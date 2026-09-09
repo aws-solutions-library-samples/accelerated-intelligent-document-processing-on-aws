@@ -132,7 +132,10 @@ def test_the_decision_is_per_section_and_resets():
 
 
 @pytest.mark.unit
-def test_downgrade_emits_a_processing_issue_and_metadata():
+def test_downgrade_is_recorded_in_metadata_and_NOT_as_a_processing_issue():
+    """The document-level HasProcessingIssues flag and the list-view badge are
+    severity-blind, so even an `info` issue would badge every document of a
+    Simple + integrated deployment for a routing decision. Metadata + flow only."""
     svc = _svc(mode="simple", confidence="integrated", schema=LIST_SCHEMA)
     svc._simple_integrated_list_downgrade()
     metadata: dict = {}
@@ -142,27 +145,25 @@ def test_downgrade_emits_a_processing_issue_and_metadata():
         section_id="s1",
     )
     codes = [i.code for i in issues]
-    assert "confidence_integrated_downgraded" in codes
-    issue = next(i for i in issues if i.code == "confidence_integrated_downgraded")
-    assert issue.severity == "info"  # a routing decision, not a shortfall
-    assert issue.section_id == "s1"
-    assert issue.details["effective_confidence_mode"] == "separate"
-    assert issue.details["list_fields"] == ["Transactions"]
+    assert "confidence_integrated_downgraded" not in codes
+    assert not any("downgrad" in (i.code or "") for i in issues)
     assert metadata["confidence_mode_effective"] == "separate"
-    # A populated list must NOT also trip the empty-list issue.
+    assert "Transactions" in metadata["confidence_mode_downgraded_reason"]
+    # A populated list must NOT trip the empty-list issue either.
     assert "extraction_incomplete" not in codes
 
 
 @pytest.mark.unit
-def test_no_issue_when_nothing_was_downgraded():
+def test_no_metadata_when_nothing_was_downgraded():
     svc = _svc(mode="simple", confidence="integrated", schema=SCALAR_SCHEMA)
     svc._simple_integrated_list_downgrade()
-    issues = svc._build_extraction_issues(
+    metadata: dict = {}
+    svc._build_extraction_issues(
         extracted_fields={"AccountNumber": "1", "Total": 2.0},
-        metadata={},
+        metadata=metadata,
         section_id="s1",
     )
-    assert all(i.code != "confidence_integrated_downgraded" for i in issues)
+    assert "confidence_mode_effective" not in metadata
 
 
 @pytest.mark.unit
@@ -219,6 +220,21 @@ def test_processing_flow_reports_the_effective_mode():
     conf = next(s for s in flow["stages"] if s["key"] == "confidence")
     assert "separate pass" in conf["detail"] and "downgraded" in conf["detail"]
     assert "inline" not in conf["detail"]
+    # Short enough not to distort the flow graph; the long reason lives in
+    # metadata.confidence_mode_downgraded_reason. `info` matches the decision.
+    assert len(conf["detail"]) < 70
+    assert conf["status"] == "info"
+
+
+@pytest.mark.unit
+def test_processing_flow_status_is_ok_when_not_downgraded():
+    svc = _svc(mode="simple", confidence="integrated", schema=SCALAR_SCHEMA)
+    svc._simple_integrated_list_downgrade()
+    flow = svc._build_processing_flow(
+        metadata={}, extraction_method="simple", tool_used=False
+    )
+    conf = next(s for s in flow["stages"] if s["key"] == "confidence")
+    assert conf["status"] == "ok" and "integrated" in conf["detail"]
 
 
 @pytest.mark.unit
@@ -256,6 +272,203 @@ def test_config_validation_warns_about_the_affected_classes_without_failing():
     assert "IdCard" not in hits[0] and "Custom" not in hits[0]
     assert result["valid"] is True or not any(
         "integrated" in e for e in result.get("errors", [])
+    )
+
+
+@pytest.mark.unit
+def test_the_allow_flag_keeps_a_list_class_on_integrated():
+    """`x-aws-idp-allow-integrated-lists: true` is the explicit opt-in."""
+    schema = dict(LIST_SCHEMA, **{"x-aws-idp-allow-integrated-lists": True})
+    svc = _svc(mode="simple", confidence="integrated", schema=schema)
+    assert svc._simple_integrated_list_downgrade() is None
+    assert svc._integrated_assessment_enabled() is True
+    # Falsey spellings do not opt in.
+    for v in (False, None, 0, ""):
+        svc = _svc(
+            mode="simple",
+            confidence="integrated",
+            schema=dict(LIST_SCHEMA, **{"x-aws-idp-allow-integrated-lists": v}),
+        )
+        assert svc._simple_integrated_list_downgrade() is not None
+
+
+@pytest.mark.unit
+def test_the_allow_flag_survives_the_multi_instance_wrapper():
+    """The service reads the flag off `_class_schema`, which for a multi-instance
+    class is the `instances[]` wrapper — wrap_class_schema must keep it there."""
+    from idp_common.schema.multi_instance import wrap_class_schema
+
+    stored = {
+        "$id": "Receipt",
+        "type": "object",
+        "properties": {"Total": {"type": "number"}},
+        "x-aws-idp-multi-instance": True,
+        "x-aws-idp-allow-integrated-lists": True,
+    }
+    wrapped = wrap_class_schema(stored)
+    assert "instances" in wrapped["properties"]
+    assert wrapped["x-aws-idp-allow-integrated-lists"] is True
+    svc = _svc(mode="simple", confidence="integrated", schema=wrapped)
+    assert svc._simple_integrated_list_downgrade() is None
+    # ...and without the flag the wrapper IS downgraded (instances is a list).
+    wrapped_plain = wrap_class_schema(
+        {k: v for k, v in stored.items() if "allow" not in k}
+    )
+    svc = _svc(mode="simple", confidence="integrated", schema=wrapped_plain)
+    assert svc._simple_integrated_list_downgrade() is not None
+
+
+@pytest.mark.unit
+def test_the_allow_flag_is_rollback_safe_in_the_config_model():
+    """Classes are free-form dicts in IDPConfig (also at v0.6.7), so a stored
+    config carrying the new key loads on the previous release unchanged."""
+    cfg = IDPConfig(
+        **{
+            "classes": [
+                dict(
+                    LIST_SCHEMA,
+                    **{"$id": "S", "x-aws-idp-allow-integrated-lists": True},
+                )
+            ]
+        }
+    )
+    assert cfg.classes[0]["x-aws-idp-allow-integrated-lists"] is True
+
+
+def _validate(extraction: dict, classes: list) -> dict:
+    from idp_common.config.merge_utils import validate_config
+
+    return validate_config({"extraction": extraction, "classes": classes})
+
+
+def _hits(result: dict) -> list:
+    return [w for w in result.get("warnings", []) if "declare list fields" in w]
+
+
+_LIST_CLASS = {
+    "$id": "BankStatement",
+    "type": "object",
+    "properties": LIST_SCHEMA["properties"],
+}
+
+
+@pytest.mark.unit
+def test_config_check_treats_mode_as_authoritative_over_agentic_enabled():
+    """The UI writes only `mode`; reconcile_mode_and_agentic derives
+    agentic.enabled from it. The check must agree with the runtime, which reads
+    the reconciled model."""
+    integrated = {"mode": "integrated"}
+    # Advanced + integrated: no downgrade at runtime -> no warning.
+    assert (
+        _hits(_validate({"mode": "advanced", "confidence": integrated}, [_LIST_CLASS]))
+        == []
+    )
+    assert (
+        _hits(
+            _validate(
+                {
+                    "mode": "advanced",
+                    "agentic": {"enabled": False},
+                    "confidence": integrated,
+                },
+                [_LIST_CLASS],
+            )
+        )
+        == []
+    )
+    # Simple with a STALE agentic.enabled: the runtime downgrades -> warn.
+    assert (
+        len(
+            _hits(
+                _validate(
+                    {
+                        "mode": "simple",
+                        "agentic": {"enabled": True},
+                        "confidence": integrated,
+                    },
+                    [_LIST_CLASS],
+                )
+            )
+        )
+        == 1
+    )
+    # Legacy config without `mode`: fall back to agentic.enabled.
+    assert (
+        _hits(
+            _validate(
+                {"agentic": {"enabled": True}, "confidence": integrated}, [_LIST_CLASS]
+            )
+        )
+        == []
+    )
+    assert (
+        len(
+            _hits(
+                _validate(
+                    {"agentic": {"enabled": False}, "confidence": integrated},
+                    [_LIST_CLASS],
+                )
+            )
+        )
+        == 1
+    )
+
+
+@pytest.mark.unit
+def test_config_check_is_silent_when_confidence_is_disabled_or_opted_in():
+    off = {"mode": "integrated", "enabled": False}  # reconciles to mode off
+    assert _hits(_validate({"mode": "simple", "confidence": off}, [_LIST_CLASS])) == []
+    opted = dict(_LIST_CLASS, **{"x-aws-idp-allow-integrated-lists": True})
+    assert (
+        _hits(
+            _validate({"mode": "simple", "confidence": {"mode": "integrated"}}, [opted])
+        )
+        == []
+    )
+
+
+@pytest.mark.unit
+def test_config_check_sees_a_legacy_attributes_list_class():
+    """merge_config_with_defaults does not migrate legacy classes but the runtime
+    does, so the downgrade fires for them; the check must say so too."""
+    legacy = {
+        "name": "Statement",
+        "attributes": [
+            {"name": "AccountNumber", "attributeType": "simple"},
+            {"name": "Transactions", "attributeType": "list", "listItemTemplate": {}},
+        ],
+    }
+    hits = _hits(
+        _validate({"mode": "simple", "confidence": {"mode": "integrated"}}, [legacy])
+    )
+    assert len(hits) == 1 and "Statement" in hits[0]
+    scalar_legacy = {
+        "name": "Card",
+        "attributes": [{"name": "Id", "attributeType": "simple"}],
+    }
+    assert (
+        _hits(
+            _validate(
+                {"mode": "simple", "confidence": {"mode": "integrated"}},
+                [scalar_legacy],
+            )
+        )
+        == []
+    )
+
+
+@pytest.mark.unit
+def test_agentic_call_site_does_not_consult_the_downgrade():
+    """The agentic branch cannot be downgraded (agentic.enabled short-circuits the
+    memo), so it must not pass `integrated_ok=` — the one remaining caller is the
+    simple content builder."""
+    import inspect
+
+    from idp_common.extraction import service as svc_mod
+
+    src = inspect.getsource(svc_mod)
+    assert (
+        src.count("integrated_ok=self._simple_integrated_list_downgrade() is None") == 1
     )
 
 

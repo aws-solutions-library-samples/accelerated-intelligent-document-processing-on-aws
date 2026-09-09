@@ -779,8 +779,8 @@ class ConfidenceConfig(BaseModel):
             "saving a model call — the standalone step is bypassed). In simple "
             "extraction a class that declares list fields is automatically scored "
             "in a separate pass even when 'integrated' is selected, because simple "
-            "+ integrated loses list rows silently; a "
-            "confidence_integrated_downgraded issue records it."
+            "+ integrated loses list rows silently; set "
+            "x-aws-idp-allow-integrated-lists: true on a class to opt it back in."
         ),
     )
     enabled: bool = Field(

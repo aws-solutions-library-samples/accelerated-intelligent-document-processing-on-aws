@@ -28,7 +28,15 @@ import {
   CopyToClipboard,
   Alert,
 } from '@cloudscape-design/components';
-import { DEFS_FIELD, ID_FIELD, REF_FIELD, SCHEMA_FIELD, X_AWS_IDP_MULTI_INSTANCE } from '../../constants/schemaConstants';
+import {
+  DEFS_FIELD,
+  ID_FIELD,
+  REF_FIELD,
+  SCHEMA_FIELD,
+  X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+  X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+  X_AWS_IDP_MULTI_INSTANCE,
+} from '../../constants/schemaConstants';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -375,6 +383,31 @@ export const extractionModeOf = (formValues: Record<string, unknown> | null | un
   if (typeof raw === 'string' && raw.trim()) return raw.trim().toLowerCase() === 'advanced' ? 'advanced' : 'simple';
   const agentic = (extraction.agentic as Record<string, unknown>) || {};
   return boolish(agentic.enabled, false) ? 'advanced' : 'simple';
+};
+
+/**
+ * Whether a Simple + `integrated` section on this class is scored in a SEPARATE
+ * pass at run time. Mirrors ``ExtractionService._simple_integrated_list_downgrade``:
+ * Simple mode, confidence.mode integrated, the class declares a top-level array
+ * (or is multi-instance, whose ``instances`` wrapper is one), and neither opt-out
+ * is set — a per-class task-prompt override or ``x-aws-idp-allow-integrated-lists``.
+ * The backend then sends the PLAIN extraction prompt, so the preview must too.
+ */
+export const simpleIntegratedDowngraded = (
+  formValues: Record<string, unknown> | null | undefined,
+  selectedClass: Record<string, unknown> | null | undefined,
+): boolean => {
+  const extraction = (formValues?.extraction as Record<string, unknown>) || {};
+  const confidence = (extraction.confidence as Record<string, unknown>) || {};
+  if (String(confidence.mode ?? 'separate') !== 'integrated') return false;
+  if (confidence.enabled !== undefined && !boolish(confidence.enabled, true)) return false;
+  if (extractionModeOf(formValues) !== 'simple') return false;
+  if (!selectedClass) return false;
+  if (selectedClass[X_AWS_IDP_EXTRACTION_TASK_PROMPT]) return false;
+  if (boolish(selectedClass[X_AWS_IDP_ALLOW_INTEGRATED_LISTS], false)) return false;
+  if (boolish(selectedClass[X_AWS_IDP_MULTI_INSTANCE], false)) return true;
+  const props = (selectedClass.properties as Record<string, unknown> | undefined) || {};
+  return Object.values(props).some((s) => s && typeof s === 'object' && (s as Record<string, unknown>).type === 'array');
 };
 
 /**
@@ -834,6 +867,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     }
   }, [classes, selectedClassId]);
 
+  const selectedClass = useMemo((): ClassSchema | null => {
+    if (!selectedClassId) return null;
+    return classes.find((cls) => getClassId(cls) === selectedClassId) || null;
+  }, [classes, selectedClassId]);
+
   // Get the step config (system_prompt, task_prompt, model). For the v0.6
   // 'extraction' and 'confidence' views this composes the actual template that
   // will run given confidence.mode + geometry.mode (mirrors the Python
@@ -849,7 +887,9 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     const bboxBlock = String(geometry.task_prompt_bbox ?? '');
 
     if (selectedStep === 'extraction') {
-      const integrated = mode === 'integrated';
+      // A Simple + integrated section on a list-bearing class is downgraded to a
+      // separate pass server-side and gets the PLAIN prompt; show that.
+      const integrated = mode === 'integrated' && !simpleIntegratedDowngraded(formValues, selectedClass);
       let task = String(extraction.task_prompt ?? '');
       if (integrated) {
         // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
@@ -880,16 +920,12 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     const cfg = formValues?.[selectedStep];
     if (!cfg || typeof cfg !== 'object') return {};
     return cfg as StepConfig;
-  }, [formValues, selectedStep]);
+  }, [formValues, selectedStep, selectedClass]);
 
   // Whether this step needs a class selection
   const needsClassSelection = selectedStep === 'extraction' || selectedStep === 'confidence';
 
   // Get selected class schema
-  const selectedClass = useMemo((): ClassSchema | null => {
-    if (!selectedClassId) return null;
-    return classes.find((cls) => getClassId(cls) === selectedClassId) || null;
-  }, [classes, selectedClassId]);
 
   const schemaDivergence = useMemo(
     () => schemaDivergenceFor(formValues, selectedClass, selectedStep),
@@ -1025,15 +1061,9 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
             : ` No bounding-box block (Geometry mode: ${geomMode}).`;
           let msg: string;
           if (selectedStep === 'extraction') {
-            const props = (selectedClass?.properties as Record<string, unknown> | undefined) || {};
-            const classDeclaresList = Object.values(props).some(
-              (s) => s && typeof s === 'object' && (s as Record<string, unknown>).type === 'array',
-            );
-            const classHasPromptOverride = Boolean(selectedClass?.['x-aws-idp-extraction-task-prompt']);
-            const downgraded =
-              mode === 'integrated' && extractionModeOf(formValues) === 'simple' && classDeclaresList && !classHasPromptOverride;
+            const downgraded = simpleIntegratedDowngraded(formValues, selectedClass);
             msg = downgraded
-              ? `Integrated confidence is configured, but this class declares list fields, so for its sections the backend sends the PLAIN extraction prompt (extraction.task_prompt) and scores confidence in a separate pass — Simple + integrated loses list rows silently. The template shown here is the 1S-TopK one that scalar-only classes get.${bbox}`
+              ? `Integrated confidence is configured, but this class declares list fields (a multi-instance class's instances array counts), so for its sections the backend sends the PLAIN extraction prompt shown here (extraction.task_prompt) and scores confidence in a separate pass — Simple + integrated loses list rows silently. To keep 1S-TopK on this class, set ${X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on it once you have verified its lists come back complete.`
               : mode === 'integrated'
                 ? `Integrated confidence mode: showing the extraction + confidence template (one inference emits value and confidence).${bbox}`
                 : 'Showing the extraction-only template (confidence scoring is off or runs separately).';

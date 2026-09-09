@@ -940,15 +940,24 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 
 ## 1S-TopK: single-stage extraction + confidence (Simple mode)
 
-> **Not used on list-bearing classes.** When the section's class declares a top-level
-> array property, `ExtractionService._simple_integrated_list_downgrade` switches the
-> section to the plain extraction prompt and emits no inline confidence, so the
-> standalone Assessment step (which skips only when `explainability_info` is already
-> present) scores it separately. Benchmarked reason: Simple + integrated returned
-> 1–10 of 100 rows on 4/4 repeats and an 800-row list came back absent, all reporting
-> COMPLETED (config-guidance §2.1). A `confidence_integrated_downgraded` issue and
-> `metadata.confidence_mode_effective` record the downgrade. Runtime per-section
-> decision, not a config rejection: a stored config must keep loading.
+> **Not used on list-bearing classes unless the class opts in.** When the section's
+> class declares a top-level array property (a multi-instance `instances` wrapper
+> counts), `ExtractionService._simple_integrated_list_downgrade` switches the section
+> to the plain extraction prompt and emits no inline confidence, so the standalone
+> Assessment step (which skips only when `explainability_info` is already present)
+> scores it separately. Benchmarked reason: Simple + integrated returned 1–10 of 100
+> rows on 4/4 repeats and an 800-row list came back absent, all reporting COMPLETED
+> (config-guidance §2.1); the separate pass costs ~2.5× per 100-row document. Recorded
+> in `metadata.confidence_mode_effective` / `confidence_mode_downgraded_reason` and the
+> Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because
+> `HasProcessingIssues` is severity-blind and would badge every document. Two class-level
+> opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
+> never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
+> verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
+> warns at `idp-cli config validate` / SDK validate time — the web UI does not validate
+> on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
+> not a config rejection: a stored config must keep loading, and the new key is a
+> free-form class key that older releases ignore.
 
 When `extraction.mode: simple` and `extraction.confidence.mode: integrated`, the
 service produces the extracted values **and** their per-field confidence in a

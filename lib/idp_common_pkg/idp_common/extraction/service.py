@@ -26,6 +26,7 @@ from idp_common.config.schema_constants import (
     SCHEMA_TYPE,
     TYPE_ARRAY,
     TYPE_OBJECT,
+    X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
     X_AWS_IDP_DOCUMENT_TYPE,
     X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
     X_AWS_IDP_EXTRACTION_MODEL,
@@ -924,7 +925,7 @@ class ExtractionService:
         self._agent_table_tool_note = None
         # Reason a Simple + integrated section was downgraded to a separate
         # confidence pass (list-bearing class), or None. Set lazily per section by
-        # _simple_integrated_list_downgrade; surfaced as a ProcessingIssue.
+        # _simple_integrated_list_downgrade; surfaced in metadata and the flow.
         self._integrated_downgrade_reason = None
         self._integrated_downgrade_checked = False
 
@@ -2421,36 +2422,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         ]
 
         # 0) Integrated confidence downgraded to a separate pass for this
-        # list-bearing class (see _simple_integrated_list_downgrade). Advisory:
-        # the section is COMPLETE and scored; the user asked for one inference
-        # and got two, and should know why.
+        # list-bearing class (see _simple_integrated_list_downgrade). Recorded in
+        # metadata and the Processing Flow, deliberately NOT as a ProcessingIssue:
+        # the document-level HasProcessingIssues flag and the list-view badge are
+        # severity-blind, so even an `info` issue would mark every document of a
+        # Simple + integrated deployment "Processing Issues: 1" for a routing
+        # decision that produced a complete, scored section.
         if self._integrated_downgrade_reason:
-            # `info`, not `warning`: this is a routing decision that produced a
-            # COMPLETE, scored section, not a shortfall. `warning` would mark every
-            # such document "Degraded" / "COMPLETED WITH WARNINGS" and set the
-            # sticky HasProcessingIssues flag on a correct result.
-            issues.append(
-                ProcessingIssue(
-                    stage="extraction",
-                    severity="info",
-                    code="confidence_integrated_downgraded",
-                    message=(
-                        "Confidence was scored in a separate pass (integrated was "
-                        "configured) because this class declares list field(s) "
-                        f"({', '.join(sorted(array_fields))}); Simple + integrated "
-                        "loses list rows silently. Set confidence.mode: separate "
-                        "for list-bearing classes to make this explicit, or use "
-                        "Advanced extraction to keep a single inference."
-                    ),
-                    root_cause=self._integrated_downgrade_reason,
-                    section_id=section_id,
-                    details={
-                        "requested_confidence_mode": "integrated",
-                        "effective_confidence_mode": "separate",
-                        "list_fields": sorted(array_fields),
-                    },
-                )
-            )
             metadata["confidence_mode_effective"] = "separate"
             metadata["confidence_mode_downgraded_reason"] = (
                 self._integrated_downgrade_reason
@@ -2916,16 +2894,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         else:
             batch_count = split.get("batch_count")
             concurrent = split.get("concurrent_batches")
+            c_status = "ok"
             if conf_mode == "integrated" and self._integrated_downgrade_reason:
                 # Configured integrated, ran separately (list-bearing class).
-                # Report what HAPPENED, not what was configured.
+                # Report what HAPPENED, not what was configured; the full reason
+                # is in metadata.confidence_mode_downgraded_reason, the box stays
+                # short so the flow graph keeps its shape.
                 c_detail = (
-                    f"{conf_cfg.model or 'model'} · separate pass (integrated "
-                    "requested; downgraded because the class declares list fields)"
+                    f"{conf_cfg.model or 'model'} · separate pass "
+                    "(downgraded: list fields)"
                 )
                 if batch_count and batch_count > 1:
                     c_detail += f" · {batch_count} batches"
                 fan = concurrent if (concurrent and concurrent > 1) else 0
+                c_status = "info"
             elif conf_mode == "integrated":
                 c_detail = "integrated (inline with extraction)"
                 fan = 0
@@ -2942,7 +2924,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "key": "confidence",
                     "label": "Confidence",
                     "detail": c_detail,
-                    "status": "ok",
+                    "status": c_status,
                     "fanout": fan,
                     "model": conf_cfg.model,
                 }
@@ -4250,12 +4232,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 select_extraction_task_prompt,
             )
 
+            # No `integrated_ok=` here: this is the agentic branch and the Simple +
+            # integrated downgrade never applies to it (cfg.agentic.enabled
+            # short-circuits _simple_integrated_list_downgrade).
             prompt_template = (
-                select_extraction_task_prompt(
-                    self.config.extraction,
-                    integrated_ok=self._simple_integrated_list_downgrade() is None,
-                )
-                or ""
+                select_extraction_task_prompt(self.config.extraction) or ""
             )
             send_images = "{DOCUMENT_IMAGE}" in prompt_template
 
@@ -5781,11 +5762,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         emitted, and the standalone Assessment step — which skips only when
         ``explainability_info`` is already present — therefore runs. The section
         gets complete rows plus batched confidence at the cost of one extra
-        inference, and a ``confidence_integrated_downgraded`` ProcessingIssue
-        says so. Deliberately a per-section runtime decision and not a config
-        rejection: a stored config that validated yesterday must still load today
-        (the rollback trap), and a scalar-only class keeps the single-inference
-        saving.
+        inference; ``metadata.confidence_mode_effective`` /
+        ``confidence_mode_downgraded_reason`` and the Processing Flow say so (not
+        a ProcessingIssue — that flag is severity-blind and would badge every
+        document). Two opt-outs keep a class on 1S-TopK: a per-class
+        ``x-aws-idp-extraction-task-prompt`` (the downgrade works by swapping
+        the prompt, so a user-controlled prompt must not be half-applied) and
+        the explicit ``x-aws-idp-allow-integrated-lists: true`` flag for a class
+        whose lists the author has verified come back complete. Deliberately a
+        per-section runtime decision and not a config rejection: a stored config
+        that validated yesterday must still load today (the rollback trap), and
+        a scalar-only class keeps the single-inference saving.
         """
         if self._integrated_downgrade_checked:
             return self._integrated_downgrade_reason
@@ -5810,6 +5797,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if isinstance(spec, dict) and spec.get(SCHEMA_TYPE) == TYPE_ARRAY
         )
         if not list_fields:
+            return None
+        if (self._class_schema or {}).get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS):
+            # Explicit opt-in. For a multi-instance class the flag rides on the
+            # wrapper (wrap_class_schema keeps every non-record-shape key there),
+            # so this reads it for both plain and wrapped classes.
+            logger.info(
+                "Class '%s' declares list fields %s but sets %s; keeping "
+                "integrated confidence as configured",
+                self._class_label,
+                list_fields,
+                X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+            )
             return None
         if (self._class_schema or {}).get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
             # The class carries its own extraction task prompt. The downgrade

@@ -841,6 +841,10 @@ def _validate_agentic_openai(
     if not isinstance(extraction, dict):
         return
 
+    # NOTE: reads the raw merged dict, where `agentic.enabled` may disagree with
+    # `mode` (reconcile_mode_and_agentic makes `mode` authoritative in IDPConfig).
+    # Behaviour deliberately unchanged here; see _extraction_is_simple for the
+    # mode-first rule.
     agentic_enabled = bool(extraction.get("agentic", {}).get("enabled"))
     if not agentic_enabled:
         return
@@ -1277,6 +1281,45 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
             )
 
 
+def _extraction_is_simple(extraction: Dict[str, Any]) -> bool:
+    """Whether the merged (un-reconciled) extraction block means Simple mode.
+
+    `extraction.mode` is authoritative when present — `reconcile_mode_and_agentic`
+    in the config model sets `agentic.enabled = (mode == "advanced")`, and the UI
+    writes only `mode` — so a stale `agentic.enabled` must not flip the answer.
+    `agentic.enabled` is the fallback for a legacy config with no `mode`.
+    """
+    mode = extraction.get("mode")
+    if isinstance(mode, str) and mode.strip():
+        return mode.strip().lower() == "simple"
+    return not bool((extraction.get("agentic") or {}).get("enabled"))
+
+
+def _class_declares_list(cls: Dict[str, Any]) -> bool:
+    """Top-level array property, multi-instance wrapper, or a legacy
+    `attributes` entry of `attributeType: list` (the merged dict is not migrated;
+    the runtime path is, so the runtime downgrade WOULD fire for that class)."""
+    from idp_common.config.schema_constants import (
+        ATTRIBUTE_TYPE_LIST,
+        LEGACY_ATTRIBUTE_TYPE,
+        LEGACY_ATTRIBUTES,
+        X_AWS_IDP_MULTI_INSTANCE,
+    )
+
+    if cls.get(X_AWS_IDP_MULTI_INSTANCE):
+        return True
+    props = cls.get("properties") or {}
+    if isinstance(props, dict) and any(
+        isinstance(s, dict) and s.get("type") == "array" for s in props.values()
+    ):
+        return True
+    legacy = cls.get(LEGACY_ATTRIBUTES)
+    return isinstance(legacy, list) and any(
+        isinstance(a, dict) and a.get(LEGACY_ATTRIBUTE_TYPE) == ATTRIBUTE_TYPE_LIST
+        for a in legacy
+    )
+
+
 def _validate_simple_integrated_lists(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -1289,26 +1332,33 @@ def _validate_simple_integrated_lists(
     scored in batches) and the 1S-TopK prompt is not used for that class. Saying
     so at config time is free. A hard error would wedge a stored config that
     validated yesterday (the rollback trap), so this is a warning only.
+
+    Surfaces wherever `validate_config` runs: `idp-cli config validate` and the SDK
+    validate operation. The web UI does NOT validate on save; its Prompt Preview
+    pane shows the same decision per class.
     """
+    from idp_common.config.schema_constants import (
+        X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+
     extraction = merged_config.get("extraction", {})
-    if not isinstance(extraction, dict):
-        return
-    if bool((extraction.get("agentic") or {}).get("enabled")):
+    if not isinstance(extraction, dict) or not _extraction_is_simple(extraction):
         return
     confidence = extraction.get("confidence") or {}
     if not isinstance(confidence, dict) or confidence.get("mode") != "integrated":
         return
+    if confidence.get("enabled") is False:
+        return  # reconciles to mode "off": no confidence runs at all
     affected: List[str] = []
     for cls in merged_config.get("classes") or []:
         if not isinstance(cls, dict):
             continue
-        if cls.get("x-aws-idp-extraction-task-prompt"):
+        if cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
             continue  # a per-class prompt override opts the class out
-        props = cls.get("properties") or {}
-        has_list = any(
-            isinstance(s, dict) and s.get("type") == "array" for s in props.values()
-        )
-        if has_list or cls.get("x-aws-idp-multi-instance"):
+        if cls.get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS):
+            continue  # explicit opt-in: the author verified list completeness
+        if _class_declares_list(cls):
             affected.append(str(cls.get("$id") or cls.get("name") or "?"))
     if affected:
         result["warnings"].append(
@@ -1317,6 +1367,8 @@ def _validate_simple_integrated_lists(
             "sections will be scored in a separate confidence pass instead "
             "(Simple + integrated loses list rows silently), at roughly 2.5x the "
             "per-document confidence cost of a single inference. Set "
-            "confidence.mode: separate to make this explicit, or use Advanced "
-            "extraction to keep integrated confidence."
+            "confidence.mode: separate to make this explicit, use Advanced "
+            "extraction to keep integrated confidence, or set "
+            f"{X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on a class whose lists you "
+            "have verified come back complete."
         )

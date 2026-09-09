@@ -1765,7 +1765,7 @@ Resources:
                     title: Confidence scoring mode
                     enum: ["off", "separate", "integrated"]
                     default: "separate"
-                    description: "How per-field confidence is produced. 'off': no confidence scoring (no extra model pass, no confidence data). 'separate' (default): scored in a distinct inference — a per-shard second pass in Advanced extraction mode, or the standalone Assessment step in Simple mode. 'integrated': the extraction inference emits each value's confidence in one pass (saves a model call). In Simple extraction a class that declares list fields is automatically scored in a separate pass even when integrated is selected, because Simple + integrated loses list rows silently; a confidence_integrated_downgraded issue records it. Confidence drives HITL review and the UI confidence display."
+                    description: "How per-field confidence is produced. 'off': no confidence scoring (no extra model pass, no confidence data). 'separate' (default): scored in a distinct inference — a per-shard second pass in Advanced extraction mode, or the standalone Assessment step in Simple mode. 'integrated': the extraction inference emits each value's confidence in one pass (saves a model call). In Simple extraction a class that declares list fields is automatically scored in a separate pass even when integrated is selected, because Simple + integrated loses list rows silently; set x-aws-idp-allow-integrated-lists: true on a class to opt it back in. Confidence drives HITL review and the UI confidence display."
                     order: 0
                   list_batch_size:
                     type: integer
