@@ -1328,7 +1328,7 @@ def _validate_simple_integrated_lists(
 
     At run time such a section is scored in a separate pass instead — a routing
     decision, not a failure — but it costs more than the single inference the user
-    configured (benchmarked ~2.5x per 100-row document, since long lists are
+    configured at Sonnet 5 (~2.5x per 100-row document, since long lists are
     scored in batches) and the 1S-TopK prompt is not used for that class. Saying
     so at config time is free. A hard error would wedge a stored config that
     validated yesterday (the rollback trap), so this is a warning only.
@@ -1366,8 +1366,9 @@ def _validate_simple_integrated_lists(
             "extraction.confidence.mode is 'integrated' with simple extraction, but "
             f"these classes declare list fields: {', '.join(affected)}. Their "
             "sections will be scored in a separate confidence pass instead "
-            "(Simple + integrated loses list rows silently), at roughly 2.5x the "
-            "per-document confidence cost of a single inference. Set "
+            "(Simple + integrated loses list rows silently); the cost relative to "
+            "the single inference depends on the model (about 2.5x at Sonnet 5 on "
+            "a 100-row document, cheaper at Sonnet 4.6). Set "
             "confidence.mode: separate to make this explicit, use Advanced "
             "extraction to keep integrated confidence, or set "
             f"{X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on a class whose lists you "
