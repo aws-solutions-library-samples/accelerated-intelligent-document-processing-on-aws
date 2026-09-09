@@ -420,7 +420,10 @@ const CreateTestSetWizard = ({
           <FormField label="Bucket" description="Where to look for the documents.">
             <Select selectedOption={bucket} onChange={({ detail }) => setBucket(detail.selectedOption)} options={BUCKET_OPTIONS} />
           </FormField>
-          <FormField label="File pattern" description="For example *.pdf, or invoices/2024-*.pdf">
+          <FormField
+            label="File pattern"
+            description="* matches within one folder, ** matches any depth, ? matches one character; the folder path before the first wildcard is exact, the rest ignores case. For example *.pdf, invoices/2024-*.pdf, or invoices/**/*.pdf"
+          >
             <Input value={filePattern} onChange={({ detail }) => setFilePattern(detail.value)} placeholder="*.pdf" />
           </FormField>
           <FormField label="Modified after — optional" description="Useful for picking up only recently reviewed documents.">

@@ -5,6 +5,7 @@ import boto3
 import json
 import logging
 import os
+import re
 from typing import Dict, Any, Optional, Union, List
 from ..utils import parse_s3_uri
 
@@ -263,6 +264,53 @@ def _list_local_images(directory_path: str, image_extensions: set) -> List[str]:
         raise
 
 
+def _glob_to_regex(pattern: str) -> re.Pattern:
+    """Translate an S3 key glob into an anchored, case-insensitive regex.
+
+    ``**/`` matches zero or more folders, ``**`` matches anything including ``/``,
+    ``*`` matches within one folder level, ``?`` matches one non-``/`` character.
+    Every other character is literal: a ``.`` in a name is a dot, and ``(``, ``+``
+    or ``[`` in a document name neither mis-match nor raise. The previous
+    translation had none of this — ``*`` could not cross ``/``, ``**`` degraded to
+    two single-segment wildcards, and literals reached the regex unescaped — so a
+    pattern like ``folder/**/*.pdf`` matched nothing nested (#808).
+    """
+    parts = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            parts.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile(f"^{''.join(parts)}$", re.IGNORECASE)
+
+
+def _literal_prefix(pattern: str) -> str:
+    """The folder path before the first wildcard, for listing under an S3 Prefix.
+
+    Cut back to the last ``/`` so a partial name is never used as a prefix. Empty
+    when the pattern starts with a wildcard or has no ``/`` before one. S3
+    prefixes are exact-case, which is why the folder path is the one part of a
+    pattern that is; the regex takes care of the rest.
+    """
+    wildcard_at = min(
+        (pos for pos in (pattern.find("*"), pattern.find("?")) if pos != -1),
+        default=len(pattern),
+    )
+    return pattern[: pattern.rfind("/", 0, wildcard_at) + 1]
+
+
 def find_matching_files(
     bucket: str, pattern: str, modified_after: str | None = None
 ) -> List[str]:
@@ -271,22 +319,29 @@ def find_matching_files(
 
     Args:
         bucket: S3 bucket name
-        pattern: File pattern with wildcards (* and ?) - case sensitive, * doesn't match /
+        pattern: Glob over the full key. ``**`` matches any depth (``**/`` is zero
+            or more folders), ``*`` matches within one folder level, ``?`` matches
+            one character; other characters are literal. The folder path before
+            the first wildcard must match exactly; the rest is case-insensitive.
         modified_after: Optional ISO 8601 timestamp to filter files modified after this time
 
     Returns:
         List of matching file keys
     """
-    import re
     from datetime import datetime, timezone
 
     try:
         s3 = get_s3_client()
         paginator = s3.get_paginator("list_objects_v2")
 
-        # Convert pattern: * matches anything except /, ? matches single char except /
-        regex_pattern = pattern.replace("*", "[^/]*").replace("?", "[^/]")
-        regex = re.compile(f"^{regex_pattern}$")
+        regex = _glob_to_regex(pattern)
+        # Only the folder the pattern names is listed, not the whole bucket: the
+        # regex is anchored to that same literal path, so this cannot change
+        # what matches, only how much is read to find it.
+        list_kwargs = {"Bucket": bucket}
+        prefix = _literal_prefix(pattern)
+        if prefix:
+            list_kwargs["Prefix"] = prefix
 
         # Parse modified_after filter if provided
         cutoff_time = None
@@ -298,7 +353,7 @@ def find_matching_files(
 
         matching_files = []
 
-        for page in paginator.paginate(Bucket=bucket):
+        for page in paginator.paginate(**list_kwargs):
             if "Contents" in page:
                 for obj in page["Contents"]:
                     key = obj["Key"]
