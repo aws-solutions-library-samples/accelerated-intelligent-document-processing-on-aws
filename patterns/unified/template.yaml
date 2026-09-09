@@ -5619,11 +5619,13 @@ Resources:
           # S3 as a compressed reference for the next step. Unused when hooks
           # are read-only or return their own compressed reference.
           WORKING_BUCKET: !Ref WorkingBucket
+      LoggingConfig:
+        LogGroup: !Ref PipelineHooksDispatcherFunctionLogGroup
 
   PipelineHooksDispatcherFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${PipelineHooksDispatcherFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/PipelineHooksDispatcherFunction'
       RetentionInDays: !Ref LogRetentionDays
       KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
 
