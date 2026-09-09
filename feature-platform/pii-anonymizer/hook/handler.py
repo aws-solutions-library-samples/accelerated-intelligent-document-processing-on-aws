@@ -346,6 +346,21 @@ def _redact_to_scratch(
         )
         out_ext = "xlsx"
     elif ext in ("docx", "doc"):
+        # A legacy binary .doc cannot be read here either: the vendored word
+        # processor uses python-docx, which reads the OOXML container only, and no
+        # pure-Python reader exists for the OLE2 format (host-side: #829). It
+        # already failed — `PackageNotFoundError` from deep inside the processor —
+        # so this changes the message, not the outcome. The outcome is the right
+        # one for a redaction feature: the shipped preset sets `onError: fail`, so
+        # the run stops rather than passing an unredacted document through, which
+        # is what routing it to the unsupported-format path below would do.
+        if ext == "doc":
+            raise RuntimeError(
+                f"Cannot redact {input_key}: legacy binary Word (.doc) is not "
+                "readable — only .docx is. Re-save the document as .docx and "
+                "upload it again. (Failing rather than passing it through: an "
+                "unredacted document must not continue.)"
+            )
         from processors.word_processor import process_word_file
 
         result = process_word_file(
