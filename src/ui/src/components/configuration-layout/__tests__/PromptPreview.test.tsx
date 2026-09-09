@@ -35,6 +35,7 @@ import PromptPreview, {
   getAttributeNamesForClass,
   invalidToolPropertyNames,
   schemaDivergenceFor,
+  simpleIntegratedDowngraded,
   toolInputSchemaFor,
   toolSpecWireText,
 } from '../PromptPreview';
@@ -299,6 +300,42 @@ describe('schemaDivergenceFor', () => {
     it('never leaks into the confidence step', () => {
       expect(schemaDivergenceFor({ extraction: { mode: 'advanced' } }, {}, 'confidence').restatesSchema).toBe(false);
     });
+  });
+});
+
+describe('simpleIntegratedDowngraded', () => {
+  const simpleIntegrated = { extraction: { mode: 'simple', confidence: { mode: 'integrated' } } };
+  const listClass = { $id: 'Stmt', properties: { Rows: { type: 'array', items: { type: 'object' } } } };
+  const scalarClass = { $id: 'Card', properties: { Id: { type: 'string' } } };
+
+  it('is on for Simple + integrated on a list-bearing or multi-instance class', () => {
+    expect(simpleIntegratedDowngraded(simpleIntegrated, listClass)).toBe(true);
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...scalarClass, 'x-aws-idp-multi-instance': true })).toBe(true);
+  });
+
+  it('is off for scalar-only classes, Advanced mode, other confidence modes and disabled confidence', () => {
+    expect(simpleIntegratedDowngraded(simpleIntegrated, scalarClass)).toBe(false);
+    expect(simpleIntegratedDowngraded({ extraction: { mode: 'advanced', confidence: { mode: 'integrated' } } }, listClass)).toBe(false);
+    expect(simpleIntegratedDowngraded({ extraction: { mode: 'simple', confidence: { mode: 'separate' } } }, listClass)).toBe(false);
+    const disabled = { extraction: { mode: 'simple', confidence: { mode: 'integrated', enabled: false } } };
+    expect(simpleIntegratedDowngraded(disabled, listClass)).toBe(false);
+    expect(simpleIntegratedDowngraded(simpleIntegrated, null)).toBe(false);
+  });
+
+  it('honours both opt-outs: a per-class task prompt and x-aws-idp-allow-integrated-lists', () => {
+    const overridden = { ...listClass, 'x-aws-idp-extraction-task-prompt': 'MY {DOCUMENT_TEXT}' };
+    expect(simpleIntegratedDowngraded(simpleIntegrated, overridden)).toBe(false);
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': true })).toBe(false);
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': 'true' })).toBe(false);
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': false })).toBe(true);
+    // String spellings agree with the backend's flag_is_true: "false" is NOT an opt-in.
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...listClass, 'x-aws-idp-allow-integrated-lists': 'false' })).toBe(true);
+    expect(simpleIntegratedDowngraded(simpleIntegrated, { ...scalarClass, 'x-aws-idp-multi-instance': 'false' })).toBe(false);
+  });
+
+  it('treats mode as authoritative over a stale agentic.enabled, like the backend', () => {
+    const stale = { extraction: { mode: 'simple', agentic: { enabled: true }, confidence: { mode: 'integrated' } } };
+    expect(simpleIntegratedDowngraded(stale, listClass)).toBe(true);
   });
 });
 

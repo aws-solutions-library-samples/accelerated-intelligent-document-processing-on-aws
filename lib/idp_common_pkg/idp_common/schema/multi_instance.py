@@ -139,12 +139,9 @@ def is_multi_instance(class_schema: Any) -> bool:
     """
     if not isinstance(class_schema, dict):
         return False
-    raw = class_schema.get(X_AWS_IDP_MULTI_INSTANCE)
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        return raw.strip().lower() in ("true", "yes", "1")
-    return bool(raw)
+    from idp_common.config.flags import flag_is_true
+
+    return flag_is_true(class_schema.get(X_AWS_IDP_MULTI_INSTANCE))
 
 
 def is_wrapped(class_schema: Any) -> bool:

@@ -633,6 +633,7 @@ def validate_config(
     _validate_task_prompt_placeholders(merged, result)
     _validate_schema_fields(config.get("classes", []), result)
     _validate_agentic_openai(merged, result)
+    _validate_simple_integrated_lists(merged, result)
     _validate_discovery_openai(merged, result)
 
     return result
@@ -840,6 +841,10 @@ def _validate_agentic_openai(
     if not isinstance(extraction, dict):
         return
 
+    # NOTE: reads the raw merged dict, where `agentic.enabled` may disagree with
+    # `mode` (reconcile_mode_and_agentic makes `mode` authoritative in IDPConfig).
+    # Behaviour deliberately unchanged here; see _extraction_is_simple for the
+    # mode-first rule.
     agentic_enabled = bool(extraction.get("agentic", {}).get("enabled"))
     if not agentic_enabled:
         return
@@ -1274,3 +1279,97 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
             logger.warning(
                 "Could not validate max_tokens for %s: %s", section_name, str(e)
             )
+
+
+def _extraction_is_simple(extraction: Dict[str, Any]) -> bool:
+    """Whether the merged (un-reconciled) extraction block means Simple mode.
+
+    `extraction.mode` is authoritative when present — `reconcile_mode_and_agentic`
+    in the config model sets `agentic.enabled = (mode == "advanced")`, and the UI
+    writes only `mode` — so a stale `agentic.enabled` must not flip the answer.
+    `agentic.enabled` is the fallback for a legacy config with no `mode`.
+    """
+    mode = extraction.get("mode")
+    if isinstance(mode, str) and mode.strip():
+        return mode.strip().lower() == "simple"
+    return not bool((extraction.get("agentic") or {}).get("enabled"))
+
+
+def _class_declares_list(cls: Dict[str, Any]) -> bool:
+    """Top-level array property, multi-instance wrapper, or a legacy
+    `attributes` entry of `attributeType: list` (the merged dict is not migrated;
+    the runtime path is, so the runtime downgrade WOULD fire for that class)."""
+    from idp_common.config.schema_constants import (
+        ATTRIBUTE_TYPE_LIST,
+        LEGACY_ATTRIBUTE_TYPE,
+        LEGACY_ATTRIBUTES,
+    )
+    from idp_common.schema.multi_instance import is_multi_instance
+
+    if is_multi_instance(cls):  # tolerant of "true"/"false" strings, like the runtime
+        return True
+    props = cls.get("properties") or {}
+    if isinstance(props, dict) and any(
+        isinstance(s, dict) and s.get("type") == "array" for s in props.values()
+    ):
+        return True
+    legacy = cls.get(LEGACY_ATTRIBUTES)
+    return isinstance(legacy, list) and any(
+        isinstance(a, dict) and a.get(LEGACY_ATTRIBUTE_TYPE) == ATTRIBUTE_TYPE_LIST
+        for a in legacy
+    )
+
+
+def _validate_simple_integrated_lists(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Warn (never error) when Simple + integrated confidence meets a class that
+    declares list fields.
+
+    At run time such a section is scored in a separate pass instead — a routing
+    decision, not a failure — but it costs more than the single inference the user
+    configured (benchmarked ~2.5x per 100-row document, since long lists are
+    scored in batches) and the 1S-TopK prompt is not used for that class. Saying
+    so at config time is free. A hard error would wedge a stored config that
+    validated yesterday (the rollback trap), so this is a warning only.
+
+    Surfaces wherever `validate_config` runs: `idp-cli config validate` and the SDK
+    validate operation. The web UI does NOT validate on save; its Prompt Preview
+    pane shows the same decision per class.
+    """
+    from idp_common.config.flags import flag_is_true
+    from idp_common.config.schema_constants import (
+        X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+
+    extraction = merged_config.get("extraction", {})
+    if not isinstance(extraction, dict) or not _extraction_is_simple(extraction):
+        return
+    confidence = extraction.get("confidence") or {}
+    if not isinstance(confidence, dict) or confidence.get("mode") != "integrated":
+        return
+    if not flag_is_true(confidence.get("enabled"), default=True):
+        return  # reconciles to mode "off": no confidence runs at all ("false" too)
+    affected: List[str] = []
+    for cls in merged_config.get("classes") or []:
+        if not isinstance(cls, dict):
+            continue
+        if cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
+            continue  # a per-class prompt override opts the class out
+        if flag_is_true(cls.get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS)):
+            continue  # explicit opt-in: the author verified list completeness
+        if _class_declares_list(cls):
+            affected.append(str(cls.get("$id") or cls.get("name") or "?"))
+    if affected:
+        result["warnings"].append(
+            "extraction.confidence.mode is 'integrated' with simple extraction, but "
+            f"these classes declare list fields: {', '.join(affected)}. Their "
+            "sections will be scored in a separate confidence pass instead "
+            "(Simple + integrated loses list rows silently), at roughly 2.5x the "
+            "per-document confidence cost of a single inference. Set "
+            "confidence.mode: separate to make this explicit, use Advanced "
+            "extraction to keep integrated confidence, or set "
+            f"{X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on a class whose lists you "
+            "have verified come back complete."
+        )

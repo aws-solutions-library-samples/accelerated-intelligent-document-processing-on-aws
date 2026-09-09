@@ -26,6 +26,7 @@ from idp_common.config.schema_constants import (
     SCHEMA_TYPE,
     TYPE_ARRAY,
     TYPE_OBJECT,
+    X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
     X_AWS_IDP_DOCUMENT_TYPE,
     X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
     X_AWS_IDP_EXTRACTION_MODEL,
@@ -241,6 +242,8 @@ class ExtractionService:
         # Wall-clock deadline (epoch seconds) for the in-shard assessment ladder
         # (1.5). Set per-invocation from the Lambda context; None = no guard.
         self._assessment_deadline_epoch: float | None = None
+        self._integrated_downgrade_reason: str | None = None
+        self._integrated_downgrade_checked = False
         # Memoized model-aware SizingPlan for the current section (item 2).
         self._sizing_plan: Any = None
         # The Document for the current section, stashed by _prepare_section_context
@@ -926,6 +929,11 @@ class ExtractionService:
         self._sizing_plan = None
         self._document = None
         self._agent_table_tool_note = None
+        # Reason a Simple + integrated section was downgraded to a separate
+        # confidence pass (list-bearing class), or None. Set lazily per section by
+        # _simple_integrated_list_downgrade; surfaced in metadata and the flow.
+        self._integrated_downgrade_reason = None
+        self._integrated_downgrade_checked = False
 
     def _validate_and_find_section(
         self, document: Document, section_id: str
@@ -1327,7 +1335,10 @@ class ExtractionService:
         # extraction+confidence template (+ bbox for LLM-box geometry); otherwise
         # the plain extraction template. A per-class override still wins.
         task_prompt = class_task_prompt_override or select_extraction_task_prompt(
-            self.config.extraction
+            self.config.extraction,
+            # A Simple + integrated section on a list-bearing class is scored
+            # separately, so it must get the plain extraction prompt, not 1S-TopK.
+            integrated_ok=self._simple_integrated_list_downgrade() is None,
         )
         if class_task_prompt_override:
             logger.info(
@@ -2415,6 +2426,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             for name, spec in properties.items()
             if isinstance(spec, dict) and spec.get(SCHEMA_TYPE) == TYPE_ARRAY
         ]
+
+        # 0) Integrated confidence downgraded to a separate pass for this
+        # list-bearing class (see _simple_integrated_list_downgrade). Recorded in
+        # metadata and the Processing Flow, deliberately NOT as a ProcessingIssue:
+        # the document-level HasProcessingIssues flag and the list-view badge are
+        # severity-blind, so even an `info` issue would mark every document of a
+        # Simple + integrated deployment "Processing Issues: 1" for a routing
+        # decision that produced a complete, scored section.
+        if self._integrated_downgrade_reason:
+            metadata["confidence_mode_effective"] = "separate"
+            metadata["confidence_mode_downgraded_reason"] = (
+                self._integrated_downgrade_reason
+            )
+
         empty_lists = [
             name
             for name in array_fields
@@ -2875,7 +2900,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         else:
             batch_count = split.get("batch_count")
             concurrent = split.get("concurrent_batches")
-            if conf_mode == "integrated":
+            c_status = "ok"
+            if conf_mode == "integrated" and self._integrated_downgrade_reason:
+                # Configured integrated, ran separately (list-bearing class).
+                # Report what HAPPENED, not what was configured; the full reason
+                # is in metadata.confidence_mode_downgraded_reason, the box stays
+                # short so the flow graph keeps its shape.
+                c_detail = (
+                    f"{conf_cfg.model or 'model'} · separate pass "
+                    "(downgraded: list fields)"
+                )
+                if batch_count and batch_count > 1:
+                    c_detail += f" · {batch_count} batches"
+                fan = concurrent if (concurrent and concurrent > 1) else 0
+                c_status = "info"
+            elif conf_mode == "integrated":
                 c_detail = "integrated (inline with extraction)"
                 fan = 0
             elif batch_count and batch_count > 1:
@@ -2891,7 +2930,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "key": "confidence",
                     "label": "Confidence",
                     "detail": c_detail,
-                    "status": "ok",
+                    "status": c_status,
                     "fanout": fan,
                     "model": conf_cfg.model,
                 }
@@ -4252,6 +4291,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 select_extraction_task_prompt,
             )
 
+            # No `integrated_ok=` here: this is the agentic branch and the Simple +
+            # integrated downgrade never applies to it (cfg.agentic.enabled
+            # short-circuits _simple_integrated_list_downgrade).
             prompt_template = (
                 select_extraction_task_prompt(self.config.extraction) or ""
             )
@@ -5782,17 +5824,119 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             return False
         return self.config.extraction.confidence.mode == "separate"
 
-    def _integrated_assessment_enabled(self) -> bool:
-        """Whether the agent should emit confidence/bbox INLINE (single inference).
+    def _simple_integrated_list_downgrade(self) -> str | None:
+        """Why this section must NOT run Simple + integrated confidence, or None.
 
-        True when confidence is enabled AND ``confidence.mode == "integrated"``.
-        In this mode the extraction agent calls ``provide_field_assessment`` in its
-        own session (document already in cached context — no second Bedrock pass),
-        and the result rides the same collation/grounding/emit path as separate mode.
+        Simple + ``integrated`` (1S-TopK) puts values AND per-cell confidence for
+        the whole section into ONE response, and on a list-bearing class the
+        model stops emitting rows rather than erroring. Measured at the shipped
+        default extraction model on the v0.6.7 benchmark grid: 1–10 of 100 rows
+        across 4 of 4 repeats with none matching ground truth; 5–10 of 400; the
+        800-row document's list ABSENT entirely — every one reported COMPLETED
+        with scalar accuracy 1.000, and it is the cheapest and fastest cell
+        because it does the least work. Mean recall 0.294 (config-guidance §2.1).
+        Advanced + integrated is unaffected because sharding keeps each call small.
+
+        So when the section's class declares a top-level array property and
+        extraction is Simple, integrated confidence is downgraded to a SEPARATE
+        pass: the extraction prompt is the plain one, no inline confidence is
+        emitted, and the standalone Assessment step — which skips only when
+        ``explainability_info`` is already present — therefore runs. The section
+        gets complete rows plus batched confidence at the cost of one extra
+        inference; ``metadata.confidence_mode_effective`` /
+        ``confidence_mode_downgraded_reason`` and the Processing Flow say so (not
+        a ProcessingIssue — that flag is severity-blind and would badge every
+        document). Two opt-outs keep a class on 1S-TopK: a per-class
+        ``x-aws-idp-extraction-task-prompt`` (the downgrade works by swapping
+        the prompt, so a user-controlled prompt must not be half-applied) and
+        the explicit ``x-aws-idp-allow-integrated-lists: true`` flag for a class
+        whose lists the author has verified come back complete. Deliberately a
+        per-section runtime decision and not a config rejection: a stored config
+        that validated yesterday must still load today (the rollback trap), and
+        a scalar-only class keeps the single-inference saving.
+        """
+        if self._integrated_downgrade_checked:
+            return self._integrated_downgrade_reason
+        self._integrated_downgrade_checked = True
+        cfg = self.config.extraction
+        if (
+            not cfg.confidence.enabled
+            or cfg.confidence.mode != "integrated"
+            or cfg.agentic.enabled
+        ):
+            return None
+        from idp_common.config.schema_constants import (
+            SCHEMA_PROPERTIES,
+            SCHEMA_TYPE,
+            TYPE_ARRAY,
+        )
+
+        properties = (self._class_schema or {}).get(SCHEMA_PROPERTIES, {}) or {}
+        list_fields = sorted(
+            name
+            for name, spec in properties.items()
+            if isinstance(spec, dict) and spec.get(SCHEMA_TYPE) == TYPE_ARRAY
+        )
+        if not list_fields:
+            return None
+        from idp_common.config.flags import flag_is_true
+
+        if flag_is_true(
+            (self._class_schema or {}).get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS)
+        ):
+            # Explicit opt-in (tolerant of the "true"/"false" strings a config
+            # round-trip can produce, and in agreement with the Prompt Preview). For a multi-instance class the flag rides on the
+            # wrapper (wrap_class_schema keeps every non-record-shape key there),
+            # so this reads it for both plain and wrapped classes.
+            logger.info(
+                "Class '%s' declares list fields %s but sets %s; keeping "
+                "integrated confidence as configured",
+                self._class_label,
+                list_fields,
+                X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+            )
+            return None
+        if (self._class_schema or {}).get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
+            # The class carries its own extraction task prompt. The downgrade
+            # works by swapping the prompt; when the user controls the prompt we
+            # must not half-apply it (plain-prompt gate False but TopK prompt
+            # sent would leave raw {G1,P1} candidate objects in the result). The
+            # override is an explicit choice, so that class keeps integrated mode.
+            logger.info(
+                "Class '%s' declares list fields but carries a per-class extraction "
+                "task prompt; leaving integrated confidence as configured",
+                self._class_label,
+            )
+            return None
+        self._integrated_downgrade_reason = (
+            "Simple extraction with integrated confidence loses list rows "
+            "silently (benchmarked mean recall 0.294; an 800-row list came back "
+            "absent while reporting COMPLETED). Class "
+            f"'{self._class_label}' declares list field(s) {list_fields}, so "
+            "confidence for this section is scored in a separate pass instead."
+        )
+        logger.warning(
+            "Downgrading integrated confidence to a separate pass for section "
+            f"class '{self._class_label}': list fields {list_fields}"
+        )
+        return self._integrated_downgrade_reason
+
+    def _integrated_assessment_enabled(self) -> bool:
+        """Whether the extraction inference should emit confidence/bbox INLINE.
+
+        True when confidence is enabled AND ``confidence.mode == "integrated"``,
+        EXCEPT for a Simple-mode section whose class declares list fields, which
+        is downgraded to a separate pass (see ``_simple_integrated_list_downgrade``
+        for the measured reason). In integrated mode the agent calls
+        ``provide_field_assessment`` in its own session (document already in
+        cached context — no second Bedrock pass), and the result rides the same
+        collation/grounding/emit path as separate mode.
         """
         if not self.config.extraction.confidence.enabled:
             return False
-        return self.config.extraction.confidence.mode == "integrated"
+        if self.config.extraction.confidence.mode != "integrated":
+            return False
+        return self._simple_integrated_list_downgrade() is None
 
     @staticmethod
     def _reconcile_assessment_to_data(
