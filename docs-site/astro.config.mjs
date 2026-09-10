@@ -144,6 +144,8 @@ export default defineConfig({
           items: [
             { label: "Benchmarking Guide", slug: "benchmarking" },
             { label: "Configuration Guidance", slug: "benchmarking/config-guidance" },
+            { label: "Prompt Caching (measured)", slug: "benchmarking/prompt-caching" },
+            { label: "Cache Padding Proposal", slug: "benchmarking/prompt-cache-padding-proposal" },
             {
               label: "Classification Confidence",
               slug: "benchmarking/classification-confidence",
@@ -194,6 +196,10 @@ export default defineConfig({
                 {
                   label: "Auto Optimizer (Beta)",
                   slug: "extensions/auto-optimizer",
+                },
+                {
+                  label: "IDP Monitor",
+                  slug: "extensions/idp-monitor",
                 },
                 {
                   label: "PII Anonymization",

@@ -1078,6 +1078,30 @@ extraction:
 - **High-Quality Resampling**: Better visual quality after resizing
 - **Original Format Preservation**: Maintains PNG, JPEG, and other formats when possible
 
+### Effective per-image budget: 3.75 MiB, enforced post-base64
+
+Amazon Bedrock rejects any single image over **5 MiB** — and it measures the
+**base64-encoded** payload, not the stored bytes. The effective budget for a stored
+page image is therefore **3.75 MiB (3,932,160 bytes)**, and any image over it fails
+the whole request with `ValidationException: image exceeds 5 MB maximum`, which on a
+document means a hard `FAILED` status at the extraction (or classification) step.
+The Converse API also rejects any image over **8,000 px** on a side regardless of size
+(this applies to every model routed through Converse, not only Claude).
+
+Because the defaults above preserve original resolution, a high-resolution page image
+**uploaded as PNG or JPEG** is stored as-is and can cross that budget — that is the case
+measured in #778 (source PNGs of 3.8–5.4 MB). PDF pages are rendered by the OCR step and
+stored as JPEG, which rarely approaches the limit even at `ocr.image.dpi: 300`. The
+pipeline now
+**downscales such an image to fit, proportionally, in as few passes as possible**
+(same format first; lossless formats fall back to JPEG only if they still do not
+fit) instead of failing the document, logs a `WARNING` naming the sizes, and — for
+extraction — records the reduction per page under the section's
+`metadata.image_downscale` so a page the model saw at lower resolution than stored
+is auditable. To avoid the downscale (and the warning) on every request, set
+`target_width` / `target_height` so pages render inside the budget. See
+[#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778).
+
 ### Configuration Benefits
 
 - **High-Resolution Processing**: Empty strings preserve full document resolution for maximum OCR accuracy

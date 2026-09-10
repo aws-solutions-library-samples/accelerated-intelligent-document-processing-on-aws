@@ -1,0 +1,11 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+core-tt-simple-sep,med_narrow.pdf,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9994,0.0,,,,,304.859514,0.5893
+core-tt-simple-sep,med_narrow.pdf,1,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9994,0.0,,,,,306.087445,0.5823
+core-tt-simple-sep,med_narrow.pdf,2,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9994,0.0,,,,,300.347043,0.5891
+core-tt-simple-sep,med_narrow.pdf,3,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9994,0.0,,,,,310.885829,0.5827
+core-tt-simple-sep,med_narrow.pdf,4,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9994,0.0,,,,,298.168785,0.5838
+core-tt-adv-sep,med_narrow.pdf,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9957,0.0,,,,,340.556548,1.3286
+core-tt-adv-sep,med_narrow.pdf,1,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9928,0.2,,,,,354.386215,1.2237
+core-tt-adv-sep,med_narrow.pdf,2,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9924,0.0,,,,,357.862706,1.3754
+core-tt-adv-sep,med_narrow.pdf,3,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9891,0.0,,,,,325.959453,1.3396
+core-tt-adv-sep,med_narrow.pdf,4,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9942,0.0,,,,,331.346131,1.3401

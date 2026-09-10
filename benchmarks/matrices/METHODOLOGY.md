@@ -14,6 +14,21 @@ vary size (rows/pages), list count, row width (token density), text length, and 
 controllable OCR-noise level. Generators are deterministic given their params (no RNG
 that would break reproducibility) so a regenerated corpus is byte-comparable.
 
+> ⚠️ **A generated document can also be wrong, and the ground truth will not say so.**
+> `longdesc_100` rendered its long descriptions as plain strings in a reportlab table
+> cell, which does not wrap — so the text ran past the column edge and **overprinted the
+> Amount column**. Textract read the collision: the OCR of that document contained *zero*
+> amount-shaped lines, and one row came back as `"...recurring monthly charge00ference
+> invoice 0"`, the amount `0.00` stamped over the word `reference`. Every Amount on the
+> document was physically unreadable, so it tested nothing — while the truth file
+> confidently asserted the values that had been drawn over.
+>
+> Fixed by wrapping long description cells in a `Paragraph`. **Results for
+> `desc_len: long` documents are not comparable across that fix** (the page count changes,
+> 3 → 4). The generic lesson: when a metric is unexpectedly *uniform* across every
+> configuration — as `cell_accuracy` was here, exactly 0.500 for all 19 cells — suspect the
+> document before the product.
+
 ### B. Reference (real, labeled)
 Existing stack test sets (`realkie-fcc-verified`, `ocr-benchmark`, `samples-tables`)
 with curated evaluation baselines. Real-world messiness the synthetic set can't emulate.
@@ -73,6 +88,28 @@ Every run is scored on SEVEN dimensions:
 | **cost** | Metering priced with `config_library/pricing.yaml` (longest-suffix key match), broken out by phase (OCR/Extraction/Assessment/Summarization/Lambda). |
 
 Scoring is **resolver-free** (reads S3 + DDB directly) so it works on any stack version.
+
+### An instrument only exists where the truth file declares it
+
+`accuracy` above promises "per-row cell match on list fields (keyed by SEQ)", and that
+promise is only kept for a document whose truth file carries `rows_typed`. It used to be
+emitted **only** for the value-noise variants, so every other synthetic document —
+including all seven in `core_synth`, the grid the config-guidance paper reports — had no
+per-cell instrument at all, and `cell_accuracy` came back `None`.
+
+That is not a theoretical gap. On `longdesc_100`, simple extraction returned all 100 rows
+with `Amount: null`; `completeness_recall` counts SEQ tags in the *Description* and
+`scalar_accuracy` only looks at document-level fields, so the run scored **recall 1.000 /
+accuracy 1.000 with an entire column empty**. Two studies drew conclusions across that
+blind spot before it was closed.
+
+`rows_typed` is now emitted for every generated bank statement. Two rules follow:
+
+- **A `None` metric is "not measured", never "fine".** Before reporting "no effect",
+  check that the instrument that would have shown the effect was populated — the
+  aggregate prints `cells_compared` alongside `cell_accuracy` for exactly this.
+- **Scoring is retroactive.** It re-reads S3 and DynamoDB, so adding truth or a metric
+  lets an already-completed run be re-scored with no new spend. Prefer that to a re-run.
 
 ## 5. Aggregation + comparison — aggregate.py
 - Rolls per-run scores into `results/<release>/<suite>/summary.{json,csv}`: one row per
