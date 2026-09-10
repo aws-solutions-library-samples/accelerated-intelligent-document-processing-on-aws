@@ -1407,6 +1407,18 @@ class StackDeployer:
             f"/aws/lambda/{stack_name}-BDASAMPLEPROJECT",  # BDA sample project
             f"/aws/lambda/{stack_name}-DashboardMergerFunction",
             f"/aws/lambda/{stack_name}-InitializeConcurrencyTableLambda",
+            f"/aws/lambda/{stack_name}-TestSetBucketNotificationFunction",
+            # Auto-created groups left behind by the seven Lambdas that gained a
+            # real log group in #826. On a stack that predates that change these
+            # still exist with NO retention, and CloudFormation never owned them,
+            # so teardown has to remove them explicitly or they outlive the stack.
+            f"/aws/lambda/{stack_name}-BatchPreProcessorFunction",
+            f"/aws/lambda/{stack_name}-ListInstalledFeaturesFunction",
+            f"/aws/lambda/{stack_name}-ListCatalogFeaturesFunction",
+            f"/aws/lambda/{stack_name}-GetFeatureLaunchUrlFunction",
+            f"/aws/lambda/{stack_name}-CheckFeatureEntitlementFunction",
+            f"/aws/lambda/{stack_name}-SubscribeFeatureFunction",
+            f"/aws/lambda/{stack_name}-UnsubscribeFeatureFunction",
             # Nested stacks - pattern requires hyphen after stack name
             f"/{stack_name}-PATTERN1STACK-",  # e.g., /IDPDocker-P1-PATTERN1STACK-ABC123/lambda/...
             f"/{stack_name}-PATTERN2STACK-",

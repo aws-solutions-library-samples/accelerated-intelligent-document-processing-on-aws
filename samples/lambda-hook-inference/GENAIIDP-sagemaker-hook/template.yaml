@@ -5,6 +5,16 @@ Description: >
   to a SageMaker real-time inference endpoint.
 
 Parameters:
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: >
+      Days to retain this sample hook's CloudWatch logs. Without an explicit log
+      group, Lambda auto-creates one with NO retention and the logs are billed
+      indefinitely — these hooks run per document, so that adds up (issue #826).
+    AllowedValues:
+      [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+
   IDPWorkingBucket:
     Type: String
     Description: >
@@ -63,6 +73,14 @@ Resources:
                   - kms:GenerateDataKey
                 Resource: !Ref CustomerManagedEncryptionKeyArn
               - !Ref AWS::NoValue
+      LoggingConfig:
+        LogGroup: !Ref SageMakerHookFunctionLogGroup
+
+  SageMakerHookFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/SageMakerHookFunction"
+      RetentionInDays: !Ref LogRetentionDays
 
 Outputs:
   FunctionArn:

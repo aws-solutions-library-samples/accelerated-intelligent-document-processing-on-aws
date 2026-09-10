@@ -18,31 +18,44 @@ test would have caught:
   auto-created ``/aws/lambda/<fn>`` group. Lambda's auto-create sets **no
   retention**, so those logs accumulate and are billed forever.
 
-The three rules below are therefore:
+Rules enforced:
 
-1. Every Lambda has a ``LoggingConfig`` — unless it is exempt (see
+1. Every Lambda has a ``LoggingConfig`` that **resolves to a real
+   ``AWS::Logs::LogGroup`` in the same template** — unless it is exempt (see
    ``CUSTOM_RESOURCE_ONLY``).
-2. Every ``AWS::Logs::LogGroup`` sets ``RetentionInDays``.
-3. No ``LogGroupName`` references a Function resource. This is #818 as a
-   permanent gate.
+2. Every ``AWS::Logs::LogGroup`` sets a non-null ``RetentionInDays``.
+3. No ``LogGroupName`` references a Function resource, in **any** intrinsic
+   form. This is #818 as a permanent gate.
+4. A log group's ``Condition`` matches the ``Condition`` of the function it
+   serves, so a group is never created on a stack whose function does not exist
+   (and never missing on one where it does).
 
 Rule 1's exemption is for Lambdas that run **only** during a CloudFormation
-stack operation: a custom-resource handler, or an install-hook invoked by
+stack operation: a custom-resource handler, or an install hook invoked by
 another stack's custom resource. Those are very low volume and log only stack
 operations, so indefinite retention on an auto-created group is a deliberate
 accepted cost rather than an oversight.
 
-That exemption is **verified, not trusted** (``test_exemptions_are_really_custom_resource_only``):
-an exempt function must actually be reachable only that way — a ``ServiceToken``
-target in its own template, or an install-hook whose ARN is exported for other
-stacks to invoke. A data-plane Lambda cannot be quietly added to the list to
-silence rule 1.
+That exemption is **verified, not trusted**
+(``test_exemptions_are_really_custom_resource_only``): an exempt function must
+actually be reachable only that way — a ``ServiceToken`` target in its own
+template, or an install hook whose ARN is exported *via a direct ``GetAtt`` on
+that function*. It must also have no event source of any kind: no SAM
+``Events``, no ``EventSourceMapping``, no ``Lambda::Permission``, and no
+mention in an API/EventBridge/Step Functions resource. A request-serving Lambda
+therefore cannot be added to the list to silence rule 1.
+
+Earlier revisions of this gate could be defeated nine ways — ``Fn::Join`` and
+the list form of ``Fn::Sub`` slipped rule 3, a ``LoggingConfig`` naming a
+non-existent log group satisfied rule 1, ``RetentionInDays: ~`` satisfied rule
+2, and the exemption check accepted any export whose value merely *mentioned*
+the function. ``test_gate_catches_known_bypasses`` pins each of those closed.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -63,6 +76,18 @@ TEMPLATES = [
     "feature-platform/sample-feature/template.yaml",
     "feature-platform/sample-health-insurance-review/template.yaml",
     "feature-platform/seller-entitlement-service/template.yaml",
+    # Customer-deployable sample hook stacks. These are per-document data-plane
+    # Lambdas — the IDP pipeline invokes them once per page or document — so
+    # their log volume is higher than several functions in the stacks above.
+    "samples/lambda-hook-inference/template.yaml",
+    "samples/lambda-hook-inference/GENAIIDP-bedrock-proxy/template.yaml",
+    "samples/lambda-hook-inference/GENAIIDP-sagemaker-hook/template.yaml",
+    "samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook/template.yaml",
+    "samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook/template.yaml",
+    "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency/template.yaml",
+    # Throwaway verification fixture (make verify-idp-federation). Included so
+    # an interrupted run cannot leave a never-expiring log group behind.
+    "scripts/security/live_checks/oidc_provider/template.yaml",
 ]
 
 FUNCTION_TYPES = {"AWS::Serverless::Function", "AWS::Lambda::Function"}
@@ -116,13 +141,12 @@ def _tag_to_python(loader, tag_suffix, node):
 _CfnLoader.add_multi_constructor("!", _tag_to_python)
 
 
+def _load_text(text: str) -> dict:
+    return yaml.load(text, Loader=_CfnLoader) or {}
+
+
 def _load(rel_path: str) -> dict:
-    with open(REPO_ROOT / rel_path) as handle:
-        return yaml.load(handle, Loader=_CfnLoader) or {}
-
-
-def _resources(rel_path: str) -> dict:
-    return _load(rel_path).get("Resources", {}) or {}
+    return _load_text((REPO_ROOT / rel_path).read_text())
 
 
 def _functions(resources: dict) -> dict:
@@ -141,27 +165,128 @@ def _log_groups(resources: dict) -> dict:
     }
 
 
-def _raw(rel_path: str) -> str:
-    return (REPO_ROOT / rel_path).read_text()
+def _referenced_logical_ids(node: Any) -> set[str]:
+    """Every logical id any intrinsic in ``node`` could resolve to.
+
+    Walks the whole structure so ``Fn::Join``, the list form of ``Fn::Sub``,
+    and nesting are all covered — not just a top-level scalar ``Fn::Sub``.
+    """
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "Fn::Sub":
+                template = value[0] if isinstance(value, list) and value else value
+                if isinstance(template, str):
+                    # ${Foo} and ${Foo.Arn} both name Foo.
+                    import re
+
+                    for token in re.findall(r"\$\{([^}]+)\}", template):
+                        found.add(token.split(".")[0].strip())
+                if isinstance(value, list) and len(value) > 1:
+                    found |= _referenced_logical_ids(value[1])
+            elif key in {"Ref", "Fn::Ref"} and isinstance(value, str):
+                found.add(value)
+            elif key == "Fn::GetAtt":
+                if isinstance(value, str):
+                    found.add(value.split(".")[0])
+                elif isinstance(value, list) and value:
+                    found.add(str(value[0]))
+            else:
+                found |= _referenced_logical_ids(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _referenced_logical_ids(item)
+    return found
+
+
+def _logging_config_target(function_body: dict) -> Any:
+    return ((function_body.get("Properties") or {}).get("LoggingConfig") or {}).get(
+        "LogGroup"
+    )
+
+
+def _check_rule_1(rel_path: str, doc: dict, exempt: set[str]) -> list[str]:
+    resources = doc.get("Resources", {}) or {}
+    log_groups = _log_groups(resources)
+    problems = []
+    for name, body in _functions(resources).items():
+        if name in exempt:
+            continue
+        target = _logging_config_target(body)
+        if not target:
+            problems.append(f"{name}: no LoggingConfig")
+            continue
+        # Must resolve to a log group resource declared in this template.
+        resolved = (
+            _referenced_logical_ids(target) if isinstance(target, dict) else set()
+        )
+        if not resolved & set(log_groups):
+            problems.append(
+                f"{name}: LoggingConfig.LogGroup does not resolve to an "
+                f"AWS::Logs::LogGroup in this template (got {target!r})"
+            )
+    return problems
+
+
+def _check_rule_2(doc: dict) -> list[str]:
+    resources = doc.get("Resources", {}) or {}
+    problems = []
+    for name, body in _log_groups(resources).items():
+        properties = body.get("Properties") or {}
+        if "RetentionInDays" not in properties:
+            problems.append(f"{name}: no RetentionInDays")
+        elif properties["RetentionInDays"] is None:
+            problems.append(f"{name}: RetentionInDays is null")
+    return problems
+
+
+def _check_rule_3(doc: dict) -> list[str]:
+    resources = doc.get("Resources", {}) or {}
+    function_names = set(_functions(resources))
+    problems = []
+    for name, body in _log_groups(resources).items():
+        log_group_name = (body.get("Properties") or {}).get("LogGroupName")
+        if log_group_name is None:
+            continue
+        offending = _referenced_logical_ids(log_group_name) & function_names
+        if offending:
+            problems.append(f"{name} -> {sorted(offending)}")
+    return problems
+
+
+def _check_rule_4(doc: dict, exempt: set[str]) -> list[str]:
+    """Condition parity between a function and the log group it points at."""
+    resources = doc.get("Resources", {}) or {}
+    log_groups = _log_groups(resources)
+    problems = []
+    for name, body in _functions(resources).items():
+        if name in exempt:
+            continue
+        target = _logging_config_target(body)
+        if not isinstance(target, dict):
+            continue
+        for group in _referenced_logical_ids(target) & set(log_groups):
+            fn_condition = body.get("Condition")
+            group_condition = log_groups[group].get("Condition")
+            if fn_condition != group_condition:
+                problems.append(
+                    f"{name} (Condition={fn_condition!r}) -> {group} "
+                    f"(Condition={group_condition!r})"
+                )
+    return problems
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("rel_path", TEMPLATES)
-def test_every_lambda_declares_a_log_group(rel_path: str) -> None:
-    """Rule 1: a Lambda has LoggingConfig, or is custom-resource-only (#826)."""
-    resources = _resources(rel_path)
-    exempt = CUSTOM_RESOURCE_ONLY.get(rel_path, set())
-
-    missing = [
-        name
-        for name, body in _functions(resources).items()
-        if name not in exempt and not (body.get("Properties") or {}).get("LoggingConfig")
-    ]
-
-    assert not missing, (
-        f"{rel_path}: {len(missing)} Lambda(s) have no LoggingConfig, so Lambda "
-        f"auto-creates /aws/lambda/<fn> with NO retention and their logs are "
-        f"billed forever: {sorted(missing)}. Either declare a log group (see "
+def test_every_lambda_declares_a_real_log_group(rel_path: str) -> None:
+    """Rule 1 (#826): LoggingConfig present AND resolving to a real group."""
+    problems = _check_rule_1(
+        rel_path, _load(rel_path), CUSTOM_RESOURCE_ONLY.get(rel_path, set())
+    )
+    assert not problems, (
+        f"{rel_path}: Lambda(s) would fall back to Lambda's auto-created "
+        f"/aws/lambda/<fn> group, which has NO retention, so their logs are "
+        f"billed forever: {problems}. Declare a log group (see "
         f".claude/skills/infrastructure.md) or, if the function runs only during "
         f"a stack operation, add it to CUSTOM_RESOURCE_ONLY in this file."
     )
@@ -170,49 +295,34 @@ def test_every_lambda_declares_a_log_group(rel_path: str) -> None:
 @pytest.mark.unit
 @pytest.mark.parametrize("rel_path", TEMPLATES)
 def test_every_log_group_sets_retention(rel_path: str) -> None:
-    """Rule 2: a declared log group without RetentionInDays never expires."""
-    offenders = [
-        name
-        for name, body in _log_groups(_resources(rel_path)).items()
-        if "RetentionInDays" not in (body.get("Properties") or {})
-    ]
-
-    assert not offenders, (
-        f"{rel_path}: log group(s) without RetentionInDays never expire: "
-        f"{sorted(offenders)}"
-    )
+    """Rule 2: a log group without a real RetentionInDays never expires."""
+    problems = _check_rule_2(_load(rel_path))
+    assert not problems, f"{rel_path}: log group(s) never expire: {problems}"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("rel_path", TEMPLATES)
 def test_no_log_group_is_named_after_a_function(rel_path: str) -> None:
-    """Rule 3: #818 as a permanent gate.
-
-    ``LogGroupName: !Sub '/aws/lambda/${SomeFunction}'`` inverts the create
-    order (the group waits on the function) and renames the group whenever the
-    function is replaced, orphaning the old one with no retention.
-    """
-    resources = _resources(rel_path)
-    function_names = set(_functions(resources))
-
-    offenders = []
-    for name, body in _log_groups(resources).items():
-        log_group_name = (body.get("Properties") or {}).get("LogGroupName")
-        if not isinstance(log_group_name, dict):
-            continue
-        template = log_group_name.get("Fn::Sub")
-        if not isinstance(template, str):
-            continue
-        for referenced in re.findall(r"\$\{([A-Za-z0-9:]+)\}", template):
-            if referenced in function_names:
-                offenders.append(f"{name} -> ${{{referenced}}}")
-
-    assert not offenders, (
+    """Rule 3: #818 as a permanent gate, across every intrinsic form."""
+    problems = _check_rule_3(_load(rel_path))
+    assert not problems, (
         f"{rel_path}: log group name(s) reference a Function resource, which "
         f"inverts the CloudFormation create order and orphans never-expiring "
-        f"groups on function replacement (#818): {sorted(offenders)}. Use "
+        f"groups on function replacement (#818): {problems}. Use "
         f"'/${{AWS::StackName}}/lambda/<FunctionLogicalId>' with a matching "
         f"LoggingConfig on the function instead."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rel_path", TEMPLATES)
+def test_log_group_condition_matches_its_function(rel_path: str) -> None:
+    """Rule 4: a group must exist exactly where its function does."""
+    problems = _check_rule_4(_load(rel_path), CUSTOM_RESOURCE_ONLY.get(rel_path, set()))
+    assert not problems, (
+        f"{rel_path}: log group Condition does not match its function's, so the "
+        f"group is created where the function is absent (empty group forever) or "
+        f"missing where it is present (stack failure): {problems}"
     )
 
 
@@ -221,20 +331,14 @@ def test_no_log_group_is_named_after_a_function(rel_path: str) -> None:
 def test_exemptions_are_really_custom_resource_only(rel_path: str) -> None:
     """The exemption list is verified, not trusted.
 
-    An exempt function must actually be reachable only during a stack
-    operation: either a ``ServiceToken`` target in this template, or an
-    install-hook whose ARN is Exported for another stack's custom resource to
-    invoke. This stops a data-plane Lambda being added to
-    ``CUSTOM_RESOURCE_ONLY`` to silence rule 1.
+    An exempt function must be reachable only during a stack operation: a
+    ``ServiceToken`` target in this template, or an install hook whose ARN is
+    exported via a direct ``GetAtt`` on that function. It must also have no
+    event source of any kind.
     """
-    raw = _raw(rel_path)
-    resources = _resources(rel_path)
-    outputs = _load(rel_path).get("Outputs", {}) or {}
-    exported_arns = {
-        str(body.get("Value"))
-        for body in outputs.values()
-        if isinstance(body, dict) and body.get("Export")
-    }
+    doc = _load(rel_path)
+    resources = doc.get("Resources", {}) or {}
+    outputs = doc.get("Outputs", {}) or {}
 
     unjustified = []
     for name in sorted(CUSTOM_RESOURCE_ONLY[rel_path]):
@@ -243,23 +347,251 @@ def test_exemptions_are_really_custom_resource_only(rel_path: str) -> None:
             f"exists. Remove the stale entry."
         )
 
-        is_service_token = bool(
-            re.search(rf"ServiceToken:\s*!GetAtt\s+{name}\.Arn", raw)
-            or re.search(rf"ServiceToken:\s*!Ref\s+{name}\b", raw)
+        # (a) ServiceToken target of a custom resource in this template.
+        is_service_token = any(
+            name
+            in _referenced_logical_ids(
+                (body.get("Properties") or {}).get("ServiceToken")
+            )
+            for body in resources.values()
+            if isinstance(body, dict)
         )
-        # Install-hook: ARN exported for other stacks to invoke, and never
-        # wired to an event source or API in this template.
-        is_exported_hook = any(name in arn for arn in exported_arns)
 
+        # (b) Install hook: ARN exported via a DIRECT GetAtt on this function,
+        # not merely a string that mentions it.
+        is_exported_hook = False
+        for output in outputs.values():
+            if not isinstance(output, dict) or not output.get("Export"):
+                continue
+            value = output.get("Value")
+            if isinstance(value, dict) and value.get("Fn::GetAtt"):
+                attr = value["Fn::GetAtt"]
+                target = attr.split(".")[0] if isinstance(attr, str) else str(attr[0])
+                if target == name:
+                    is_exported_hook = True
+
+        # (c) No event source of any kind.
         properties = resources[name].get("Properties") or {}
-        has_event_source = bool(properties.get("Events"))
+        event_sources = []
+        if properties.get("Events"):
+            event_sources.append("SAM Events")
+        for other, body in resources.items():
+            if not isinstance(body, dict) or other == name:
+                continue
+            kind = body.get("Type")
+            if kind in {
+                "AWS::Lambda::EventSourceMapping",
+                "AWS::Lambda::Permission",
+                "AWS::Events::Rule",
+                "AWS::ApiGateway::Method",
+                "AWS::ApiGatewayV2::Integration",
+            } and name in _referenced_logical_ids(body.get("Properties")):
+                event_sources.append(f"{other} ({kind})")
 
-        if has_event_source or not (is_service_token or is_exported_hook):
-            unjustified.append(name)
+        if event_sources or not (is_service_token or is_exported_hook):
+            unjustified.append(f"{name}: event_sources={event_sources or None}")
 
     assert not unjustified, (
-        f"{rel_path}: {unjustified} are listed in CUSTOM_RESOURCE_ONLY but are "
-        f"not custom-resource-only — they are neither a ServiceToken target nor "
-        f"an exported install hook, or they declare an event source. They need a "
-        f"real log group with retention."
+        f"{rel_path}: listed in CUSTOM_RESOURCE_ONLY but not custom-resource-only "
+        f"— neither a ServiceToken target nor a GetAtt-exported install hook, or "
+        f"they have an event source: {unjustified}. They need a real log group "
+        f"with retention."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Meta-tests: a gate that cannot fail is worthless. Each case below is a real
+# bypass an earlier revision of this file accepted.
+# ---------------------------------------------------------------------------
+
+_FN = """
+Resources:
+  MyFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+{extra}
+"""
+
+
+def _rules(text: str, exempt: set[str] | None = None):
+    doc = _load_text(text)
+    exempt = exempt or set()
+    return {
+        1: _check_rule_1("<synthetic>", doc, exempt),
+        2: _check_rule_2(doc),
+        3: _check_rule_3(doc),
+        4: _check_rule_4(doc, exempt),
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,rule,body",
+    [
+        (
+            "818-Fn-Join",
+            3,
+            """      LoggingConfig:
+        LogGroup: !Ref G
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+      LogGroupName: !Join ['', ['/aws/lambda/', !Ref MyFn]]""",
+        ),
+        (
+            "818-Fn-Sub-list-form",
+            3,
+            """      LoggingConfig:
+        LogGroup: !Ref G
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+      LogGroupName: !Sub ['/aws/lambda/${X}', {X: !Ref MyFn}]""",
+        ),
+        (
+            "818-Fn-Sub-scalar",
+            3,
+            """      LoggingConfig:
+        LogGroup: !Ref G
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+      LogGroupName: !Sub '/aws/lambda/${MyFn}'""",
+        ),
+        (
+            "826-no-logging-config",
+            1,
+            "",
+        ),
+        (
+            "826-logging-config-typo",
+            1,
+            """      LoggingConfig:
+        LogGroup: !Ref TypoLogGrup
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30""",
+        ),
+        (
+            "826-logging-config-bare-string",
+            1,
+            "      LoggingConfig:\n        LogGroup: /aws/lambda/whatever",
+        ),
+        (
+            "retention-null",
+            2,
+            """      LoggingConfig:
+        LogGroup: !Ref G
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: ~""",
+        ),
+        (
+            "condition-mismatch",
+            4,
+            """      LoggingConfig:
+        LogGroup: !Ref G
+    Condition: SomeCondition
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30""",
+        ),
+    ],
+)
+def test_gate_catches_known_bypasses(case: str, rule: int, body: str) -> None:
+    """Each of these defeated an earlier revision of this gate."""
+    problems = _rules(_FN.format(extra=body))
+    assert problems[rule], (
+        f"bypass {case!r} was NOT caught by rule {rule} — the gate has "
+        f"regressed. All rules: {problems}"
+    )
+
+
+@pytest.mark.unit
+def test_cross_wired_log_groups_are_caught() -> None:
+    """Two functions pointing at each other's groups is a Condition/pairing bug."""
+    text = """
+Resources:
+  A:
+    Type: AWS::Serverless::Function
+    Condition: CondA
+    Properties:
+      LoggingConfig:
+        LogGroup: !Ref BLog
+  B:
+    Type: AWS::Serverless::Function
+    Properties:
+      LoggingConfig:
+        LogGroup: !Ref ALog
+  ALog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+  BLog:
+    Type: AWS::Logs::LogGroup
+    Condition: CondB
+    Properties:
+      RetentionInDays: 30
+"""
+    assert _rules(text)[4], "cross-wired groups with mismatched Conditions not caught"
+
+
+@pytest.mark.unit
+def test_exemption_cannot_be_claimed_by_a_loose_export_mention() -> None:
+    """An export whose value merely mentions the function must not exempt it."""
+    text = """
+Resources:
+  MyFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+Outputs:
+  Hint:
+    Value: 'see MyFn for details'
+    Export:
+      Name: hint
+"""
+    path = REPO_ROOT / "scripts" / "tests" / "_synthetic_probe.yaml"
+    path.write_text(text)
+    try:
+        CUSTOM_RESOURCE_ONLY["scripts/tests/_synthetic_probe.yaml"] = {"MyFn"}
+        with pytest.raises(AssertionError, match="not custom-resource-only"):
+            test_exemptions_are_really_custom_resource_only(
+                "scripts/tests/_synthetic_probe.yaml"
+            )
+    finally:
+        CUSTOM_RESOURCE_ONLY.pop("scripts/tests/_synthetic_probe.yaml", None)
+        path.unlink()
+
+
+@pytest.mark.unit
+def test_every_template_with_lambdas_is_listed() -> None:
+    """A new template with Lambdas must be added to TEMPLATES, not forgotten.
+
+    ``samples/lambda-hook-inference`` was missed on the first pass, and its
+    per-document hook Lambdas had the #826 defect.
+    """
+    listed = {REPO_ROOT / rel for rel in TEMPLATES}
+    skip_dirs = {".aws-sam", "node_modules", ".venv", "build", "dist"}
+    unlisted = []
+    for path in REPO_ROOT.rglob("template.yaml"):
+        if any(part in skip_dirs for part in path.parts) or path in listed:
+            continue
+        try:
+            resources = _load_text(path.read_text()).get("Resources") or {}
+        except yaml.YAMLError:
+            continue
+        if _functions(resources):
+            unlisted.append(str(path.relative_to(REPO_ROOT)))
+
+    assert not unlisted, (
+        f"template(s) declare Lambda functions but are not in TEMPLATES, so the "
+        f"log-group rules do not cover them: {sorted(unlisted)}"
     )

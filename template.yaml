@@ -11187,6 +11187,11 @@ Resources:
 
   CognitoUserPoolEmailDomainVerifyFunctionLogGroup:
     Type: AWS::Logs::LogGroup
+    # Must carry the same Condition as the function it serves, or the group is
+    # created on stacks where the function does not exist and sits empty
+    # forever. Caught by the Condition-parity rule in
+    # scripts/tests/test_lambda_log_groups.py.
+    Condition: ShouldAllowSignUpEmailDomain
     Properties:
       KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
       RetentionInDays: !Ref LogRetentionDays

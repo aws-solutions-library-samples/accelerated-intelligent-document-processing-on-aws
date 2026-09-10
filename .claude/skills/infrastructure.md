@@ -128,12 +128,30 @@ nothing but stack operations, so indefinite retention is an accepted cost rather
 than an oversight. Every other Lambda needs a log group with `RetentionInDays`.
 
 All of this is enforced by `scripts/tests/test_lambda_log_groups.py`, which
-gates all 13 templates on three rules: every Lambda has a `LoggingConfig`
-(unless exempt), every log group sets `RetentionInDays`, and no `LogGroupName`
-references a function resource. The exemption list is *verified*, not trusted —
-an exempt function must actually be a `ServiceToken` target or an exported
-install hook and must declare no event source, so a data-plane Lambda cannot be
-added to it to silence the gate.
+gates **every** template in the repo that declares a Lambda (20 of them, and a
+meta-test fails if a new one is added and not listed) on four rules:
+
+1. Every Lambda has a `LoggingConfig` that resolves to a real
+   `AWS::Logs::LogGroup` **in the same template** — a typo'd or bare-string
+   `LogGroup` fails.
+2. Every log group sets a non-null `RetentionInDays`.
+3. No `LogGroupName` references a function resource, in **any** intrinsic form —
+   `Fn::Sub` scalar and list form, `Fn::Join`, `Ref`, `GetAtt`, nested.
+4. A log group's `Condition` matches its function's, so a group is never created
+   where its function is absent, nor missing where it is present.
+
+The exemption list is *verified*, not trusted: an exempt function must be a
+`ServiceToken` target or have its ARN exported via a direct `GetAtt`, and must
+have no event source (SAM `Events`, `EventSourceMapping`, `Lambda::Permission`,
+`Events::Rule`, or an API Gateway method/integration).
+
+The gate has its own meta-tests. An earlier revision could be defeated nine ways
+— `Fn::Join` and `Fn::Sub`'s list form slipped rule 3, a `LoggingConfig` naming a
+non-existent group satisfied rule 1, `RetentionInDays: ~` satisfied rule 2, and
+the exemption check accepted any export merely *mentioning* the function.
+`test_gate_catches_known_bypasses` pins each closed, so the rules cannot silently
+weaken. Be aware the check is still structural: it reasons about the template, not
+about what actually invokes a function at runtime.
 
 **Never name a log group after the function resource:**
 

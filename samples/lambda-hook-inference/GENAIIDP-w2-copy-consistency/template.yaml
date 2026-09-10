@@ -7,6 +7,17 @@ Description: >
   mismatches). No LLM call -- pure Python comparison logic. No-op passthrough
   for every other document class.
 
+Parameters:
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: >
+      Days to retain this hook's CloudWatch logs. Without an explicit log group,
+      Lambda auto-creates one with NO retention and the logs are billed
+      indefinitely — this hook runs per document, so that adds up (issue #826).
+    AllowedValues:
+      [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+
 Resources:
   W2CopyConsistencyFunction:
     Type: AWS::Serverless::Function
@@ -27,6 +38,14 @@ Resources:
       # No AWS service permissions required: this function only inspects the
       # payload it receives and returns a computed JSON response. No S3, no
       # Bedrock, no DynamoDB access.
+      LoggingConfig:
+        LogGroup: !Ref W2CopyConsistencyFunctionLogGroup
+
+  W2CopyConsistencyFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/W2CopyConsistencyFunction"
+      RetentionInDays: !Ref LogRetentionDays
 
 Outputs:
   FunctionArn:
