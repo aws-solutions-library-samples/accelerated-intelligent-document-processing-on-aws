@@ -489,8 +489,11 @@ that has been deleted from S3 gets its row removed. A `contentSignature`
 short-circuit means unchanged folders cost no DDB write.
 
 A registered set whose `input/` is empty is not treated as broken: it
-reconciles to COMPLETED with `fileCount` 0 and no labels, which is the state
-a set created empty or emptied by **Remove** is in. Such a set keeps a
+reconciles to COMPLETED with `fileCount` 0, which is the state a set created
+empty or emptied by **Remove** is in. Its label state becomes `unlabeled`,
+except that a set whose inputs were deleted by hand while its machine-draft
+baselines survived keeps `draft`, so restoring the inputs cannot promote
+unreviewed drafts to ground truth. Such a set keeps a
 zero-byte `<prefix>/.keep` marker so the prefix stays listable and the
 "folder gone" rule above does not delete its row. Deleting the whole prefix
 by hand, marker included, still removes the set.

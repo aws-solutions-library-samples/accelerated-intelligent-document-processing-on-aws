@@ -6299,7 +6299,10 @@ class TestTestSetResolver:
             s3, "test-set-bucket", "ts1", existing_row
         )
         row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
-        assert row["status"] == "FAILED"
+        # An emptied set is a healthy (COMPLETED, zero-document) state now, but
+        # with its draft baselines still in S3 the draft signal must survive.
+        assert row["status"] == "COMPLETED"
+        assert row["fileCount"] == 0
         assert row["labelState"] == "draft", (
             "no_inputs branch destroyed the draft signal — a subsequent "
             "recovery would silently bless machine drafts as ground truth"

@@ -4317,6 +4317,9 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 "valid": False,
                 "error": "No input files found",
                 "input_count": 0,
+                # Lets reconcile tell an emptied set (no labels left either) from
+                # a set whose inputs vanished while its baselines survived.
+                "baseline_count": len(baseline_files),
                 "signature": signature,
             }
 
@@ -4741,13 +4744,21 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
         elif no_inputs:
             # A set with no documents is a legitimate state, not a broken one: a
             # set can be created empty, and removing its last document leaves it
-            # empty. There is nothing to label, so labelState is 'unlabeled' and
-            # any earlier error is cleared. (Restoring inputs and draft baselines
-            # by hand does not bless the drafts: the fileCount change re-probes
-            # in _reconcile_label_state, which recognises drafts as drafts.)
+            # empty. Any earlier error is cleared. labelState is 'unlabeled' when
+            # no baselines remain either (the Remove path deletes both). When the
+            # inputs vanished but draft baselines survived — a hand edit in S3 —
+            # 'draft' is preserved: writing 'unlabeled' here would let a later
+            # restore promote unreviewed machine drafts to 'labeled', and
+            # _reconcile_label_state cannot undo that on a row that carries a
+            # labelJobId.
             new_status = "COMPLETED"
             new_error = None
-            new_label_state = "unlabeled"
+            baselines_remain = int(validation.get("baseline_count") or 0) > 0
+            new_label_state = (
+                "draft"
+                if existing_label_state == "draft" and baselines_remain
+                else "unlabeled"
+            )
         elif validation["valid"]:
             # Fully paired OR unlabeled-with-no-baselines (allow_unlabeled=True
             # path). Both are healthy states.
