@@ -1,0 +1,1042 @@
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-vdxcvpsm"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Reporting SQL Layer | GenAI IDP</title><link rel="canonical" href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/reporting-sql-layer/"/><link rel="sitemap" href="/accelerated-intelligent-document-processing-on-aws/sitemap-index.xml"/><link rel="shortcut icon" href="/accelerated-intelligent-document-processing-on-aws/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v7.3.2"/><meta name="generator" content="Starlight v0.41.4"/><meta property="og:title" content="Reporting SQL Layer"/><meta property="og:type" content="article"/><meta property="og:url" content="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/reporting-sql-layer/"/><meta property="og:locale" content="en"/><meta property="og:description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><meta property="og:site_name" content="GenAI IDP"/><meta name="twitter:card" content="summary_large_image"/><meta name="description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><script>
+	window.StarlightThemeProvider = (() => {
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme =
+			storedTheme ||
+			(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+		document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector(`#theme-icons`);
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
+</script><template id="theme-icons"><svg aria-hidden="true" class="light astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M5 12a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h1a1 1 0 0 0 1-1Zm.64 5-.71.71a1 1 0 0 0 0 1.41 1 1 0 0 0 1.41 0l.71-.71A1 1 0 0 0 5.64 17ZM12 5a1 1 0 0 0 1-1V3a1 1 0 0 0-2 0v1a1 1 0 0 0 1 1Zm5.66 2.34a1 1 0 0 0 .7-.29l.71-.71a1 1 0 1 0-1.41-1.41l-.66.71a1 1 0 0 0 0 1.41 1 1 0 0 0 .66.29Zm-12-.29a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.71-.71a1.004 1.004 0 1 0-1.43 1.41l.73.71ZM21 11h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Zm-2.64 6A1 1 0 0 0 17 18.36l.71.71a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.76-.66ZM12 6.5a5.5 5.5 0 1 0 5.5 5.5A5.51 5.51 0 0 0 12 6.5Zm0 9a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm0 3.5a1 1 0 0 0-1 1v1a1 1 0 0 0 2 0v-1a1 1 0 0 0-1-1Z"/></svg><svg aria-hidden="true" class="dark astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8.049 8.049 0 0 1-3.37.73 8.15 8.15 0 0 1-8.14-8.1 8.59 8.59 0 0 1 .25-2A1 1 0 0 0 8 2.36a10.14 10.14 0 1 0 14 11.69 1 1 0 0 0-.36-1.05Zm-9.5 6.69A8.14 8.14 0 0 1 7.08 5.22v.27a10.15 10.15 0 0 0 10.14 10.14 9.784 9.784 0 0 0 2.1-.22 8.11 8.11 0 0 1-7.18 4.32v-.04Z"/></svg><svg aria-hidden="true" class="auto astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg></template><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/print.ehPL0gv-.css" media="print"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/common.CjZgBAcP.css"><style>@layer starlight.components{.card:where(.astro-zts4jgjd){--sl-card-border:var(--sl-color-purple);--sl-card-bg:var(--sl-color-purple-low);border:1px solid var(--sl-color-gray-5);background-color:var(--sl-color-black);flex-direction:column;gap:clamp(.5rem,.125rem + 1vw,1rem);padding:clamp(1rem,.125rem + 3vw,2.5rem)}.card:where(.astro-zts4jgjd):nth-child(4n+1){--sl-card-border:var(--sl-color-orange);--sl-card-bg:var(--sl-color-orange-low)}.card:where(.astro-zts4jgjd):nth-child(4n+3){--sl-card-border:var(--sl-color-green);--sl-card-bg:var(--sl-color-green-low)}.card:where(.astro-zts4jgjd):nth-child(4n+4){--sl-card-border:var(--sl-color-red);--sl-card-bg:var(--sl-color-red-low)}.card:where(.astro-zts4jgjd):nth-child(4n+5){--sl-card-border:var(--sl-color-blue);--sl-card-bg:var(--sl-color-blue-low)}.title:where(.astro-zts4jgjd){font-weight:600;font-size:var(--sl-text-h4);color:var(--sl-color-white);line-height:var(--sl-line-height-headings);align-items:center;gap:1rem}.card:where(.astro-zts4jgjd) .icon:where(.astro-zts4jgjd){border:1px solid var(--sl-card-border);background-color:var(--sl-card-bg);border-radius:.25rem;flex-shrink:0;padding:.2em}.card:where(.astro-zts4jgjd) .body:where(.astro-zts4jgjd){font-size:clamp(var(--sl-text-sm), calc(.5rem + 1vw), var(--sl-text-body));margin:0}.card-grid:where(.astro-lmor3ela){grid-template-columns:100%;gap:1rem;display:grid}.card-grid:where(.astro-lmor3ela)>*{margin-top:0!important}@media (width>=50rem){.card-grid:where(.astro-lmor3ela){grid-template-columns:1fr 1fr;gap:1.5rem}.stagger:where(.astro-lmor3ela){--stagger-height:5rem;padding-bottom:var(--stagger-height)}.stagger:where(.astro-lmor3ela)>:nth-child(2n){transform:translateY(var(--stagger-height))}}.sl-link-card:where(.astro-vodiqeol){border:1px solid var(--sl-color-gray-5);box-shadow:var(--sl-shadow-sm);border-radius:.5rem;grid-template-columns:1fr auto;gap:.5rem;padding:1rem;display:grid;position:relative}a:where(.astro-vodiqeol){line-height:var(--sl-line-height-headings);text-decoration:none}a:where(.astro-vodiqeol):before{content:"";position:absolute;inset:0}.stack:where(.astro-vodiqeol){flex-direction:column;gap:.5rem}.title:where(.astro-vodiqeol){color:var(--sl-color-white);font-weight:600;font-size:var(--sl-text-lg)}.description:where(.astro-vodiqeol){color:var(--sl-color-gray-3);line-height:1.5}.icon:where(.astro-vodiqeol){color:var(--sl-color-gray-3)}.sl-link-card:where(.astro-vodiqeol):hover{background:var(--sl-color-gray-7,var(--sl-color-gray-6));border-color:var(--sl-color-gray-2)}.sl-link-card:where(.astro-vodiqeol):hover .icon:where(.astro-vodiqeol){color:var(--sl-color-white)}}
+@layer starlight.components{svg:where(.astro-n5k4ipy7){color:var(--sl-icon-color);font-size:var(--sl-icon-size,1em);width:1em;height:1em}}
+</style><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/page.LAbJoB63.js"></script></head><body class="astro-vdxcvpsm"><a class="sl-skip-link astro-vxeigawq" href="#_top">Skip to content</a><div class="page sl-flex astro-gqpr5s5a"><header class="header astro-gqpr5s5a"><div class="header astro-nczgtkxc"><div class="title-wrapper sl-flex astro-nczgtkxc"><a href="/accelerated-intelligent-document-processing-on-aws/" class="site-title sl-flex astro-clw6ags5"><img class="light:sl-hidden print:hidden astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-dark.CDSNlVMV.svg" width="120" height="32"><img class="dark:sl-hidden print:block astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-light.CszXvHpe.svg" width="120" height="32"><span class="astro-clw6ags5" translate="no">GenAI IDP</span></a></div><div class="sl-flex print:hidden astro-nczgtkxc"><site-search class="astro-nczgtkxc astro-r5ar4xm7" data-translations="{&quot;placeholder&quot;:&quot;Search&quot;}"><button data-open-modal disabled aria-label="Search" aria-keyshortcuts="Control+K" class="astro-r5ar4xm7"><svg aria-hidden="true" class="astro-r5ar4xm7 astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"/></svg><span class="sl-hidden md:sl-block astro-r5ar4xm7" aria-hidden="true">Search</span><kbd class="sl-hidden md:sl-flex astro-r5ar4xm7" style="display: none;"><kbd class="astro-r5ar4xm7">Ctrl</kbd><kbd class="astro-r5ar4xm7">K</kbd></kbd></button><dialog style="padding:0" aria-label="Search" class="astro-r5ar4xm7"><div class="dialog-frame sl-flex astro-r5ar4xm7"><button data-close-modal class="sl-flex md:sl-hidden astro-r5ar4xm7">Cancel</button><div class="search-container astro-r5ar4xm7"><div id="starlight__search" class="astro-r5ar4xm7"></div></div></div></dialog></site-search><script>
+	(() => {
+		const openBtn = document.querySelector('button[data-open-modal]');
+		const shortcut = openBtn?.querySelector('kbd');
+		if (!openBtn || !(shortcut instanceof HTMLElement)) return;
+		const platformKey = shortcut.querySelector('kbd');
+		if (platformKey && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform)) {
+			platformKey.textContent = '⌘';
+			openBtn.setAttribute('aria-keyshortcuts', 'Meta+K');
+		}
+		shortcut.style.display = '';
+	})();
+</script><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/Search.astro_astro_type_script_index_0_lang.DgM3kjKb.js"></script></div><div class="sl-hidden md:sl-flex print:hidden right-group astro-nczgtkxc"><div class="sl-flex social-icons astro-nczgtkxc"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script><script type="module">var e=`starlight-theme`,t=e=>e===`auto`||e===`dark`||e===`light`?e:`auto`,n=()=>t(typeof localStorage<`u`&&localStorage.getItem(e));function r(t){typeof localStorage<`u`&&localStorage.setItem(e,t===`light`||t===`dark`?t:``)}var i=()=>matchMedia(`(prefers-color-scheme: light)`).matches?`light`:`dark`;function a(e){StarlightThemeProvider.updatePickers(e),document.documentElement.dataset.theme=e===`auto`?i():e,r(e)}matchMedia(`(prefers-color-scheme: light)`).addEventListener(`change`,()=>{n()===`auto`&&a(`auto`)});var o=class extends HTMLElement{constructor(){super(),a(n()),this.querySelector(`select`)?.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&a(t(e.currentTarget.value))})}};customElements.define(`starlight-theme-select`,o);</script><script type="module">var e=class extends HTMLElement{constructor(){super();let e=this.querySelector(`select`);e&&(e.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&(window.location.pathname=e.currentTarget.value)}),window.addEventListener(`pageshow`,t=>{if(!t.persisted)return;let n=e.querySelector(`option[selected]`)?.index;n!==e.selectedIndex&&(e.selectedIndex=n??0)}))}};customElements.define(`starlight-lang-select`,e);</script></div></div></header><nav class="sidebar print:hidden astro-gqpr5s5a" aria-label="Main"><starlight-menu-button class="print:hidden astro-vvx7mffu"><button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden astro-vvx7mffu"><svg aria-hidden="true" class="open-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M3 8h18a1 1 0 1 0 0-2H3a1 1 0 0 0 0 2Zm18 8H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Zm0-5H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Z"/></svg><svg aria-hidden="true" class="close-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="m13.41 12 6.3-6.29a1.004 1.004 0 1 0-1.42-1.42L12 10.59l-6.29-6.3a1.004 1.004 0 0 0-1.42 1.42l6.3 6.29-6.3 6.29a1 1 0 0 0 0 1.42.998.998 0 0 0 1.42 0l6.29-6.3 6.29 6.3a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.42L13.41 12Z"/></svg></button></starlight-menu-button><script type="module">var e=class extends HTMLElement{btn=this.querySelector(`button`);constructor(){super(),this.btn.addEventListener(`click`,()=>this.toggleExpanded());let e=this.closest(`nav`);e&&e.addEventListener(`keyup`,e=>this.closeOnEscape(e)),matchMedia(`(min-width: 50em)`).addEventListener(`change`,()=>this.setExpanded(!1))}setExpanded(e){this.setAttribute(`aria-expanded`,String(e)),document.body.toggleAttribute(`data-mobile-menu-expanded`,e),document.querySelectorAll(`.main-frame, .sl-skip-link`).forEach(t=>{t.toggleAttribute(`inert`,e)})}toggleExpanded(){this.setExpanded(this.getAttribute(`aria-expanded`)!==`true`)}closeOnEscape(e){e.code===`Escape`&&(this.setExpanded(!1),this.btn.focus())}};customElements.define(`starlight-menu-button`,e);</script><div id="starlight__sidebar" class="sidebar-pane astro-gqpr5s5a"><div class="sidebar-content sl-flex astro-gqpr5s5a"><sl-sidebar-state-persist data-hash="1ltaq3e" class="astro-f5yvicm7"><script aria-hidden="true">
+		(() => {
+			try {
+				if (!matchMedia('(min-width: 50em)').matches) return;
+				/** @type {HTMLElement | null} */
+				const target = document.querySelector('sl-sidebar-state-persist');
+				const state = JSON.parse(sessionStorage.getItem('sl-sidebar-state') || '0');
+				if (!target || !state || target.dataset.hash !== state.hash) return;
+				window._starlightScrollRestore = state.scroll;
+				customElements.define(
+					'sl-sidebar-restore',
+					class SidebarRestore extends HTMLElement {
+						connectedCallback() {
+							try {
+								const idx = parseInt(this.dataset.index || '');
+								const details = this.closest('details');
+								if (details && typeof state.open[idx] === 'boolean') details.open = state.open[idx];
+							} catch {}
+						}
+					}
+				);
+			} catch {}
+		})();
+	</script><ul class="top-level astro-ojxuodky"><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Overview</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="0"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/" class="astro-ojxuodky"><span class="astro-ojxuodky">Welcome</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/references/" class="astro-ojxuodky"><span class="astro-ojxuodky">Blogs, Customer Stories &amp; Research</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Core</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="1"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/quick-start/" class="astro-ojxuodky"><span class="astro-ojxuodky">Quick Start</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-deployment-ai-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">AI-Guided Deployment Walkthrough</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/headless-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Headless Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/apigateway-hosting/" class="astro-ojxuodky"><span class="astro-ojxuodky">API Gateway Hosting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment-private-network/" class="astro-ojxuodky"><span class="astro-ojxuodky">Private Network Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/vpc-secured-mode/" class="astro-ojxuodky"><span class="astro-ojxuodky">VPC-Secured Mode</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-profiles/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Profiles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Versions (renamed)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-configuration-best-practices/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Best Practices</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/json-schema-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">JSON Schema Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/web-ui/" class="astro-ojxuodky"><span class="astro-ojxuodky">Web UI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-appsync-to-rest/" class="astro-ojxuodky"><span class="astro-ojxuodky">UI ⇄ Backend Transport (AppSync → REST)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-cli/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP CLI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-sdk/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP SDK</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idpcommon-api-reference/" class="astro-ojxuodky"><span class="astro-ojxuodky">idp_common API Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/demo-videos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Demo Videos</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/troubleshooting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Troubleshooting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/error-analyzer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Error Analyzer</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Processing Modes</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="2"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-1/" class="astro-ojxuodky"><span class="astro-ojxuodky">BDA Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-2/" class="astro-ojxuodky"><span class="astro-ojxuodky">Pipeline Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Discovery</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/policy-discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Policy Discovery</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Document Processing Features</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="3"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/classification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction &amp; Confidence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment-bounding-boxes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment Bounding Boxes (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/few-shot-examples/" class="astro-ojxuodky"><span class="astro-ojxuodky">Few-Shot Examples</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/human-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Human-in-the-Loop Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/criteria-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Criteria Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/missing-page-handling/" class="astro-ojxuodky"><span class="astro-ojxuodky">Missing Page Handling</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/ocr-image-sizing-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">OCR Image Sizing Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/languages/" class="astro-ojxuodky"><span class="astro-ojxuodky">Languages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Evaluation &amp; Testing</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="4"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Evaluation Framework</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation-enhanced-reporting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Enhanced Reporting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/test-studio/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Studio</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/creating-custom-test-sets/" class="astro-ojxuodky"><span class="astro-ojxuodky">Creating Custom Test Sets</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mlflow-integration/" class="astro-ojxuodky"><span class="astro-ojxuodky">MLflow Experiment Tracking</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Validation</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="5"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation Records</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.6</span></a></li></ul></details></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Benchmarks &amp; Performance</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="6"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmarking Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/config-guidance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Guidance</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/classification-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification Confidence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/feature-multi-instance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Multi-instance Sections</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Audit Trail</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="7"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit Trail</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v060/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.0 vs v0.5.16</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.5 vs v0.6.4</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065-fix-verification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fix Verification: v0.6.5 correctness fixes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.6 vs v0.6.5</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v067/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.7</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-scaling-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction Scaling Guide</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">AI Agents &amp; Analytics</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="8"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-analysis/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Analysis</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-companion-chat/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Companion Chat</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/code-intelligence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Code Intelligence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/knowledge-base/" class="astro-ojxuodky"><span class="astro-ojxuodky">Knowledge Base</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-mcp-agent/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom MCP Agent</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-connector/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Connector</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-server/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Server</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Integration &amp; Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="9"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform-developer-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform Developer Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/marketplace-subscription-next-steps/" class="astro-ojxuodky"><span class="astro-ojxuodky">After Subscribing on AWS Marketplace</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="10"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/auto-optimizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Auto Optimizer (Beta)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/pii-anonymizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">PII Anonymization</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/confbench-testset/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set - ConfBench</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-data-generator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set Generator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-document-status/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Document Status (feature add-on)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-health-insurance-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Health Insurance Review</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Versions</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/post-processing-lambda-hook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Post-Processing Lambda Hook</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/lambda-hook-inference/" class="astro-ojxuodky"><span class="astro-ojxuodky">Lambda Hook Inference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/nova-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Nova Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-model-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom Model Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/service-tiers/" class="astro-ojxuodky"><span class="astro-ojxuodky">Service Tiers</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Monitoring &amp; Operations</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="11"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/monitoring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Monitoring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-database/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting Database</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-sql-layer/" aria-current="page" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting SQL Layer</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/capacity-planning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Capacity Planning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cost-calculator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cost Calculator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/circuit-breaker/" class="astro-ojxuodky"><span class="astro-ojxuodky">Circuit Breaker</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cross-account-bedrock/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cross-Account Bedrock</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/version-update-indicator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Version Update Indicator</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Planning &amp; Security</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="12"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/well-architected/" class="astro-ojxuodky"><span class="astro-ojxuodky">Well-Architected Assessment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/aws-services-and-roles/" class="astro-ojxuodky"><span class="astro-ojxuodky">AWS Services &amp; IAM Roles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rbac/" class="astro-ojxuodky"><span class="astro-ojxuodky">Role-Based Access Control (RBAC)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/external-idp/" class="astro-ojxuodky"><span class="astro-ojxuodky">External Identity Provider</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">GovCloud</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="13"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-operations/" class="astro-ojxuodky"><span class="astro-ojxuodky">Operations</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-batch-api/" class="astro-ojxuodky"><span class="astro-ojxuodky">Batch API</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/eu-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">EU Region Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/openai-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">OpenAI GPT-5.x Models</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Development Setup</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="14"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-linux/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Linux</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-macos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: macOS</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-wsl/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: WSL</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-windows/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Windows</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/using-notebooks-with-idp-common/" class="astro-ojxuodky"><span class="astro-ojxuodky">Using Notebooks</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-mirroring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Dependency Mirroring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-confusion/" class="astro-ojxuodky"><span class="astro-ojxuodky">Installing First-Party Packages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Migration</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="15"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v05-to-v06/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.5 → v0.6 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v04-to-v05/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.4 → v0.5 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-granular-retirement/" class="astro-ojxuodky"><span class="astro-ojxuodky">Granular Assessment Retirement</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">New &amp; Uncategorized</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="16"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/grok-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">Grok Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation-z3/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation Z3</span></a></li></ul></details></li></ul><script aria-hidden="true">
+		(() => {
+			const scroller = document.getElementById('starlight__sidebar');
+			if (!window._starlightScrollRestore || !scroller) return;
+			scroller.scrollTop = window._starlightScrollRestore;
+			delete window._starlightScrollRestore;
+		})();
+	</script></sl-sidebar-state-persist><div class="md:sl-hidden"><div class="mobile-preferences sl-flex astro-b5gddk54"><div class="social-icons astro-b5gddk54"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script></div></div></div></div></nav><div class="main-frame astro-gqpr5s5a"><script type="module">var e=document.getElementById(`starlight__sidebar`),t=e?.querySelector(`sl-sidebar-state-persist`),n=`sl-sidebar-state`,r=()=>{let r=[],i=t?.dataset.hash||``;try{let e=sessionStorage.getItem(n),t=JSON.parse(e||`{}`);Array.isArray(t.open)&&t.hash===i&&(r=t.open)}catch{}return{hash:i,open:r,scroll:e?.scrollTop||0}},i=e=>{try{sessionStorage.setItem(n,JSON.stringify(e))}catch{}},a=()=>i(r()),o=(e,t)=>{let n=r();n.open[t]=e,i(n)};t?.addEventListener(`click`,e=>{if(!(e.target instanceof Element))return;let t=e.target.closest(`summary`)?.closest(`details`);if(!t)return;let n=t.querySelector(`sl-sidebar-restore`),r=parseInt(n?.dataset.index||``);isNaN(r)||o(!t.open,r)}),addEventListener(`visibilitychange`,()=>{document.visibilityState===`hidden`&&a()});</script><div class="lg:sl-flex astro-abfeecmu"><aside class="right-sidebar-container print:hidden astro-abfeecmu"><div class="right-sidebar astro-abfeecmu"><div class="lg:sl-hidden astro-q5mffni3"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-5ulgm6bh"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-5ulgm6bh"><details id="starlight__mobile-toc" class="astro-5ulgm6bh"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-5ulgm6bh"><span class="toggle sl-flex astro-5ulgm6bh">On this page<svg aria-hidden="true" class="caret astro-5ulgm6bh astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-5ulgm6bh"></span></summary><div class="dropdown astro-5ulgm6bh"><ul class="isMobile astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#1-overview" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">1. Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#2-tables" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">2. Tables</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#23-metering-partitioning-write-time-not-queue-time" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">2.3 metering partitioning: write time, not queue time</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#rollup-lambda" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Rollup Lambda</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#10-cost-observability--data-plane-vs-control-plane" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">10. Cost observability — data plane vs control plane</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#101-data-plane-cost" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.1 Data plane cost</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#102-control-plane-cost" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.2 Control plane cost</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#103-tagging-convention--controls" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.3 Tagging convention + controls</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#104-data-plane-lambda-allowlist" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.4 Data-plane Lambda allowlist</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#105-custom-metric-emission--what-each-component-measures" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.5 Custom-metric emission — what each component measures</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#consumer-contract" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Consumer contract</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#phase-2--upcoming-features-planned-for-future-work" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Phase 2 — upcoming features planned for future work</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-a--new-tables-data-phase-1-had-nowhere-to-put" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track A — new tables (data Phase 1 had nowhere to put)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-b--consumer-integration-make-phase-1s-tables-actually-pay-off" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track B — consumer integration (make Phase 1’s tables actually pay off)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-c--producers-metrics-with-no-emitter-today" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track C — producers (metrics with no emitter today)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-d--operational-hardening" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track D — operational hardening</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#suggested-sequencing-indicative" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Suggested sequencing (indicative)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#what-phase-2-explicitly-does-not-do" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">What Phase 2 explicitly does NOT do</span></a></li></ul></li></ul></div></details></nav></mobile-starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.BcSo_yiZ.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-q5mffni3"><div class="sl-container astro-q5mffni3"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#1-overview" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">1. Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#2-tables" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">2. Tables</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#23-metering-partitioning-write-time-not-queue-time" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">2.3 metering partitioning: write time, not queue time</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#rollup-lambda" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Rollup Lambda</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#10-cost-observability--data-plane-vs-control-plane" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">10. Cost observability — data plane vs control plane</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#101-data-plane-cost" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.1 Data plane cost</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#102-control-plane-cost" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.2 Control plane cost</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#103-tagging-convention--controls" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.3 Tagging convention + controls</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#104-data-plane-lambda-allowlist" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.4 Data-plane Lambda allowlist</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#105-custom-metric-emission--what-each-component-measures" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">10.5 Custom-metric emission — what each component measures</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#consumer-contract" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Consumer contract</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#phase-2--upcoming-features-planned-for-future-work" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Phase 2 — upcoming features planned for future work</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-a--new-tables-data-phase-1-had-nowhere-to-put" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track A — new tables (data Phase 1 had nowhere to put)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-b--consumer-integration-make-phase-1s-tables-actually-pay-off" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track B — consumer integration (make Phase 1’s tables actually pay off)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-c--producers-metrics-with-no-emitter-today" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track C — producers (metrics with no emitter today)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#track-d--operational-hardening" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Track D — operational hardening</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#suggested-sequencing-indicative" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">Suggested sequencing (indicative)</span></a></li><li style="--depth: 1;" class="astro-cxyftcne"><a href="#what-phase-2-explicitly-does-not-do" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">What Phase 2 explicitly does NOT do</span></a></li></ul></li></ul></nav></starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/TableOfContents.astro_astro_type_script_index_0_lang.Csloo1VZ.js"></script></div></div></div></aside><div class="main-pane astro-abfeecmu"><main data-pagefind-body class="astro-vdxcvpsm" lang="en" dir="ltr"><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><h1 id="_top" class="astro-2sm4b3ln">Reporting SQL Layer</h1></div></div><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><div class="sl-markdown-content"><p>Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0</p>
+<div class="sl-heading-wrapper level-h1"><h1 id="reporting-sql-layer--rollup-tables-on-top-of-metering">Reporting SQL Layer — rollup tables on top of <code dir="auto">metering</code></h1><a class="sl-anchor-link" href="#reporting-sql-layer--rollup-tables-on-top-of-metering"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Reporting SQL Layer — rollup tables on top of metering”</span></a></div>
+<p><strong>Status:</strong> Shipped (Phase 1).
+<strong>Owner:</strong> Taniya Mathur.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="1-overview">1. Overview</h2><a class="sl-anchor-link" href="#1-overview"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “1. Overview”</span></a></div>
+<p>A SQL layer on top of the raw <code dir="auto">metering</code> Parquet lake that lets
+consumers (idp-monitor, in-tree analytics agents, and any future
+dashboard/report) answer “additive-over-wide-range” cost and volume
+questions in KB-scale scans instead of GB-scale.</p>
+<p>Six new Athena/Glue tables and one scheduled rollup Lambda; no
+other infrastructure. This doc is the reference for the shape of the
+tables, the partitioning contract, and the tagging model that drives
+control-plane cost attribution.</p>
+<p>Related module docs (developer tier):</p>
+<ul>
+<li><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/lib/idp_common_pkg/idp_common/reporting/README.md"><code dir="auto">lib/idp_common_pkg/idp_common/reporting/README.md</code></a> — the write path (<code dir="auto">save_reporting_data.py</code>).</li>
+<li><a href="../reporting-database/"><code dir="auto">docs/reporting-database.md</code></a> — Glue database + table catalogue reference.</li>
+</ul>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="2-tables">2. Tables</h2><a class="sl-anchor-link" href="#2-tables"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “2. Tables”</span></a></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Table</th><th>Grain</th><th>Populated by</th></tr></thead><tbody><tr><td>1</td><td><code dir="auto">metering_hourly</code></td><td>hour × config_version × service_api × unit</td><td>Scheduled hourly rollup Lambda, Athena <code dir="auto">INSERT INTO</code> from raw <code dir="auto">metering</code></td></tr><tr><td>2</td><td><code dir="auto">metering_daily</code></td><td>date × config_version × service_api × unit</td><td>Same rollup Lambda, <code dir="auto">INSERT INTO</code> from <code dir="auto">metering_hourly</code></td></tr><tr><td>3</td><td><code dir="auto">metering_docs_hourly</code></td><td>hour × config_version</td><td>Same rollup Lambda, <code dir="auto">INSERT INTO</code> from raw <code dir="auto">metering</code> via a MAX-per-doc subquery</td></tr><tr><td>4</td><td><code dir="auto">metering_docs_daily</code></td><td>date × config_version</td><td>Same rollup Lambda, <code dir="auto">INSERT INTO</code> from <code dir="auto">metering_docs_hourly</code></td></tr><tr><td>5</td><td><code dir="auto">control_plane_hourly</code></td><td>hour × function_name × component × bedrock_model</td><td>Same rollup Lambda, writes Parquet directly from CloudWatch data</td></tr><tr><td>6</td><td><code dir="auto">data_plane_lambda_hourly</code></td><td>hour × function_name × component</td><td>Same rollup Lambda, writes Parquet from CloudWatch <code dir="auto">AWS/Lambda</code> Duration/Invocations for <code dir="auto">idp:plane=data</code> Lambdas (Lambda compute cost only — Bedrock/Textract API costs are already in <code dir="auto">metering_hourly</code> per-doc, so they are omitted here to avoid double-count)</td></tr></tbody></table>
+<p><strong>Column split — cost vs docs (Phase 1 change).</strong> Cost columns
+(<code dir="auto">sum_value</code>, <code dir="auto">sum_cost</code>) live on <code dir="auto">metering_hourly</code> / <code dir="auto">metering_daily</code>
+because they aggregate cleanly per (service_api, unit). Document-level
+metrics (<code dir="auto">n_docs</code>, <code dir="auto">sum_pages</code>) live on the separate <code dir="auto">metering_docs_*</code>
+tables at the coarser (hour, config_version) grain — <code dir="auto">number_of_pages</code>
+is stamped identically on every metering row for a given document, so
+grouping by <code dir="auto">service_api</code> would fan out the page count by the number
+of (service_api, unit) combinations a doc touched (e.g. a 10-page doc
+touching 6 service rows would report 60 pages). The <code dir="auto">metering_docs_*</code>
+tables aggregate via a <code dir="auto">MAX(number_of_pages) GROUP BY document_id</code>
+subquery to collapse the fan-out.</p>
+<p><strong>Columns on <code dir="auto">metering_hourly</code> / <code dir="auto">metering_daily</code></strong> (cost per service/unit):
+<code dir="auto">hour_ts</code> (or <code dir="auto">day</code>), <code dir="auto">config_version</code>, <code dir="auto">service_api</code>, <code dir="auto">unit</code>,
+<code dir="auto">sum_value</code>, <code dir="auto">sum_cost</code>.</p>
+<p><strong>Columns on <code dir="auto">metering_docs_hourly</code> / <code dir="auto">metering_docs_daily</code></strong> (doc-grain
+volume/pages): <code dir="auto">hour_ts</code> (or <code dir="auto">day</code>), <code dir="auto">config_version</code>, <code dir="auto">n_docs</code>,
+<code dir="auto">sum_pages</code>.</p>
+<p><strong>Naming note — <code dir="auto">n_docs</code> counts differently at hour vs day grain.</strong>
+On <code dir="auto">metering_docs_hourly</code>, <code dir="auto">n_docs = COUNT(DISTINCT document_id)</code>
+within the hour — accurate for that hour. On <code dir="auto">metering_docs_daily</code>,
+<code dir="auto">n_docs = SUM(hourly n_docs)</code>, which counts a document once per hour
+it appeared in — a “doc-hours” count, not a cross-day unique count.
+For strict cross-day unique-doc counts, query raw <code dir="auto">metering</code> with
+<code dir="auto">COUNT(DISTINCT document_id)</code>.</p>
+<p><strong>Where status/timing data actually lives</strong> — NOT on <code dir="auto">metering</code>.
+<code dir="auto">metering</code> carries only cost primitives: <code dir="auto">document_id</code>, <code dir="auto">context</code>,
+<code dir="auto">service_api</code>, <code dir="auto">unit</code>, <code dir="auto">value</code>, <code dir="auto">number_of_pages</code>, <code dir="auto">unit_cost</code>,
+<code dir="auto">estimated_cost</code>, <code dir="auto">timestamp</code>, <code dir="auto">initial_event_time</code>, <code dir="auto">config_version</code>.
+Document status (<code dir="auto">SUCCESS</code>/<code dir="auto">FAILED</code>/<code dir="auto">ABORTED</code>), pipeline stage,
+error text, and wall-clock duration are in the tracking DynamoDB
+table, not in Athena. A future <code dir="auto">document_lifecycle</code> table (Phase 2)
+would move these into the SQL layer for KPI queries.</p>
+<p><strong>All six tables are append-only.</strong> A partition is written once and
+never rewritten. The write-time partitioning of <code dir="auto">metering</code> (see §2.3)
+means metering rows never land in past partitions, so no
+<code dir="auto">INSERT OVERWRITE</code> / trailing-window / Iceberg complexity is needed.</p>
+<p><strong>Consumer tier picker.</strong> Consumers pick the cheapest sufficient table
+by requested range <strong>and by the metric they’re asking for</strong>. Cost
+(<code dir="auto">sum_value</code>/<code dir="auto">sum_cost</code>) is on <code dir="auto">metering_*</code>; volume (<code dir="auto">n_docs</code>/<code dir="auto">sum_pages</code>)
+is on <code dir="auto">metering_docs_*</code>:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Requested range</th><th>Cost tier</th><th>Volume tier (docs, pages)</th><th>Live tail (current partial bucket)</th></tr></thead><tbody><tr><td><code dir="auto">&#x3C; 2h</code></td><td>raw <code dir="auto">metering</code> (partition-pruned to hour)</td><td>raw <code dir="auto">metering</code> (<code dir="auto">COUNT(DISTINCT document_id)</code>, <code dir="auto">MAX(number_of_pages)</code> per doc)</td><td>n/a — whole window is “current”</td></tr><tr><td><code dir="auto">2h – 24h</code></td><td><code dir="auto">metering_hourly</code></td><td><code dir="auto">metering_docs_hourly</code></td><td>raw <code dir="auto">metering</code> for the current hour</td></tr><tr><td><code dir="auto">> 24h</code></td><td><code dir="auto">metering_daily</code></td><td><code dir="auto">metering_docs_daily</code> (note: <code dir="auto">n_docs</code> is a doc-hours count at day grain — see §2 for the strict-unique-doc pattern)</td><td><code dir="auto">metering_hourly</code> / <code dir="auto">metering_docs_hourly</code> for the current day</td></tr></tbody></table>
+<p>Sealed hour and day rows never change once written, so consumer
+<code dir="auto">SELECT</code>s against them are safe candidates for Athena result reuse.
+<strong>Result reuse is NOT enabled automatically.</strong> Athena’s per-query
+<code dir="auto">ResultReuseConfiguration.ResultReuseByAgeConfiguration.Enabled</code> is
+off by default and the <code dir="auto">primary</code> workgroup this pipeline uses has no
+default reuse TTL set. Consumers who want it must set it explicitly
+on each <code dir="auto">StartQueryExecution</code> (e.g. <code dir="auto">MaxAgeInMinutes=60</code> for a
+one-hour cache). The rollup Lambda’s own <code dir="auto">INSERT</code>s never benefit
+from reuse — Athena caches SELECT results only.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="23-metering-partitioning-write-time-not-queue-time">2.3 <code dir="auto">metering</code> partitioning: write time, not queue time</h3><a class="sl-anchor-link" href="#23-metering-partitioning-write-time-not-queue-time"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “2.3 metering partitioning: write time, not queue time”</span></a></div>
+<p><code dir="auto">save_reporting_data.py</code> partitions metering rows by write time
+(= document completion time, since the writer runs at workflow end):</p>
+<ul>
+<li>Every metering row lands in the current partition. No time-travel
+into past partitions.</li>
+<li>Rollups become trivially append-only — no re-materialization window.</li>
+<li>Dashboard time filters (“last 24h”) match user intent — “docs
+completed in the last 24h” — since completion = write time.</li>
+<li><code dir="auto">initial_event_time</code> is preserved as a column on the row for
+consumers that need queue-time semantics.</li>
+</ul>
+<p><code dir="auto">metering</code> also gains an <code dir="auto">hour</code> partition key so the current-hour tail
+query in the tier picker partition-prunes to ~40 MB instead of scanning
+the whole day.</p>
+<p><strong>Semantic consequence for consumers of raw <code dir="auto">metering</code>:</strong> the
+predicate <code dir="auto">WHERE date = '2026-08-18'</code> shifts meaning from “docs
+queued that day” to “docs completed that day”. Consumers who need
+queue-time semantics filter on the <code dir="auto">initial_event_time</code> column
+explicitly.</p>
+<p><strong>Upgrade cutover — partition semantics differ before and after.</strong>
+The migration custom resource that relocates historical
+<code dir="auto">date=X/*.parquet</code> files into <code dir="auto">date=X/hour=HH/</code> subdirs infers the
+hour from each file’s own <code dir="auto">timestamp</code> column. Before Phase 1, that
+<code dir="auto">timestamp</code> was queue-derived; after Phase 1, new writes are
+completion-derived. So on any given stack:</p>
+<ul>
+<li><strong>New writes (post-upgrade)</strong> — <code dir="auto">date</code>/<code dir="auto">hour</code> partition = completion time.</li>
+<li><strong>Historical rows (pre-upgrade, migrated in place)</strong> — <code dir="auto">date</code>/<code dir="auto">hour</code>
+partition = queue time (whatever the <code dir="auto">timestamp</code> column said at the
+time). Dates aren’t relocated by the migration — only hours are added.</li>
+</ul>
+<p>A query spanning the cutover mixes both semantics silently. At the
+<code dir="auto">hour</code> grain this affects any document whose processing crossed an
+hour boundary, not just midnight — a document queued at 15:58 and
+completing at 16:04 lands in the queue-derived <code dir="auto">hour=15</code> bucket
+before the cutover and the completion-derived <code dir="auto">hour=16</code> bucket after
+it. At the <code dir="auto">date</code> grain the mismatch reduces to docs that crossed
+midnight during processing. If you need the cutover boundary
+programmatically, look at the earliest <code dir="auto">hour_ts</code> in
+<code dir="auto">metering_hourly</code> — that’s the point new-semantic rows start
+appearing.</p>
+<p><strong>Upgrade ordering — why the writer updates first.</strong> The migration takes a
+one-shot snapshot of the old-layout key list. Anything written at
+<code dir="auto">metering/date=X/*.parquet</code> <em>after</em> that listing but <em>before</em> the writer starts
+emitting the new layout is unreachable by the new <code dir="auto">date=X/hour=HH/</code> projection
+— not an error, just silently absent from <code dir="auto">metering</code> and every rollup built on
+it. <code dir="auto">SaveReportingDataFunctionV2</code> is the sole writer of <code dir="auto">metering/</code> parquet, so
+<code dir="auto">MeteringHourMigrationCustomResource</code> declares
+<code dir="auto">DependsOn: SaveReportingDataFunctionV2</code> and the full ordering is:</p>
+<div class="expressive-code"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/ec.w36nc.css"><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">SaveReportingDataFunctionV2  →  migration custom resource  →  MeteringTable</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">(new layout live)            (relocates history)       (new projection)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="SaveReportingDataFunctionV2  →  migration custom resource  →  MeteringTable       (new layout live)            (relocates history)       (new projection)"><div></div></button></div></figure></div>
+<p><strong>Residual window, and what to do about it.</strong> Lambda finishes in-flight
+invocations on the <em>previous</em> code version, so a container that started just
+before the writer updated can still emit one old-layout file after the
+migration listed. That shrinks the exposure from the whole stack update (tens
+of minutes) to roughly one invocation duration — but it is not zero. If your
+deployment ingests continuously and you care about complete cost history:</p>
+<ol>
+<li>Quiesce ingestion for the update (stop uploading to the input bucket), <strong>or</strong></li>
+<li>after <code dir="auto">UPDATE_COMPLETE</code>, re-run the standalone migration, which is
+idempotent and picks up exactly these stragglers:</li>
+</ol>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">scripts/migrate_metering_hour_partition.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--bucket</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;reporting-bucket></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--dry-run</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">scripts/migrate_metering_hour_partition.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--bucket</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;reporting-bucket></span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="python scripts/migrate_metering_hour_partition.py --bucket <reporting-bucket> --dry-runpython scripts/migrate_metering_hour_partition.py --bucket <reporting-bucket>"><div></div></button></div></figure></div>
+<p>To check whether any straggler exists at all, list for old-layout keys — a
+metering parquet whose path has no <code dir="auto">hour=</code> segment:</p>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">aws</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">s3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">ls</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">s3://&#x3C;reporting-bucket>/metering/</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--recursive</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">grep</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">\.parquet$</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">grep</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-v</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">/hour=</span><span style="--0:#D9F5DD;--1:#111111">'</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="aws s3 ls s3://<reporting-bucket>/metering/ --recursive \  | grep &#x27;\.parquet$&#x27; | grep -v &#x27;/hour=&#x27;"><div></div></button></div></figure></div>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="rollup-lambda">Rollup Lambda</h2><a class="sl-anchor-link" href="#rollup-lambda"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Rollup Lambda”</span></a></div>
+<p><code dir="auto">DataMartRollupFunction</code> (<code dir="auto">src/lambda/data_mart_rollup/index.py</code>).
+Two EventBridge schedules dispatch based on the <code dir="auto">mode</code> field:</p>
+<ul>
+<li><code dir="auto">{"mode": "hourly"}</code> — every hour at :05 UTC. Writes
+<code dir="auto">metering_hourly</code>, <code dir="auto">metering_docs_hourly</code>, and <code dir="auto">control_plane_hourly</code>
+for the previous sealed hour.</li>
+<li><code dir="auto">{"mode": "daily"}</code> — every day at 00:15 UTC. Writes <code dir="auto">metering_daily</code>
+and <code dir="auto">metering_docs_daily</code> for the previous sealed day, reading from
+the corresponding hourly tables.</li>
+</ul>
+<p><strong>Idempotency:</strong> the handler checks whether the target partition
+already has data before writing (Athena <code dir="auto">LIMIT 1</code> for the metering
+tables; S3 HEAD for <code dir="auto">control_plane_hourly</code>). Duplicate EventBridge
+fires are safe — the second run skips.</p>
+<p><strong>Ad-hoc invocations</strong> default to <code dir="auto">hourly</code> mode (the more common case).</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="10-cost-observability--data-plane-vs-control-plane">10. Cost observability — data plane vs control plane</h2><a class="sl-anchor-link" href="#10-cost-observability--data-plane-vs-control-plane"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “10. Cost observability — data plane vs control plane”</span></a></div>
+<p>The dashboard surfaces two independent cost KPIs so operators can
+distinguish “what did processing documents cost me” from “what is the
+IDP infrastructure itself costing me while idle or serving my UI”.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="101-data-plane-cost">10.1 Data plane cost</h3><a class="sl-anchor-link" href="#101-data-plane-cost"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “10.1 Data plane cost”</span></a></div>
+<p><strong>Definition:</strong> any AWS spend attributable to processing a specific
+document. Lambda invocations of the per-doc pipeline (OCR /
+Classification / Extraction / Assessment / Summarization / Evaluation /
+BDA path / Rule Validation / ingest + tracking / pipeline hooks).
+Bedrock tokens on the extraction path. Textract calls.</p>
+<p><strong>Source:</strong> raw <code dir="auto">metering</code> per-doc rows, rolled up into
+<code dir="auto">metering_hourly</code> and <code dir="auto">metering_daily</code>.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="102-control-plane-cost">10.2 Control plane cost</h3><a class="sl-anchor-link" href="#102-control-plane-cost"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “10.2 Control plane cost”</span></a></div>
+<p><strong>Definition:</strong> every other IDP AWS spend that runs regardless of
+whether documents are processing — dashboard resolvers, scheduled
+AI-summary agents, natural-language agents, test-set polling,
+test-run aggregation, config resolvers, capacity planners, discovery,
+fine-tuning, agent chat, the rollup Lambda itself.</p>
+<p><strong>Classifier:</strong> <em>what triggered the invocation</em>, not what it queried.
+Doc-arrived → data plane. User-triggered / scheduled / admin →
+control plane.</p>
+<p><strong>Storage:</strong> <code dir="auto">control_plane_hourly</code> table:</p>
+<div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="sql"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">CREATE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">EXTERNAL</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">TABLE</span><span style="--0:#D6DEEB;--1:#403F53"> control_plane_hourly (</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">hour_ts             </span><span style="--0:#C792EA;--1:#8844AE">timestamp</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">function_name       string,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">component           string,     </span><span style="--0:#919F9F;--1:#5F636F">-- 'monitor-dashboard', 'monitor-agent',</span></div></div><div class="ec-line"><div class="code"><span class="indent">                                  </span><span style="--0:#919F9F;--1:#5F636F">-- 'test-runner', 'test-results',</span></div></div><div class="ec-line"><div class="code"><span class="indent">                                  </span><span style="--0:#919F9F;--1:#5F636F">-- 'analytics-agent', 'rollup-lambda', etc.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">bedrock_model       string,     </span><span style="--0:#919F9F;--1:#5F636F">-- nullable; only for Bedrock invocations</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">invocations         </span><span style="--0:#C792EA;--1:#8844AE">bigint</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">duration_ms_sum     </span><span style="--0:#C792EA;--1:#8844AE">bigint</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">athena_bytes_sum    </span><span style="--0:#C792EA;--1:#8844AE">bigint</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">bedrock_tokens_in   </span><span style="--0:#C792EA;--1:#8844AE">bigint</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">bedrock_tokens_out  </span><span style="--0:#C792EA;--1:#8844AE">bigint</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">est_lambda_cost     double,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">est_athena_cost     double,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">est_bedrock_cost    double</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">PARTITIONED </span><span style="--0:#C792EA;--1:#8844AE">BY</span><span style="--0:#D6DEEB;--1:#403F53"> (</span><span style="--0:#C792EA;--1:#8844AE">date</span><span style="--0:#D6DEEB;--1:#403F53"> string, </span><span style="--0:#C792EA;--1:#8844AE">hour</span><span style="--0:#D6DEEB;--1:#403F53"> string)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="CREATE EXTERNAL TABLE control_plane_hourly (  hour_ts             timestamp,  function_name       string,  component           string,     -- &#x27;monitor-dashboard&#x27;, &#x27;monitor-agent&#x27;,                                  -- &#x27;test-runner&#x27;, &#x27;test-results&#x27;,                                  -- &#x27;analytics-agent&#x27;, &#x27;rollup-lambda&#x27;, etc.  bedrock_model       string,     -- nullable; only for Bedrock invocations  invocations         bigint,  duration_ms_sum     bigint,  athena_bytes_sum    bigint,  bedrock_tokens_in   bigint,  bedrock_tokens_out  bigint,  est_lambda_cost     double,  est_athena_cost     double,  est_bedrock_cost    double)PARTITIONED BY (date string, hour string)"><div></div></button></div></figure></div>
+<p>Cardinality: ~20 control-plane Lambdas × few components × few models
+= ~50-100 rows/hour, ~40K rows/month. No <code dir="auto">control_plane_daily</code> — the
+hourly table is small enough that a daily rollup on top would be
+pure overhead.</p>
+<p><strong>Population — same rollup Lambda that writes the metering rollups.</strong>
+Every hour, for the sealed hour N-1:</p>
+<ol>
+<li>Discover control-plane Lambda ARNs via a two-stage walk:
+first <code dir="auto">cloudformation:ListStackResources</code> on the root stack and
+its nested-stack children (<code dir="auto">_enumerate_stack_tree</code> — needed
+because nested-stack Lambdas carry the nested stack’s
+<code dir="auto">aws:cloudformation:stack-name</code> tag, not the root’s, and a
+pure-tag query on the root name would miss most of the fleet),
+then <code dir="auto">resourcegroupstaggingapi:GetResources</code> filtered on the
+discovered stack names (<code dir="auto">_get_resources_by_tag</code>). Every Lambda
+in the stack tree that does <em>not</em> carry <code dir="auto">idp:plane=data</code> (see
+§10.3) is treated as control-plane.</li>
+<li>For each ARN, call CloudWatch <code dir="auto">GetMetricData</code>:
+<ul>
+<li><code dir="auto">AWS/Lambda/Duration</code> and <code dir="auto">Invocations</code> (native, all Lambdas)</li>
+<li><code dir="auto">IDPControlPlane/AthenaBytesScanned</code> (custom, emitted by
+control-plane Lambdas that hit Athena)</li>
+<li><code dir="auto">IDPControlPlane/BedrockInputTokens</code> / <code dir="auto">BedrockOutputTokens</code>
+(custom, dimensioned by Model)</li>
+</ul>
+</li>
+<li>Multiply by pricing constants → <code dir="auto">est_*_cost</code> columns.</li>
+<li>Write one Parquet row per (function, component, model) for the
+sealed hour under
+<code dir="auto">s3://reporting/control_plane_hourly/date=…/hour=…/</code>. Append-only.</li>
+</ol>
+<p><strong>Component labels</strong> — values of the <code dir="auto">component</code> column:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Category</th><th>What runs here</th><th>Typical trigger</th></tr></thead><tbody><tr><td><code dir="auto">monitor-dashboard</code></td><td>Dashboard resolver + Athena reads it issues</td><td>Page open in IDP Monitor UI</td></tr><tr><td><code dir="auto">monitor-agent</code></td><td>Scheduled AI-summary agent</td><td>EventBridge hourly cron</td></tr><tr><td><code dir="auto">analytics-agent</code></td><td>Natural-language → SQL agent, agent-chat processor</td><td>User question / chat</td></tr><tr><td><code dir="auto">chat-orchestrator</code></td><td>Chat companion’s top-level orchestrator agent (routes user prompts to specialised sub-agents)</td><td>User chat</td></tr><tr><td><code dir="auto">error-analyzer</code></td><td>Chat companion’s error-analysis agent</td><td>User question about a failed doc</td></tr><tr><td><code dir="auto">code-intelligence</code></td><td>Chat companion’s code-intelligence agent (DeepWiki MCP)</td><td>User question about the codebase</td></tr><tr><td><code dir="auto">quick-start</code></td><td>Chat companion’s quick-start / bootstrap agent</td><td>User setup flow</td></tr><tr><td><code dir="auto">external-mcp</code></td><td>Chat companion’s user-registered external MCP agent</td><td>User invokes an installed MCP server</td></tr><tr><td><code dir="auto">doc-chat</code></td><td>Chat-with-document + streaming chat</td><td>User chat about a specific doc</td></tr><tr><td><code dir="auto">test-set-mgmt</code></td><td>Test set CRUD + S3 polling</td><td>Test Studio UI + on-open scan</td></tr><tr><td><code dir="auto">test-runner</code></td><td>Kick off test runs + copy files</td><td>User clicks “Run test”</td></tr><tr><td><code dir="auto">test-results</code></td><td>Aggregate test runs + serve dashboard reads</td><td>End-of-run + results page open</td></tr><tr><td><code dir="auto">config-mgmt</code></td><td>Config CRUD, apply-preset custom resource</td><td>Config UI + feature installs</td></tr><tr><td><code dir="auto">capacity-planner</code></td><td>Capacity calculation tool</td><td>User action</td></tr><tr><td><code dir="auto">policy-discovery</code></td><td>Policy Discovery API + async processor</td><td>Admin action</td></tr><tr><td><code dir="auto">finetuning</code></td><td>Fine-tuning job management</td><td>Admin action</td></tr><tr><td><code dir="auto">user-mgmt</code></td><td>Cognito user CRUD + directory sync</td><td>Admin action</td></tr><tr><td><code dir="auto">api-dispatch</code></td><td>Main HTTP API dispatcher + document status lookup</td><td>Every UI page load</td></tr><tr><td><code dir="auto">agent-core</code></td><td>AgentCore MCP handler + gateway manager</td><td>Agent runtime invocation</td></tr><tr><td><code dir="auto">blueprint-optimization</code></td><td>LLM-driven blueprint (schema) optimizer</td><td>Admin action</td></tr><tr><td><code dir="auto">circuit-breaker</code></td><td>Bedrock throttle backpressure manager</td><td>Throttle event</td></tr><tr><td><code dir="auto">version-check</code></td><td>Version-check resolver</td><td>Every UI page load</td></tr><tr><td><code dir="auto">multi-doc-discovery</code></td><td>Multi-doc discovery orchestration</td><td>Admin batch tool</td></tr><tr><td><code dir="auto">rollup-lambda</code></td><td>The rollup Lambda itself</td><td>EventBridge cron</td></tr><tr><td><code dir="auto">other-control</code></td><td>Fallback for Lambdas that don’t match a category</td><td>—</td></tr></tbody></table>
+<p><strong>Data-plane component labels</strong> — round-24 UI polish. Data-plane rows
+in <code dir="auto">data_plane_lambda_hourly</code> are labeled with the pipeline stage
+they belong to (the mapping matches on the stage name embedded in
+the CFN-generated Lambda ID):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Category</th><th>Stage / Lambda</th></tr></thead><tbody><tr><td><code dir="auto">ocr</code></td><td>Textract OCR stage</td></tr><tr><td><code dir="auto">classification</code></td><td>Document classifier</td></tr><tr><td><code dir="auto">extraction</code></td><td>Field extraction (traditional or agentic)</td></tr><tr><td><code dir="auto">assessment</code></td><td>Extraction confidence assessment</td></tr><tr><td><code dir="auto">summarization</code></td><td>Document summarizer</td></tr><tr><td><code dir="auto">evaluation</code></td><td>Per-doc evaluation against baseline</td></tr><tr><td><code dir="auto">rule-validation</code></td><td>Rule-based validation + policy classification</td></tr><tr><td><code dir="auto">process-results</code></td><td>Post-processing / results aggregation</td></tr><tr><td><code dir="auto">shard-runtime</code></td><td>Shard runtime (agentic extraction fan-out)</td></tr><tr><td><code dir="auto">save-reporting</code></td><td><code dir="auto">SaveReportingDataFunctionV2</code></td></tr><tr><td><code dir="auto">workflow-tracker</code></td><td>Step-Functions workflow state tracker</td></tr><tr><td><code dir="auto">queue-processor</code></td><td>Doc-arrival queue processor</td></tr><tr><td><code dir="auto">queue-sender</code></td><td>S3-event → SQS forwarder</td></tr><tr><td><code dir="auto">pipeline-hooks</code></td><td>Pipeline-hooks dispatcher</td></tr><tr><td><code dir="auto">bda</code></td><td>Bedrock Data Automation invocation, completion, project-setup</td></tr><tr><td><code dir="auto">batch-ingest</code></td><td>Jobs API batch ingest (zip extract → input bucket)</td></tr><tr><td><code dir="auto">job-tracker</code></td><td>Per-doc status-change events on the Jobs API path</td></tr><tr><td><code dir="auto">post-processing</code></td><td>Dispatcher for the user-supplied custom post-processor</td></tr><tr><td><code dir="auto">hitl-review</code></td><td>HITL section-review completion callback</td></tr></tbody></table>
+<p>The mapping is heuristic (substring match on function name) in
+<code dir="auto">_component_for_function()</code>. Anything unmatched lands under
+<code dir="auto">other-control</code>.</p>
+<p>For a <strong>data-plane</strong> row, <code dir="auto">other-control</code> is always a bug — the Lambda carries
+<code dir="auto">idp:plane=data</code>, so a label saying “control” contradicts the table it sits in.
+<code dir="auto">scripts/tests/test_data_plane_component_labels.py</code> pins the mapping against
+<code dir="auto">DATA_PLANE_ALLOWLIST</code> (see the Component column in §10.4) so a new pipeline
+stage cannot be added without a label, and a rule reordering cannot silently
+move a stage between buckets. Rule <strong>order</strong> matters — first match wins, so a
+broader pattern placed above a narrower one steals the label; the BDA and
+<code dir="auto">rule-validation</code> rules sit above the pipeline stages for exactly that reason
+(<code dir="auto">BDAProcessResultsFunction</code> contains <code dir="auto">processresultsfunction</code>, and
+<code dir="auto">RuleValidationPolicyClassificationFunction</code> contains
+<code dir="auto">classificationfunction</code>).</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="103-tagging-convention--controls">10.3 Tagging convention + controls</h3><a class="sl-anchor-link" href="#103-tagging-convention--controls"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “10.3 Tagging convention + controls”</span></a></div>
+<p><strong>Rule (allowlist model):</strong> only per-doc-arrival Lambdas carry
+<code dir="auto">idp:plane=data</code>. Everything else is <em>implicitly</em> control plane.</p>
+<p>This inverts the naive “tag everything” approach so the maintenance
+surface is tiny — data plane is a stable set; adding a new
+control-plane feature (autotune, hooks, agents, etc.) requires zero
+tagging work.</p>
+<p><strong>Enforcement — <code dir="auto">scripts/check_data_plane_tags.py</code>, wired into <code dir="auto">make lint</code> / <code dir="auto">fastlint</code> / <code dir="auto">lint-cicd</code>:</strong> the linter checks that every
+Lambda in the <code dir="auto">DATA_PLANE_ALLOWLIST</code> list exists in its template AND
+carries <code dir="auto">Properties.Tags: idp:plane: data</code>. A rename, removal, or
+missing tag fails the build. This turns a silent misattribution (the
+Lambda’s cost quietly falls into <code dir="auto">other-control</code>) into a loud CI
+failure.</p>
+<p><strong>When adding a new pipeline stage:</strong> add the Lambda’s logical ID to
+<code dir="auto">DATA_PLANE_ALLOWLIST</code> in <code dir="auto">scripts/check_data_plane_tags.py</code> <strong>and</strong>
+add <code dir="auto">Tags: idp:plane: data</code> in the CFN block. If the Lambda is
+control plane (user/schedule/admin-triggered, not per-doc-arrival),
+don’t touch either.</p>
+<p><strong>Stack scoping</strong> uses the CloudFormation-native
+<code dir="auto">aws:cloudformation:stack-name</code> tag (present on every stack-created
+resource — no custom tagging work required). No custom <code dir="auto">idp:stack</code>
+tag is defined or maintained.</p>
+<p><strong>Untagged Lambda default at runtime:</strong> treated as control plane —
+the safe default, since we track control plane cost. If a data-plane
+Lambda slips through without a tag, its cost is <em>misattributed</em> to
+<code dir="auto">other-control</code>, not lost — and the linter catches this in CI first.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="104-data-plane-lambda-allowlist">10.4 Data-plane Lambda allowlist</h3><a class="sl-anchor-link" href="#104-data-plane-lambda-allowlist"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “10.4 Data-plane Lambda allowlist”</span></a></div>
+<p>Applied classifier: <em>what triggered the invocation</em>. If cost scales
+with production doc arrival, it’s data plane.</p>
+<p><strong>Data-plane Lambdas</strong> (all in <code dir="auto">DATA_PLANE_ALLOWLIST</code>). The <strong>Component</strong>
+column is the <code dir="auto">component</code> value its <code dir="auto">data_plane_lambda_hourly</code> rows carry.
+<code dir="auto">scripts/tests/test_data_plane_component_labels.py</code> enforces the allowlist ↔
+label mapping against <code dir="auto">_component_for_function</code>, but it does so via its own
+<code dir="auto">EXPECTED_COMPONENT</code> map — <strong>nothing parses this table</strong>, so keep the rules, that
+map, and this column in step by hand when adding a stage.</p>
+<p>⚠️ <strong>Rule literals must stay at or under 24 characters.</strong> Lambda function names
+cap at 64 chars and CloudFormation truncates the <em>logical-ID</em> segment to fit, so
+<code dir="auto">_component_for_function</code> receives a prefix of the logical ID on any stack whose
+name is long enough. A longer literal matches the full logical ID — and so
+passes a naive test — while matching nothing a real deployment emits.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Lambda</th><th>Template</th><th>Component</th><th>Trigger</th></tr></thead><tbody><tr><td><code dir="auto">OCRFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">ocr</code></td><td>Doc arrival (Step Functions)</td></tr><tr><td><code dir="auto">ClassificationFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">classification</code></td><td>Doc arrival</td></tr><tr><td><code dir="auto">ExtractionFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">extraction</code></td><td>Doc arrival</td></tr><tr><td><code dir="auto">AssessmentFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">assessment</code></td><td>Doc arrival</td></tr><tr><td><code dir="auto">SummarizationFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">summarization</code></td><td>Doc arrival</td></tr><tr><td><code dir="auto">EvaluationFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">evaluation</code></td><td>Doc arrival</td></tr><tr><td><code dir="auto">ProcessResultsFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">process-results</code></td><td>Per-doc pipeline result stitching</td></tr><tr><td><code dir="auto">PipelineHooksDispatcherFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">pipeline-hooks</code></td><td>Sync-invoked per doc (PII, etc.)</td></tr><tr><td><code dir="auto">ShardRuntimeFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">shard-runtime</code></td><td>Per-doc/per-shard Bedrock batch runtime</td></tr><tr><td><code dir="auto">InvokeBDAFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">bda</code></td><td>Per-doc BDA invocation (BDA mode)</td></tr><tr><td><code dir="auto">BDAProcessResultsFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">bda</code></td><td>Per-doc BDA result parsing</td></tr><tr><td><code dir="auto">BDACompletionFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">bda</code></td><td>Per-doc BDA completion</td></tr><tr><td><code dir="auto">RuleValidationFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">rule-validation</code></td><td>Per-doc rule validation</td></tr><tr><td><code dir="auto">RuleValidationOrchestrationFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">rule-validation</code></td><td>Per-doc orchestration</td></tr><tr><td><code dir="auto">RuleValidationPolicyClassificationFunction</code></td><td><code dir="auto">patterns/unified/template.yaml</code></td><td><code dir="auto">rule-validation</code></td><td>Per-doc policy classification</td></tr><tr><td><code dir="auto">WorkflowTracker</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">workflow-tracker</code></td><td>SF state change per doc</td></tr><tr><td><code dir="auto">QueueSender</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">queue-sender</code></td><td>S3 upload event per doc</td></tr><tr><td><code dir="auto">QueueProcessor</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">queue-processor</code></td><td>SQS batch trigger from doc queue</td></tr><tr><td><code dir="auto">BatchPreProcessorFunction</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">batch-ingest</code></td><td>Jobs API batch ingest</td></tr><tr><td><code dir="auto">JobTracker</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">job-tracker</code></td><td>SQS per-doc status-change events</td></tr><tr><td><code dir="auto">SaveReportingDataFunctionV2</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">save-reporting</code></td><td>Async per doc (Evaluation / RuleValidation)</td></tr><tr><td><code dir="auto">PostProcessingDecompressor</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">post-processing</code></td><td>SQS per-doc custom post-processor dispatcher</td></tr><tr><td><code dir="auto">CompleteSectionReviewFunction</code></td><td><code dir="auto">template.yaml</code></td><td><code dir="auto">hitl-review</code></td><td>HITL callback — resumes paused Step Function once per doc that needs review</td></tr></tbody></table>
+<p><strong>Explicitly NOT data plane (in the same templates):</strong>
+<code dir="auto">TestExecutionAggregationFunction</code> (post-run orchestration),
+<code dir="auto">MLflowLoggerFunction</code> (per-run write-up),
+<code dir="auto">CodeBuildTrigger</code> / <code dir="auto">BDAOCRProjectFunction</code> (one-shot CFN custom
+resources), <code dir="auto">TestFileCopierFunction</code> (test-run seeding — scales with
+test volume, not prod docs — <code dir="auto">test-runner</code> component),
+<code dir="auto">CircuitBreakerManagerFunction</code> (alarm/health-check),
+<code dir="auto">BackfillWorkerFunction</code> (admin one-shot),
+<code dir="auto">FinetuningProcessDocumentFunction</code> (training-set processing),
+<code dir="auto">DataMartRollupFunction</code> (this rollup itself), and all API resolvers /
+chat / auth / admin functions.</p>
+<p><strong>Test-run cost split:</strong> kickoff, file-copy, aggregation, and MLflow
+write-up are control plane (<code dir="auto">test-runner</code> + <code dir="auto">test-results</code>
+components). The actual document processing that runs against test
+docs — OCR, Extraction, etc. — goes through the same data-plane
+Lambdas as production docs and appears under Data Plane Cost.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="105-custom-metric-emission--what-each-component-measures">10.5 Custom-metric emission — what each component measures</h3><a class="sl-anchor-link" href="#105-custom-metric-emission--what-each-component-measures"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “10.5 Custom-metric emission — what each component measures”</span></a></div>
+<p>The rollup Lambda queries CloudWatch for three metric types per
+control-plane Lambda:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Metric</th><th>Emitted by</th><th>How</th></tr></thead><tbody><tr><td><code dir="auto">AWS/Lambda/Duration</code> + <code dir="auto">Invocations</code></td><td>Native (all Lambdas)</td><td>Zero code — CloudWatch emits automatically.</td></tr><tr><td><code dir="auto">IDPControlPlane/AthenaBytesScanned</code> (dims: <code dir="auto">Component</code>, <code dir="auto">FunctionName</code>)</td><td>Any control-plane Lambda that runs an Athena query</td><td>Emit at end of <code dir="auto">athena.get_query_execution</code>, one <code dir="auto">PutMetricData</code> call with <code dir="auto">bytes_scanned</code> value.</td></tr><tr><td><code dir="auto">IDPControlPlane/BedrockInputTokens</code> / <code dir="auto">BedrockOutputTokens</code> (dims: <code dir="auto">Component</code>, <code dir="auto">FunctionName</code>, <code dir="auto">Model</code>)</td><td>Any control-plane Lambda that calls Bedrock</td><td>Emit at end of every <code dir="auto">converse</code> / <code dir="auto">invoke_model</code> response with the token counts from the response envelope.</td></tr></tbody></table>
+<p><code dir="auto">FunctionName</code> is load-bearing — the rollup Lambda scopes its
+<code dir="auto">GetMetricData</code> calls on <code dir="auto">FunctionName</code> alone (not <code dir="auto">Component</code>) so a
+Lambda whose emitter-side hardcoded component label differs from the
+rollup-side derived label (e.g. a Lambda that vendors the analytics
+agent — emitted as <code dir="auto">analytics-agent</code> but mapped to a different
+component by <code dir="auto">_COMPONENT_RULES</code>) still has its metrics found. The
+<code dir="auto">Component</code> and <code dir="auto">Model</code> dims are informational — useful for direct
+CloudWatch queries by an operator but not required by the rollup.</p>
+<p>Both custom metrics are one-line calls to a shared helper —
+<code dir="auto">idp_common.metrics.emit_control_plane_cost_metric(...)</code> — that
+callers get for free via <code dir="auto">idp_common</code>. Fire-and-forget; logs a
+warning (never raises) on CloudWatch failure so the calling Lambda’s
+business logic keeps working. <code dir="auto">FunctionName</code> is auto-populated from
+<code dir="auto">AWS_LAMBDA_FUNCTION_NAME</code> — callers pass only <code dir="auto">component</code> (and
+<code dir="auto">bedrock_model</code> for Bedrock metrics).</p>
+<p><strong>Phase 1 emitter coverage</strong> (<code dir="auto">AthenaBytesScanned</code> only). Three
+in-repo call sites: the analytics agent’s Athena tool
+(<code dir="auto">lib/idp_common_pkg/idp_common/agents/analytics/tools/athena_tool.py</code>),
+the test-results resolver
+(<code dir="auto">nested/api-resolvers/src/lambda/test_results_resolver/index.py</code>),
+and the rollup Lambda’s own self-cost accounting
+(<code dir="auto">src/lambda/data_mart_rollup/index.py</code>).</p>
+<p><strong>Phase 2 emitter coverage</strong> (<code dir="auto">BedrockInputTokens</code> /
+<code dir="auto">BedrockOutputTokens</code>). Wired via a reusable Strands
+<code dir="auto">ControlPlaneCostHook</code>
+(<code dir="auto">lib/idp_common_pkg/idp_common/agents/common/cost_metrics.py</code>) that
+registers on <code dir="auto">AfterInvocationEvent</code>, reads the agent’s cumulative
+<code dir="auto">event_loop_metrics.accumulated_usage</code>, and emits the per-invocation
+delta with the concrete <code dir="auto">bedrock_model</code> used at inference time.
+Registered on all six in-tree Strands agents through the
+<code dir="auto">with_cost_hook(hooks, component, model_id)</code> one-liner in the same
+module — the analytics chat agent (<code dir="auto">analytics-agent</code>), chat
+orchestrator (<code dir="auto">chat-orchestrator</code>), error analyzer (<code dir="auto">error-analyzer</code>),
+code-intelligence agent (<code dir="auto">code-intelligence</code>), quick-start agent
+(<code dir="auto">quick-start</code>), and external MCP agent (<code dir="auto">external-mcp</code>). The
+marketplace idp-monitor’s <code dir="auto">monitor-agent</code> picks up the same hook via
+its own repo. The hook is asymmetric-regression-safe (one counter
+dropping doesn’t re-emit the other from scratch), thread-safe (state
+update guarded by an internal lock so concurrent <code dir="auto">stream_async</code> calls
+against a reused agent don’t tear the delta), and zero-side-skipping
+(a 0-valued CloudWatch datum is never emitted). <strong>Latent gap</strong>: the
+hook doesn’t yet read <code dir="auto">cacheReadInputTokens</code> / <code dir="auto">cacheWriteInputTokens</code>
+— no in-repo agent has prompt caching enabled today, so the counters
+stay accurate until the first one does; wiring cache tokens is a
+tracked follow-up.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="consumer-contract">Consumer contract</h2><a class="sl-anchor-link" href="#consumer-contract"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Consumer contract”</span></a></div>
+<p>Consumers of these tables (idp-monitor, in-tree analytics agents,
+future dashboards):</p>
+<ul>
+<li><strong>Read-only.</strong> The rollup Lambda is the sole writer. Never <code dir="auto">INSERT</code>
+from a consumer.</li>
+<li><strong>Pick the tier</strong> by requested range (see §2). Live tail from raw
+<code dir="auto">metering</code> for the current hour/day is expected.</li>
+<li><strong>Assume append-only.</strong> A partition, once written, never changes.
+Athena result reuse is safe for sealed partitions — enable it
+explicitly on each <code dir="auto">StartQueryExecution</code> via
+<code dir="auto">ResultReuseConfiguration.ResultReuseByAgeConfiguration</code> (it’s off
+by default on the <code dir="auto">primary</code> workgroup this pipeline uses).</li>
+<li><strong>Freshness:</strong> hourly rollup for hour N lands at N+1:05 UTC. Daily
+rollup for day D lands at D+1 00:15 UTC. Consumers can display “as
+of HH:05” for hourly and “as of 00:15” for daily.</li>
+<li><strong>Schema drift:</strong> columns may be added; existing columns never
+removed or retyped without a version bump on the table name.</li>
+</ul>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="phase-2--upcoming-features-planned-for-future-work">Phase 2 — upcoming features planned for future work</h2><a class="sl-anchor-link" href="#phase-2--upcoming-features-planned-for-future-work"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Phase 2 — upcoming features planned for future work”</span></a></div>
+<blockquote>
+<p><strong>Status: proposed / planned, not committed.</strong> This section lists
+features and integrations that are <strong>candidates for future PRs</strong>, not
+guarantees. Scope, timing, and priority will be decided per-item as
+work is picked up. Nothing here is in flight today.</p>
+</blockquote>
+<p>Phase 1 (this doc’s subject) delivered <strong>infrastructure and correctness</strong>:
+the five rollup tables, the scheduled Lambda that populates them, the
+migration custom resource, the tagging model, write-time partitioning
+on raw metering. Phase 2 is the follow-on that delivers <strong>integration</strong>
+(consumers reading the tables) and <strong>the data types Phase 1 deliberately
+deferred</strong>.</p>
+<p>Tracked as four parallel workstreams. Ordering within a track is
+dependency-sensitive; tracks are independent.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="track-a--new-tables-data-phase-1-had-nowhere-to-put">Track A — new tables (data Phase 1 had nowhere to put)</h3><a class="sl-anchor-link" href="#track-a--new-tables-data-phase-1-had-nowhere-to-put"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Track A — new tables (data Phase 1 had nowhere to put)”</span></a></div>
+<ul>
+<li><strong><code dir="auto">document_lifecycle</code></strong> — one row per document with <code dir="auto">status</code>
+(<code dir="auto">SUCCESS</code> / <code dir="auto">FAILED</code> / <code dir="auto">ABORTED</code> / <code dir="auto">REDACTED_SUPERSEDED</code>), pipeline
+<code dir="auto">stage</code>, <code dir="auto">error_message</code>, <code dir="auto">queued_at</code>, <code dir="auto">completed_at</code>, <code dir="auto">duration_ms</code>,
+<code dir="auto">config_version</code>. Written by <code dir="auto">WorkflowTracker</code> on every state
+transition (currently DynamoDB-only). Enables true success/failure
+rates, latency percentiles, and stage-level failure attribution —
+today’s <code dir="auto">get_volume_metrics</code> hardcodes <code dir="auto">failed: 0, success_rate: 1.0</code>
+because status data doesn’t exist in Athena.</li>
+<li><strong><code dir="auto">document_confidence</code></strong> — aggregate confidence-alert queries. Today
+the confidence data is visible only in the per-doc UI; Phase 2 makes
+“docs with confidence drops in the last week” a single query.</li>
+<li><strong><code dir="auto">latency_hourly</code></strong> — pre-bucketed p50/p90/p99 histograms per
+<code dir="auto">(hour, service_api)</code>. Current dashboard latency comes from X-Ray +
+a 500-doc tracking-DDB sample; Phase 2 lifts that to a single-row
+scan at any range.</li>
+<li><strong><code dir="auto">document_class</code> in the metering grain</strong> — extends
+<code dir="auto">metering_hourly</code> / <code dir="auto">metering_daily</code> grain from
+<code dir="auto">(hour, config_version, service_api, unit)</code> to
+<code dir="auto">(hour, document_class, config_version, service_api, unit)</code>. Blocked
+on the classification service emitting <code dir="auto">document_class</code> into
+metering rows (write-side change).</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="track-b--consumer-integration-make-phase-1s-tables-actually-pay-off">Track B — consumer integration (make Phase 1’s tables actually pay off)</h3><a class="sl-anchor-link" href="#track-b--consumer-integration-make-phase-1s-tables-actually-pay-off"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Track B — consumer integration (make Phase 1’s tables actually pay off)”</span></a></div>
+<ul>
+<li><strong>Analytics chat agent</strong> — extend <code dir="auto">schema_provider.py</code> to describe
+all 5 rollup tables to the LLM. Add tier-picker guidance in the
+prompt (<code dir="auto">&#x3C;2h → raw</code>, <code dir="auto">2-24h → hourly</code>, <code dir="auto">>24h → daily</code>). Add
+cost-vs-docs split guidance: never <code dir="auto">SELECT sum_pages FROM metering_hourly</code>;
+always route volume/pages to <code dir="auto">metering_docs_*</code>. Roughly half a day
+of prompt work + testing.</li>
+<li><strong><code dir="auto">analytics_cost_service.py</code></strong> — route wide-range queries through
+the tier picker rather than always scanning raw metering.</li>
+<li><strong>Marketplace <code dir="auto">idp-monitor</code> dashboard</strong> (external repo, the primary
+intended consumer) — full tier picker in the dashboard resolver,
+read volume/pages from <code dir="auto">metering_docs_*</code>, read per-Lambda cost from
+<code dir="auto">control_plane_hourly</code>, fall back to raw metering for the current-hour
+tail, set <code dir="auto">ResultReuseConfiguration</code> explicitly on every
+<code dir="auto">StartQueryExecution</code>.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="track-c--producers-metrics-with-no-emitter-today">Track C — producers (metrics with no emitter today)</h3><a class="sl-anchor-link" href="#track-c--producers-metrics-with-no-emitter-today"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Track C — producers (metrics with no emitter today)”</span></a></div>
+<ul>
+<li>✅ <strong>Bedrock token emission</strong> from control-plane Lambdas — <strong>SHIPPED</strong>.
+Implemented via <code dir="auto">ControlPlaneCostHook</code> in
+<code dir="auto">lib/idp_common_pkg/idp_common/agents/common/cost_metrics.py</code>,
+wired on all six in-tree Strands agents (<code dir="auto">analytics-agent</code>,
+<code dir="auto">chat-orchestrator</code>, <code dir="auto">error-analyzer</code>, <code dir="auto">code-intelligence</code>,
+<code dir="auto">quick-start</code>, <code dir="auto">external-mcp</code>) plus the marketplace idp-monitor’s
+<code dir="auto">monitor-agent</code>. See §10.5 for the emission mechanics. Verified
+live on <code dir="auto">idp-dev-fix</code>: a chat session produced <code dir="auto">bedrock_tokens_in = 203,255</code> and <code dir="auto">est_bedrock_cost = $0.2519</code> in the next <code dir="auto">:05</code>
+rollup — first time this column has been non-zero on that stack.</li>
+<li><strong><code dir="auto">config_library/pricing.yaml</code> integration.</strong> <code dir="auto">BEDROCK_PRICING</code>
+is currently hardcoded in <code dir="auto">data_mart_rollup/index.py</code> and drifts on
+every new Bedrock model — this is the class-of-bug that produced the
+1000× overstate reviewer #2 caught. <code dir="auto">pricing.yaml</code> is the canonical
+unit-price source used by the data plane. Blocked on factoring out a
+lightweight <code dir="auto">read_bedrock_prices()</code> — the current reader is coupled
+to <code dir="auto">IDPConfig</code> init that the rollup Lambda doesn’t hold. Once fixed,
+kills the drift by construction.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="track-d--operational-hardening">Track D — operational hardening</h3><a class="sl-anchor-link" href="#track-d--operational-hardening"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Track D — operational hardening”</span></a></div>
+<ul>
+<li><strong>Backfill mode for the rollup Lambda.</strong> If the Lambda misses a
+period (like <code dir="auto">idp-dev-qs</code> did after a redeploy dropped it),
+partitions for those hours are just missing — the Lambda only ever
+processes the immediately-previous hour. Phase 2 adds a
+<code dir="auto">{"mode":"backfill","start":"…","end":"…"}</code> payload that iterates
+the range and calls the hourly logic per hour, using the same
+idempotency guard so reruns are safe.</li>
+<li><strong>Alarm on rollup absence.</strong> The develop redeploy that dropped
+<code dir="auto">DataMartRollupFunction</code> from <code dir="auto">idp-dev-qs</code> was invisible until an
+operator noticed missing partitions. Phase 2 adds a CloudWatch alarm
+on <code dir="auto">AWS/Lambda/Invocations == 0 for 2 hours</code> → page the operator.</li>
+<li><strong>Rollup-Lambda layer swap-in-place guard.</strong> Both the rollup and the
+migration Lambdas now use <code dir="auto">IDPCommonReportingLayer</code> for pyarrow +
+<code dir="auto">idp_common</code>. External customers install this feature via
+CreateFunction (new resource in this release) so the layer attaches
+cleanly under the 250 MB “combined code + layers” limit. A <em>future</em>
+release that swaps the rollup Lambda’s runtime shape in-place
+(bundled ↔ layer, or a much larger layer) risks the same
+update-stack size trap seen once during dev iteration — CFN’s
+<code dir="auto">UpdateFunctionConfiguration</code> call validates old-code + new-layer
+before <code dir="auto">UpdateFunctionCode</code> runs. If Phase 2 changes the layer
+materially, deliver the swap via a custom resource that
+delete-then-recreates the function rather than an in-place
+configuration update.</li>
+<li><strong><code dir="auto">GetResources</code> tag-filter chunking.</strong> <code dir="auto">TagFilters[].Values</code> caps at
+25; the stack tree today is 6, but a deep future topology would
+throw <code dir="auto">ValidationException</code> rather than degrade. Trivial fix, low
+urgency.</li>
+<li><strong>Doc updates going forward.</strong> Any Phase 2 table added must include
+a doc-drift lint check that fails if the doc’s grain description
+doesn’t match the actual <code dir="auto">PartitionKeys</code> and <code dir="auto">GROUP BY</code> in the SQL —
+reviewer #2 caught two “doc says X, SQL says Y” mismatches.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="suggested-sequencing-indicative">Suggested sequencing (indicative)</h3><a class="sl-anchor-link" href="#suggested-sequencing-indicative"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Suggested sequencing (indicative)”</span></a></div>
+<p>These groupings show a natural dependency order if the work is picked
+up; they aren’t a commitment to ship in any particular window.</p>
+<ul>
+<li><strong>2a — marketplace repo:</strong> dashboard tier picker + result-reuse
+configuration. Highest-value item because it turns the KB-vs-GB scan
+win from theoretical to real for the primary consumer.</li>
+<li><strong>2b — this repo:</strong> analytics agent integration, Bedrock emission
+wiring, <code dir="auto">pricing.yaml</code> refactor.</li>
+<li><strong>2c — this repo:</strong> <code dir="auto">document_lifecycle</code> + <code dir="auto">document_confidence</code>
+tables. Bigger scope, needs its own design doc before implementation.</li>
+<li><strong>2d — cross-repo:</strong> latency histograms + <code dir="auto">document_class</code> in the
+metering grain. Needs classification service change first.</li>
+</ul>
+<div class="sl-heading-wrapper level-h3"><h3 id="what-phase-2-explicitly-does-not-do">What Phase 2 explicitly does NOT do</h3><a class="sl-anchor-link" href="#what-phase-2-explicitly-does-not-do"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “What Phase 2 explicitly does NOT do”</span></a></div>
+<ul>
+<li><strong>Change any Phase 1 table shape.</strong> Adding columns is allowed;
+removing or renaming is not without a version bump on the table
+name.</li>
+<li><strong>Re-aggregate historical data.</strong> Phase 2 tables written after
+their deploy contain data from that point forward only. Backfilling
+a lifecycle table for months of pre-Phase-2 tracking-DDB history is
+out of scope.</li>
+<li><strong>Bring feature-platform extensions into the stack-tree walk.</strong>
+Extensions deployed as separate top-level stacks stay invisible to
+<code dir="auto">_discover_control_plane_lambdas</code> by design — an extension author who
+wants cost visibility must register with the reporting pipeline
+explicitly.</li>
+</ul></div><footer class="sl-flex astro-xhxjzfa7"><div class="meta sl-flex astro-xhxjzfa7"></div><div class="pagination-links print:hidden astro-jgq3vlii" dir="ltr"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-database/" rel="prev" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg><span class="astro-jgq3vlii">Previous<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Reporting Database</span></span></a><a href="/accelerated-intelligent-document-processing-on-aws/capacity-planning/" rel="next" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg><span class="astro-jgq3vlii">Next<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Capacity Planning</span></span></a></div></footer></div></div></main></div></div></div></div></body></html>
