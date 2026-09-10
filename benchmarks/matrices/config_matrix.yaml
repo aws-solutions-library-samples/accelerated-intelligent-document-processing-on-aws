@@ -120,6 +120,10 @@ axes:
     current: {}          # whatever the shipped system default is (the fix)
     legacy:
       classification.task_prompt: "@file:classification_task_prompt_pre653.txt"
+    # The v0.6.7 shipped prompt (#653 rules, before the #726 TABLE CONTINUATION rule):
+    # the same-stack control for the #726 A/B.
+    v067:
+      classification.task_prompt: "@file:classification_task_prompt_v067.txt"
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -275,6 +279,7 @@ control_cells:
   # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
   # boundary claim is a measured delta rather than a single post-fix number.
   - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
+  - {id: split-llm-v067prompt,   ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: v067}
 
 # -----------------------------------------------------------------------------
 # ONE-AXIS sweeps — vary a single knob, everything else = default_cell.
@@ -378,6 +383,11 @@ suites:
   # construction and WRONG on twodocs_2x20 by construction (one all-pages
   # section), which is exactly why `disabled` is not a workaround for packets.
   # Non-deterministic, so repeats: 5 — a single passing run does not clear it.
+  # #726 A/B on ONE stack: the shipped rules (with TABLE CONTINUATION) vs the v0.6.7
+  # prompt vs `disabled`, on the three boundary fixtures plus the #750 running-header
+  # shape (expected to stay wrong for BOTH prompts — it is here so a regression on it
+  # would be visible, not because it is a gate). repeats: 5, non-deterministic.
+  boundaryab: {cells: [split-llm, split-llm-v067prompt, split-disabled], docs: [small_narrow, twodocs_2x20, paginated_3pg, repeathdr_3pg], repeats: 5}
   boundary:
     cells:
     - split-llm

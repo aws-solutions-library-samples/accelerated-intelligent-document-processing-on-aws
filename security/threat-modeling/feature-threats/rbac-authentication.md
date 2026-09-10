@@ -118,7 +118,7 @@ flowchart TD
 | **Likelihood** | Low |
 | **Severity** | High |
 | **Affected Components** | Cognito User Pool |
-| **Mitigations** | Self-signup disabled (admin-created accounts only), strong password policy enforcement, MFA option, email verification required, Cognito advanced security features (compromised credential detection) |
+| **Mitigations** | Self-signup is disabled by default (`AllowAdminCreateUserOnly: true`, admin-created accounts only). Setting `AllowedSignUpEmailDomain` deliberately enables it, restricted to the named email domains and enforced by the `CognitoUserPoolEmailDomainVerifyFunction` PreSignUp/PreAuthentication trigger — anyone holding an address at those domains can then create their own account, so treat the domain list as the trust boundary (it also widens who can reach AUTH.T13). Strong password policy enforcement, MFA option, email verification required, Cognito advanced security features (compromised credential detection). |
 
 ### AUTH.T05: Refresh Token Abuse
 
@@ -232,6 +232,20 @@ flowchart TD
 | **Affected Components** | API Gateway (execute-api) domain / CloudFront distribution TLS policy |
 | **Mitigations** | API Gateway `execute-api` enforces TLS 1.2+ and does not serve on port 80; CloudFront uses a TLS 1.2+ minimum-protocol security policy. The **TLS suite in `make api-test`** actively attempts TLS 1.0/1.1 handshakes and a plaintext HTTP request against the live endpoint and asserts they are refused while TLS 1.2 succeeds. |
 
+### AUTH.T13: Group Assignment From a User-Writable Attribute (External IdP Mapping)
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | AUTH.T13 |
+| **Category** | STRIDE: Elevation of Privilege, Spoofing |
+| **Description** | With external IdP federation and `ExternalIdPGroupAttributeName` configured, Cognito maps the IdP's group claim onto the `custom:idp_groups` User Pool attribute, and the `ExternalIdPGroupMappingFunction` pre-token-generation trigger turns that attribute into Cognito group membership — including `Admin`. The attribute is `Mutable: true`, and because Cognito applies IdP attribute mapping *as the app client*, a mapped attribute must also be writable by that client. Nothing in the stored value records which principal wrote it, so a trigger that reads it without establishing provenance treats a value of any origin as the IdP's assertion. |
+| **Attack Vector** | A low-privilege user of the pool (or, where `AllowedSignUpEmailDomain` permits self-registration, anyone with an address at an allowed domain) writes the group value corresponding to `ExternalIdPAdminGroupName` to their own attribute, then obtains a fresh token so the trigger reads it. |
+| **Impact** | Application Admin: configuration and user management, and every configuration version. The trigger writes group membership with `AdminAddUserToGroup`, so the effect outlives the attribute value that caused it. |
+| **Likelihood** | Low (requires federation *and* group mapping to be configured, and knowledge of the deployment-specific admin group string) |
+| **Severity** | High |
+| **Affected Components** | `ExternalIdPGroupMappingFunction` (inline handler in `template.yaml`; standalone copy `src/lambda/external_idp_group_mapping/index.py`), `UserPool` schema (`idp_groups`), `UserPoolClient` attribute permissions |
+| **Mitigations** | **Provenance:** the trigger reads the Cognito-managed `identities` attribute via `AdminGetUser` — a field no client can write — and honours `custom:idp_groups` only for a user linked to the provider named by `EXTERNAL_IDP_NAME`. A native user who writes the attribute themselves gains nothing. **Freshness:** only fresh sign-in trigger sources are honoured, never `TokenGeneration_RefreshTokens`, so a value written after sign-in cannot be picked up by refreshing; at a fresh federated sign-in Cognito has just rewritten the attribute from the assertion. Both checks fail closed. **Attribute permissions:** `UserPoolClient` now declares an explicit `WriteAttributes` naming only the IdP-mapped attributes, so every other attribute is read-only to end users (an attempt returns `NotAuthorizedException`). `scripts/sdlc/tests/test_userpool_attribute_permissions.py` pins that list between its two failure modes. **Tests:** `src/lambda/external_idp_group_mapping/test_index.py` asserts that a user-written attribute and a token refresh both grant nothing, and re-runs those assertions against the InlineCode copy extracted from `template.yaml` so the deployed handler cannot drift from the tested one. `scripts/security/live_checks/verify_idp_group_mapping.py` runs the same scenarios against a real pool, provider and federated identity. **Residual:** a user already federated through the trusted provider can self-set the attribute, and if their IdP omits the group claim on a later fresh sign-in Cognito may leave that value in place — assert the group attribute for all federated users in the IdP (documented in `docs/external-idp.md`). |
+
 ## 4. Security Controls Summary
 
 | Control | Implementation | Threats Mitigated |
@@ -242,9 +256,11 @@ flowchart TD
 | **Object-level authorization** | Owner-scoped keys / `ownerSub`-vs-caller checks on user-owned resources (chat sessions, agent jobs) | AUTH.T09 |
 | **Central input-shape validation** | Dispatcher validates `arguments` against a schema-derived spec (`validation.py`); rejects unknown/missing/wrong-typed args with 400 | AUTH.T12 |
 | **Config-version scope** | `allowedConfigVersions` enforced in scope-aware resolvers; resolver IAM roles granted UsersTable GSI Query | AUTH.T07 |
+| **Caller-supplied ARN bounding** | `getStepFunctionExecution` requires the supplied `executionArn` to name this deployment's state machine before any Step Functions call, then applies the caller's config-version scope to the execution's `config_version` | AUTH.T07, AUTH.T09 |
+| **IdP group-claim provenance** | Group assignment from `custom:idp_groups` requires the user to be federated through the configured provider (`identities` via `AdminGetUser`) and the trigger source to be a fresh sign-in; explicit `WriteAttributes` keeps non-mapped attributes read-only to end users | AUTH.T13 |
 | **Automated authorization testing** | `make api-test-static` (static scan of op↔schema↔expectations drift + missing checks) and `make api-test` (live multi-role + scoped-user + token-negative + **IDOR + token-lifecycle + deleted-resource + input-validation + TLS** suites, with an auditable report); known gaps tracked as WARN so real regressions fail the gate | AUTH.T03, AUTH.T07, AUTH.T08, AUTH.T09, AUTH.T10, AUTH.T11, AUTH.T12 |
 | **Transport security** | API Gateway/CloudFront TLS 1.2+ minimum, no cleartext HTTP | AUTH.T11 |
-| **Cognito config** | No self-signup, strong passwords, email verification | AUTH.T04 |
+| **Cognito config** | Self-signup off unless `AllowedSignUpEmailDomain` is set (then domain-restricted), strong passwords, email verification | AUTH.T04 |
 | **Defense-in-depth** | `@aws_cognito_user_pools` schema directives in addition to resolver checks | AUTH.T03, AUTH.T08 |
 | **Audit logging** | CloudTrail for Cognito, CloudWatch for API Gateway + resolver Lambdas | All |
 | **CSP headers** | Content Security Policy in CloudFront | AUTH.T02 |

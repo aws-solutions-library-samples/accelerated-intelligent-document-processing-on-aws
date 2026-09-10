@@ -75,15 +75,17 @@ The bundled sample documents and their config associations are published to the 
 ## Evaluation report
 
 On a document that was evaluated against a baseline, **View Evaluation Report**
-opens a summary that leads with the two figures the report exists to answer:
+opens a summary that leads with the figures the report exists to answer:
 
 - **Extraction accuracy** — weighted by field importance when the configuration
   assigns weights, otherwise the plain proportion of fields that matched (the
   label says which, because they are not the same number).
-- **Classification accuracy** — page level, shown separately because
-  classification and extraction fail independently. A document can be classified
-  perfectly and extracted badly, or the reverse, and one number cannot stand for
-  both.
+- **Classification accuracy** — page level, with the page count beneath it. Shown
+  separately because classification and extraction fail independently: a
+  document can be classified perfectly and extracted badly, or the reverse.
+- **Split accuracy** — for a packet evaluated against section-level ground truth:
+  how many expected sections were reproduced with the same pages and class, with
+  the stricter in-order figure beside it.
 - **F1 score**, with precision and recall beneath it.
 
 A figure with no value is **omitted rather than shown as 0%** — a zero would be
@@ -91,18 +93,40 @@ indistinguishable from "scored nothing correctly", which is the one actively
 wrong reading available. A document that could not be scored at all (no section
 had an extractable schema) says so instead of showing zeros.
 
-Below that, one expandable section per document section, each carrying the
-per-field table: expected value, extracted value, score, and the comparison
-method with the evaluator's own reason in a tooltip. Sections with mismatches are
-expanded by default. **Mismatches only** hides everything that matched, for
-working through problems on a wide document. A wrong class is called out at the
-top of its section, because it makes the field table below it meaningless rather
-than merely wrong.
+The report then follows the same order as the markdown it replaces, each part
+collapsed unless it has something to show:
 
-**Comparison methods used** lists the comparators this document's evaluation
-applied. Worth checking when a score is surprising: "Acme Inc" not matching
-"Acme, Inc." is usually a comparison-method question rather than an extraction
-one.
+- **Sections not evaluated** — each excluded section with its class, the reason
+  it was skipped, and its pages.
+- **Section split analysis** — for a packet: one row per expected section
+  (matched or not, page order kept or not, expected and predicted class and
+  pages, which predicted section it paired with), then every predicted section
+  that matched nothing, the graded packet score, and any split errors. Expanded
+  automatically when a section or its ordering was wrong.
+- **All metrics** — every figure the run recorded, split and extraction, with the
+  rating the report applies to it.
+- One expandable section per document section, its own score in the header so
+  the section that pulled the document down is visible without opening each one.
+  Inside: a **Section metrics** table; the per-field table with expected and
+  extracted values, confidence against its threshold, score, weight, and the
+  comparison method with the evaluator's reason in a tooltip; and for an
+  aggregate field (a nested object or a matched list) an expandable row that
+  opens into the field-by-field comparisons beneath it — which is where a
+  Hungarian-matched list shows which item was paired with which. A section that
+  could not be evaluated says why, with the same how-to-fix steps the markdown
+  gives for that failure type.
+- **Comparison methods used** — the comparators this document's evaluation
+  applied. Worth checking when a score is surprising: "Acme Inc" not matching
+  "Acme, Inc." is usually a comparison-method question rather than an extraction
+  one.
+- **How scores are computed** — the field-level methods, array matching, field
+  weighting and, for packets, the split metrics, condensed from the markdown.
+
+A list or object value is shown as what it is — "3 items", "5 fields" — and
+opens into its structure on demand, rather than being flattened into one
+truncated string. **Mismatches only** hides everything that matched, for working
+through problems on a wide document. A wrong class is called out at the top,
+because it makes the field tables below it meaningless rather than merely wrong.
 
 The markdown report is still generated and is one click away via **Markdown
 report**, which is also where **download** and **print** live. Documents

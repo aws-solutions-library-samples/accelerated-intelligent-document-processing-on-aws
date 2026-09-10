@@ -57,6 +57,7 @@ EXEMPT = {
     # The deliberate pre-#653 control prompt: the benchmark's whole purpose is to
     # measure the fix against the prompt it replaced.
     "benchmarks/matrices/prompts/classification_task_prompt_pre653.txt",
+    "benchmarks/matrices/prompts/classification_task_prompt_v067.txt",
     # Declares that control suite, so it names the control prompt's text.
     "benchmarks/tests/test_suite_declarations.py",
     # This guard, which has to spell out the string it forbids.

@@ -55,6 +55,13 @@ synthetic:
   # a residual over-split is "the rules do not work" or "this document withholds
   # their primary evidence".
   - {id: paginated_3pg,   gen: bank_statement, rows: 100,  cols: 3, lists: 1, paginate: true, tag: shape=paginated}
+  # Running identity header (title + account number + period) reprinted on every
+  # page, NO pagination — the #750 shape, which DOES reproduce with this knob
+  # (0/5 correct on Nova 2 Lite and Haiku 4.5, before and after #726). Not in any
+  # release-gate suite: it is a documented hard case whose supported fix is the
+  # per-class `BOUNDARY:` description sentence, kept here so a candidate rule can
+  # be checked against it (see docs/classification.md, "Known failure mode").
+  - {id: repeathdr_3pg,   gen: bank_statement, rows: 100,  cols: 3, lists: 1, repeat_header: true, tag: shape=runninghdr}
 
 # --- B. Reference, real labeled sets (already in the stack testset bucket) ------
 reference:

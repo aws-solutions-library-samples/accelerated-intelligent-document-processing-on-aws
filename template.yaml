@@ -2844,7 +2844,8 @@ Resources:
         WorkingBucketName: !Ref WorkingBucket
         DiscoveryBucketName: !Ref DiscoveryBucket
         MultiDocDiscoveryStateMachineArn: !Ref MultiDocDiscoveryStateMachine
-        
+        StateMachineArn: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+
         # SQS Queues
         DocumentQueueUrl: !Ref DocumentQueue
         DiscoveryQueueUrl: !Ref DiscoveryQueue
@@ -10213,6 +10214,30 @@ Resources:
           - HasExternalIdP
           - custom:idp_groups
           - !Ref AWS::NoValue
+      # Attribute WRITE permissions. Left unset, Cognito's default lets a user's
+      # own access token write every mutable attribute via UpdateUserAttributes —
+      # including custom:idp_groups, the attribute the pre-token trigger reads to
+      # assign Cognito groups. Naming the writable set explicitly removes that
+      # self-write path for every attribute the application does not need
+      # (attempting one then fails with NotAuthorizedException).
+      #
+      # Attributes mapped from an external IdP MUST be listed: Cognito applies the
+      # provider's AttributeMapping as this app client and fails the federated
+      # sign-in if the client cannot write a mapped attribute. That is why
+      # custom:idp_groups is listed when group mapping is configured; what stops a
+      # self-set value being trusted there is the trigger's provenance and
+      # freshness checks (see ExternalIdPGroupMappingFunction), not this list.
+      #
+      # The Web UI writes no user attributes, so only IdP-mapped attributes need
+      # write access. Add an entry here if that changes.
+      WriteAttributes:
+        - email
+        - given_name
+        - family_name
+        - !If
+          - ShouldMapExternalIdPGroups
+          - custom:idp_groups
+          - !Ref AWS::NoValue
       RefreshTokenValidity: 30
       SupportedIdentityProviders: !If
         - HasExternalIdP
@@ -10525,11 +10550,43 @@ Resources:
           AUTHOR_GROUP_NAME: !Ref ExternalIdPAuthorGroupName
           REVIEWER_GROUP_NAME: !Ref ExternalIdPReviewerGroupName
           VIEWER_GROUP_NAME: !Ref ExternalIdPViewerGroupName
+          # The only provider whose assertions may grant groups. The trigger
+          # requires the signing-in user to be linked to it before it reads
+          # custom:idp_groups.
+          EXTERNAL_IDP_NAME: !Ref ExternalIdPName
       LoggingConfig:
         LogGroup: !Ref ExternalIdPGroupMappingFunctionLogGroup
       Policies: []
+      # MAINTENANCE NOTE: this inline handler is what deploys. A standalone copy
+      # with the same logic lives at src/lambda/external_idp_group_mapping/index.py
+      # and carries the unit tests (test_index.py). Change both together.
       InlineCode: |
-        """Post-authentication Lambda trigger to map external IdP groups to Cognito groups."""
+        """Pre-token-generation Lambda trigger to map external IdP groups to Cognito groups.
+
+        The group claim arrives as the `custom:idp_groups` user-pool attribute, written
+        by Cognito's identity-provider AttributeMapping at each federated sign-in. That
+        attribute is `Mutable: true` and — when it is IdP-mapped — must also be listed in
+        the app client's `WriteAttributes` (Cognito writes mapped attributes *as the app
+        client*, and fails the sign-in if it lacks write access). A user's own access
+        token can therefore write it via `UpdateUserAttributes`.
+
+        Two checks keep a self-set value from granting groups:
+
+        1. Provenance. The user must be federated through the configured provider
+           (`EXTERNAL_IDP_NAME`). Provenance comes from the Cognito-managed `identities`
+           attribute read back via `AdminGetUser`, which no client can write. A native
+           user who sets `custom:idp_groups` on themselves has no `identities` entry and
+           is ignored.
+        2. Freshness. Only a fresh sign-in is honoured, never a token refresh. At a fresh
+           federated sign-in Cognito has just rewritten the mapped attribute from the
+           assertion, so the value read here is the IdP's. On a refresh the stored
+           attribute may be whatever the user last wrote, so the mapping is skipped and
+           the token carries the group membership already synced to Cognito.
+
+        Both checks fail closed: anything unverified returns the event untouched, which
+        leaves existing group membership alone and adds no token override.
+        """
+        import json
         import os
         import logging
         import boto3
@@ -10553,10 +10610,74 @@ Resources:
 
         COGNITO_GROUPS = set(GROUP_MAPPING.values())
 
+        # Name of the Cognito identity provider whose assertions may grant groups.
+        # Empty means no provider is trusted, so no sign-in can be granted groups.
+        EXTERNAL_IDP_NAME = os.environ.get("EXTERNAL_IDP_NAME", "").strip()
+
+        # Trigger sources that represent a fresh sign-in, where Cognito has just
+        # applied the provider's AttributeMapping. TokenGeneration_RefreshTokens is
+        # deliberately absent: a refresh re-reads whatever is stored on the user,
+        # which the user may have written themselves. Anything not listed is
+        # treated as untrusted.
+        FRESH_SIGN_IN_TRIGGERS = frozenset({
+            "TokenGeneration_HostedAuth",
+            "TokenGeneration_Authentication",
+            "TokenGeneration_NewPasswordChallenge",
+            "TokenGeneration_AuthenticateDevice",
+        })
+
+
+        def is_federated_via_configured_idp(user_pool_id, username):
+            """Return True only if `username` is linked to the configured IdP.
+
+            Reads the Cognito-managed `identities` attribute through AdminGetUser
+            rather than trusting the trigger event, so the answer comes from a field
+            no client can write. Any failure returns False.
+            """
+            if not EXTERNAL_IDP_NAME:
+                logger.warning("EXTERNAL_IDP_NAME is not set; refusing to map groups for any sign-in")
+                return False
+
+            try:
+                response = cognito.admin_get_user(UserPoolId=user_pool_id, Username=username)
+            except Exception as e:
+                logger.error(f"Failed to read user {username} for provenance check: {e}")
+                return False
+
+            raw_identities = ""
+            for attr in response.get("UserAttributes", []):
+                if attr.get("Name") == "identities":
+                    raw_identities = attr.get("Value", "")
+                    break
+
+            if not raw_identities:
+                logger.warning(f"User {username} has no federated identities; ignoring custom:idp_groups")
+                return False
+
+            try:
+                identities = json.loads(raw_identities)
+            except Exception as e:
+                logger.error(f"Could not parse identities for user {username}: {e}")
+                return False
+
+            if not isinstance(identities, list):
+                logger.error(f"Unexpected identities shape for user {username}")
+                return False
+
+            for identity in identities:
+                if isinstance(identity, dict) and identity.get("providerName") == EXTERNAL_IDP_NAME:
+                    return True
+
+            logger.warning(
+                f"User {username} is not federated through '{EXTERNAL_IDP_NAME}'; ignoring custom:idp_groups"
+            )
+            return False
+
 
         def handler(event, context):
             """Handle pre-token-generation trigger from Cognito."""
-            logger.info(f"Pre-token trigger source: {event.get('triggerSource')}")
+            trigger_source = event.get("triggerSource")
+            logger.info(f"Pre-token trigger source: {trigger_source}")
 
             # Extract user pool ID from the event (avoids circular CloudFormation dependency)
             user_pool_id = event.get("userPoolId", "")
@@ -10568,6 +10689,19 @@ Resources:
                 logger.info(f"No IdP groups claim for user {username}")
                 return event
 
+            # A refresh re-reads the stored attribute, which the user's own access
+            # token may have written. Only a fresh sign-in has just had it rewritten
+            # from the provider's assertion.
+            if trigger_source not in FRESH_SIGN_IN_TRIGGERS:
+                logger.info(
+                    f"Trigger source {trigger_source} is not a fresh sign-in; "
+                    f"leaving groups for user {username} unchanged"
+                )
+                return event
+
+            if not is_federated_via_configured_idp(user_pool_id, username):
+                return event
+
             # Parse IdP groups - handle comma-separated, JSON array, or single value
             idp_groups = []
             idp_groups_raw = idp_groups_raw.strip()
@@ -10575,7 +10709,6 @@ Resources:
                 logger.info(f"No IdP groups claim for user {username}")
                 return event
             if idp_groups_raw.startswith("["):
-                import json
                 try:
                     idp_groups = json.loads(idp_groups_raw)
                 except Exception:
@@ -10627,13 +10760,25 @@ Resources:
 
             logger.info(f"User {username} group sync complete. Groups: {target_groups}")
 
-            # Inject groups into the token so they are available immediately on first sign-in
-            event.setdefault("response", {})
-            event["response"]["claimsAndScopeOverrideDetails"] = {
-                "groupOverrideDetails": {
-                    "groupsToOverride": list(target_groups)
-                }
+            # Inject groups into the token so they are available immediately on
+            # first sign-in, rather than only from the second token onwards.
+            #
+            # BOTH response keys are emitted because the key Cognito reads depends
+            # on the pool's PreTokenGenerationConfig.LambdaVersion, and the two
+            # names are not interchangeable:
+            #   V1_0      -> claimsOverrideDetails
+            #   V2_0/V3_0 -> claimsAndScopeOverrideDetails
+            # This template registers the trigger with `PreTokenGeneration:`,
+            # which is V1_0, so emitting only the V2 name meant the override was
+            # silently ignored and a first sign-in produced a token with no group
+            # claim. Cognito ignores an unrecognised key, so writing both is safe
+            # and survives a later move to V2_0/V3_0.
+            group_override = {
+                "groupOverrideDetails": {"groupsToOverride": list(target_groups)}
             }
+            event.setdefault("response", {})
+            event["response"]["claimsOverrideDetails"] = group_override
+            event["response"]["claimsAndScopeOverrideDetails"] = group_override
 
             return event
 
@@ -10659,6 +10804,11 @@ Resources:
         Statement:
           - Effect: Allow
             Action:
+              # AdminGetUser backs the trigger's provenance check: it reads the
+              # Cognito-managed `identities` attribute to confirm the signing-in
+              # user is federated through the configured provider before any
+              # group is granted from custom:idp_groups.
+              - cognito-idp:AdminGetUser
               - cognito-idp:AdminListGroupsForUser
               - cognito-idp:AdminAddUserToGroup
               - cognito-idp:AdminRemoveUserFromGroup

@@ -9,6 +9,15 @@
 # (extraction.task_prompt_extraction_with_confidence_topk), which is selected
 # automatically for extraction.mode: simple + extraction.confidence.mode:
 # integrated. To customize the prompt, override that key here or in the UI.
+#
+# NOTE: by default a Simple-mode class that declares a list field is scored in a
+# SEPARATE confidence pass instead of 1S-TopK, because Simple + integrated was
+# measured to drop list rows silently at 100+ rows on the shipped default model.
+# The Invoice class below declares a list (LineItems) and OPTS IN with
+# x-aws-idp-allow-integrated-lists: true so this preset still demonstrates
+# 1S-TopK end to end. That flag is a statement about YOUR documents: verify list
+# completeness on your own invoices before relying on it, and remove it to fall
+# back to the separate pass.
 
 use_bda: false
 
@@ -97,6 +106,8 @@ classes:
   description: Invoice document
   type: object
   x-aws-idp-document-type: Invoice
+  # Keep 1S-TopK on this list-bearing class (see the NOTE at the top).
+  x-aws-idp-allow-integrated-lists: true
   properties:
     Agency:
       description: The agency the invoice is addressed to

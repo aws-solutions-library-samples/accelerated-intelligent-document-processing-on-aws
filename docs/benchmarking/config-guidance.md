@@ -323,16 +323,20 @@ into a single "0 rows":
   1.000, because the scalar fields are extracted correctly either way.
 
 The `separate` control was complete in 8 of 8 runs across both models, at 1.5–2× the
-integrated cell's cost. **Use `separate`.**
+integrated cell's cost. The recommendation at the time was **use `separate`**; since then
+the routing is automatic — Simple + `integrated` runs the separate pass on any list-bearing
+class unless the class sets `x-aws-idp-allow-integrated-lists: true` (see the "Addressed"
+note below).
 
 > **Fixes since this measurement.** The value-corruption cause ("as short as possible") is
 > removed and list cells now request a single guess instead of four, which cuts list output
 > ~4× and pushes the truncation point out. A separate defect found in the same
 > investigation — group/object fields keeping their raw `{G1,P1,…}` candidate dict as the
 > extracted value, with no confidence at all — is also fixed. The single-response limit is
-> fundamental to this mode, so **the recommendation to use `separate` on list-bearing
-> schemas stands**, and these numbers describe the configuration as measured, before those
-> fixes.
+> fundamental to this mode, so list-bearing classes are now **routed to the separate pass
+> automatically** (the opt-in flag above keeps 1S-TopK for a class whose lists you have
+> verified complete), and these numbers describe the configuration as measured, before
+> those fixes.
 
 ---
 
@@ -602,31 +606,34 @@ one metric you would expect to catch it:**
 
 ## 6. Product improvement backlog (surfaced by this study)
 
-1. **🚨 `sectionSplitting: llm_determined` over-splits, and on the agentic path it is a
-   ~22% bill increase (P0).** #726. Every cell in §2 is over-split 2–3×; §4 shows the same
-   document classified 1 to 5 ways across five identical runs. It also manufactures spurious
-   `required property` validation issues on continuation sections, fragments a large list
-   into N per-section lists (§3), and is a large part of what makes agentic cost look
-   unpredictable.
-   **The default classifier is the problem, not the splitting logic:** Nova 2 Lite gets the
-   boundary decision right 0 of 5 runs, Haiku 4.5 and Sonnet 5 both 5 of 5 (§7). Two
-   candidate fixes, in order: (a) improve the boundary prompt for the small classifier —
-   still the cheapest outcome and untried; (b) change the default `classification.model` to
-   **Haiku 4.5**, which is measured to remove the whole premium (advanced −5.6% vs v0.6.6)
-   at +9% on simple mode. Note `sectionSplitting: disabled` is **not** an acceptable general
-   workaround — it fails outright above ~25 pages (§3).
-2. **🚨 Forced tool use serializes group attributes to JSON strings on Sonnet 5 —
-   [#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783) (P0 for the feature).**
-   `sanitize_tool_schema` leaves `$defs` *definition* names unsanitized, so a group named
-   `Account Holder Address` ships a `$ref` pointer containing spaces, which Sonnet 5 does
-   not resolve. **Every** section with a group attribute is then schema-invalid (§2 finding
-   8). Fix: sanitize `$defs` names and rewrite the pointers (adding `"type": "object"` or
-   inlining single-use defs also works). Separately, coercion should JSON-parse a string
-   that is valid JSON for an object-typed field — it currently refuses a lossless repair.
-3. **⚠️ Integrated confidence + simple extraction still truncates lists (P1, improved).**
-   0.552 recall on one of seven documents at v0.6.7, versus a 0.294 grid mean at v0.6.5.
-   Refuse the `integrated` + simple combination for list-bearing schemas (route to a
-   separate confidence pass or sharded advanced), or fail the section loudly.
+1. **`sectionSplitting: llm_determined` over-split single documents, and on the agentic path it
+   was a ~22% bill increase.** #726. Every cell in §2 was over-split 2–3×; §4 shows the same
+   document classified 1 to 5 ways across five identical runs. It also manufactured spurious
+   `required property` validation issues on continuation sections and fragmented a large list
+   into N per-section lists (§3). **Addressed** ([#817](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/817)):
+   the cause was the table's reprinted column headings reading as a document heading; a
+   TABLE CONTINUATION rule in `<boundary-detection-rules>` took the unpaginated 3-page
+   statement from 1/5 to 5/5 correct section counts in a same-stack A/B against the v0.6.7
+   prompt, with the two-documents and paginated fixtures unchanged — a prompt fix, not a
+   classifier-model change (Haiku 4.5 was measured only on the remaining running-header shape,
+   which it also fails). Note `sectionSplitting: disabled` is still **not** an acceptable
+   general workaround — it fails outright above ~25 pages (§3).
+2. **Forced tool use serialized group attributes to JSON strings on Sonnet 5 —
+   [#783](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/783).**
+   `sanitize_tool_schema` left `$defs` *definition* names unsanitized, so a group named
+   `Account Holder Address` shipped a `$ref` pointer containing spaces, which Sonnet 5 does
+   not resolve; **every** section with a group attribute was then schema-invalid (§2 finding
+   8). **Addressed** ([#794](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/794)):
+   definition names are sanitized and every pointer rewritten, the name map is linked through
+   each `$ref` so authored names are restored, and coercion parses a string that is the JSON
+   of the requested container; forcing at Sonnet 5 scored valid on 7/7 sections live.
+3. **Integrated confidence + simple extraction returned empty/partial lists.** At the
+   default extraction model this was a total loss of list data with no error and perfect
+   scalar accuracy. **Addressed** ([#795](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/795)):
+   a Simple-mode section whose class declares list fields is now routed to a separate
+   confidence pass automatically (recorded in `metadata.confidence_mode_effective` and the
+   Processing Flow; a class can opt back in with `x-aws-idp-allow-integrated-lists: true`);
+   scalar-only classes are unchanged.
 4. **Silent truncation needs detection, not just documentation (P0).** Both failure modes
    above return `COMPLETED`. Compare extracted row count against schema `minItems` (or an
    OCR-derived row estimate) and surface a completeness warning/metric. Note the recovered
@@ -900,9 +907,13 @@ anti-over-merge clause holds at scale, and page-level *class* accuracy moves at 
 0.015 — the change touches boundaries only. On #653's reported 2-page form Sonnet 5
 goes 6/24 → 10/10; on a 4-page packet of two copies of one form, 1/10 → 5/5.
 
-⚠️ **Still incomplete**: an unpaginated multi-page document is split roughly 40% of the
-time even with the fix, because the rules lean on pagination markers — corpora whose
-scans lack them benefit least. Raising `classification.contextPagesCount` is not the
+⚠️ **Partly closed by #726**: after the #653 rules an unpaginated multi-page document was
+still split roughly 40% of the time, because the rules leaned on pagination markers. The
+#726 TABLE CONTINUATION rule (repeated column headings are not a document title) took the
+unpaginated 3-page statement from 8/15 to 15/15 correct section counts in the offline
+probe, so that residual over-split is fixed for table-continuation pages; a reprinted
+title-and-account running header (#750) is still not, and corpora whose scans lack
+pagination benefit least from the pagination rule itself. Raising `classification.contextPagesCount` is not the
 answer (0/5 on the 4-page two-copies packet, by merging all four pages). The block sits
 inside the prompt-cache prefix, so it is not re-billed per page.
 

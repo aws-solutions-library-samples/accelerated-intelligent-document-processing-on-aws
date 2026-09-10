@@ -64,8 +64,17 @@ def _append_bbox_block(core: str, bbox_block: str) -> str:
     return core.rstrip() + "\n\n" + block + "\n"
 
 
-def select_extraction_task_prompt(extraction_cfg: Any) -> str:
+def select_extraction_task_prompt(
+    extraction_cfg: Any, *, integrated_ok: bool = True
+) -> str:
     """Return the task prompt for the EXTRACTION inference, per settings.
+
+    ``integrated_ok=False`` forces the plain extraction prompt even when
+    ``confidence.mode == "integrated"``. The service passes this when it has
+    downgraded a Simple + integrated section to a separate confidence pass because
+    the class declares list fields (see ``ExtractionService.
+    _simple_integrated_list_downgrade``) — the 1S-TopK prompt must not be sent
+    for a section whose confidence will be scored separately.
 
     Integrated confidence selects a confidence-bearing extraction prompt (+ bbox
     for LLM-box geometry); otherwise the plain extraction task_prompt:
@@ -83,7 +92,7 @@ def select_extraction_task_prompt(extraction_cfg: Any) -> str:
     """
     confidence = extraction_cfg.confidence
     geometry_mode = extraction_cfg.geometry.mode
-    if confidence.mode == "integrated":
+    if confidence.mode == "integrated" and integrated_ok:
         if not extraction_cfg.agentic.enabled:
             # Simple mode -> 1S-TopK prompt.
             core = (

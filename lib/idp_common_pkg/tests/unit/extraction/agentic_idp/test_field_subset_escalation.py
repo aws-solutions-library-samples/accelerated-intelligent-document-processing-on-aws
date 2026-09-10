@@ -110,6 +110,8 @@ def test_escalation_scopes_to_failing_fields_and_merges():
     assert meta["escalation_scope"] == "field-subset"
     assert meta["escalation_fields"] == ["status"]
     assert meta["resolved_by_escalation"] is True
+    assert meta["escalation_kept"] is True
+    assert meta["escalation_decision"].startswith("status accepted")
     assert meta["initial_error_count"] == 1
     assert meta["valid"] is True
     assert "ExtractionEscalation/bedrock/strong" in metering
@@ -145,6 +147,8 @@ def test_escalation_kept_only_if_improved():
     assert fields["status"] == "pending"  # original retained
     assert meta["escalated"] is True
     assert meta["resolved_by_escalation"] is False
+    assert meta["escalation_kept"] is False
+    assert meta["escalation_decision"].startswith("status rejected")
 
 
 def test_escalation_failure_keeps_original():
@@ -178,3 +182,80 @@ def test_escalation_failure_keeps_original():
     assert meta["escalated"] is True
     assert meta["resolved_by_escalation"] is False
     assert metering == {}
+
+
+def test_escalation_failure_reason_is_one_bounded_line_without_document_text():
+    """The exception text of a pydantic ValidationError over a 100-row model carries
+    input_value= excerpts of extracted document content, one block per row. That
+    must not be persisted into metadata or rendered in the Processing Report."""
+    svc = _service()
+    bad = {"invoice_id": "INV-9", "status": "pending", "notes": "keep me"}
+
+    def boom(*args, **kwargs):
+        raise RuntimeError(
+            "bedrock unavailable\nline two with SSN 123-45-6789\n" + "x" * 500
+        )
+
+    with (
+        patch(
+            "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+            return_value=StatusOnlyModel,
+        ),
+        patch("idp_common.extraction.service.structured_output", boom),
+    ):
+        _fields, _data, meta, _metering, _ok = svc._validate_and_maybe_escalate(
+            extracted_fields=dict(bad),
+            structured_data=FullModel(**bad),
+            data_model=FullModel,
+            model_id="us.amazon.nova-pro-v1:0",
+            message_prompt="(p)",
+            agentic_images=[],
+            custom_instruction=None,
+            section_info=_FakeSection(),
+            parsing_succeeded=True,
+        )
+    decision = meta["escalation_decision"]
+    assert meta["escalation_kept"] is False
+    assert decision.startswith(
+        "escalation call failed: RuntimeError: bedrock unavailable"
+    )
+    assert "\n" not in decision and "SSN" not in decision and len(decision) < 220
+
+
+def test_escalation_seed_is_none_when_every_failing_field_is_null():
+    """An all-null seed must not construct: a truthy existing_data triggers the
+    'RESUME FROM CHECKPOINT — do NOT call extraction_tool again' prompt, telling
+    the stronger model brought in to re-read the value not to re-extract."""
+    svc = _service()
+    captured = {}
+
+    def fake_so(*args, **kwargs):
+        captured["existing_data"] = kwargs["existing_data"]
+        return StatusOnlyModel(status="void"), {"metering": {}}
+
+    class NullableStatusModel(BaseModel):
+        status: str | None = None
+
+    for status, expect_seed in [(None, False), ("pending", True)]:
+        bad = {"invoice_id": "INV-9", "status": status, "notes": "n"}
+        # A schema where status is required, so a null status fails validation.
+        svc._class_schema = {**SCHEMA, "required": ["invoice_id", "status"]}
+        with (
+            patch(
+                "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+                return_value=NullableStatusModel,
+            ),
+            patch("idp_common.extraction.service.structured_output", fake_so),
+        ):
+            svc._validate_and_maybe_escalate(
+                extracted_fields=dict(bad),
+                structured_data=FullModel(invoice_id="INV-9", status=status, notes="n"),
+                data_model=FullModel,
+                model_id="us.amazon.nova-pro-v1:0",
+                message_prompt="(p)",
+                agentic_images=[],
+                custom_instruction=None,
+                section_info=_FakeSection(),
+                parsing_succeeded=True,
+            )
+        assert (captured["existing_data"] is not None) is expect_seed, status
