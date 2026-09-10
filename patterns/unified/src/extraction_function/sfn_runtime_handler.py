@@ -27,11 +27,13 @@ import os
 import time
 
 import boto3
+
 from idp_common import extraction, get_config
-from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
+from idp_common.utils.transient_errors import raise_if_transient
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -101,6 +103,27 @@ def _cleanup_shards(working_bucket, execution_arn, section_id):
 
 
 def handler(event, context):
+    """Plan / run one shard / merge — see ``_handle``.
+
+    #787: ShardExtractionStep used to retry ``States.TaskFailed`` — EVERY function
+    error, eight times at 2x backoff, including deterministic ones that fail the
+    same way on attempt 8. It now retries the transient names only, so a transient
+    failure that surfaces as a plain Python exception has to be re-raised under the
+    one name the state lists. Hard errors keep their own name and are not retried;
+    completed shards are still preserved by ``S3ShardPersistence`` for the retries
+    that do happen.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(
+            e,
+            where=f"shard runtime {event.get('mode', 'plan')} section {event.get('section_id')}",
+        )
+        raise
+
+
+def _handle(event, context):
     mode = event.get("mode", "plan")
     section_id = event["section_id"]
     execution_arn = event.get("execution_arn", "")

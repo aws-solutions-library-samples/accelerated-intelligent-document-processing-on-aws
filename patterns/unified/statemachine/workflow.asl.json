@@ -474,6 +474,7 @@
               },
               {
                 "ErrorEquals": [
+                  "TransientError",
                   "Sandbox.Timedout",
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
@@ -526,8 +527,18 @@
                   },
                   "OutputPath": "$.Payload",
                   "Retry": [
+{
+                      "ErrorEquals": [
+                        "Lambda.CodeArtifactUserPendingException",
+                        "Lambda.CodeArtifactUserDeletedException"
+                      ],
+                      "IntervalSeconds": 5,
+                      "MaxAttempts": 5,
+                      "BackoffRate": 2
+                    },
                     {
                       "ErrorEquals": [
+                        "TransientError",
                         "States.Timeout",
                         "Lambda.Unknown",
                         "Sandbox.Timedout",
@@ -541,8 +552,7 @@
                         "RequestLimitExceeded",
                         "ServiceUnavailableException",
                         "InternalServerException",
-                        "InternalServerError",
-                        "States.TaskFailed"
+                        "InternalServerError"
                       ],
                       "IntervalSeconds": 10,
                       "MaxAttempts": 8,
@@ -585,6 +595,7 @@
               },
               {
                 "ErrorEquals": [
+                  "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",
@@ -619,6 +630,7 @@
               },
               {
                 "ErrorEquals": [
+                  "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",
@@ -714,6 +726,7 @@
               },
               {
                 "ErrorEquals": [
+                  "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
                   "Sandbox.Timedout",
