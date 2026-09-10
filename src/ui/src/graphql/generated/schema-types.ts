@@ -791,6 +791,7 @@ export type Mutation = {
   completeSectionReview?: Maybe<Document>;
   copyToBaseline: CopyToBaselineResponse;
   createDocument?: Maybe<CreateDocumentOutput>;
+  createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
@@ -976,6 +977,13 @@ export type MutationCopyToBaselineArgs = {
 
 export type MutationCreateDocumentArgs = {
   input: CreateDocumentInput;
+};
+
+
+export type MutationCreateEmptyTestSetArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  documentClassType?: InputMaybe<DocumentClassType>;
+  name: Scalars['String']['input'];
 };
 
 

@@ -1519,6 +1519,10 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addTestSetFromUpload(input: TestSetUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  # A set with no documents yet, grown later from its page: files in a bucket, a
+  # zip upload, or generated documents. Created COMPLETED with fileCount 0.
+  createEmptyTestSet(name: String!, description: String, documentClassType: DocumentClassType): TestSet
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSet(testSetId: String!, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String): TestSet
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSetFromUpload(input: TestSetDocumentsUploadInput!): TestSetUploadResponse

@@ -521,6 +521,11 @@ operations:
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { name: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
+  createEmptyTestSet:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { name: "__nope__" }
   addTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation

@@ -27,8 +27,8 @@ working draft; a later publish cuts the next immutable version.
 
 ## Non-goals
 
-- No UI document-picker yet (TestSets has no per-set document list today) — the
-  backend capability + generated op ship first; the picker is a follow-up.
+- The UI picker shipped later, with #812: row selection and **Remove** on the set's
+  detail page, which also gained **Add documents** and the empty-set state.
 - No merge (separate slice).
 
 ## Verify

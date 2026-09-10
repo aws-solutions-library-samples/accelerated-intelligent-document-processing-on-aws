@@ -31,7 +31,7 @@ import {
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { addTestSet, addTestSetFromUpload, listBucketFiles, validateTestFileName } from '../../graphql/generated';
+import { addTestSet, addTestSetFromUpload, createEmptyTestSet, listBucketFiles, validateTestFileName } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
@@ -107,6 +107,7 @@ const CreateTestSetWizard = ({
 
   const isUpload = source === 'upload-labeled' || source === 'upload-documents';
   const isGenerate = source === 'generate';
+  const isEmpty = source === 'empty';
 
   // Shared with the standalone deep-link modal so the two entry points cannot
   // drift. Gated on the branch: inactive it fetches no estimates or test sets.
@@ -259,6 +260,19 @@ const CreateTestSetWizard = ({
     onCreated(`Test set "${name.trim()}" created from ${fileCount} matching file(s).`);
   };
 
+  const submitEmpty = async () => {
+    const variables: { name: string; description: string; documentClassType?: DocumentClassType } = {
+      name: name.trim(),
+      description: description.trim(),
+    };
+    if (documentClassType.value) {
+      variables.documentClassType = documentClassType.value as DocumentClassType;
+    }
+    const result = await client.graphql({ query: createEmptyTestSet, variables });
+    const createdId = result.data?.createEmptyTestSet?.id ?? name.trim();
+    onCreated(`Test set "${name.trim()}" created as ${createdId}, with no documents yet. Open it and use Add documents.`);
+  };
+
   const handleSubmit = async () => {
     setError('');
     if (isGenerate) {
@@ -285,7 +299,8 @@ const CreateTestSetWizard = ({
 
     setIsSubmitting(true);
     try {
-      if (isUpload) await submitUpload();
+      if (isEmpty) await submitEmpty();
+      else if (isUpload) await submitUpload();
       else await submitPattern();
       close();
     } catch (err) {
@@ -305,7 +320,7 @@ const CreateTestSetWizard = ({
    * does, because draft labeling has to be told what to extract.
    */
   const configPrerequisite =
-    source === 'upload-labeled' ? null : (
+    source === 'upload-labeled' || isEmpty ? null : (
       <Alert type="info" header={source === 'generate' ? 'Generation needs a configuration' : 'Labeling needs a configuration'}>
         <SpaceBetween size="xxs">
           <Box>
@@ -480,15 +495,23 @@ const CreateTestSetWizard = ({
           { label: 'Name', value: name || '—' },
           { label: 'Description', value: description || '—' },
           { label: 'Classification type', value: documentClassType.label ?? 'Unspecified' },
-          ...(isUpload
-            ? [{ label: 'Zip file', value: files[0]?.name ?? '—' }]
-            : [
-                { label: 'Bucket', value: bucket.label ?? '' },
-                { label: 'Pattern', value: filePattern || '—' },
-                { label: 'Matching files', value: fileCount > 0 ? String(fileCount) : 'not checked' },
-              ]),
+          ...(isEmpty
+            ? []
+            : isUpload
+              ? [{ label: 'Zip file', value: files[0]?.name ?? '—' }]
+              : [
+                  { label: 'Bucket', value: bucket.label ?? '' },
+                  { label: 'Pattern', value: filePattern || '—' },
+                  { label: 'Matching files', value: fileCount > 0 ? String(fileCount) : 'not checked' },
+                ]),
         ]}
       />
+      {isEmpty && (
+        <Alert type="info" header="Next step after this">
+          This set is created with no documents. Open it and use <strong>Add documents</strong> to bring some in: files in a bucket, a zip
+          upload, or generated documents.
+        </Alert>
+      )}
       {source === 'upload-documents' && (
         <Alert type="info" header="Next step after this">
           This set arrives without ground truth. Open it and choose <strong>Generate draft labels</strong>, then review the documents with

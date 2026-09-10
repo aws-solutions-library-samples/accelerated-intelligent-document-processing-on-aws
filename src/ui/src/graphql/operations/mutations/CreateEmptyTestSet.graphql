@@ -1,0 +1,13 @@
+mutation CreateEmptyTestSet($name: String!, $description: String, $documentClassType: DocumentClassType) {
+  createEmptyTestSet(name: $name, description: $description, documentClassType: $documentClassType) {
+    id
+    name
+    description
+    filePattern
+    fileCount
+    status
+    labelState
+    createdAt
+    documentClassType
+  }
+}

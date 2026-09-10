@@ -1006,7 +1006,7 @@ class TestTestSetResolver:
 
     def test_publish_increments_and_can_skip_active(self, publish_table):
         """Second publish is v2; setAsActiveReference=false leaves active alone."""
-        _seed_test_set(publish_table, "ts1")
+        _seed_test_set(publish_table, "ts1", fileCount=5)
         test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
 
         result = test_set_index.publish_test_set_version(
@@ -1031,7 +1031,7 @@ class TestTestSetResolver:
         number is reserved by an atomic ADD, so interleaved reads still yield
         distinct versions and two surviving items.
         """
-        _seed_test_set(publish_table, "ts1")
+        _seed_test_set(publish_table, "ts1", fileCount=5)
 
         real_get_item = test_set_index.db_client.get_item
         second_result = {}
@@ -1075,7 +1075,12 @@ class TestTestSetResolver:
         reservation hands out v1 while the pointers already say v5.
         """
         _seed_test_set(
-            publish_table, "ts1", publishedVersion=5, activeReference=5, latestVersion=0
+            publish_table,
+            "ts1",
+            fileCount=5,
+            publishedVersion=5,
+            activeReference=5,
+            latestVersion=0,
         )
 
         result = test_set_index.publish_test_set_version(
@@ -1104,7 +1109,7 @@ class TestTestSetResolver:
     def test_publish_race_on_deleted_test_set_raises(self, publish_table):
         """A set deleted between the metadata read and the reservation must not
         be resurrected by update_item's upsert semantics."""
-        _seed_test_set(publish_table, "ts1")
+        _seed_test_set(publish_table, "ts1", fileCount=5)
         real_get_item = test_set_index.db_client.get_item
 
         def delete_after_read(key):
@@ -5269,21 +5274,23 @@ class TestTestSetResolver:
         assert row["fileCount"] == 2
         assert "error" not in row
 
-    def test_reconcile_hard_fails_when_all_inputs_deleted(self, labeling_env):
-        """The one hard-fail condition reconcile still emits.
+    def test_reconcile_treats_an_emptied_set_as_healthy(self, labeling_env):
+        """A set with no documents is a legitimate state, not a broken one.
 
-        ``No input files found`` is genuinely broken — every input file has
-        been deleted from S3 while the row survives. Operator should see
-        FAILED so the state doesn't hide.
+        A set can be created empty, and removing its last document leaves it
+        empty, so ``No input files found`` reconciles to COMPLETED with a zero
+        count and no labels — clearing a FAILED verdict an earlier reconcile
+        may have written.
         """
         table, s3 = labeling_env
 
-        # No input files in S3 at all.
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/.keep", Body=b"")
         _seed_test_set(
             table,
             "ts1",
             name="ts1",
-            status="COMPLETED",
+            status="FAILED",
+            error="No input files found",
             fileCount=1,
             labelState="labeled",
             source="uploaded",
@@ -5300,8 +5307,13 @@ class TestTestSetResolver:
             s3, "test-set-bucket", "ts1", existing_row
         )
         assert result is not None
-        assert result["status"] == "FAILED"
-        assert result["error"] == "No input files found"
+        assert result["status"] == "COMPLETED"
+        assert result["fileCount"] == 0
+        assert result["labelState"] == "unlabeled"
+        assert not result.get("error")
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "COMPLETED"
+        assert "error" not in row
 
     def test_reconcile_clears_error_when_baseline_added_back(self, labeling_env):
         """A row FAILED yesterday must recover when the missing baseline arrives."""
@@ -7209,3 +7221,176 @@ class TestStatusUpdatedAtIsWritten:
                         )
                         break
                 break
+
+
+class TestMembershipEditing:
+    """Removing documents down to empty, creating a set empty, and the guards
+    that keep an edit from racing a job that is still writing to the set."""
+
+    def _remove(self, meta, file_names=("a.pdf",)):
+        s3 = MagicMock()
+        with (
+            patch.object(test_set_index.db_client, "get_item", return_value=meta),
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            test_set_index.remove_documents_from_test_set(
+                {"testSetId": "ts1", "fileNames": list(file_names)}
+            )
+        return s3
+
+    def test_remove_refuses_while_draft_labeling(self):
+        with pytest.raises(Exception, match="being draft-labeled"):
+            self._remove(
+                {"id": "ts1", "status": "COMPLETED", "labelJobStatus": "RUNNING"}
+            )
+
+    def test_remove_refuses_while_the_set_is_being_written(self):
+        with pytest.raises(Exception, match="is busy \\(UPDATING\\)"):
+            self._remove({"id": "ts1", "status": "UPDATING"})
+
+    @pytest.mark.parametrize("bad", ["", "/etc", "a//b"])
+    def test_remove_rejects_malformed_names_before_deleting(self, bad):
+        with pytest.raises(Exception, match="Invalid document name"):
+            self._remove({"id": "ts1", "status": "COMPLETED"}, file_names=[bad])
+
+    def test_guards_run_before_any_delete(self):
+        s3 = MagicMock()
+        with (
+            patch.object(
+                test_set_index.db_client,
+                "get_item",
+                return_value={
+                    "id": "ts1",
+                    "status": "COMPLETED",
+                    "labelJobStatus": "RUNNING",
+                },
+            ),
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            with pytest.raises(Exception):
+                test_set_index.remove_documents_from_test_set(
+                    {"testSetId": "ts1", "fileNames": ["a.pdf"]}
+                )
+        s3.delete_objects.assert_not_called()
+
+    def test_removing_the_last_document_leaves_a_keep_marker(self, labeling_env):
+        """The prefix must stay listable or getTestSets reaps the row as an orphan."""
+        table, s3 = labeling_env
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=1,
+            createdAt="2026-01-01T00:00:00Z",
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+
+        with patch.object(test_set_index, "s3_client", s3):
+            result = test_set_index.remove_documents_from_test_set(
+                {"testSetId": "ts1", "fileNames": ["a.pdf"]}
+            )
+
+        assert result["fileCount"] == 0
+        keys = {
+            o["Key"]
+            for o in s3.list_objects_v2(Bucket="test-set-bucket", Prefix="ts1/").get(
+                "Contents", []
+            )
+        }
+        assert keys == {"ts1/.keep"}
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["fileCount"] == 0
+
+    def test_removing_some_documents_writes_no_marker(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=2,
+            createdAt="2026-01-01T00:00:00Z",
+        )
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+
+        with patch.object(test_set_index, "s3_client", s3):
+            result = test_set_index.remove_documents_from_test_set(
+                {"testSetId": "ts1", "fileNames": ["a.pdf"]}
+            )
+
+        assert result["fileCount"] == 1
+        keys = {
+            o["Key"]
+            for o in s3.list_objects_v2(Bucket="test-set-bucket", Prefix="ts1/").get(
+                "Contents", []
+            )
+        }
+        assert keys == {"ts1/input/b.pdf"}
+
+    def test_create_empty_test_set_writes_the_row_then_the_marker(self):
+        s3 = MagicMock()
+        with (
+            patch.object(test_set_index.db_client, "put_item") as mock_put,
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            result = test_set_index.create_empty_test_set(
+                {
+                    "name": "My Empty Set",
+                    "description": "grown later",
+                    "documentClassType": "SINGLE_CLASS",
+                }
+            )
+
+        item = mock_put.call_args.args[0]
+        assert mock_put.call_args.kwargs["condition_expression"] == (
+            "attribute_not_exists(PK)"
+        )
+        assert item["PK"] == "testset#my-empty-set"
+        assert item["status"] == "COMPLETED"
+        assert item["fileCount"] == 0
+        assert item["labelState"] == "unlabeled"
+        assert item["documentClassType"] == "SINGLE_CLASS"
+        s3.put_object.assert_called_once_with(
+            Bucket="b", Key="my-empty-set/.keep", Body=b""
+        )
+        assert result["id"] == "my-empty-set"
+        assert result["fileCount"] == 0
+        assert result["status"] == "COMPLETED"
+
+    def test_create_empty_test_set_refuses_an_existing_id(self):
+        class Duplicate(Exception):
+            error_code = "ConditionalCheckFailedException"
+
+        s3 = MagicMock()
+        with (
+            patch.object(
+                test_set_index.db_client, "put_item", side_effect=Duplicate("dup")
+            ),
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            with pytest.raises(Exception, match="already exists"):
+                test_set_index.create_empty_test_set({"name": "Taken"})
+        s3.put_object.assert_not_called()
+
+    def test_create_empty_test_set_validates_the_name(self):
+        with pytest.raises(Exception, match="Test set name can only contain"):
+            test_set_index.create_empty_test_set({"name": "bad/name"})
+
+    def test_publish_refuses_an_empty_set(self, publish_table):
+        _seed_test_set(publish_table, "ts1", fileCount=0)
+        with pytest.raises(Exception, match="has no documents"):
+            test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+        assert "Item" not in publish_table.get_item(
+            Key={"PK": "testset#ts1", "SK": "version#000001"}
+        )

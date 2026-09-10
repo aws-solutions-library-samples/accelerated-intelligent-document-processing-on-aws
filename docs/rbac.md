@@ -281,7 +281,8 @@ Every GraphQL **mutation** and many **queries** have `@aws_cognito_user_pools(co
 | `updateModelConfigLimits`, `restoreDefaultModelConfigLimits` | Admin |
 | `deleteDocument`, `updateConfiguration`, `setActiveVersion` | Admin, Author |
 | `uploadDocument`, `reprocessDocument`, `abortWorkflow` | Admin, Author |
-| `startTestRun`, `addTestSet`, `addTestSetFromUpload`, `deleteTests`, `deleteTestSets` | Admin, Author |
+| `startTestRun`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `deleteTests`, `deleteTestSets` | Admin, Author |
+| `addDocumentsToTestSet`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `updateTestSet`, `publishTestSetVersion` | Admin, Author |
 | `syncBdaIdp`, `uploadDiscoveryDocument`, `deleteDiscoveryJob`, `autoDetectSections` | Admin, Author |
 | `copyToBaseline` | Admin, Author |
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
