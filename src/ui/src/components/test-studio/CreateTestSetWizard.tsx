@@ -31,6 +31,7 @@ import {
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
+import useUserRole from '../../hooks/use-user-role';
 import { addTestSet, addTestSetFromUpload, createEmptyTestSet, listBucketFiles, validateTestFileName } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { DISCOVERY_PATH } from '../../routes/constants';
@@ -108,6 +109,8 @@ const CreateTestSetWizard = ({
   const isUpload = source === 'upload-labeled' || source === 'upload-documents';
   const isGenerate = source === 'generate';
   const isEmpty = source === 'empty';
+  // Matching a pattern searches a whole bucket, so that source is Admin-only.
+  const { isAdmin } = useUserRole();
 
   // Shared with the standalone deep-link modal so the two entry points cannot
   // drift. Gated on the branch: inactive it fetches no estimates or test sets.
@@ -347,7 +350,9 @@ const CreateTestSetWizard = ({
             setSource(detail.value as CreateSource);
             setError('');
           }}
-          items={CREATE_SOURCES.filter((s) => s.value !== 'generate' || generatorAvailable).map((s) => ({
+          items={CREATE_SOURCES.filter(
+            (s) => (s.value !== 'generate' || generatorAvailable) && (s.value !== 'existing-files' || isAdmin),
+          ).map((s) => ({
             value: s.value,
             label: s.label,
             description: `${s.description} → ${s.outcome}`,
@@ -357,6 +362,11 @@ const CreateTestSetWizard = ({
       {!generatorAvailable && (
         <Box fontSize="body-s" color="text-body-secondary">
           Synthetic generation needs the data-generator extension installed.
+        </Box>
+      )}
+      {!isAdmin && (
+        <Box fontSize="body-s" color="text-body-secondary">
+          Importing by file pattern from a bucket is available to administrators.
         </Box>
       )}
     </SpaceBetween>

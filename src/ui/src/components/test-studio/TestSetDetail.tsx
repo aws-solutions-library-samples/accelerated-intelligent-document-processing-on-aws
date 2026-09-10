@@ -790,7 +790,7 @@ const TestSetDetail = (): React.JSX.Element => {
                       )}
                       <ButtonDropdown
                         items={[
-                          { id: 'add-pattern', text: 'From files in a bucket' },
+                          { id: 'add-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
                           { id: 'add-upload', text: 'From a zip upload' },
                           {
                             id: 'add-generate',

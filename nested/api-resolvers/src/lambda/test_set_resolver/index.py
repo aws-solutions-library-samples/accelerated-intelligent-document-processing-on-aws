@@ -219,8 +219,18 @@ ANNOTATOR_ALLOWED_FIELDS = (
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
 # a set including human-reviewed ones, so an Author who can otherwise manage test
-# sets cannot destroy the team's annotation work.
-ADMIN_ONLY_FIELDS = ("resetTestSetLabels",)
+# sets cannot destroy the team's annotation work. Importing by file pattern is
+# Admin-only because matching keys is a search over the whole bucket: an Author
+# probing patterns would learn which documents exist, including ones the
+# document list hides from a profile-scoped account, and an import copies them
+# with their baselines. Authors still create sets from a zip, by generation, or
+# empty.
+ADMIN_ONLY_FIELDS = (
+    "resetTestSetLabels",
+    "listBucketFiles",
+    "addTestSet",
+    "addDocumentsToTestSet",
+)
 
 
 def handler(event, context):

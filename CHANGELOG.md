@@ -9,6 +9,10 @@ SPDX-License-Identifier: MIT-0
 
 - **Test sets can be edited in place: remove documents, add from the set's own page, or start a set empty** ([#812](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/812)). A set's page now has row selection and a **Remove** action (the confirmation names the documents, warns about reviewed labels, and says when the set will be left empty), and an **Add documents** menu offering the same bucket-pattern and zip dialogs as the Test Sets table plus **Generate synthetic documents** pre-targeted at the set. The create wizard gains **Start empty**, backed by a new `createEmptyTestSet` mutation. An empty set is a healthy state throughout: reconcile keeps it COMPLETED at zero rather than FAILED, a `.keep` marker stops the orphan reaper from deleting its row, and running, publishing, annotating and draft-labeling it are refused with a reason. See [Test Studio](docs/test-studio.md#adding-documents-to-existing-test-sets).
 
+### Changed
+
+- **Importing test-set documents by file pattern is now Admin-only.** `listBucketFiles`, `addTestSet` and `addDocumentsToTestSet` search a whole bucket for matching keys, so an Author probing patterns could learn which documents exist and copy them, baselines included, into a set. The three operations now require the Admin group (enforced in the resolver, 403 otherwise), and the wizard and both Add documents menus stop offering the bucket source to Authors. Authors still create sets from a zip, by generation, or empty, and still add documents by zip. See [RBAC](docs/rbac.md).
+
 ### Fixed
 
 - **Removing documents from a test set no longer races a job still writing to it.** `removeDocumentsFromTestSet` now refuses while a draft-labeling job is harvesting or while a bucket or zip add is in flight, and rejects malformed document names, instead of deleting under a writer that would leave orphaned baselines or overwrite the recount.

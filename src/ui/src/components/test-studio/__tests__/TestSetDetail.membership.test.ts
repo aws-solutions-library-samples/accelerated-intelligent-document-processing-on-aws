@@ -86,6 +86,34 @@ describe('the shared Add documents dialogs', () => {
   });
 });
 
+describe('importing by file pattern', () => {
+  // Matching a pattern searches a whole bucket, so it is Admin-only end to end:
+  // the resolver refuses Authors, and no surface offers them the source.
+  const WIZARD = readFileSync(join(HERE, 'CreateTestSetWizard.tsx'), 'utf-8');
+  const RESOLVER = readFileSync(join(ROOT, 'nested', 'api-resolvers', 'src', 'lambda', 'test_set_resolver', 'index.py'), 'utf-8');
+  const SCHEMA = readFileSync(join(ROOT, 'nested', 'api-resolvers', 'src', 'api', 'schema.graphql'), 'utf-8');
+
+  it('is refused server-side for anyone but an Admin', () => {
+    const adminOnly = RESOLVER.slice(
+      RESOLVER.indexOf('ADMIN_ONLY_FIELDS = ('),
+      RESOLVER.indexOf(')', RESOLVER.indexOf('ADMIN_ONLY_FIELDS = (')),
+    );
+    for (const op of ['listBucketFiles', 'addTestSet', 'addDocumentsToTestSet']) {
+      expect(adminOnly, op).toContain(`"${op}"`);
+      expect(RBAC, op).toMatch(new RegExp(`^ {2}${op}:\n {4}groups: \\[Admin\\]`, 'm'));
+      const decl = SCHEMA.slice(SCHEMA.indexOf(`\n  ${op}(`));
+      expect(decl.slice(0, decl.indexOf(')\n', decl.indexOf('@aws_cognito')) + 2), op).toMatch(/cognito_groups: \["Admin"\]/);
+    }
+  });
+
+  it('is not offered to Authors on any of the three surfaces', () => {
+    expect(WIZARD).toMatch(/s\.value !== 'existing-files' \|\| isAdmin/);
+    expect(WIZARD).toMatch(/Importing by file pattern from a bucket is available to administrators\./);
+    expect(TEST_SETS).toMatch(/id: 'docs-pattern', text: 'From files in a bucket', disabled: !isAdmin/);
+    expect(DETAIL).toMatch(/id: 'add-pattern', text: 'From files in a bucket', disabled: !isAdmin/);
+  });
+});
+
 describe('an empty set', () => {
   it('cannot be run from the run form', () => {
     expect(RUNNER).toMatch(/selectedFileCount === 0 \? 'This test set has no documents'/);

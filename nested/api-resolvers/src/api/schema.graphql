@@ -1516,15 +1516,16 @@ type Mutation {
   abortTestRuns(testRunIds: [String!]!): AbortWorkflowResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addTestSet(name: String!, description: String, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String, documentClassType: DocumentClassType): TestSet
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   addTestSetFromUpload(input: TestSetUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
-  # A set with no documents yet, grown later from its page: files in a bucket, a
-  # zip upload, or generated documents. Created COMPLETED with fileCount 0.
+  # A set with no documents yet, grown later from its page: files in a bucket
+  # (Admin), a zip upload, or generated documents. Created COMPLETED with
+  # fileCount 0.
   createEmptyTestSet(name: String!, description: String, documentClassType: DocumentClassType): TestSet
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addDocumentsToTestSet(testSetId: String!, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String): TestSet
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   addDocumentsToTestSetFromUpload(input: TestSetDocumentsUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   updateTestSet(input: UpdateTestSetInput!): TestSet
@@ -1922,7 +1923,7 @@ type Query @aws_cognito_user_pools @aws_iam {
   getAnnotationQueue(testSetId: String!, limit: Int, includeCompleted: Boolean): AnnotationQueue
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   listBucketFiles(bucketType: String!, filePattern: String!, modifiedAfter: String): [String]
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   validateTestFileName(fileName: String!): TestSetValidationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
 

@@ -21,6 +21,7 @@ import {
   Link,
 } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
+import useUserRole from '../../hooks/use-user-role';
 import {
   deleteTestSets,
   getTestSets,
@@ -68,6 +69,8 @@ interface TestSetItem {
 const TestSets = (): React.JSX.Element => {
   const [testSets, setTestSets] = useState<TestSetItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<TestSetItem[]>([]);
+  // Importing by file pattern searches a whole bucket, so it is Admin-only.
+  const { isAdmin } = useUserRole();
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -685,7 +688,7 @@ const TestSets = (): React.JSX.Element => {
                     text: 'Add documents',
                     disabled: selectedItems.length !== 1 || selectedItems[0]?.status !== 'COMPLETED',
                     items: [
-                      { id: 'docs-pattern', text: 'From files in a bucket' },
+                      { id: 'docs-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
                       { id: 'docs-upload', text: 'From a zip upload' },
                     ],
                   },

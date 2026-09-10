@@ -602,7 +602,7 @@ state:
 |---|---|---|
 | **Upload documents with ground truth** | A zip with `input/` and matching `baseline/` folders | Ready to publish |
 | **Upload documents only** | A zip with just `input/` | Needs labeling — run [draft labeling](#draft-labeling-unlabeled-documents--ground-truth) next |
-| **From files already in a bucket** | A file pattern (e.g. `*.pdf`) over the input or test set bucket | Labeled where baselines exist |
+| **From files already in a bucket** (Admin only) | A file pattern (e.g. `*.pdf`) over the input or test set bucket | Labeled where baselines exist |
 | **Generate synthetic documents** | A configuration or a description | Synthetic, labeled |
 | **Start empty** | Just a name | Empty — add documents later from the set's page |
 
@@ -678,7 +678,7 @@ You can incrementally add documents to a COMPLETED test set — useful for build
 
 The same **Add documents** menu is available in two places: on the Test Sets table (select one COMPLETED set, then **Actions → Add documents**) and on the set's own page (open the set, then **Add documents** above its document list). It offers three sources:
 
-- **From files in a bucket**: Select a bucket, enter a file pattern, and optionally filter by modification time
+- **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
 - **From a zip upload**: Upload a zip file containing new documents and their baselines
 - **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
 

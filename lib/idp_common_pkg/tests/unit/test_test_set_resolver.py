@@ -336,7 +336,7 @@ class TestTestSetResolver:
             "arguments": {},
             "identity": {"claims": {"cognito:groups": ["Viewer"]}},
         }
-        with pytest.raises(Exception, match="requires Admin or Author group"):
+        with pytest.raises(Exception, match="requires Admin group"):
             test_set_index.handler(event, {})
 
     def test_handler_allows_direct_lambda_invoke_no_identity(self):
@@ -7397,3 +7397,62 @@ class TestMembershipEditing:
         assert "Item" not in publish_table.get_item(
             Key={"PK": "testset#ts1", "SK": "version#000001"}
         )
+
+
+@pytest.mark.unit
+class TestPatternImportIsAdminOnly:
+    """Matching a pattern searches a whole bucket, so Authors cannot do it.
+
+    An Author probing patterns would learn which documents exist — including
+    ones the document list hides from a profile-scoped account — and an import
+    copies them with their baselines. Authors keep zip upload, generation and
+    empty sets.
+    """
+
+    def _event(self, field, groups):
+        return {
+            "info": {"fieldName": field},
+            "arguments": {"filePattern": "**", "bucketType": "input"},
+            "identity": {
+                "claims": {"cognito:groups": groups, "email": "u@example.com"}
+            },
+        }
+
+    @pytest.mark.parametrize(
+        "field", ["listBucketFiles", "addTestSet", "addDocumentsToTestSet"]
+    )
+    def test_author_is_refused(self, field):
+        with (
+            patch.object(test_set_index, "find_matching_files") as find,
+            patch.object(test_set_index.db_client, "put_item") as put,
+            patch.object(test_set_index.db_client, "get_item") as get,
+        ):
+            with pytest.raises(Exception, match="requires Admin group"):
+                test_set_index.handler(self._event(field, ["Author"]), {})
+        find.assert_not_called()
+        put.assert_not_called()
+        get.assert_not_called()
+
+    @patch.dict(os.environ, {"INPUT_BUCKET": "input-bucket"})
+    def test_admin_passes(self):
+        with patch.object(
+            test_set_index, "find_matching_files", return_value=["a.pdf"]
+        ):
+            assert test_set_index.handler(
+                self._event("listBucketFiles", ["Admin"]), {}
+            ) == ["a.pdf"]
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "addTestSetFromUpload",
+            "addDocumentsToTestSetFromUpload",
+            "createEmptyTestSet",
+        ],
+    )
+    def test_authors_keep_the_other_ways_of_adding_documents(self, field):
+        # Reaching the handler body (and failing on the fake arguments there) is
+        # the point: the group gate let the Author through.
+        with pytest.raises(Exception) as excinfo:
+            test_set_index.handler(self._event(field, ["Author"]), {})
+        assert "requires Admin" not in str(excinfo.value)
