@@ -83,15 +83,13 @@ Resources:
 
   BedrockProxyFunctionLogGroup:
     Type: AWS::Logs::LogGroup
-    # No KmsKeyId: the CustomerManagedEncryptionKeyArn these stacks take is the
-    # IDP *working bucket* key, and a CloudWatch Logs key needs a
-    # `logs.<region>.amazonaws.com` principal in its key policy, which that key
-    # is not guaranteed to have. Encrypting with it would fail the stack at
-    # create time. The host stack's own log groups are CMK-encrypted because its
-    # key grants that principal explicitly.
+    # Encrypted with the host's CMK when one was supplied. That key grants
+    # `logs.${AWS::URLSuffix}` unconditionally (template.yaml "Allow CloudWatch
+    # Logs to use the key"), which is why the host's own log groups use it too.
     Properties:
       LogGroupName: !Sub "/${AWS::StackName}/lambda/BedrockProxyFunction"
       RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasKMSKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
 
 Outputs:
   FunctionArn:

@@ -1402,34 +1402,36 @@ class StackDeployer:
         # Use exact prefixes to avoid inadvertent matches to longer stack names
         # (e.g., "idp1" should not match "idp10")
         patterns_to_check = [
-            # Lambda functions - pattern requires hyphen after stack name
-            f"/aws/lambda/{stack_name}-DOCUMENTKB",
-            f"/aws/lambda/{stack_name}-BDASAMPLEPROJECT",  # BDA sample project
-            f"/aws/lambda/{stack_name}-DashboardMergerFunction",
-            f"/aws/lambda/{stack_name}-InitializeConcurrencyTableLambda",
-            f"/aws/lambda/{stack_name}-TestSetBucketNotificationFunction",
-            # Auto-created groups left behind by the Lambdas that gained a real
-            # log group in #826. On a stack that predates that change these still
-            # exist with NO retention, and CloudFormation never owned them, so
-            # teardown has to remove them explicitly or they outlive the stack.
-            f"/aws/lambda/{stack_name}-BatchPreProcessorFunction",
-            # The six feature-platform resolvers live in the NESTED
-            # FeaturePlatformStack, so their auto-created groups are named
-            # `/aws/lambda/<parent>-FeaturePlatformStack-<fn>-<hash>` — a
-            # per-function prefix under the parent name never matches them.
-            # Lambda also truncates the logical-id segment to fit its 64-char
-            # name cap (observed: `...-CheckFeatureEntitlementF-32Q2qRNU35FU`),
-            # so a per-function prefix would not match even under the right
-            # parent. Match at the nested-stack level instead. The install-hook
-            # trio is deliberately exempt from having its own log group, but its
-            # auto-created groups are equally unowned, so this sweeps those too.
-            f"/aws/lambda/{stack_name}-FeaturePlatformStack-",
-            # Nested stacks - pattern requires hyphen after stack name
-            f"/{stack_name}-PATTERN1STACK-",  # e.g., /IDPDocker-P1-PATTERN1STACK-ABC123/lambda/...
-            f"/{stack_name}-PATTERN2STACK-",
+            # ONE generic prefix covers every Lambda-auto-created group belonging
+            # to this stack or any of its nested stacks, because CloudFormation
+            # always generates a function name of the form
+            # `<stack-or-nested-stack-name>-<LogicalId>-<hash>` and every nested
+            # stack's own name begins `<parent>-`.
+            #
+            # This deliberately replaces the per-function and per-nested-stack
+            # prefixes that used to be listed here. They were fragile in a way
+            # that FAILED SILENTLY: CloudFormation truncates the name to Lambda's
+            # 64-char cap, and a zero-match prefix is indistinguishable from
+            # "no orphans to clean". Worked backwards from a real observed group,
+            # `/aws/lambda/IDP1-FeaturePlatformStack-CheckFeatureEntitlementF-32Q2qRNU35FU`:
+            # the logical id kept 24 chars and the hash 12, leaving ~26 for the
+            # stack-name segment — and `IDP1-FeaturePlatformStack-` is exactly 26.
+            # It matched only because that parent stack name is 4 characters. At
+            # `IDP-DEV` the same prefix matches nothing and all 9 groups leak.
+            #
+            # The `-` immediately after {stack_name} is what keeps `IDP1` from
+            # matching a sibling `IDP10-...` stack's groups.
+            f"/aws/lambda/{stack_name}-",
+            # Nested-stack log groups that use the `/<nested-stack-name>/lambda/...`
+            # convention rather than Lambda's default. PATTERN1STACK/PATTERN2STACK
+            # were removed: those logical ids no longer exist (the pattern stacks
+            # were unified into PATTERNSTACK), so they were dead prefixes of
+            # exactly the kind described above.
+            f"/{stack_name}-PATTERNSTACK-",
+            f"/{stack_name}-APIRESOLVERSTACK-",
+            f"/{stack_name}-FeaturePlatformStack-",
             # CodeBuild projects - pattern requires hyphen after stack name
-            f"/aws/codebuild/{stack_name}-PATTERN1STACK",  # Nested stack CodeBuild
-            f"/aws/codebuild/{stack_name}-PATTERN2STACK",
+            f"/aws/codebuild/{stack_name}-PATTERNSTACK",
             f"/aws/codebuild/{stack_name}-webui-build",  # Main stack webui build
             # Glue crawlers - pattern requires hyphen after stack name
             f"/aws-glue/crawlers-role/{stack_name}-DocumentSectionsCrawlerRole",

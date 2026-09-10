@@ -128,7 +128,7 @@ nothing but stack operations, so indefinite retention is an accepted cost rather
 than an oversight. Every other Lambda needs a log group with `RetentionInDays`.
 
 All of this is enforced by `scripts/tests/test_lambda_log_groups.py`, which
-gates **every** template in the repo that declares a Lambda (20 of them, and a
+gates **every** template in the repo that declares a Lambda (21 of them, and a
 meta-test fails if a new one is added and not listed) on four rules:
 
 1. Every Lambda has a `LoggingConfig` that resolves to a real
@@ -145,7 +145,7 @@ The exemption list is *verified*, not trusted: an exempt function must be a
 have no event source (SAM `Events`, `EventSourceMapping`, `Lambda::Permission`,
 `Events::Rule`, or an API Gateway method/integration).
 
-The gate has its own meta-tests. An earlier revision could be defeated nine ways
+The gate has its own meta-tests. Earlier revisions could be defeated 13 ways
 — `Fn::Join` and `Fn::Sub`'s list form slipped rule 3, a `LoggingConfig` naming a
 non-existent group satisfied rule 1, `RetentionInDays: ~` satisfied rule 2, and
 the exemption check accepted any export merely *mentioning* the function.

@@ -43,12 +43,9 @@ Resources:
 
   W2CopyConsistencyFunctionLogGroup:
     Type: AWS::Logs::LogGroup
-    # No KmsKeyId: the CustomerManagedEncryptionKeyArn these stacks take is the
-    # IDP *working bucket* key, and a CloudWatch Logs key needs a
-    # `logs.<region>.amazonaws.com` principal in its key policy, which that key
-    # is not guaranteed to have. Encrypting with it would fail the stack at
-    # create time. The host stack's own log groups are CMK-encrypted because its
-    # key grants that principal explicitly.
+    # Not CMK-encrypted: this template takes no CustomerManagedEncryptionKeyArn
+    # parameter, so it has no key to use and stays deployable standalone. Add the
+    # parameter and a KmsKeyId here if your account requires CMK-encrypted logs.
     Properties:
       LogGroupName: !Sub "/${AWS::StackName}/lambda/W2CopyConsistencyFunction"
       RetentionInDays: !Ref LogRetentionDays

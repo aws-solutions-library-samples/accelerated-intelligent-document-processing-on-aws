@@ -63,6 +63,21 @@ non-existent log group, or one merely *mentioning* a real one
 export whose value merely mentioned the function.
 ``test_gate_catches_known_bypasses`` pins each of those closed so the rules
 cannot silently weaken again.
+
+Two seams remain, both known and both currently harmless:
+
+* **Rule 2 fails open on shapes it does not recognise**, where rule 1 fails
+  closed. ``RetentionInDays: !Ref SomeUndeclaredParam``, ``''``, ``7777`` (not a
+  valid CloudWatch value) and a malformed 2-arity ``Fn::If`` all pass here.
+  CloudFormation or cfn-lint rejects each at deploy, so nothing ships — but
+  cfn-lint is not run in CI, and "nothing checked it" is the premise of both
+  #818 and #826. Note also that four templates declare ``LogRetentionDays`` with
+  no ``AllowedValues``, so the ``!Ref`` leg is not as constrained as it looks.
+* **``Fn::ForEach`` / ``Transform: AWS::LanguageExtensions`` is invisible.** A
+  ``Fn::ForEach::X`` key under ``Resources`` maps to a list, so ``_functions``
+  and ``_log_groups`` skip it and every rule silently passes. The repo does not
+  use it today (checked); if that changes, this gate must be taught about it
+  rather than trusted.
 """
 
 from __future__ import annotations
@@ -708,18 +723,54 @@ Outputs:
         path.unlink()
 
 
-def _discover_unlisted_templates() -> list[str]:
+def _walk_yaml(pattern: str, root: Path):
+    """Yield repo files matching ``pattern``, pruning heavy directories.
+
+    ``Path.rglob`` descends into ``.aws-sam``, ``node_modules`` and friends and
+    then discards the results, which cost about 22 seconds — a third of the whole
+    ``scripts/tests`` run. Pruning during the walk makes it near-instant.
+    """
+    import fnmatch
+    import os
+
+    pruned = {
+        ".aws-sam",
+        "node_modules",
+        ".venv",
+        "build",
+        "dist",
+        ".git",
+        "__pycache__",
+    }
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in pruned]
+        for name in files:
+            if fnmatch.fnmatch(name, pattern):
+                yield Path(current) / name
+
+
+def _discover_unlisted_templates(root: Path | None = None) -> list[str]:
     """Every Lambda-declaring template in the repo that TEMPLATES omits.
 
     Globs both ``*.yaml`` and ``*.yml``, and does not assume the filename is
     ``template.yaml`` — ``notebooks/examples/demo-lambda/template.yml`` was
     invisible to an earlier ``template.yaml``-only sweep.
     """
-    listed = {REPO_ROOT / rel for rel in TEMPLATES}
+    root = root or REPO_ROOT
+    listed = {root / rel for rel in TEMPLATES}
     skip_dirs = {".aws-sam", "node_modules", ".venv", "build", "dist", ".git"}
     unlisted = []
     for pattern in ("*.yaml", "*.yml"):
-        for path in REPO_ROOT.rglob(pattern):
+        for path in _walk_yaml(pattern, root):
+            # The meta-tests below write synthetic probe templates INSIDE the repo
+            # and delete them in a `finally`. Skip them, for two reasons: under a
+            # parallel run (`pytest -n auto`) this sweep otherwise sees another
+            # worker's probe and fails; and if a run is hard-killed between write
+            # and unlink, a leaked probe would fail every later run.
+            if path.name.startswith("_") and path.name.endswith(
+                ("_probe.yaml", "_probe.yml")
+            ):
+                continue
             if any(part in skip_dirs for part in path.parts) or path in listed:
                 continue
             try:
@@ -729,7 +780,7 @@ def _discover_unlisted_templates() -> list[str]:
             if not isinstance(doc, dict):
                 continue
             if _functions(doc.get("Resources") or {}):
-                unlisted.append(str(path.relative_to(REPO_ROOT)))
+                unlisted.append(str(path.relative_to(root)))
     return sorted(unlisted)
 
 
@@ -750,14 +801,22 @@ def test_every_template_with_lambdas_is_listed() -> None:
 
 
 @pytest.mark.unit
-def test_discovery_actually_finds_an_unlisted_template() -> None:
+def test_discovery_actually_finds_an_unlisted_template(tmp_path: Path) -> None:
     """The discovery sweep must be able to fail.
 
     Without this, deleting the body of ``_discover_unlisted_templates`` leaves
     the suite green and the coverage guarantee silently gone — one of two
     mechanisms a prior review found unprotected.
+
+    The probe goes in ``tmp_path``, **not** in the repo. An earlier revision wrote
+    it into ``scripts/tests/`` and the repo-wide sweep in
+    ``test_every_template_with_lambdas_is_listed`` then found *this* test's probe
+    under ``pytest -n 8`` — a deterministic parallel-run failure, reproduced 3/3.
+    A hard kill between write and unlink also leaked the file and broke every
+    later run.
     """
-    probe = REPO_ROOT / "scripts" / "tests" / "_unlisted_probe.yml"
+    probe = tmp_path / "some-service" / "template.yml"
+    probe.parent.mkdir(parents=True)
     probe.write_text(
         "Resources:\n"
         "  ProbeFn:\n"
@@ -765,10 +824,7 @@ def test_discovery_actually_finds_an_unlisted_template() -> None:
         "    Properties:\n"
         "      Handler: index.handler\n"
     )
-    try:
-        assert "scripts/tests/_unlisted_probe.yml" in _discover_unlisted_templates()
-    finally:
-        probe.unlink()
+    assert _discover_unlisted_templates(root=tmp_path) == ["some-service/template.yml"]
 
 
 @pytest.mark.unit
