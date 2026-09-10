@@ -419,10 +419,14 @@ prefixes before concluding a function has no logs:
 | `/<StackName>/lambda/<FunctionLogicalId>` | `patterns/unified` and every feature-platform extension — the pipeline-hooks dispatcher, feature hook Lambdas, `FeatureApiFunction`, `UiDeployerFunction` |
 | `/aws/lambda/<StackName>-<Name>` | 5 groups in the parent `template.yaml` (`CircuitBreakerManager`, `CalculateCapacity`, `CalculateCapacityResolver`, `VersionCheckResolver`, `AgentProcessor`) and 2 in `nested/api-resolvers/` |
 | `/aws/lambda/<fn>` (Lambda's default) | **custom-resource-only Lambdas**, which deliberately keep the auto-created group — they run only during a stack operation, so indefinite retention is an accepted cost. Includes `nested/bedrockkb/` (all 5), the `Custom::` handlers in `template.yaml`, and the feature-platform install hooks (`...-RegisterFeature...`, `...-RegisterFeatureHooks...`, `...-ApplyFeatureConfigPreset...`). Enforced by `scripts/tests/test_lambda_log_groups.py` |
+| `<StackName>-<LogicalId>-<hash>` — **no prefix at all** | the ~84 groups that declare no `LogGroupName` and so take CloudFormation's generated name. This is the single most common shape in the repo and it does **not** start with `/`, so neither a `/aws/lambda/` nor a `/<StackName>/` prefix listing finds it. `aws logs describe-log-groups --log-group-name-prefix '<StackName>-'` is the third listing you need |
 
-Note the first shape is `/<StackName>/`, **not** `/aws/lambda/<StackName>-`, so a
-single `/aws/lambda/` prefix listing will miss the dispatcher and every feature
-Lambda. See the log-group naming rules in `.claude/skills/infrastructure.md`.
+Note the first shape is `/<StackName>/`, **not** `/aws/lambda/<StackName>-`, and
+the fourth has no leading `/` at all — so a single `/aws/lambda/` prefix listing
+misses the dispatcher, every feature Lambda, *and* the ~84 generated-name groups.
+Listing on all three prefixes (`/aws/lambda/`, `/<StackName>/`, `<StackName>-`)
+is the only way to be sure a function has no logs. See the log-group naming rules
+in `.claude/skills/infrastructure.md`.
 
 ## AWS Service Requirements
 

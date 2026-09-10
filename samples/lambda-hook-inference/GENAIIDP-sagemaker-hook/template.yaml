@@ -78,6 +78,12 @@ Resources:
 
   SageMakerHookFunctionLogGroup:
     Type: AWS::Logs::LogGroup
+    # No KmsKeyId: the CustomerManagedEncryptionKeyArn these stacks take is the
+    # IDP *working bucket* key, and a CloudWatch Logs key needs a
+    # `logs.<region>.amazonaws.com` principal in its key policy, which that key
+    # is not guaranteed to have. Encrypting with it would fail the stack at
+    # create time. The host stack's own log groups are CMK-encrypted because its
+    # key grants that principal explicitly.
     Properties:
       LogGroupName: !Sub "/${AWS::StackName}/lambda/SageMakerHookFunction"
       RetentionInDays: !Ref LogRetentionDays

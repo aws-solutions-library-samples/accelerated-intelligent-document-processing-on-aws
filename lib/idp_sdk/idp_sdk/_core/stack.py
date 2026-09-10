@@ -1408,17 +1408,22 @@ class StackDeployer:
             f"/aws/lambda/{stack_name}-DashboardMergerFunction",
             f"/aws/lambda/{stack_name}-InitializeConcurrencyTableLambda",
             f"/aws/lambda/{stack_name}-TestSetBucketNotificationFunction",
-            # Auto-created groups left behind by the seven Lambdas that gained a
-            # real log group in #826. On a stack that predates that change these
-            # still exist with NO retention, and CloudFormation never owned them,
-            # so teardown has to remove them explicitly or they outlive the stack.
+            # Auto-created groups left behind by the Lambdas that gained a real
+            # log group in #826. On a stack that predates that change these still
+            # exist with NO retention, and CloudFormation never owned them, so
+            # teardown has to remove them explicitly or they outlive the stack.
             f"/aws/lambda/{stack_name}-BatchPreProcessorFunction",
-            f"/aws/lambda/{stack_name}-ListInstalledFeaturesFunction",
-            f"/aws/lambda/{stack_name}-ListCatalogFeaturesFunction",
-            f"/aws/lambda/{stack_name}-GetFeatureLaunchUrlFunction",
-            f"/aws/lambda/{stack_name}-CheckFeatureEntitlementFunction",
-            f"/aws/lambda/{stack_name}-SubscribeFeatureFunction",
-            f"/aws/lambda/{stack_name}-UnsubscribeFeatureFunction",
+            # The six feature-platform resolvers live in the NESTED
+            # FeaturePlatformStack, so their auto-created groups are named
+            # `/aws/lambda/<parent>-FeaturePlatformStack-<fn>-<hash>` — a
+            # per-function prefix under the parent name never matches them.
+            # Lambda also truncates the logical-id segment to fit its 64-char
+            # name cap (observed: `...-CheckFeatureEntitlementF-32Q2qRNU35FU`),
+            # so a per-function prefix would not match even under the right
+            # parent. Match at the nested-stack level instead. The install-hook
+            # trio is deliberately exempt from having its own log group, but its
+            # auto-created groups are equally unowned, so this sweeps those too.
+            f"/aws/lambda/{stack_name}-FeaturePlatformStack-",
             # Nested stacks - pattern requires hyphen after stack name
             f"/{stack_name}-PATTERN1STACK-",  # e.g., /IDPDocker-P1-PATTERN1STACK-ABC123/lambda/...
             f"/{stack_name}-PATTERN2STACK-",

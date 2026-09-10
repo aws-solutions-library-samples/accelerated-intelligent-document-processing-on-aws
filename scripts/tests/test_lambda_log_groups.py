@@ -36,29 +36,57 @@ another stack's custom resource. Those are very low volume and log only stack
 operations, so indefinite retention on an auto-created group is a deliberate
 accepted cost rather than an oversight.
 
-That exemption is **verified, not trusted**
-(``test_exemptions_are_really_custom_resource_only``): an exempt function must
-actually be reachable only that way — a ``ServiceToken`` target in its own
-template, or an install hook whose ARN is exported *via a direct ``GetAtt`` on
-that function*. It must also have no event source of any kind: no SAM
-``Events``, no ``EventSourceMapping``, no ``Lambda::Permission``, and no
-mention in an API/EventBridge/Step Functions resource. A request-serving Lambda
-therefore cannot be added to the list to silence rule 1.
+That exemption is **checked, not merely trusted**
+(``test_exemptions_are_really_custom_resource_only``): an exempt function must be
+a ``ServiceToken`` target in its own template, or have its ARN exported via a
+direct ``GetAtt``, and must have no event source declared in the template — no
+SAM ``Events``, ``EventSourceMapping``, ``Lambda::Permission``, ``Events::Rule``
+or API Gateway method/integration.
 
-Earlier revisions of this gate could be defeated nine ways — ``Fn::Join`` and
-the list form of ``Fn::Sub`` slipped rule 3, a ``LoggingConfig`` naming a
-non-existent log group satisfied rule 1, ``RetentionInDays: ~`` satisfied rule
-2, and the exemption check accepted any export whose value merely *mentioned*
-the function. ``test_gate_catches_known_bypasses`` pins each of those closed.
+**That check is structural and it is not airtight.** It reasons about the
+template, not about what actually invokes a function at runtime. A Lambda that
+is invoked *by ARN from configuration* — every hook in
+``samples/lambda-hook-inference`` — has no template wiring for the event-source
+leg to find, so adding an ``Export`` to its ARN output would make it look like an
+install hook and let it be exempted. Nothing in this repo is wrongly exempt
+today, and each entry in ``CUSTOM_RESOURCE_ONLY`` carries its justification, but
+treat the list as a reviewed decision rather than a proof: **when you add an
+entry, confirm by hand that nothing invokes the function outside a stack
+operation.**
+
+Earlier revisions of this gate could be defeated in several ways — ``Fn::Join``
+and the list form of ``Fn::Sub`` slipped rule 3; a ``LoggingConfig`` naming a
+non-existent log group, or one merely *mentioning* a real one
+(``!Sub '${G}-suffix'``), satisfied rule 1; ``RetentionInDays: ~`` and
+``!Ref 'AWS::NoValue'`` satisfied rule 2; an ``Fn::If`` branch yielding
+``AWS::NoValue`` bypassed rules 1 and 4; and the exemption check accepted any
+export whose value merely mentioned the function.
+``test_gate_catches_known_bypasses`` pins each of those closed so the rules
+cannot silently weaken again.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+
+
+def _is_no_value(node: Any) -> bool:
+    """``!Ref AWS::NoValue`` — removes whatever property it stands in.
+
+    A log group whose ``RetentionInDays`` resolves to this has NO retention —
+    the #826 defect — and cfn-lint does not flag it (verified: exit 0). Same for
+    a ``LoggingConfig.LogGroup``: the function silently loses its log group on
+    whichever branch yields NoValue.
+    """
+    return isinstance(node, dict) and any(
+        node.get(key) == "AWS::NoValue" for key in ("Ref", "Fn::Ref")
+    )
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -88,6 +116,10 @@ TEMPLATES = [
     # Throwaway verification fixture (make verify-idp-federation). Included so
     # an interrupted run cannot leave a never-expiring log group behind.
     "scripts/security/live_checks/oidc_provider/template.yaml",
+    # Note the .yml extension — the discovery meta-test below globs both
+    # spellings precisely because this one was invisible to a template.yaml-only
+    # sweep.
+    "notebooks/examples/demo-lambda/template.yml",
 ]
 
 FUNCTION_TYPES = {"AWS::Serverless::Function", "AWS::Lambda::Function"}
@@ -178,8 +210,6 @@ def _referenced_logical_ids(node: Any) -> set[str]:
                 template = value[0] if isinstance(value, list) and value else value
                 if isinstance(template, str):
                     # ${Foo} and ${Foo.Arn} both name Foo.
-                    import re
-
                     for token in re.findall(r"\$\{([^}]+)\}", template):
                         found.add(token.split(".")[0].strip())
                 if isinstance(value, list) and len(value) > 1:
@@ -205,9 +235,47 @@ def _logging_config_target(function_body: dict) -> Any:
     )
 
 
+def _branches(node: Any) -> list[Any]:
+    """Every value ``node`` can evaluate to, expanding ``Fn::If`` branches.
+
+    A rule that inspects only the node itself is blind to
+    ``!If [C, !Ref G, !Ref 'AWS::NoValue']``, which on one branch drops the
+    property entirely. This repo uses that idiom heavily, so every branch has to
+    be checked independently.
+    """
+    if isinstance(node, dict) and "Fn::If" in node:
+        value = node["Fn::If"]
+        if isinstance(value, list) and len(value) == 3:
+            return [b for branch in value[1:] for b in _branches(branch)]
+    return [node]
+
+
+def _resolves_exactly_to(target: Any, candidates: set[str]) -> bool:
+    """True only if ``target`` *is* a reference to one of ``candidates``.
+
+    ``!Sub '${G}-suffix'`` and ``!Join ['', [!Ref G, '-oops']]`` mention ``G``
+    but name a log group that does not exist, so the function still falls back
+    to Lambda's auto-created group. Membership in
+    ``_referenced_logical_ids`` is therefore not enough — the whole value must
+    resolve to exactly the group.
+    """
+    if not isinstance(target, dict):
+        return False
+    for key in ("Ref", "Fn::Ref"):
+        if isinstance(target.get(key), str) and target[key] in candidates:
+            return True
+    sub = target.get("Fn::Sub")
+    template = sub[0] if isinstance(sub, list) and sub else sub
+    if isinstance(template, str):
+        match = re.fullmatch(r"\$\{([^}]+)\}", template.strip())
+        if match and match.group(1).split(".")[0].strip() in candidates:
+            return True
+    return False
+
+
 def _check_rule_1(rel_path: str, doc: dict, exempt: set[str]) -> list[str]:
     resources = doc.get("Resources", {}) or {}
-    log_groups = _log_groups(resources)
+    log_groups = set(_log_groups(resources))
     problems = []
     for name, body in _functions(resources).items():
         if name in exempt:
@@ -216,15 +284,15 @@ def _check_rule_1(rel_path: str, doc: dict, exempt: set[str]) -> list[str]:
         if not target:
             problems.append(f"{name}: no LoggingConfig")
             continue
-        # Must resolve to a log group resource declared in this template.
-        resolved = (
-            _referenced_logical_ids(target) if isinstance(target, dict) else set()
-        )
-        if not resolved & set(log_groups):
-            problems.append(
-                f"{name}: LoggingConfig.LogGroup does not resolve to an "
-                f"AWS::Logs::LogGroup in this template (got {target!r})"
-            )
+        # Every Fn::If branch must independently resolve to a real log group.
+        for branch in _branches(target):
+            if _is_no_value(branch):
+                problems.append(f"{name}: LoggingConfig.LogGroup can be AWS::NoValue")
+            elif not _resolves_exactly_to(branch, log_groups):
+                problems.append(
+                    f"{name}: LoggingConfig.LogGroup does not resolve to an "
+                    f"AWS::Logs::LogGroup in this template (got {branch!r})"
+                )
     return problems
 
 
@@ -235,8 +303,12 @@ def _check_rule_2(doc: dict) -> list[str]:
         properties = body.get("Properties") or {}
         if "RetentionInDays" not in properties:
             problems.append(f"{name}: no RetentionInDays")
-        elif properties["RetentionInDays"] is None:
-            problems.append(f"{name}: RetentionInDays is null")
+            continue
+        for branch in _branches(properties["RetentionInDays"]):
+            if branch is None:
+                problems.append(f"{name}: RetentionInDays is null")
+            elif _is_no_value(branch):
+                problems.append(f"{name}: RetentionInDays can be AWS::NoValue")
     return problems
 
 
@@ -265,7 +337,12 @@ def _check_rule_4(doc: dict, exempt: set[str]) -> list[str]:
         target = _logging_config_target(body)
         if not isinstance(target, dict):
             continue
-        for group in _referenced_logical_ids(target) & set(log_groups):
+        # Expand Fn::If so a group referenced from only one branch is still
+        # checked, matching rule 1.
+        referenced: set[str] = set()
+        for branch in _branches(target):
+            referenced |= _referenced_logical_ids(branch)
+        for group in referenced & set(log_groups):
             fn_condition = body.get("Condition")
             group_condition = log_groups[group].get("Condition")
             if fn_condition != group_condition:
@@ -493,6 +570,66 @@ def _rules(text: str, exempt: set[str] | None = None):
       RetentionInDays: ~""",
         ),
         (
+            "retention-no-value",
+            2,
+            """      LoggingConfig:
+        LogGroup: !Ref G
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !Ref 'AWS::NoValue'""",
+        ),
+        (
+            "retention-if-branch-no-value",
+            2,
+            """      LoggingConfig:
+        LogGroup: !Ref G
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: !If [C, 30, !Ref 'AWS::NoValue']""",
+        ),
+        (
+            "loggroup-if-branch-no-value",
+            1,
+            """      LoggingConfig:
+        LogGroup: !If [C, !Ref G, !Ref 'AWS::NoValue']
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30""",
+        ),
+        (
+            "loggroup-mentions-but-does-not-resolve-sub",
+            1,
+            """      LoggingConfig:
+        LogGroup: !Sub '${G}-suffix'
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30""",
+        ),
+        (
+            "loggroup-mentions-but-does-not-resolve-join",
+            1,
+            """      LoggingConfig:
+        LogGroup: !Join ['', [!Ref G, '-oops']]
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30""",
+        ),
+        (
+            "loggroup-getatt-arn-not-name",
+            1,
+            """      LoggingConfig:
+        LogGroup: !GetAtt G.Arn
+  G:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30""",
+        ),
+        (
             "condition-mismatch",
             4,
             """      LoggingConfig:
@@ -571,27 +708,101 @@ Outputs:
         path.unlink()
 
 
+def _discover_unlisted_templates() -> list[str]:
+    """Every Lambda-declaring template in the repo that TEMPLATES omits.
+
+    Globs both ``*.yaml`` and ``*.yml``, and does not assume the filename is
+    ``template.yaml`` — ``notebooks/examples/demo-lambda/template.yml`` was
+    invisible to an earlier ``template.yaml``-only sweep.
+    """
+    listed = {REPO_ROOT / rel for rel in TEMPLATES}
+    skip_dirs = {".aws-sam", "node_modules", ".venv", "build", "dist", ".git"}
+    unlisted = []
+    for pattern in ("*.yaml", "*.yml"):
+        for path in REPO_ROOT.rglob(pattern):
+            if any(part in skip_dirs for part in path.parts) or path in listed:
+                continue
+            try:
+                doc = _load_text(path.read_text())
+            except (yaml.YAMLError, UnicodeDecodeError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+            if _functions(doc.get("Resources") or {}):
+                unlisted.append(str(path.relative_to(REPO_ROOT)))
+    return sorted(unlisted)
+
+
 @pytest.mark.unit
 def test_every_template_with_lambdas_is_listed() -> None:
     """A new template with Lambdas must be added to TEMPLATES, not forgotten.
 
-    ``samples/lambda-hook-inference`` was missed on the first pass, and its
-    per-document hook Lambdas had the #826 defect.
+    ``samples/lambda-hook-inference`` was missed on the first pass and its
+    per-document hook Lambdas had the #826 defect;
+    ``notebooks/examples/demo-lambda/template.yml`` was then missed because the
+    sweep only globbed ``template.yaml``.
     """
-    listed = {REPO_ROOT / rel for rel in TEMPLATES}
-    skip_dirs = {".aws-sam", "node_modules", ".venv", "build", "dist"}
-    unlisted = []
-    for path in REPO_ROOT.rglob("template.yaml"):
-        if any(part in skip_dirs for part in path.parts) or path in listed:
-            continue
-        try:
-            resources = _load_text(path.read_text()).get("Resources") or {}
-        except yaml.YAMLError:
-            continue
-        if _functions(resources):
-            unlisted.append(str(path.relative_to(REPO_ROOT)))
-
+    unlisted = _discover_unlisted_templates()
     assert not unlisted, (
         f"template(s) declare Lambda functions but are not in TEMPLATES, so the "
-        f"log-group rules do not cover them: {sorted(unlisted)}"
+        f"log-group rules do not cover them: {unlisted}"
     )
+
+
+@pytest.mark.unit
+def test_discovery_actually_finds_an_unlisted_template() -> None:
+    """The discovery sweep must be able to fail.
+
+    Without this, deleting the body of ``_discover_unlisted_templates`` leaves
+    the suite green and the coverage guarantee silently gone — one of two
+    mechanisms a prior review found unprotected.
+    """
+    probe = REPO_ROOT / "scripts" / "tests" / "_unlisted_probe.yml"
+    probe.write_text(
+        "Resources:\n"
+        "  ProbeFn:\n"
+        "    Type: AWS::Serverless::Function\n"
+        "    Properties:\n"
+        "      Handler: index.handler\n"
+    )
+    try:
+        assert "scripts/tests/_unlisted_probe.yml" in _discover_unlisted_templates()
+    finally:
+        probe.unlink()
+
+
+@pytest.mark.unit
+def test_exemption_rejects_a_function_with_an_external_event_source() -> None:
+    """The event-source leg of the exemption check must be able to fail.
+
+    A ``ServiceToken`` handler that ALSO has an ``EventSourceMapping`` is not
+    custom-resource-only. Without this test the whole leg can be deleted and the
+    suite stays green — the second of two mechanisms a prior review found
+    unprotected.
+    """
+    text = """
+Resources:
+  MyFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+  Custom:
+    Type: Custom::Thing
+    Properties:
+      ServiceToken: !GetAtt MyFn.Arn
+  Mapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref MyFn
+      EventSourceArn: arn:aws:sqs:us-east-1:123456789012:q
+"""
+    probe = REPO_ROOT / "scripts" / "tests" / "_eventsource_probe.yaml"
+    probe.write_text(text)
+    rel = "scripts/tests/_eventsource_probe.yaml"
+    try:
+        CUSTOM_RESOURCE_ONLY[rel] = {"MyFn"}
+        with pytest.raises(AssertionError, match="not custom-resource-only"):
+            test_exemptions_are_really_custom_resource_only(rel)
+    finally:
+        CUSTOM_RESOURCE_ONLY.pop(rel, None)
+        probe.unlink()
