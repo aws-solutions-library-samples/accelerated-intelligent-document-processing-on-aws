@@ -315,10 +315,10 @@ def main() -> int:
 
         # ------------------------------- 3. removal path on the deployed trigger
         section("3. deployed trigger, fresh sign-in event with a demoted claim")
-        print("  invoked directly: a second hosted-UI sign-in by an existing")
-        print("  federated user is blocked by this pool's immutable email")
-        print("  attribute (pre-existing — see 3b), so the removal path is")
-        print("  exercised against the deployed function instead.")
+        print("  invoked directly, so the removal path is exercised against the")
+        print("  deployed function regardless of whether this pool lets the same")
+        print("  federated user sign in twice (that depends on the email schema")
+        print("  flag, checked in 3b).")
         resp = lam.invoke(
             FunctionName=args.trigger_function,
             Payload=json.dumps(
