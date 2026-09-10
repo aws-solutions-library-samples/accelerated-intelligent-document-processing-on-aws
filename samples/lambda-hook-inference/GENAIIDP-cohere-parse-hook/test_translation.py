@@ -54,6 +54,26 @@ def test_html_table_without_header_synthesizes_one():
     print("test_html_table_without_header_synthesizes_one: PASS")
 
 
+def test_html_table_thead_with_td_cells_is_the_header():
+    """Cohere marks its header with <thead> containing plain <td> cells.
+
+    Keying on <th> alone would leave the real header as a body row under a
+    blank header, and the deterministic table parser would then read every
+    column name as an empty string.
+    """
+    html = (
+        "<table><thead><tr><td>DATE</td><td>AMOUNT ($)</td></tr></thead>"
+        "<tbody><tr><td>06/09</td><td>150.00</td></tr></tbody></table>"
+    )
+    md = index.html_table_to_markdown(html)
+    assert md.split("\n") == [
+        "| DATE | AMOUNT ($) |",
+        "|---|---|",
+        "| 06/09 | 150.00 |",
+    ]
+    print("test_html_table_thead_with_td_cells_is_the_header: PASS")
+
+
 def test_html_table_colspan_and_ragged_rows():
     html = (
         "<table><tr><th>H1</th><th>H2</th><th>H3</th></tr>"
@@ -62,11 +82,50 @@ def test_html_table_colspan_and_ragged_rows():
     )
     md = index.html_table_to_markdown(html)
     lines = md.split("\n")
-    # colspan=2 repeats the cell so columns stay aligned
-    assert lines[2] == "| wide | wide | x |"
+    # colspan=2 keeps columns aligned with the text in the FIRST spanned column;
+    # repeating it would show the extraction model one label as several values.
+    assert lines[2] == "| wide |  | x |"
     # short row is padded to full width
     assert lines[3] == "| only |  |  |"
     print("test_html_table_colspan_and_ragged_rows: PASS")
+
+
+def test_table_description_is_never_emitted():
+    """Parse's table `description` is model-written prose, not transcription.
+
+    On a live bank statement it restated the account number as 0035258015143
+    where the table said 003525801543, so injecting it would hand fabricated
+    values to extraction as if they had been read off the page.
+    """
+    resp = {
+        "pages": [
+            {
+                "type": "blocks",
+                "index": 0,
+                "blocks": [
+                    {
+                        "type": "table",
+                        "table": {
+                            "html": (
+                                "<table><thead><tr><td>ACCOUNT</td></tr></thead>"
+                                "<tbody><tr><td>003525801543</td></tr></tbody></table>"
+                            ),
+                            "description": (
+                                "The Checking account (0035258015143) has a "
+                                "balance of $5,657.47."
+                            ),
+                        },
+                    }
+                ],
+            }
+        ],
+        "meta": {"billed_units": {"pages": 1}},
+    }
+    text, _, _ = index.build_textract_response(resp)
+    assert "003525801543" in text
+    assert "0035258015143" not in text
+    assert "balance of" not in text
+    print("test_table_description_is_never_emitted: PASS")
 
 
 def test_html_table_escapes_pipes_and_collapses_whitespace():
@@ -347,7 +406,9 @@ def test_retry_after_parsing():
 if __name__ == "__main__":
     test_html_table_with_header()
     test_html_table_without_header_synthesizes_one()
+    test_html_table_thead_with_td_cells_is_the_header()
     test_html_table_colspan_and_ragged_rows()
+    test_table_description_is_never_emitted()
     test_html_table_escapes_pipes_and_collapses_whitespace()
     test_nested_table_falls_back_to_html()
     test_non_table_html_is_preserved()

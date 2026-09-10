@@ -254,12 +254,21 @@ def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
 # here keeps that path working — otherwise every table falls back to pure-LLM
 # extraction and loses the row-completeness guarantee.
 #
-# Scope is deliberately narrow: `colspan` is expanded (repeat the cell across
-# the spanned columns) because it keeps columns aligned; `rowspan` is NOT
-# expanded — a spanning cell appears only in the row where it is declared,
-# which is how Markdown tables behave anyway. Nested tables cannot be
-# represented in Markdown at all, so a table containing another table falls
-# back to its original HTML.
+# Scope is deliberately narrow:
+#
+# * Header detection follows `<thead>` first, then `<th>`. Cohere Parse marks
+#   its header row with `<thead>` containing plain `<td>` cells (verified
+#   against the live API) — so keying on `<th>` alone would leave the real
+#   header sitting in the body under a blank header row, and the deterministic
+#   table parser would then read every column name as an empty string.
+# * `colspan` is expanded to keep columns aligned, placing the text in the
+#   first spanned column and leaving the rest empty. Repeating the text across
+#   the span would show the extraction model the same label two or three times
+#   as if they were distinct column values.
+# * `rowspan` is NOT expanded — a spanning cell appears only in the row where
+#   it is declared, which is how Markdown tables behave anyway.
+# * Nested tables cannot be represented in Markdown at all, so a table
+#   containing another table falls back to its original HTML.
 
 
 class _HTMLTableParser(HTMLParser):
@@ -267,10 +276,11 @@ class _HTMLTableParser(HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        # One entry per table: {"rows": [[cell, ...], ...], "header": bool,
-        #                       "nested": bool}
+        # One entry per table: {"rows": [[cell, ...], ...],
+        #                       "row_is_header": [bool, ...], "nested": bool}
         self.tables: list[dict] = []
         self._table_depth = 0
+        self._in_thead = False
         self._cell_parts: list[str] | None = None
         self._colspan = 1
 
@@ -279,7 +289,7 @@ class _HTMLTableParser(HTMLParser):
         if tag == "table":
             self._table_depth += 1
             if self._table_depth == 1:
-                self.tables.append({"rows": [], "header": False, "nested": False})
+                self.tables.append({"rows": [], "row_is_header": [], "nested": False})
             else:
                 # Nested table: mark the enclosing one unrepresentable.
                 if self.tables:
@@ -289,13 +299,16 @@ class _HTMLTableParser(HTMLParser):
         if self._table_depth != 1 or not self.tables:
             return
 
-        if tag == "tr":
+        if tag == "thead":
+            self._in_thead = True
+        elif tag == "tr":
             self.tables[-1]["rows"].append([])
+            self.tables[-1]["row_is_header"].append(self._in_thead)
         elif tag in ("td", "th"):
             self._cell_parts = []
             self._colspan = _positive_int(dict(attrs).get("colspan"), default=1)
             if tag == "th":
-                self.tables[-1]["header"] = True
+                self._mark_current_row_as_header()
         elif tag == "br":
             if self._cell_parts is not None:
                 self._cell_parts.append(" ")
@@ -308,18 +321,28 @@ class _HTMLTableParser(HTMLParser):
         if self._table_depth != 1 or not self.tables:
             return
 
-        if tag in ("td", "th") and self._cell_parts is not None:
+        if tag == "thead":
+            self._in_thead = False
+        elif tag in ("td", "th") and self._cell_parts is not None:
             text = _clean_cell("".join(self._cell_parts))
-            rows = self.tables[-1]["rows"]
-            if not rows:  # cell outside any <tr>
-                rows.append([])
-            rows[-1].extend([text] * self._colspan)
+            table = self.tables[-1]
+            if not table["rows"]:  # cell outside any <tr>
+                table["rows"].append([])
+                table["row_is_header"].append(self._in_thead)
+            # Spanned columns keep the text in the first one only.
+            table["rows"][-1].extend([text] + [""] * (self._colspan - 1))
             self._cell_parts = None
             self._colspan = 1
 
     def handle_data(self, data):
         if self._table_depth == 1 and self._cell_parts is not None:
             self._cell_parts.append(data)
+
+    def _mark_current_row_as_header(self) -> None:
+        """Flag the row being built as a header row (a `<th>` was seen in it)."""
+        table = self.tables[-1]
+        if table["row_is_header"]:
+            table["row_is_header"][-1] = True
 
 
 def _positive_int(value, default: int = 1) -> int:
@@ -337,21 +360,32 @@ def _clean_cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
 
-def _rows_to_markdown(rows: list[list[str]], has_header: bool) -> str:
+def _rows_to_markdown(rows: list[list[str]], row_is_header: list[bool]) -> str:
     """Render parsed rows as a Markdown pipe table."""
-    rows = [r for r in rows if r]
-    if not rows:
+    # Drop empty rows, keeping each surviving row paired with its header flag.
+    kept = [
+        (row, is_header)
+        for row, is_header in zip(rows, row_is_header + [False] * len(rows))
+        if row
+    ]
+    if not kept:
         return ""
 
-    width = max(len(r) for r in rows)
-    padded = [r + [""] * (width - len(r)) for r in rows]
+    width = max(len(row) for row, _ in kept)
+    padded = [(row + [""] * (width - len(row)), is_header) for row, is_header in kept]
 
-    if has_header:
-        header, body = padded[0], padded[1:]
+    header_index = next((i for i, (_, is_hdr) in enumerate(padded) if is_hdr), None)
+    if header_index is not None:
+        # The first header row becomes the Markdown header; everything else —
+        # including any additional header rows — stays in the body so no cell
+        # is dropped.
+        header = padded[header_index][0]
+        body = [row for i, (row, _) in enumerate(padded) if i != header_index]
     else:
-        # Markdown requires a header row; synthesize an empty one so no data
-        # row is silently promoted into (and thus dropped from) the header.
-        header, body = [""] * width, padded
+        # Markdown requires a header row; with no <thead>/<th> to identify one,
+        # synthesize an empty header so no data row is silently promoted into
+        # (and thus dropped from) the header.
+        header, body = [""] * width, [row for row, _ in padded]
 
     lines = [
         "| " + " | ".join(header) + " |",
@@ -385,7 +419,7 @@ def html_table_to_markdown(html: str) -> str:
         if table["nested"]:
             logger.info("Nested HTML table is not representable in Markdown; kept HTML")
             return html
-        markdown = _rows_to_markdown(table["rows"], table["header"])
+        markdown = _rows_to_markdown(table["rows"], table["row_is_header"])
         if markdown:
             rendered.append(markdown)
 
@@ -499,8 +533,13 @@ def _rendered_blocks(page: dict) -> list[tuple[str, dict | None]]:
             table = _payload(block, "table")
             html = str(table.get("html") or "")
             text = html_table_to_markdown(html) if CONVERT_HTML_TABLES else html
-            # A title/description gives the extraction LLM (and the deterministic
-            # table parser's fragment merging) a handle on what the table is.
+            # A short `title` labels the table, so it is kept. The `description`
+            # field is deliberately NOT included: it is model-written prose that
+            # restates the table's figures, and it restates them wrongly — on a
+            # live bank statement it reported the account number as
+            # 0035258015143 where the table itself said 003525801543. Feeding
+            # that into the OCR text would put fabricated values in front of
+            # extraction as if they had been read off the page.
             title = str(table.get("title") or "").strip()
             if title:
                 text = f"**{title}**\n\n{text}" if text else f"**{title}**"
