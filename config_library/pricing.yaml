@@ -1003,6 +1003,12 @@ pricing:
       - name: pages
         price: "0.004"
 
+  # Cohere Parse hosted API list price: $1.50 / 1,000 pages.
+  - name: GENAIIDP-cohere-parse-hook
+    units:
+      - name: pages
+        price: "0.0015"
+
   # ---------------------------------------------------------------------------
   # AWS Lambda Pricing (US East - N. Virginia)
   # ---------------------------------------------------------------------------

@@ -2202,7 +2202,17 @@ class OcrService:
                 text = block.get("Text", "").replace(
                     "|", "\\|"
                 )  # Escape pipe characters
-                confidence = round(block.get("Confidence", 0.0), 1)
+                # Confidence is independently optional: a LambdaHook OCR backend
+                # may return geometry but no confidence scores at all (e.g. the
+                # Cohere Parse hook). Defaulting a missing value to 0.0 would
+                # tell the assessment LLM that every line was maximally
+                # unreliable, so report it as unavailable instead.
+                raw_confidence = block.get("Confidence")
+                confidence = (
+                    round(raw_confidence, 1)
+                    if isinstance(raw_confidence, (int, float))
+                    else "N/A"
+                )
 
                 # Add text type indicator if it's handwriting
                 if block.get("TextType") == "HANDWRITING":

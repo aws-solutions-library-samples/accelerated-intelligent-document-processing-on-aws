@@ -14,6 +14,7 @@ See [docs/lambda-hook-inference.md](../../docs/lambda-hook-inference.md) for ful
 | **GENAIIDP-sagemaker-hook** | Calls a SageMaker real-time inference endpoint. Shows format conversion between Converse API and SageMaker. |
 | **GENAIIDP-chandra-ocr-hook** | Calls the [Chandra OCR 2](https://github.com/datalab-to/chandra) hosted API for high-quality OCR. Converts page images to structured Markdown, JSON, or HTML. |
 | **GENAIIDP-mistral-ocr-hook** | Calls the hosted [Mistral OCR](https://mistral.ai/news/ocr-4/) API for high-quality OCR. Returns Markdown **plus per-word confidence scores and bounding-box geometry** (in Amazon Textract format) so extraction confidence and spatial localization work in Assessment and the UI. Fully serverless — no SageMaker/GPU. |
+| **GENAIIDP-cohere-parse-hook** | Calls the hosted [Cohere Parse](https://cohere.com/blog/parse) API for low-cost OCR ($1.50 / 1,000 pages). Converts Cohere's HTML tables to Markdown pipe tables and returns **bounding boxes for tables and figures**. **No confidence scores** — Cohere Parse does not provide them. Fully serverless. |
 | **GENAIIDP-w2-copy-consistency** | **Assessment** hook (not OCR): deterministically flags Form-W2 fields that disagree across duplicate copies of the same employee on one page (hand-filled Copy B vs Copy C). Pure Python comparison — no LLM call, no added inference cost. No-op passthrough for every other document class. |
 
 ## Naming Convention
@@ -77,6 +78,18 @@ sam deploy --guided \
 ```
 
 ```bash
+# Deploy the Cohere Parse hook sample
+cd samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook
+sam build
+sam deploy --guided \
+  --stack-name GENAIIDP-cohere-parse-hook \
+  --parameter-overrides \
+    IDPWorkingBucket=<your-idp-working-bucket-name> \
+    CustomerManagedEncryptionKeyArn=<your-kms-key-arn> \
+    CohereApiKey=<your-cohere-api-key>
+```
+
+```bash
 # Deploy the W-2 copy-consistency Assessment hook sample
 # (no parameters: this function makes no AWS service calls)
 cd samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency
@@ -100,8 +113,27 @@ sam deploy --guided \
     TargetModelId=us.amazon.nova-pro-v1:0 \
     SageMakerEndpointName=<your-endpoint-name> \
     ChandraApiKey=<your-datalab-api-key> \
-    MistralApiKey=<your-mistral-api-key>
+    MistralApiKey=<your-mistral-api-key> \
+    CohereApiKey=<your-cohere-api-key>
 ```
+
+## Choosing an OCR hook
+
+All three OCR hooks plug in the same way; they differ in what they can feed
+downstream. Confidence is what Assessment consumes for extraction confidence,
+and geometry is what the UI Visual Editor highlights.
+
+| Backend | Confidence | Geometry | Tables | Languages | List price / page |
+|---------|-----------|----------|--------|-----------|-------------------|
+| Amazon Textract (native, no hook) | per LINE + WORD | per LINE + WORD | table structure via `TABLES` feature | see Textract docs | $0.0015 (DetectDocumentText) |
+| **Mistral OCR** hook | per LINE + WORD | paragraph-level | Markdown | 170 | $0.004 |
+| **Cohere Parse** hook | **none** | tables + figures only | HTML → converted to Markdown | 9 stable | $0.0015 |
+| **Chandra OCR** hook | none | none | Markdown / HTML / JSON | 90+ | see datalab.to |
+
+Pick **Mistral** when you need OCR-grounded extraction confidence or HITL
+triggering off OCR quality; **Cohere Parse** when cost and table fidelity matter
+more than confidence; **Textract** when you want an in-AWS backend with no
+third-party data egress.
 
 ## Configuration in IDP
 
@@ -184,6 +216,65 @@ python test_local.py ../../insurance_package.pdf --pages 1,2
 
 # 3. End-to-end test of the DEPLOYED Lambda (uploads an image to temp/lambdahook/,
 #    invokes the function, validates blocks + confidence + geometry + metering, cleans up)
+AWS_PROFILE=default python test_deployed.py \
+  --bucket <your-idp-working-bucket-name> \
+  --image ../../old_cal_license.png
+```
+
+### Cohere Parse Configuration
+
+To use [Cohere Parse](https://cohere.com/blog/parse) as the OCR engine, set the OCR backend to `bedrock` with `LambdaHook` as the model:
+
+```yaml
+ocr:
+  backend: bedrock
+  model_id: "LambdaHook"
+  model_lambda_hook_arn: "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-cohere-parse-hook"
+```
+
+Cohere Parse (`parse-v5.0`) is a 2.3B-parameter vision language model that converts document images into Markdown at $1.50 / 1,000 pages — the cheapest of the OCR hooks, and 2.7× cheaper than Mistral OCR. On Cohere's own ParseBench it scores 87.0 on tables against Mistral OCR 4's 73.9 and Textract's 82.3, and 79.2 overall against 74.5 and 53.3 — but it trails Mistral on raw content faithfulness (86.6 vs 89.5). Treat vendor benchmarks as directional and validate on your own documents.
+
+**HTML tables are converted to Markdown (default on):** Cohere Parse returns tables as HTML. The accelerator's deterministic table parser (used by [agentic extraction](../../lib/idp_common_pkg/idp_common/extraction/README.md)) reads Markdown pipe tables, so this hook converts them — otherwise every table would silently fall back to pure-LLM extraction and lose the row-completeness guarantee. Set `CONVERT_HTML_TABLES=false` to keep the raw HTML. `colspan` is expanded so columns stay aligned; a table nested inside another table is left as HTML (Markdown cannot represent it).
+
+**No confidence scores.** Cohere Parse returns none, by design. Consequences to plan for:
+
+- The `{OCR_TEXT_CONFIDENCE}` placeholder reports `N/A` per line rather than a score, so Assessment cannot ground extraction confidence in OCR quality. Confidence still comes from the assessment model itself.
+- Don't tune HITL thresholds against OCR confidence on this backend.
+
+Choose the Mistral hook instead if OCR-grounded confidence matters to you.
+
+**Geometry for tables and figures only.** Parse returns bounding boxes on table and figure elements, never on text. The hook requests `output_format=blocks` and attaches each table's/figure's normalized box to every line derived from it, which the OCR service recognizes as paragraph-level geometry (`geometrySource: "paragraph"`). Result: tables and figures highlight in the UI Visual Editor; body text has no overlay. Parse's pixel `bounding_box` is ignored because normalizing it would need source-image dimensions the response does not carry.
+
+**Other limits to know:** images only (`document.type: "image_url"` — PDFs are not accepted, which is fine since the accelerator sends page images); 20 MB / 50 megapixel per image; nine stable languages (ar, en, fr, de, ja, ko, it, pt, es) with others zero-shot at lower accuracy; headers, footers and font hierarchy are not identified; charts get a description rather than extracted data series. Rate limit is a flat **500 requests/minute** for trial *and* production keys, so the hook retries 429/5xx with exponential backoff (`MAX_RETRIES`, default 4). Trial keys are additionally capped at 1,000 calls/month — enough for a POC, not for a batch run.
+
+**Cost metering:** The hook returns `usage.pages` (from Parse's `meta.billed_units.pages`). `config_library/pricing.yaml` ships the entry:
+
+```yaml
+  - name: GENAIIDP-cohere-parse-hook
+    units:
+      - name: pages
+        price: "0.0015"
+```
+
+**Getting an API key:** Sign up at [dashboard.cohere.com](https://dashboard.cohere.com/api-keys) to get your API key, then provide it as `CohereApiKey` when deploying the Lambda function.
+
+**Testing:** Three test scripts are provided in the sample folder:
+```bash
+cd samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook
+
+# 1. Offline unit tests for HTML->Markdown tables and the Textract translation
+#    (no API key or AWS needed)
+python test_translation.py
+
+# 2. Live API test against the hosted Cohere Parse API
+export COHERE_API_KEY="your-api-key"
+python test_local.py ../../old_cal_license.png            # single image
+pip install pdf2image Pillow                              # (PDFs need poppler installed)
+python test_local.py ../../insurance_package.pdf --pages 1,2
+
+# 3. End-to-end test of the DEPLOYED Lambda (uploads an image to temp/lambdahook/,
+#    invokes the function, validates blocks + geometry + metering + the ABSENCE
+#    of confidence, cleans up)
 AWS_PROFILE=default python test_deployed.py \
   --bucket <your-idp-working-bucket-name> \
   --image ../../old_cal_license.png

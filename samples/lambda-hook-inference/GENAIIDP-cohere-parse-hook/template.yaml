@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  GENAIIDP-cohere-parse-hook: Lambda Hook that calls the hosted Cohere Parse API
+  for high-quality, low-cost OCR. Returns Markdown (HTML tables converted to
+  Markdown pipe tables) plus Amazon Textract-format blocks carrying table and
+  figure bounding boxes. Cohere Parse returns no confidence scores, so OCR
+  confidence is unavailable. Fully serverless — no SageMaker endpoint required.
+
+Parameters:
+  IDPWorkingBucket:
+    Type: String
+    Description: >
+      Name of the IDP stack's working S3 bucket. Required for reading images
+      that are uploaded as S3 references in the LambdaHook payload.
+
+  CustomerManagedEncryptionKeyArn:
+    Type: String
+    Default: ""
+    Description: >
+      (Optional) ARN of the KMS key used to encrypt the IDP working bucket.
+      Required if the working bucket uses customer-managed KMS encryption.
+
+  CohereApiKey:
+    Type: String
+    NoEcho: true
+    Description: >
+      Cohere API key (Bearer token) for authenticating with the hosted Cohere
+      Parse API. Get your API key from https://dashboard.cohere.com/api-keys
+
+  CohereApiUrl:
+    Type: String
+    Default: "https://api.cohere.com/v2/parse"
+    Description: >
+      Cohere Parse endpoint URL. Defaults to the hosted API.
+
+  CohereParseModel:
+    Type: String
+    Default: "parse-v5.0"
+    Description: >
+      Cohere Parse model id (e.g. parse-v5.0).
+
+  OutputFormat:
+    Type: String
+    Default: "blocks"
+    AllowedValues:
+      - blocks
+      - markdown
+    Description: >
+      Parse output format. 'blocks' returns per-element blocks with bounding
+      boxes for tables and figures (required for UI highlighting); 'markdown'
+      returns a single content string with no usable geometry.
+
+  ConvertHtmlTables:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Convert Cohere's HTML tables into Markdown pipe tables. Keep this enabled
+      so the accelerator's deterministic table parser (agentic extraction) can
+      read them; disabling it leaves tables as raw HTML.
+
+  MaxRetries:
+    Type: String
+    Default: "4"
+    AllowedPattern: "^([0-9]|10)$"
+    Description: >
+      Retry attempts for throttled (429) and 5xx responses. Cohere's Parse rate
+      limit is 500 requests/minute for both trial and production keys.
+
+Conditions:
+  HasKMSKey: !Not [!Equals [!Ref CustomerManagedEncryptionKeyArn, ""]]
+
+Resources:
+  CohereParseHookFunction:
+    Type: AWS::Serverless::Function
+    # checkov:skip=CKV_AWS_173: "API key is passed via NoEcho parameter, encrypted at rest by Lambda service"
+    # checkov:skip=CKV_AWS_116: "DLQ not required for sample Lambda hook function - errors handled by IDP pipeline"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it calls an external HTTPS API"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency - sample function for demonstration purposes"
+    Properties:
+      FunctionName: GENAIIDP-cohere-parse-hook
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: .
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          COHERE_API_KEY: !Ref CohereApiKey
+          COHERE_API_URL: !Ref CohereApiUrl
+          COHERE_PARSE_MODEL: !Ref CohereParseModel
+          OUTPUT_FORMAT: !Ref OutputFormat
+          CONVERT_HTML_TABLES: !Ref ConvertHtmlTables
+          MAX_RETRIES: !Ref MaxRetries
+          RETRY_BASE_DELAY: "1"
+          REQUEST_TIMEOUT: "120"
+          LOG_LEVEL: INFO
+      Policies:
+        - Statement:
+            # Read images from IDP working bucket
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${IDPWorkingBucket}/temp/lambdahook/*"
+            # KMS decrypt if working bucket uses customer-managed encryption
+            - !If
+              - HasKMSKey
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !Ref CustomerManagedEncryptionKeyArn
+              - !Ref AWS::NoValue
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the Cohere Parse Lambda hook function
+    Value: !GetAtt CohereParseHookFunction.Arn
+
+  Usage:
+    Description: How to use in IDP configuration
+    Value: !Sub |
+      Set OCR backend to "bedrock", model_id to "LambdaHook", and model_lambda_hook_arn to "${CohereParseHookFunction.Arn}"

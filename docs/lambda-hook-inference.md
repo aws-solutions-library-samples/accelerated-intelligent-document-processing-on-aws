@@ -174,6 +174,12 @@ same data the native Textract backend produces. Text-only hooks are unaffected
 [consolidated OCR page data](../lib/idp_common_pkg/idp_common/ocr/README.md#consolidated-ocr-page-data-pagedatajson)
 docs for the `pageData.json` schema.
 
+`Confidence` and `Geometry` are **independently optional** on every block, so a hook
+contributes whatever its backend has. A block with no `Confidence` is reported as
+`N/A` in the confidence table (not `0.0`), so a geometry-only backend does not
+signal to the assessment model that every line was unreliable — see
+**GENAIIDP-cohere-parse-hook**, which has geometry but no confidence.
+
 A hook may also return `usage.pages` (in addition to / instead of token counts) to
 enable per-page cost metering. See **GENAIIDP-mistral-ocr-hook** for a worked example.
 
@@ -187,6 +193,7 @@ Ready-to-deploy sample Lambda hook functions are provided in [`samples/lambda-ho
 | **GENAIIDP-sagemaker-hook** | Calls a SageMaker real-time inference endpoint — shows format conversion between Converse API and SageMaker |
 | **GENAIIDP-chandra-ocr-hook** | Calls the [Datalab Chandra OCR 2](https://github.com/datalab-to/chandra) hosted API for high-quality OCR — converts page images to structured Markdown, JSON, or HTML |
 | **GENAIIDP-mistral-ocr-hook** | Calls the hosted [Mistral OCR](https://mistral.ai/news/ocr-4/) API for high-quality OCR — returns Markdown **plus per-word confidence and bounding-box geometry** (Textract format) for explainability, with per-page cost metering. Fully serverless |
+| **GENAIIDP-cohere-parse-hook** | Calls the hosted [Cohere Parse](https://cohere.com/blog/parse) API for low-cost OCR ($1.50 / 1,000 pages) — converts Cohere's HTML tables to Markdown pipe tables and returns **table/figure bounding boxes**, but **no confidence scores** (Parse provides none). Fully serverless |
 
 Each sample includes:
 - Well-commented Python code with clearly marked customization points
@@ -315,6 +322,113 @@ export MISTRAL_API_KEY="your-api-key"
 python test_local.py ../../insurance_package.pdf --pages 1,2   # markdown + confidence + geometry
 python test_translation.py                                     # offline unit tests (no API/AWS)
 ```
+
+## Cohere Parse Integration
+
+[Cohere Parse](https://cohere.com/blog/parse) (`parse-v5.0`) is a 2.3B-parameter
+vision language model that converts document images into Markdown, with tables as
+HTML and bounding boxes on tables and figures. The
+**GENAIIDP-cohere-parse-hook** sample calls the hosted Parse API
+(`POST https://api.cohere.com/v2/parse`, Bearer-key auth) — fully serverless, no
+SageMaker endpoint or GPU required. At **$1.50 / 1,000 pages** it is the cheapest
+of the OCR hooks (2.7× cheaper than Mistral OCR, the same list price as Textract
+`DetectDocumentText`).
+
+### What it does and does not give you
+
+| | Cohere Parse hook | Mistral OCR hook |
+|---|---|---|
+| OCR confidence | **none** — Parse returns no scores | per LINE and per WORD |
+| Geometry | tables and figures only | paragraph-level, all text |
+| Tables | HTML → converted to Markdown pipe tables | Markdown |
+| Languages | 9 stable, others zero-shot | 170 |
+| API accepts | images only (no PDF) | images or PDF |
+| List price / page | $0.0015 | $0.004 |
+
+**The confidence gap is the thing to decide on.** With no OCR scores, the
+`{OCR_TEXT_CONFIDENCE}` placeholder reports `N/A` per line, so
+[Assessment](./extraction-and-confidence.md) cannot ground extraction confidence
+in OCR quality — confidence comes from the assessment model alone. Don't tune HITL
+thresholds against OCR confidence on this backend. Use the Mistral hook if that
+grounding matters to you.
+
+**HTML tables are converted to Markdown by default.** Parse emits tables as HTML;
+the accelerator's deterministic table parser (agentic extraction) reads Markdown
+pipe tables. Without conversion every table would silently fall back to pure-LLM
+extraction and lose the row-completeness guarantee — so the hook converts them
+(`CONVERT_HTML_TABLES=false` to opt out). `colspan` is expanded; a nested table is
+left as HTML because Markdown cannot represent one.
+
+**Geometry.** The hook requests `output_format=blocks` and attaches each table's
+or figure's normalized box to every line derived from it. The OCR service
+recognizes a box shared across lines as paragraph-level geometry
+(`geometrySource: "paragraph"`), so tables and figures highlight in the Web UI
+Visual Editor while body text has no overlay. Parse's pixel `bounding_box` is
+ignored — normalizing it would require source-image dimensions the response does
+not carry.
+
+### Configuration
+
+```yaml
+ocr:
+  backend: bedrock
+  model_id: "LambdaHook"
+  model_lambda_hook_arn: "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-cohere-parse-hook"
+```
+
+**Getting an API key**: Sign up at [dashboard.cohere.com](https://dashboard.cohere.com/api-keys) to get your API key, provided as `CohereApiKey` at deploy time.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COHERE_API_KEY` | (required) | Cohere API key (Bearer token) |
+| `COHERE_API_URL` | `https://api.cohere.com/v2/parse` | Parse endpoint |
+| `COHERE_PARSE_MODEL` | `parse-v5.0` | Parse model id |
+| `OUTPUT_FORMAT` | `blocks` | `blocks` (table/figure geometry) or `markdown` (no usable geometry) |
+| `CONVERT_HTML_TABLES` | `true` | Convert HTML tables to Markdown pipe tables |
+| `MAX_RETRIES` | `4` | Retry attempts for 429 / 5xx responses |
+| `RETRY_BASE_DELAY` | `1` | Initial backoff in seconds, doubled per attempt |
+| `REQUEST_TIMEOUT` | `120` | Per-request timeout (seconds) |
+
+### Service limits
+
+Images only (`document.type: "image_url"`; PDFs are not accepted — fine, since the
+accelerator sends page images), 20 MB / 50 megapixels per image, and a flat
+**500 requests/minute** for trial *and* production keys, hence the built-in
+429/5xx retry with exponential backoff. Trial keys are additionally capped at
+1,000 calls/month. Headers, footers and font hierarchy are not identified, and
+charts get a description rather than extracted data series.
+
+### Cost metering
+
+The hook returns `usage.pages` (from Parse's `meta.billed_units.pages`).
+`config_library/pricing.yaml` ships the entry:
+
+```yaml
+  - name: GENAIIDP-cohere-parse-hook
+    units:
+      - name: pages
+        price: "0.0015"
+```
+
+### Local Testing
+
+```bash
+cd samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook
+export COHERE_API_KEY="your-api-key"
+python test_local.py ../../old_cal_license.png   # markdown + table/figure geometry
+python test_translation.py                       # offline unit tests (no API/AWS)
+```
+
+### Self-hosting option
+
+Parse is also offered on **Amazon SageMaker** and Cohere's Model Vault (it is not
+on Amazon Bedrock). A SageMaker deployment keeps document images inside your own
+account and VPC, and Cohere quotes 23–61% lower cost at sustained GPU
+utilization. That is a different hook — start from
+[`GENAIIDP-sagemaker-hook`](../samples/lambda-hook-inference/GENAIIDP-sagemaker-hook/)
+and reuse this hook's response translation.
 
 ## Example Implementations
 

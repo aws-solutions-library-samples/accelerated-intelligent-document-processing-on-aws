@@ -1,0 +1,706 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+"""
+GENAIIDP-cohere-parse-hook: Lambda Hook that calls the hosted Cohere Parse API.
+
+This Lambda function receives a Converse API-compatible payload from the
+GenAI IDP Accelerator's LambdaHook feature and forwards each page image to the
+hosted Cohere Parse API (https://api.cohere.com/v2/parse) for high-quality OCR.
+
+Cohere Parse ("parse-v5.0") is a vision language model that converts document
+images into Markdown, with tables emitted as HTML and bounding boxes for tables
+and figures. This hook is fully serverless (HTTPS API + API key) — no SageMaker
+endpoint or GPU instance is required.
+
+How this hook differs from the Mistral OCR hook
+-----------------------------------------------
+Cohere Parse returns **no confidence scores at all** (documented), so this hook
+cannot feed OCR confidence into Assessment the way the Mistral hook does. It
+does return geometry, but only for **tables and figures** — never for text. So:
+
+1. It requests ``output_format="blocks"``, which yields reading-ordered text
+   blocks plus table/figure blocks carrying ``bounding_box_normalized``.
+2. It converts Parse's **HTML tables into Markdown pipe tables**. This matters:
+   the accelerator's deterministic table-parsing tool (agentic extraction) keys
+   on Markdown pipe tables, and HTML tables would silently fall back to
+   pure-LLM extraction, losing the completeness guarantee that matters most on
+   large tabular documents.
+3. It emits Amazon Textract-format blocks under ``textractBlocks`` with
+   ``Geometry`` but **no** ``Confidence``. Lines derived from one table/figure
+   share that element's box, which the IDP OCR service already recognizes as
+   paragraph-level geometry (``geometrySource: "paragraph"``), so table and
+   figure highlighting works in the UI Visual Editor with no core changes.
+4. It reports per-page metering (``pages``) so cost tracking works.
+5. It retries throttled (429) and 5xx responses with exponential backoff —
+   Cohere's Parse rate limit is a flat 500 requests/minute for both trial and
+   production keys, which IDP concurrency can reach.
+
+The function:
+1. Downloads page images from S3 (sent as S3 references by the accelerator).
+2. Submits each image to the Cohere Parse API as a base64 data URI.
+3. Converts HTML tables to Markdown and translates blocks to Textract format.
+4. Maps everything back to a Converse API-compatible response for the pipeline.
+
+Environment variables:
+  COHERE_API_KEY      - (Required) Cohere API key (Bearer token).
+  COHERE_API_URL      - Parse endpoint (default:
+                        https://api.cohere.com/v2/parse)
+  COHERE_PARSE_MODEL  - Parse model id (default: parse-v5.0)
+  OUTPUT_FORMAT       - "blocks" or "markdown" (default: blocks). "blocks" is
+                        required for table/figure geometry.
+  CONVERT_HTML_TABLES - "true"/"false" — convert Parse's HTML tables into
+                        Markdown pipe tables (default: true)
+  MAX_RETRIES         - Retry attempts for 429/5xx responses (default: 4)
+  RETRY_BASE_DELAY    - Initial backoff in seconds, doubled per attempt
+                        (default: 1)
+  REQUEST_TIMEOUT     - Per-request timeout in seconds (default: 120)
+  LOG_LEVEL           - Logging level (default: INFO)
+"""
+
+import base64
+import json
+import logging
+import os
+import time
+import urllib.error
+import urllib.request
+from html.parser import HTMLParser
+
+import boto3
+
+logger = logging.getLogger()
+logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+
+# Initialize AWS clients
+s3_client = boto3.client("s3")
+
+# Configuration from environment variables
+COHERE_API_KEY = os.environ.get("COHERE_API_KEY", "")
+COHERE_API_URL = os.environ.get("COHERE_API_URL", "https://api.cohere.com/v2/parse")
+COHERE_PARSE_MODEL = os.environ.get("COHERE_PARSE_MODEL", "parse-v5.0")
+OUTPUT_FORMAT = os.environ.get("OUTPUT_FORMAT", "blocks").lower()
+CONVERT_HTML_TABLES = os.environ.get("CONVERT_HTML_TABLES", "true").lower() == "true"
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "4"))
+RETRY_BASE_DELAY = float(os.environ.get("RETRY_BASE_DELAY", "1"))
+REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "120"))
+
+# Image format to MIME type mapping (for building the data URI)
+IMAGE_MIME_TYPES = {
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "tiff": "image/tiff",
+    "tif": "image/tiff",
+}
+
+
+def download_image_from_s3(s3_uri: str) -> bytes:
+    """Download image bytes from an S3 URI."""
+    parts = s3_uri.replace("s3://", "").split("/", 1)
+    bucket = parts[0]
+    key = parts[1]
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    return response["Body"].read()
+
+
+def extract_images_from_messages(messages: list) -> list[dict]:
+    """
+    Extract images from Converse API messages.
+
+    Args:
+        messages: List of Converse API message objects
+
+    Returns:
+        List of dicts with 'bytes' and 'format' keys
+    """
+    images = []
+    for message in messages:
+        for item in message.get("content", []):
+            if "image" not in item:
+                continue
+            source = item["image"].get("source", {})
+            img_format = item["image"].get("format", "jpeg")
+            if "s3Location" in source:
+                s3_uri = source["s3Location"]["uri"]
+                try:
+                    img_bytes = download_image_from_s3(s3_uri)
+                    images.append({"bytes": img_bytes, "format": img_format})
+                    logger.info(
+                        f"Downloaded image from S3: {s3_uri} ({len(img_bytes)} bytes)"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to download image from {s3_uri}: {e}")
+            elif "bytes" in source:
+                images.append({"bytes": source["bytes"], "format": img_format})
+    return images
+
+
+def call_cohere_parse(image_bytes: bytes, image_format: str) -> dict:
+    """
+    Submit a single image to the hosted Cohere Parse API.
+
+    Cohere Parse accepts one image per call (``document.type: "image_url"``
+    only — PDFs and file uploads are not supported), which lines up exactly with
+    the per-page images the accelerator sends.
+
+    Retries 429 (throttling) and 5xx responses with exponential backoff,
+    honoring a ``Retry-After`` header when the service supplies one.
+
+    Args:
+        image_bytes: Raw image bytes
+        image_format: Image format string (e.g. 'jpeg', 'png')
+
+    Returns:
+        The parsed JSON Parse response.
+
+    Raises:
+        ValueError: If the API key is not configured.
+        urllib.error.HTTPError: If the request still fails after all retries.
+    """
+    if not COHERE_API_KEY:
+        raise ValueError(
+            "COHERE_API_KEY environment variable is required. "
+            "Get your API key from https://dashboard.cohere.com/api-keys"
+        )
+
+    mime_type = IMAGE_MIME_TYPES.get(image_format.lower(), "image/jpeg")
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    data_uri = f"data:{mime_type};base64,{b64}"
+
+    payload = {
+        "model": COHERE_PARSE_MODEL,
+        "document": {"type": "image_url", "image_url": data_uri},
+        "output_format": OUTPUT_FORMAT,
+    }
+
+    req = urllib.request.Request(
+        COHERE_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {COHERE_API_KEY}",
+            "X-Client-Name": "GENAIIDP-cohere-parse-hook",
+            "User-Agent": "GENAIIDP-cohere-parse-hook/1.0",
+        },
+        method="POST",
+    )
+
+    logger.info(
+        f"Submitting image to Cohere Parse ({len(image_bytes)} bytes, "
+        f"model={COHERE_PARSE_MODEL}, output_format={OUTPUT_FORMAT})"
+    )
+
+    delay = RETRY_BASE_DELAY
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(  # nosec B310 - COHERE_API_URL env var (https default), not request input
+                req, timeout=REQUEST_TIMEOUT
+            ) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            retryable = e.code == 429 or e.code >= 500
+            if not retryable or attempt == MAX_RETRIES:
+                # Read the body for a useful error message; Cohere returns
+                # {"message": "..."} on failures.
+                body = ""
+                try:
+                    body = e.read().decode("utf-8")[:500]
+                except Exception:  # nosec B110 - best-effort diagnostics only
+                    pass
+                logger.error(f"Cohere Parse request failed (HTTP {e.code}): {body}")
+                raise
+            wait = _retry_after_seconds(e) or delay
+            logger.warning(
+                f"Cohere Parse HTTP {e.code} (attempt {attempt + 1}/"
+                f"{MAX_RETRIES + 1}); retrying in {wait:.1f}s"
+            )
+            time.sleep(wait)
+            delay *= 2
+        except urllib.error.URLError as e:
+            if attempt == MAX_RETRIES:
+                logger.error(f"Cohere Parse request failed: {e}")
+                raise
+            logger.warning(
+                f"Cohere Parse connection error (attempt {attempt + 1}/"
+                f"{MAX_RETRIES + 1}): {e}; retrying in {delay:.1f}s"
+            )
+            time.sleep(delay)
+            delay *= 2
+
+    # Unreachable: the loop either returns or raises.
+    raise RuntimeError("Cohere Parse request exhausted retries without a result")
+
+
+def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
+    """Parse a numeric Retry-After header, if present and sane."""
+    try:
+        value = float(error.headers.get("Retry-After", ""))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    # Ignore absurd values so a misbehaving header can't stall the Lambda.
+    return value if 0 < value <= 60 else None
+
+
+# ---------------------------------------------------------------------------
+# HTML tables -> Markdown pipe tables
+# ---------------------------------------------------------------------------
+#
+# Cohere Parse emits tables as HTML. The accelerator's deterministic table
+# parser (agentic extraction) recognizes Markdown pipe tables, so converting
+# here keeps that path working — otherwise every table falls back to pure-LLM
+# extraction and loses the row-completeness guarantee.
+#
+# Scope is deliberately narrow: `colspan` is expanded (repeat the cell across
+# the spanned columns) because it keeps columns aligned; `rowspan` is NOT
+# expanded — a spanning cell appears only in the row where it is declared,
+# which is how Markdown tables behave anyway. Nested tables cannot be
+# represented in Markdown at all, so a table containing another table falls
+# back to its original HTML.
+
+
+class _HTMLTableParser(HTMLParser):
+    """Collect the cell text of every top-level ``<table>`` in an HTML string."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        # One entry per table: {"rows": [[cell, ...], ...], "header": bool,
+        #                       "nested": bool}
+        self.tables: list[dict] = []
+        self._table_depth = 0
+        self._cell_parts: list[str] | None = None
+        self._colspan = 1
+
+    # -- structure ---------------------------------------------------------
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            self._table_depth += 1
+            if self._table_depth == 1:
+                self.tables.append({"rows": [], "header": False, "nested": False})
+            else:
+                # Nested table: mark the enclosing one unrepresentable.
+                if self.tables:
+                    self.tables[-1]["nested"] = True
+            return
+
+        if self._table_depth != 1 or not self.tables:
+            return
+
+        if tag == "tr":
+            self.tables[-1]["rows"].append([])
+        elif tag in ("td", "th"):
+            self._cell_parts = []
+            self._colspan = _positive_int(dict(attrs).get("colspan"), default=1)
+            if tag == "th":
+                self.tables[-1]["header"] = True
+        elif tag == "br":
+            if self._cell_parts is not None:
+                self._cell_parts.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag == "table":
+            self._table_depth = max(0, self._table_depth - 1)
+            return
+
+        if self._table_depth != 1 or not self.tables:
+            return
+
+        if tag in ("td", "th") and self._cell_parts is not None:
+            text = _clean_cell("".join(self._cell_parts))
+            rows = self.tables[-1]["rows"]
+            if not rows:  # cell outside any <tr>
+                rows.append([])
+            rows[-1].extend([text] * self._colspan)
+            self._cell_parts = None
+            self._colspan = 1
+
+    def handle_data(self, data):
+        if self._table_depth == 1 and self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+
+def _positive_int(value, default: int = 1) -> int:
+    """Parse a positive int attribute, clamping to a sane range."""
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        return default
+    # Cap the span so a malformed attribute cannot explode the row width.
+    return parsed if 1 <= parsed <= 64 else default
+
+
+def _clean_cell(text: str) -> str:
+    """Collapse whitespace and escape pipes so the cell is Markdown-safe."""
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def _rows_to_markdown(rows: list[list[str]], has_header: bool) -> str:
+    """Render parsed rows as a Markdown pipe table."""
+    rows = [r for r in rows if r]
+    if not rows:
+        return ""
+
+    width = max(len(r) for r in rows)
+    padded = [r + [""] * (width - len(r)) for r in rows]
+
+    if has_header:
+        header, body = padded[0], padded[1:]
+    else:
+        # Markdown requires a header row; synthesize an empty one so no data
+        # row is silently promoted into (and thus dropped from) the header.
+        header, body = [""] * width, padded
+
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "|" + "|".join(["---"] * width) + "|",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in body)
+    return "\n".join(lines)
+
+
+def html_table_to_markdown(html: str) -> str:
+    """
+    Convert every ``<table>`` in ``html`` to a Markdown pipe table.
+
+    Returns the original HTML unchanged when it contains nothing convertible
+    (no rows parsed, or a nested table that Markdown cannot represent), so no
+    content is ever lost.
+    """
+    if not html or not html.strip():
+        return ""
+
+    parser = _HTMLTableParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception as e:  # malformed HTML — keep the original
+        logger.warning(f"HTML table parse failed, keeping raw HTML: {e}")
+        return html
+
+    rendered = []
+    for table in parser.tables:
+        if table["nested"]:
+            logger.info("Nested HTML table is not representable in Markdown; kept HTML")
+            return html
+        markdown = _rows_to_markdown(table["rows"], table["header"])
+        if markdown:
+            rendered.append(markdown)
+
+    if not rendered:
+        return html
+    return "\n\n".join(rendered)
+
+
+# ---------------------------------------------------------------------------
+# Cohere Parse response -> Amazon Textract response format
+# ---------------------------------------------------------------------------
+#
+# Textract geometry uses a normalized 0-1 BoundingBox {Left, Top, Width,
+# Height}. Cohere Parse gives `bounding_box_normalized` (0-1
+# top_left_x/top_left_y/bottom_right_x/bottom_right_y) on table and image
+# elements, so no page dimensions are needed. Its pixel `bounding_box` is
+# deliberately ignored: normalizing it would require the source image
+# dimensions, which the response does not carry.
+#
+# Parse returns NO confidence scores, so no block gets a `Confidence` field.
+# The OCR service treats confidence and geometry as independently optional, and
+# reports missing confidence as "N/A" in the assessment table rather than 0.0.
+#
+# All lines derived from one table or figure share that element's box. The OCR
+# service detects a box reused across LINEs and flags those lines
+# `geometrySource: "paragraph"`, which is exactly the right semantics here.
+
+
+def _bbox_to_geometry(element: dict) -> dict | None:
+    """Convert a Cohere normalized bbox to a Textract Geometry dict."""
+    bbox = element.get("bounding_box_normalized")
+    if not isinstance(bbox, dict):
+        return None
+
+    try:
+        left = float(bbox["top_left_x"])
+        top = float(bbox["top_left_y"])
+        right = float(bbox["bottom_right_x"])
+        bottom = float(bbox["bottom_right_y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    left = max(0.0, min(1.0, left))
+    top = max(0.0, min(1.0, top))
+    width = max(0.0, min(1.0, right - left))
+    height = max(0.0, min(1.0, bottom - top))
+    if width <= 0.0 or height <= 0.0:
+        return None
+
+    return {
+        "BoundingBox": {
+            "Width": width,
+            "Height": height,
+            "Left": left,
+            "Top": top,
+        },
+        "Polygon": [
+            {"X": left, "Y": top},
+            {"X": left + width, "Y": top},
+            {"X": left + width, "Y": top + height},
+            {"X": left, "Y": top + height},
+        ],
+    }
+
+
+def _payload(block: dict, key: str) -> dict:
+    """
+    Return a block's type-specific payload.
+
+    Cohere's schema nests it under the type name (``{"type": "text", "text":
+    {"content": ...}}``), but the docs are loose about this for image and table
+    blocks, so fall back to the block itself when the nested object is absent.
+    """
+    nested = block.get(key)
+    return nested if isinstance(nested, dict) else block
+
+
+def _image_markdown(image: dict) -> str:
+    """Render an image/figure block the way Parse's markdown mode does."""
+    description = str(image.get("description") or "").strip()
+    image_id = str(image.get("id") or "").strip()
+    category = str(image.get("category") or "").strip()
+    if category and category != "other" and description:
+        description = f"{category}: {description}"
+    return f"![{description}]({image_id})"
+
+
+def _rendered_blocks(page: dict) -> list[tuple[str, dict | None]]:
+    """
+    Flatten one Parse page into ``(text, geometry)`` pairs in reading order.
+
+    Handles both ``output_format`` values: "blocks" (per-element blocks, with
+    geometry on tables and images) and "markdown" (one content string, with
+    geometry only on images — which are embedded in the content, so nothing to
+    attach a box to).
+    """
+    page_type = page.get("type")
+
+    if page_type == "markdown" or "markdown" in page:
+        markdown = _payload(page, "markdown")
+        content = str(markdown.get("content") or "")
+        return [(content, None)] if content.strip() else []
+
+    rendered: list[tuple[str, dict | None]] = []
+    for block in page.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+
+        if block_type == "table":
+            table = _payload(block, "table")
+            html = str(table.get("html") or "")
+            text = html_table_to_markdown(html) if CONVERT_HTML_TABLES else html
+            # A title/description gives the extraction LLM (and the deterministic
+            # table parser's fragment merging) a handle on what the table is.
+            title = str(table.get("title") or "").strip()
+            if title:
+                text = f"**{title}**\n\n{text}" if text else f"**{title}**"
+            if text.strip():
+                rendered.append((text, _bbox_to_geometry(table)))
+        elif block_type == "image":
+            image = _payload(block, "image")
+            rendered.append((_image_markdown(image), _bbox_to_geometry(image)))
+        else:
+            # "text" and any future block type that carries a content string.
+            payload = _payload(block, block_type or "text")
+            content = str(payload.get("content") or payload.get("text") or "")
+            if content.strip():
+                rendered.append((content, _bbox_to_geometry(payload)))
+
+    return rendered
+
+
+def cohere_page_to_textract(page: dict) -> tuple[str, list[dict]]:
+    """
+    Convert a single Cohere Parse page object into (markdown, textract_blocks).
+
+    Returns:
+        Tuple of (page markdown text, list of Textract-format Block dicts).
+    """
+    rendered = _rendered_blocks(page)
+
+    blocks: list[dict] = []
+    block_id = 0
+
+    def next_id() -> str:
+        nonlocal block_id
+        block_id += 1
+        return f"cohere-{page.get('index', 0)}-{block_id}"
+
+    # PAGE block. Parse gives no page dimensions, but geometry is already
+    # normalized, so a full-page box is always correct.
+    blocks.append(
+        {
+            "BlockType": "PAGE",
+            "Id": next_id(),
+            "Geometry": {
+                "BoundingBox": {"Width": 1.0, "Height": 1.0, "Left": 0.0, "Top": 0.0},
+                "Polygon": [
+                    {"X": 0.0, "Y": 0.0},
+                    {"X": 1.0, "Y": 0.0},
+                    {"X": 1.0, "Y": 1.0},
+                    {"X": 0.0, "Y": 1.0},
+                ],
+            },
+        }
+    )
+
+    # LINE blocks: one per physical line of the rendered content, carrying the
+    # source element's geometry when it has one. No Confidence — Cohere Parse
+    # does not return confidence scores.
+    for text, geometry in rendered:
+        for raw_line in text.split("\n"):
+            line_text = raw_line.strip()
+            if not line_text:
+                continue
+            line = {"BlockType": "LINE", "Id": next_id(), "Text": line_text}
+            if geometry:
+                line["Geometry"] = geometry
+            blocks.append(line)
+
+    markdown = "\n\n".join(text for text, _ in rendered if text.strip())
+    return markdown, blocks
+
+
+def build_textract_response(parse_response: dict) -> tuple[str, dict, int]:
+    """
+    Build a Textract-format response from a full Cohere Parse API response.
+
+    Returns:
+        Tuple of (combined markdown text, textract-format dict with "Blocks"
+        and "DocumentMetadata", pages_processed count).
+    """
+    pages = parse_response.get("pages") or []
+    all_text: list[str] = []
+    all_blocks: list[dict] = []
+
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        markdown, blocks = cohere_page_to_textract(page)
+        if markdown:
+            all_text.append(markdown)
+        all_blocks.extend(blocks)
+
+    meta = parse_response.get("meta") or {}
+    billed_units = meta.get("billed_units") or {}
+    try:
+        pages_processed = int(billed_units.get("pages") or 0)
+    except (TypeError, ValueError):
+        pages_processed = 0
+    pages_processed = pages_processed or len(pages)
+
+    for warning in meta.get("warnings") or []:
+        logger.warning(f"Cohere Parse warning: {warning}")
+
+    textract_response = {
+        "DocumentMetadata": {"Pages": pages_processed or len(pages)},
+        "Blocks": all_blocks,
+        # Preserve the Parse model id for traceability
+        "ModelId": COHERE_PARSE_MODEL,
+    }
+    return "\n\n".join(all_text), textract_response, pages_processed
+
+
+def lambda_handler(event, context):
+    """
+    Lambda handler that proxies LambdaHook payloads to the Cohere Parse API.
+
+    Expected event format (Converse API-compatible):
+    {
+        "modelId": "LambdaHook",
+        "messages": [{"role": "user", "content": [...]}],
+        "system": [{"text": "..."}],
+        "inferenceConfig": {"temperature": 0.0, ...},
+        "context": "OCR"
+    }
+
+    Returns a Converse API-compatible response, augmented with a top-level
+    ``textractBlocks`` object (Amazon Textract response format) carrying
+    table/figure geometry — but no confidence scores, which Cohere Parse does
+    not provide:
+    {
+        "output": {"message": {"role": "assistant", "content": [{"text": "..."}]}},
+        "textractBlocks": {"DocumentMetadata": {...}, "Blocks": [...]},
+        "usage": {"pages": N, "inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
+    }
+    """
+    idp_context = event.get("context", "unknown")
+    logger.info(f"Received LambdaHook request. Context: {idp_context}")
+
+    messages = event.get("messages", [])
+    images = extract_images_from_messages(messages)
+
+    if not images:
+        logger.warning("No images found in the payload. Cohere Parse requires images.")
+        return {
+            "output": {"message": {"role": "assistant", "content": [{"text": ""}]}},
+            "usage": {
+                "pages": 0,
+                "inputTokens": 0,
+                "outputTokens": 0,
+                "totalTokens": 0,
+            },
+        }
+
+    logger.info(
+        f"Processing {len(images)} image(s) with Cohere Parse "
+        f"(model={COHERE_PARSE_MODEL}, output_format={OUTPUT_FORMAT}, "
+        f"convert_html_tables={CONVERT_HTML_TABLES})"
+    )
+
+    all_text: list[str] = []
+    all_blocks: list[dict] = []
+    total_pages = 0
+
+    for i, img in enumerate(images):
+        logger.info(f"Parsing image {i + 1}/{len(images)}...")
+        parse_response = call_cohere_parse(img["bytes"], img["format"])
+        text, textract_response, pages_processed = build_textract_response(
+            parse_response
+        )
+        if text:
+            all_text.append(text)
+        all_blocks.extend(textract_response["Blocks"])
+        total_pages += pages_processed or 1
+
+    combined_text = "\n\n".join(all_text)
+
+    textract_blocks = {
+        "DocumentMetadata": {"Pages": total_pages},
+        "Blocks": all_blocks,
+        "ModelId": COHERE_PARSE_MODEL,
+    }
+
+    logger.info(
+        f"Cohere Parse complete. Output: {len(combined_text)} chars, "
+        f"{len(all_blocks)} blocks, {total_pages} page(s)."
+    )
+
+    # Return Converse API-compatible response augmented with Textract blocks.
+    # "usage.pages" enables per-page cost metering — add a pricing entry keyed
+    # on the function name (e.g. "GENAIIDP-cohere-parse-hook") with unit "pages".
+    return {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"text": combined_text}],
+            }
+        },
+        "textractBlocks": textract_blocks,
+        "usage": {
+            "pages": total_pages,
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "totalTokens": 0,
+        },
+    }

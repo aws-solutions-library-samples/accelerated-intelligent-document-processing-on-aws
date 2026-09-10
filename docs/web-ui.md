@@ -305,7 +305,7 @@ The Edit Pages feature provides an intelligent interface for modifying individua
 
 ##### View Mode (Default)
 - Click "View Page Text" button to view page content in read-only mode
-- The page image is shown on the left, with a right-pane toggle. **OCR Lines** (the default) lists the OCR text lines with per-line confidence; click a text line to draw its bounding box on the image; zoom with the mouse wheel, pan by dragging, and move between pages with the Next/Previous arrows. (Bounding boxes require an OCR backend that provides geometry, e.g. Textract or the Mistral hook; otherwise the lines are shown without overlays.)
+- The page image is shown on the left, with a right-pane toggle. **OCR Lines** (the default) lists the OCR text lines with per-line confidence; click a text line to draw its bounding box on the image; zoom with the mouse wheel, pan by dragging, and move between pages with the Next/Previous arrows. (Bounding boxes require an OCR backend that provides geometry, e.g. Textract or the Mistral hook — the Cohere Parse hook boxes tables and figures only; otherwise the lines are shown without overlays.)
 - Switch the right pane to **Markdown** to read the page's extracted markdown, with a Rendered ↔ Raw toggle
 
 ##### Edit Mode
