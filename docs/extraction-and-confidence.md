@@ -1858,24 +1858,18 @@ Without it, only the empty/absent and sparse signals apply — a list that retur
 10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
 For corpora where large tables are expected — in practice anything beyond ~400 rows
 or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
-3,200 rows by sharding. Simple mode deliberately does not shard: that is the
-capability that distinguishes the two modes, so a large single document in simple mode
-is the one case where you must set `minItems` (or switch modes) to be told about a
-truncation.
-Without it, the OCR-row estimate (`extraction_rows_below_ocr_estimate`) is what
-catches a partial list — it compares the rows extracted with the table rows the OCR
-text contains, so 43 of 800 is reported even with no `minItems`; a list that returns
-10 of 1,200 rows from a document whose OCR shows only 10 table rows cannot be
-distinguished from a document that genuinely has 10.
-For corpora where large tables are expected, also prefer **Advanced** mode, which
-holds recall 1.000 through 3,200 rows by sharding. Simple mode deliberately does not
-shard: that is the capability that distinguishes the two modes. When a Simple-mode
-section is too large to fit the model's input window at all, the run **fails**
-(Bedrock's *Input is too long for requested model*); the failure is raised as
-`ExtractionInputTooLarge` with an explanation and the remedy (the estimated request size,
-the window, and "use Advanced extraction or split the document") in the Step Functions
-cause and the extraction log, and it is deliberately not retried. The pre-flight estimate
-is logged before the call.
+3,200 rows by sharding. Simple mode deliberately does not shard: that is the capability
+that distinguishes the two modes. Without `minItems`, the OCR-row estimate
+(`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
+compares the rows extracted with the rows in the section's OCR tables of the same shape,
+so 43 of 800 is reported even with no `minItems`; a list that returns 10 of 1,200 rows
+from a document whose OCR shows only 10 table rows cannot be distinguished from a document
+that genuinely has 10. When a Simple-mode section is too large to fit the model's input
+window at all, the run **fails** (Bedrock's *Input is too long for requested model*); the
+failure is raised as `ExtractionInputTooLarge` with an explanation and the remedy (the
+estimated request size, the window, and "use Advanced extraction or split the document")
+in the Step Functions cause and the extraction log, and it is deliberately not retried.
+The pre-flight estimate is logged before the call.
 
 #### Advanced mode: an empty list is retried when the OCR proves there were rows
 
