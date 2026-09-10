@@ -5,40 +5,44 @@
 
 With over-splitting fixed, a Simple-mode section is ONE request: an 800-row statement
 returned 43 rows with COMPLETED and no processing issue, and 25+ pages failed with
-Bedrock's "Input is too long". Two warnings and one message make both loud:
+Bedrock's bare "Input is too long". This pins:
 
-* ``extraction_rows_below_ocr_estimate`` — rows extracted vs table rows in the OCR text.
-* ``extraction_section_exceeds_model_input`` — pre-flight: the single request exceeds
-  the model's input window.
-* the ``document.errors`` entry for the "Input is too long" failure says what to change.
+* ``extraction_rows_below_ocr_estimate`` — rows extracted vs the OCR tables SHAPED like
+  the list (column count within one of the item's property count), so a second table,
+  a form's key/value blocks, a prose "|" or a list of scalars never count against it.
+* the pre-flight estimate (log + remembered figures, NOT a processing issue) and
+  ``ExtractionInputTooLarge`` — the mode-aware, remedy-carrying failure.
 """
 
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 
-from idp_common.config.models import IDPConfig
-from idp_common.extraction.service import ExtractionService
+import pytest
 
+from idp_common.config.models import IDPConfig
+from idp_common.extraction.service import ExtractionInputTooLarge, ExtractionService
+from idp_common.utils.bedrock_utils import is_input_token_overflow
+
+ROW = {
+    "type": "object",
+    "properties": {
+        "Date": {"type": "string"},
+        "Description": {"type": "string"},
+        "Amount": {"type": "number"},
+    },
+}
 SCHEMA = {
     "type": "object",
     "properties": {
         "Account Number": {"type": "string"},
-        "Transactions": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "Date": {"type": "string"},
-                    "Amount": {"type": "number"},
-                },
-            },
-        },
+        "Transactions": {"type": "array", "items": ROW},
     },
 }
 
 
-def _svc(*, agentic: bool = False) -> ExtractionService:
+def _svc(*, agentic: bool = False, schema: dict | None = None) -> ExtractionService:
     cfg = IDPConfig(
         **{
             "extraction": {
@@ -49,197 +53,313 @@ def _svc(*, agentic: bool = False) -> ExtractionService:
     )
     svc = ExtractionService(config=cfg)
     svc._reset_context()
-    svc._class_schema = SCHEMA
+    svc._class_schema = schema or SCHEMA
     return svc
 
 
-def _table_text(rows: int, *, pages: int = 1) -> str:
-    """OCR-like Markdown: one table split across ``pages`` blocks, headings repeated."""
-    per = max(1, rows // pages)
+def _table(
+    rows: int, cols: int = 3, *, pages: int = 1, heading: str | None = None
+) -> str:
+    """OCR-like Markdown: one ``cols``-column table across ``pages`` blocks with the
+    heading reprinted per page, blocks separated by a short page break."""
+    per = max(1, -(-rows // pages))
+    head = heading or "| " + " | ".join(f"H{c}" for c in range(cols)) + " |"
+    sep = "|" + "---|" * cols
     blocks = []
     for p in range(pages):
-        lines = ["| Date | Description | Amount |", "|---|---|---|"]
-        lines += [
-            f"| 01/0{(i % 9) + 1}/2024 | SEQ{i:05d} Sample | {i}.00 |"
-            for i in range(p * per, min(rows, (p + 1) * per))
-        ]
+        lines = [head, sep]
+        for i in range(p * per, min(rows, (p + 1) * per)):
+            lines.append("| " + " | ".join(f"c{c}_{i}" for c in range(cols)) + " |")
         blocks.append("\n".join(lines))
-    return ("\n\nSome prose between pages.\n\n" * 1).join(blocks)
+    return "\n\nPage break text.\n\n".join(blocks)
 
 
 def _rows(n: int) -> list[dict]:
-    return [{"Date": "01/01/2024", "Amount": float(i)} for i in range(n)]
+    return [
+        {"Date": "01/01/2024", "Description": f"SEQ{i:05d}", "Amount": float(i)}
+        for i in range(n)
+    ]
 
 
 def _codes(issues) -> list[str]:
     return [i.code for i in issues]
 
 
+def _issues(svc, fields):
+    return svc._build_extraction_issues(
+        extracted_fields=fields, metadata={}, section_id="1"
+    )
+
+
+CODE = "extraction_rows_below_ocr_estimate"
+
+
 class TestRowShortfall:
     def test_43_of_800_rows_is_reported(self):
         svc = _svc()
-        svc._document_text = _table_text(800, pages=17)
-        issues = svc._build_extraction_issues(
-            extracted_fields={"Account Number": "1", "Transactions": _rows(43)},
-            metadata={},
-            section_id="1",
-        )
-        assert "extraction_rows_below_ocr_estimate" in _codes(issues)
-        issue = next(
-            i for i in issues if i.code == "extraction_rows_below_ocr_estimate"
-        )
+        svc._document_text = _table(800, pages=17)
+        issues = _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+        assert CODE in _codes(issues)
+        issue = next(i for i in issues if i.code == CODE)
         assert issue.severity == "warning"
+        assert issue.details["list_field"] == "Transactions"
         assert issue.details["extracted_rows"] == 43
-        assert 800 <= issue.details["ocr_estimated_rows"] <= 800 + 17  # heading rows
-        assert "Advanced" in issue.message  # simple mode recommends switching
-        assert "extraction_incomplete" not in _codes(issues)  # not double-reported
+        assert (
+            800 <= issue.details["ocr_estimated_rows"] <= 800 + 17
+        )  # reprinted headings
+        assert "Advanced" in issue.message
+        assert "extraction_incomplete" not in _codes(issues)
 
     def test_a_complete_list_is_not_reported(self):
         svc = _svc()
-        svc._document_text = _table_text(400, pages=9)
-        issues = svc._build_extraction_issues(
-            extracted_fields={"Account Number": "1", "Transactions": _rows(400)},
-            metadata={},
-            section_id="1",
+        svc._document_text = _table(400, pages=9)
+        assert CODE not in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(400)})
         )
-        assert "extraction_rows_below_ocr_estimate" not in _codes(issues)
 
-    def test_small_key_value_tables_do_not_trigger_it(self):
-        """A payslip-like class: a short list next to a 20-row key/value table."""
+    def test_a_second_table_of_another_shape_does_not_count(self):
+        """100 Transactions complete, next to a 100-row two-column Daily Balances table."""
         svc = _svc()
-        svc._document_text = "\n".join(f"| Field {i} | value {i} |" for i in range(20))
-        issues = svc._build_extraction_issues(
-            extracted_fields={"Account Number": "1", "Transactions": _rows(2)},
-            metadata={},
-            section_id="1",
+        svc._document_text = (
+            _table(100, cols=3)
+            + "\n\n\n\n\n\n\n\n"
+            + _table(100, cols=2, heading="| Date | Balance |")
         )
-        assert "extraction_rows_below_ocr_estimate" not in _codes(issues)
+        assert CODE not in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(100)})
+        )
+
+    def test_key_value_blocks_do_not_count_against_a_short_list(self):
+        """A form pack: 60 key/value rows (2 columns) and a 3-row list of 3-column rows."""
+        svc = _svc()
+        svc._document_text = "\n".join(f"| Field {i} | value {i} |" for i in range(60))
+        assert CODE not in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(3)})
+        )
+
+    def test_prose_lines_with_a_pipe_are_not_a_table(self):
+        svc = _svc()
+        svc._document_text = "\n".join(
+            f"Call 1-800-000-{i:04d} | Visit us online\n\nMore prose here.\n\nAnd more.\n\nStill more.\n\nEnd."
+            for i in range(40)
+        )
+        assert CODE not in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(2)})
+        )
+
+    def test_a_list_of_scalars_is_never_compared(self):
+        svc = _svc(
+            schema={
+                "type": "object",
+                "properties": {
+                    "CheckNumbers": {"type": "array", "items": {"type": "string"}}
+                },
+            }
+        )
+        svc._document_text = _table(40, cols=1, heading="| Check |")
+        assert CODE not in _codes(
+            _issues(svc, {"CheckNumbers": [str(i) for i in range(40)]})
+        )
 
     def test_an_empty_list_is_left_to_extraction_incomplete(self):
         svc = _svc()
-        svc._document_text = _table_text(800, pages=17)
-        issues = svc._build_extraction_issues(
-            extracted_fields={"Account Number": "1", "Transactions": []},
-            metadata={},
-            section_id="1",
-        )
-        codes = _codes(issues)
-        assert "extraction_incomplete" in codes
-        assert "extraction_rows_below_ocr_estimate" not in codes
+        svc._document_text = _table(800, pages=17)
+        codes = _codes(_issues(svc, {"Account Number": "1", "Transactions": []}))
+        assert "extraction_incomplete" in codes and CODE not in codes
 
-    def test_multi_instance_wrapper_counts_nested_rows(self):
-        """`instances: [{Transactions: [...400 rows]}]` is one top-level item but 400 rows."""
-        svc = _svc()
-        svc._class_schema = {
-            "type": "object",
-            "properties": {"instances": {"type": "array", "items": SCHEMA}},
-        }
-        svc._document_text = _table_text(400, pages=9)
-        issues = svc._build_extraction_issues(
-            extracted_fields={
-                "instances": [{"Account Number": "1", "Transactions": _rows(400)}]
-            },
-            metadata={},
-            section_id="1",
+    def test_instances_are_compared_through_their_inner_lists(self):
+        """Multi-instance wrapper: one instance holding a complete 400-row list."""
+        svc = _svc(
+            schema={
+                "type": "object",
+                "properties": {"instances": {"type": "array", "items": SCHEMA}},
+            }
         )
-        assert "extraction_rows_below_ocr_estimate" not in _codes(issues)
+        svc._document_text = _table(400, pages=9)
+        assert CODE not in _codes(
+            _issues(
+                svc,
+                {"instances": [{"Account Number": "1", "Transactions": _rows(400)}]},
+            )
+        )
+
+    def test_a_truncated_inner_list_across_instances_is_reported(self):
+        svc = _svc(
+            schema={
+                "type": "object",
+                "properties": {"instances": {"type": "array", "items": SCHEMA}},
+            }
+        )
+        svc._document_text = _table(800, pages=17)
+        issues = _issues(
+            svc,
+            {
+                "instances": [
+                    {"Account Number": "1", "Transactions": _rows(20)},
+                    {"Account Number": "2", "Transactions": _rows(23)},
+                ]
+            },
+        )
+        issue = next(i for i in issues if i.code == CODE)
+        assert issue.details["list_field"] == "instances[].Transactions"
+        assert issue.details["extracted_rows"] == 43
+
+    def test_form_style_instances_with_key_value_blocks_are_quiet(self):
+        """3 payslip-like instances, each 12 key/value rows and a complete 3-row list."""
+        svc = _svc(
+            schema={
+                "type": "object",
+                "properties": {"instances": {"type": "array", "items": SCHEMA}},
+            }
+        )
+        svc._document_text = "\n\n\n\n\n\n\n\n".join(
+            "\n".join(f"| Field {i} | value {i} |" for i in range(12)) for _ in range(3)
+        )
+        assert CODE not in _codes(
+            _issues(
+                svc,
+                {
+                    "instances": [
+                        {"Account Number": str(k), "Transactions": _rows(3)}
+                        for k in range(3)
+                    ]
+                },
+            )
+        )
 
     def test_advanced_mode_wording_does_not_recommend_advanced(self):
         svc = _svc(agentic=True)
-        svc._document_text = _table_text(800, pages=17)
-        issues = svc._build_extraction_issues(
-            extracted_fields={"Account Number": "1", "Transactions": _rows(43)},
-            metadata={},
-            section_id="1",
-        )
+        svc._document_text = _table(800, pages=17)
         issue = next(
-            i for i in issues if i.code == "extraction_rows_below_ocr_estimate"
+            i
+            for i in _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+            if i.code == CODE
         )
         assert "Advanced (agentic) extraction, which shards" not in issue.message
         assert issue.details["agentic"] is True
 
     def test_no_document_text_means_no_estimate_and_no_issue(self):
         svc = _svc()
-        issues = svc._build_extraction_issues(
-            extracted_fields={"Account Number": "1", "Transactions": _rows(3)},
-            metadata={},
-            section_id="1",
+        assert CODE not in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(3)})
         )
-        assert "extraction_rows_below_ocr_estimate" not in _codes(issues)
 
-
-class TestRowLikeCounting:
-    def test_counts_dict_items_at_any_depth_not_scalars(self):
-        f = ExtractionService._count_row_like_items
-        assert f({"Transactions": _rows(3)}) == 3
-        assert f({"Tags": ["a", "b", "c"]}) == 0
+    @pytest.mark.parametrize(
+        "ocr_rows,extracted,fires",
+        [
+            (29, 5, False),
+            (30, 14, True),
+            (30, 15, False),
+            (100, 49, True),
+            (100, 50, False),
+        ],
+    )
+    def test_the_floor_and_the_half_ratio_boundaries(self, ocr_rows, extracted, fires):
+        svc = _svc()
+        svc._document_text = _table(ocr_rows)  # +1 heading row per page
+        # subtract the heading row so `ocr_rows` is the exact estimate
+        svc._document_text = "\n".join(
+            svc._document_text.split("\n")[2:]
+        )  # drop heading + separator
         assert (
-            f({"instances": [{"Transactions": _rows(4)}, {"Transactions": _rows(5)}]})
-            == 2 + 9
+            CODE
+            in _codes(
+                _issues(svc, {"Account Number": "1", "Transactions": _rows(extracted)})
+            )
+        ) is fires
+
+
+class TestOcrTables:
+    def test_segments_by_gap_and_measures_columns(self):
+        text = (
+            _table(10, cols=3)
+            + "\n" * 8
+            + _table(5, cols=2, heading="| A | B |")
+            + "\n" * 8
+            + "x | y\n"
         )
-        assert f({"Group": {"Rows": _rows(2)}}) == 2
-        assert f(None) == 0
+        tables = ExtractionService._ocr_tables(text)
+        assert [(t["rows"], t["cols"]) for t in tables] == [
+            (11, 3),
+            (6, 2),
+        ]  # headings counted; lone 'x | y' dropped
+
+    def test_expected_rows_matches_shape(self):
+        tables = [
+            {"rows": 101, "cols": 3},
+            {"rows": 100, "cols": 2},
+            {"rows": 4, "cols": 4},
+        ]
+        # only the exact 3-column table matches a 3-property item
+        assert ExtractionService._expected_rows_for_list(ROW, tables) == 101
+        # unknown shape: largest table
+        assert ExtractionService._expected_rows_for_list({}, tables) == 101
 
 
 class TestInputPreflight:
-    def test_records_a_warning_when_the_request_exceeds_the_window(self, monkeypatch):
+    def test_logs_and_remembers_but_records_no_issue(self, monkeypatch, caplog):
         svc = _svc()
         monkeypatch.setattr(
             svc, "_get_sizing_plan", lambda: SimpleNamespace(max_input_tokens=10_000)
         )
         svc._page_images = [b"x"] * 25
-        content = [{"text": "x" * 60_000}, *([{"image": {"format": "jpeg"}}] * 25)]
-        est = svc._simple_mode_input_preflight(
-            content=content, system_prompt="sys", model_id="m", section_id="7"
-        )
-        assert est > 10_000
-        assert len(svc._preflight_issues) == 1
-        issue = svc._preflight_issues[0]
-        assert issue.code == "extraction_section_exceeds_model_input"
-        assert issue.severity == "warning" and issue.section_id == "7"
+        content = [
+            {"text": "x" * 60_000},
+            *(
+                [{"image": {"format": "jpeg", "source": {"bytes": b"not-an-image"}}}]
+                * 25
+            ),
+        ]
+        with caplog.at_level("WARNING"):
+            est = svc._simple_mode_input_preflight(
+                content=content, system_prompt="sys", model_id="m", section_id="7"
+            )
+        # chars/4 ("sys" rounds to 0) + the fallback per unreadable image
+        assert est == 15_000 + 25 * 1600
+        assert svc._last_simple_input_estimate["max_input_tokens"] == 10_000
+        assert svc._last_simple_input_estimate["pages"] == 25
+        assert any("Input is too long" in r.message for r in caplog.records)
         assert (
-            issue.details["max_input_tokens"] == 10_000
-            and issue.details["images"] == 25
+            _codes(_issues(svc, {"Account Number": "1", "Transactions": _rows(3)}))
+            == []
         )
-        assert "Input is too long" in issue.message and "Advanced" in issue.message
-        # ...and it is the FIRST issue the builder reports.
-        svc._document_text = ""
-        issues = svc._build_extraction_issues(
-            extracted_fields={"Account Number": "1", "Transactions": _rows(3)},
-            metadata={},
-            section_id="7",
-        )
-        assert issues[0].code == "extraction_section_exceeds_model_input"
 
-    def test_silent_when_the_request_fits(self, monkeypatch):
+    def test_image_tokens_come_from_pixels_when_readable(self):
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (1500, 3000)).save(buf, format="PNG")
+        assert (
+            ExtractionService._image_token_estimate(
+                {"format": "png", "source": {"bytes": buf.getvalue()}}, 1600
+            )
+            == 6000
+        )
+        assert (
+            ExtractionService._image_token_estimate(
+                {"source": {"bytes": b"garbage"}}, 1600
+            )
+            == 1600
+        )
+        assert ExtractionService._image_token_estimate("not a dict", 1600) == 1600
+
+    def test_silent_when_the_request_fits(self, monkeypatch, caplog):
         svc = _svc()
         monkeypatch.setattr(
             svc, "_get_sizing_plan", lambda: SimpleNamespace(max_input_tokens=200_000)
         )
-        svc._simple_mode_input_preflight(
-            content=[{"text": "short"}],
-            system_prompt="sys",
-            model_id="m",
-            section_id="1",
-        )
-        assert svc._preflight_issues == []
+        with caplog.at_level("WARNING"):
+            svc._simple_mode_input_preflight(
+                content=[{"text": "short"}],
+                system_prompt="sys",
+                model_id="m",
+                section_id="1",
+            )
+        assert not any("Input is too long" in r.message for r in caplog.records)
 
-    def test_reset_clears_preflight_issues(self, monkeypatch):
-        svc = _svc()
-        monkeypatch.setattr(
-            svc, "_get_sizing_plan", lambda: SimpleNamespace(max_input_tokens=10)
-        )
-        svc._simple_mode_input_preflight(
-            content=[{"text": "x" * 1000}],
-            system_prompt=None,
-            model_id="m",
-            section_id="1",
-        )
-        assert svc._preflight_issues
-        svc._reset_context()
-        assert svc._preflight_issues == []
-
-    def test_sizing_failure_never_blocks(self, monkeypatch):
+    def test_reset_clears_the_estimate_and_sizing_failure_never_blocks(
+        self, monkeypatch
+    ):
         svc = _svc()
         monkeypatch.setattr(
             svc,
@@ -252,23 +372,59 @@ class TestInputPreflight:
             model_id="m",
             section_id="1",
         )
-        assert est > 0 and svc._preflight_issues == []
+        assert est == 250 and svc._last_simple_input_estimate["max_input_tokens"] == 0
+        svc._reset_context()
+        assert svc._last_simple_input_estimate is None
 
 
-class TestActionableError:
-    def test_input_too_long_gets_the_explanation(self):
-        msg = ExtractionService._actionable_section_error(
-            RuntimeError(
-                "An error occurred (ValidationException) when calling the Converse operation: Input is too long for requested model."
-            ),
+class TestOverflowFailure:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "An error occurred (ValidationException) when calling the Converse operation: Input is too long for requested model.",
+            "Input Tokens Exceeded",
+            "input token count 210000 exceeds the maximum of 200000",
+            "The context window was exceeded",
+        ],
+    )
+    def test_every_bedrock_phrasing_is_recognised(self, text):
+        assert is_input_token_overflow(RuntimeError(text)) is True
+
+    def test_other_errors_are_not(self):
+        assert is_input_token_overflow(ValueError("bad schema")) is False
+
+    def test_simple_wording_carries_size_and_remedy(self):
+        svc = _svc()
+        svc._last_simple_input_estimate = {
+            "estimated_input_tokens": 280_000,
+            "max_input_tokens": 200_000,
+            "pages": 25,
+            "images": 25,
+        }
+        msg = svc._explain_input_overflow(
+            RuntimeError("Input is too long for requested model."),
             "3",
-            25,
+            is_agentic=False,
         )
         assert msg.startswith("Error processing section 3: ")
-        assert "25 page(s)" in msg and "Advanced (agentic) extraction" in msg
-
-    def test_other_errors_are_unchanged(self):
-        msg = ExtractionService._actionable_section_error(
-            ValueError("bad schema"), "3", 25
+        assert (
+            "280,000" in msg
+            and "25 page(s)" in msg
+            and "Advanced (agentic) extraction" in msg
         )
-        assert msg == "Error processing section 3: bad schema"
+
+    def test_agentic_wording_does_not_tell_an_agentic_user_to_go_agentic(self):
+        svc = _svc(agentic=True)
+        msg = svc._explain_input_overflow(
+            RuntimeError("Input is too long"), "3", is_agentic=True
+        )
+        assert "max_pages_per_shard" in msg and "Use Advanced" not in msg
+
+    def test_the_raised_class_is_new_and_therefore_not_retried(self):
+        from idp_common.utils.transient_errors import is_transient_error
+
+        exc = ExtractionInputTooLarge(
+            "Error processing section 1: Input is too long ..."
+        )
+        assert is_transient_error(exc) is False
+        assert type(exc).__name__ == "ExtractionInputTooLarge"

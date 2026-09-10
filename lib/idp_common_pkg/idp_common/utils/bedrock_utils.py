@@ -157,6 +157,24 @@ def _clamped_or_log(
     return allowed
 
 
+def is_input_token_overflow(error: BaseException) -> bool:
+    """True if ``error`` is a Bedrock input/context overflow.
+
+    Bedrock phrases it several ways — "Input is too long for requested model",
+    "Input Tokens Exceeded", "input token count ... exceeds the maximum" — so the
+    match is loose. Shared by summarization (which degrades to a stub) and
+    extraction (which explains the failure); keep the one matcher.
+    """
+    msg = str(error).lower()
+    if "too long" in msg and "input" in msg:
+        return True
+    if "input token" in msg or "input tokens" in msg:
+        return True
+    if "context" in msg and ("exceed" in msg or "too long" in msg):
+        return True
+    return False
+
+
 # Default retryable error codes (matched against ClientError codes and exception
 # messages).
 #

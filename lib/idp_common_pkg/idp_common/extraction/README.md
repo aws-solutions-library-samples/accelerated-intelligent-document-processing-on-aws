@@ -1778,14 +1778,21 @@ Use these metrics to:
 
 With over-splitting fixed (#726) a Simple-mode section is ONE request, and the measured
 consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED` and no
-processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two
-`ProcessingIssue`s make both loud without changing what is extracted:
-`extraction_rows_below_ocr_estimate` (warning; rows extracted < half the table rows the
-section's OCR text contains, floor 30 rows — the same Markdown-row heuristic the agentic
-path uses to recommend the table tool — counted at any depth so a multi-instance wrapper
-is not mis-counted; raised in both modes, the Simple-mode wording recommends Advanced) and
-`extraction_section_exceeds_model_input` (warning; Simple mode only, a pre-flight estimate
-of the single request against the sizing plan's input window, recorded before the call so
-it survives the failure). The `document.errors` entry for the *Input is too long* failure
-explains the cause and remedy (`_actionable_section_error`). Simple mode deliberately does
-not shard — that is Advanced mode's capability.
+processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
+make both loud without changing what is extracted:
+
+- `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for a list of
+  objects vs the rows in the section's OCR tables **of the same shape** (`_ocr_tables`
+  segments pipe-delimited runs by gaps and measures their column count;
+  `_expected_rows_for_list` keeps the tables whose column count equals the list item's
+  property count). Fires below half, with a 30-row floor. Lists of scalars are not compared;
+  an array of instances (the multi-instance wrapper, or any list whose items carry lists) is
+  compared through its inner lists (`_object_list_targets`). Simple-mode wording recommends
+  Advanced or `minItems`; agentic wording does not.
+- `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
+  `ValidationException` with the section size (from the logged pre-flight estimate,
+  `_simple_mode_input_preflight`: text chars/4 + images at Bedrock's pixels/750) and the
+  remedy; the wording is mode-aware (`_explain_input_overflow`) and the matcher is the shared
+  `bedrock_utils.is_input_token_overflow` (also used by summarization). The class name is in
+  no retry list, so #787 keeps it hard. The pre-flight is **not** a processing issue: a
+  successful call proves the estimate wrong, and a failed section never reaches the record.

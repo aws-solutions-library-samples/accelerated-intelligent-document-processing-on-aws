@@ -1822,7 +1822,7 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Three signals are now raised as
+So it must be detected structurally. Four signals are raised as
 [processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
 
 | Code | Severity | Fires when |
@@ -1830,10 +1830,9 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
-| `extraction_rows_below_ocr_estimate` | warning | The list fields returned **fewer than half** the table rows the section's OCR text contains (and the OCR holds at least 30 table rows). This is the ground-truth-free signal for the Simple-mode case above — 43 rows extracted from an 800-row statement — which passes every other check because the list is non-empty and the scalars are right. Advisory: heading rows and unrelated key/value tables inflate the estimate, hence the floor and the half ratio. |
-| `extraction_section_exceeds_model_input` | warning | Simple mode only, raised **before** the call: the section's single request (page text, page images, prompt) is estimated above the extraction model's input window, so Bedrock will answer *Input is too long for requested model*. The document's error entry for that failure carries the same explanation. Advanced mode shards and does not hit this. |
+| `extraction_rows_below_ocr_estimate` | warning | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. A second table of another shape (a two-column Daily Balances table next to Transactions), a form's key/value blocks, a prose line containing a pipe, and lists of scalars do not count against it; an array of instances is compared through its inner lists. Reprinted heading rows inflate the estimate slightly, hence the half ratio. |
 
-A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+A fifth issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
 
 | Code | Severity | Fires when |
@@ -1856,7 +1855,14 @@ text contains, so 43 of 800 is reported even with no `minItems`; a list that ret
 10 of 1,200 rows from a document whose OCR shows only 10 table rows cannot be
 distinguished from a document that genuinely has 10.
 For corpora where large tables are expected, also prefer **Advanced** mode, which
-holds recall 1.000 through 3,200 rows by sharding.
+holds recall 1.000 through 3,200 rows by sharding. Simple mode deliberately does not
+shard: that is the capability that distinguishes the two modes. When a Simple-mode
+section is too large to fit the model's input window at all, the run **fails**
+(Bedrock's *Input is too long for requested model*); the failure is raised as
+`ExtractionInputTooLarge` with an explanation and the remedy (the estimated request size,
+the window, and "use Advanced extraction or split the document") in the Step Functions
+cause and the extraction log, and it is deliberately not retried. The pre-flight estimate
+is logged before the call.
 
 #### Advanced mode: an empty list is retried when the OCR proves there were rows
 
