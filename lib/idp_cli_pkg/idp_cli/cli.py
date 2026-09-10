@@ -270,6 +270,33 @@ TEMPLATE_URLS = {
 }
 
 
+def _default_email_mutable_for_new_federated_stack(
+    additional_params: Dict[str, str], *, stack_exists: bool, headless: bool
+) -> Optional[str]:
+    """Default ``ExternalIdPEmailMutable=true`` when CREATING a federated stack.
+
+    Cognito rewrites the IdP-mapped ``email`` attribute on every federated
+    sign-in, so a pool created with the template default (``Mutable: false``)
+    lets each federated user sign in exactly once (#835). The flag is fixed at
+    pool creation and changing it on an existing stack fails the update, which
+    is why the template cannot simply default it to ``true``: that would flip it
+    on every existing stack's next update. The CLI knows whether this is a
+    create or an update, so it can supply the safe value for a new stack only.
+
+    Mutates ``additional_params`` in place. Returns the value that was applied,
+    or ``None`` when nothing was changed (update, headless, no external IdP, or
+    the caller set the parameter explicitly).
+    """
+    if stack_exists or headless:
+        return None
+    if not additional_params.get("ExternalIdPType"):
+        return None
+    if "ExternalIdPEmailMutable" in additional_params:
+        return None
+    additional_params["ExternalIdPEmailMutable"] = "true"
+    return "true"
+
+
 def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     """Parse a --tags string (key=value,key2=value2) into a dict.
 
@@ -789,6 +816,16 @@ def deploy(
                 key = match.group(1).strip()
                 value = match.group(2).strip().rstrip(",")
                 additional_params[key] = value
+
+        if _default_email_mutable_for_new_federated_stack(
+            additional_params, stack_exists=stack_exists, headless=headless
+        ):
+            console.print(
+                "[yellow]ExternalIdPType is set and this is a new stack: "
+                "defaulting ExternalIdPEmailMutable=true so federated users can "
+                "sign in more than once. This flag is fixed at User Pool creation "
+                "and must not be changed on a later update.[/yellow]"
+            )
 
         # Parse stack tags (key=value,key2=value2), propagated by CloudFormation
         # to all taggable resources and nested stacks.

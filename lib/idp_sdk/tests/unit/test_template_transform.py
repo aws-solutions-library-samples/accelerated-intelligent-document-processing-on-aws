@@ -459,3 +459,22 @@ def test_real_template_headless_has_no_cfn_lint_errors():
             for f in errors
         )
     )
+
+
+def test_real_template_headless_drops_external_idp_email_mutable_and_its_condition():
+    """#835: the parameter and the condition that reads it must BOTH go, or the
+    headless template carries a dangling Ref that CloudFormation rejects (E1020).
+    Behavioural counterpart of the source-text check in
+    scripts/sdlc/tests/test_userpool_email_mutability.py."""
+    base = _load_real_template_plain()
+    assert "ExternalIdPEmailMutable" in base["Parameters"], (
+        "premise: develop declares it"
+    )
+    assert "ExternalIdPEmailIsMutable" in base["Conditions"]
+    result = HeadlessTemplateTransformer().apply_transforms(base)
+    assert "ExternalIdPEmailMutable" not in result.get("Parameters", {})
+    assert "ExternalIdPEmailIsMutable" not in result.get("Conditions", {})
+    interface = result.get("Metadata", {}).get("AWS::CloudFormation::Interface", {})
+    for group in interface.get("ParameterGroups", []):
+        assert "ExternalIdPEmailMutable" not in group.get("Parameters", [])
+    assert "ExternalIdPEmailMutable" not in interface.get("ParameterLabels", {})
