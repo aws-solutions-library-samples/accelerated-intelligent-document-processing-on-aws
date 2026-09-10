@@ -266,6 +266,7 @@ class HeadlessTemplateTransformer:
             "ExternalIdPReviewerGroupName",
             "ExternalIdPViewerGroupName",
             "ExternalIdPAutoLogin",
+            "ExternalIdPEmailMutable",
             # Public-template version-check (UI-only feature — resolver
             # removed above in self.appsync_resources). Drop the params so
             # the headless template doesn't expose unused UI configuration.
@@ -321,6 +322,7 @@ class HeadlessTemplateTransformer:
             "IsExternalIdPOIDC",
             "HasExternalIdPGroupMapping",
             "ShouldMapExternalIdPGroups",
+            "ExternalIdPEmailIsMutable",  # reads ExternalIdPEmailMutable (#835)
             "CreateExternalAppClient",
             # Used only by the removed VersionCheckResolverFunction (AppSync UI feature)
             "HasPublicArtifactsBucket",

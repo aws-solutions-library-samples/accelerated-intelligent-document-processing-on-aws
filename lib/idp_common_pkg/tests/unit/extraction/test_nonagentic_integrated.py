@@ -402,3 +402,62 @@ def test_escalation_answering_in_candidate_shape_is_discarded():
     # Original kept: a wrong-but-flat value beats a shape nothing can read.
     assert result.extracted_fields["due_date"] == "whenever"
     assert not isinstance(result.extracted_fields["due_date"], dict)
+
+
+def test_integrated_retry_returns_the_regenerated_global_surface():
+    """The alerts the retry returns are rebuilt from the FINAL spliced
+    assessment (globally-indexed paths over the full merged list), not the
+    slice-relative alerts accumulated while retrying the missing subset
+    (upstream #813). Row 3 is the low-confidence one in the final list; a
+    surface derived from the retried-subset enumeration could not name it 3."""
+    svc = _svc()
+    svc._document_text = "doc"
+    svc._page_images = []
+    svc._class_schema = {
+        "properties": {
+            "Items": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"rate": {}}},
+            }
+        }
+    }
+    section_info = SimpleNamespace(class_label="invoice")
+
+    # Rows 0-2 already scored confidently inline; rows 3-4 are unscored
+    # placeholders, so ONLY they are retried (a subset whose local indexes
+    # are 0 and 1). The retry scores row 3 low.
+    extracted = {"Items": [{"rate": str(i)} for i in range(5)]}
+    merged = {
+        "Items": [
+            {"rate": {"confidence": 0.95}},
+            {"rate": {"confidence": 0.95}},
+            {"rate": {"confidence": 0.95}},
+            {"rate": {"confidence": None}},
+            {"rate": {"confidence": None}},
+        ],
+    }
+
+    class _ScoresRow3Low(_TruncateOverN):
+        def assess_results(self, **kw):
+            result = super().assess_results(**kw)
+            rows = kw["extraction_results"].get("Items", [])
+            for i, row in enumerate(rows):
+                if row.get("rate") == "3":
+                    result.enhanced_assessment["Items"][i]["confidence"] = 0.4
+            return result
+
+    fake = _ScoresRow3Low()
+    with patch("idp_common.assessment.service.AssessmentService", return_value=fake):
+        out, alerts, _split = svc._retry_missing_integrated_rows(
+            merged_assessment=merged,
+            extracted_fields=extracted,
+            section_info=section_info,
+        )
+
+    assert out["Items"][3]["rate"]["confidence"] == 0.4
+    paths = [a["attribute_name"] for a in alerts]
+    assert paths == ["Items[3].rate"], (
+        f"expected the final-list index, got {paths} — Items[0]/Items[1] "
+        "would mean the surface came from the retried subset's local "
+        "enumeration instead of the final spliced assessment"
+    )

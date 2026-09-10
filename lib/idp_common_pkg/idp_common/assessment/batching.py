@@ -1286,6 +1286,7 @@ def assess_results_batched(
     deadline_epoch: float | None = None,
     max_concurrent_batches: int = 1,
     class_schema: dict[str, Any] | None = None,
+    default_confidence_threshold: float | None = None,
 ) -> dict[str, Any]:
     """Assess one scope, batching large list fields across multiple inferences.
 
@@ -1454,6 +1455,22 @@ def assess_results_batched(
                 _missing_row_indices(
                     merged_assessment.get(big), extraction_results.get(big)
                 )
+            )
+        # Alert surface (upstream #813): row indexes in per-core alerts are LOCAL
+        # to the slice each core was handed, so accumulating them yields paths
+        # like transactions[6] for the merged list's row 16 — mislabeled, and
+        # colliding across slices. When the schema and default threshold are
+        # available, REGENERATE the surface from the merged assessment instead:
+        # enrich_assessment_with_thresholds enumerates the full merged list, so
+        # paths are globally indexed by construction, and the retry path's
+        # slice-relative alerts stop mattering because they are no longer part
+        # of the surface. The stored list is a derived copy of
+        # explainability_info (see dedupe_alerts' docstring); this makes it a
+        # pure projection of it. Without a schema the per-core accumulation
+        # remains (there is nothing to resolve thresholds against).
+        if class_schema is not None and default_confidence_threshold is not None:
+            _, merged_alerts = enrich_assessment_with_thresholds(
+                merged_assessment, class_schema, default_confidence_threshold
             )
         return {
             "assessment": merged_assessment,
@@ -1635,6 +1652,14 @@ def assess_results_batched(
         _missing_row_indices(merged_assessment.get(big_field), rows)
     )
 
+    # Alert surface regeneration — see the identical block on the single-call
+    # branch above for the full rationale (upstream #813): per-core alert row
+    # indexes are slice-local; rebuilding from the merged assessment makes them
+    # global by construction.
+    if class_schema is not None and default_confidence_threshold is not None:
+        _, merged_alerts = enrich_assessment_with_thresholds(
+            merged_assessment, class_schema, default_confidence_threshold
+        )
     return {
         "assessment": merged_assessment,
         "alerts": dedupe_alerts(merged_alerts),

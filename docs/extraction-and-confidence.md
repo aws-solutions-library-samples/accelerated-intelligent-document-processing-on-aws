@@ -635,6 +635,20 @@ already unambiguous (a `15` cannot be a month whatever you set).
 > column typing, rule validation, API clients — rather than as an accuracy
 > improver. It did not move evaluation accuracy in either A/B we ran.
 
+### Oversize page images (`metadata.image_downscale`)
+
+Bedrock rejects a single image over 5 MiB and measures the **base64-encoded**
+payload, so a stored page image over **3.75 MiB** — reachable from the shipped
+defaults, which preserve original resolution — used to fail the whole document with
+`ValidationException: image exceeds 5 MB maximum` at the extraction step
+([#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778)). Such a page is now downscaled proportionally to fit (same format
+first, JPEG only as a fallback), the reduction is logged, and the section records it
+per page under `metadata.image_downscale` (original and final bytes, size and format,
+passes, reason). A page that already fits leaves no entry. Set the service's
+`image.target_width` / `image.target_height` to keep pages inside the budget if you
+would rather control the resolution than have it reduced per request; see
+[Image Processing Configuration](./configuration.md#effective-per-image-budget-375-mib-enforced-post-base64).
+
 ### Schema validation (`extraction.validation`)
 
 Validates the result against the **full class JSON Schema** — most importantly the
@@ -1827,7 +1841,7 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Three signals are now raised as
+So it must be detected structurally. Four signals are raised as
 [processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
 
 | Code | Severity | Fires when |
@@ -1835,8 +1849,9 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
+| `extraction_rows_below_ocr_estimate` | warning | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a second table of another shape (a two-column Daily Balances table printed directly under Transactions), a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. The check needs OCR that emits Markdown tables (Textract with the `TABLES` feature, or BDA); with the default `ocr.features: []` there are none and it never fires. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
 
-A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+A fifth issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
 
 | Code | Severity | Fires when |
@@ -1857,10 +1872,18 @@ Without it, only the empty/absent and sparse signals apply — a list that retur
 10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
 For corpora where large tables are expected — in practice anything beyond ~400 rows
 or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
-3,200 rows by sharding. Simple mode deliberately does not shard: that is the
-capability that distinguishes the two modes, so a large single document in simple mode
-is the one case where you must set `minItems` (or switch modes) to be told about a
-truncation.
+3,200 rows by sharding. Simple mode deliberately does not shard: that is the capability
+that distinguishes the two modes. Without `minItems`, the OCR-row estimate
+(`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
+compares the rows extracted with the rows in the section's OCR tables of the same shape,
+so 43 of 800 is reported even with no `minItems`; a list that returns 10 of 1,200 rows
+from a document whose OCR shows only 10 table rows cannot be distinguished from a document
+that genuinely has 10. When a Simple-mode section is too large to fit the model's input
+window at all, the run **fails** (Bedrock's *Input is too long for requested model*); the
+failure is raised as `ExtractionInputTooLarge` with an explanation and the remedy (the
+estimated request size, the window, and "use Advanced extraction or split the document")
+in the Step Functions cause and the extraction log, and it is deliberately not retried.
+The pre-flight estimate is logged before the call.
 
 #### Advanced mode: an empty list is retried when the OCR proves there were rows
 
