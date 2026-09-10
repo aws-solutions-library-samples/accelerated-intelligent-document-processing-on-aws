@@ -425,9 +425,7 @@ class LowConfidenceOnAmount17(FakeAssessmentService):
         for local_idx, row in enumerate(rows):
             low = row.get("amount") == "17.00"
             conf = 0.5 if low else 0.95
-            row_assessments.append(
-                {"confidence": conf, "confidence_reason": "x"}
-            )
+            row_assessments.append({"confidence": conf, "confidence_reason": "x"})
             if low:
                 core_alerts.append(
                     {
