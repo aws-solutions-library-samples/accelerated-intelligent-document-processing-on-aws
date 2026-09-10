@@ -229,3 +229,33 @@ class TestFindMatchingFiles:
         paginator.paginate.assert_called_once_with(
             Bucket="bucket", Prefix="inv (2).pdf/rule_validation/sections/"
         )
+
+    @patch("idp_common.s3.get_s3_client")
+    def test_globstar_slash_needs_its_slash(self, mock_get_client):
+        # ``a/**/b`` is ``a/b`` or ``a/<folders>/b``; a body that has consumed
+        # characters cannot fall through without a closing ``/``, so ``a/xb``
+        # and ``a/x/yb`` stay out.
+        _s3_with_keys(mock_get_client, ["a/b", "a/x/b", "a/x/y/b", "a/xb", "a/x/yb"])
+
+        assert find_matching_files("bucket", "a/**/b") == ["a/b", "a/x/b", "a/x/y/b"]
+
+    @patch("idp_common.s3.get_s3_client")
+    def test_many_wildcards_against_a_deep_key_stay_fast(self, mock_get_client):
+        """The pattern is user input; matching must not be exponential in it.
+
+        A backtracking regex for these rules took 4 s per key at four ``**/``
+        groups on a 600-character non-matching key and did not finish in two
+        minutes at 25. The matcher walks each key once, so the same work takes
+        milliseconds. The bound below is deliberately loose: it separates
+        "finishes" from "hangs", and must hold on a slow CI runner under
+        coverage instrumentation, not just on a fast laptop.
+        """
+        import time
+
+        deep_key = "a/" + "/".join("d" for _ in range(300)) + "/y.pdf"
+        _s3_with_keys(mock_get_client, [deep_key] * 5)
+
+        started = time.monotonic()
+        assert find_matching_files("bucket", "a/" + "**/" * 25 + "z.pdf") == []
+        assert find_matching_files("bucket", "*a" * 200) == []
+        assert time.monotonic() - started < 10.0
