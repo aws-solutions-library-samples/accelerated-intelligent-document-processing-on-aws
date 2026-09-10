@@ -120,6 +120,21 @@ for new code; **do not "fix" the second or third** — they are correct:
 | `/aws/lambda/${SomeParameter}-<Name>` | `idp-data-generator`, keyed on `MainStackName`/`FeatureId` |
 | *(generated — no `LogGroupName`)* | most of the parent `template.yaml` (49 groups) |
 
+**One exemption, and only one:** a Lambda that runs *only* during a
+CloudFormation stack operation — a `ServiceToken` custom-resource handler, or an
+install hook invoked by another stack's custom resource — may omit its log group
+entirely and keep Lambda's auto-created one. Those are very low volume and log
+nothing but stack operations, so indefinite retention is an accepted cost rather
+than an oversight. Every other Lambda needs a log group with `RetentionInDays`.
+
+All of this is enforced by `scripts/tests/test_lambda_log_groups.py`, which
+gates all 13 templates on three rules: every Lambda has a `LoggingConfig`
+(unless exempt), every log group sets `RetentionInDays`, and no `LogGroupName`
+references a function resource. The exemption list is *verified*, not trusted —
+an exempt function must actually be a `ServiceToken` target or an exported
+install hook and must declare no event source, so a data-plane Lambda cannot be
+added to it to silence the gate.
+
 **Never name a log group after the function resource:**
 
 ```yaml

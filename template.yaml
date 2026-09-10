@@ -1932,6 +1932,20 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+      LoggingConfig:
+        LogGroup: !Ref BatchPreProcessorFunctionLogGroup
+
+  # Data-plane Lambda (idp:plane=data, Jobs API batch ingest), so its log volume
+  # scales with document throughput. It had no log group of its own, which meant
+  # Lambda auto-created one with NO retention policy and those logs were billed
+  # indefinitely (issue #826).
+  BatchPreProcessorFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployApiGateway
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/BatchPreProcessorFunction"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
 
   ##########################################################################
   # Bastion Host (optional - for testing Private API Gateway)
@@ -3092,6 +3106,11 @@ Resources:
         # feature release (issue #697).
         IDPCommonBaseLayerArn: !Ref IDPCommonBaseLayer
         LogLevel: !Ref LogLevel
+        # Retention for the six UI-facing resolver Lambdas' log groups. Without
+        # this the nested stack's resolvers logged to Lambda's auto-created
+        # groups, which carry NO retention policy, so their logs accumulated
+        # and were billed indefinitely (issue #826).
+        LogRetentionDays: !Ref LogRetentionDays
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,
         # accounts with an SCP that requires a boundary on every role fail

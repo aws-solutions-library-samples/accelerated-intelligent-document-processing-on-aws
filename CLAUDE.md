@@ -418,7 +418,7 @@ prefixes before concluding a function has no logs:
 |---|---|
 | `/<StackName>/lambda/<FunctionLogicalId>` | `patterns/unified` and every feature-platform extension — the pipeline-hooks dispatcher, feature hook Lambdas, `FeatureApiFunction`, `UiDeployerFunction` |
 | `/aws/lambda/<StackName>-<Name>` | 5 groups in the parent `template.yaml` (`CircuitBreakerManager`, `CalculateCapacity`, `CalculateCapacityResolver`, `VersionCheckResolver`, `AgentProcessor`) and 2 in `nested/api-resolvers/` |
-| `/aws/lambda/<fn>` (Lambda's default) | anything with no explicit log group — including the 9 functions in `feature-platform/main-stack-extensions/`, e.g. the config-preset resolver (`...-ApplyFeatureConfigPreset...`) |
+| `/aws/lambda/<fn>` (Lambda's default) | **custom-resource-only Lambdas**, which deliberately keep the auto-created group — they run only during a stack operation, so indefinite retention is an accepted cost. Includes `nested/bedrockkb/` (all 5), the `Custom::` handlers in `template.yaml`, and the feature-platform install hooks (`...-RegisterFeature...`, `...-RegisterFeatureHooks...`, `...-ApplyFeatureConfigPreset...`). Enforced by `scripts/tests/test_lambda_log_groups.py` |
 
 Note the first shape is `/<StackName>/`, **not** `/aws/lambda/<StackName>-`, so a
 single `/aws/lambda/` prefix listing will miss the dispatcher and every feature
