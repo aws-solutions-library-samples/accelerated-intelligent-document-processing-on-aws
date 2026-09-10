@@ -165,6 +165,14 @@ def is_input_token_overflow(error: BaseException) -> bool:
     match is loose. Shared by summarization (which degrades to a stub) and
     extraction (which explains the failure); keep the one matcher.
     """
+    code = ""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        code = str((response.get("Error") or {}).get("Code") or "")
+    if code and code != "ValidationException":
+        # A ClientError with a definite code is judged by the code: a throttle that
+        # mentions "input tokens per minute" is not an overflow.
+        return False
     msg = str(error).lower()
     if "too long" in msg and "input" in msg:
         return True

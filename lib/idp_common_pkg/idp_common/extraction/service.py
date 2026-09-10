@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Callable
 
@@ -1520,31 +1521,51 @@ class ExtractionService:
     def _ocr_tables(cls, text: str) -> list[dict[str, int]]:
         """The Markdown tables in ``text`` as ``[{"rows": n, "cols": c}, ...]``.
 
-        Rows are pipe-delimited lines that are not separator rows. A new table
-        starts when more than ``_OCR_TABLE_GAP_LINES`` non-table lines intervene
-        OR when the cell count changes — textractor separates two adjacent tables
-        by a blank line and a heading, which is under the gap, so the width change
-        is what tells a 2-column Daily Balances table from the 3-column
-        Transactions table above it. Trailing empty cells (Textract's spare
-        column) are not counted. Runs shorter than ``_OCR_TABLE_MIN_ROWS`` are
-        dropped, so a footer or prose line containing a pipe is not a table.
-        Heading rows a table reprints on every page are counted as rows (the half
-        ratio absorbs them).
+        A table row is a line that STARTS with a pipe (textractor renders Textract
+        TABLE blocks in GitHub table form; a prose line that merely contains "|",
+        such as a footer, does not start with one). A run counts only if it holds
+        a separator row (``|---|``): pipe-bearing lines with no separator are not
+        a table. A separator starts a NEW table whose heading is the row before
+        it, so a table reprinted per page is one table per page (same width, so
+        the rows are summed by the caller). A run also ends when more than
+        ``_OCR_TABLE_GAP_LINES`` lines intervene, or when the cell count changes —
+        textractor separates two adjacent tables by a blank line and a heading,
+        which is under the gap, so the width change is what tells a 2-column
+        Daily Balances table from the 3-column Transactions table above it.
+        A non-empty line without a leading pipe ends the table (rows are emitted
+        contiguously; only EMPTY lines, up to the gap, are tolerated inside one).
+        Trailing empty cells (Textract's spare column) are not counted. Runs
+        shorter than ``_OCR_TABLE_MIN_ROWS`` are dropped. Heading rows count as
+        rows (the half ratio absorbs them).
         """
-        import re
-
         tables: list[dict[str, int]] = []
         cur_rows = 0
         cur_cols = 0
+        has_sep = False
         last_idx: int | None = None
 
-        def _flush() -> None:
-            if cur_rows >= cls._OCR_TABLE_MIN_ROWS:
-                tables.append({"rows": cur_rows, "cols": cur_cols})
+        def _flush(rows: int, cols: int) -> None:
+            if has_sep and rows >= cls._OCR_TABLE_MIN_ROWS:
+                tables.append({"rows": rows, "cols": cols})
 
         for idx, line in enumerate(text.split("\n")):
             stripped = line.strip()
-            if "|" not in stripped or re.match(r"^[\s|:-]+$", stripped):
+            if not stripped.startswith("|"):
+                if stripped and cur_rows:
+                    # prose ends the table: textractor emits a table's rows
+                    # contiguously, so pipe lines after a text line (a footer
+                    # block) are a new run, which needs its own separator to count
+                    _flush(cur_rows, cur_cols)
+                    cur_rows, has_sep = 0, False
+                continue
+            if re.match(r"^[\s|:-]+$", stripped):
+                if cur_rows > 1:
+                    # the row just read is the heading of the NEXT table; what came
+                    # before is the previous table (or, with no separator, not one)
+                    _flush(cur_rows - 1, cur_cols)
+                    cur_rows = 1
+                has_sep = True
+                last_idx = idx
                 continue
             cells = [c.strip() for c in stripped.strip("|").split("|")]
             while len(cells) > 1 and cells[-1] == "":
@@ -1554,12 +1575,15 @@ class ExtractionService:
                 (last_idx is not None and idx - last_idx > cls._OCR_TABLE_GAP_LINES)
                 or ncols != cur_cols
             ):
-                _flush()
-                cur_rows, cur_cols = 0, 0
+                heading_only = cur_rows == 1 and has_sep and ncols != cur_cols
+                _flush(cur_rows, cur_cols)
+                cur_rows = 0
+                # a heading wider/narrower than its body keeps the separator it saw
+                has_sep = heading_only
             cur_cols = ncols
             cur_rows += 1
             last_idx = idx
-        _flush()
+        _flush(cur_rows, cur_cols)
         return tables
 
     @classmethod
@@ -1628,7 +1652,7 @@ class ExtractionService:
                         for r in inst[iname]
                     ]
                     out.append((f"{name}[].{iname}", len(ip), concat))
-            elif root.get("x-aws-idp-instance-array") == name:
+            elif root.get(X_AWS_IDP_INSTANCE_ARRAY) == name:
                 continue  # bare multi-instance wrapper: instances are documents
             else:
                 out.append((name, len(iprops), rows))
@@ -1719,14 +1743,16 @@ class ExtractionService:
             pass
         return int(fallback)
 
-    def _run_shard_or_explain_overflow(self, fn: Any, **kwargs: Any) -> Any:
-        """Run one shard; re-raise a Bedrock input overflow as ``ExtractionInputTooLarge``
-        with the Advanced-mode explanation, so the Step Functions shard path fails
-        with the same actionable cause as the in-process path."""
+    async def _run_shard_or_explain_overflow(self, fn: Any, **kwargs: Any) -> Any:
+        """Await one shard coroutine; re-raise a Bedrock input overflow as
+        ``ExtractionInputTooLarge`` with the Advanced-mode explanation, so the Step
+        Functions shard path fails with the same actionable cause as the in-process
+        path. ``fn`` is ``async`` (``extract_one_shard``): the try must wrap the
+        await, not the call that merely creates the coroutine."""
         from idp_common.utils.bedrock_utils import is_input_token_overflow
 
         try:
-            return fn(**kwargs)
+            return await fn(**kwargs)
         except Exception as e:
             if is_input_token_overflow(e):
                 msg = self._explain_input_overflow(
@@ -1754,7 +1780,9 @@ class ExtractionService:
             if est.get("estimated_input_tokens") and est.get("max_input_tokens")
             else (f" ({pages} page(s))" if pages else "")
         )
-        if is_agentic:
+        if is_agentic and "remedies:" in str(exc).lower():
+            advice = ""  # agentic_idp already translated it with its own remedies
+        elif is_agentic:
             advice = (
                 " The request exceeded the model's input window even in Advanced "
                 "mode: lower extraction.agentic.max_pages_per_shard or the number "
@@ -2809,7 +2837,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             ):
                 groups.setdefault(n_props, []).append((label, rows))
             for n_props, members in sorted(groups.items()):
-                labels = [lb for lb, rows in members if rows]
+                labels = [
+                    lb for lb, rows in members if any(isinstance(r, dict) for r in rows)
+                ]
                 if not labels:
                     continue  # every list of this width is empty: extraction_incomplete
                 expected = self._expected_rows_for_width(n_props, tables)

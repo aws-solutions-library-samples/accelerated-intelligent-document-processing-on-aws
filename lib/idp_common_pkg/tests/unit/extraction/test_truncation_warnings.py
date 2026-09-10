@@ -257,11 +257,8 @@ class TestRowShortfall:
     )
     def test_the_floor_and_the_half_ratio_boundaries(self, ocr_rows, extracted, fires):
         svc = _svc()
-        svc._document_text = _table(ocr_rows)  # +1 heading row per page
-        # subtract the heading row so `ocr_rows` is the exact estimate
-        svc._document_text = "\n".join(
-            svc._document_text.split("\n")[2:]
-        )  # drop heading + separator
+        # the heading row counts as a row, so ocr_rows-1 body rows = ocr_rows exactly
+        svc._document_text = _table(ocr_rows - 1)
         assert (
             CODE
             in _codes(
@@ -365,15 +362,97 @@ class TestSiblingsRefsAndWrappers:
 
 
 class TestOcrTables:
-    @pytest.mark.parametrize("gap,expect", [(5, 1), (6, 2)])
-    def test_the_gap_boundary(self, gap, expect):
-        text = _table(10, cols=3) + "\n" * gap + _table(10, cols=3)  # gap-1 blank lines
-        assert len(ExtractionService._ocr_tables(text)) == expect
+    @pytest.mark.parametrize("gap,rows", [(5, [11]), (6, [6])])
+    def test_the_gap_boundary_tolerates_empty_lines_inside_a_table(self, gap, rows):
+        """Up to 5 intervening lines keep one table; at 6 the second run stands alone,
+        and without its own separator it is not a table at all."""
+        body = "\n".join(f"| a{i} | b{i} | c{i} |" for i in range(5))
+        text = _table(5, cols=3) + "\n" * gap + body
+        assert [t["rows"] for t in ExtractionService._ocr_tables(text)] == rows
 
     @pytest.mark.parametrize("rows,expect", [(2, 0), (3, 1)])
     def test_the_minimum_rows(self, rows, expect):
-        text = "\n".join(f"| a{i} | b{i} |" for i in range(rows))
+        text = "| a | b |\n|---|---|\n" + "\n".join(
+            f"| a{i} | b{i} |" for i in range(rows - 1)
+        )
         assert len(ExtractionService._ocr_tables(text)) == expect
+
+    def test_pipe_lines_without_a_separator_row_are_not_a_table(self):
+        """A 2-column key/value BLOCK rendered with pipes but no ``|---|`` row, and a
+        footer whose pipes are inside the text: neither is a Markdown table."""
+        kv = "\n".join(f"| Field {i} | value {i} |" for i in range(60))
+        assert ExtractionService._ocr_tables(kv) == []
+        footer = "\n".join(
+            "Member Services | 1-800-555-0100 | www.example.com" for _ in range(40)
+        )
+        assert ExtractionService._ocr_tables(footer) == []
+
+    def test_a_footer_block_after_prose_does_not_join_the_table(self):
+        """The reviewer's case: 17 pages, each a 2-row Charges table, one prose line,
+        then a 3-line 2-column footer block with leading pipes. Prose ends the table
+        and the footer run has no separator, so a complete 34-row extraction is not
+        warned (before this rule the footer inflated the estimate to 102 rows)."""
+        page = (
+            _table(2, cols=2, heading="| Description | Amount |")
+            + "\nQuestions?\n"
+            + "| Member Services | 1-800-555-0100 |\n| Claims | PO Box 1 |\n| Web | x.com |"
+        )
+        text = "\n\n".join(page for _ in range(17))
+        tables = ExtractionService._ocr_tables(text)
+        assert [(t["rows"], t["cols"]) for t in tables] == [(3, 2)] * 17
+        schema = {
+            "type": "object",
+            "properties": {
+                "Charges": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "Description": {"type": "string"},
+                            "Amount": {"type": "number"},
+                        },
+                    },
+                }
+            },
+        }
+        svc = _svc(schema=schema)
+        svc._document_text = text
+        rows = [{"Description": "d", "Amount": 1.0}] * 34
+        assert CODE not in _codes(_issues(svc, {"Charges": rows}))
+
+    def test_a_real_two_column_table_next_to_a_two_property_list_counts(self):
+        """The trade the exact-width rule makes: a 35-row 2-column TABLE (heading and
+        separator) is evidence for a 2-property list, so 3 extracted rows warn."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "Deductions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "Name": {"type": "string"},
+                            "Amount": {"type": "number"},
+                        },
+                    },
+                }
+            },
+        }
+        svc = _svc(schema=schema)
+        svc._document_text = _table(35, cols=2, heading="| Field | Value |")
+        rows = [{"Name": "a", "Amount": 1.0}]
+        assert CODE in _codes(_issues(svc, {"Deductions": rows * 3}))
+        assert CODE not in _codes(_issues(svc, {"Deductions": rows * 20}))
+
+    def test_a_reprinted_heading_starts_a_new_table_of_the_same_width(self):
+        tables = ExtractionService._ocr_tables(_table(20, pages=2))
+        assert [(t["rows"], t["cols"]) for t in tables] == [(11, 3), (11, 3)]
+
+    def test_a_heading_wider_than_its_body_still_counts_the_body(self):
+        text = "| A | B | C | D |\n|---|---|---|---|\n" + "\n".join(
+            f"| a{i} | b{i} | c{i} |" for i in range(10)
+        )
+        assert ExtractionService._ocr_tables(text) == [{"rows": 10, "cols": 3}]
 
     def test_a_width_change_starts_a_new_table_and_trailing_empty_cells_are_ignored(
         self,
@@ -381,9 +460,10 @@ class TestOcrTables:
         text = (
             _table(10, cols=3)
             + "\n"
-            + "\n".join(f"| k{i} | v{i} |" for i in range(6))
+            + _table(5, cols=2, heading="| K | V |")
             + "\n"
-            + "\n".join("| a | b | c |  |" for _ in range(4))
+            + "| a | b | c |  |\n|---|---|---|---|\n"
+            + "\n".join("| a | b | c |  |" for _ in range(3))
         )
         tables = ExtractionService._ocr_tables(text)
         assert [(t["rows"], t["cols"]) for t in tables] == [(11, 3), (6, 2), (4, 3)]
@@ -493,6 +573,84 @@ class TestInputPreflight:
         assert est == 250 and svc._last_simple_input_estimate["max_input_tokens"] == 0
         svc._reset_context()
         assert svc._last_simple_input_estimate is None
+
+
+class TestShardWrapperAndMatcher:
+    def test_the_shard_wrapper_awaits_the_coroutine_and_explains_overflow(self):
+        import asyncio
+
+        from botocore.exceptions import ClientError
+
+        svc = _svc()
+
+        async def shard(**kw):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ValidationException",
+                        "Message": "Input is too long for requested model.",
+                    }
+                },
+                "Converse",
+            )
+
+        with pytest.raises(ExtractionInputTooLarge) as ei:
+            asyncio.run(svc._run_shard_or_explain_overflow(shard, section_id="s1"))
+        assert "max_pages_per_shard" in str(ei.value)
+        assert isinstance(ei.value.__cause__, ClientError)
+
+    def test_the_shard_wrapper_passes_other_errors_and_results_through(self):
+        import asyncio
+
+        svc = _svc()
+
+        async def ok(**kw):
+            return {"status": "ok", **kw}
+
+        async def boom(**kw):
+            raise RuntimeError("shard exploded")
+
+        assert asyncio.run(svc._run_shard_or_explain_overflow(ok, x=1)) == {
+            "status": "ok",
+            "x": 1,
+        }
+        with pytest.raises(RuntimeError):
+            asyncio.run(svc._run_shard_or_explain_overflow(boom))
+
+    def test_a_client_error_is_judged_by_its_code(self):
+        from botocore.exceptions import ClientError
+
+        throttle = ClientError(
+            {
+                "Error": {
+                    "Code": "ThrottlingException",
+                    "Message": "Too many input tokens per minute",
+                }
+            },
+            "Converse",
+        )
+        assert not is_input_token_overflow(throttle)
+        overflow = ClientError(
+            {
+                "Error": {
+                    "Code": "ValidationException",
+                    "Message": "Input is too long for requested model.",
+                }
+            },
+            "Converse",
+        )
+        assert is_input_token_overflow(overflow)
+        assert is_input_token_overflow(
+            ValueError("input token count 210000 exceeds the maximum")
+        )
+
+    def test_an_already_explained_agentic_overflow_gets_no_second_remedy(self):
+        svc = _svc()
+        inner = ValueError(
+            "Extraction input exceeds the model's context window. Remedies: enable concurrent sharding ... (underlying error: Input is too long)"
+        )
+        msg = svc._explain_input_overflow(inner, "s1", is_agentic=True)
+        assert "max_pages_per_shard" not in msg and "Remedies:" in msg
 
 
 class TestOverflowFailure:

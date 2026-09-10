@@ -1783,8 +1783,12 @@ make both loud without changing what is extracted:
 
 - `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for the lists of
   objects of one shape vs the rows in the section's OCR tables **of that shape** (`_ocr_tables`
-  segments pipe-delimited runs at gaps of more than 5 non-table lines AND wherever the cell
-  count changes, ignoring trailing empty cells, and drops runs under 3 rows;
+  counts only Markdown tables: lines that START with a pipe, in a run that holds a `|---|`
+  separator row; a separator starts a new table, a non-empty line without a leading pipe
+  ends one, more than 5 intervening lines or a change in cell count splits one, trailing
+  empty cells are ignored, runs under 3 rows are dropped — so a footer block with pipes, a
+  key/value block rendered with pipes but no separator, or prose containing "|" is never
+  evidence;
   `_expected_rows_for_width` keeps the tables whose column count equals the list item's
   property count; `_object_list_targets` resolves `items` through `$ref` with `deref_schema`,
   descends one level into an array of instances, skips a bare multi-instance wrapper, and
@@ -1794,13 +1798,19 @@ make both loud without changing what is extracted:
   rows and the group extracted fewer than half of them (`_OCR_ROW_ESTIMATE_MIN`,
   `_OCR_ROW_SHORTFALL_RATIO`). The exact-width rule is a trade: an item schema with a
   derived property the table lacks is not compared at all, and a two-property list next to a
-  long run of key/value rows is.
+  real two-column table (a form rendered as a Textract TABLE) is.
 - `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
   `ValidationException` with the section size (from the logged pre-flight estimate,
   `_simple_mode_input_preflight`: text chars/4 + images at Bedrock's pixels/750) and the
   remedy; the wording is mode-aware (`_explain_input_overflow`) and the matcher is the shared
   `bedrock_utils.is_input_token_overflow` (also used by summarization). The class name is in
-  no retry list, so #787 keeps it hard. The Step Functions shard runtime raises it too
-  (`_run_shard_or_explain_overflow` wraps `extract_one_shard`), with the Advanced-mode
-  wording. The pre-flight is **not** a processing issue: a
+  no retry list, so #787 keeps it hard. The matcher judges a `ClientError` by its code
+  first (only `ValidationException` can be an overflow; a throttle mentioning "input tokens
+  per minute" is not) and by text otherwise. The Step Functions shard runtime raises it too
+  (`_run_shard_or_explain_overflow` is `async` and wraps the **await** of
+  `extract_one_shard`), with the Advanced-mode wording; when the agentic path has already
+  translated the overflow (`agentic_idp._is_context_overflow_error`, which also recognises
+  Strands' `ContextWindowOverflowException` by type name and so stays separate), its
+  remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
+  issue: a
   successful call proves the estimate wrong, and a failed section never reaches the record.
