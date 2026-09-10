@@ -34,6 +34,11 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 5))
 PRESET_CONFIGS = sorted(
     glob.glob(os.path.join(REPO, "config_library", "unified", "*", "config.yaml"))
 )
+# An empty parametrize list makes pytest SKIP the parity test rather than fail
+# it, so the guarantee would vanish silently if this path ever stopped resolving.
+assert PRESET_CONFIGS, f"no preset configs found under {REPO}/config_library/unified"
+
+_SCALARS = {"string", "number", "integer", "boolean"}
 
 
 def _referenced_defs(schema: dict) -> set[str]:
@@ -84,9 +89,6 @@ def descriptions(
     return out
 
 
-_SCALARS = {"string", "number", "integer", "boolean"}
-
-
 def _wire_schema(class_schema: dict) -> dict:
     """What the extraction service hands the agent (ExtractionService._transport_model)."""
     model = create_pydantic_model_from_json_schema(
@@ -99,7 +101,8 @@ def _wire_schema(class_schema: dict) -> dict:
 
 def _classes():
     for path in PRESET_CONFIGS:
-        cfg = yaml.safe_load(open(path)) or {}
+        with open(path) as fh:
+            cfg = yaml.safe_load(fh) or {}
         for cls in cfg.get("classes") or []:
             if isinstance(cls, dict) and cls.get("properties"):
                 label = cls.get("x-aws-idp-document-type") or cls.get("$id")
@@ -183,3 +186,39 @@ def test_class_without_descriptions_gets_none_invented():
     schema = {"type": "object", "properties": {"A": {"type": "string"}}}
     wire = create_pydantic_model_from_json_schema(schema, "bare").model_json_schema()
     assert "description" not in wire
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        'Contains """triple quotes""" inside.',
+        'Ends with a double quote"',
+        "Ends with a backslash\\",
+        "Line one\nLine two\n    indented third line",
+        "Sphinx-looking :param x: and >>> doctest prompt",
+        "Unicode — dashes, ünïcödé, 日本語",
+    ],
+)
+def test_docstring_hostile_descriptions_round_trip(hostile):
+    """Object descriptions now enter GENERATED PYTHON SOURCE as docstrings. The
+    only thing between an admin-authored description and a SyntaxError at import
+    (which would fail extraction for that class) is datamodel-code-generator's
+    docstring escaping. Pin that it holds for the shapes most likely to break
+    it; a future generator release that stops escaping fails here, not in Lambda."""
+    schema = {
+        "type": "object",
+        "description": hostile,
+        "properties": {
+            "Group": {
+                "type": "object",
+                "description": hostile,
+                "properties": {"A": {"type": "string"}},
+            }
+        },
+    }
+    wire = create_pydantic_model_from_json_schema(schema, "hostile").model_json_schema()
+    # inspect.cleandoc strips outer whitespace/trailing newline; nothing else may change.
+    assert wire.get("description") == hostile.strip()
+    # The group's text lands on its $defs entry (and Pydantic may repeat it on the
+    # referencing property); what matters is that it arrives byte-identical.
+    assert wire["$defs"]["Group"]["description"] == hostile.strip()

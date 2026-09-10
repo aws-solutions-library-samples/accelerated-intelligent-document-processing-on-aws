@@ -1082,6 +1082,8 @@ on `config_library/unified/lending-package-sample` -> `Payslip` at ~4 chars/toke
 | 1 | prose `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` substituted into the task prompt | ~1,485 |
 | 2 | `"Expected Schema: ..."` appended to the **system** prompt | ~2,600 |
 | 3 | the extraction tool's `inputSchema`, which Strands derives from the same model | ~2,595 |
+
+Figures measured before #836; the class and group descriptions that fix recovers add roughly 130 tokens to each of copies 2 and 3 on `Payslip`.
 | | **total ~6,680, of which copy 2 is 38%** | |
 
 Copies 2 and 3 are **the same JSON string** — not merely equivalent; a test asserts
