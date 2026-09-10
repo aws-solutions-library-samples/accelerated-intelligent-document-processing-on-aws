@@ -151,6 +151,14 @@ def filter_models_by_region(data: Any, region_type: str) -> Any:
     # Models that carry no region prefix but are only available in US (and
     # us-gov) regions via the bedrock-mantle endpoint. They must NOT be offered
     # in EU-region deployments where they are not callable. See openai_responses.py.
+    #
+    # NOTE: openai.gpt-6-astra deliberately does NOT belong here, despite the
+    # shared "openai." prefix. Astra is only ever offered in the CRIS-prefixed
+    # forms, and the us./global. rules below already do the right thing: the
+    # `us.` profile is dropped for EU deployments while `global.` is kept, which
+    # matches the model card (global CRIS covers every EU region) and was
+    # verified live against global.openai.gpt-6-astra in eu-west-1. Listing it
+    # here would wrongly hide the model from EU stacks entirely.
     US_ONLY_MODELS = {
         "openai.gpt-5.4",
         "openai.gpt-5.5",

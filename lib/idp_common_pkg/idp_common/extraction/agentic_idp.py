@@ -38,9 +38,11 @@ from strands.types.media import (
 )
 
 from idp_common.bedrock.client import (
+    ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
     CLAUDE_EFFORT_LEVELS,
     GROK_EFFORT_LEVELS,
+    is_astra_model,
     is_claude_effort_model,
     is_grok_model,
     strips_sampling_params,
@@ -1206,6 +1208,25 @@ def _build_model_config(
                 "Ignoring unsupported Grok reasoning effort '%s' (valid: %s)",
                 reasoning_effort,
                 ", ".join(GROK_EFFORT_LEVELS),
+            )
+
+    # OpenAI GPT-6 Astra shares Grok's `reasoning.effort` carrier but a THIRD
+    # vocabulary: none/low/medium/high/xhigh/max (Claude's set plus `none`;
+    # `minimal` from the GPT-5.x Responses API is rejected). Astra 400s on an
+    # unknown value rather than ignoring it, so dropping out-of-vocabulary values
+    # here is what keeps a stale config from failing every agentic call.
+    elif reasoning_effort and is_astra_model(model_id):
+        effort = str(reasoning_effort).lower().strip()
+        if effort in ASTRA_EFFORT_LEVELS:
+            if additional_request_fields is None:
+                additional_request_fields = {}
+            additional_request_fields["reasoning"] = {"effort": effort}
+            logger.info("Agentic extraction using reasoning effort '%s'", effort)
+        else:
+            logger.warning(
+                "Ignoring unsupported Astra reasoning effort '%s' (valid: %s)",
+                reasoning_effort,
+                ", ".join(ASTRA_EFFORT_LEVELS),
             )
 
     # Resolve the model's true max output tokens from the single source of truth

@@ -563,6 +563,8 @@ The Chat panel includes a **Model** selector that defaults to the `chat.model` c
 
 > **xAI Grok in chat:** `us.xai.grok-4.6` and `global.xai.grok-4.6` are supported for Chat-with-Document. They run on the standard Converse API and are tuned via `chat.reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`) rather than temperature/top_p, which Grok rejects. In EU-region deployments only the `global.` ID appears in the selector — there is no `eu.` Grok profile. A large-context model is recommended for chat and Grok's 500K window is the largest available. See [xAI Grok Models](./grok-models.md).
 
+> **OpenAI GPT-6 Astra in chat:** `us.openai.gpt-6-astra` and `global.openai.gpt-6-astra` are supported for Chat-with-Document. Like Grok they run on the standard Converse API (**not** the bedrock-mantle path the GPT-5.x models use) and are tuned via `chat.reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) rather than temperature/top_p, which Astra rejects with a 400. In EU-region deployments only the `global.` ID appears in the selector — there is no `eu.` Astra profile. Astra's 1.05M context window is the largest available, which suits long chat sessions over big documents, but it is also the most expensive model offered — its automatic prompt caching offsets much of the repeated-history cost. See [OpenAI Models](./openai-models.md#gpt-6-astra-converse).
+
 If a document is "too large for chat context window" — i.e. Bedrock returns an `Input Tokens Exceeded` error — pick a larger-context model in the Chat panel's Model selector and retry. For documents that are larger than any single-prompt model can fit, use the [Knowledge Base](./knowledge-base.md) feature instead.
 
 ### Chat history

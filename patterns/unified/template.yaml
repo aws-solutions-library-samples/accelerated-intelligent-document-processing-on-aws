@@ -500,6 +500,7 @@ Resources:
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
                   - "us.xai.grok-4.6"
+                  - "us.openai.gpt-6-astra"
                   - "google.gemma-3-27b-it"
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
@@ -518,6 +519,7 @@ Resources:
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
                   - "global.xai.grok-4.6"
+                  - "global.openai.gpt-6-astra"
                 order: 2
                 dependsOn: { field: "backend", value: "bedrock" }
               model_lambda_hook_arn:
@@ -532,7 +534,7 @@ Resources:
                 title: Reasoning effort
                 enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                 default: "medium"
-                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                 order: 4
                 dependsOn: { field: "model_id", reasoningCapable: true }
               features:
@@ -683,6 +685,7 @@ Resources:
                     - "us.anthropic.claude-opus-5"
                     - "us.anthropic.claude-opus-5:1m"
                     - "us.xai.grok-4.6"
+                    - "us.openai.gpt-6-astra"
                     - "openai.gpt-5.4"
                     - "openai.gpt-5.5"
                     - "openai.gpt-5.6-sol"
@@ -723,6 +726,7 @@ Resources:
                     - "global.anthropic.claude-opus-5"
                     - "global.anthropic.claude-opus-5:1m"
                     - "global.xai.grok-4.6"
+                    - "global.openai.gpt-6-astra"
                 # NOTE: the Web UI edits document classes with the JSON Schema
                 # builder, not this schema-driven form (ConfigurationLayout filters
                 # `classes` out), so this block is descriptive only. Field names here
@@ -1027,6 +1031,7 @@ Resources:
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
                   - "us.xai.grok-4.6"
+                  - "us.openai.gpt-6-astra"
                   - "google.gemma-3-27b-it"
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
@@ -1046,6 +1051,7 @@ Resources:
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
                   - "global.xai.grok-4.6"
+                  - "global.openai.gpt-6-astra"
                 order: 1
               model_lambda_hook_arn:
                 type: string
@@ -1071,18 +1077,18 @@ Resources:
                     title: Temperature
                     minimum: 0
                     maximum: 1
-                    description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 1
                   top_k:
                     type: integer
                     title: Top K
                     minimum: 1
-                    description: "Sampling Top K. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 2
                   top_p:
                     type: number
                     title: Top P
-                    description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 3
                   max_tokens:
                     type: number
@@ -1094,7 +1100,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               classificationMethod:
@@ -1500,6 +1506,7 @@ Resources:
                       - "us.meta.llama4-maverick-17b-instruct-v1:0"
                       - "us.meta.llama4-scout-17b-instruct-v1:0"
                       - "us.xai.grok-4.6"
+                      - "us.openai.gpt-6-astra"
                       - "google.gemma-3-27b-it"
                       - "nvidia.nemotron-nano-12b-v2"
                       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -1518,6 +1525,7 @@ Resources:
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
                       - "global.xai.grok-4.6"
+                      - "global.openai.gpt-6-astra"
                     default: ""
                   min_population_ratio:
                     type: number
@@ -1634,6 +1642,7 @@ Resources:
                   - "us.meta.llama4-maverick-17b-instruct-v1:0"
                   - "us.meta.llama4-scout-17b-instruct-v1:0"
                   - "us.xai.grok-4.6"
+                  - "us.openai.gpt-6-astra"
                   - "google.gemma-3-27b-it"
                   - "nvidia.nemotron-nano-12b-v2"
                   - "global.amazon.nova-2-lite-v1:0"
@@ -1653,6 +1662,7 @@ Resources:
                   - "global.anthropic.claude-opus-5"
                   - "global.anthropic.claude-opus-5:1m"
                   - "global.xai.grok-4.6"
+                  - "global.openai.gpt-6-astra"
                 order: 5
               model_lambda_hook_arn:
                 type: string
@@ -1678,7 +1688,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "low"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Defaults to low. Raise for reasoning-heavy documents. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Defaults to low. Raise for reasoning-heavy documents. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 1
                     dependsOn: { field: "model", reasoningCapable: true }
                   temperature:
@@ -1686,18 +1696,18 @@ Resources:
                     title: Temperature
                     minimum: 0
                     maximum: 1
-                    description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 2
                   top_k:
                     type: integer
                     title: Top K
                     minimum: 1
-                    description: "Sampling Top K. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 3
                   top_p:
                     type: number
                     title: Top P
-                    description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 4
               system_prompt:
                 type: string
@@ -1829,6 +1839,7 @@ Resources:
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
                         "us.xai.grok-4.6",
+                        "us.openai.gpt-6-astra",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -1847,7 +1858,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
-                        "global.xai.grok-4.6"
+                        "global.xai.grok-4.6",
+                        "global.openai.gpt-6-astra"
                       ]
                     order: 3
                   model_lambda_hook_arn:
@@ -1875,19 +1887,19 @@ Resources:
                         title: Temperature
                         minimum: 0
                         maximum: 1
-                        description: "Sampling temperature. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                        description: "Sampling temperature. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                         order: 1
                         dependsOn: { field: "extraction.confidence.mode", value: "separate" }
                       top_k:
                         type: number
                         title: Top K
-                        description: "Sampling Top K. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                        description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                         order: 2
                         dependsOn: { field: "extraction.confidence.mode", value: "separate" }
                       top_p:
                         type: number
                         title: Top P
-                        description: "Sampling Top P. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                        description: "Sampling Top P. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                         order: 3
                         dependsOn: { field: "extraction.confidence.mode", value: "separate" }
                       reasoning_effort:
@@ -1895,7 +1907,7 @@ Resources:
                         title: Reasoning effort
                         enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         default: "medium"
-                        description: "Reasoning effort for reasoning-capable confidence models (OpenAI GPT-5.x; Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5; xAI Grok, which accepts none|low|medium|high|xhigh but not max). Ignored by the default Nova Lite confidence model and by Sonnet 4.5 / Haiku 4.5."
+                        description: "Reasoning effort for reasoning-capable confidence models (OpenAI GPT-5.x; Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5; xAI Grok, which accepts none|low|medium|high|xhigh but not max; OpenAI GPT-6 Astra, which accepts none|low|medium|high|xhigh|max but not minimal). Ignored by the default Nova Lite confidence model and by Sonnet 4.5 / Haiku 4.5."
                         order: 4
                         dependsOn: { field: "model", reasoningCapable: true }
                   system_prompt:
@@ -2085,6 +2097,7 @@ Resources:
                     "us.meta.llama4-maverick-17b-instruct-v1:0",
                     "us.meta.llama4-scout-17b-instruct-v1:0",
                     "us.xai.grok-4.6",
+                    "us.openai.gpt-6-astra",
                     "google.gemma-3-27b-it",
                     "nvidia.nemotron-nano-12b-v2",
                     "global.amazon.nova-2-lite-v1:0",
@@ -2103,7 +2116,8 @@ Resources:
                     "global.anthropic.claude-opus-4-8:1m",
                     "global.anthropic.claude-opus-5",
                     "global.anthropic.claude-opus-5:1m",
-                    "global.xai.grok-4.6"
+                    "global.xai.grok-4.6",
+                    "global.openai.gpt-6-astra"
                   ]
                 order: 1
               model_lambda_hook_arn:
@@ -2128,19 +2142,19 @@ Resources:
                   temperature:
                     type: number
                     title: Temperature
-                    description: "Sampling temperature. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling temperature. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 1
                     dependsOn: { field: "summarization.enabled", value: true }
                   top_k:
                     type: number
                     title: Top K
-                    description: "Sampling Top K. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 2
                     dependsOn: { field: "summarization.enabled", value: true }
                   top_p:
                     type: number
                     title: Top P
-                    description: "Sampling Top P. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top P. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 3
                     dependsOn: { field: "summarization.enabled", value: true }
                   max_tokens:
@@ -2154,7 +2168,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               system_prompt:
@@ -2299,6 +2313,7 @@ Resources:
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
                         "us.xai.grok-4.6",
+                        "us.openai.gpt-6-astra",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -2317,7 +2332,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
-                        "global.xai.grok-4.6"
+                        "global.xai.grok-4.6",
+                        "global.openai.gpt-6-astra"
                       ]
                     order: 1
                   model_params:
@@ -2335,19 +2351,19 @@ Resources:
                       temperature:
                         type: number
                         title: Temperature
-                        description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                        description: "Sampling temperature: Controls randomness in model output (0.0 = deterministic, higher = more random). Used when top_p is 0. Set temperature=0.0 for consistent, deterministic outputs. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                         default: 0.0
                         order: 1
                       top_k:
                         type: number
                         title: Top K
-                        description: "Sampling Top K. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                        description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                         default: 250
                         order: 2
                       top_p:
                         type: number
                         title: Top P
-                        description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                        description: "Sampling Top P: Nucleus sampling threshold (0.0-1.0). When set to a positive value (> 0), overrides temperature parameter. Set to 0 to use temperature instead. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                         order: 3
                       max_tokens:
                         type: number
@@ -2359,7 +2375,7 @@ Resources:
                         title: Reasoning effort
                         enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                         default: "medium"
-                        description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                        description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                         order: 5
                         dependsOn: { field: "model", reasoningCapable: true }
                   system_prompt:
@@ -2805,6 +2821,7 @@ Resources:
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
                       - "us.xai.grok-4.6"
+                      - "us.openai.gpt-6-astra"
                     order: 1
                   temperature:
                     type: number
@@ -2995,6 +3012,7 @@ Resources:
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
                       - "global.xai.grok-4.6"
+                      - "global.openai.gpt-6-astra"
                       - "eu.amazon.nova-lite-v1:0"
                       - "eu.amazon.nova-pro-v1:0"
                       - "eu.amazon.nova-2-lite-v1:0"
@@ -3019,6 +3037,7 @@ Resources:
                       - "us.meta.llama4-maverick-17b-instruct-v1:0"
                       - "us.meta.llama4-scout-17b-instruct-v1:0"
                       - "us.xai.grok-4.6"
+                      - "us.openai.gpt-6-astra"
                       - "google.gemma-3-27b-it"
                       - "nvidia.nemotron-nano-12b-v2"
                     default: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -3049,6 +3068,7 @@ Resources:
                       - "us.anthropic.claude-opus-5"
                       - "us.anthropic.claude-opus-5:1m"
                       - "us.xai.grok-4.6"
+                      - "us.openai.gpt-6-astra"
                       - "global.amazon.nova-pro-v1:0"
                       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "global.anthropic.claude-sonnet-4-6"
@@ -3065,6 +3085,7 @@ Resources:
                       - "global.anthropic.claude-opus-5"
                       - "global.anthropic.claude-opus-5:1m"
                       - "global.xai.grok-4.6"
+                      - "global.openai.gpt-6-astra"
                       - "eu.amazon.nova-pro-v1:0"
                       - "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "eu.anthropic.claude-sonnet-4-6"
@@ -3136,6 +3157,7 @@ Resources:
                     "us.anthropic.claude-opus-5",
                     "us.anthropic.claude-opus-5:1m",
                     "us.xai.grok-4.6",
+                    "us.openai.gpt-6-astra",
                     "openai.gpt-5.4",
                     "openai.gpt-5.5",
                     "openai.gpt-5.6-sol",
@@ -3174,7 +3196,8 @@ Resources:
                     "global.anthropic.claude-opus-4-8:1m",
                     "global.anthropic.claude-opus-5",
                     "global.anthropic.claude-opus-5:1m",
-                    "global.xai.grok-4.6"
+                    "global.xai.grok-4.6",
+                    "global.openai.gpt-6-astra"
                   ]
                 order: 1
               model_lambda_hook_arn:
@@ -3199,19 +3222,19 @@ Resources:
                   temperature:
                     type: number
                     title: Temperature
-                    description: "Sampling temperature. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling temperature. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 1
                     dependsOn: { field: "chat.enabled", value: true }
                   top_k:
                     type: number
                     title: Top K
-                    description: "Sampling Top K. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top K. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 2
                     dependsOn: { field: "chat.enabled", value: true }
                   top_p:
                     type: number
                     title: Top P
-                    description: "Sampling Top P. Not used for Claude 4.7+ or OpenAI GPT-5.x models."
+                    description: "Sampling Top P. Not used for Claude 4.7+, OpenAI GPT-5.x, OpenAI GPT-6 Astra, or xAI Grok models."
                     order: 3
                     dependsOn: { field: "chat.enabled", value: true }
                   max_tokens:
@@ -3225,7 +3248,7 @@ Resources:
                     title: Reasoning effort
                     enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
                     default: "medium"
-                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), and xAI Grok (none|low|medium|high|xhigh). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
+                    description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5."
                     order: 5
                     dependsOn: { field: "model", reasoningCapable: true }
               system_prompt:
@@ -3328,6 +3351,7 @@ Resources:
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
                         "us.xai.grok-4.6",
+                        "us.openai.gpt-6-astra",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -3346,7 +3370,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
-                        "global.xai.grok-4.6"
+                        "global.xai.grok-4.6",
+                        "global.openai.gpt-6-astra"
                       ]
                     default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     order: 0
@@ -3435,6 +3460,7 @@ Resources:
                         "us.meta.llama4-maverick-17b-instruct-v1:0",
                         "us.meta.llama4-scout-17b-instruct-v1:0",
                         "us.xai.grok-4.6",
+                        "us.openai.gpt-6-astra",
                         "google.gemma-3-27b-it",
                         "nvidia.nemotron-nano-12b-v2",
                         "global.amazon.nova-2-lite-v1:0",
@@ -3453,7 +3479,8 @@ Resources:
                         "global.anthropic.claude-opus-4-8:1m",
                         "global.anthropic.claude-opus-5",
                         "global.anthropic.claude-opus-5:1m",
-                        "global.xai.grok-4.6"
+                        "global.xai.grok-4.6",
+                        "global.openai.gpt-6-astra"
                       ]
                     default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                     order: 0

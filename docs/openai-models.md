@@ -1,20 +1,169 @@
 ---
-title: "OpenAI GPT-5.x Models"
+title: "OpenAI Models"
 ---
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
+# OpenAI Models on Bedrock
+
+The GenAIIDP accelerator supports OpenAI's frontier models on Amazon Bedrock.
+They arrive over **two different APIs**, and almost every practical difference
+between them follows from that split — so start here before reading either
+section.
+
+| | GPT-6 Astra | GPT-5.4 / 5.5 / 5.6 (Sol, Terra, Luna) |
+|---|---|---|
+| Model IDs | `us.openai.gpt-6-astra`, `global.openai.gpt-6-astra` | `openai.gpt-5.4`, `openai.gpt-5.5`, `openai.gpt-5.6-sol`, `-terra`, `-luna` |
+| API | **Bedrock Converse** (`bedrock-runtime`) | **OpenAI Responses API** (`bedrock-mantle`) |
+| Agentic extraction | ✅ supported | ❌ |
+| Discovery (whole-PDF) | ❌ | ❌ |
+| Regions | US geo + **global CRIS worldwide** (incl. EU, APAC) | US in-region only |
+| Prompt caching | Implicit, automatic | Automatic (5.4/5.5) or explicit (5.6) |
+| Context window | 1.05M | 272K |
+| Reasoning effort values | `none`…`max` (no `minimal`) | `minimal`…`high` |
+
+> **The trap:** "OpenAI model" does not imply "Responses API model". Astra is a
+> plain Converse model — closer in behaviour to xAI Grok than to GPT-5.6 — and
+> the accelerator's capability gates key on the **route**, not the vendor prefix.
+> This is why Astra can do agentic extraction and GPT-5.6 cannot.
+
+- [GPT-6 Astra](#gpt-6-astra-converse) — Converse path
+- [GPT-5.x](#openai-gpt-5x-models-gpt-54--gpt-55--gpt-56) — bedrock-mantle path
+
+## GPT-6 Astra (Converse)
+
+**GPT-6 Astra** is OpenAI's most capable model on Bedrock, reached through the
+ordinary Bedrock Converse API via cross-region inference profiles. Because it is
+on the same path as Claude and Nova, it needs none of the mantle machinery below:
+no special endpoint, no `BEDROCK_MANTLE_*` environment variables, and no
+per-service code.
+
+> **TL;DR** — Astra works for **OCR, classification, extraction (including
+> agentic), assessment, summarization, evaluation, and Chat-with-Document**, in
+> **every Region** via the `global.` profile. It does **not** work for
+> **Discovery** or **Policy Discovery** (no PDF `document` blocks). Implicit
+> prompt caching is automatic. Standard service tier only.
+
+### At a glance
+
+| | GPT-6 Astra |
+|---|---|
+| Model IDs | `us.openai.gpt-6-astra` (US geo), `global.openai.gpt-6-astra` (worldwide) |
+| Context window | 1,050,000 tokens |
+| Max output tokens | 128,000 |
+| Endpoint / API | `bedrock-runtime` — Converse |
+| In-Region availability | **None** — CRIS-only (the bare `openai.gpt-6-astra` is rejected on Converse) |
+| Geo cross-region (`us.`) | `us-east-1`, `us-east-2`, `us-west-1`, `us-west-2`, `ca-central-1` |
+| Global cross-region (`global.`) | Every commercial Region, including all EU and APAC Regions and `sa-east-1` |
+| GovCloud | Not available |
+| Service tier | Standard only (`flex` / `priority` rejected) |
+| Prompt caching | **Implicit and automatic** — no `<<CACHEPOINT>>` needed (explicit blocks are rejected) |
+| Input modalities | Text, image (**no** PDF `document` blocks) |
+| Reasoning effort | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
+| Price / 1M (in / cache-read / out) | `us.` $11.00 / $1.10 / $55.00 · `global.` $10.00 / $1.00 / $50.00 |
+
+Prefer `global.openai.gpt-6-astra` unless you have data-residency requirements
+that need the US geo profile: it is available in more Regions **and** costs about
+10% less.
+
+### Long-context pricing — read this before sending large prompts
+
+Astra bills in **two context bands**, and the band applies to the whole request:
+
+| Input size | Input / 1M | Output / 1M |
+|---|---|---|
+| ≤ 272K tokens | $11.00 (`us.`) / $10.00 (`global.`) | $55.00 / $50.00 |
+| > 272K tokens | **$22.00 / $20.00** | **$82.50 / $75.00** |
+
+`config_library/model_config_limits.yaml` allows the full 1.05M window, while
+`config_library/pricing.yaml` records only the **short-band** rates — the metering
+schema has one price per unit per model and cannot express a usage-dependent
+band. So for prompts above 272K tokens the accelerator's cost reports
+**under-report** actual spend (up to 2× on input, 1.5× on output). Two ways to
+remove the discrepancy:
+
+- **Cap the window** — set `max_input_tokens: 272000` for the
+  `openai\.gpt-6-astra` pattern in `model_config_limits.yaml`. Cost stays exactly
+  as reported; large documents shard as they do for other models.
+- **Reprice for the long band** — edit the two `bedrock/*.openai.gpt-6-astra`
+  rows to the long-band rates, which then over-reports ordinary requests.
+
+### Prompt caching
+
+Astra caches **implicitly**: repeat a prompt prefix and it is reused with no
+request change at all. Verified live — a repeated 2,707-token prefix billed
+`inputTokens=2` with `cacheReadInputTokens=2707`, a 10× saving on the cached
+portion. Because the discount lands in the standard `cacheReadInputTokens`
+metering field, cost reports pick it up automatically.
+
+Do **not** add `<<CACHEPOINT>>` markers for Astra: explicit `cachePoint` blocks
+raise `AccessDeniedException`, so the accelerator strips the markers and keeps
+Astra out of `CACHEPOINT_SUPPORTED_MODELS`.
+
+### What is and is not supported
+
+| Capability | Supported? | Notes |
+|---|---|---|
+| OCR (Bedrock backend) | ✅ | Image + text input |
+| Classification | ✅ | Page-level and holistic |
+| Extraction (standard) | ✅ | Text + page images |
+| **Agentic / advanced extraction** | ✅ | Astra reaches Converse and emits `toolUse` under a forced `toolChoice`. **This is the key difference from GPT-5.x.** |
+| Confidence (assessment) | ✅ | |
+| Summarization, Evaluation (LLM method) | ✅ | |
+| Chat-with-Document | ✅ | Streaming via ConverseStream |
+| Guardrails | ✅ | Converse API only |
+| Application inference profiles | ✅ | For cost-allocation tagging |
+| **Discovery** (classes / ground-truth / auto-split) | ❌ | Rejects `document` blocks ("This model doesn't support the document field for user messages"). Rejected by `config-validate` and guarded at runtime. |
+| **Policy / Rule Discovery** | ❌ | Same limitation. |
+| PDF `document` input blocks | ❌ | Text and images only. |
+| Explicit prompt caching (`<<CACHEPOINT>>`) | ❌ | Implicit caching is automatic instead — see above. |
+| Service tiers (`:priority` / `:flex`) | ❌ | Standard only. |
+| `temperature` / `top_p` / `top_k` | ❌ | Reasoning model — these are **rejected with a 400**, not ignored. Use `reasoning_effort`. |
+| In-Region inference | ❌ | CRIS-only; name the `us.` or `global.` profile. |
+| GovCloud | ❌ | Not in the model's Region list. |
+
+### Reasoning effort
+
+Astra accepts `none`, `low`, `medium`, `high`, `xhigh`, `max` — Claude's set plus
+`none`. Note the two easy mistakes: `minimal` is a **GPT-5.x** value and is
+rejected by Astra, and Astra accepts `max` where xAI Grok rejects it. Values
+outside the vocabulary are dropped with a warning rather than sent.
+
+```yaml
+extraction:
+  model: "global.openai.gpt-6-astra"
+  reasoning_effort: "low"   # none | low | medium | high | xhigh | max
+```
+
+### `bedrock-mantle` and Astra
+
+The model card also lists Astra on the `bedrock-mantle` Responses API, but only in
+`us-west-2`, with no cross-region inference and no application inference profiles.
+The accelerator deliberately does **not** use that route: Converse already
+provides worldwide Regions, tool use, guardrails, cost-allocation profiles and
+prompt caching, while mantle would add only server-side tool calling and explicit
+cache breakpoints. Astra is therefore never routed through
+`openai_responses.py` — a behaviour pinned by
+`tests/unit/test_bedrock_astra.py`.
+
+### IAM
+
+No additional permissions are required. The generation Lambda roles already grant
+`bedrock:InvokeModel*` on `foundation-model/*` plus `inference-profile/*` and
+`application-inference-profile/*`, which covers Astra. The `bedrock-mantle:*`
+actions those roles also hold are for GPT-5.x and are unused by Astra.
+
 # OpenAI GPT-5.x Models (GPT-5.4 / GPT-5.5 / GPT-5.6)
 
-The GenAIIDP accelerator supports OpenAI's frontier models on Amazon Bedrock:
+The accelerator also supports OpenAI's GPT-5.x models on Bedrock:
 **GPT-5.4** (`openai.gpt-5.4`), **GPT-5.5** (`openai.gpt-5.5`), and the
 **GPT-5.6** family — **Sol** (`openai.gpt-5.6-sol`, flagship reasoning),
 **Terra** (`openai.gpt-5.6-terra`, GPT-5.5-class quality at roughly half the
 cost), and **Luna** (`openai.gpt-5.6-luna`, fastest / lowest cost).
 
-Unlike every other model in the accelerator, these are **not** served on the
-Bedrock Converse / InvokeModel APIs. They are available only on the
+Unlike Astra above and every other model in the accelerator, these are **not**
+served on the Bedrock Converse / InvokeModel APIs. They are available only on the
 **`bedrock-mantle` endpoint via the OpenAI Responses API**. The accelerator
 hides this difference behind the existing `idp_common` Bedrock client: when a
 model ID starting with `openai.gpt-5` is selected, `BedrockClient.invoke_model`
@@ -115,7 +264,14 @@ Chat-with-Document) exposes a `reasoning_effort` config field.
 | Model family | Allowed values | Mechanism |
 |---|---|---|
 | OpenAI GPT-5.x | `minimal`, `low`, `medium`, `high` | Responses API `reasoning.effort` |
+| OpenAI GPT-6 Astra | `none`, `low`, `medium`, `high`, `xhigh`, `max` | Converse `additionalModelRequestFields.reasoning.effort` |
+| xAI Grok | `none`, `low`, `medium`, `high`, `xhigh` (**not** `max`) | Converse `additionalModelRequestFields.reasoning.effort` |
 | Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5–4.8 / Fable 5 | `low`, `medium`, `high`, `xhigh`, `max` | Bedrock Converse `output_config.effort` |
+
+The vocabularies genuinely differ — `minimal` is GPT-5.x-only, `none` is not a
+Claude value, and `max` is valid everywhere except Grok. The config UI offers the
+union and each backend drops what its model would reject, so a value that does not
+apply is logged and omitted rather than causing a 400.
 
 It is **ignored** by models without an effort control — Amazon Nova, Claude
 Sonnet 4.5, and Claude Haiku 4.5. In the config UI, the **Reasoning effort**
@@ -172,28 +328,43 @@ cross-account hub role, that role must also grant these `bedrock-mantle` actions
 
 ## Pricing
 
-Pricing for all `bedrock/openai.gpt-5.*` models is defined in
-`config_library/pricing.yaml` and matches OpenAI first-party rates on Bedrock
-(in-region on-demand, per 1M tokens):
+Pricing for every OpenAI model is defined in `config_library/pricing.yaml` and
+matches OpenAI first-party rates on Bedrock (per 1M tokens):
 
 | Model | Input | Cache write (30m) | Cache read | Output |
 |---|---|---|---|---|
+| GPT-6 Astra (`us.`) | $11.00 | $13.75 | $1.10 | $55.00 |
+| GPT-6 Astra (`global.`) | $10.00 | $12.50 | $1.00 | $50.00 |
 | GPT-5.4 | $2.75 | — | $0.275 | $16.50 |
 | GPT-5.5 | $5.50 | — | $0.55 | $33.00 |
 | GPT-5.6 Sol | $5.50 | $6.88 | $0.55 | $33.00 |
 | GPT-5.6 Terra | $2.75 | $3.44 | $0.28 | $16.50 |
 | GPT-5.6 Luna | $1.10 | $1.38 | $0.11 | $6.60 |
 
+The Astra rows are the **short-context (≤272K) band**; larger prompts bill at
+roughly double — see [Long-context pricing](#long-context-pricing--read-this-before-sending-large-prompts).
 GPT-5.4/5.5 cache automatically and have no cache-write cost. GPT-5.6 caches via
-explicit breakpoints and bills a 30-minute cache-write. Confirm against the
+explicit breakpoints and bills a 30-minute cache-write. The GPT-5.x rows are
+in-region on-demand rates. Confirm against the
 [Amazon Bedrock pricing page](https://aws.amazon.com/bedrock/pricing/) if rates
 change.
 
+Astra is the most expensive model the accelerator offers — roughly 2× GPT-5.6 Sol
+on input and 4× Claude Sonnet 5 — so reach for it where its capability earns the
+cost, and rely on its automatic prompt caching (a 10× discount on repeated
+prefixes) to keep steady-state extraction affordable.
+
 ## Choosing a model
 
-Use GPT-5.4/5.5 for OCR, classification, extraction, assessment, summarization,
-evaluation, or chat where their reasoning quality helps and inputs are text or
-page images. For workloads that require **whole-PDF ingestion** (Discovery,
-Policy Discovery) or **agentic extraction**, choose a Claude or Nova model,
-which accept PDF document blocks natively and support the Converse/Strands
-paths.
+Use **GPT-6 Astra** when you want OpenAI's strongest model and need either
+**agentic extraction** or **non-US Regions** — it is the only OpenAI option that
+supports both. Use `global.` for the wider Region coverage and lower price.
+
+Use **GPT-5.4/5.5/5.6** for OCR, classification, extraction, assessment,
+summarization, evaluation, or chat in US Regions where their reasoning quality
+helps at a materially lower price than Astra, and inputs are text or page images.
+
+For workloads that require **whole-PDF ingestion** (Discovery, Policy Discovery),
+choose a Claude or Nova model — no OpenAI model on Bedrock accepts PDF `document`
+blocks. For agentic extraction, Astra, Claude, Nova and xAI Grok all work; GPT-5.x
+does not.

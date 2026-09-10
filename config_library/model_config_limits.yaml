@@ -129,6 +129,32 @@ model_limits:
     reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html"
 
   # ---------------------------------------------------------------------------
+  # OpenAI GPT-6 Astra (Converse via cross-region inference profiles only)
+  # ---------------------------------------------------------------------------
+  # NOT the same route as the GPT-5.x entry above: Astra reaches bedrock-runtime
+  # Converse, so it is matched separately. The two patterns cannot collide
+  # ("openai\.gpt-5" does not occur in "openai.gpt-6-astra"), but this entry is
+  # kept adjacent so the difference is obvious to the next reader.
+  #
+  # Verified live on us.openai.gpt-6-astra (us-west-2 Converse, 2026-09-10):
+  # requesting 200000 output tokens returns "The maximum tokens you requested
+  # exceeds the model limit of 131072". 128000 is the model card's documented cap
+  # and the value used here (the 131072 in the error is the raw ceiling).
+  #
+  # COST WARNING — the 1,050,000 input window is deliberate, but Astra is billed
+  # in two context bands: input at or below 272K costs $11/1M (us) or $10/1M
+  # (global), while ANY request above 272K moves the WHOLE request into the long
+  # band at $22/$20 input and $82.50/$75 output. config_library/pricing.yaml
+  # records only the short-band rates, so cost reports UNDER-REPORT (by up to 2x
+  # on input, 1.5x on output) for prompts that cross 272K. Lower this value to
+  # 272000 if predictable cost matters more than window size for your workload.
+  - pattern: "openai\\.gpt-6-astra"
+    max_output_tokens: 128000
+    max_input_tokens: 1050000
+    description: "OpenAI GPT-6 Astra — 1.05M context, 128K max output (CRIS-only: us./global.); input above 272K bills at the 2x long-context rate"
+    reference: "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-astra.html"
+
+  # ---------------------------------------------------------------------------
   # xAI Grok (Converse via cross-region inference profiles only)
   # ---------------------------------------------------------------------------
   # Verified live on us.xai.grok-4.6 (us-west-2 Converse, 2026-09-02): requesting
