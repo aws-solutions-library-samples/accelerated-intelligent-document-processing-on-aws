@@ -635,6 +635,20 @@ already unambiguous (a `15` cannot be a month whatever you set).
 > column typing, rule validation, API clients — rather than as an accuracy
 > improver. It did not move evaluation accuracy in either A/B we ran.
 
+### Oversize page images (`metadata.image_downscale`)
+
+Bedrock rejects a single image over 5 MiB and measures the **base64-encoded**
+payload, so a stored page image over **3.75 MiB** — reachable from the shipped
+defaults, which preserve original resolution — used to fail the whole document with
+`ValidationException: image exceeds 5 MB maximum` at the extraction step
+([#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778)). Such a page is now downscaled proportionally to fit (same format
+first, JPEG only as a fallback), the reduction is logged, and the section records it
+per page under `metadata.image_downscale` (original and final bytes, size and format,
+passes, reason). A page that already fits leaves no entry. Set the service's
+`image.target_width` / `image.target_height` to keep pages inside the budget if you
+would rather control the resolution than have it reduced per request; see
+[Image Processing Configuration](./configuration.md#effective-per-image-budget-375-mib-enforced-post-base64).
+
 ### Schema validation (`extraction.validation`)
 
 Validates the result against the **full class JSON Schema** — most importantly the
@@ -1811,9 +1825,14 @@ For large documents and big tables:
 
 ### Detecting a truncated list
 
-Extraction can lose rows **silently**: a benchmarked simple-mode run returns
-complete lists (recall 1.000) up to ~800 rows, then **0.199 at 1,200 rows and
-0.009 at 3,200** — and reports success every time. Two things make this
+Extraction can lose rows **silently**: measured on synthetic bank statements with
+exact ground truth (Sonnet 5, one run per size, after the #726 over-splitting fix so
+each statement is one section), simple mode returns complete lists (recall 1.000)
+through **400 rows / 9 pages**, then **43 of 800 rows at 17 pages while reporting
+`COMPLETED` with no processing issue**, and fails outright with *Input is too long
+for requested model* from about 25 pages. (Earlier figures of "complete through
+~1,600 rows" were an artefact of over-splitting, which cut large statements into 6–18
+sections; see `docs/benchmarking/config-guidance.md` §3.) Two things make this
 particularly easy to miss:
 
 - **Scalar accuracy is unaffected.** The document's non-list fields extract
@@ -1850,8 +1869,12 @@ Transactions:
 
 Without it, only the empty/absent and sparse signals apply — a list that returns
 10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
-For corpora where large tables are expected, also prefer **Advanced** mode, which
-holds recall 1.000 through 3,200 rows by sharding.
+For corpora where large tables are expected — in practice anything beyond ~400 rows
+or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
+3,200 rows by sharding. Simple mode deliberately does not shard: that is the
+capability that distinguishes the two modes, so a large single document in simple mode
+is the one case where you must set `minItems` (or switch modes) to be told about a
+truncation.
 
 #### Advanced mode: an empty list is retried when the OCR proves there were rows
 

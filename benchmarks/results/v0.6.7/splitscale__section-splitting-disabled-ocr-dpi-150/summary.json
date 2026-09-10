@@ -1,0 +1,394 @@
+{
+  "meta": {
+    "stack": "IDPSplit01",
+    "stack_version": "0.6.7",
+    "suite": "splitscale",
+    "class": "bank_statement",
+    "overrides": [
+      "extraction_model=sonnet5",
+      "section_splitting=disabled",
+      "ocr_dpi=150"
+    ],
+    "docs_named": [
+      "scale_1200",
+      "scale_1600",
+      "scale_3200"
+    ],
+    "docs_run": [
+      "scale_1200",
+      "scale_1600",
+      "scale_3200"
+    ],
+    "docs_unlaunchable": [],
+    "docs_other_class": [],
+    "commit": "e17e3ab0b",
+    "pricing_sha256": "aa52446ac3eed120ffb91faf57667785c0f1fe66c5378ebf69796f0c6a41fde5",
+    "scored_at": "2026-09-06T14:16:54.427461Z",
+    "region": "us-west-2"
+  },
+  "rows": [
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_1200.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "disabled",
+        "boundary_prompt": "current",
+        "class_confidence": "topk",
+        "ocr_dpi": "150",
+        "multi_instance": "off",
+        "multi_instance_detection": "on"
+      },
+      "run_id": "bench-scale_1200-20260906-140634",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 25.0,
+      "wall_s": 209.536585,
+      "cost": 0.8526,
+      "cost_by_phase": {
+        "OCR": 0.3755,
+        "Classification": 2e-05,
+        "Extraction": 0.4208,
+        "Assessment": 0.05628,
+        "Summarization": 2e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.375,
+        "lambda/duration": 0.01324,
+        "bedrock/us.anthropic.claude-sonnet-5": 0.41872,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.04566
+      },
+      "tokens": {
+        "inputTokens": 823151,
+        "outputTokens": 15041,
+        "cacheReadInputTokens": 0,
+        "cacheWriteInputTokens": 1894
+      },
+      "tokens_by_phase": {
+        "Extraction": {
+          "inputTokens": 113192,
+          "outputTokens": 2265,
+          "cacheReadInputTokens": 0,
+          "cacheWriteInputTokens": 1894
+        },
+        "Assessment": {
+          "inputTokens": 709959,
+          "outputTokens": 12776,
+          "cacheReadInputTokens": 0,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 1200,
+      "rows_extracted": 43,
+      "completeness_recall": 0.0358,
+      "truncation_prefix": 43,
+      "dups": 0,
+      "n_gaps": 1157,
+      "scalar_accuracy": 0.5,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": 1.0,
+      "cells_compared": 86,
+      "mean_confidence": 0.989,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 136
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_1600.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "disabled",
+        "boundary_prompt": "current",
+        "class_confidence": "topk",
+        "ocr_dpi": "150",
+        "multi_instance": "off",
+        "multi_instance_detection": "on"
+      },
+      "run_id": "bench-scale_1600-20260906-140642",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 33.0,
+      "wall_s": 137.85892,
+      "cost": 1.0269,
+      "cost_by_phase": {
+        "OCR": 0.49598,
+        "Classification": 1e-05,
+        "Extraction": 0.51913,
+        "Assessment": 0.01173,
+        "Summarization": 2e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.495,
+        "lambda/duration": 0.0052,
+        "bedrock/us.anthropic.claude-sonnet-5": 0.51711,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00957
+      },
+      "tokens": {
+        "inputTokens": 307168,
+        "outputTokens": 1477,
+        "cacheReadInputTokens": 0,
+        "cacheWriteInputTokens": 1894
+      },
+      "tokens_by_phase": {
+        "Extraction": {
+          "inputTokens": 150251,
+          "outputTokens": 816,
+          "cacheReadInputTokens": 0,
+          "cacheWriteInputTokens": 1894
+        },
+        "Assessment": {
+          "inputTokens": 156917,
+          "outputTokens": 661,
+          "cacheReadInputTokens": 0,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 1600,
+      "rows_extracted": 10,
+      "completeness_recall": 0.0063,
+      "truncation_prefix": 10,
+      "dups": 0,
+      "n_gaps": 1590,
+      "scalar_accuracy": 1.0,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": 1.0,
+      "cells_compared": 20,
+      "mean_confidence": 1.0,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 37
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "scale_3200.pdf",
+      "repeat": 0,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "disabled",
+        "boundary_prompt": "current",
+        "class_confidence": "topk",
+        "ocr_dpi": "150",
+        "multi_instance": "off",
+        "multi_instance_detection": "on"
+      },
+      "run_id": "bench-scale_3200-20260906-140645",
+      "status": "FAILED",
+      "success": false,
+      "page_count": 66.0,
+      "wall_s": 32.970136,
+      "cost": 0.9913,
+      "cost_by_phase": {
+        "OCR": 0.99125,
+        "Classification": 2e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.99,
+        "lambda/duration": 0.00126
+      },
+      "tokens": {},
+      "tokens_by_phase": {},
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": null,
+      "validation_valid_rate": null,
+      "validation_errors": null,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 0,
+      "sections_expected": 1,
+      "sections_correct": 0.0,
+      "rows_truth": 3200,
+      "rows_extracted": 0,
+      "completeness_recall": 0.0,
+      "truncation_prefix": 0,
+      "dups": 0,
+      "n_gaps": 3200,
+      "scalar_accuracy": 0.0,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": null,
+      "cells_compared": null,
+      "mean_confidence": null,
+      "pct_conf_below_0.9": null,
+      "n_conf_leaves": 0
+    }
+  ],
+  "cell_stats": {
+    "core-tt-simple-sep": {
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet5",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "disabled",
+        "boundary_prompt": "current",
+        "class_confidence": "topk",
+        "ocr_dpi": "150",
+        "multi_instance": "off",
+        "multi_instance_detection": "on"
+      },
+      "n_runs": 3,
+      "n_success": 2,
+      "n_fail": 1,
+      "max_repeat": 1,
+      "cost": {
+        "n": 2,
+        "mean": 0.93975,
+        "stdev": 0.12325,
+        "cv": 0.1312,
+        "min": 0.8526,
+        "max": 1.0269
+      },
+      "completeness_recall": {
+        "n": 2,
+        "mean": 0.02105,
+        "stdev": 0.02086,
+        "cv": 0.991,
+        "min": 0.0063,
+        "max": 0.0358
+      },
+      "scalar_accuracy": {
+        "n": 2,
+        "mean": 0.75,
+        "stdev": 0.35355,
+        "cv": 0.4714,
+        "min": 0.5,
+        "max": 1.0
+      },
+      "typed_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "cell_accuracy": {
+        "n": 2,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "sections_correct": {
+        "n": 2,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "weighted_accuracy": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "forced_tool_honored_rate": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "coercions": {
+        "n": 0,
+        "mean": null,
+        "stdev": null,
+        "cv": null,
+        "min": null,
+        "max": null
+      },
+      "validation_valid_rate": {
+        "n": 2,
+        "mean": 1.0,
+        "stdev": 0.0,
+        "cv": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "wall_s": {
+        "n": 2,
+        "mean": 173.69775,
+        "stdev": 50.68376,
+        "cv": 0.2918,
+        "min": 137.85892,
+        "max": 209.53659
+      }
+    }
+  }
+}
