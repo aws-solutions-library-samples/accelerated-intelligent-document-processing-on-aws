@@ -288,7 +288,7 @@ You don't have to create your entire test set in one go. As you process and revi
 1. Process new documents and save their evaluation baselines (Steps 3-4 above)
 2. Go to **Test Studio** → **Test Sets** tab
 3. Select your existing test set and click **Add Documents** → **From Existing Files**
-4. Select the **Input Bucket** and enter a file pattern matching your new documents
+4. Select the **Input Bucket** and enter a file pattern matching your new documents (`*` within a folder, `**` across folders, e.g. `invoices/**/*.pdf`)
 5. The file pattern is pre-filled from the original test set — adjust if needed
 6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date/time) to easily find recently reviewed documents
 7. Click **Check Files** to preview matches, then **Add Documents**
