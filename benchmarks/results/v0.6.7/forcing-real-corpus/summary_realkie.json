@@ -1,0 +1,102 @@
+{
+  "realkie-fcc-verified": {
+    "arm_a": {
+      "corpus": "realkie-fcc-verified",
+      "profile": "rk-force-off",
+      "run_id": "RealKIE-FCC-Verified-20260904-223051",
+      "n": 40,
+      "arm": "A"
+    },
+    "arm_b": {
+      "corpus": "realkie-fcc-verified",
+      "profile": "rk-force-on",
+      "run_id": "RealKIE-FCC-Verified-20260904-223052",
+      "n": 40,
+      "arm": "B"
+    },
+    "paired": 40,
+    "accuracy": {
+      "metric": "accuracy",
+      "n_pairs": 40,
+      "mean_delta": 0.0038667367323583514,
+      "sd": 0.09049961395538074,
+      "se": 0.01430924537324815,
+      "t": 0.27022646069005213
+    },
+    "cost": {
+      "metric": "cost",
+      "n_pairs": 40,
+      "mean_delta": 0.007386338223999997,
+      "sd": 0.06016720016585308,
+      "se": 0.00951326964796782,
+      "t": 0.7764247726939846
+    },
+    "tokens": {
+      "inputTokens": {
+        "metric": "inputTokens",
+        "n_pairs": 40,
+        "mean_delta": 50.675,
+        "sd": 53.61466863002785,
+        "se": 8.477223443303373,
+        "t": 5.977782742064087
+      },
+      "outputTokens": {
+        "metric": "outputTokens",
+        "n_pairs": 40,
+        "mean_delta": -80.95,
+        "sd": 337.3079662601583,
+        "se": 53.3330723150664,
+        "t": -1.5178199283511353
+      },
+      "cacheReadInputTokens": {
+        "metric": "cacheReadInputTokens",
+        "n_pairs": 40,
+        "mean_delta": 3216.15,
+        "sd": 3179.4189563503583,
+        "se": 502.71027689913006,
+        "t": 6.397621349295248
+      },
+      "cacheWriteInputTokens": {
+        "metric": "cacheWriteInputTokens",
+        "n_pairs": 40,
+        "mean_delta": 30.45,
+        "sd": 535.5015837080654,
+        "se": 84.67023475724012,
+        "t": 0.3596305134537994
+      }
+    },
+    "sign_test_p": 0.1670684814453125,
+    "counters": {
+      "forced_tool.honored": {
+        "A": [
+          0,
+          109
+        ],
+        "B": [
+          108,
+          108
+        ]
+      },
+      "forced_tool.requested": {
+        "A": [
+          0,
+          109
+        ],
+        "B": [
+          108,
+          108
+        ]
+      },
+      "forced_tool.skipped": {
+        "A": [
+          0,
+          109
+        ],
+        "B": [
+          0,
+          108
+        ]
+      }
+    }
+  }
+}

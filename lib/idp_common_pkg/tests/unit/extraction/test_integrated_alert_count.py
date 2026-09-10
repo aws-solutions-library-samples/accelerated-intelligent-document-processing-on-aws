@@ -113,8 +113,9 @@ def test_the_raw_count_is_absent_when_nothing_was_collapsed():
 
 
 def test_indexed_row_alerts_are_all_counted():
-    """Per-row alerts are never deduped (their indexes are slice-local, #813), so
-    the count must not shrink for them either."""
+    """Per-row alerts are never deduped (indexed paths pass through dedupe_alerts;
+    since #813 their indexes are global), so the count must not shrink for them
+    either."""
     alerts = [_alert(f"Transactions[{i}].Amount", 0.5) for i in range(40)]
 
     metadata, section = _attach(alerts)
@@ -130,3 +131,75 @@ def test_no_alerts_records_zero():
     assert section.confidence_threshold_alerts == []
     assert metadata["assessment_alert_count"] == 0
     assert "assessment_alert_count_before_dedupe" not in metadata
+
+
+def _service_integrated() -> ExtractionService:
+    """Integrated confidence genuinely ON: the missing-row retry helper runs."""
+    svc = _service()
+    svc._integrated_assessment_enabled = lambda: True  # type: ignore[method-assign]
+    return svc
+
+
+def test_integrated_surface_is_regenerated_when_nothing_needs_retrying():
+    """#813 regression guard. The integrated path REPLACES its alert surface with
+    what the missing-row retry returns. When every row was already scored inline
+    (the common case — and always, for a scalar-only class) the helper has
+    nothing to retry; it must still hand back the surface rebuilt from the
+    merged assessment, not an empty list that wipes every alert."""
+    svc = _service_integrated()
+    section = _Section()
+    output_metadata: dict[str, Any] = {}
+    svc._attach_explainability(
+        output_metadata=output_metadata,
+        merged_assessment={
+            "InvoiceTotal": {"confidence": 0.4},
+            "Vendor": {"confidence": 0.95},
+        },
+        # A slice-local incoming surface that the regeneration must supersede.
+        merged_assessment_alerts=[_alert("InvoiceTotal", 0.4)],
+        extracted_fields={"InvoiceTotal": "100.00", "Vendor": "Acme"},
+        document=Document(id="doc-1", input_key="doc.pdf"),
+        section=section,
+        section_info=_section_info(),
+    )
+    names = [a["attribute_name"] for a in section.confidence_threshold_alerts]
+    assert names == ["InvoiceTotal"], names
+    assert output_metadata["assessment_alert_count"] == 1
+
+
+def test_integrated_surface_with_a_fully_scored_list_is_globally_indexed():
+    """A list whose every row scored inline: nothing to retry, and the regenerated
+    surface enumerates the FULL merged list so indexes are global."""
+    svc = _service_integrated()
+    svc._class_schema = {
+        "type": "object",
+        "$id": "Statement",
+        "properties": {
+            "Transactions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"Amount": {"type": "string"}},
+                },
+            }
+        },
+    }
+    rows = [{"Amount": str(i)} for i in range(30)]
+    assessment = {
+        "Transactions": [
+            {"Amount": {"confidence": 0.3 if i == 28 else 0.99}} for i in range(30)
+        ]
+    }
+    section = _Section()
+    output_metadata: dict[str, Any] = {}
+    svc._attach_explainability(
+        output_metadata=output_metadata,
+        merged_assessment=assessment,
+        merged_assessment_alerts=[_alert("Transactions[3].Amount", 0.3)],  # slice-local
+        extracted_fields={"Transactions": rows},
+        document=Document(id="doc-1", input_key="doc.pdf"),
+        section=section,
+        section_info=_section_info(),
+    )
+    names = [a["attribute_name"] for a in section.confidence_threshold_alerts]
+    assert names == ["Transactions[28].Amount"], names

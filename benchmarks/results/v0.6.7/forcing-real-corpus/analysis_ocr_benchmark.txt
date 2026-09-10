@@ -1,0 +1,85 @@
+
+==============================================================================
+CORPUS: ocr-benchmark   (n requested = 293)
+  A  ocrb-force-off   run=OmniAI-OCR-Benchmark-20260904-223034
+  B  ocrb-force-on    run=OmniAI-OCR-Benchmark-20260904-223041
+  documents seen: 293   paired in both arms: 293
+
+  ACCURACY (weighted_overall_score), paired over 282 docs
+    A mean 0.9835
+    B mean 0.9832
+    mean paired delta (B-A) -0.0003  sd 0.0134  t -0.34
+    B better 24 / worse 31 / identical 227
+    sign test on 55 discordant pairs: p = 0.4188
+
+  COST/doc: A $0.0286  B $0.0279  delta -0.0007 (-2.3%)  t -4.06  SEPARATES
+
+  TOKENS/doc (kept separate — a cache shift moves tokens BETWEEN these)
+    class                                 A            B        delta        %
+    inputTokens                       3,438        3,325         -113    -3.3%
+    outputTokens                      1,037        1,002          -34    -3.3%
+    cacheReadInputTokens              2,350        3,571       +1,221   +51.9%
+    cacheWriteInputTokens                80           53          -27   -33.4%
+
+  SECTION METADATA (did the arm actually engage?)
+    forced_tool.honored                A 0/282   B 282/282
+    forced_tool.requested              A 0/282   B 282/282
+    forced_tool.skipped                A 0/282   B 0/282
+
+==============================================================================
+ARM: ocr-benchmark / ocrb-force-off   (293 docs, 3732 metering entries)
+==============================================================================
+OVERALL: caching active (read share 40.1%)
+  uncached input    1,007,206   cacheRead      688,679   cacheWrite     23,371
+
+phase/model                                           docs      input      cRead    cWrite   read%  verdict
+Assessment/lambda                                      282          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+Classification/bedrock                                 293    293,107    397,797     2,734   57.4%  caching active (read share 57.4%)
+Classification/lambda                                  293          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+Extraction/bedrock                                     282    714,099    290,882    20,637   28.4%  caching active (read share 28.4%)
+Extraction/lambda                                      282          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+OCR/lambda                                             293          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+OCR/textract                                           293          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+Summarization/lambda                                   282          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+
+--- extraction, per document class (the prefix-length cliff) ---
+class                               docs  input/doc  cRead/doc  cWrite/doc   read%  verdict
+BANK_CHECK                            51      1,934      1,000         378   30.2%  caching active (read share 30.2%)
+COMMERCIAL_LEASE_AGREEMENT            52      2,205      1,305          25   36.9%  caching active (read share 36.9%)
+CREDIT_CARD_STATEMENT                 11      4,818      1,172           0   19.6%  caching active (read share 19.6%)
+DELIVERY_NOTE                          8      2,370      1,706           0   41.9%  caching active (read share 41.9%)
+EQUIPMENT_INSPECTION                  11      1,988      1,301           0   39.6%  caching active (read share 39.6%)
+GLOSSARY                              23      4,239          0           0    0.0%  NEVER CACHED (cachePoint did nothing — full-price input)
+PETITION_FORM                         51      2,450      1,183           0   32.6%  caching active (read share 32.6%)
+REAL_ESTATE                           57      2,061      1,242           0   37.6%  caching active (read share 37.6%)
+SHIFT_SCHEDULE                        18      3,719          0           0    0.0%  NEVER CACHED (cachePoint did nothing — full-price input)
+
+==============================================================================
+ARM: ocr-benchmark / ocrb-force-on   (293 docs, 3732 metering entries)
+==============================================================================
+OVERALL: caching active (read share 51.4%)
+  uncached input      974,111   cacheRead    1,046,315   cacheWrite     15,556
+
+phase/model                                           docs      input      cRead    cWrite   read%  verdict
+Assessment/lambda                                      282          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+Classification/bedrock                                 293    293,107    400,531         0   57.7%  caching active (read share 57.7%)
+Classification/lambda                                  293          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+Extraction/bedrock                                     282    681,004    645,784    15,556   48.1%  caching active (read share 48.1%)
+Extraction/lambda                                      282          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+OCR/lambda                                             293          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+OCR/textract                                           293          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+Summarization/lambda                                   282          0          0         0       —  NEVER CACHED (cachePoint did nothing — full-price input)
+
+--- extraction, per document class (the prefix-length cliff) ---
+class                               docs  input/doc  cRead/doc  cWrite/doc   read%  verdict
+BANK_CHECK                            51      1,957      2,362         201   52.3%  caching active (read share 52.3%)
+COMMERCIAL_LEASE_AGREEMENT            52      2,228      2,470           0   52.6%  caching active (read share 52.6%)
+CREDIT_CARD_STATEMENT                 11      4,841      2,043         204   28.8%  caching active (read share 28.8%)
+DELIVERY_NOTE                          8      2,393      2,670         381   49.0%  caching active (read share 49.0%)
+EQUIPMENT_INSPECTION                  11      2,011      2,436           0   54.8%  caching active (read share 54.8%)
+GLOSSARY                              23      3,319      1,839           0   35.6%  caching active (read share 35.6%)
+PETITION_FORM                         51      2,473      2,210           0   47.2%  caching active (read share 47.2%)
+REAL_ESTATE                           57      2,084      2,403           0   53.5%  caching active (read share 53.5%)
+SHIFT_SCHEDULE                        18      2,748      1,901           0   40.9%  caching active (read share 40.9%)
+
+wrote /tmp/ab-forcing/ocrb/summary.json

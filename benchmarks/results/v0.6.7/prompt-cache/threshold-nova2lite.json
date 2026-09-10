@@ -1,0 +1,130 @@
+[
+  {
+    "target": 400,
+    "call": 1,
+    "inputTokens": 9,
+    "cacheWrite": 355,
+    "cacheRead": 0,
+    "total_in": 364
+  },
+  {
+    "target": 400,
+    "call": 2,
+    "inputTokens": 9,
+    "cacheWrite": 355,
+    "cacheRead": 0,
+    "total_in": 364
+  },
+  {
+    "target": 700,
+    "call": 1,
+    "inputTokens": 8,
+    "cacheWrite": 574,
+    "cacheRead": 0,
+    "total_in": 582
+  },
+  {
+    "target": 700,
+    "call": 2,
+    "inputTokens": 8,
+    "cacheWrite": 0,
+    "cacheRead": 574,
+    "total_in": 582
+  },
+  {
+    "target": 800,
+    "call": 1,
+    "inputTokens": 8,
+    "cacheWrite": 643,
+    "cacheRead": 0,
+    "total_in": 651
+  },
+  {
+    "target": 800,
+    "call": 2,
+    "inputTokens": 8,
+    "cacheWrite": 643,
+    "cacheRead": 0,
+    "total_in": 651
+  },
+  {
+    "target": 900,
+    "call": 1,
+    "inputTokens": 8,
+    "cacheWrite": 715,
+    "cacheRead": 0,
+    "total_in": 723
+  },
+  {
+    "target": 900,
+    "call": 2,
+    "inputTokens": 8,
+    "cacheWrite": 715,
+    "cacheRead": 0,
+    "total_in": 723
+  },
+  {
+    "target": 1000,
+    "call": 1,
+    "inputTokens": 8,
+    "cacheWrite": 788,
+    "cacheRead": 0,
+    "total_in": 796
+  },
+  {
+    "target": 1000,
+    "call": 2,
+    "inputTokens": 8,
+    "cacheWrite": 0,
+    "cacheRead": 788,
+    "total_in": 796
+  },
+  {
+    "target": 1200,
+    "call": 1,
+    "inputTokens": 8,
+    "cacheWrite": 931,
+    "cacheRead": 0,
+    "total_in": 939
+  },
+  {
+    "target": 1200,
+    "call": 2,
+    "inputTokens": 8,
+    "cacheWrite": 931,
+    "cacheRead": 0,
+    "total_in": 939
+  },
+  {
+    "target": 1600,
+    "call": 1,
+    "inputTokens": 8,
+    "cacheWrite": 1219,
+    "cacheRead": 0,
+    "total_in": 1227
+  },
+  {
+    "target": 1600,
+    "call": 2,
+    "inputTokens": 8,
+    "cacheWrite": 1219,
+    "cacheRead": 0,
+    "total_in": 1227
+  },
+  {
+    "target": 2400,
+    "call": 1,
+    "inputTokens": 8,
+    "cacheWrite": 1798,
+    "cacheRead": 0,
+    "total_in": 1806
+  },
+  {
+    "target": 2400,
+    "call": 2,
+    "inputTokens": 8,
+    "cacheWrite": 0,
+    "cacheRead": 1798,
+    "total_in": 1806
+  }
+]

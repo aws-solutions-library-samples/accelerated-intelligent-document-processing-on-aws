@@ -410,3 +410,74 @@ def test_merge_split_stats_sums_across_shards():
     assert merged["rows_recovered_by_retry"] == 8
     assert merged["unrecoverable_rows"] == 1
     assert merge_split_stats(None, None) is None
+
+
+class LowConfidenceOnAmount17(FakeAssessmentService):
+    """Rows whose amount is 17.00 score low; the core's own alert names the
+    row by its position WITHIN THE SLICE it was handed (mimicking the real
+    core, which enumerates only the rows it sees)."""
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        self.calls.append(len(rows))
+        row_assessments = []
+        core_alerts = []
+        for local_idx, row in enumerate(rows):
+            low = row.get("amount") == "17.00"
+            conf = 0.5 if low else 0.95
+            row_assessments.append({"confidence": conf, "confidence_reason": "x"})
+            if low:
+                core_alerts.append(
+                    {
+                        "attribute_name": f"{self.list_field}[{local_idx}]",
+                        "confidence": conf,
+                        "confidence_threshold": 0.9,
+                    }
+                )
+        return AssessmentCoreResult(
+            enhanced_assessment={self.list_field: row_assessments},
+            confidence_threshold_alerts=core_alerts,
+            metering={},
+            parsing_succeeded=True,
+            duration_seconds=0.1,
+        )
+
+
+def test_alert_row_indexes_are_global_not_slice_local():
+    """A low-confidence row in the SECOND batch must be reported at its
+    position in the merged list (transactions[16]), not at its position
+    within the slice that assessed it (transactions[6]). Regression test
+    for the per-slice index surface (upstream #813)."""
+    svc = LowConfidenceOnAmount17("transactions")
+    schema = {
+        "properties": {
+            "transactions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"date": {"type": "string"}},
+                },
+            }
+        }
+    }
+    out = assess_results_batched(
+        svc,
+        class_label="bank_statement",
+        extraction_results={"transactions": _rows(25)},
+        document_text="doc",
+        page_images=[],
+        batch_size=10,
+        class_schema=schema,
+        default_confidence_threshold=0.9,
+    )
+    paths = [a["attribute_name"] for a in out["alerts"]]
+    # Reconciliation reshapes row-level confidence leaves into per-cell leaves
+    # (one per data column), so the regenerated surface names cells — the same
+    # shape the standalone path's per-sub-field alerts use (``attr[i].sub``).
+    # The essential property is the ROW index: 16 (merged list), never 6 (the
+    # row's position within the slice that assessed it).
+    assert paths == ["transactions[16].date", "transactions[16].amount"], (
+        f"expected merged-list cell paths at row 16, got {paths} — an index "
+        "of 6 means the surface was accumulated per core (slice-local) "
+        "instead of regenerated from the merged assessment"
+    )

@@ -791,6 +791,7 @@ export type Mutation = {
   completeSectionReview?: Maybe<Document>;
   copyToBaseline: CopyToBaselineResponse;
   createDocument?: Maybe<CreateDocumentOutput>;
+  createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
@@ -976,6 +977,13 @@ export type MutationCopyToBaselineArgs = {
 
 export type MutationCreateDocumentArgs = {
   input: CreateDocumentInput;
+};
+
+
+export type MutationCreateEmptyTestSetArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  documentClassType?: InputMaybe<DocumentClassType>;
+  name: Scalars['String']['input'];
 };
 
 
@@ -2390,6 +2398,15 @@ export type CopyToBaselineMutationVariables = Exact<{
 
 
 export type CopyToBaselineMutation = { copyToBaseline: { success: boolean, message?: string | null } };
+
+export type CreateEmptyTestSetMutationVariables = Exact<{
+  name: Scalars['String']['input'];
+  description?: InputMaybe<Scalars['String']['input']>;
+  documentClassType?: InputMaybe<DocumentClassType>;
+}>;
+
+
+export type CreateEmptyTestSetMutation = { createEmptyTestSet?: { id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, status?: string | null, labelState?: string | null, createdAt: string, documentClassType?: DocumentClassType | null } | null };
 
 export type CreateFinetuningJobMutationVariables = Exact<{
   input: CreateFinetuningJobInput;

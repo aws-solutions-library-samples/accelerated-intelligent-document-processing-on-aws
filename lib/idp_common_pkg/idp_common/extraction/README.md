@@ -609,6 +609,20 @@ effect" from "forcing never ran", and both look identical in the output.
 > `bedrock.<name>(...)` calls and asserts each resolves; add the re-export line
 > whenever you call a new client method that way.
 
+## Page images over Bedrock's per-image limit (`metadata.image_downscale`)
+
+Bedrock enforces its 5 MiB per-image limit on the **base64-encoded** payload, so a
+stored page image over **3.75 MiB** used to fail the whole section with a hard
+`ValidationException` (#778). `_load_document_images` now runs each page through
+`idp_common.image.fit_image_to_bedrock_limit` after the configured
+`image.target_width/target_height` resize; a page that had to be shrunk is recorded
+in the section's `metadata.image_downscale` as a list of per-page entries
+(`page_id`, original/final bytes and encoded bytes, original/final size and format,
+`passes`, `reason`). Pages already within budget are passed through byte-identical and
+leave no entry. The attach-time choke point (`prepare_bedrock_image_attachment`)
+fits as well, so the shard runtime and every other caller are covered even when
+they bypass this loader; only the loader records metadata.
+
 ## Multi-document sections (`instance_count`)
 
 Classification splits sections on document *type*. When a packet concatenates
@@ -1068,6 +1082,8 @@ on `config_library/unified/lending-package-sample` -> `Payslip` at ~4 chars/toke
 | 1 | prose `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` substituted into the task prompt | ~1,485 |
 | 2 | `"Expected Schema: ..."` appended to the **system** prompt | ~2,600 |
 | 3 | the extraction tool's `inputSchema`, which Strands derives from the same model | ~2,595 |
+
+Figures measured before #836; the class and group descriptions that fix recovers add roughly 130 tokens to each of copies 2 and 3 on `Payslip`.
 | | **total ~6,680, of which copy 2 is 38%** | |
 
 Copies 2 and 3 are **the same JSON string** — not merely equivalent; a test asserts
@@ -1772,3 +1788,48 @@ Use these metrics to:
 - 🔲 Support for additional extraction backends (custom models)
 - 🔲 Automatic example quality assessment and recommendations
 - 🔲 Table structure detection for complex layouts (merged cells, nested headers)
+
+
+### Simple-mode large-document warnings (2026-09-10)
+
+With over-splitting fixed (#726) a Simple-mode section is ONE request, and the measured
+consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED` and no
+processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
+make both loud without changing what is extracted:
+
+- `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for the lists of
+  objects of one shape vs the rows in the section's OCR tables **of that shape** (`_ocr_tables`
+  counts only Markdown tables: lines that START with a pipe, in a run that holds a `|---|`
+  separator row; a separator starts a new table, a non-empty line without a leading pipe
+  ends one, more than 5 intervening empty lines or a change in cell count splits one, trailing
+  empty cells are ignored, runs under 3 rows are dropped — so a footer block with pipes, a
+  key/value block rendered with pipes but no separator, or prose containing "|" is never
+  evidence; `_expected_rows_for_width` keeps the tables whose column count equals the list item's
+  property count; `_object_list_targets` resolves `items` through `$ref` with `deref_schema`,
+  descends one level into an array of instances, skips a bare multi-instance wrapper, and
+  ignores lists of scalars). Lists of the same width are judged as one group — total rows
+  extracted vs total matched OCR rows — so complete sibling tables (Deposits, Withdrawals)
+  never warn against their shared evidence. Fires when the matched tables hold at least 30
+  rows and the group extracted fewer than half of them (`_OCR_ROW_ESTIMATE_MIN`,
+  `_OCR_ROW_SHORTFALL_RATIO`). It needs OCR that emits Markdown tables — Textract with the
+  `TABLES` feature (textractor always writes the separator row) or BDA; with the default
+  `ocr.features: []` there are no pipe tables and the check is inert by construction, the
+  same precondition as the table-parsing tool. The exact-width rule is a trade: an item schema with a
+  derived property the table lacks is not compared at all, and a two-property list next to a
+  real two-column table (a form rendered as a Textract TABLE) is.
+- `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
+  `ValidationException` (in the shard path, `from` the agentic `ValueError` whose cause is
+  that `ValidationException`; the transient check follows the whole chain) with the section size (from the logged pre-flight estimate,
+  `_simple_mode_input_preflight`: text chars/4 + images at Bedrock's pixels/750) and the
+  remedy; the wording is mode-aware (`_explain_input_overflow`) and the matcher is the shared
+  `bedrock_utils.is_input_token_overflow` (also used by summarization). The class name is in
+  no retry list, so #787 keeps it hard. The matcher judges a `ClientError` by its code
+  first (only `ValidationException` can be an overflow; a throttle mentioning "input tokens
+  per minute" is not) and by text otherwise. The Step Functions shard runtime raises it too
+  (`_run_shard_or_explain_overflow` is `async` and wraps the **await** of
+  `extract_one_shard`), with the Advanced-mode wording; when the agentic path has already
+  translated the overflow (`agentic_idp._is_context_overflow_error`, which also recognises
+  Strands' `ContextWindowOverflowException` by type name and so stays separate), its
+  remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
+  issue: a
+  successful call proves the estimate wrong, and a failed section never reaches the record.

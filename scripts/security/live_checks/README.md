@@ -109,6 +109,8 @@ nothing; the deployed trigger removes a stale role on a demoted claim; a
 non-mapped attribute is not writable by an end user while the mapped one is; and a
 native user who wrote `custom:idp_groups` themselves gains no role.
 
-Expect one `NOTE` about pre-existing behaviour — a second federated sign-in by the
-same user fails because the pool's `email` attribute is `Mutable: false`. See the
-skill for what that means and why it is not your change.
+Section 3b (a second federated sign-in by the same user) reads the pool's `email`
+schema flag: on a pool created with `ExternalIdPEmailMutable=true` it is a real
+PASS/FAIL check; on a pool created with the default `false` it is recorded as a
+`NOTE`, because such a pool lets each federated user sign in exactly once (#835).
+See the skill for what that means and why it is not your change.

@@ -498,3 +498,27 @@ class TestTestRunnerRBAC:
         with patch.object(test_runner_index.dynamodb, "Table", return_value=table):
             with pytest.raises(ValueError, match="Test run 'ghost' not found"):
                 test_runner_index.send_test_run_to_review({"testRunId": "ghost"})
+
+    def test_handler_refuses_an_empty_test_set(self):
+        """A set with no documents cannot be run, and nothing is queued for it."""
+        with (
+            patch.object(test_runner_index, "_get_test_set") as mock_get_test_set,
+            patch.object(test_runner_index, "_capture_config"),
+            patch.object(
+                test_runner_index, "_active_config_version", return_value="v1"
+            ),
+            patch.object(test_runner_index, "_store_test_run_metadata"),
+            patch.object(test_runner_index.sqs, "send_message") as mock_sqs,
+            patch.dict(
+                os.environ,
+                {"TRACKING_TABLE": "test-table", "CONFIG_TABLE": "test-config-table"},
+            ),
+        ):
+            mock_get_test_set.return_value = {"name": "Empty-Set", "fileCount": 0}
+            event = {
+                "arguments": {"input": {"testSetId": "empty-set", "context": "UI"}},
+                "identity": _ADMIN_IDENTITY,
+            }
+            with pytest.raises(ValueError, match="has no documents to run"):
+                test_runner_index.handler(event, {})
+            mock_sqs.assert_not_called()
