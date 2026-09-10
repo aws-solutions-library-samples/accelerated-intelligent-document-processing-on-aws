@@ -517,10 +517,15 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "__nope__", fileNames: ["__nope__"] }
   addTestSet:
-    groups: [Admin, Author]
+    groups: [Admin]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { name: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
+  createEmptyTestSet:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { name: "__nope__" }
   addTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation
@@ -528,7 +533,7 @@ operations:
     # schema: addTestSetFromUpload(input: TestSetUploadInput!)
     args: { input: {} }
   addDocumentsToTestSet:
-    groups: [Admin, Author]
+    groups: [Admin]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
@@ -550,7 +555,7 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetIds: ["__nope__"] }
   listBucketFiles:
-    groups: [Admin, Author]
+    groups: [Admin]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { bucketType: "input", filePattern: "__nope__" }
