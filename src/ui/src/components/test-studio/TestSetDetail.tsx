@@ -475,6 +475,7 @@ const TestSetDetail = (): React.JSX.Element => {
   /** After a bucket or zip add: re-read the set's size until it moves, then refetch. */
   const watchForArrival = (message: string) => {
     stopArrivalWatch();
+    setRemovedMessage(null);
     const sizeBefore = totalCount;
     const startedAt = Date.now();
     setArrivalNotice({ type: 'info', text: message });
@@ -505,6 +506,7 @@ const TestSetDetail = (): React.JSX.Element => {
   /** After starting generation into this set: follow the job, then refetch. */
   const watchGeneration = (jobId: string) => {
     stopArrivalWatch();
+    setRemovedMessage(null);
     setArrivalNotice({ type: 'info', text: 'Generating documents into this set. They appear here when the job completes.' });
     arrivalTimer.current = setInterval(async () => {
       const job = await getJobStatus(jobId);
@@ -527,6 +529,10 @@ const TestSetDetail = (): React.JSX.Element => {
     if (!testSetId || selectedItems.length === 0) return;
     setIsRemoving(true);
     setError(null);
+    // An arrival notice from an earlier add would otherwise sit beside the
+    // removal message, still announcing the documents that were just removed.
+    stopArrivalWatch();
+    setArrivalNotice(null);
     try {
       const response = await client.graphql({
         query: removeDocumentsFromTestSet,

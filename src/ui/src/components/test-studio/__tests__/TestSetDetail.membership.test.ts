@@ -58,6 +58,15 @@ describe('the set detail page', () => {
     expect(DETAIL).toMatch(/disabled=\{isLoading \|\| labelJob\?\.status === 'RUNNING' \|\| totalCount === 0\}/);
   });
 
+  it('shows one membership notice at a time', () => {
+    // Seen live: after removing the documents an earlier add had brought in, the
+    // green "Documents are arriving" notice stayed beside "Removed 2 document(s)".
+    const remove = DETAIL.slice(DETAIL.indexOf('const handleRemoveDocuments = async'), DETAIL.indexOf('const handleResetLabels = async'));
+    expect(remove).toMatch(/stopArrivalWatch\(\);\s*setArrivalNotice\(null\);/);
+    const arrival = DETAIL.slice(DETAIL.indexOf('const watchForArrival = '), DETAIL.indexOf('const handleRemoveDocuments = async'));
+    expect(arrival.match(/setRemovedMessage\(null\)/g)).toHaveLength(2);
+  });
+
   it('clears the selection whenever the page is refetched', () => {
     const fetchPage = DETAIL.slice(
       DETAIL.indexOf('const fetchPage = useCallback('),

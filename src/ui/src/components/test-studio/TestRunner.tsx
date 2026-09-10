@@ -391,11 +391,13 @@ const TestRunner = ({
               // If number is too large, don't update the state (prevents typing)
             }}
             placeholder={
-              selectedTestSet
-                ? `Enter 1-${testSets.find((ts) => ts.id === selectedTestSet.value)?.fileCount || 0}`
-                : 'Select a test set first'
+              !selectedTestSet
+                ? 'Select a test set first'
+                : selectedFileCount > 0
+                  ? `Enter 1-${selectedFileCount}`
+                  : 'This test set has no documents'
             }
-            disabled={!selectedTestSet}
+            disabled={!selectedTestSet || selectedFileCount === 0}
             type="text"
             inputMode="numeric"
           />
