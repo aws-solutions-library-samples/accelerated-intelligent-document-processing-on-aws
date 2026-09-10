@@ -390,6 +390,34 @@ images are what push the request over the limit.
 > **fail or lose 96–99% of rows** on 25+ page documents. See §5 for the size-conditional
 > recommendation, and prefer fixing the classifier (below) over disabling splitting.
 
+#### 🔄 And now it has moved back — measured after the #726 fix (2026-09-10)
+
+The paragraph above predicted it, and the fix for #726 (repeated table column headings
+are no longer read as a new document, so a single statement arrives as ONE section) makes
+it measurable. Same simple-mode cell, Sonnet 5, one run per size, on a stack built from
+`develop` after #726 merged (`benchmarks/results/v0.6.8/scalingsimple__extraction-model-sonnet5/`):
+
+| rows | pages | sections | recall | status | v0.6.7 (over-split) |
+|---:|---:|---:|---:|---|---|
+| 25 | 1 | 1 | 1.000 | COMPLETED | 1.000, 1 section |
+| 100 | 3 | 1 | 1.000 | COMPLETED | 1.000, 2 sections |
+| 400 | 9 | 1 | 1.000 | COMPLETED | 1.000, 3 sections |
+| 800 | 17 | 1 | **0.054** (43 of 800 rows) | **COMPLETED, no processing issue** | 1.000, 7 sections |
+| 1,200 | 25 | — | 0 | **FAILED** `Input is too long for requested model` | 1.000, 6 sections |
+| 1,600 | 33 | — | 0 | **FAILED** | 1.000, 12 sections |
+| 3,200 | 66 | — | 0 | **FAILED** | 0.724, 18 sections |
+
+Per-cell accuracy is 1.000 on every completed run, so what completes is right. But the
+simple-mode completeness cliff is back where the single-response limit puts it: complete at
+400 rows / 9 pages, **silently truncated at 800 rows / 17 pages** (the population check
+passes because the list is non-empty, and the confidence pass scores the 43 rows it was
+given), and a hard, correctly-unretried failure from 25 pages up. This is the accepted cost
+of not giving simple mode shard-and-rejoin: that capability is what advanced mode is for,
+and the over-splitting that masked the limit was a classification defect, not a feature.
+Two things follow for anyone running simple mode: the §5 size threshold below is now
+~400 rows / ~10 pages, and the 800-row row is the strongest case yet for row-count
+completeness detection (§6 item 4) — a truncated simple-mode run must not report success.
+
 #### ⚠️ Correction: "complete through 1,600 rows" does not replicate
 
 The same configuration run on two stacks disagrees at the top of the range:
@@ -554,11 +582,11 @@ these are like-for-like cost comparisons of configurations that all did the job.
 
 | Situation | Recommended configuration |
 |-----------|---------------------------|
-| Typical documents ≤ ~1,600 rows / ≤ ~33 pages | **simple mode** (complete, per-row-accurate, ~2.6–2.9× cheaper) |
+| Typical documents ≤ ~400 rows / ≤ ~10 pages per document | **simple mode** (complete, per-row-accurate, ~2.6–2.9× cheaper). The earlier "≤ ~1,600 rows" figure relied on #726's over-splitting; with that fixed, simple mode is measured complete at 400 rows / 9 pages, **silently truncated at 800 rows / 17 pages**, and fails outright from ~25 pages (§3). |
 | Table-free / forms corpora | **LAYOUT-only OCR** (cheapest complete option in both modes; best-behaved confidence) |
-| Large multi-page tables (> ~1,200 rows) | **advanced mode** (recall 1.000 through 3,200 rows, §3; budget cost as a *range*). Simple mode is unreliable from ~1,600 rows and fragments the list either way |
+| Large multi-page tables (> ~400 rows / ~10 pages) | **advanced mode** (recall 1.000 through 3,200 rows, §3; budget cost as a *range*). Simple mode is unreliable from ~1,600 rows and fragments the list either way |
 | Very large docs (> ~3,000 rows / 60 pages) | advanced **and split the document** if feasible (~$22 and ~11 min per document at 3,200 rows, §3) |
-| **Paying the +22% agentic over-split premium** | **set `classification.model` to Claude Haiku 4.5.** It gets the section count right 5 of 5 where the default Nova 2 Lite gets 0 of 5, taking advanced mode to **−5.6% vs v0.6.6** and costing simple mode only **+9%** (Sonnet 5 also fixes it but costs simple mode **+45%**). This is the recommended fix — it corrects the boundary decision rather than switching it off, so it is safe for packets *and* for large documents |
+| The agentic over-split premium (+22% at v0.6.7) | **Fixed in the shipped prompt (#726, PR #817)** — a single statement is one section again (5/5 vs 1/5 under the v0.6.7 prompt, same stack). No classifier-model change is needed; Haiku 4.5 was measured only on the remaining running-header shape (#750), which it also fails. |
 | **`sectionSplitting: disabled`** | Only for a single-class corpus of **small** documents (≤ ~9 pages measured), where it is the cheapest correct setting. ⚠️ **Never** if input can be a packet (§7). ⚠️ **Never** above ~1,000 rows / ~25 pages: measured to **FAIL outright** (`Input is too long for requested model`) at the shipped dpi, and to silently truncate to **0.6–3.6% recall** at dpi 150 (§3) |
 | Very large lists **+ confidence** | expect the confidence pass to be the fragile part, not extraction — it failed to converge inside its Lambda on an 800-row list (§3). Lower `extraction.confidence.list_batch_size` from 25, or use `confidence.mode: off` and reconcile separately |
 | Confidence needed | **`separate`** assessment. Do not use `integrated` with simple extraction (§2.1) — it is now more expensive *and* less complete *and* worse calibrated than `separate` |
@@ -1032,6 +1060,29 @@ leave on. `mode: off` returns the previous behaviour. Full analysis:
 [classification.md](../classification.md) § Classification Confidence.
 
 ---
+
+### `extraction.confidence.list_batch_size` — the shipped sizing pays for one truncated call per 100-row section (measured 2026-09-10)
+
+Every 100-row simple-mode section in the 2026-09-09 live pass recorded the same
+`assessment_batch_split_stats`: eight batches (the token sizer's ~13 rows), ONE truncated
+Nova Lite call, a split-to-3 retry, every row recovered. An A/B on the unchanged
+`small_narrow` fixture (Sonnet 4.6 extraction, Nova Lite confidence, 5 repeats per arm, one
+stack; `benchmarks/results/v0.6.8/sizerab*/`):
+
+| `list_batch_size` | assessment $/doc | assessment output tokens | truncation events | wall s/doc |
+|---|---:|---:|---:|---:|
+| shipped `25` (→ token sizer 13; warm run) | 0.0086 | 10,237 | 4 of 5 runs | 99.5 |
+| pinned `13` | 0.0071 | 8,580 | 1 of 5 | 76.5 |
+| pinned `8` | **0.0061** | **7,085** | **0 of 5** | **61.3** |
+
+Recall, `cell_accuracy`, the 307 scored confidence leaves and mean confidence are identical
+across arms; input tokens are equal (~19k). The whole difference is output tokens — the
+truncated call's wasted output plus the retry. So the self-healing ladder is correct but is
+doing, on every section, work the sizer should have avoided: −29% assessment cost and
+−38 s per 100-row document at `8`, with nothing lost. A default change is a product
+decision (it interacts with the two-sizer design in `bedrock/sizing.py` and
+`assessment/batching.py`, and a stored `25` on upgraded stacks would keep the old behaviour);
+until then, `list_batch_size: 8` is a safe per-config setting for 3-column lists on Nova Lite.
 
 ## Appendix A — Data & reproduction
 
