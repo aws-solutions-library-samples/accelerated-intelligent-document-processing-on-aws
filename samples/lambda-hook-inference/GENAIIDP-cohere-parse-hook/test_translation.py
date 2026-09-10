@@ -376,6 +376,35 @@ def test_missing_and_degenerate_geometry_is_dropped():
     print("test_missing_and_degenerate_geometry_is_dropped: PASS")
 
 
+def test_multiline_image_description_stays_one_line():
+    """A newline in the description would split ![...](...) across LINE blocks."""
+    resp = {
+        "pages": [
+            {
+                "type": "blocks",
+                "index": 0,
+                "blocks": [
+                    {
+                        "type": "image",
+                        "image": {
+                            "id": "img-1",
+                            "description": "A portrait of a man.\nHe wears glasses.",
+                            "category": "other",
+                        },
+                    }
+                ],
+            }
+        ],
+        "meta": {"billed_units": {"pages": 1}},
+    }
+    text, textract, _ = index.build_textract_response(resp)
+    assert "\n" not in text
+    lines = [b for b in textract["Blocks"] if b["BlockType"] == "LINE"]
+    assert len(lines) == 1
+    assert lines[0]["Text"] == ("![A portrait of a man. He wears glasses.](img-1)")
+    print("test_multiline_image_description_stays_one_line: PASS")
+
+
 def test_empty_pages():
     text, textract, pages = index.build_textract_response({"pages": []})
     assert text == ""
@@ -416,6 +445,7 @@ if __name__ == "__main__":
     test_convert_html_tables_disabled_keeps_html()
     test_markdown_output_format()
     test_flat_block_shapes_are_tolerated()
+    test_multiline_image_description_stays_one_line()
     test_missing_and_degenerate_geometry_is_dropped()
     test_empty_pages()
     test_retry_after_parsing()

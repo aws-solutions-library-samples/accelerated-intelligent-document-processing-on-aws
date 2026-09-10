@@ -33,6 +33,46 @@ class TestLambdaHookModelId:
         assert LAMBDA_HOOK_MODEL_ID == "LambdaHook"
 
 
+class TestLambdaHookClientConfig:
+    """The invoke client must outwait a hook and never silently retry it.
+
+    boto3's defaults (60s read timeout, botocore retries on) abandoned an
+    in-flight hook after 60s and re-invoked it, re-running whatever the hook
+    charges for while the first call was still going. Measured on the Cohere
+    Parse hook (75s median per page), one 5-page document produced 44
+    invocations and zero completed pages.
+    """
+
+    def test_read_timeout_covers_the_maximum_lambda_timeout(self):
+        client = BedrockClient(region="us-east-1")
+        with patch("boto3.client") as mock_boto:
+            _ = client.lambda_client
+        config = mock_boto.call_args.kwargs["config"]
+        # A hook may run for the full 900s Lambda maximum.
+        assert config.read_timeout >= 900
+
+    def test_botocore_retries_are_disabled(self):
+        """Retrying an invocation re-runs paid work, so the library owns it.
+
+        `_invoke_lambda_hook_with_retry` backs off, logs, and knows which
+        errors are worth another attempt; botocore retrying underneath it
+        duplicates the spend invisibly.
+        """
+        client = BedrockClient(region="us-east-1")
+        with patch("boto3.client") as mock_boto:
+            _ = client.lambda_client
+        config = mock_boto.call_args.kwargs["config"]
+        assert config.retries["max_attempts"] == 1
+
+    def test_connection_pool_fits_the_ocr_worker_fanout(self):
+        """OCR worker threads share this client; the default pool of 10 serializes them."""
+        client = BedrockClient(region="us-east-1")
+        with patch("boto3.client") as mock_boto:
+            _ = client.lambda_client
+        config = mock_boto.call_args.kwargs["config"]
+        assert config.max_pool_connections >= 20
+
+
 class TestBedrockClientRouting:
     """Test that BedrockClient routes to Lambda when model_id is LambdaHook."""
 

@@ -498,8 +498,15 @@ def _payload(block: dict, key: str) -> dict:
 
 
 def _image_markdown(image: dict) -> str:
-    """Render an image/figure block the way Parse's markdown mode does."""
-    description = str(image.get("description") or "").strip()
+    """
+    Render an image/figure block the way Parse's markdown mode does.
+
+    The description is collapsed onto one line: Parse writes a multi-sentence
+    description of the figure, and a newline inside it would split the
+    ``![...](...)`` syntax across separate LINE blocks, leaving fragments of a
+    figure caption looking like page text.
+    """
+    description = " ".join(str(image.get("description") or "").split())
     image_id = str(image.get("id") or "").strip()
     category = str(image.get("category") or "").strip()
     if category and category != "other" and description:

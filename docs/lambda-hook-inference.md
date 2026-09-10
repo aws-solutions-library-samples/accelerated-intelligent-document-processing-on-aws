@@ -374,7 +374,20 @@ ocr:
   backend: bedrock
   model_id: "LambdaHook"
   model_lambda_hook_arn: "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-cohere-parse-hook"
+  # Required when moving an existing config from Textract to any OCR LambdaHook:
+  task_prompt: |
+    Extract all text from this document image. Preserve the layout, including
+    paragraphs, tables, and formatting.
+    {DOCUMENT_IMAGE}
 ```
+
+⚠️ **Switching an existing profile from `backend: textract` needs `{DOCUMENT_IMAGE}`
+in `ocr.task_prompt`.** A Textract-based profile has no reason to carry the
+placeholder, and config validation rejects the save without it (correctly — the
+hook would receive no image). Note that the error message's suggestion to "remove
+task_prompt to use system defaults" does **not** resolve it when the stack's
+`default` profile is itself Textract-based, because the inherited default has no
+placeholder either. Set it explicitly, as above.
 
 **Getting an API key**: Sign up at [dashboard.cohere.com](https://dashboard.cohere.com/api-keys) to get your API key, provided as `CohereApiKey` at deploy time.
 
@@ -391,7 +404,7 @@ ocr:
 | `RETRY_BASE_DELAY` | `1` | Initial backoff in seconds, doubled per attempt |
 | `REQUEST_TIMEOUT` | `120` | Per-request timeout (seconds) |
 
-### Service limits
+### Service limits and latency
 
 Images only (`document.type: "image_url"`; PDFs are not accepted — fine, since the
 accelerator sends page images), 20 MB / 50 megapixels per image, and a flat
@@ -399,6 +412,23 @@ accelerator sends page images), 20 MB / 50 megapixels per image, and a flat
 429/5xx retry with exponential backoff. Trial keys are additionally capped at
 1,000 calls/month. Headers, footers and font hierarchy are not identified, and
 charts get a description rather than extracted data series.
+
+⚠️ **The hosted API is slow per page.** Measured on a bank statement page:
+**~50–90 seconds per page**, and it does not improve with a smaller image (150 dpi
+took 55.6s, 300 dpi took 50.9s — the cost is model time, not upload). The blog's
+"4.5 pages/second" is a *self-hosted 8×H100 vLLM* figure and does not describe the
+hosted API.
+
+Two consequences:
+
+- The pipeline waits up to 900s for a hook (see the LambdaHook read-timeout note
+  in the CHANGELOG). Older releases waited only 60s — the boto3 default — and
+  would abandon then re-invoke a slow hook, re-running the paid Cohere call while
+  the first was still going. If you are on a release before that fix, this hook
+  will not complete.
+- Cohere Parse's output is not deterministic: repeat calls on the same page
+  returned differing block counts and one transcribed an account number
+  differently between runs. Don't expect byte-identical OCR across runs.
 
 ### Cost metering
 
