@@ -107,22 +107,26 @@ aws cloudformation delete-stack --stack-name IDPVerify
 python3 scripts/security/live_checks/oidc_provider/deploy.py down --region us-west-2
 ```
 
-### Expect one recorded NOTE, not a failure
+### Section 3b depends on how the pool was created
 
 The checks print a `NOTE` for behaviour that is pre-existing rather than a
-pass/fail of your change. Today there is one: **a second federated sign-in by the
-same user fails** with `user.email: Attribute cannot be updated`, because the
-pool's `email` attribute is `Mutable: false` (reverted to `false` in `3bed47097`
-to keep stack updates working — a schema flag cannot be changed on an existing
-pool). Cognito rewrites mapped attributes on every federated sign-in, so the
-second one is rejected. Consequences to keep in mind:
+pass/fail of your change. Section 3b (a second hosted-UI sign-in by the same
+federated user) reads the pool's `email` schema flag and branches:
 
-- IdP-driven group changes cannot reach an *existing* federated user on such a
-  pool. The checks therefore exercise the group-removal path by invoking the
-  deployed trigger directly, and delete the federated user record between
-  sign-ins (the one-shot bridge `docs/external-idp.md` documents).
-- Do not read this as your change breaking federation. Confirm by checking
-  whether `email` is `Mutable: false` on the pool.
+- **Pool created with `ExternalIdPEmailMutable=true`** (the value the CLI applies
+  when it creates a federated stack, and what `IDPVerify` above should use): the
+  second sign-in is a **PASS/FAIL check** — it must succeed and the new group claim
+  must be applied.
+- **Pool created with the default `false`**: the second sign-in fails with
+  `user.email: Attribute cannot be updated` and is recorded as a `NOTE`, not a
+  failure. Cognito rewrites mapped attributes on every federated sign-in and an
+  immutable attribute cannot be rewritten. Consequences: IdP-driven group changes
+  cannot reach an *existing* federated user on such a pool, so the checks exercise
+  the group-removal path by invoking the deployed trigger directly, and delete the
+  federated user record between sign-ins (the one-shot bridge
+  `docs/external-idp.md` documents). Do not read this as your change breaking
+  federation; the flag is fixed at pool creation and cannot be changed on an
+  existing stack (#835).
 
 ## What `make api-test` covers, and its one precondition
 

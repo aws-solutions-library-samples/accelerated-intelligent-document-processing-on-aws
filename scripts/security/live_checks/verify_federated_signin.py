@@ -74,15 +74,28 @@ def find_federated_user(cog, pool_id: str) -> str | None:
     return None
 
 
+def email_is_mutable(cog, pool_id: str) -> bool:
+    """Whether the pool's `email` schema attribute is mutable.
+
+    Set at pool creation by the `ExternalIdPEmailMutable` template parameter
+    (#835). Decides whether a second federated sign-in is expected to succeed.
+    """
+    pool = cog.describe_user_pool(UserPoolId=pool_id)["UserPool"]
+    for attr in pool.get("SchemaAttributes", []):
+        if attr.get("Name") == "email":
+            return bool(attr.get("Mutable"))
+    return False
+
+
 def delete_federated_user(cog, pool_id: str) -> None:
     """Remove the federated user record so the next sign-in is a first sign-in.
 
-    Needed because this pool's `email` attribute is `Mutable: false` and Cognito
-    rewrites mapped attributes on every federated sign-in, so a second sign-in by
-    an existing federated user is rejected with `user.email: Attribute cannot be
-    updated`. Pre-existing and independent of the changes under test (see
-    docs/external-idp.md); deleting the record is the one-shot bridge that doc
-    describes.
+    Needed on a pool whose `email` attribute is immutable (created with
+    `ExternalIdPEmailMutable=false`, the template default): Cognito rewrites
+    mapped attributes on every federated sign-in, so a second sign-in by an
+    existing federated user is rejected with `user.email: Attribute cannot be
+    updated`. Independent of the changes under test (see docs/external-idp.md);
+    deleting the record is the one-shot bridge that doc describes.
     """
     username = find_federated_user(cog, pool_id)
     if username:
@@ -214,14 +227,23 @@ def main() -> int:
         "UserPoolClient"
     ]
     write_attrs = client.get("WriteAttributes") or []
-    check(bool(write_attrs), "UserPoolClient declares WriteAttributes",
-          f"WriteAttributes={sorted(write_attrs)}")
-    check("custom:idp_groups" in write_attrs,
-          "custom:idp_groups is writable (required for IdP AttributeMapping)")
-    check("preferred_username" not in write_attrs,
-          "a non-mapped attribute is absent from the write list")
-    check(args.idp_name in (client.get("SupportedIdentityProviders") or []),
-          f"{args.idp_name} is a supported provider")
+    check(
+        bool(write_attrs),
+        "UserPoolClient declares WriteAttributes",
+        f"WriteAttributes={sorted(write_attrs)}",
+    )
+    check(
+        "custom:idp_groups" in write_attrs,
+        "custom:idp_groups is writable (required for IdP AttributeMapping)",
+    )
+    check(
+        "preferred_username" not in write_attrs,
+        "a non-mapped attribute is absent from the write list",
+    )
+    check(
+        args.idp_name in (client.get("SupportedIdentityProviders") or []),
+        f"{args.idp_name} is a supported provider",
+    )
 
     # ------------------------------------- 1. real federated sign-in (the R2 gap)
     section("1. real federated sign-in, IdP asserts IdP-Admins")
@@ -230,49 +252,66 @@ def main() -> int:
     tokens, hops = federated_signin(domain, client_id, redirect_uri, args.idp_name)
     print("     " + " | ".join(hops))
     fed_username = None
-    if check(tokens is not None,
-             "federated sign-in completed — Cognito's AttributeMapping write "
-             "succeeded with WriteAttributes declared"):
+    if check(
+        tokens is not None,
+        "federated sign-in completed — Cognito's AttributeMapping write "
+        "succeeded with WriteAttributes declared",
+    ):
         claims = jwt_claims(tokens["id_token"])
         groups = claims.get("cognito:groups") or []
         fed_username = claims.get("cognito:username") or claims.get("sub")
-        check("Admin" in groups,
-              "the FIRST token already carries the mapped Admin group",
-              f"cognito:groups={groups}")
+        check(
+            "Admin" in groups,
+            "the FIRST token already carries the mapped Admin group",
+            f"cognito:groups={groups}",
+        )
         attrs = {
             a["Name"]: a["Value"]
             for a in cog.admin_get_user(UserPoolId=pool_id, Username=fed_username)[
                 "UserAttributes"
             ]
         }
-        check(attrs.get("custom:idp_groups") == ADMIN_IDP_GROUP,
-              "Cognito's AttributeMapping wrote custom:idp_groups",
-              f"stored={attrs.get('custom:idp_groups')!r}")
-        check("identities" in attrs,
-              "the federated user has an identities attribute to check provenance against")
-        check(managed_groups(cog, pool_id, fed_username) == {"Admin"},
-              "Cognito role membership synced to Admin")
+        check(
+            attrs.get("custom:idp_groups") == ADMIN_IDP_GROUP,
+            "Cognito's AttributeMapping wrote custom:idp_groups",
+            f"stored={attrs.get('custom:idp_groups')!r}",
+        )
+        check(
+            "identities" in attrs,
+            "the federated user has an identities attribute to check provenance against",
+        )
+        check(
+            managed_groups(cog, pool_id, fed_username) == {"Admin"},
+            "Cognito role membership synced to Admin",
+        )
 
     # ----------------------------------------------------- 2. refresh (freshness)
     if fed_username:
         section("2. attribute rewritten out of band, then a token REFRESH")
         cog.admin_update_user_attributes(
-            UserPoolId=pool_id, Username=fed_username,
+            UserPoolId=pool_id,
+            Username=fed_username,
             UserAttributes=[{"Name": "custom:idp_groups", "Value": VIEWER_IDP_GROUP}],
         )
         print(f"  set custom:idp_groups={VIEWER_IDP_GROUP} via the admin API")
         r = requests.post(
             f"{domain}/oauth2/token",
-            data={"grant_type": "refresh_token", "client_id": client_id,
-                  "refresh_token": tokens["refresh_token"]},
-            headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=30,
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "refresh_token": tokens["refresh_token"],
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30,
         )
         if check(r.status_code == 200, "refresh succeeded", f"HTTP {r.status_code}"):
             tok_groups = jwt_claims(r.json()["id_token"]).get("cognito:groups") or []
             roles = managed_groups(cog, pool_id, fed_username)
-            check(roles == {"Admin"} and "Viewer" not in tok_groups,
-                  "the refresh did NOT act on the rewritten attribute",
-                  f"role membership={roles}, token groups={tok_groups}")
+            check(
+                roles == {"Admin"} and "Viewer" not in tok_groups,
+                "the refresh did NOT act on the rewritten attribute",
+                f"role membership={roles}, token groups={tok_groups}",
+            )
 
         # ------------------------------- 3. removal path on the deployed trigger
         section("3. deployed trigger, fresh sign-in event with a demoted claim")
@@ -283,32 +322,69 @@ def main() -> int:
         resp = lam.invoke(
             FunctionName=args.trigger_function,
             Payload=json.dumps(
-                pretoken_event(pool_id, fed_username, VIEWER_IDP_GROUP,
-                               "TokenGeneration_HostedAuth")
+                pretoken_event(
+                    pool_id,
+                    fed_username,
+                    VIEWER_IDP_GROUP,
+                    "TokenGeneration_HostedAuth",
+                )
             ).encode(),
         )
         body = json.loads(resp["Payload"].read())
-        if check(not resp.get("FunctionError"), "trigger returned normally",
-                 str(body)[:160]):
-            check(managed_groups(cog, pool_id, fed_username) == {"Viewer"},
-                  "Admin removed and Viewer granted on the demoted claim",
-                  f"role membership={managed_groups(cog, pool_id, fed_username)}")
-            check(override_groups(body) == ["Viewer"],
-                  f"token override = {override_groups(body)}")
+        if check(
+            not resp.get("FunctionError"), "trigger returned normally", str(body)[:160]
+        ):
+            check(
+                managed_groups(cog, pool_id, fed_username) == {"Viewer"},
+                "Admin removed and Viewer granted on the demoted claim",
+                f"role membership={managed_groups(cog, pool_id, fed_username)}",
+            )
+            check(
+                override_groups(body) == ["Viewer"],
+                f"token override = {override_groups(body)}",
+            )
 
         section("3b. second hosted-UI sign-in by the SAME federated user")
+        mutable = email_is_mutable(cog, pool_id)
+        print(
+            f"     pool email attribute Mutable={mutable} "
+            f"(ExternalIdPEmailMutable at stack creation)"
+        )
         set_mock_user(lam, args.idp_function, memberOf=ADMIN_IDP_GROUP)
-        tokens2, hops2 = federated_signin(domain, client_id, redirect_uri, args.idp_name)
+        tokens2, hops2 = federated_signin(
+            domain, client_id, redirect_uri, args.idp_name
+        )
         print("     " + " | ".join(hops2))
-        if tokens2 is None and any("cannot be updated" in h for h in hops2):
-            note("second federated sign-in fails with `user.email: Attribute cannot "
-                 "be updated` — this pool's email attribute is Mutable: false. "
-                 "PRE-EXISTING and unrelated to the changes under test; documented "
-                 "in docs/external-idp.md. It does mean IdP-driven group changes "
-                 "cannot reach an existing federated user on such a pool.")
+        if mutable:
+            # #835 fix in effect: repeat sign-ins must work and the new claim
+            # must be applied, or the parameter-gated schema flag regressed.
+            if check(
+                tokens2 is not None,
+                "second federated sign-in by the same user succeeds "
+                "(email attribute is mutable)",
+                " | ".join(hops2),
+            ):
+                check(
+                    "Admin" in managed_groups(cog, pool_id, fed_username),
+                    "re-asserted Admin claim applied on the second sign-in",
+                    f"role membership={managed_groups(cog, pool_id, fed_username)}",
+                )
+        elif tokens2 is None and any("cannot be updated" in h for h in hops2):
+            note(
+                "second federated sign-in fails with `user.email: Attribute cannot "
+                "be updated` — this pool was created with "
+                "ExternalIdPEmailMutable=false (the template default), so its "
+                "email attribute is immutable (#835). Independent of the changes "
+                "under test; documented in docs/external-idp.md. It does mean "
+                "IdP-driven group changes cannot reach an existing federated user "
+                "on such a pool. Create verification stacks with "
+                "ExternalIdPEmailMutable=true to make this a real check."
+            )
         else:
-            note(f"second sign-in {'succeeded' if tokens2 else 'failed'}: "
-                 f"{' | '.join(hops2)}")
+            note(
+                f"second sign-in {'succeeded' if tokens2 else 'failed'}: "
+                f"{' | '.join(hops2)}"
+            )
 
     # ------------------------------------------- 4. attribute write permissions
     section("4. attribute write permissions on the deployed client")
@@ -317,34 +393,54 @@ def main() -> int:
     except Exception:
         pass
     cog.admin_create_user(
-        UserPoolId=pool_id, Username=NATIVE_EMAIL, MessageAction="SUPPRESS",
-        UserAttributes=[{"Name": "email", "Value": NATIVE_EMAIL},
-                        {"Name": "email_verified", "Value": "true"}],
+        UserPoolId=pool_id,
+        Username=NATIVE_EMAIL,
+        MessageAction="SUPPRESS",
+        UserAttributes=[
+            {"Name": "email", "Value": NATIVE_EMAIL},
+            {"Name": "email_verified", "Value": "true"},
+        ],
     )
     cog.admin_set_user_password(
         UserPoolId=pool_id, Username=NATIVE_EMAIL, Password=NATIVE_PW, Permanent=True
     )
     preserve = {
-        k: v for k, v in client.items()
-        if k in ("ClientName", "RefreshTokenValidity", "AccessTokenValidity",
-                 "IdTokenValidity", "TokenValidityUnits", "ReadAttributes",
-                 "WriteAttributes", "SupportedIdentityProviders", "CallbackURLs",
-                 "LogoutURLs", "AllowedOAuthFlows", "AllowedOAuthScopes",
-                 "AllowedOAuthFlowsUserPoolClient", "PreventUserExistenceErrors",
-                 "EnableTokenRevocation")
+        k: v
+        for k, v in client.items()
+        if k
+        in (
+            "ClientName",
+            "RefreshTokenValidity",
+            "AccessTokenValidity",
+            "IdTokenValidity",
+            "TokenValidityUnits",
+            "ReadAttributes",
+            "WriteAttributes",
+            "SupportedIdentityProviders",
+            "CallbackURLs",
+            "LogoutURLs",
+            "AllowedOAuthFlows",
+            "AllowedOAuthScopes",
+            "AllowedOAuthFlowsUserPoolClient",
+            "PreventUserExistenceErrors",
+            "EnableTokenRevocation",
+        )
     }
     flows = client.get("ExplicitAuthFlows") or []
     restore = None
     if "ALLOW_ADMIN_USER_PASSWORD_AUTH" not in flows:
         restore = list(flows)
         cog.update_user_pool_client(
-            UserPoolId=pool_id, ClientId=client_id,
-            ExplicitAuthFlows=flows + ["ALLOW_ADMIN_USER_PASSWORD_AUTH"], **preserve
+            UserPoolId=pool_id,
+            ClientId=client_id,
+            ExplicitAuthFlows=flows + ["ALLOW_ADMIN_USER_PASSWORD_AUTH"],
+            **preserve,
         )
         print("  temporarily enabled ADMIN_USER_PASSWORD_AUTH")
     try:
         auth = cog.admin_initiate_auth(
-            UserPoolId=pool_id, ClientId=client_id,
+            UserPoolId=pool_id,
+            ClientId=client_id,
             AuthFlow="ADMIN_USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": NATIVE_EMAIL, "PASSWORD": NATIVE_PW},
         )
@@ -355,19 +451,27 @@ def main() -> int:
         try:
             cog.update_user_attributes(
                 AccessToken=access_token,
-                UserAttributes=[{"Name": "custom:idp_groups", "Value": ADMIN_IDP_GROUP}],
+                UserAttributes=[
+                    {"Name": "custom:idp_groups", "Value": ADMIN_IDP_GROUP}
+                ],
             )
             check(True, "custom:idp_groups is writable, as IdP mapping requires")
         except cog.exceptions.NotAuthorizedException as e:
-            check(False, "custom:idp_groups is writable, as IdP mapping requires",
-                  f"refused — this would break federated sign-in: {e}")
+            check(
+                False,
+                "custom:idp_groups is writable, as IdP mapping requires",
+                f"refused — this would break federated sign-in: {e}",
+            )
         try:
             cog.update_user_attributes(
                 AccessToken=access_token,
                 UserAttributes=[{"Name": "preferred_username", "Value": "nope"}],
             )
-            check(False, "a non-mapped attribute is NOT writable",
-                  "the write succeeded — WriteAttributes is too wide")
+            check(
+                False,
+                "a non-mapped attribute is NOT writable",
+                "the write succeeded — WriteAttributes is too wide",
+            )
         except cog.exceptions.NotAuthorizedException as e:
             check(True, "a non-mapped attribute is NOT writable", str(e)[:100])
 
@@ -379,26 +483,34 @@ def main() -> int:
                 "UserAttributes"
             ]
         }
-        check(stored.get("custom:idp_groups") == ADMIN_IDP_GROUP,
-              "the native user's own write persisted",
-              f"stored={stored.get('custom:idp_groups')!r}")
+        check(
+            stored.get("custom:idp_groups") == ADMIN_IDP_GROUP,
+            "the native user's own write persisted",
+            f"stored={stored.get('custom:idp_groups')!r}",
+        )
         auth = cog.admin_initiate_auth(
-            UserPoolId=pool_id, ClientId=client_id,
+            UserPoolId=pool_id,
+            ClientId=client_id,
             AuthFlow="ADMIN_USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": NATIVE_EMAIL, "PASSWORD": NATIVE_PW},
         )
-        tok_groups = jwt_claims(
-            auth["AuthenticationResult"]["IdToken"]
-        ).get("cognito:groups") or []
+        tok_groups = (
+            jwt_claims(auth["AuthenticationResult"]["IdToken"]).get("cognito:groups")
+            or []
+        )
         assigned = managed_groups(cog, pool_id, NATIVE_EMAIL)
-        check("Admin" not in tok_groups and assigned == set(),
-              "the native user gained NO role from the attribute they set",
-              f"token groups={tok_groups or '[]'}, role membership={assigned or '{}'}")
+        check(
+            "Admin" not in tok_groups and assigned == set(),
+            "the native user gained NO role from the attribute they set",
+            f"token groups={tok_groups or '[]'}, role membership={assigned or '{}'}",
+        )
     finally:
         if restore is not None:
             cog.update_user_pool_client(
-                UserPoolId=pool_id, ClientId=client_id,
-                ExplicitAuthFlows=restore, **preserve
+                UserPoolId=pool_id,
+                ClientId=client_id,
+                ExplicitAuthFlows=restore,
+                **preserve,
             )
             print("\n  restored the app client's auth flows")
         try:

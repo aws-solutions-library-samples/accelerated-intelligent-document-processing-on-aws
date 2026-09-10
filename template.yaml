@@ -206,6 +206,22 @@ Parameters:
       to the external IdP for authentication instead of seeing the Cognito login page first.
       Native Cognito username/password login is still available by navigating directly to the Cognito hosted UI.
 
+  ExternalIdPEmailMutable:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      Set to 'true' for ALL NEW deployments that use an external identity provider (ExternalIdPType=SAML or OIDC).
+      Cognito rewrites the IdP-mapped 'email' attribute on every federated sign-in, and with the default
+      'false' the pool's email attribute is immutable, so a federated user can sign in exactly ONCE
+      (the second sign-in fails with "user.email: Attribute cannot be updated").
+      IMPORTANT: this flag is fixed when the User Pool is created and CANNOT be changed afterwards -
+      changing it on an existing stack fails the update and can leave the stack in UPDATE_ROLLBACK_FAILED.
+      Keep the value the stack was created with. The default stays 'false' so updates of existing stacks are
+      unaffected; native (username/password) sign-in works either way.
+
   # Custom Configuration Path
 
   CustomConfigPath:
@@ -1244,6 +1260,9 @@ Conditions:
       - !Condition HasExternalIdP
       - !Equals [ !Ref ExternalIdPType, "OIDC" ]
   HasExternalIdPGroupMapping: !Not [ !Equals [ !Ref ExternalIdPGroupAttributeName, "" ] ]
+  # Schema flags are fixed at User Pool creation, so this condition MUST resolve to
+  # the value the pool was created with on every update (see ExternalIdPEmailMutable).
+  ExternalIdPEmailIsMutable: !Equals [ !Ref ExternalIdPEmailMutable, "true" ]
   ShouldMapExternalIdPGroups:
     !And
       - !Condition HasExternalIdP
@@ -1420,6 +1439,7 @@ Metadata:
           - ExternalIdPReviewerGroupName
           - ExternalIdPViewerGroupName
           - ExternalIdPAutoLogin
+          - ExternalIdPEmailMutable
       - Label:
           default: "Web UI Hosting"
         Parameters:
@@ -1618,6 +1638,8 @@ Metadata:
         default: "Bastion Host - Security Group ID (required when Bastion Host is enabled)"
       BastionHostAmiId:
         default: "Bastion Host - AMI ID (SSM parameter path, leave default for Amazon Linux 2)"
+      ExternalIdPEmailMutable:
+        default: "Federated sign-in: mutable email attribute (set 'true' for ALL new deployments using an external IdP; fixed at stack creation, do not change on an existing stack)"
 
 Resources:
   # Custom resource to enforce max length of StackName - prevent downstream failures
@@ -10121,10 +10143,29 @@ Resources:
           RequireNumbers: true
           RequireSymbols: true
           RequireUppercase: true
+      # Federated `email` mutability (#835). Cognito re-applies the identity
+      # provider's AttributeMapping on EVERY federated sign-in, and an immutable
+      # attribute cannot be rewritten even with an identical value, so with
+      # Mutable: false a federated user can sign in exactly once. Mutable: true
+      # is the fix — but a schema flag is fixed at pool creation: changing it on
+      # an existing pool fails the update with a misleading "Required custom
+      # attributes are not supported" and can leave the stack in
+      # UPDATE_ROLLBACK_FAILED (11fd05dbd flipped it, 3bed47097 reverted it).
+      # Hence the flag is parameter-gated, defaulting to the historical false so
+      # existing stacks resolve to the value their pool was created with.
+      #
+      # When the attribute IS mutable, a native user's own access token (SRP
+      # sign-in carries aws.cognito.signin.user.admin) can rewrite `email` via
+      # UpdateUserAttributes, and the API resolvers key config scope
+      # (allowedConfigVersions, UsersTable EmailIndex) on the token's email
+      # claim. UserAttributeUpdateSettings below therefore makes a self-service
+      # email change take effect only after the NEW address is verified, so a
+      # user cannot adopt an address they do not control. Gated on the same
+      # condition so an existing pool sees no property change at all.
       Schema:
         - Name: email
           AttributeDataType: String
-          Mutable: false
+          Mutable: !If [ ExternalIdPEmailIsMutable, true, false ]
           Required: true
         - Name: idp_groups
           AttributeDataType: String
@@ -10132,6 +10173,11 @@ Resources:
           Required: false
           StringAttributeConstraints:
             MaxLength: "2048"
+      UserAttributeUpdateSettings: !If
+        - ExternalIdPEmailIsMutable
+        - AttributesRequireVerificationBeforeUpdate:
+            - email
+        - !Ref AWS::NoValue
       UsernameConfiguration:
         CaseSensitive: false
 
