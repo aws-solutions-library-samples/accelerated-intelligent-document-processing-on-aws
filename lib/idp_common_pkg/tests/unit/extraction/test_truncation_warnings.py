@@ -362,12 +362,14 @@ class TestSiblingsRefsAndWrappers:
 
 
 class TestOcrTables:
-    @pytest.mark.parametrize("gap,rows", [(5, [11]), (6, [6])])
-    def test_the_gap_boundary_tolerates_empty_lines_inside_a_table(self, gap, rows):
-        """Up to 5 intervening lines keep one table; at 6 the second run stands alone,
-        and without its own separator it is not a table at all."""
+    @pytest.mark.parametrize("empty_lines,rows", [(5, [11]), (6, [6])])
+    def test_the_gap_boundary_tolerates_empty_lines_inside_a_table(
+        self, empty_lines, rows
+    ):
+        """Up to 5 intervening empty lines keep one table; at 6 the second run stands
+        alone, and without its own separator it is not a table at all."""
         body = "\n".join(f"| a{i} | b{i} | c{i} |" for i in range(5))
-        text = _table(5, cols=3) + "\n" * gap + body
+        text = _table(5, cols=3) + "\n" * (empty_lines + 1) + body
         assert [t["rows"] for t in ExtractionService._ocr_tables(text)] == rows
 
     @pytest.mark.parametrize("rows,expect", [(2, 0), (3, 1)])

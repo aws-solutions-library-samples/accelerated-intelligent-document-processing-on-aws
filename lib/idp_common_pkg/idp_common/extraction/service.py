@@ -1572,7 +1572,11 @@ class ExtractionService:
                 cells.pop()
             ncols = len(cells)
             if cur_rows and (
-                (last_idx is not None and idx - last_idx > cls._OCR_TABLE_GAP_LINES)
+                (
+                    last_idx is not None
+                    and idx - last_idx - 1
+                    > cls._OCR_TABLE_GAP_LINES  # intervening lines
+                )
                 or ncols != cur_cols
             ):
                 heading_only = cur_rows == 1 and has_sep and ncols != cur_cols
@@ -1806,7 +1810,6 @@ class ExtractionService:
         Returns:
             Dict with table detection results
         """
-        import re
 
         # Detect Markdown table rows (lines with | delimiters)
         table_rows = []
