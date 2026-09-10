@@ -8,8 +8,9 @@ returned 43 rows with COMPLETED and no processing issue, and 25+ pages failed wi
 Bedrock's bare "Input is too long". This pins:
 
 * ``extraction_rows_below_ocr_estimate`` — rows extracted vs the OCR tables SHAPED like
-  the list (column count within one of the item's property count), so a second table,
-  a form's key/value blocks, a prose "|" or a list of scalars never count against it.
+  the list (column count EQUAL to the item's property count; tables segmented on gaps AND
+  on width changes; same-width lists judged as a group), so a second table, a form's
+  key/value blocks, a prose "|" or a list of scalars never count against it.
 * the pre-flight estimate (log + remembered figures, NOT a processing issue) and
   ``ExtractionInputTooLarge`` — the mode-aware, remedy-carrying failure.
 """
@@ -102,7 +103,7 @@ class TestRowShortfall:
         assert CODE in _codes(issues)
         issue = next(i for i in issues if i.code == CODE)
         assert issue.severity == "warning"
-        assert issue.details["list_field"] == "Transactions"
+        assert issue.details["list_fields"] == ["Transactions"]
         assert issue.details["extracted_rows"] == 43
         assert (
             800 <= issue.details["ocr_estimated_rows"] <= 800 + 17
@@ -201,7 +202,7 @@ class TestRowShortfall:
             },
         )
         issue = next(i for i in issues if i.code == CODE)
-        assert issue.details["list_field"] == "instances[].Transactions"
+        assert issue.details["list_fields"] == ["instances[].Transactions"]
         assert issue.details["extracted_rows"] == 43
 
     def test_form_style_instances_with_key_value_blocks_are_quiet(self):
@@ -269,7 +270,124 @@ class TestRowShortfall:
         ) is fires
 
 
+class TestSiblingsRefsAndWrappers:
+    def test_same_width_sibling_tables_complete_do_not_warn(self):
+        """Deposits, Withdrawals and Fees — three complete (Date, Description, Amount) tables."""
+        schema = {
+            "type": "object",
+            "properties": {
+                k: {"type": "array", "items": ROW}
+                for k in ("Deposits", "Withdrawals", "Fees")
+            },
+        }
+        svc = _svc(schema=schema)
+        svc._document_text = "\n\n## Withdrawals\n\n".join(
+            _table(100, cols=3) for _ in range(3)
+        )
+        assert CODE not in _codes(
+            _issues(svc, {k: _rows(100) for k in ("Deposits", "Withdrawals", "Fees")})
+        )
+
+    def test_same_width_siblings_truncated_in_total_warn_once_naming_them(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                k: {"type": "array", "items": ROW} for k in ("Deposits", "Withdrawals")
+            },
+        }
+        svc = _svc(schema=schema)
+        svc._document_text = "\n\n## Withdrawals\n\n".join(
+            _table(100, cols=3) for _ in range(2)
+        )
+        issues = [
+            i
+            for i in _issues(svc, {"Deposits": _rows(20), "Withdrawals": _rows(23)})
+            if i.code == CODE
+        ]
+        assert len(issues) == 1
+        assert issues[0].details["list_fields"] == ["Deposits", "Withdrawals"]
+        assert issues[0].details["extracted_rows"] == 43
+
+    def test_items_defined_by_ref_are_resolved(self):
+        """Every shipped preset defines its rows in $defs; the check must see through it."""
+        schema = {
+            "type": "object",
+            "$defs": {"Transaction": ROW},
+            "properties": {
+                "Account Number": {"type": "string"},
+                "Transactions": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/Transaction"},
+                },
+            },
+        }
+        svc = _svc(schema=schema)
+        svc._document_text = _table(800, pages=17)
+        assert CODE in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+        )
+        assert CODE not in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(800)})
+        )
+
+    def test_a_bare_multi_instance_wrapper_is_not_compared_to_table_rows(self):
+        """Instances are documents: 5 payee instances next to a 100-row 3-column table."""
+        item = {
+            "type": "object",
+            "properties": {
+                "Payee": {"type": "string"},
+                "Amount": {"type": "number"},
+                "Date": {"type": "string"},
+            },
+        }
+        schema = {
+            "type": "object",
+            "x-aws-idp-instance-array": "instances",
+            "properties": {"instances": {"type": "array", "items": item}},
+        }
+        svc = _svc(schema=schema)
+        svc._document_text = _table(100, cols=3)
+        assert CODE not in _codes(
+            _issues(
+                svc, {"instances": [{"Payee": "p", "Amount": 1.0, "Date": "d"}] * 5}
+            )
+        )
+
+    def test_a_footer_line_with_pipes_does_not_change_the_table_width(self):
+        svc = _svc()
+        svc._document_text = (
+            _table(800, pages=17)
+            + "\nPage 17 of 17 | Member FDIC | Equal Housing Lender | Routing 000000000\n"
+        )
+        assert CODE in _codes(
+            _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+        )
+
+
 class TestOcrTables:
+    @pytest.mark.parametrize("gap,expect", [(5, 1), (6, 2)])
+    def test_the_gap_boundary(self, gap, expect):
+        text = _table(10, cols=3) + "\n" * gap + _table(10, cols=3)  # gap-1 blank lines
+        assert len(ExtractionService._ocr_tables(text)) == expect
+
+    @pytest.mark.parametrize("rows,expect", [(2, 0), (3, 1)])
+    def test_the_minimum_rows(self, rows, expect):
+        text = "\n".join(f"| a{i} | b{i} |" for i in range(rows))
+        assert len(ExtractionService._ocr_tables(text)) == expect
+
+    def test_a_width_change_starts_a_new_table_and_trailing_empty_cells_are_ignored(
+        self,
+    ):
+        text = (
+            _table(10, cols=3)
+            + "\n"
+            + "\n".join(f"| k{i} | v{i} |" for i in range(6))
+            + "\n"
+            + "\n".join("| a | b | c |  |" for _ in range(4))
+        )
+        tables = ExtractionService._ocr_tables(text)
+        assert [(t["rows"], t["cols"]) for t in tables] == [(11, 3), (6, 2), (4, 3)]
+
     def test_segments_by_gap_and_measures_columns(self):
         text = (
             _table(10, cols=3)
@@ -291,9 +409,9 @@ class TestOcrTables:
             {"rows": 4, "cols": 4},
         ]
         # only the exact 3-column table matches a 3-property item
-        assert ExtractionService._expected_rows_for_list(ROW, tables) == 101
-        # unknown shape: largest table
-        assert ExtractionService._expected_rows_for_list({}, tables) == 101
+        assert ExtractionService._expected_rows_for_width(3, tables) == 101
+        # a 2-property item matches only the 2-column table
+        assert ExtractionService._expected_rows_for_width(2, tables) == 100
 
 
 class TestInputPreflight:
@@ -385,6 +503,7 @@ class TestOverflowFailure:
             "Input Tokens Exceeded",
             "input token count 210000 exceeds the maximum of 200000",
             "The context window was exceeded",
+            "The model returned the following errors: prompt is too long: 213551 tokens > 200000 maximum",
         ],
     )
     def test_every_bedrock_phrasing_is_recognised(self, text):

@@ -1781,18 +1781,26 @@ consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED`
 processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
 make both loud without changing what is extracted:
 
-- `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for a list of
-  objects vs the rows in the section's OCR tables **of the same shape** (`_ocr_tables`
-  segments pipe-delimited runs by gaps and measures their column count;
-  `_expected_rows_for_list` keeps the tables whose column count equals the list item's
-  property count). Fires below half, with a 30-row floor. Lists of scalars are not compared;
-  an array of instances (the multi-instance wrapper, or any list whose items carry lists) is
-  compared through its inner lists (`_object_list_targets`). Simple-mode wording recommends
-  Advanced or `minItems`; agentic wording does not.
+- `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for the lists of
+  objects of one shape vs the rows in the section's OCR tables **of that shape** (`_ocr_tables`
+  segments pipe-delimited runs at gaps of more than 5 non-table lines AND wherever the cell
+  count changes, ignoring trailing empty cells, and drops runs under 3 rows;
+  `_expected_rows_for_width` keeps the tables whose column count equals the list item's
+  property count; `_object_list_targets` resolves `items` through `$ref` with `deref_schema`,
+  descends one level into an array of instances, skips a bare multi-instance wrapper, and
+  ignores lists of scalars). Lists of the same width are judged as one group — total rows
+  extracted vs total matched OCR rows — so complete sibling tables (Deposits, Withdrawals)
+  never warn against their shared evidence. Fires when the matched tables hold at least 30
+  rows and the group extracted fewer than half of them (`_OCR_ROW_ESTIMATE_MIN`,
+  `_OCR_ROW_SHORTFALL_RATIO`). The exact-width rule is a trade: an item schema with a
+  derived property the table lacks is not compared at all, and a two-property list next to a
+  long run of key/value rows is.
 - `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
   `ValidationException` with the section size (from the logged pre-flight estimate,
   `_simple_mode_input_preflight`: text chars/4 + images at Bedrock's pixels/750) and the
   remedy; the wording is mode-aware (`_explain_input_overflow`) and the matcher is the shared
   `bedrock_utils.is_input_token_overflow` (also used by summarization). The class name is in
-  no retry list, so #787 keeps it hard. The pre-flight is **not** a processing issue: a
+  no retry list, so #787 keeps it hard. The Step Functions shard runtime raises it too
+  (`_run_shard_or_explain_overflow` wraps `extract_one_shard`), with the Advanced-mode
+  wording. The pre-flight is **not** a processing issue: a
   successful call proves the estimate wrong, and a failed section never reaches the record.

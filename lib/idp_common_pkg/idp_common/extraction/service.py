@@ -1520,11 +1520,16 @@ class ExtractionService:
     def _ocr_tables(cls, text: str) -> list[dict[str, int]]:
         """The Markdown tables in ``text`` as ``[{"rows": n, "cols": c}, ...]``.
 
-        Rows are pipe-delimited lines that are not separator rows; a gap of more
-        than ``_OCR_TABLE_GAP_LINES`` non-table lines starts a new table; a table's
-        column count is the widest row's cell count. Runs shorter than
-        ``_OCR_TABLE_MIN_ROWS`` are dropped. Heading rows that a table reprints on
-        every page are counted as rows (the half ratio absorbs them).
+        Rows are pipe-delimited lines that are not separator rows. A new table
+        starts when more than ``_OCR_TABLE_GAP_LINES`` non-table lines intervene
+        OR when the cell count changes — textractor separates two adjacent tables
+        by a blank line and a heading, which is under the gap, so the width change
+        is what tells a 2-column Daily Balances table from the 3-column
+        Transactions table above it. Trailing empty cells (Textract's spare
+        column) are not counted. Runs shorter than ``_OCR_TABLE_MIN_ROWS`` are
+        dropped, so a footer or prose line containing a pipe is not a table.
+        Heading rows a table reprints on every page are counted as rows (the half
+        ratio absorbs them).
         """
         import re
 
@@ -1532,87 +1537,101 @@ class ExtractionService:
         cur_rows = 0
         cur_cols = 0
         last_idx: int | None = None
+
+        def _flush() -> None:
+            if cur_rows >= cls._OCR_TABLE_MIN_ROWS:
+                tables.append({"rows": cur_rows, "cols": cur_cols})
+
         for idx, line in enumerate(text.split("\n")):
             stripped = line.strip()
             if "|" not in stripped or re.match(r"^[\s|:-]+$", stripped):
                 continue
-            if last_idx is not None and idx - last_idx > cls._OCR_TABLE_GAP_LINES:
-                if cur_rows >= cls._OCR_TABLE_MIN_ROWS:
-                    tables.append({"rows": cur_rows, "cols": cur_cols})
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            while len(cells) > 1 and cells[-1] == "":
+                cells.pop()
+            ncols = len(cells)
+            if cur_rows and (
+                (last_idx is not None and idx - last_idx > cls._OCR_TABLE_GAP_LINES)
+                or ncols != cur_cols
+            ):
+                _flush()
                 cur_rows, cur_cols = 0, 0
-            cells = [c for c in stripped.strip("|").split("|")]
-            cur_cols = max(cur_cols, len(cells))
+            cur_cols = ncols
             cur_rows += 1
             last_idx = idx
-        if cur_rows >= cls._OCR_TABLE_MIN_ROWS:
-            tables.append({"rows": cur_rows, "cols": cur_cols})
+        _flush()
         return tables
 
     @classmethod
-    def _expected_rows_for_list(
-        cls, items_schema: Any, tables: list[dict[str, int]]
+    def _expected_rows_for_width(
+        cls, n_props: int, tables: list[dict[str, int]]
     ) -> int:
-        """OCR table rows that plausibly belong to a list whose items look like
-        ``items_schema``: the tables whose column count EQUALS the item's
-        property count. A section can hold several tables — a statement's
-        Transactions next to a Daily Balances table, a form's key/value blocks —
-        and only the ones shaped like the list are evidence about the list.
-        Unknown item shape falls back to the largest table.
+        """OCR table rows in tables whose column count EQUALS ``n_props``.
+
+        A section can hold several tables — Transactions next to a two-column
+        Daily Balances table, a form's key/value blocks — and only the ones shaped
+        like the list are evidence about it. Exact width is the trade the check
+        makes: a one-column tolerance let every key/value block count against a
+        three-column list, at the price that an item schema with a property the
+        table lacks (a derived Balance) is not compared at all.
         """
-        if not tables:
-            return 0
-        props = (
-            (items_schema or {}).get("properties")
-            if isinstance(items_schema, dict)
-            else None
-        )
-        n = len(props) if isinstance(props, dict) and props else 0
-        if n == 0:
-            return max(tb["rows"] for tb in tables)
-        return sum(tb["rows"] for tb in tables if tb["cols"] == n)
+        return sum(tb["rows"] for tb in tables if tb["cols"] == n_props)
 
     @staticmethod
     def _object_list_targets(
         schema: dict[str, Any], values: Any
-    ) -> list[tuple[str, dict[str, Any], list[Any]]]:
-        """``(label, items_schema, rows)`` for every list of OBJECTS the schema
-        declares at the top level — descending one level into an array of
-        instances (the multi-instance wrapper, or any list whose items carry
-        their own lists) so the inner lists are compared as rows across all
-        instances rather than the instance count being compared to table rows.
-        Lists of scalars are not targets: their items are not table rows.
+    ) -> list[tuple[str, int, list[Any]]]:
+        """``(label, item_property_count, rows)`` for every list of OBJECTS the
+        schema declares at the top level — ``items`` resolved through ``$ref``
+        (every shipped preset defines its rows in ``$defs``), descending one level
+        into an array of instances (the multi-instance wrapper, or any list whose
+        items carry their own lists) so the inner lists are compared as rows
+        across all instances. A wrapper whose instances carry no lists is skipped
+        — instances are documents, not table rows. Lists of scalars are not
+        targets: their items are not table rows.
         """
-        out: list[tuple[str, dict[str, Any], list[Any]]] = []
-        props = (schema or {}).get("properties") or {}
+        from idp_common.config.schema_utils import deref_schema
+
+        root = schema or {}
+        out: list[tuple[str, int, list[Any]]] = []
+        props = root.get("properties") or {}
+
+        def _items_props(spec: dict[str, Any]) -> dict[str, Any] | None:
+            items = spec.get("items")
+            if not isinstance(items, dict):
+                return None
+            items = deref_schema(items, root)
+            iprops = items.get("properties") if isinstance(items, dict) else None
+            return iprops if isinstance(iprops, dict) and iprops else None
+
         for name, spec in props.items():
             if not isinstance(spec, dict) or spec.get("type") != "array":
                 continue
-            items = spec.get("items") if isinstance(spec.get("items"), dict) else {}
-            iprops = items.get("properties") if isinstance(items, dict) else None
-            if not isinstance(iprops, dict) or not iprops:
+            iprops = _items_props(spec)
+            if not iprops:
                 continue  # scalars, or an untyped list
             rows = values.get(name) if isinstance(values, dict) else None
             rows = rows if isinstance(rows, list) else []
-            inner = {
-                k: v
-                for k, v in iprops.items()
-                if isinstance(v, dict)
-                and v.get("type") == "array"
-                and isinstance(v.get("items"), dict)
-                and isinstance(v["items"].get("properties"), dict)
-            }
+            inner: dict[str, dict[str, Any]] = {}
+            for k, v in iprops.items():
+                v = deref_schema(v, root) if isinstance(v, dict) else v
+                if isinstance(v, dict) and v.get("type") == "array":
+                    ip = _items_props(v)
+                    if ip:
+                        inner[k] = ip
             if inner:
-                for iname, ispec in inner.items():
+                for iname, ip in inner.items():
                     concat = [
                         r
                         for inst in rows
-                        if isinstance(inst, dict)
-                        for r in (inst.get(iname) or [])
-                        if isinstance(inst.get(iname), list)
+                        if isinstance(inst, dict) and isinstance(inst.get(iname), list)
+                        for r in inst[iname]
                     ]
-                    out.append((f"{name}[].{iname}", ispec["items"], concat))
+                    out.append((f"{name}[].{iname}", len(ip), concat))
+            elif root.get("x-aws-idp-instance-array") == name:
+                continue  # bare multi-instance wrapper: instances are documents
             else:
-                out.append((name, items, rows))
+                out.append((name, len(iprops), rows))
         return out
 
     def _simple_mode_input_preflight(
@@ -1699,6 +1718,23 @@ class ExtractionService:
         except Exception:  # noqa: BLE001 - estimate only
             pass
         return int(fallback)
+
+    def _run_shard_or_explain_overflow(self, fn: Any, **kwargs: Any) -> Any:
+        """Run one shard; re-raise a Bedrock input overflow as ``ExtractionInputTooLarge``
+        with the Advanced-mode explanation, so the Step Functions shard path fails
+        with the same actionable cause as the in-process path."""
+        from idp_common.utils.bedrock_utils import is_input_token_overflow
+
+        try:
+            return fn(**kwargs)
+        except Exception as e:
+            if is_input_token_overflow(e):
+                msg = self._explain_input_overflow(
+                    e, str(kwargs.get("section_id") or "?"), is_agentic=True
+                )
+                logger.error(msg)
+                raise ExtractionInputTooLarge(msg) from e
+            raise
 
     def _explain_input_overflow(
         self, exc: BaseException, section_id: str, *, is_agentic: bool
@@ -2762,18 +2798,30 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # the floor and the half ratio absorb reprinted heading rows.
         if array_fields:
             tables = self._ocr_tables(self._document_text or "")
-            for label, items_schema, rows in self._object_list_targets(
+            # Lists of the same width share the OCR evidence — Deposits and
+            # Withdrawals are both (Date, Description, Amount) tables — so they are
+            # judged as a GROUP: total rows extracted across the width vs total
+            # matched OCR rows. Judging each against the shared sum warned on
+            # every complete statement with sibling tables.
+            groups: dict[int, list[tuple[str, list[Any]]]] = {}
+            for label, n_props, rows in self._object_list_targets(
                 self._class_schema or {}, extracted_fields
             ):
-                if not rows:
-                    continue  # empty lists belong to extraction_incomplete
-                expected = self._expected_rows_for_list(items_schema, tables)
-                extracted = sum(1 for r in rows if isinstance(r, dict))
+                groups.setdefault(n_props, []).append((label, rows))
+            for n_props, members in sorted(groups.items()):
+                labels = [lb for lb, rows in members if rows]
+                if not labels:
+                    continue  # every list of this width is empty: extraction_incomplete
+                expected = self._expected_rows_for_width(n_props, tables)
+                extracted = sum(
+                    1 for _lb, rows in members for r in rows if isinstance(r, dict)
+                )
                 if (
                     expected < self._OCR_ROW_ESTIMATE_MIN
                     or extracted >= expected * self._OCR_ROW_SHORTFALL_RATIO
                 ):
                     continue
+                fields_str = ", ".join(labels)
                 rec = (
                     " Simple extraction returns one response per section and "
                     "stops early on long lists; for documents this size use "
@@ -2789,23 +2837,24 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         severity="warning",
                         code="extraction_rows_below_ocr_estimate",
                         message=(
-                            f"Extracted {extracted} row(s) for list field {label}, "
-                            f"but the section's OCR text contains about {expected} "
-                            f"rows in table(s) of that shape — the list is likely "
-                            f"truncated. The run still reports success and scalar "
-                            f"fields are unaffected, so no other signal flags "
-                            f"this.{rec}"
+                            f"Extracted {extracted} row(s) for list field(s) "
+                            f"{fields_str}, but the section's OCR text contains about "
+                            f"{expected} rows in {n_props}-column table(s) of that "
+                            f"shape — the list is likely truncated. The run still "
+                            f"reports success and scalar fields are unaffected, so no "
+                            f"other signal flags this.{rec}"
                         ),
                         root_cause=(
                             f"{'agentic' if is_agentic else 'traditional'} extraction "
                             f"with model "
                             f"{self._pending_extraction_model or self.config.extraction.model}; "
                             f"{extracted} extracted rows vs ~{expected} matching OCR "
-                            f"table rows for {label}"
+                            f"table rows for {fields_str}"
                         ),
                         section_id=section_id,
                         details={
-                            "list_field": label,
+                            "list_fields": labels,
+                            "item_property_count": n_props,
                             "extracted_rows": extracted,
                             "ocr_estimated_rows": expected,
                             "ratio": round(extracted / expected, 3),
@@ -6662,7 +6711,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         payload = shard_payloads[shard_index]
 
         fields, response = _asyncio.run(
-            extract_one_shard(
+            self._run_shard_or_explain_overflow(
+                extract_one_shard,
                 shard_index=shard_index,
                 total_shards=len(shard_payloads),
                 payload=payload,

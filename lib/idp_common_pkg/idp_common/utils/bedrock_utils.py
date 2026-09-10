@@ -172,6 +172,8 @@ def is_input_token_overflow(error: BaseException) -> bool:
         return True
     if "context" in msg and ("exceed" in msg or "too long" in msg):
         return True
+    if "prompt is too long" in msg:  # Anthropic-native phrasing forwarded by Bedrock
+        return True
     return False
 
 
