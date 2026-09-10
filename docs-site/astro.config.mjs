@@ -198,6 +198,10 @@ export default defineConfig({
                   slug: "extensions/auto-optimizer",
                 },
                 {
+                  label: "IDP Monitor",
+                  slug: "extensions/idp-monitor",
+                },
+                {
                   label: "PII Anonymization",
                   slug: "extensions/pii-anonymizer",
                 },
