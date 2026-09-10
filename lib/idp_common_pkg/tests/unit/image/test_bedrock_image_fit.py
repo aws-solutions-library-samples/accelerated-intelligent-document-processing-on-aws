@@ -239,3 +239,55 @@ def test_prepare_bedrock_image_attachment_is_a_pass_through_when_it_fits() -> No
     data = _flat_png(800, 1000)
     block = prepare_bedrock_image_attachment(data)
     assert block["image"]["source"]["bytes"] is data
+
+
+# ------------------------------------------------- modes Pillow would mangle
+
+
+def _bilevel_png(width: int, height: int) -> bytes:
+    """A mode-"1" (bilevel) noise PNG, like a fax/TIFF-derived scan."""
+    import random
+
+    rng = random.Random(11)
+    img = Image.new("1", (width, height))
+    img.putdata([rng.getrandbits(1) for _ in range(width * height)])
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_bilevel_image_is_converted_so_lanczos_is_used_not_nearest() -> None:
+    """Pillow silently swaps LANCZOS for NEAREST on mode "1"/"P"; pixel-dropping
+    a scanned text page breaks thin strokes. The fit must convert first — the
+    observable evidence is that the output is grayscale, not bilevel."""
+    data = _bilevel_png(9000, 200)  # over the 8,000 px cap, tiny in bytes
+    out, fit = fit_image_to_bedrock_limit(data)
+    assert fit is not None
+    result = Image.open(io.BytesIO(out))
+    assert result.mode == "L", result.mode
+    assert result.size[0] <= BEDROCK_IMAGE_MAX_DIMENSION
+
+
+def test_palette_image_is_converted_before_resizing() -> None:
+    img = Image.new("RGB", (9000, 100), (200, 30, 30)).convert("P")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    out, fit = fit_image_to_bedrock_limit(buf.getvalue())
+    assert fit is not None
+    assert Image.open(io.BytesIO(out)).mode in ("RGB", "RGBA")
+
+
+def test_multi_pass_resizes_from_the_original_pixels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each pass resamples the ORIGINAL at the running product of scales. With
+    the size estimate neutralised, every pass is exactly the step floor, so the
+    final width must be original × floor**passes computed once — not the drift
+    of repeatedly truncating an already-resized image."""
+    monkeypatch.setattr(image_mod, "_FIT_TARGET_FRACTION", 1e9)  # size_ratio huge
+    monkeypatch.setattr(image_mod, "_FIT_MAX_STEP_RATIO", 0.5)  # so scale == 0.5
+    data = _noise_png(600, 600)
+    out, fit = fit_image_to_bedrock_limit(data, max_encoded_bytes=200_000)
+    assert fit is not None and fit.passes >= 2, fit
+    assert fit.final_width == int(600 * 0.5**fit.passes)
+    assert Image.open(io.BytesIO(out)).size[0] == fit.final_width

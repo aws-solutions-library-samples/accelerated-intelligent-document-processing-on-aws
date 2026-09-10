@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 # so the check has to happen here, where the image is prepared.
 BEDROCK_IMAGE_MAX_ENCODED_BYTES = 5 * 1024 * 1024  # 5,242,880
 BEDROCK_IMAGE_MAX_RAW_BYTES = BEDROCK_IMAGE_MAX_ENCODED_BYTES // 4 * 3  # 3,932,160
-# Claude rejects any image over 8,000 px on a side regardless of byte size.
+# The Converse API rejects any image over 8,000 px on a side regardless of byte
+# size (documented on the Message reference: "no more than 3.75 MB, 8000 px, and
+# 8000 px"); it applies to every model routed through Converse, not only Claude.
 BEDROCK_IMAGE_MAX_DIMENSION = 8000
 # Aim a little under the limit so PNG's non-linear compression cannot land a
 # resized image a few hundred bytes over and force another pass.
@@ -130,8 +132,18 @@ def fit_image_to_bedrock_limit(
         return image_data, None
 
     original = (len(image_data), encoded, width, height, original_format)
+    # Pillow silently falls back to NEAREST for mode "1" (bilevel) and "P"
+    # (palette) images, which would downscale a scanned text page by dropping
+    # pixels and break thin strokes. Convert first so LANCZOS really is used.
+    source = img
+    if img.mode == "1":
+        source = img.convert("L")
+    elif img.mode == "P":
+        source = img.convert("RGBA" if "transparency" in img.info else "RGB")
+    src_w, src_h = source.size
     data = image_data
     fmt = original_format
+    cumulative_scale = 1.0
     for passes in range(1, _FIT_MAX_PASSES + 1):
         # Bytes scale roughly with pixel area, so the linear factor is the
         # square root of the size ratio; the dimension cap is linear. Always
@@ -139,15 +151,18 @@ def fit_image_to_bedrock_limit(
         size_ratio = math.sqrt(max_encoded_bytes * _FIT_TARGET_FRACTION / encoded)
         dim_ratio = max_dimension / max(width, height)
         scale = min(size_ratio, dim_ratio, _FIT_MAX_STEP_RATIO)
-        new_w = max(1, int(width * scale))
-        new_h = max(1, int(height * scale))
+        # Resize from the ORIGINAL pixels at the running product of scales, so
+        # a multi-pass fit does not compound resampling loss pass over pass.
+        cumulative_scale *= scale
+        new_w = max(1, int(src_w * cumulative_scale))
+        new_h = max(1, int(src_h * cumulative_scale))
 
         use_jpeg = fmt == "JPEG" or passes > _FIT_NATIVE_FORMAT_PASSES
         save_fmt = "JPEG" if use_jpeg else fmt
         if save_fmt not in ("JPEG", "PNG", "GIF", "WEBP"):
             save_fmt = "JPEG"  # Bedrock accepts only these four anyway
 
-        resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        resized = source.resize((new_w, new_h), Image.Resampling.LANCZOS)
         if save_fmt == "JPEG" and resized.mode not in ("RGB", "L"):
             # JPEG has no alpha / palette; flatten onto white like a printed page.
             if "A" in resized.mode or resized.mode == "P":
@@ -164,13 +179,13 @@ def fit_image_to_bedrock_limit(
         save_kwargs: Dict[str, Any] = {"format": save_fmt}
         if save_fmt == "JPEG":
             save_kwargs.update(quality=_FIT_JPEG_QUALITY, optimize=True)
-        elif save_fmt == "PNG":
-            save_kwargs.update(optimize=True)
+        # PNG deliberately uses Pillow's default compression: optimize=True
+        # measured 2.5x slower per pass on a real page with no size gain.
         resized.save(buf, **save_kwargs)
 
         data = buf.getvalue()
         encoded = base64_encoded_size(len(data))
-        img, width, height, fmt = resized, new_w, new_h, save_fmt
+        width, height, fmt = new_w, new_h, save_fmt
         if (
             _fit_reason(encoded, width, height, max_encoded_bytes, max_dimension)
             is None
@@ -192,8 +207,9 @@ def fit_image_to_bedrock_limit(
             logger.warning(
                 "Page image exceeded Bedrock's per-image limit (%s); downscaled "
                 "%dx%d %s (%s B) -> %dx%d %s (%s B, %s B encoded) in %d pass(es) "
-                "so the request can succeed. Set extraction/classification "
-                "image.target_width/target_height to avoid this per request.",
+                "so the request can succeed. Set the stage's "
+                "image.target_width/target_height so pages render inside the "
+                "budget and avoid this per request.",
                 reason,
                 original[2],
                 original[3],

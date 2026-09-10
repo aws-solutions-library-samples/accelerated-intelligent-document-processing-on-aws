@@ -265,6 +265,9 @@ def apply_patches_to_data(
     return patched_dict
 
 
+# NOTE: page_images here (and in the prompt builder below) come from
+# ExtractionService._page_images, which _load_document_images has already
+# fitted to Bedrock's per-image limit (#778). Do not pass raw page bytes in.
 def create_view_image_tool(page_images: list[bytes]) -> Any:
     """
     Create a view_image tool that has access to page images.

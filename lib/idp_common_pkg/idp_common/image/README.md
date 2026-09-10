@@ -64,8 +64,8 @@ attachment = prepare_bedrock_image_attachment(image_bytes)
 Bedrock rejects a single image over **5 MiB** and measures the **base64-encoded**
 payload, so the raw budget is **3.75 MiB** (`BEDROCK_IMAGE_MAX_RAW_BYTES` =
 3,932,160). A 4 MB PNG is 5.3 MB encoded and fails the whole request with
-`ValidationException: image exceeds 5 MB maximum`. Claude also rejects images over
-**8,000 px** on a side (`BEDROCK_IMAGE_MAX_DIMENSION`).
+`ValidationException: image exceeds 5 MB maximum`. Converse also rejects images over
+**8,000 px** on a side (`BEDROCK_IMAGE_MAX_DIMENSION`), for every model it routes.
 
 `prepare_bedrock_image_attachment` — the one function every Bedrock image
 attachment in the pipeline passes through — fits the image first, so no caller can
@@ -81,9 +81,11 @@ if fit is not None:          # None = already within budget, bytes returned unch
     audit.append(fit.to_dict())   # original/final bytes, encoded bytes, size, format, passes, reason
 ```
 
-The fit shrinks proportionally (LANCZOS) by the square root of the byte ratio, aiming
-a little under the limit; lossless formats get two passes at their own format before
-falling back to JPEG (quality 90, alpha flattened onto white). It raises `ValueError`
+The fit shrinks proportionally (LANCZOS, always from the original pixels at the
+running scale so passes do not compound loss; bilevel and palette images are converted
+first because Pillow would otherwise fall back to NEAREST) by the square root of the
+byte ratio, aiming a little under the limit; lossless formats get two passes at their
+own format before falling back to JPEG (quality 90, alpha flattened onto white). It raises `ValueError`
 naming the sizes if the image still does not fit after nine passes, so the failure is
 attributable rather than Bedrock's generic error. Bytes PIL cannot read pass through
 unchanged; `prepare_bedrock_image_attachment` still raises its existing

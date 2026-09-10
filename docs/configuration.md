@@ -1085,10 +1085,14 @@ Amazon Bedrock rejects any single image over **5 MiB** — and it measures the
 page image is therefore **3.75 MiB (3,932,160 bytes)**, and any image over it fails
 the whole request with `ValidationException: image exceeds 5 MB maximum`, which on a
 document means a hard `FAILED` status at the extraction (or classification) step.
-Claude models also reject any image over **8,000 px** on a side regardless of size.
+The Converse API also rejects any image over **8,000 px** on a side regardless of size
+(this applies to every model routed through Converse, not only Claude).
 
-Because the defaults above preserve original resolution, a high-resolution scan or a
-PDF rendered at `ocr.image.dpi: 300` can cross that budget. The pipeline now
+Because the defaults above preserve original resolution, a high-resolution page image
+**uploaded as PNG or JPEG** is stored as-is and can cross that budget — that is the case
+measured in #778 (source PNGs of 3.8–5.4 MB). PDF pages are rendered by the OCR step and
+stored as JPEG, which rarely approaches the limit even at `ocr.image.dpi: 300`. The
+pipeline now
 **downscales such an image to fit, proportionally, in as few passes as possible**
 (same format first; lossless formats fall back to JPEG only if they still do not
 fit) instead of failing the document, logs a `WARNING` naming the sizes, and — for
