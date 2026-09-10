@@ -20,6 +20,8 @@ interface GenerateSyntheticDataModalProps {
   initialTab?: 'prompt' | 'config';
   initialVersion?: string;
   initialClassName?: string;
+  /** Open on "Add to existing test set" with this set chosen. */
+  initialDestination?: { testSetId: string; label: string };
 }
 
 const GenerateSyntheticDataModal = ({
@@ -29,12 +31,14 @@ const GenerateSyntheticDataModal = ({
   initialTab,
   initialVersion,
   initialClassName,
+  initialDestination,
 }: GenerateSyntheticDataModalProps): React.JSX.Element => {
   const form = useGenerateSyntheticForm({
     active: visible,
     initialMode: initialTab,
     initialVersion,
     initialClassName,
+    initialDestination,
   });
 
   const handleDismiss = () => {

@@ -219,8 +219,18 @@ ANNOTATOR_ALLOWED_FIELDS = (
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
 # a set including human-reviewed ones, so an Author who can otherwise manage test
-# sets cannot destroy the team's annotation work.
-ADMIN_ONLY_FIELDS = ("resetTestSetLabels",)
+# sets cannot destroy the team's annotation work. Importing by file pattern is
+# Admin-only because matching keys is a search over the whole bucket: an Author
+# probing patterns would learn which documents exist, including ones the
+# document list hides from a profile-scoped account, and an import copies them
+# with their baselines. Authors still create sets from a zip, by generation, or
+# empty.
+ADMIN_ONLY_FIELDS = (
+    "resetTestSetLabels",
+    "listBucketFiles",
+    "addTestSet",
+    "addDocumentsToTestSet",
+)
 
 
 def handler(event, context):
@@ -253,6 +263,8 @@ def handler(event, context):
 
     if field_name == "addTestSet":
         return add_test_set(event["arguments"])
+    elif field_name == "createEmptyTestSet":
+        return create_empty_test_set(event["arguments"])
     elif field_name == "addTestSetFromUpload":
         return add_test_set_from_upload(event["arguments"])
     elif field_name == "addDocumentsToTestSet":
@@ -497,6 +509,93 @@ def add_test_set(args):
     return result
 
 
+KEEP_MARKER = ".keep"
+
+
+def _write_keep_marker(test_set_id):
+    """Keep ``<id>/`` listable while the set has no documents.
+
+    getTestSets deletes the row of any COMPLETED set whose S3 prefix has vanished,
+    so a set whose last document was removed would vanish with it. The marker
+    carries no meaning of its own; ``.source`` cannot double as it because that
+    marker's presence means "synthetic".
+    """
+    s3_client.put_object(
+        Bucket=os.environ["TEST_SET_BUCKET"],
+        Key=f"{test_set_id}/{KEEP_MARKER}",
+        Body=b"",
+    )
+
+
+def create_empty_test_set(args):
+    """Create a COMPLETED test set with no documents, to be grown from its page.
+
+    Unlike ``add_test_set`` nothing is queued: there is no copy to wait for, so the
+    row is COMPLETED at once and the set is immediately usable as a destination for
+    a bucket pattern, a zip upload or generated documents.
+    """
+    test_set_name = args["name"]
+    description = args.get("description") or ""
+    document_class_type = args.get("documentClassType")
+
+    if not validate_test_set_name(test_set_name):
+        raise Exception(
+            "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
+        )
+    if description and not validate_description(description):
+        raise Exception("Description cannot exceed 500 characters")
+
+    test_set_id = test_set_name.replace(" ", "-").lower()
+    now = datetime.utcnow().isoformat() + "Z"
+    item = {
+        "PK": f"testset#{test_set_id}",
+        "SK": "metadata",
+        "ItemType": "testset",
+        "InitialEventTime": now,
+        "id": test_set_id,
+        "name": test_set_name,
+        "description": description,
+        "filePattern": "",
+        "fileCount": 0,
+        "source": "uploaded",
+        "status": "COMPLETED",
+        "labelState": "unlabeled",
+        "createdAt": now,
+    }
+    if document_class_type:
+        item["documentClassType"] = document_class_type
+
+    # Conditional so a name that derives to an existing id is refused rather than
+    # silently replacing that set's record.
+    try:
+        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
+    except Exception as e:
+        if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
+            "ConditionalCheckFailed" in str(e)
+        ):
+            raise Exception(f"A test set with id '{test_set_id}' already exists")
+        raise
+    # After the row: a marker without a row is a stray folder discovery ignores,
+    # while a row without a marker is reaped on the next getTestSets.
+    _write_keep_marker(test_set_id)
+    logger.info(f"Created empty test set {test_set_id}")
+
+    result = {
+        "id": test_set_id,
+        "name": test_set_name,
+        "description": description,
+        "filePattern": "",
+        "fileCount": 0,
+        "source": "uploaded",
+        "status": "COMPLETED",
+        "labelState": "unlabeled",
+        "createdAt": now,
+    }
+    if document_class_type:
+        result["documentClassType"] = document_class_type
+    return result
+
+
 def add_documents_to_test_set(args):
     logger.info(f"Adding documents to existing test set: {args}")
 
@@ -700,6 +799,12 @@ def publish_test_set_version(args, event=None):
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
+
+    if (_as_int(meta.get("fileCount")) or 0) <= 0:
+        raise Exception(
+            f"Test set '{test_set_id}' has no documents; add documents before "
+            "publishing a version"
+        )
 
     # Reserve the version number with an atomic ADD before writing the version
     # item. Deriving it from the read above would be a read-modify-write race in
@@ -2722,6 +2827,23 @@ def remove_documents_from_test_set(args):
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
+    # A harvest in progress writes a baseline for each document as its run
+    # finishes; deleting a document under it leaves that baseline orphaned as
+    # "Extra baseline files". A copier or extractor in flight recounts on
+    # completion and would overwrite the count computed here.
+    if meta.get("labelJobStatus") == "RUNNING":
+        raise Exception(
+            f"Test set '{test_set_id}' is being draft-labeled; wait for the job "
+            "to finish before removing documents"
+        )
+    if meta.get("status") in IN_FLUX_TEST_SET_STATUSES:
+        raise Exception(
+            f"Test set '{test_set_id}' is busy ({meta.get('status')}); try again "
+            "when it is COMPLETED"
+        )
+    for file_name in file_names:
+        if not file_name or file_name.startswith("/") or "//" in file_name:
+            raise Exception(f"Invalid document name: {file_name!r}")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
 
@@ -2765,6 +2887,9 @@ def remove_documents_from_test_set(args):
             f"transiently ({validation.get('error')}). Reconcile will pick "
             "up the correct count on the next getTestSets."
         )
+        # The count is unknown here, so the marker is written regardless: it is
+        # harmless on a set that still has documents and vital on one that does not.
+        _write_keep_marker(test_set_id)
         return {
             "id": test_set_id,
             "name": meta.get("name"),
@@ -2774,6 +2899,8 @@ def remove_documents_from_test_set(args):
             "lastAddResult": f"Removed {removed} document(s)",
         }
     new_count = validation.get("input_count", 0)
+    if new_count == 0:
+        _write_keep_marker(test_set_id)
     # Two REMOVEs in one UpdateItem:
     #  - lastAddResult is the ASYNCHRONOUS add flow's completion notice; this
     #    mutation is synchronous, so the caller sees the count in the response
@@ -4200,6 +4327,9 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 "valid": False,
                 "error": "No input files found",
                 "input_count": 0,
+                # Lets reconcile tell an emptied set (no labels left either) from
+                # a set whose inputs vanished while its baselines survived.
+                "baseline_count": len(baseline_files),
                 "signature": signature,
             }
 
@@ -4622,17 +4752,23 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             else:
                 new_error = existing_row.get("error")
         elif no_inputs:
-            new_status = "FAILED"
-            new_error = error_message
-            # Preserve the current labelState. Overwriting to 'unlabeled' would
-            # silently destroy a 'draft' signal: a user who accidentally deletes
-            # inputs and then restores them would see the recovery valid-branch
-            # promote 'unlabeled' → 'labeled' on the next reconcile, blessing
-            # unreviewed machine drafts as ground truth. The draft-preservation
-            # guard in the valid-branch keys on existing_label_state — if that
-            # was 'draft' before the input deletion, it must stay 'draft'
-            # through the transient FAILED state so recovery preserves it.
-            new_label_state = existing_label_state
+            # A set with no documents is a legitimate state, not a broken one: a
+            # set can be created empty, and removing its last document leaves it
+            # empty. Any earlier error is cleared. labelState is 'unlabeled' when
+            # no baselines remain either (the Remove path deletes both). When the
+            # inputs vanished but draft baselines survived — a hand edit in S3 —
+            # 'draft' is preserved: writing 'unlabeled' here would let a later
+            # restore promote unreviewed machine drafts to 'labeled', and
+            # _reconcile_label_state cannot undo that on a row that carries a
+            # labelJobId.
+            new_status = "COMPLETED"
+            new_error = None
+            baselines_remain = int(validation.get("baseline_count") or 0) > 0
+            new_label_state = (
+                "draft"
+                if existing_label_state == "draft" and baselines_remain
+                else "unlabeled"
+            )
         elif validation["valid"]:
             # Fully paired OR unlabeled-with-no-baselines (allow_unlabeled=True
             # path). Both are healthy states.

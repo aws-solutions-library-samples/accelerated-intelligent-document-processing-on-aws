@@ -119,6 +119,11 @@ def handler(event, context):
 
         # Determine actual file count to process
         test_set_file_count = test_set["fileCount"]
+        if int(test_set_file_count or 0) <= 0:
+            raise ValueError(
+                f"Test set '{test_set_id}' has no documents to run; add documents "
+                "to it first"
+            )
         files_to_process = test_set_file_count
 
         if object_keys:

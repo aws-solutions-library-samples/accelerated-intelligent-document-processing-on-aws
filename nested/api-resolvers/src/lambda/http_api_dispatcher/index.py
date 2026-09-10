@@ -151,6 +151,7 @@ FIELD_ALIASES: Dict[str, str] = {
     "addTestSet": "addDocumentsToTestSet",
     "addTestSetFromUpload": "addDocumentsToTestSet",
     "clearDraftLabels": "addDocumentsToTestSet",
+    "createEmptyTestSet": "addDocumentsToTestSet",
     "deleteTestSets": "addDocumentsToTestSet",
     "estimateReviewEffort": "addDocumentsToTestSet",
     "getAnnotationQueue": "addDocumentsToTestSet",

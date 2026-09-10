@@ -44,7 +44,7 @@ export const validateDescription = (desc: string): boolean => desc.length <= 500
  * state, so the UI names sources by outcome (labeled, needs labeling, synthetic)
  * rather than by mechanism.
  */
-export type CreateSource = 'upload-labeled' | 'upload-documents' | 'existing-files' | 'generate';
+export type CreateSource = 'upload-labeled' | 'upload-documents' | 'existing-files' | 'generate' | 'empty';
 
 export interface CreateSourceMeta {
   value: CreateSource;
@@ -79,5 +79,11 @@ export const CREATE_SOURCES: CreateSourceMeta[] = [
     label: 'Generate synthetic documents',
     description: 'Create documents and matching ground truth from a configuration or a description.',
     outcome: 'Synthetic, labeled',
+  },
+  {
+    value: 'empty',
+    label: 'Start empty',
+    description: 'Create the set now and add documents later from its page: files in a bucket, a zip, or generated documents.',
+    outcome: 'Empty',
   },
 ];

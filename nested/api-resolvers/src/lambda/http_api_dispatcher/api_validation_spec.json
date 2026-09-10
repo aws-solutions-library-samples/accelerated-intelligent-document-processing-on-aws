@@ -327,6 +327,31 @@
         }
       ]
     },
+    "createEmptyTestSet": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "name",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "description",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "documentClassType",
+          "non_null": false,
+          "type": "DocumentClassType"
+        }
+      ]
+    },
     "createFinetuningJob": {
       "args": [
         {
