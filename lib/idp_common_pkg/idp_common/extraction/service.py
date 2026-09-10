@@ -950,6 +950,7 @@ class ExtractionService:
         # _simple_integrated_list_downgrade; surfaced in metadata and the flow.
         self._integrated_downgrade_reason = None
         self._integrated_downgrade_checked = False
+        self._preflight_issues: list[Any] = []
 
     def _validate_and_find_section(
         self, document: Document, section_id: str
@@ -1491,6 +1492,141 @@ class ExtractionService:
                 else "OPTIONAL"
             ),
         }
+
+    #: Below this many OCR table rows the row-shortfall check stays quiet: small
+    #: key/value tables (a payslip's "Employee Number | 00000000 |" block) are
+    #: table rows too, and a class with a short list next to one must not warn.
+    _OCR_ROW_ESTIMATE_MIN = 30
+    #: Extracted rows below this fraction of the OCR estimate are a shortfall.
+    #: Column-heading rows and page-broken tables inflate the estimate a little,
+    #: so the bar is "less than half", not "fewer".
+    _OCR_ROW_SHORTFALL_RATIO = 0.5
+
+    def _ocr_table_row_estimate(self) -> int:
+        """Table rows the OCR text of the CURRENT section contains (0 if none).
+
+        The same Markdown-row heuristic the agentic path uses to decide on the
+        table tool (``_analyze_ocr_for_tables``), reused here as ground-truth-free
+        evidence of how many rows the section *should* have produced.
+        """
+        text = self._document_text or ""
+        if not text:
+            return 0
+        try:
+            return int(
+                self._analyze_ocr_for_tables(text).get("estimated_row_count") or 0
+            )
+        except Exception:  # noqa: BLE001 - advisory only
+            return 0
+
+    @staticmethod
+    def _count_row_like_items(value: Any) -> int:
+        """Count list items that are objects (rows), at any depth.
+
+        Depth matters: a multi-instance wrapper returns ``instances: [{...,
+        Transactions: [...]}]`` and a group attribute can carry its own list, so
+        counting only the top-level arrays would compare 1 instance against 800
+        OCR rows and warn on a complete extraction.
+        """
+        if isinstance(value, list):
+            rows = sum(1 for v in value if isinstance(v, dict))
+            return rows + sum(ExtractionService._count_row_like_items(v) for v in value)
+        if isinstance(value, dict):
+            return sum(
+                ExtractionService._count_row_like_items(v) for v in value.values()
+            )
+        return 0
+
+    def _simple_mode_input_preflight(
+        self,
+        *,
+        content: list[dict[str, Any]],
+        system_prompt: str | None,
+        model_id: str,
+        section_id: str | None,
+    ) -> int:
+        """Estimate the single request Simple mode is about to send and record a
+        warning when it exceeds the model's input window.
+
+        Simple mode sends ONE request per section — that is the difference from
+        Advanced mode, which shards. When the request does not fit, Bedrock
+        answers ``ValidationException: Input is too long for requested model``,
+        a deterministic failure that is (correctly) not retried. This estimate
+        (chars/4 for text, the sizing module's per-image figure for images) is
+        recorded as a processing issue so the failure is explained in the
+        document's report rather than only as a stack trace, and logged first so
+        it is visible even if the call never returns. Returns the estimate.
+        """
+        from idp_common.bedrock.sizing import _TOKENS_PER_IMAGE
+        from idp_common.models import ProcessingIssue
+
+        text_tokens = estimate_tokens(system_prompt or "")
+        images = 0
+        for block in content or []:
+            if not isinstance(block, dict):
+                continue
+            if "text" in block:
+                text_tokens += estimate_tokens(str(block.get("text") or ""))
+            if "image" in block:
+                images += 1
+        estimate = text_tokens + images * _TOKENS_PER_IMAGE
+        try:
+            max_input = int(self._get_sizing_plan().max_input_tokens)
+        except Exception:  # noqa: BLE001 - never block extraction on sizing
+            return estimate
+        if max_input and estimate > max_input:
+            pages = len(self._page_images or []) or images
+            msg = (
+                f"Simple extraction sends this section as ONE request of about "
+                f"{estimate:,} input tokens ({pages} page(s), {images} image(s)), "
+                f"above the {max_input:,}-token input window of {model_id}. The "
+                f"request will fail with 'Input is too long for requested model'. "
+                f"Use Advanced (agentic) extraction, which shards a section across "
+                f"requests, or split the document."
+            )
+            logger.warning("Section %s: %s", section_id, msg)
+            self._preflight_issues.append(
+                ProcessingIssue(
+                    stage="extraction",
+                    severity="warning",
+                    code="extraction_section_exceeds_model_input",
+                    message=msg,
+                    root_cause=(
+                        f"traditional extraction with model {model_id}; estimated "
+                        f"{estimate} input tokens > {max_input} window"
+                    ),
+                    section_id=section_id,
+                    details={
+                        "estimated_input_tokens": estimate,
+                        "max_input_tokens": max_input,
+                        "pages": pages,
+                        "images": images,
+                    },
+                )
+            )
+        return estimate
+
+    @staticmethod
+    def _actionable_section_error(
+        exc: BaseException, section_id: str, pages: int
+    ) -> str:
+        """The message stored in ``document.errors`` for a section failure.
+
+        Bedrock's ``Input is too long for requested model`` is the Simple-mode
+        large-document failure (#726 made it reachable again by fixing the
+        over-splitting that used to hide it); it gets the same explanation the
+        pre-flight warning carries, so a reader of the document record is told
+        what to change rather than which API call failed.
+        """
+        base = f"Error processing section {section_id}: {exc}"
+        if "Input is too long" in str(exc):
+            base += (
+                f" — Simple extraction sends the whole section ({pages} page(s)) as "
+                f"one request and it exceeds the model's input window. Use Advanced "
+                f"(agentic) extraction, which shards a section across requests, or "
+                f"split the document."
+            )
+        return base
 
     def _analyze_ocr_for_tables(self, ocr_text: str) -> dict[str, Any]:
         """
@@ -2429,7 +2565,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         from idp_common.models import ProcessingIssue
 
-        issues: list[Any] = []
+        issues: list[Any] = list(getattr(self, "_preflight_issues", []) or [])
         is_agentic = self.config.extraction.agentic.enabled
         properties = (self._class_schema or {}).get(SCHEMA_PROPERTIES, {}) or {}
 
@@ -2508,6 +2644,62 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # dropped (mirroring agentic Pydantic validation) so they can't corrupt
         # downstream assessment. Info severity — the data was never valid for this
         # class — but surfaced so a systematic prompt/schema mismatch is visible.
+        # Row shortfall against the OCR's own evidence (BOTH modes). A list that
+        # came back with SOME rows passes every check above — population is fine,
+        # the empty-list check does not fire, and without `minItems` there is no
+        # schema signal — yet a Simple-mode section of 800 rows returned 43 with
+        # COMPLETED and nothing said so (measured 2026-09-10). The OCR text says
+        # how many table rows the section holds; extracting fewer than half of
+        # them is reported as a likely truncation. Advisory: heading rows and
+        # unrelated key/value tables inflate the estimate, hence the floor and the
+        # half ratio, and the empty-list case is left to extraction_incomplete.
+        if array_fields and not empty_lists:
+            ocr_rows = self._ocr_table_row_estimate()
+            extracted_rows = self._count_row_like_items(
+                {name: extracted_fields.get(name) for name in array_fields}
+            )
+            if (
+                ocr_rows >= self._OCR_ROW_ESTIMATE_MIN
+                and extracted_rows < ocr_rows * self._OCR_ROW_SHORTFALL_RATIO
+            ):
+                fields_str = ", ".join(array_fields)
+                rec = (
+                    " Simple extraction returns one response per section and "
+                    "stops early on long lists; for documents this size use "
+                    "Advanced (agentic) extraction, which shards, or set minItems "
+                    "on the list field to make the shortfall a hard constraint."
+                    if not is_agentic
+                    else " Set minItems on the list field to make this a hard "
+                    "constraint, and check the table-parsing tool was used."
+                )
+                issues.append(
+                    ProcessingIssue(
+                        stage="extraction",
+                        severity="warning",
+                        code="extraction_rows_below_ocr_estimate",
+                        message=(
+                            f"Extracted {extracted_rows} row(s) across list field(s) "
+                            f"{fields_str}, but the section's OCR text contains about "
+                            f"{ocr_rows} table rows — the list is likely truncated. "
+                            f"The run still reports success and scalar fields are "
+                            f"unaffected, so no other signal flags this.{rec}"
+                        ),
+                        root_cause=(
+                            f"{'agentic' if is_agentic else 'traditional'} extraction "
+                            f"with model "
+                            f"{self._pending_extraction_model or self.config.extraction.model}; "
+                            f"{extracted_rows} extracted rows vs ~{ocr_rows} OCR table rows"
+                        ),
+                        section_id=section_id,
+                        details={
+                            "extracted_rows": extracted_rows,
+                            "ocr_estimated_rows": ocr_rows,
+                            "ratio": round(extracted_rows / ocr_rows, 3),
+                            "list_fields": array_fields,
+                            "agentic": is_agentic,
+                        },
+                    )
+                )
         off_schema = list(getattr(self, "_off_schema_fields", []) or [])
         if off_schema:
             fields_str = ", ".join(off_schema)
@@ -4555,6 +4747,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 # "never ran" look identical is unreadable.
                 logger.info("Forced tool use skipped — %s", skip_reason)
 
+            self._simple_mode_input_preflight(
+                content=content,
+                system_prompt=system_prompt,
+                model_id=model_id,
+                section_id=getattr(section_info, "section_id", None),
+            )
             response_with_metering = bedrock.invoke_model(
                 model_id=model_id,
                 system_prompt=system_prompt,
@@ -5746,7 +5944,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._save_results(document, section, result, section_info, section_id, t0)
 
         except Exception as e:
-            error_msg = f"Error processing section {section_id}: {str(e)}"
+            error_msg = self._actionable_section_error(
+                e, section_id, len(self._page_images or [])
+            )
             logger.error(error_msg)
             document.errors.append(error_msg)
             raise

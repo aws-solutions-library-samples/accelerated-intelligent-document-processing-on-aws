@@ -1830,6 +1830,8 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
+| `extraction_rows_below_ocr_estimate` | warning | The list fields returned **fewer than half** the table rows the section's OCR text contains (and the OCR holds at least 30 table rows). This is the ground-truth-free signal for the Simple-mode case above — 43 rows extracted from an 800-row statement — which passes every other check because the list is non-empty and the scalars are right. Advisory: heading rows and unrelated key/value tables inflate the estimate, hence the floor and the half ratio. |
+| `extraction_section_exceeds_model_input` | warning | Simple mode only, raised **before** the call: the section's single request (page text, page images, prompt) is estimated above the extraction model's input window, so Bedrock will answer *Input is too long for requested model*. The document's error entry for that failure carries the same explanation. Advanced mode shards and does not hit this. |
 
 A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
@@ -1848,8 +1850,11 @@ Transactions:
   items: { … }
 ```
 
-Without it, only the empty/absent and sparse signals apply — a list that returns
-10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
+Without it, the OCR-row estimate (`extraction_rows_below_ocr_estimate`) is what
+catches a partial list — it compares the rows extracted with the table rows the OCR
+text contains, so 43 of 800 is reported even with no `minItems`; a list that returns
+10 of 1,200 rows from a document whose OCR shows only 10 table rows cannot be
+distinguished from a document that genuinely has 10.
 For corpora where large tables are expected, also prefer **Advanced** mode, which
 holds recall 1.000 through 3,200 rows by sharding.
 

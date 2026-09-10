@@ -1772,3 +1772,20 @@ Use these metrics to:
 - 🔲 Support for additional extraction backends (custom models)
 - 🔲 Automatic example quality assessment and recommendations
 - 🔲 Table structure detection for complex layouts (merged cells, nested headers)
+
+
+### Simple-mode large-document warnings (2026-09-10)
+
+With over-splitting fixed (#726) a Simple-mode section is ONE request, and the measured
+consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED` and no
+processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two
+`ProcessingIssue`s make both loud without changing what is extracted:
+`extraction_rows_below_ocr_estimate` (warning; rows extracted < half the table rows the
+section's OCR text contains, floor 30 rows — the same Markdown-row heuristic the agentic
+path uses to recommend the table tool — counted at any depth so a multi-instance wrapper
+is not mis-counted; raised in both modes, the Simple-mode wording recommends Advanced) and
+`extraction_section_exceeds_model_input` (warning; Simple mode only, a pre-flight estimate
+of the single request against the sizing plan's input window, recorded before the call so
+it survives the failure). The `document.errors` entry for the *Input is too long* failure
+explains the cause and remedy (`_actionable_section_error`). Simple mode deliberately does
+not shard — that is Advanced mode's capability.
