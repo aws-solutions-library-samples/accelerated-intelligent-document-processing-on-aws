@@ -373,6 +373,49 @@ def main() -> int:
                     "(Admin granted, stale Viewer removed)",
                     f"role membership={managed_groups(cog, pool_id, fed_username)}",
                 )
+            # 3c. The compensating control on a mutable pool
+            # (UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate
+            # = [email]) is documented by AWS only for user-initiated
+            # UpdateUserAttributes. Prove it does not gate the IdP mapping write:
+            # an email changed at the IdP must land on the Cognito record on the
+            # next sign-in, with no user verification, or a federated email
+            # change would silently never apply.
+            section(
+                "3c. IdP-side email change applies on the next sign-in "
+                "(verification-before-update must not gate the mapping write)"
+            )
+            changed_email = "fed-admin-renamed@example.invalid"
+            set_mock_user(
+                lam, args.idp_function, memberOf=ADMIN_IDP_GROUP, email=changed_email
+            )
+            tokens3, hops3 = federated_signin(
+                domain, client_id, redirect_uri, args.idp_name
+            )
+            print("     " + " | ".join(hops3))
+            if check(
+                tokens3 is not None,
+                "third sign-in with a changed IdP email succeeds",
+                " | ".join(hops3),
+            ):
+                stored = {
+                    a["Name"]: a["Value"]
+                    for a in cog.admin_get_user(
+                        UserPoolId=pool_id, Username=fed_username
+                    )["UserAttributes"]
+                }
+                check(
+                    stored.get("email") == changed_email,
+                    "Cognito's mapping write applied the changed email despite "
+                    "AttributesRequireVerificationBeforeUpdate",
+                    f"stored email={stored.get('email')!r}",
+                )
+                claim = jwt_claims(tokens3["id_token"]).get("email")
+                check(
+                    claim == changed_email,
+                    "the new token carries the changed email",
+                    f"claim={claim!r}",
+                )
+            set_mock_user(lam, args.idp_function, memberOf=ADMIN_IDP_GROUP)
         elif tokens2 is None and any("cannot be updated" in h for h in hops2):
             note(
                 "second federated sign-in fails with `user.email: Attribute cannot "
