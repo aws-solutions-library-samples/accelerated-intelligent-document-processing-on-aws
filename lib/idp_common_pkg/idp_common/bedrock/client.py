@@ -40,6 +40,28 @@ LAMBDA_HOOK_MODEL_ID = "LambdaHook"
 
 
 # Dummy exception classes for requests timeouts if requests is not available
+
+
+def numeric_usage(usage: Any) -> Dict[str, Any]:
+    """The numeric members of a Converse ``usage`` block, for metering.
+
+    Metering values are summed across calls (``merge_metering_data``) and priced
+    per unit (``save_reporting_data``), so every value must be a number. Bedrock's
+    ``usage`` has grown structured members — ``cacheDetails`` is a list of
+    ``{"ttl": "5m", "inputTokens": N}`` cache-write breakdowns — and spreading the
+    whole block into metering made every subsequent merge log
+    ``unsupported operand type(s) for +: 'int' and 'list'`` and stored the list
+    where a count belongs. Booleans are excluded too (they are ints in Python).
+    """
+    if not isinstance(usage, dict):
+        return {}
+    return {
+        k: v
+        for k, v in usage.items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+
+
 class _RequestsReadTimeout(Exception):
     """Fallback exception class when requests library is not available."""
 
@@ -273,7 +295,7 @@ DOCUMENT_BLOCK_UNSUPPORTED_ROUTES: Dict[str, str] = {
     ),
     "xai-grok": (
         "xAI Grok models reject Converse document blocks (\"This model doesn't "
-        "support documents\"); their input modalities are text and image only"
+        'support documents"); their input modalities are text and image only'
     ),
 }
 
@@ -1458,11 +1480,19 @@ class BedrockClient:
                 "BedrockTotalLatency", total_duration * 1000, "Milliseconds"
             )
 
-            # Create metering data
+            # Create metering data. Keep only NUMERIC usage entries: Bedrock now
+            # returns structured members too (e.g. ``cacheDetails``, a list of
+            # per-TTL cache-write breakdowns) and metering values are summed
+            # (merge_metering_data) and priced (save_reporting_data) as numbers.
             usage = response.get("usage", {})
             response_with_metering = {
                 "response": response,
-                "metering": {f"{context}/bedrock/{model_id}": {**usage, "requests": 1}},
+                "metering": {
+                    f"{context}/bedrock/{model_id}": {
+                        **numeric_usage(usage),
+                        "requests": 1,
+                    }
+                },
             }
 
             return response_with_metering
@@ -2507,12 +2537,13 @@ class BedrockClient:
                 "LambdaHookTotalLatency", total_duration * 1000, "Milliseconds"
             )
 
-            # Build response in the same format as Bedrock responses
+            # Build response in the same format as Bedrock responses (numeric
+            # usage entries only — see the Bedrock site).
             response_with_metering = {
                 "response": response_payload,
                 "metering": {
                     f"{context}/lambda_hook/{lambda_arn}": {
-                        **usage,
+                        **numeric_usage(usage),
                         "requests": 1,
                     }
                 },
