@@ -635,6 +635,20 @@ already unambiguous (a `15` cannot be a month whatever you set).
 > column typing, rule validation, API clients — rather than as an accuracy
 > improver. It did not move evaluation accuracy in either A/B we ran.
 
+### Oversize page images (`metadata.image_downscale`)
+
+Bedrock rejects a single image over 5 MiB and measures the **base64-encoded**
+payload, so a stored page image over **3.75 MiB** — reachable from the shipped
+defaults, which preserve original resolution — used to fail the whole document with
+`ValidationException: image exceeds 5 MB maximum` at the extraction step
+([#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778)). Such a page is now downscaled proportionally to fit (same format
+first, JPEG only as a fallback), the reduction is logged, and the section records it
+per page under `metadata.image_downscale` (original and final bytes, size and format,
+passes, reason). A page that already fits leaves no entry. Set the service's
+`image.target_width` / `image.target_height` to keep pages inside the budget if you
+would rather control the resolution than have it reduced per request; see
+[Image Processing Configuration](./configuration.md#effective-per-image-budget-375-mib-enforced-post-base64).
+
 ### Schema validation (`extraction.validation`)
 
 Validates the result against the **full class JSON Schema** — most importantly the
