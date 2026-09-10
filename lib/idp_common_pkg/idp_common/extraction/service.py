@@ -244,6 +244,11 @@ class ExtractionService:
         # Deterministic type/format repairs applied to the most recent section's
         # simple-mode result, so nothing is silently rewritten. Reset per section.
         self._pending_coercion_metadata: dict[str, Any] | None = None
+        # Page images downscaled to fit Bedrock's per-image limit (#778), one
+        # entry per affected page, so a page sent at lower resolution than stored
+        # is auditable. Set by _load_document_images, reset by _reset_context
+        # (NOT by _invoke_extraction_model — images load before it runs).
+        self._pending_image_fit_metadata: list[dict[str, Any]] | None = None
         # Model actually used for the most recent section's extraction (after
         # per-class override resolution), recorded in metadata for audit. Reset
         # per section.
@@ -945,6 +950,7 @@ class ExtractionService:
         self._instance_probe_requested = False
         self._page_images = []
         self._image_uris = []
+        self._pending_image_fit_metadata = None
         self._grounded_assessment = None
         # Top-level fields the simple-extraction schema-compliance filter dropped
         # because the class schema does not define them (off-schema/hallucinated).
@@ -1198,6 +1204,17 @@ class ExtractionService:
             page = document.pages[page_id]
             image_uri = page.image_uri
             image_content = image.prepare_image(image_uri, target_width, target_height)
+            # Bedrock's 5 MiB per-image limit is enforced on the BASE64 payload, so
+            # a stored page image over 3.75 MiB fails the whole request (#778).
+            # Fit it here — where the reduction can be recorded per page — rather
+            # than at the attach choke point, whose fit is then a pass-through.
+            image_content, fit = image.fit_image_to_bedrock_limit(image_content)
+            if fit is not None:
+                if self._pending_image_fit_metadata is None:
+                    self._pending_image_fit_metadata = []
+                self._pending_image_fit_metadata.append(
+                    {"page_id": page_id, **fit.to_dict()}
+                )
             page_images.append(image_content)
 
         t1 = time.time()
@@ -5411,17 +5428,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # missing. Best-effort: never fails extraction.
         if self._integrated_assessment_enabled():
             try:
-                merged_assessment, extra_alerts, split_stats = (
+                merged_assessment, regenerated_alerts, split_stats = (
                     self._retry_missing_integrated_rows(
                         merged_assessment=merged_assessment,
                         extracted_fields=extracted_fields,
                         section_info=section_info,
                     )
                 )
-                if extra_alerts:
-                    merged_assessment_alerts = list(merged_assessment_alerts) + (
-                        extra_alerts
-                    )
+                # The retry re-enriches the FINAL spliced assessment and returns
+                # the alerts that enrichment built — a projection of the merged
+                # list with globally-indexed row paths. It replaces (never
+                # extends) the incoming surface: extending would re-introduce
+                # the slice-local duplicates this exists to fix (upstream #813).
+                merged_assessment_alerts = regenerated_alerts
                 # Surface adaptive batch-splitting activity (only when the
                 # confidence model truncated and batches had to shrink).
                 from idp_common.assessment.batching import split_stats_are_notable
@@ -5514,9 +5533,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         a stronger confidence model (bigger output cap) — the same ladder the
         ``separate`` path uses — so integrated mode is equally robust.
 
-        Returns ``(merged_assessment, new_alerts, split_stats)`` where
-        ``split_stats`` records any adaptive-splitting/escalation activity (None
-        when nothing was retried). Best-effort — a failed retry keeps placeholders.
+        Returns ``(merged_assessment, regenerated_alerts, split_stats)`` where
+        ``regenerated_alerts`` is the alert surface rebuilt from the final
+        spliced assessment (globally-indexed row paths — it replaces the
+        caller's surface, see upstream #813) and ``split_stats`` records any
+        adaptive-splitting/escalation activity (None when nothing was retried).
+        Best-effort — a failed retry keeps placeholders.
         """
         from idp_common.assessment.batching import (
             _missing_row_indices,
@@ -5534,7 +5556,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if isinstance(v, list) and _missing_row_indices(merged_assessment.get(f), v)
         }
         if not targets:
-            return merged_assessment, [], None
+            # Nothing to retry — but the caller REPLACES its alert surface with
+            # what this returns (#813), so an empty list here would leave every
+            # fully-scored integrated section with no confidence alerts at all
+            # (the common case; scalar-only classes always land here). Rebuild
+            # the surface from the merged assessment exactly as the retry path
+            # does below, so the replace is always a globally-indexed surface.
+            merged_assessment, regenerated_alerts = enrich_assessment_with_thresholds(
+                merged_assessment,
+                self._class_schema,
+                self.config.hitl.confidence_threshold,
+            )
+            return merged_assessment, regenerated_alerts, None
 
         assessment_service = AssessmentService(region=self.region, config=self.config)
         confidence_cfg = self.config.extraction.confidence
@@ -5619,11 +5652,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 _missing_row_indices(merged_assessment.get(field), rows)
             )
 
-        # Re-enrich so any spliced-in rows carry confidence_threshold like the rest.
-        merged_assessment, _ = enrich_assessment_with_thresholds(
+        # Re-enrich so any spliced-in rows carry confidence_threshold like the
+        # rest — and keep the alerts it builds: enumerating the full merged list
+        # makes their row indexes global, so they REPLACE the surface (upstream
+        # #813). The alerts accumulated during the retry itself carry indexes
+        # relative to the missing-row subset and are deliberately not returned.
+        merged_assessment, regenerated_alerts = enrich_assessment_with_thresholds(
             merged_assessment, self._class_schema, default_threshold
         )
-        return merged_assessment, new_alerts, split_stats
+        return merged_assessment, regenerated_alerts, split_stats
 
     def _save_results(
         self,
@@ -5895,6 +5932,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # alter extracted document data.
         if self._pending_coercion_metadata is not None:
             metadata["coercion"] = self._pending_coercion_metadata
+
+        # Page images that had to be downscaled to fit Bedrock's per-image limit
+        # (#778). Without this the model silently saw a lower resolution than the
+        # stored page and nothing in the output said so.
+        if self._pending_image_fit_metadata:
+            metadata["image_downscale"] = self._pending_image_fit_metadata
 
         # Record scalar-field conflicts detected when merging sharded concurrent
         # extraction (two shards disagreed on a scalar; first value kept).
@@ -6443,6 +6486,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             deadline_epoch=self._assessment_deadline_epoch,
             max_concurrent_batches=self.config.extraction.agentic.max_concurrent_batches,
             class_schema=assessment_service._get_class_schema(class_label),
+            default_confidence_threshold=self.config.hitl.confidence_threshold,
         )
 
     def _build_assess_runner(

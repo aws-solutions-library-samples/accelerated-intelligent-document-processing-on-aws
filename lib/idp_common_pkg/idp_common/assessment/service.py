@@ -1449,6 +1449,7 @@ class AssessmentService:
                 deadline_epoch=deadline_epoch,
                 max_concurrent_batches=self.config.extraction.agentic.max_concurrent_batches,
                 class_schema=self._get_class_schema(class_label),
+                default_confidence_threshold=self.config.hitl.confidence_threshold,
             )
             enhanced_assessment_data = batched["assessment"]
             confidence_threshold_alerts = batched["alerts"]
