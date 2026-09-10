@@ -609,6 +609,20 @@ effect" from "forcing never ran", and both look identical in the output.
 > `bedrock.<name>(...)` calls and asserts each resolves; add the re-export line
 > whenever you call a new client method that way.
 
+## Page images over Bedrock's per-image limit (`metadata.image_downscale`)
+
+Bedrock enforces its 5 MiB per-image limit on the **base64-encoded** payload, so a
+stored page image over **3.75 MiB** used to fail the whole section with a hard
+`ValidationException` (#778). `_load_document_images` now runs each page through
+`idp_common.image.fit_image_to_bedrock_limit` after the configured
+`image.target_width/target_height` resize; a page that had to be shrunk is recorded
+in the section's `metadata.image_downscale` as a list of per-page entries
+(`page_id`, original/final bytes and encoded bytes, original/final size and format,
+`passes`, `reason`). Pages already within budget are passed through byte-identical and
+leave no entry. The attach-time choke point (`prepare_bedrock_image_attachment`)
+fits as well, so the shard runtime and every other caller are covered even when
+they bypass this loader; only the loader records metadata.
+
 ## Multi-document sections (`instance_count`)
 
 Classification splits sections on document *type*. When a packet concatenates
