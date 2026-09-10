@@ -265,8 +265,11 @@ classes:
       EmployeeNumber:
         type: string
         description: >-
-          The unique identifier assigned to the employee by the employer for
-          payroll and  administrative purposes.
+          The unique identifier assigned to the employee by the employer. Also labelled
+          'Employee No.', 'Emp #' or 'Employee ID'. On ADP-style earnings statements the
+          header row reads 'CO. FILE DEPT. CLOCK NUMBER' and the employee number is the
+          value under NUMBER — the LAST of those five codes, typically the longest
+          (zero-padded) one. It is never the CLOCK value.
         x-aws-idp-evaluation-method: EXACT
       RegularHourlyRate:
         type: number
@@ -305,8 +308,10 @@ classes:
       PayrollNumber:
         type: string
         description: >-
-          The payroll batch or sequence number for this pay period, used for
-          payroll processing  identification and tracking.
+          The employee's payroll file or batch number for this pay period. Also labelled
+          'File', 'File No.' or 'Payroll ID'. On ADP-style earnings statements it is the
+          value under FILE — the second of the five codes in the 'CO. FILE DEPT. CLOCK
+          NUMBER' header row.
         x-aws-idp-evaluation-method: EXACT
       YTDStateTax:
         description: >-
