@@ -442,6 +442,14 @@ The hook returns `usage.pages` (from Parse's `meta.billed_units.pages`).
         price: "0.0015"
 ```
 
+The $1.50 / 1,000 pages figure comes from the [Parse announcement](https://cohere.com/blog/parse)
+("access Parse through the Cohere API for just $1.50 per 1,000 pages"), not from
+[cohere.com/pricing](https://cohere.com/pricing), which lists no per-page rate for
+Parse — it prices Model Vault per dedicated instance ($4.00/hr Medium, $7.00/hr XL).
+**Confirm the current rate against your own Cohere invoice**, and override this
+entry if you self-host on Model Vault or SageMaker, where cost is per
+instance-hour rather than per page.
+
 ### Local Testing
 
 ```bash

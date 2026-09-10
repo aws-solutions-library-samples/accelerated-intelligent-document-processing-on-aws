@@ -1004,6 +1004,14 @@ pricing:
         price: "0.004"
 
   # Cohere Parse hosted API list price: $1.50 / 1,000 pages.
+  #
+  # Source: the Parse announcement (https://cohere.com/blog/parse), verbatim —
+  # "access Parse through the Cohere API for just $1.50 per 1,000 pages".
+  # Note that https://cohere.com/pricing does NOT list a per-page rate for
+  # Parse; it prices Model Vault by dedicated instance instead ($4.00/hr Medium,
+  # $7.00/hr XL). So this default is right for the hosted-API hook, and anyone
+  # self-hosting Parse on Model Vault or SageMaker should override it — their
+  # cost is per instance-hour, not per page.
   - name: GENAIIDP-cohere-parse-hook
     units:
       - name: pages
