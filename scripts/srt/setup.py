@@ -54,15 +54,60 @@ def get_platform_suffix():
 
 
 def get_latest_release():
-    """Fetch latest release information from GitHub."""
+    """Fetch latest release information from GitHub.
+
+    Authenticates when a token is available. This call runs once per setup, and
+    unauthenticated GitHub API is limited to 60 requests/hour **per IP** — which
+    hosted CI runners share, so on a busy runner pool the anonymous request
+    returns 403 and the whole scan fails with "Failed to fetch latest release".
+    A token raises the limit to 5,000/hour for that token. GitHub Actions always
+    provides GITHUB_TOKEN; GitLab CI has no equivalent, so there the request
+    stays anonymous exactly as before.
+    """
     url = "https://api.github.com/repos/aws-samples/sample-security-review-tool/releases/latest"
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(url) as response:  # nosec B310 - GitHub API URL is trusted
+        with urllib.request.urlopen(request) as response:  # nosec B310 - GitHub API URL is trusted
             data = json.loads(response.read().decode())
             return data["tag_name"], data["assets"]
     except Exception as e:
         print(f"Failed to fetch latest release: {e}")
+        if not token:
+            print(
+                "   Hint: unauthenticated GitHub API allows 60 requests/hour per "
+                "IP, which CI runners share. Set GITHUB_TOKEN to raise it."
+            )
         return None, None
+
+
+def write_aws_profile(profile, region):
+    """Ensure `~/.aws/config` names `profile`, without needing the AWS CLI.
+
+    Equivalent to `aws configure set region <region> --profile <profile>`, for
+    images that have no awscli. Appends rather than overwrites, and leaves an
+    existing entry for the profile alone, so this can never clobber a developer's
+    real configuration.
+    """
+    aws_dir = Path.home() / ".aws"
+    config = aws_dir / "config"
+    # `default` is spelled `[default]`; every other profile is `[profile name]`.
+    header = "[default]" if profile == "default" else f"[profile {profile}]"
+
+    existing = config.read_text() if config.exists() else ""
+    if header in existing:
+        print(f"   ℹ️  {config} already has {header} - leaving it alone")
+        return
+
+    aws_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    separator = "" if (not existing or existing.endswith("\n")) else "\n"
+    with config.open("a", encoding="utf-8") as fh:
+        fh.write(f"{separator}{header}\nregion = {region}\noutput = json\n")
+    config.chmod(0o600)
+    print(f"   ✅ wrote {header} (region={region}) to {config}")
 
 
 def download_srt(tag_name, assets, srt_dir):
@@ -243,8 +288,20 @@ def main():
         aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
         aws_profile = os.getenv("AWS_PROFILE", "default")
 
-        # Configure AWS CLI first so SRT can detect profiles (skipped when the
-        # CLI isn't installed, e.g. CI images that rely on env-var credentials)
+        # A profile must EXIST in ~/.aws before `srt config` runs. That command
+        # enumerates profiles and aborts with "✗ No AWS profiles found!" if there
+        # are none — and it is what installs the five scanners, so without a
+        # profile the whole scan dies at setup with a message about AWS that has
+        # nothing to do with the failure the user cares about.
+        #
+        # No credentials are needed: the scan is static analysis. Only the profile
+        # entry has to be there.
+        #
+        # This used to be skipped entirely when the AWS CLI was absent, which made
+        # the setup silently dependent on the CI image happening to ship awscli.
+        # It does on the GitLab runner and does not in python:3.13-bookworm, so the
+        # GitHub job failed at `srt config` with all five scanners missing. Write
+        # the file directly in that case rather than skipping.
         if shutil.which("aws"):
             print(f"   Configuring AWS CLI for profile '{aws_profile}'...")
             configure_ok = True
@@ -266,7 +323,8 @@ def main():
                     f"   ✅ AWS CLI configured: profile={aws_profile}, region={aws_region}"
                 )
         else:
-            print("   ℹ️  AWS CLI not found - skipping profile configuration")
+            print("   ℹ️  AWS CLI not found - writing ~/.aws/config directly")
+            write_aws_profile(aws_profile, aws_region)
 
         config_data = {
             "AWS_PROFILE": aws_profile,

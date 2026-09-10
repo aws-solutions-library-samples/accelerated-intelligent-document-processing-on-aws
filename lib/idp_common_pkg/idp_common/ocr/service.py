@@ -27,7 +27,10 @@ from botocore.config import Config
 from idp_common import bedrock, image, s3, utils
 from idp_common.config.models import IDPConfig
 from idp_common.models import Document, Page, Status
-from idp_common.ocr.document_converter import DocumentConverter
+from idp_common.ocr.document_converter import (
+    DocumentConverter,
+    UnsupportedLegacyFormatError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2847,6 +2850,21 @@ class OcrService:
                         )
                     ]
 
+        except UnsupportedLegacyFormatError:
+            # Deliberately NOT turned into an error page. A format that cannot be
+            # read at all is not the same as a file that failed to parse: a page
+            # reading "Error processing docx document" lets the document complete
+            # classification and extraction with no content, so the real cause
+            # surfaces later as inexplicably empty results (#829). Failing the OCR
+            # task puts the reason in front of whoever uploaded the file. Safe to
+            # raise here: OCRStep retries only named transient errors, so this
+            # fails immediately rather than burning a retry ladder.
+            logger.error(
+                "Unreadable legacy Office format submitted as %s; failing the "
+                "document rather than emitting a blank page",
+                file_type,
+            )
+            raise
         except Exception as e:
             logger.error(f"Error processing {file_type} document: {str(e)}")
             return [

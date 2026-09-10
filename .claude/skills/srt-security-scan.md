@@ -2,8 +2,10 @@
 
 Use this skill whenever you run the [Sample Security Review Tool
 (SRT)](https://github.com/aws-samples/sample-security-review-tool) — via
-`make srt-scan` / `make srt` — or when CI's `security_review` stage fails on
-an MR to `develop`. It covers reproducing the scan, telling real issues from
+`make srt-scan` / `make srt` — or when the SRT gate fails, either in GitLab CI
+(`srt_security_review`) or on a GitHub pull request
+(`.github/workflows/security-checks.yml`). Both run the same two commands
+(`make srt-setup && make srt-scan`), so a finding reproduces identically. It covers reproducing the scan, telling real issues from
 false positives, and the two ways to make a HIGH finding go away: **mitigate**
 (fix the code) or **suppress** (record accepted-risk / scanner-limitation).
 

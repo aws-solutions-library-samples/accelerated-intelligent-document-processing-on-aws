@@ -94,9 +94,25 @@ the expensive AWS deploy runs only when it's worth it:
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | `code_checks` (lint, typecheck, static RBAC scan, all unit suites, UI vitest) **and** `srt_security_review` (SRT security scan) — run in **parallel** | No | ~minutes |
+| **fast_checks** | `code_checks` (lint, typecheck, static RBAC scan, all unit suites, UI vitest), `srt_security_review` (SRT security scan) **and** `dep_audit` (SCA vs OSV) — run in **parallel** | No | ~minutes |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (Steps 1–13) on the **primary shared stack only**. The deployment-variant probes no longer run here by default — see the ⚠️ note under "deployment-variant probe framework" (run them manually with `make stacktest-*`, or set `IDP_RUN_PROBES=true`). | Yes (deploys) | ~1 hour |
+
+### The GitHub side runs the same two security gates
+
+The repo is mirrored to GitHub and PRs are merged there, so a GitLab-only gate is
+not a gate. `.github/workflows/security-checks.yml` runs `srt_security_review` and
+`dep_audit` on every pull request with the same commands as their GitLab
+counterparts; `.github/workflows/developer-tests.yml` covers lint, typecheck and
+the unit suites.
+
+This was added after twelve HIGH SRT findings reached `develop` through a GitHub
+merge with every visible check green — the SRT and `dep_audit` gates simply never
+ran on that change.
+
+⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
+added to the branch-protection rule for `develop` as *required status checks*, or a
+PR can still be merged while they are red or pending.
 
 **Trigger matrix** — what runs, when:
 

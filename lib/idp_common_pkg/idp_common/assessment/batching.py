@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import time
 from collections.abc import Iterator
 from typing import Any, Callable
@@ -83,6 +84,88 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except (ValueError, TypeError):
         return default
+
+
+# A path that addresses a list row, e.g. ``cost_elements[3].unit_cost``. In the
+# batched flow, row indexes in alert paths are local to the slice that produced
+# them (the core enumerates the rows it was handed), so two slices can emit the
+# same indexed path for DIFFERENT rows. Indexed alerts are therefore never
+# deduped here — an alert we cannot key uniquely is an alert we must not drop.
+_INDEXED_ALERT_PATH_RE = re.compile(r"\[\d+\]")
+
+
+def dedupe_alerts(alerts: Any) -> Any:
+    """Collapse repeated confidence alerts for the same non-indexed attribute path.
+
+    Every slice is assessed with the SAME scalars/context (see the module
+    docstring), so a non-list attribute is re-assessed once per slice and
+    contributes its alert once per slice. The merge already treats those repeats
+    as redundant for the *assessment* — it keeps the first slice's scalars and
+    discards the rest — but the alert list is a plain ``extend``, so the same
+    finding lands N times. On a 512-row workbook that produced 2,603 alerts over
+    16 distinct group paths (~163 copies each), and the duplicated list was the
+    dominant share of a tracking item that breached DynamoDB's 409,600-byte
+    ceiling: the write is where a document is LOST, because a section that will
+    not fit fails the whole run with no result at all.
+
+    This makes the alerts obey the rule the assessment merge already applies,
+    and it drops no finding:
+
+    - Only paths WITHOUT a row index are deduped. Indexed paths pass through
+      untouched (see ``_INDEXED_ALERT_PATH_RE`` above for why).
+    - Where two copies of one path disagree, the LOWEST confidence wins — the
+      alert asserts "this attribute scored below threshold", and the worst
+      score is the strongest true form of that claim. A missing or non-numeric
+      ``confidence`` coerces to 1.0, so a scoreless copy never displaces a
+      scored one. Deduping on the whole record instead would let float jitter
+      across slices defeat the collapse.
+    - Entries that are not dicts, or that carry no string ``attribute_name``,
+      pass through untouched.
+    - First-appearance order is preserved, and the collapse is idempotent.
+
+    PRECONDITION on the caller: within one list, a non-indexed path must
+    identify one finding. Every producer that reaches the current call sites
+    satisfies this by construction — they walk the assessment **dict**, and list
+    rows always carry an ``[i]`` suffix, so a single pass cannot emit the same
+    non-indexed path twice; repeats can only come from re-assessing the same
+    scalars. The BDA path is the counter-example and must NOT be routed here:
+    ``patterns/unified/src/bda_processresults_function/index.py`` builds alerts
+    by iterating *pages* and using the raw key-value key as ``attribute_name``,
+    so the same key found on two pages is two findings sharing one path.
+    (It assigns ``section.confidence_threshold_alerts`` directly and never
+    reaches this function; if that ever changes, put the page in the path
+    first.)
+    """
+    if not isinstance(alerts, list):
+        return alerts
+
+    kept: list[Any] = []
+    index_by_name: dict[str, int] = {}
+
+    for alert in alerts:
+        name = alert.get("attribute_name") if isinstance(alert, dict) else None
+        if not isinstance(name, str) or _INDEXED_ALERT_PATH_RE.search(name):
+            kept.append(alert)
+            continue
+        seen_at = index_by_name.get(name)
+        if seen_at is None:
+            index_by_name[name] = len(kept)
+            kept.append(alert)
+            continue
+        if _to_float(alert.get("confidence"), 1.0) < _to_float(
+            kept[seen_at].get("confidence"), 1.0
+        ):
+            kept[seen_at] = alert
+
+    if len(kept) != len(alerts):
+        logger.info(
+            "Collapsed %d duplicate confidence alerts (%d -> %d); scalars are "
+            "re-assessed once per slice and each repeat re-alerted.",
+            len(alerts) - len(kept),
+            len(alerts),
+            len(kept),
+        )
+    return kept
 
 
 def enrich_assessment_with_thresholds(
@@ -1177,7 +1260,7 @@ def _assess_slice_adaptive(
     return {
         "rows": left["rows"] + right["rows"],
         "scalars": left["scalars"] or right["scalars"],
-        "alerts": left["alerts"] + right["alerts"],
+        "alerts": dedupe_alerts(left["alerts"] + right["alerts"]),
         "metering": merged_metering,
         "duration": left["duration"]
         + right["duration"]
@@ -1374,7 +1457,7 @@ def assess_results_batched(
             )
         return {
             "assessment": merged_assessment,
-            "alerts": merged_alerts,
+            "alerts": dedupe_alerts(merged_alerts),
             "metering": merged_metering,
             "parsing_succeeded": core.parsing_succeeded,
             "duration_seconds": duration_seconds,
@@ -1554,7 +1637,7 @@ def assess_results_batched(
 
     return {
         "assessment": merged_assessment,
-        "alerts": merged_alerts,
+        "alerts": dedupe_alerts(merged_alerts),
         "metering": merged_metering,
         "parsing_succeeded": parsing_succeeded,
         "duration_seconds": duration_seconds,

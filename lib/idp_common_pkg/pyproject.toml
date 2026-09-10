@@ -231,6 +231,7 @@ all = [
   "requests==2.33.0",
   "pyarrow==23.0.1",
   "openpyxl==3.1.5",
+  "xlrd==2.0.2",
   "python-docx==1.2.0",
   "strands-agents==1.14.0; python_version>='3.10'",
   "strands-agents-tools==0.2.22; python_version>='3.10'",
