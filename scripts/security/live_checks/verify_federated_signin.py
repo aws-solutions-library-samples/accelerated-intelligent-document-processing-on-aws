@@ -364,9 +364,13 @@ def main() -> int:
                 "(email attribute is mutable)",
                 " | ".join(hops2),
             ):
+                # Section 3 demoted the user to {"Viewer"} through the deployed
+                # trigger; the re-asserted claim must both grant Admin AND remove
+                # the stale Viewer role.
                 check(
-                    "Admin" in managed_groups(cog, pool_id, fed_username),
-                    "re-asserted Admin claim applied on the second sign-in",
+                    managed_groups(cog, pool_id, fed_username) == {"Admin"},
+                    "re-asserted Admin claim applied on the second sign-in "
+                    "(Admin granted, stale Viewer removed)",
                     f"role membership={managed_groups(cog, pool_id, fed_username)}",
                 )
         elif tokens2 is None and any("cannot be updated" in h for h in hops2):

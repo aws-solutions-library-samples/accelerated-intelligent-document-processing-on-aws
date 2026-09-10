@@ -60,6 +60,15 @@ Both work equally well with this solution. Choose based on what your IdP team pr
 | `ExternalIdPAutoLogin` | Optional | `true` to auto-redirect to IdP, `false` (default) to show login page |
 | `ExternalIdPEmailMutable` | **Yes, for every new federated stack** | Set `true` when creating a stack that uses an external IdP. Makes the `email` attribute mutable so Cognito can rewrite it on each federated sign-in; with the default `false` a federated user can sign in **only once**. Fixed at User Pool creation — **never change it on an existing stack** (the update fails and can wedge the stack). `idp-cli deploy` sets it to `true` automatically when creating a stack with `ExternalIdPType` set. See [Federated `email` Attribute Mutability](#federated-email-attribute-mutability). |
 
+> **`ExternalIdPEmailMutable` is not in the `idp-cli deploy` examples below on purpose.**
+> When the CLI *creates* a stack with `ExternalIdPType` set it adds
+> `ExternalIdPEmailMutable=true` itself. Do **not** add it to an *update* of an
+> existing stack: the flag is fixed at User Pool creation, and the CLI/SDK now refuse
+> an update that tries to change it (CloudFormation would otherwise fail the update
+> and can leave the stack in `UPDATE_ROLLBACK_FAILED`). Deploying through the
+> CloudFormation console instead? Set the parameter to `true` in the *External
+> Identity Provider (Federation)* section **when creating** the stack.
+
 ## Storing the OIDC Client Secret
 
 For OIDC federation, the client secret must be stored in AWS Secrets Manager **before** deploying the stack. This ensures the secret never passes through CloudFormation parameters (which are visible via the `describe-stacks` API).
@@ -174,7 +183,6 @@ idp-cli deploy \
     --from-code . \
     --parameters "\
 ExternalIdPType=SAML,\
-ExternalIdPEmailMutable=true,\
 ExternalIdPName=PingOne,\
 ExternalIdPMetadataURL=https://auth.pingone.com/<env-id>/saml20/metadata/<app-id>,\
 ExternalIdPGroupAttributeName=http://schemas.xmlsoap.org/claims/Group,\
@@ -246,7 +254,6 @@ idp-cli deploy \
     --from-code . \
     --parameters "\
 ExternalIdPType=OIDC,\
-ExternalIdPEmailMutable=true,\
 ExternalIdPName=PingOne,\
 ExternalIdPOIDCIssuer=https://auth.pingone.com/<env-id>/as,\
 ExternalIdPOIDCClientId=<your-client-id>,\
@@ -327,7 +334,6 @@ idp-cli deploy \
     --from-code . \
     --parameters "\
 ExternalIdPType=SAML,\
-ExternalIdPEmailMutable=true,\
 ExternalIdPName=Okta,\
 ExternalIdPMetadataURL=https://<okta-domain>/app/<app-id>/sso/saml/metadata,\
 ExternalIdPGroupAttributeName=http://schemas.xmlsoap.org/claims/Group,\
@@ -385,7 +391,6 @@ idp-cli deploy \
     --from-code . \
     --parameters "\
 ExternalIdPType=OIDC,\
-ExternalIdPEmailMutable=true,\
 ExternalIdPName=Okta,\
 ExternalIdPOIDCIssuer=https://<okta-domain>/oauth2/default,\
 ExternalIdPOIDCClientId=<your-client-id>,\
@@ -463,7 +468,6 @@ idp-cli deploy \
     --from-code . \
     --parameters "\
 ExternalIdPType=SAML,\
-ExternalIdPEmailMutable=true,\
 ExternalIdPName=EntraID,\
 ExternalIdPMetadataURL=https://login.microsoftonline.com/<tenant-id>/federationmetadata/2007-06/federationmetadata.xml?appid=<app-id>,\
 ExternalIdPGroupAttributeName=http://schemas.xmlsoap.org/claims/Group,\
@@ -528,7 +532,6 @@ idp-cli deploy \
     --from-code . \
     --parameters "\
 ExternalIdPType=OIDC,\
-ExternalIdPEmailMutable=true,\
 ExternalIdPName=EntraID,\
 ExternalIdPOIDCIssuer=https://login.microsoftonline.com/<tenant-id>/v2.0,\
 ExternalIdPOIDCClientId=<your-client-id>,\
@@ -661,6 +664,20 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
   `UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate: [email]`, so
   a user-initiated change takes effect only after a code sent to the *new* address is
   confirmed; a user cannot adopt an address they do not control.
+- **Known limitation on a mutable pool: a scoped native user can widen their own
+  config scope.** `allowedConfigVersions` is keyed on email (`UsersTable`
+  `EmailIndex`), and a caller with **no** user row is treated as unrestricted. A
+  non-admin *native* user whose scope was restricted could therefore call
+  `UpdateUserAttributes` directly (the Web UI offers no such control), verify a fresh
+  address they control, and on their next token find no row — losing the restriction,
+  though not gaining a role. This needs a deliberate Cognito API call, applies only to
+  pools created with the flag, and is bounded to profile/document visibility.
+  Mitigations today: keep native accounts on a federated deployment to admins, and
+  manage scoped users through the IdP. The durable fix is to key user scope on the
+  immutable Cognito `sub` rather than email; tracked as a follow-up to
+  [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
+  This is also why the flag stays opt-in for federated deployments rather than
+  defaulting on for every new stack.
 
 **Existing deployments created with `false`:** the only way to a mutable attribute is a
 new User Pool, which in this solution means a new stack. Pre-existing
