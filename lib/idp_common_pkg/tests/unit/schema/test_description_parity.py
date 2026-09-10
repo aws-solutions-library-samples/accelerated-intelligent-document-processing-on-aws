@@ -70,13 +70,21 @@ def descriptions(
                         sub, f"{path}.{key}[{name}]", reachable_defs=reachable_defs
                     )
                 )
-        if "items" in node:
+        items = node.get("items")
+        # Known remaining gap: a description on the ITEMS of a scalar array
+        # (`items: {type: string, description: ...}`) has no home in `list[str]`
+        # and is dropped; the array field's own description survives. Object
+        # items ($ref / inline object) are checked.
+        if isinstance(items, dict) and not (
+            isinstance(items.get("type"), str) and items["type"] in _SCALARS
+        ):
             out.update(
-                descriptions(
-                    node["items"], f"{path}.items", reachable_defs=reachable_defs
-                )
+                descriptions(items, f"{path}.items", reachable_defs=reachable_defs)
             )
     return out
+
+
+_SCALARS = {"string", "number", "integer", "boolean"}
 
 
 def _wire_schema(class_schema: dict) -> dict:

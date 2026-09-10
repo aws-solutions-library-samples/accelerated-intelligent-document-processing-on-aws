@@ -68,7 +68,10 @@ The module uses `datamodel-code-generator` to convert JSON Schema into Pydantic 
   author's descriptions reach the model even when the prose copy of the schema in the
   task prompt is reduced. `tests/unit/schema/test_description_parity.py` asserts
   parity for every class in every shipped preset (unreferenced `$defs` excluded —
-  nothing can reach them in the class schema either).
+  nothing can reach them in the class schema either). One known remaining gap: a
+  `description` on the *items* of a scalar array (`items: {type: string,
+  description: ...}`) has no home in `list[str]` and is dropped; the array field's own
+  description survives.
 
 ## Public API
 
