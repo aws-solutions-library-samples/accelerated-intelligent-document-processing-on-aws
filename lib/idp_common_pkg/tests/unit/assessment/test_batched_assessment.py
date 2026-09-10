@@ -103,8 +103,10 @@ def test_large_list_is_batched_and_fully_covered():
     assert result["metering"]["Assessment/bedrock/model"]["outputTokens"] == 25
     assert result["duration_seconds"] == pytest.approx(5.0)
     assert result["parsing_succeeded"] is True
-    # One alert per batch accumulated.
-    assert len(result["alerts"]) == 5
+    # The fake re-alerts the same attribute_name on every call; the merge now
+    # collapses those repeats to one finding (each batch re-assesses the same
+    # scalars, so per-batch re-alerts are copies, not new findings).
+    assert len(result["alerts"]) == 1
 
 
 def test_small_list_single_call_still_reconciles():

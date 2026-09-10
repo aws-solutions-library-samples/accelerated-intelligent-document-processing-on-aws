@@ -31,7 +31,9 @@ import sys
 import boto3
 
 STACK_NAME = "idpverify-oidc"
-SECRET_NAME = "idpverify-oidc-client-secret"
+# The NAME of the Secrets Manager secret this creates, not a secret value; the
+# value itself is generated per run by secrets.token_urlsafe() below.
+SECRET_NAME = "idpverify-oidc-client-secret"  # nosec B105 - secret name, not a secret
 CLIENT_ID = "idp-verification-client"
 IDP_NAME = "VerifyIdP"
 GROUP_ATTRIBUTE = "memberOf"

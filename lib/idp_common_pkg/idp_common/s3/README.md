@@ -15,7 +15,7 @@ The S3 module provides utilities for reading, writing, and listing objects in Am
 | `get_binary_content(s3_uri)` | Read raw bytes from S3 |
 | `write_content(content, bucket, key, content_type)` | Write string, bytes, dict, or list to S3 |
 | `list_images_from_path(image_path)` | List image files from an S3 prefix or local directory |
-| `find_matching_files(bucket, pattern)` | Find S3 keys matching a glob pattern |
+| `find_matching_files(bucket, pattern, modified_after=None)` | Find S3 keys matching a glob pattern (`**` any depth, `*` one folder level, `?` one character; case-insensitive after the folder prefix) |
 
 ## Usage
 
@@ -86,6 +86,9 @@ files = find_matching_files(
     bucket="output-bucket",
     pattern="documents/*/sections/*/result.json"
 )
+
+# `**` matches any depth; only the literal folder prefix (documents/) is listed
+files = find_matching_files(bucket="output-bucket", pattern="documents/**/result.json")
 ```
 
 ## S3 URI Format

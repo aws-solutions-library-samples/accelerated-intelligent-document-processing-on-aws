@@ -53,6 +53,7 @@ from idp_common.extraction.validation import (
     ValidationReport,
     build_empty_list_feedback,
     build_subset_schema,
+    coerce_numeric_schema_keywords,
     find_empty_declared_lists,
     required_null_paths,
     select_escalated_fields,
@@ -313,6 +314,17 @@ class ExtractionService:
         knowing about it. The transform is a no-op (returning the same object)
         for every unflagged class, which is all of them by default.
 
+        For the same reason, stringified numeric constraints are coerced back to
+        numbers here. The Configuration table stores every numeric scalar as a
+        string and nothing converts them on read (``classes`` is
+        ``List[Dict[str, Any]]``, so validation never descends into it), so a
+        class authored in the Web UI arrives with ``minItems: "100"`` — which
+        raised ``TypeError`` in the one reader that compared it without a guard
+        and cost that section its whole completeness report (#797). Coercing at
+        this single entry point means readers do not each need their own guard;
+        the ones that already have one keep it, since they are also reachable
+        with a schema that did not come through here.
+
         Args:
             class_label: The document class name
 
@@ -330,7 +342,7 @@ class ExtractionService:
                 X_AWS_IDP_DOCUMENT_TYPE, ""
             )
             if class_id.lower() == class_label.lower():
-                return wrap_class_schema(class_obj)
+                return coerce_numeric_schema_keywords(wrap_class_schema(class_obj))
 
         return {}
 
@@ -905,7 +917,11 @@ class ExtractionService:
         except Exception as e:
             error_msg = f"Failed to invoke custom prompt Lambda {lambda_arn}: {str(e)}"
             logger.error(error_msg)
-            raise Exception(error_msg)
+            # `from e` keeps the cause chain: a Lambda-side throttle or a botocore
+            # timeout invoking the hook is transient and the handler classifies it
+            # through the explicit cause (#787); a hook that failed on its own
+            # terms stays a hard error.
+            raise Exception(error_msg) from e
 
     def _reset_context(self) -> None:
         """Reset instance variables for clean state before processing."""
@@ -1736,7 +1752,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
 
         for field_name, field_def in properties.items():
             if field_def.get("type") == "array":
-                min_items = field_def.get("minItems", 0)
+                # minItems can arrive as a string after a config round-trip
+                # (the Configuration table stores numeric schema fields as
+                # strings); coerce defensively so the comparison never raises.
+                try:
+                    min_items = int(field_def.get("minItems", 0) or 0)
+                except (TypeError, ValueError):
+                    min_items = 0
                 actual_items = len(extracted_fields.get(field_name) or [])
 
                 if min_items > 0 and actual_items < min_items:
@@ -5052,9 +5074,27 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
 
         self._grounded_assessment = grounded
-        section.confidence_threshold_alerts = merged_assessment_alerts
+        # Deduped at this boundary too: the integrated path accumulates alerts
+        # from the enrich pass, cross-shard merges, and the missing-row retry
+        # (whose extra_alerts re-emit the shared scalars per recovery chunk), so
+        # the same non-indexed finding can arrive several times. Idempotent;
+        # imported lazily like the other batching imports in this file.
+        from idp_common.assessment.batching import dedupe_alerts
+
+        section.confidence_threshold_alerts = dedupe_alerts(merged_assessment_alerts)
         output_metadata["assessment_integrated_in_extraction"] = True
-        output_metadata["assessment_alert_count"] = len(merged_assessment_alerts)
+        # Counts the list that was actually STORED. Reading the pre-dedupe list
+        # here let the recorded count contradict the data next to it — a section
+        # carrying 16 alerts reported 2,603. The raw figure is still worth having
+        # when it differs, because the gap IS the duplication this path removes,
+        # so it is recorded under its own name rather than smuggled into this one.
+        output_metadata["assessment_alert_count"] = len(
+            section.confidence_threshold_alerts
+        )
+        if len(merged_assessment_alerts) != len(section.confidence_threshold_alerts):
+            output_metadata["assessment_alert_count_before_dedupe"] = len(
+                merged_assessment_alerts
+            )
 
     def _retry_missing_integrated_rows(
         self,

@@ -116,7 +116,17 @@ def resolve_stack(stack):
         return None
 
     ddbc = lib.ddb()
-    tables = ddbc.list_tables()["TableNames"]
+    # PAGINATE. ListTables caps a page at 100 names and returns them sorted, so a
+    # single call silently truncates in any account with more than 100 tables —
+    # and which stacks break depends on where their name sorts. A 220-table
+    # account resolved `IDPAB066-TrackingTable-…` fine and returned None for
+    # `IDPRel067-TrackingTable-…`, which exists. Failing closed is the good case;
+    # the bad case is a decoy (Bootstrap/Discovery/Chat…Table) landing inside the
+    # first page while the real table does not, which resolves to the WRONG table
+    # and scores a grid against an empty tracking table.
+    tables = []
+    for page in ddbc.get_paginator("list_tables").paginate():
+        tables.extend(page["TableNames"])
 
     def findt(sub):
         # Prefer the exact "<stack>-<sub>-<suffix>" table; skip look-alikes such as
@@ -616,6 +626,16 @@ def main():
                 "stack": a.stack,
                 "suite": a.suite,
                 "class": a.klass,
+                # The `--set` overrides this grid ran with. Recorded because
+                # (suite, class) alone does NOT identify a measurement: the same
+                # suite is legitimately run twice in one release with different
+                # overrides — `cost` at the cross-version control model for a
+                # release A/B and at the shipped default for the config paper, or
+                # `advsplitcost` once per mitigation being tested. Without this,
+                # two committed result directories for one suite are
+                # indistinguishable from their metadata, and the only way to tell
+                # which was which is to read `rows[].resolved` per row.
+                "overrides": list(a.overrides or []),
                 "resources": res,
                 # What the suite ASKED for vs. what this run can measure. Without
                 # these a runmap cannot be told apart from one that covered the

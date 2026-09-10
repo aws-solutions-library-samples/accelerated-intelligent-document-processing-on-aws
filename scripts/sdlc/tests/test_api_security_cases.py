@@ -449,7 +449,7 @@ def _ref_call(outcomes):
         arn = args.get("executionArn", "")
         if "-sibling-deployment" in arn:
             return outcomes["foreign"]
-        if token == "scoped-token":
+        if token == "scoped-token":  # nosec B105 - fake token label in a test double, not a credential
             return outcomes["scoped"]
         return outcomes["own"]
 

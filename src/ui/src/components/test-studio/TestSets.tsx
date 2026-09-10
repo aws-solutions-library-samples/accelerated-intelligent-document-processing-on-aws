@@ -1054,8 +1054,8 @@ const TestSets = (): React.JSX.Element => {
             label="File Pattern"
             description={
               selectedBucket.value === 'testset'
-                ? 'Use * for wildcards. Examples: test-set-name/input/*, test-set-prefix*/input/file-prefix*'
-                : 'Use * for wildcards. Examples: prefix*, folder-name/*, folder-name/prefix*, folder-prefix*/file-prefix*'
+                ? 'Use * for one folder level and ** for any depth; the folder path before the first wildcard is exact, the rest ignores case. Examples: test-set-name/input/*, test-set-name/input/**, test-set-prefix*/input/file-prefix*'
+                : 'Use * for one folder level and ** for any depth; the folder path before the first wildcard is exact, the rest ignores case. Examples: prefix*, folder-name/*, folder-name/**/*.pdf, folder-prefix*/file-prefix*'
             }
           >
             <SpaceBetween direction="horizontal" size="xs">
