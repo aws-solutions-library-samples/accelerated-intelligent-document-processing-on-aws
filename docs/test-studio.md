@@ -592,7 +592,7 @@ state:
 |---|---|---|
 | **Upload documents with ground truth** | A zip with `input/` and matching `baseline/` folders | Ready to publish |
 | **Upload documents only** | A zip with just `input/` | Needs labeling — run [draft labeling](#draft-labeling-unlabeled-documents--ground-truth) next |
-| **From files already in a bucket** | A file pattern (e.g. `*.pdf`) over the input or test set bucket | Labeled where baselines exist |
+| **From files already in a bucket** | A file pattern (e.g. `*.pdf` or `invoices/**/*.pdf`) over the input or test set bucket | Labeled where baselines exist |
 | **Generate synthetic documents** | A configuration or a description | Synthetic, labeled |
 
 The last option requires the synthetic data generator extension; it is hidden when
@@ -612,7 +612,10 @@ a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which mak
 it easy to pick up only recently reviewed documents — and a **Check matching
 files** button that reports the match count before you commit. When reading from
 the input bucket, documents with no ground truth in the evaluation baseline bucket
-are skipped rather than failing, so a broad pattern is safe.
+are skipped rather than failing, so a broad pattern is safe. Patterns match the full
+object key: `*` matches within one folder level, `**` matches across folders, `?`
+matches a single character. The folder path before the first wildcard must be typed
+as it exists in the bucket; everything after it is matched regardless of case.
 
 **Direct upload** still works as an alternative to the wizard: files placed
 directly into the TestSetBucket under `<set-name>/input/…` are auto-detected.
