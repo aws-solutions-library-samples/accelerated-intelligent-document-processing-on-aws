@@ -24,6 +24,7 @@ from idp_common.extraction.coercion import (
     CODE_EMPTY_STRING_TO_NULL,
     CODE_FRACTIONAL_TO_INTEGER,
     CODE_INTEGER_FROM_STRING,
+    CODE_JSON_PARSED_FROM_STRING,
     CODE_NUMBER_FROM_STRING,
     CODE_STRING_FROM_BOOLEAN,
     CODE_STRING_FROM_NUMBER,
@@ -875,3 +876,127 @@ class TestFailOpen:
         report = coerce_extraction({"f": payload}, _one_field_schema(STRING))
         assert report.data["f"] is not None
         assert any(r.code == "max_depth_exceeded" for r in report.refusals)
+
+
+class TestSerializedContainerIsParsed:
+    """The one cross-family repair that is lossless: a string that IS the JSON of
+    the container the field asks for. Seen live under forced tool use (#783):
+    Sonnet 5 returned a group as a serialized string when its `$ref` pointer
+    contained a space, and coercion refused the unambiguous repair."""
+
+    def test_a_json_object_string_in_an_object_field_is_parsed(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "Address": {
+                    "type": "object",
+                    "properties": {
+                        "City": {"type": "string"},
+                        "ZIP": {"type": "string"},
+                    },
+                }
+            },
+        }
+        raw = '{"City": "Anytown", "ZIP": "90210"}'
+        report = coerce_extraction({"Address": raw}, schema)
+        assert report.data["Address"] == {"City": "Anytown", "ZIP": "90210"}
+        assert [c.code for c in report.coercions] == [CODE_JSON_PARSED_FROM_STRING]
+        assert report.refusals == []
+
+    def test_the_parsed_containers_children_are_then_coerced_normally(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "Address": {
+                    "type": "object",
+                    "properties": {"ZIP": {"type": "integer"}},
+                }
+            },
+        }
+        report = coerce_extraction({"Address": '{"ZIP": "90210"}'}, schema)
+        assert report.data["Address"] == {"ZIP": 90210}
+        assert {c.code for c in report.coercions} == {
+            CODE_JSON_PARSED_FROM_STRING,
+            CODE_INTEGER_FROM_STRING,
+        }
+
+    def test_a_json_array_string_in_an_array_field_is_parsed(self):
+        schema = {
+            "type": "object",
+            "properties": {"Rows": {"type": "array", "items": NUMBER}},
+        }
+        report = coerce_extraction({"Rows": "[1, 2, 3]"}, schema)
+        assert report.data["Rows"] == [1, 2, 3]
+        assert report.coercions[0].code == CODE_JSON_PARSED_FROM_STRING
+
+    def test_a_string_field_that_happens_to_hold_json_is_left_alone(self):
+        """Parsing only happens where the schema does NOT allow a string."""
+        schema = {"type": "object", "properties": {"Notes": STRING}}
+        raw = '{"City": "Anytown"}'
+        report = coerce_extraction({"Notes": raw}, schema)
+        assert report.data["Notes"] == raw and report.coercions == []
+
+    def test_an_object_or_string_field_keeps_the_string(self):
+        schema = {"type": "object", "properties": {"X": {"type": ["object", "string"]}}}
+        raw = '{"a": 1}'
+        report = coerce_extraction({"X": raw}, schema)
+        assert report.data["X"] == raw
+
+    def test_the_wrong_container_kind_is_still_refused(self):
+        schema = {
+            "type": "object",
+            "properties": {"Address": {"type": "object", "properties": {}}},
+        }
+        report = coerce_extraction({"Address": "[1, 2]"}, schema)
+        assert report.data["Address"] == "[1, 2]"
+        assert report.refusals[0].code == CODE_TYPE_FAMILY_MISMATCH
+
+    def test_text_that_is_not_json_is_still_refused(self):
+        schema = {
+            "type": "object",
+            "properties": {"Address": {"type": "object", "properties": {}}},
+        }
+        for raw in ("some text", "{not json", "", "  "):
+            report = coerce_extraction({"Address": raw}, schema)
+            assert report.data["Address"] == raw
+            assert CODE_JSON_PARSED_FROM_STRING not in {
+                c.code for c in report.coercions
+            }
+
+
+class TestSerializedContainerParseIsLossless:
+    SCHEMA = {
+        "type": "object",
+        "properties": {"G": {"type": "object", "properties": {"a": NUMBER}}},
+    }
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            '{"a": NaN}',
+            '{"a": Infinity}',
+            '{"a": -Infinity}',
+            '{"a": 1e400}',  # finite literal, overflows to inf
+            '{"a": 1, "a": 2}',  # a later value would silently replace the earlier
+        ],
+    )
+    def test_lossy_json_is_refused_and_the_string_survives(self, raw):
+        report = coerce_extraction({"G": raw}, self.SCHEMA)
+        assert report.data["G"] == raw
+        assert CODE_JSON_PARSED_FROM_STRING not in {c.code for c in report.coercions}
+        assert report.refusals and report.refusals[0].code == CODE_TYPE_FAMILY_MISMATCH
+
+    def test_pathologically_deep_nesting_does_not_abort_coercion(self):
+        deep = "[" * 20000 + "]" * 20000
+        schema = {"type": "object", "properties": {"L": {"type": "array"}}}
+        report = coerce_extraction({"L": deep}, schema)  # must not raise
+        assert report.data["L"] == deep
+
+    def test_moderately_deep_nesting_below_the_json_limit_does_not_crash(self):
+        """1,200 levels parses fine in json but the finiteness walk is Python
+        recursion; it must be inside the guard, or a garbage string aborts coercion
+        for the whole section."""
+        deep = "[" * 1200 + "]" * 1200
+        schema = {"type": "object", "properties": {"L": {"type": "array"}}}
+        report = coerce_extraction({"L": deep}, schema)  # must not raise
+        assert report.data["L"] == deep

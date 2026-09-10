@@ -139,7 +139,9 @@ extraction:
     top_k: 5
     top_p: 0.1
     reasoning_effort: low               # only if a reasoning-capable model is selected
-    list_batch_size: 25                 # rows per assessment batch for large lists
+    list_batch_size: 25                 # CEILING on rows per batch; the size used is
+                                        # derived from the confidence model's output
+                                        # cap, column count and geometry mode
     # NOTE: no max_tokens knob — the confidence pass always requests the model's
     # maximum output (resolved from config_library/model_config_limits.yaml) so
     # long list assessments are never truncated.
@@ -197,8 +199,9 @@ depend on granular assessment for large lists.
 `process_document_section` runs the assessment through the shared
 `idp_common.assessment.batching.assess_results_batched`, which:
 
-1. Finds the single largest list field whose length exceeds
-   `extraction.confidence.list_batch_size` (default 25).
+1. Finds the single largest list field whose length exceeds the effective batch
+   size (derived, and never larger than the `extraction.confidence.list_batch_size`
+   ceiling, default 25).
 2. Slices that list into `list_batch_size` chunks and assesses each chunk
    **sequentially**, passing the SAME scalars/context every time so scalar
    assessments and the document context are preserved (scalars come from the first
@@ -260,14 +263,28 @@ left 34/68 transaction rows with `confidence: null`). Two additions make advance
 mode complete correctly on the first try:
 
 1. **Token-aware first-pass sizing** (`compute_token_aware_batch_size`). Before
-   the first call, the effective batch size is derived from the confidence
-   model's output cap (`bedrock.model_utils.get_model_max_output_tokens`) and an
-   estimate of per-row output tokens (`extraction.sharding.estimate_tokens` ×
-   a confidence-envelope multiplier × a larger bbox multiplier for
-   `geometry.mode` `llm`/`llm_grounded`). The result **only ever shrinks**
-   `list_batch_size` (never grows it past your ceiling), so a small-cap model
-   (Nova Lite, 10K) starts at ~6–9 rows instead of truncating at 25. Unknown
-   models fall back to the configured size. Recorded as `derived_batch_size`.
+   the first call the batch size is derived from three inputs: the confidence
+   model's output cap (`bedrock.model_utils.get_model_max_output_tokens`), the
+   **column count** of the list's widest sampled row, and whether `geometry.mode`
+   is `llm`/`llm_grounded` (a per-cell bounding box roughly triples per-row
+   output). The estimator itself lives in `bedrock.sizing`
+   (`confidence_rows_per_call`) so this module and `compute_sizing_plan` cannot
+   drift apart. Recorded as `derived_batch_size`.
+
+   There is no correct fixed value. On Nova Lite (10,000-token cap) with bounding
+   boxes the batch that fits is 41 rows for a 1-column list, 13 for 3 columns and
+   5 for 8; on a 128K-output model the reliability cap of 50 bounds the derivation
+   instead of the token math. `list_batch_size` is therefore a **ceiling** on the
+   derived size (default 25), never a target — and an *explicit* ceiling is honoured
+   in full, so a deliberate pin above 50 is not clamped.
+
+   Two behaviours changed after v0.6.7, both in the safe direction. The column
+   count is measured across a sample of rows rather than off `rows[0]`, because a
+   first row missing a key made a wide list look narrow and inflated the batch.
+   And an unknown model, or a row shape whose width cannot be measured, now sizes
+   from a conservative fallback cap instead of returning the configured value —
+   silently trusting a permissive configured value on a small-cap model is how a
+   25-row batch reached Nova Lite in the first place.
 
 2. **Model-escalation ladder** (`extraction.confidence.escalation_*`). When rows
    are *still* unscored after token-aware shrink + same-model retries, the

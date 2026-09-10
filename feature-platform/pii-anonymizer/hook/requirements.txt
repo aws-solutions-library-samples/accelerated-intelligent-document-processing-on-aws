@@ -17,6 +17,13 @@ pypdfium2>=4.30.0
 pillow>=12.3.0
 python-docx>=0.8.11
 openpyxl>=3.0.10
+# openpyxl reads only the OOXML container, so a legacy BIFF `.xls` — which this
+# hook is routed (and the UI accepts) — cannot be opened by the vendored
+# processor at all. `handler._convert_xls_to_xlsx` rewrites it first; xlrd is
+# BIFF-only since 2.0 and pure Python, so it adds no wheel-architecture
+# constraint to the makefile build described above. Same engine the host's OCR
+# path declares for this format.
+xlrd>=2.0.1
 faker>=30.0.0
 defusedxml>=0.7.1
 PyYAML>=6.0

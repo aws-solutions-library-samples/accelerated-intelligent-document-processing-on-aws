@@ -57,6 +57,7 @@ extraction:
 ```
 
 - **Lower** `list_batch_size` if a model still struggles to enumerate a full chunk.
+  It is a ceiling on a derived size, so raising it has no effect.
 - **Raise** it to reduce the number of inference calls.
 
 See [Large-list batching](extraction-and-confidence.md#large-list-batching-list_batch_size)

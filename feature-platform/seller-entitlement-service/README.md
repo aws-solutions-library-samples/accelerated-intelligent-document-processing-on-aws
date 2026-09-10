@@ -325,7 +325,7 @@ added latency on the activation path. Alarm on a rising `refused` count.
 (`NotEntitledActivations`, from the API access log, additionally counts 403s that
 never reached the Lambda.)
 
-**3. Logs, for per-request forensics.** `/aws/lambda/<fn>` has the decision detail;
+**3. Logs, for per-request forensics.** `/<stack>/lambda/ActivateFunction` has the decision detail;
 `/aws/apigateway/<stack>-activation` has one JSON line per request with the
 verified caller account and status. Both age out with `LogRetentionInDays`
 (default 90) — which is exactly why the roster exists.

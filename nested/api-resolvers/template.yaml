@@ -86,6 +86,12 @@ Parameters:
   MultiDocDiscoveryStateMachineArn:
     Type: String
 
+  # ARN of the document-processing state machine. getStepFunctionExecution
+  # accepts an executionArn from the caller and uses this to require the
+  # execution be one of this deployment's.
+  StateMachineArn:
+    Type: String
+
   # SQS Queues
   DocumentQueueUrl:
     Type: String
@@ -1510,6 +1516,15 @@ Resources:
       Environment:
         Variables:
           SETTINGS_PARAMETER: !Ref SettingsParameterName
+          # The resolver rejects any executionArn that does not name this state
+          # machine, so a caller cannot read a sibling deployment's executions
+          # through the stack-name-prefix wildcard in the IAM grant below.
+          STATE_MACHINE_ARN: !Ref StateMachineArn
+          # RBAC: read-only lookup of the caller's `allowedConfigVersions` so a
+          # config-version-scoped caller cannot read the processing detail of a
+          # document handled under a version outside their scope. Empty string in
+          # single-user / pre-RBAC deployments (fail-open).
+          USERS_TABLE_NAME: !Ref UsersTableName
       LoggingConfig:
         LogGroup: !Ref GetStepFunctionExecutionResolverFunctionLogGroup
       Policies:
@@ -1525,6 +1540,15 @@ Resources:
                 - ssm:GetParameter
               Resource:
                 - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${SettingsParameterName}"
+            # RBAC: read-only lookup of caller's `allowedConfigVersions`
+            # via UsersTable `EmailIndex`.
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - KMSDecryptPolicy:
             KeyId: !Ref CustomerManagedEncryptionKeyArn
         - Statement:

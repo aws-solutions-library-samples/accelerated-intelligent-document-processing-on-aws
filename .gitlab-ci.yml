@@ -302,8 +302,26 @@ integration_tests:
         EXECUTION_ID=$(cat pipeline_execution_id.txt)
         echo "Pipeline Execution: $EXECUTION_ID"
 
-        # Get CodeBuild ID from the pipeline execution
-        BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>/dev/null || echo "")
+        # Get CodeBuild ID from the pipeline execution.
+        # RETRY, because list-action-executions is eventually consistent: the
+        # monitor exits the moment the PIPELINE reports a terminal state, which
+        # can be seconds before the BuildAction's action-execution record carries
+        # output.executionResult.externalExecutionId. When that raced we printed
+        # "Could not find CodeBuild execution" and produced neither
+        # codebuild_logs.txt nor deployment_summary.txt — so a SUCCESSFUL run
+        # left no record of what it ran, and GitLab then warned about all three
+        # missing artifacts. Observed on execution 0eeaf069 (job 28681138), whose
+        # BuildAction id resolved fine when queried a few minutes later.
+        BUILD_ID=""
+        for attempt in $(seq 1 12); do
+          BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>/dev/null || echo "")
+          if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
+            [ "$attempt" -gt 1 ] && echo "Resolved CodeBuild id on attempt $attempt"
+            break
+          fi
+          echo "CodeBuild action-execution record not queryable yet (attempt $attempt/12); waiting 5s..."
+          sleep 5
+        done
 
         if [ "$BUILD_ID" != "" ] && [ "$BUILD_ID" != "None" ]; then
           echo "CodeBuild ID: $BUILD_ID"
@@ -371,12 +389,26 @@ integration_tests:
             echo -e "\033[1;34m🔗 ZAP DAST report: ${CI_JOB_URL}/artifacts/external_file/zap-report.html\033[0m"
           else
             echo "ℹ️ No ZAP DAST report for this run (probe skipped or not yet uploaded)"
+            # Placeholder so the declared artifact always exists. GitLab has no
+            # per-path "optional" flag, so a legitimately absent report used to
+            # emit a scary "WARNING: no matching files" on every green run. A
+            # file that states WHY it is empty beats a warning that implies
+            # something broke.
+            printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>No ZAP DAST report for this run: the zapdast probe was skipped (IDP_TEST_ZAP=false or the probe did not run).</p>\n' > zap-report.html
           fi
         else
-          echo "Could not find CodeBuild execution"
+          echo "⚠️ Could not resolve the CodeBuild execution for $EXECUTION_ID after 12 attempts (~60s)."
+          echo "   The build itself is unaffected — this only costs the log/summary artifacts."
+          echo "   Look it up manually: aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID"
+          printf 'Could not resolve the CodeBuild execution for pipeline execution %s after 12 attempts (~60s).\nNo logs were fetched. The build result itself is reported by the job status above.\n' "$EXECUTION_ID" > codebuild_logs.txt
+          cp codebuild_logs.txt deployment_summary.txt
+          printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>Not collected: the CodeBuild execution could not be resolved.</p>\n' > zap-report.html
         fi
       else
-        echo "No pipeline execution ID found"
+        echo "⚠️ No pipeline execution ID found — integration_test_deployment.py exited before recording one."
+        printf 'No pipeline_execution_id.txt was produced, so no CodeBuild logs could be fetched.\nThis means the deploy script exited before it started (or recorded) a pipeline execution.\n' > codebuild_logs.txt
+        cp codebuild_logs.txt deployment_summary.txt
+        printf '<!doctype html><meta charset="utf-8"><title>No ZAP DAST report</title>\n<p>Not collected: no pipeline execution was recorded.</p>\n' > zap-report.html
       fi
 
   artifacts:

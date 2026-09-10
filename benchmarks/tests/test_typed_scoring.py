@@ -297,12 +297,15 @@ class TestGeneratorTruthContract:
                 f"expected {typed['Amount']!r}"
             )
 
-    def test_value_noise_off_leaves_the_row_and_truth_untouched(self):
+    def test_value_noise_off_leaves_the_row_untouched_but_still_types_the_truth(self):
+        """The RENDERED row is unchanged without value noise — but per-cell typed truth is
+        now emitted for EVERY row (v0.6.7 validation): without it `cell_accuracy` had no
+        instrument on any core document and a null Amount column scored 1.000."""
         bs = self._gen("bank_statement")
         cells, typed = bs._row(7, 3, "short", 0.0, value_noise=False)
-        assert typed is None
         assert cells[0] == "08/08/2024"  # the original renderer
         assert cells[2] == "-95.90"
+        assert typed == {"Date": "2024-08-08", "Amount": -95.9}
 
 
 # --------------------------------------------------------------------------- #

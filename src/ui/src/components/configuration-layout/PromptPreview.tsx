@@ -28,7 +28,15 @@ import {
   CopyToClipboard,
   Alert,
 } from '@cloudscape-design/components';
-import { DEFS_FIELD, ID_FIELD, REF_FIELD, SCHEMA_FIELD, X_AWS_IDP_MULTI_INSTANCE } from '../../constants/schemaConstants';
+import {
+  DEFS_FIELD,
+  ID_FIELD,
+  REF_FIELD,
+  SCHEMA_FIELD,
+  X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+  X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+  X_AWS_IDP_MULTI_INSTANCE,
+} from '../../constants/schemaConstants';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -178,9 +186,10 @@ function cleanSchemaForPrompt(schema: Record<string, unknown>): Record<string, u
 /**
  * Recursively drop the schema-DOCUMENT metadata keys the backend removes before
  * sending a schema as a toolSpec. Mirrors
- * ``idp_common.bedrock.tool_schema.strip_non_wire_keywords`` — including its one
- * subtlety: keys INSIDE ``properties`` are user-authored field names, so a field
- * legitimately named ``id`` must survive.
+ * ``idp_common.bedrock.tool_schema.strip_non_wire_keywords`` — including its two
+ * subtleties: keys INSIDE ``properties`` are user-authored field names and keys
+ * INSIDE ``$defs`` are user-authored definition names, so a field or a group
+ * legitimately named ``id`` must survive (only their BODIES are stripped).
  */
 function stripToolDocumentMetadata(node: unknown): unknown {
   if (Array.isArray(node)) return node.map((item) => stripToolDocumentMetadata(item));
@@ -189,12 +198,12 @@ function stripToolDocumentMetadata(node: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
     if (TOOL_DOCUMENT_METADATA_KEYS.includes(key)) continue;
-    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
-      const props: Record<string, unknown> = {};
-      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
-        props[propName] = stripToolDocumentMetadata(propSchema);
+    if ((key === 'properties' || key === DEFS_FIELD) && value && typeof value === 'object' && !Array.isArray(value)) {
+      const named: Record<string, unknown> = {};
+      for (const [name, sub] of Object.entries(value as Record<string, unknown>)) {
+        named[name] = stripToolDocumentMetadata(sub);
       }
-      out[key] = props;
+      out[key] = named;
       continue;
     }
     out[key] = stripToolDocumentMetadata(value);
@@ -220,7 +229,54 @@ function stripToolDocumentMetadata(node: unknown): unknown {
  */
 export function toolInputSchemaFor(schema: ClassSchema): Record<string, unknown> {
   const cleaned = stripToolDocumentMetadata(cleanSchemaForPrompt(schema as Record<string, unknown>)) as Record<string, unknown>;
-  return cleaned.type === 'object' ? cleaned : { ...cleaned, type: 'object' };
+  const rooted = cleaned.type === 'object' ? cleaned : { ...cleaned, type: 'object' };
+  return annotateRefTypes(rooted);
+}
+
+/**
+ * Mirror of ``tool_schema._annotate_ref_types``: every ``$ref`` node without a
+ * ``type`` gains the referenced definition's ``type`` (string-typed definitions
+ * only). The backend adds these on the wire as belt-and-braces for #783, so the
+ * Tool Schema tab and its token total must show them too. Definition names are
+ * matched as authored here because this mirror does not rename them (see the
+ * note above) — the annotation is the same either way.
+ */
+function annotateRefTypes(schema: Record<string, unknown>): Record<string, unknown> {
+  const defs = schema[DEFS_FIELD];
+  if (!defs || typeof defs !== 'object' || Array.isArray(defs)) return schema;
+  const defsRec = defs as Record<string, unknown>;
+  const targetOf = (ref: unknown): string | null => {
+    if (typeof ref !== 'string' || !ref.startsWith(`#/${DEFS_FIELD}/`)) return null;
+    const rest = ref.slice(`#/${DEFS_FIELD}/`.length);
+    if (rest.includes('/')) return null;
+    try {
+      return decodeURIComponent(rest).replace(/~1/g, '/').replace(/~0/g, '~');
+    } catch {
+      return rest;
+    }
+  };
+  const walk = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (!node || typeof node !== 'object') return node;
+    const rec = node as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(rec)) {
+      if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+        out[key] = Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, walk(v)]));
+      } else {
+        out[key] = walk(value);
+      }
+    }
+    const target = targetOf(rec.$ref);
+    if (target !== null && !('type' in rec)) {
+      const def = defsRec[target];
+      if (def && typeof def === 'object' && !Array.isArray(def) && typeof (def as Record<string, unknown>).type === 'string') {
+        out.type = (def as Record<string, unknown>).type;
+      }
+    }
+    return out;
+  };
+  return walk(schema) as Record<string, unknown>;
 }
 
 /**
@@ -247,7 +303,12 @@ export function invalidToolPropertyNames(schema: unknown, path = ''): string[] {
       bad.push(...invalidToolPropertyNames(value, `${path}[]`));
     } else if (key === DEFS_FIELD && value && typeof value === 'object' && !Array.isArray(value)) {
       for (const [defName, defSchema] of Object.entries(value as Record<string, unknown>)) {
-        bad.push(...invalidToolPropertyNames(defSchema, `${DEFS_FIELD}/${defName}`));
+        const here = `${DEFS_FIELD}/${defName}`;
+        // A definition NAME is rewritten too: Bedrock accepts any spelling, but
+        // Sonnet 5 does not resolve a `$ref` pointer containing a space (#783),
+        // so the backend renames it and the count must include it.
+        if (!TOOL_PROPERTY_NAME_PATTERN.test(defName)) bad.push(here);
+        bad.push(...invalidToolPropertyNames(defSchema, here));
       }
     } else if (['anyOf', 'allOf', 'oneOf', 'prefixItems'].includes(key) && Array.isArray(value)) {
       for (const branch of value) bad.push(...invalidToolPropertyNames(branch, path));
@@ -375,6 +436,31 @@ export const extractionModeOf = (formValues: Record<string, unknown> | null | un
   if (typeof raw === 'string' && raw.trim()) return raw.trim().toLowerCase() === 'advanced' ? 'advanced' : 'simple';
   const agentic = (extraction.agentic as Record<string, unknown>) || {};
   return boolish(agentic.enabled, false) ? 'advanced' : 'simple';
+};
+
+/**
+ * Whether a Simple + `integrated` section on this class is scored in a SEPARATE
+ * pass at run time. Mirrors ``ExtractionService._simple_integrated_list_downgrade``:
+ * Simple mode, confidence.mode integrated, the class declares a top-level array
+ * (or is multi-instance, whose ``instances`` wrapper is one), and neither opt-out
+ * is set — a per-class task-prompt override or ``x-aws-idp-allow-integrated-lists``.
+ * The backend then sends the PLAIN extraction prompt, so the preview must too.
+ */
+export const simpleIntegratedDowngraded = (
+  formValues: Record<string, unknown> | null | undefined,
+  selectedClass: Record<string, unknown> | null | undefined,
+): boolean => {
+  const extraction = (formValues?.extraction as Record<string, unknown>) || {};
+  const confidence = (extraction.confidence as Record<string, unknown>) || {};
+  if (String(confidence.mode ?? 'separate') !== 'integrated') return false;
+  if (confidence.enabled !== undefined && !boolish(confidence.enabled, true)) return false;
+  if (extractionModeOf(formValues) !== 'simple') return false;
+  if (!selectedClass) return false;
+  if (selectedClass[X_AWS_IDP_EXTRACTION_TASK_PROMPT]) return false;
+  if (boolish(selectedClass[X_AWS_IDP_ALLOW_INTEGRATED_LISTS], false)) return false;
+  if (boolish(selectedClass[X_AWS_IDP_MULTI_INSTANCE], false)) return true;
+  const props = (selectedClass.properties as Record<string, unknown> | undefined) || {};
+  return Object.values(props).some((s) => s && typeof s === 'object' && (s as Record<string, unknown>).type === 'array');
 };
 
 /**
@@ -564,9 +650,12 @@ export function toolSpecWireText(schema: ClassSchema): string {
  * (``create_pydantic_model_from_json_schema``), and that generated schema is a
  * different document from the class schema in both directions:
  *
- * - larger, dominantly: every field gains a ``title``, every optional field
- *   becomes ``anyOf: [<type>, {"type": "null"}]`` with ``default: null``, and
- *   groups become ``$defs`` entries with their own titles;
+ * - larger, dominantly: every field gains a ``title``; every optional field
+ *   becomes ``anyOf: [<type>, {"type": "null"}]`` with ``default: null``; every
+ *   REQUIRED SCALAR also becomes ``anyOf: [<type>, {"type": "null"}]`` (no
+ *   default — the backend's transport model lets the agent abstain on a cell it
+ *   cannot read, #782, while ``required`` itself is kept); and groups become
+ *   ``$defs`` entries with their own titles;
  * - smaller, marginally: object-level ``description`` is dropped (the class
  *   description on every shipped preset, plus ``$defs`` group descriptions).
  *
@@ -834,6 +923,11 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     }
   }, [classes, selectedClassId]);
 
+  const selectedClass = useMemo((): ClassSchema | null => {
+    if (!selectedClassId) return null;
+    return classes.find((cls) => getClassId(cls) === selectedClassId) || null;
+  }, [classes, selectedClassId]);
+
   // Get the step config (system_prompt, task_prompt, model). For the v0.6
   // 'extraction' and 'confidence' views this composes the actual template that
   // will run given confidence.mode + geometry.mode (mirrors the Python
@@ -849,10 +943,17 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     const bboxBlock = String(geometry.task_prompt_bbox ?? '');
 
     if (selectedStep === 'extraction') {
-      const integrated = mode === 'integrated';
+      // A Simple + integrated section on a list-bearing class is downgraded to a
+      // separate pass server-side and gets the PLAIN prompt; show that.
+      const integrated = mode === 'integrated' && !simpleIntegratedDowngraded(formValues, selectedClass);
       let task = String(extraction.task_prompt ?? '');
       if (integrated) {
-        task = String(extraction.task_prompt_extraction_with_confidence ?? '') || String(extraction.task_prompt ?? '');
+        // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
+        // the 1S-TopK template, Advanced the tool-based one. (Previously the
+        // preview showed the Advanced template for both.)
+        const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
+        const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
+        task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');
         if (needsBbox) task = appendBboxBlock(task, bboxBlock);
       }
       return {
@@ -875,16 +976,12 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     const cfg = formValues?.[selectedStep];
     if (!cfg || typeof cfg !== 'object') return {};
     return cfg as StepConfig;
-  }, [formValues, selectedStep]);
+  }, [formValues, selectedStep, selectedClass]);
 
   // Whether this step needs a class selection
   const needsClassSelection = selectedStep === 'extraction' || selectedStep === 'confidence';
 
   // Get selected class schema
-  const selectedClass = useMemo((): ClassSchema | null => {
-    if (!selectedClassId) return null;
-    return classes.find((cls) => getClassId(cls) === selectedClassId) || null;
-  }, [classes, selectedClassId]);
 
   const schemaDivergence = useMemo(
     () => schemaDivergenceFor(formValues, selectedClass, selectedStep),
@@ -1020,8 +1117,10 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
             : ` No bounding-box block (Geometry mode: ${geomMode}).`;
           let msg: string;
           if (selectedStep === 'extraction') {
-            msg =
-              mode === 'integrated'
+            const downgraded = simpleIntegratedDowngraded(formValues, selectedClass);
+            msg = downgraded
+              ? `Integrated confidence is configured, but this class declares list fields (a multi-instance class's instances array counts), so for its sections the backend sends the PLAIN extraction prompt shown here (extraction.task_prompt) and scores confidence in a separate pass — Simple + integrated loses list rows silently. To keep 1S-TopK on this class, set ${X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on it once you have verified its lists come back complete.`
+              : mode === 'integrated'
                 ? `Integrated confidence mode: showing the extraction + confidence template (one inference emits value and confidence).${bbox}`
                 : 'Showing the extraction-only template (confidence scoring is off or runs separately).';
           } else if (!enabled) {

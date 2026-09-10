@@ -423,6 +423,33 @@ endif
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
 
+# Live authorization checks that need real AWS behaviour rather than mocks, but
+# NOT a deployed stack: each creates its own throwaway Cognito pool / state
+# machines / IAM roles and deletes them again. Not in CI (they create IAM roles).
+# See .claude/skills/live-auth-checks.md.
+live-auth-checks: ## Live authorization checks vs real AWS (throwaway resources, no stack needed)
+	@echo "Running live authorization checks (creates and deletes throwaway resources)..."
+	$(PYTHON) scripts/security/live_checks/verify_idp_group_mapping.py
+	$(PYTHON) scripts/security/live_checks/verify_execution_scope.py
+	@echo -e "$(GREEN)✅ Live authorization checks passed$(NC)"
+
+# Federated sign-in verification. Needs a stack deployed against the throwaway
+# OIDC provider — see .claude/skills/live-auth-checks.md for the sequence, since
+# the provider has to exist before the stack that federates to it.
+verify-idp-federation: ## Federated sign-in checks vs a deployed stack (STACK_NAME, IDP_FUNCTION, POOL_ID, CLIENT_ID, DOMAIN, TRIGGER_FUNCTION)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks.md)
+endif
+	$(PYTHON) scripts/security/live_checks/verify_federated_signin.py \
+	    --stack-name $(STACK_NAME) \
+	    --region $(if $(REGION),$(REGION),us-west-2) \
+	    --idp-function $(IDP_FUNCTION) \
+	    --idp-name $(if $(IDP_NAME),$(IDP_NAME),VerifyIdP) \
+	    --trigger-function $(TRIGGER_FUNCTION) \
+	    --pool-id $(POOL_ID) \
+	    --client-id $(CLIENT_ID) \
+	    --domain $(DOMAIN)
+
 # Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
 # Browser-driven UX test. Not a self-contained target on purpose: the browsing and
 # the usability judgement are done by the agent following
@@ -695,6 +722,11 @@ srt-clean: ## Remove gitignored build/temp dirs that pollute local SRT scans
 	find . -name node_modules -prune -o -name .venv -prune -o \
 		-type d \( -name .aws-sam -o -path '*/layer/python' \) -prune -print \
 		| xargs -r rm -rf
+# Also drop SRT scan dirs whose template no longer exists. They outlive the
+# template — `srt assess` never removes a scan dir — so scanner_health.py keeps
+# reporting them as "checkov did not complete" and prints "this scan cannot prove
+# the tree is clean" on a run that is clean. See the module docstring.
+	@$(PYTHON) scripts/srt/prune_stale_scans.py
 	@echo -e "$(GREEN)✅ Scan-polluting artifacts removed (CI checkouts are already clean)$(NC)"
 
 srt: ## Run full SRT workflow (clean → setup → scan → optional fix)

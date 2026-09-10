@@ -137,7 +137,26 @@ def _row(seq, cols, desc_len, noise, value_noise=False):
         desc = f"SEQ{seq:05d} {merch} #{seq}"
     amount_value = round(((seq * 13.7) % 5000) * (-1 if seq % 3 else 1), 2)
     amount = f"{'-' if seq % 3 else ''}{(seq * 13.7) % 5000:.2f}"
-    typed = None
+    # Per-CELL truth for EVERY row, not just the value-noise variant.
+    #
+    # `rows_typed` is what feeds `score_cells` -> `cell_accuracy`, the only metric
+    # that can see a per-row VALUE problem. It used to be emitted only under
+    # `value_noise`, which left every other document — including all seven in
+    # `core_synth`, the grid the config-guidance paper reports — with no per-cell
+    # instrument at all. That is not a theoretical gap: on `longdesc_100` simple
+    # extraction returns all 100 rows with `Amount: null`, and because
+    # `completeness_recall` counts SEQ tags in the Description and
+    # `scalar_accuracy` only looks at document-level fields, the run scored
+    # recall 1.000 / accuracy 1.000 with an entire column empty. Two studies drew
+    # conclusions from that blind spot (the first enforcement A/B, and the WS-05
+    # forcing A/B's "no measurable effect").
+    #
+    # The rendered date is unambiguous MDY here (`02/14/2024`), so the ISO form is
+    # derivable without the `_date_pair` machinery that `value_noise` needs.
+    typed = {
+        "Date": f"2024-{(seq % 12) + 1:02d}-{(seq % 28) + 1:02d}",
+        "Amount": amount_value,
+    }
     if value_noise:
         date, iso = _date_pair(seq)
         amount = _amount_rendered(amount_value, seq)
@@ -158,6 +177,38 @@ def _row(seq, cols, desc_len, noise, value_noise=False):
     ], typed
 
 
+def _wrap_description(cells, desc_len, styles, fontsize):
+    """Make a long Description cell WRAP instead of overprinting its neighbour.
+
+    A plain string in a reportlab ``Table`` cell does not wrap — it is drawn on one
+    line and simply runs past the column edge. At ``desc_len="long"`` the
+    description is ~120 characters in a 4.8-inch column, so it overprinted the
+    Amount column to its right and Textract read the collision rather than the
+    two values: OCR of ``longdesc_100`` contained **zero** amount-shaped lines,
+    and one row came back as ``"...recurring monthly charge00ference invoice 0"``
+    — the amount ``0.00`` stamped over the word ``reference``.
+
+    That made every Amount on that document physically unreadable, so it was not a
+    test of extraction at all. It went unnoticed because the only metric that
+    could have seen it (``cell_accuracy``) was not emitted for this document —
+    see the ``rows_typed`` note in ``_row``.
+
+    ⚠️ This changes the rendering (and therefore the page count) of any
+    ``desc_len="long"`` document — today only ``longdesc_100``. Results for that
+    document are NOT comparable across this fix. Short descriptions are left as
+    plain strings so every other document renders byte-for-byte as before.
+    """
+    if desc_len != "long":
+        return cells
+    style = styles["BodyText"].clone("cellwrap")
+    style.fontSize = fontsize
+    style.leading = fontsize + 1
+    style.spaceBefore = style.spaceAfter = 0
+    out = list(cells)
+    out[1] = Paragraph(str(out[1]), style)
+    return out
+
+
 def build(
     rows,
     cols=3,
@@ -167,9 +218,17 @@ def build(
     value_noise=False,
     documents=1,
     paginate=False,
+    repeat_header=False,
     out="doc.pdf",
 ):
     """``documents=N`` emits N back-to-back COMPLETE statements in one file.
+
+    ``repeat_header=True`` reprints a running identity header — bank name, account
+    number, statement period, but NOT the account holder's name and address — at the
+    top of every page after the first (the #750 shape, and the boundary rules'
+    known failure mode). It composes with ``paginate`` (header at the top, "Page N of
+    M" at the bottom). Meant for ``documents=1``: the header carries the FIRST
+    statement's account number on every page.
 
     This is the over-MERGE direction of boundary detection, and it is the case a
     naive over-split fix regresses: a prompt biased toward ``continue`` collapses
@@ -236,7 +295,7 @@ def build(
             ids = []
             for _ in range(n):
                 cells, typed = _row(seq, cols, desc_len, ocr_noise, value_noise)
-                data.append(cells)
+                data.append(_wrap_description(cells, desc_len, styles, fontsize))
                 if typed:
                     rows_typed[f"SEQ{seq:05d}"] = typed
                 ids.append(f"SEQ{seq:05d}")
@@ -257,6 +316,27 @@ def build(
             story.append(t)
             story.append(Spacer(1, 0.15 * inch))
             per_list[f"list{li + 1}"] = ids
+
+    def _running_header(canvas, _doc):
+        # The OTHER common real-world shape (#726 counter-case, #750): many statements
+        # print a running identity header — bank name, account number, statement
+        # period — at the top of EVERY page, with no addressee name or address. A
+        # boundary rule that keys on "carries an identity block => start" over-splits
+        # exactly this shape; drawn on the canvas so it does not disturb the table.
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 9)
+        canvas.drawString(0.4 * inch, 10.6 * inch, "AnyBank Monthly Statement")
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(
+            0.4 * inch,
+            10.45 * inch,
+            f"Account Number: {FIELDS['Account Number']}    "
+            "Statement Period: 01/01/2024 - 12/31/2024",
+        )
+        canvas.restoreState()
+
+    top_margin = 0.85 * inch if repeat_header else 0.5 * inch
+
     if paginate:
         # Real statements paginate, and "Page 2 of 3" is the single most decisive
         # boundary signal a page can carry — the classification boundary rules
@@ -282,19 +362,35 @@ def build(
             )
             canvas.restoreState()
 
+        def _later(canvas, doc_):
+            _footer(canvas, doc_)
+            if repeat_header:
+                _running_header(canvas, doc_)
+
         doc = SimpleDocTemplate(
             out,
             pagesize=letter,
-            topMargin=0.5 * inch,
+            topMargin=top_margin,
             bottomMargin=0.5 * inch,
             leftMargin=0.4 * inch,
             rightMargin=0.4 * inch,
         )
-        doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+        doc.build(story, onFirstPage=_footer, onLaterPages=_later)
+    elif repeat_header:
+        doc = SimpleDocTemplate(
+            out,
+            pagesize=letter,
+            topMargin=top_margin,
+            bottomMargin=0.5 * inch,
+            leftMargin=0.4 * inch,
+            rightMargin=0.4 * inch,
+        )
+        doc.build(story, onLaterPages=_running_header)
     else:
         doc.build(story)
     truth = {
         "gen": "bank_statement",
+        "repeat_header": bool(repeat_header),
         "rows": rows,
         "cols": cols,
         "lists": lists,

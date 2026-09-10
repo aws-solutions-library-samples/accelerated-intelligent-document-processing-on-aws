@@ -113,7 +113,95 @@ def serialize_page_classification_signals(page: Any) -> Dict[str, Any]:
     return signals
 
 
-def serialize_confidence_threshold_alerts(section: Section) -> List[Dict[str, Any]]:
+# Confidence alerts are stored INLINE in the tracking item, and EVERY section's
+# alerts live in the same item's `Sections` list, so the list is bounded here or
+# not at all. Unbounded, it can push the item past DynamoDB's 409,600-byte
+# ceiling — at which point the write fails and the document is left with no
+# result at all, which is how two production documents were lost (#814). That
+# case was duplication and was fixed by deduping; these caps address the part
+# dedupe cannot touch: per-row alerts carry a row index, are legitimately
+# distinct, and are exempt from the collapse (their indexes are slice-local,
+# #813). A wide table with many sub-threshold cells reaches the same ceiling with
+# no duplication at all — 512 rows x 8 columns is ~4,096 alerts, ~450 KB at the
+# ~110 bytes a serialized alert occupies (#821).
+#
+# Nothing is lost that cannot be recovered: this list is a DERIVED convenience
+# copy. Every field's confidence and threshold is in `explainability_info` in the
+# extraction result on S3, and the Web UI's own count already prefers that data,
+# falling back to this list only when it is absent
+# (`confidence-alerts-utils.ts::getDocumentConfidenceAlertCount`).
+#
+# Two layers, because the writers see different things. `update_document_section`
+# writes ONE section atomically (`SET Sections[i] = :section`) and deliberately
+# does not read the item, so it cannot know the document-wide total — the
+# per-section cap is what protects that path. The whole-document writers get the
+# document-wide budget as well, fair-shared across sections.
+_MAX_STORED_ALERTS_PER_SECTION = 50
+_MAX_STORED_ALERTS_PER_DOCUMENT = 1000
+
+
+def _worst_first_subset(
+    alerts: List[Dict[str, Any]], limit: int
+) -> List[Dict[str, Any]]:
+    """The ``limit`` LOWEST-confidence alerts, in their original relative order.
+
+    Lowest-confidence because these are the findings a reviewer most needs to
+    see; original order because a stable list keeps the item from churning
+    between otherwise identical writes. A missing or unreadable ``confidence``
+    sorts last (treated as 1.0), so a scoreless entry never displaces a scored
+    one — the same rule ``dedupe_alerts`` uses when it collapses copies.
+    """
+
+    def _score(index_and_alert: Any) -> Any:
+        index, alert = index_and_alert
+        raw = alert.get("confidence") if isinstance(alert, dict) else None
+        try:
+            score = 1.0 if raw is None else float(raw)
+        except (TypeError, ValueError):
+            score = 1.0
+        return (score, index)
+
+    worst = sorted(enumerate(alerts), key=_score)[:limit]
+    return [alert for _, alert in sorted(worst, key=lambda pair: pair[0])]
+
+
+def allocate_alert_budget(
+    sections: List[Section], total: int = _MAX_STORED_ALERTS_PER_DOCUMENT
+) -> Dict[str, int]:
+    """How many alerts each section may store, keyed by ``section_id``.
+
+    Only for the writers that see the whole document. Returns each section's full
+    demand when the document fits the budget, so the common case is unaffected.
+    Over budget, it is fair-shared: sections are served smallest-demand first,
+    each getting at most an equal share of what is left, so a section with three
+    alerts keeps all three and its unused share flows to the sections that want
+    more. A section can be allotted zero when there are more alerting sections
+    than budget — its true count is still recorded, and the full data is in
+    ``explainability_info`` either way.
+    """
+    demand = {
+        section.section_id: len(section.confidence_threshold_alerts or [])
+        for section in sections or []
+    }
+    if sum(demand.values()) <= total:
+        return demand
+
+    allotted: Dict[str, int] = {}
+    remaining = total
+    # Deterministic order (demand, then id) so two identical documents allot
+    # identically — the write must not depend on dict ordering.
+    order = sorted(demand, key=lambda sid: (demand[sid], str(sid)))
+    for position, section_id in enumerate(order):
+        share = remaining // (len(order) - position)
+        take = min(demand[section_id], share)
+        allotted[section_id] = take
+        remaining -= take
+    return allotted
+
+
+def serialize_confidence_threshold_alerts(
+    section: Section, limit: Optional[int] = None
+) -> List[Dict[str, Any]]:
     """
     Serialize a Section's confidence threshold alerts to the DynamoDB/GraphQL
     camelCase shape (``attributeName``/``confidence``/``confidenceThreshold``).
@@ -122,9 +210,21 @@ def serialize_confidence_threshold_alerts(section: Section) -> List[Dict[str, An
     update_document_section) and the run-record writer (create_document_run) so
     a version snapshot carries the same low-confidence data the live document
     does — the UI's "Low Confidence Fields" count reads this field.
+
+    Capped at ``_MAX_STORED_ALERTS_PER_SECTION``, and at ``limit`` when the
+    caller has a document-wide budget to spend (see ``allocate_alert_budget``).
+    Callers should use ``set_section_alerts`` rather than calling this directly,
+    so the true count travels with a truncated list.
     """
+    alerts = list(section.confidence_threshold_alerts or [])
+    cap = _MAX_STORED_ALERTS_PER_SECTION
+    if limit is not None:
+        cap = min(cap, max(limit, 0))
+    if len(alerts) > cap:
+        alerts = _worst_first_subset(alerts, cap)
+
     alerts_data: List[Dict[str, Any]] = []
-    for alert in section.confidence_threshold_alerts or []:
+    for alert in alerts:
         alerts_data.append(
             convert_floats_to_decimal(
                 {
@@ -135,6 +235,36 @@ def serialize_confidence_threshold_alerts(section: Section) -> List[Dict[str, An
             )
         )
     return alerts_data
+
+
+def set_section_alerts(
+    section_data: Dict[str, Any], section: Section, limit: Optional[int] = None
+) -> None:
+    """Write a section's alerts into its item map, recording the true count.
+
+    One helper for all three writers so a truncated list can never be stored
+    without the figure that says it was truncated. ``ConfidenceThresholdAlerts``
+    holds what fits; ``ConfidenceThresholdAlertsTotal`` appears only when
+    something was dropped, so an unaffected document's item is byte-identical to
+    before. No consumer reads the total yet — it exists so "17 alerts" can be
+    told apart from "17 of 412", by a reader or by whoever surfaces it next.
+    """
+    if not section.confidence_threshold_alerts:
+        return
+    stored = serialize_confidence_threshold_alerts(section, limit=limit)
+    section_data["ConfidenceThresholdAlerts"] = stored
+    total = len(section.confidence_threshold_alerts)
+    if len(stored) < total:
+        section_data["ConfidenceThresholdAlertsTotal"] = total
+        logger.warning(
+            "Section %s: storing %d of %d confidence alerts in the tracking item "
+            "(inline alerts are capped so the item cannot breach DynamoDB's "
+            "409,600-byte limit); full per-field confidence remains in the "
+            "extraction result's explainability_info",
+            section.section_id,
+            len(stored),
+            total,
+        )
 
 
 def serialize_processing_issues(section: Section) -> List[Dict[str, Any]]:
@@ -362,6 +492,9 @@ class DocumentDynamoDBService:
 
         # Convert sections
         if document.sections:
+            # Every section's alerts land in this one item, so the cap has to be
+            # spent across the document rather than per section (#821).
+            alert_budget = allocate_alert_budget(document.sections)
             sections_data = []
             for section in document.sections:
                 # Convert page IDs to integers for DynamoDB
@@ -387,11 +520,13 @@ class DocumentDynamoDBService:
                 if section.confidence is not None:
                     section_data["Confidence"] = Decimal(str(float(section.confidence)))
 
-                # Convert confidence threshold alerts (matching current AppSync interface)
-                if section.confidence_threshold_alerts:
-                    section_data["ConfidenceThresholdAlerts"] = (
-                        serialize_confidence_threshold_alerts(section)
-                    )
+                # Convert confidence threshold alerts (matching current AppSync
+                # interface), bounded so the inline list cannot push the item past
+                # DynamoDB's size ceiling (#821). This writer sees every section,
+                # so it spends the document-wide budget.
+                set_section_alerts(
+                    section_data, section, limit=alert_budget.get(section.section_id)
+                )
 
                 # Persist structured processing issues (self-healing observability).
                 if section.processing_issues:
@@ -1205,11 +1340,11 @@ class DocumentDynamoDBService:
         if section.confidence is not None:
             section_data["Confidence"] = Decimal(str(float(section.confidence)))
 
-        # Convert confidence threshold alerts
-        if section.confidence_threshold_alerts:
-            section_data["ConfidenceThresholdAlerts"] = (
-                serialize_confidence_threshold_alerts(section)
-            )
+        # Convert confidence threshold alerts. This writer updates ONE section
+        # atomically and deliberately does not read the item, so it cannot know the
+        # document-wide total — the per-section cap inside the serializer is what
+        # bounds this path (#821).
+        set_section_alerts(section_data, section)
 
         # Persist structured processing issues. This write REPLACES the whole
         # section map (`SET #Sections[i] = :section`), so omitting them here does
@@ -1342,6 +1477,9 @@ class DocumentDynamoDBService:
             item["RuleValidationResultUri"] = document.rule_validation_result.output_uri
 
         if document.sections:
+            # Same document-wide alert budget as the live item writer, so a run
+            # snapshot is bounded identically (#821).
+            alert_budget = allocate_alert_budget(document.sections)
             sections_data = []
             for section in document.sections:
                 page_ids = []
@@ -1364,10 +1502,9 @@ class DocumentDynamoDBService:
                 # run's outputs have been overwritten).
                 if section.confidence is not None:
                     section_data["Confidence"] = Decimal(str(float(section.confidence)))
-                if section.confidence_threshold_alerts:
-                    section_data["ConfidenceThresholdAlerts"] = (
-                        serialize_confidence_threshold_alerts(section)
-                    )
+                set_section_alerts(
+                    section_data, section, limit=alert_budget.get(section.section_id)
+                )
                 if section.processing_issues:
                     section_data["ProcessingIssues"] = serialize_processing_issues(
                         section
