@@ -59,20 +59,32 @@ def main():
     ap.add_argument("--stack", required=True)
     ap.add_argument("--arm-a", required=True, help="baseline runId")
     ap.add_argument("--arm-b", required=True, help="treated runId")
-    ap.add_argument("--treated", action="append", default=[],
-                    help="class name the treatment applies to; repeat")
+    ap.add_argument(
+        "--treated",
+        action="append",
+        default=[],
+        help="class name the treatment applies to; repeat",
+    )
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
     bucket = rc._find(a.stack, "outputbucket")
     tracking = cache_audit._find_table(a.stack, "TrackingTable")
 
-    rows_a = {r["doc"].split("/", 1)[1]: r for r in cache_audit.audit_run(
-        {"output_bucket": bucket, "tracking_table": tracking}, a.arm_a)
-        if r["phase"].lower().startswith("extract") and r["model"] != "lambda"}
-    rows_b = {r["doc"].split("/", 1)[1]: r for r in cache_audit.audit_run(
-        {"output_bucket": bucket, "tracking_table": tracking}, a.arm_b)
-        if r["phase"].lower().startswith("extract") and r["model"] != "lambda"}
+    rows_a = {
+        r["doc"].split("/", 1)[1]: r
+        for r in cache_audit.audit_run(
+            {"output_bucket": bucket, "tracking_table": tracking}, a.arm_a
+        )
+        if r["phase"].lower().startswith("extract") and r["model"] != "lambda"
+    }
+    rows_b = {
+        r["doc"].split("/", 1)[1]: r
+        for r in cache_audit.audit_run(
+            {"output_bucket": bucket, "tracking_table": tracking}, a.arm_b
+        )
+        if r["phase"].lower().startswith("extract") and r["model"] != "lambda"
+    }
 
     items_a = rc._docs_of_run(tracking, a.arm_a)
     items_b = rc._docs_of_run(tracking, a.arm_b)
@@ -92,7 +104,10 @@ def main():
     by_class: dict[str, Acc] = collections.defaultdict(Acc)
     for doc in shared:
         ia, ib = items_a[doc], items_b[doc]
-        if ia.get("ObjectStatus", {}).get("S") == "FAILED" or ib.get("ObjectStatus", {}).get("S") == "FAILED":
+        if (
+            ia.get("ObjectStatus", {}).get("S") == "FAILED"
+            or ib.get("ObjectStatus", {}).get("S") == "FAILED"
+        ):
             continue
         cls = (rows_a.get(doc, {}).get("classes") or ["(unknown)"])[0]
         g = by_class[cls]
@@ -116,31 +131,46 @@ def main():
     treated = set(a.treated)
     print(f"\narm A (baseline) {a.arm_a}\narm B (treated)  {a.arm_b}")
     print(f"paired non-failed documents: {sum(g.n for g in by_class.values())}\n")
-    print(f"{'class':28} {'grp':>4} {'n':>4} {'acc Δ':>9} {'t':>6} {'sign p':>7} "
-          f"{'cost Δ':>10} {'cost t':>7} {'cRead Δ':>9} {'input Δ':>9}")
+    print(
+        f"{'class':28} {'grp':>4} {'n':>4} {'acc Δ':>9} {'t':>6} {'sign p':>7} "
+        f"{'cost Δ':>10} {'cost t':>7} {'cRead Δ':>9} {'input Δ':>9}"
+    )
     out = {}
-    for cls, g in sorted(by_class.items(), key=lambda kv: (kv[0] not in treated, kv[0])):
+    for cls, g in sorted(
+        by_class.items(), key=lambda kv: (kv[0] not in treated, kv[0])
+    ):
         grp = "TREAT" if cls in treated else "ctrl"
         acc = _paired(g.acc)
         cost = _paired(g.cost)
         cr = statistics.fmean(g.cr) if g.cr else 0
         inp = statistics.fmean(g.inp) if g.inp else 0
-        print(f"{cls[:27]:28} {grp:>4} {g.n:>4} "
-              f"{(f'{acc[0]:+.4f}' if acc else '—'):>9} "
-              f"{(f'{acc[2]:+.2f}' if acc and acc[2] is not None else '—'):>6} "
-              f"{_sign_p(g.better, g.worse):>7.3f} "
-              f"{(f'{cost[0]:+.5f}' if cost else '—'):>10} "
-              f"{(f'{cost[2]:+.2f}' if cost and cost[2] is not None else '—'):>7} "
-              f"{cr:>+9,.0f} {inp:>+9,.0f}")
-        out[cls] = {"group": grp, "n": g.n,
-                    "acc": acc and {"mean": acc[0], "sd": acc[1], "t": acc[2], "n": acc[3]},
-                    "cost": cost and {"mean": cost[0], "sd": cost[1], "t": cost[2], "n": cost[3]},
-                    "sign_p": _sign_p(g.better, g.worse),
-                    "better": g.better, "worse": g.worse, "same": g.same,
-                    "cache_read_delta": cr, "input_delta": inp}
+        print(
+            f"{cls[:27]:28} {grp:>4} {g.n:>4} "
+            f"{(f'{acc[0]:+.4f}' if acc else '—'):>9} "
+            f"{(f'{acc[2]:+.2f}' if acc and acc[2] is not None else '—'):>6} "
+            f"{_sign_p(g.better, g.worse):>7.3f} "
+            f"{(f'{cost[0]:+.5f}' if cost else '—'):>10} "
+            f"{(f'{cost[2]:+.2f}' if cost and cost[2] is not None else '—'):>7} "
+            f"{cr:>+9,.0f} {inp:>+9,.0f}"
+        )
+        out[cls] = {
+            "group": grp,
+            "n": g.n,
+            "acc": acc and {"mean": acc[0], "sd": acc[1], "t": acc[2], "n": acc[3]},
+            "cost": cost
+            and {"mean": cost[0], "sd": cost[1], "t": cost[2], "n": cost[3]},
+            "sign_p": _sign_p(g.better, g.worse),
+            "better": g.better,
+            "worse": g.worse,
+            "same": g.same,
+            "cache_read_delta": cr,
+            "input_delta": inp,
+        }
 
-    for label, keys in (("TREATED", [c for c in out if out[c]["group"] == "TREAT"]),
-                        ("CONTROL", [c for c in out if out[c]["group"] == "ctrl"])):
+    for label, keys in (
+        ("TREATED", [c for c in out if out[c]["group"] == "TREAT"]),
+        ("CONTROL", [c for c in out if out[c]["group"] == "ctrl"]),
+    ):
         accs = [d for c in keys for d in by_class[c].acc]
         costs = [d for c in keys for d in by_class[c].cost]
         s_acc, s_cost = _paired(accs), _paired(costs)
@@ -149,8 +179,10 @@ def main():
         ndocs = sum(by_class[c].n for c in keys)
         print(f"\n{label} pooled ({len(keys)} classes, {ndocs} docs)")
         if s_acc:
-            print(f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {s_acc[2]:+.2f}  "
-                  f"n={s_acc[3]}   better {b} / worse {w}  sign p={_sign_p(b, w):.4f}")
+            print(
+                f"  accuracy Δ {s_acc[0]:+.4f}  sd {s_acc[1]:.4f}  t {s_acc[2]:+.2f}  "
+                f"n={s_acc[3]}   better {b} / worse {w}  sign p={_sign_p(b, w):.4f}"
+            )
         if s_cost:
             print(f"  cost Δ     {s_cost[0]:+.5f}  t {s_cost[2]:+.2f}  n={s_cost[3]}")
 

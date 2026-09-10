@@ -115,7 +115,11 @@ def audit_run(stack_res: dict, run_id: str) -> list[dict]:
         # keys on the BARE document name. Passing the prefix through builds a
         # tracking key that does not exist and reports "no metering found" as
         # though the run had failed.
-        doc_name = prefix[len(run_id) :].strip("/") if prefix.startswith(run_id) else prefix.strip("/")
+        doc_name = (
+            prefix[len(run_id) :].strip("/")
+            if prefix.startswith(run_id)
+            else prefix.strip("/")
+        )
         metering = lib.doc_metering(tracking, run_id, doc_name) or {}
         classes = doc_classes(bucket, run_id, doc_name)
         for key, units in metering.items():
@@ -149,7 +153,9 @@ def _agg(rows: list[dict]) -> dict:
         **tot,
         # THE number the 0.1x claim rests on: what share of input was a cache READ.
         "read_share": round(tot["cacheReadInputTokens"] / denom, 4) if denom else None,
-        "write_share": round(tot["cacheWriteInputTokens"] / denom, 4) if denom else None,
+        "write_share": round(tot["cacheWriteInputTokens"] / denom, 4)
+        if denom
+        else None,
         # A request that wrote and never read paid 1.25x for nothing.
         "write_without_read": tot["cacheWriteInputTokens"] > 0
         and tot["cacheReadInputTokens"] == 0,
@@ -166,16 +172,22 @@ def verdict(a: dict) -> str:
 
 
 def report(label: str, rows: list[dict]) -> dict:
-    print(f"\n{'=' * 78}\nARM: {label}   ({len({r['doc'] for r in rows})} docs, "
-          f"{len(rows)} metering entries)\n{'=' * 78}")
+    print(
+        f"\n{'=' * 78}\nARM: {label}   ({len({r['doc'] for r in rows})} docs, "
+        f"{len(rows)} metering entries)\n{'=' * 78}"
+    )
 
     overall = _agg(rows)
     print(f"OVERALL: {verdict(overall)}")
-    print(f"  uncached input {overall['inputTokens']:>12,}   "
-          f"cacheRead {overall['cacheReadInputTokens']:>12,}   "
-          f"cacheWrite {overall['cacheWriteInputTokens']:>10,}")
+    print(
+        f"  uncached input {overall['inputTokens']:>12,}   "
+        f"cacheRead {overall['cacheReadInputTokens']:>12,}   "
+        f"cacheWrite {overall['cacheWriteInputTokens']:>10,}"
+    )
 
-    print(f"\n{'phase/model':52} {'docs':>5} {'input':>10} {'cRead':>10} {'cWrite':>9} {'read%':>7}  verdict")
+    print(
+        f"\n{'phase/model':52} {'docs':>5} {'input':>10} {'cRead':>10} {'cWrite':>9} {'read%':>7}  verdict"
+    )
     by_pm = collections.defaultdict(list)
     for r in rows:
         by_pm[(r["phase"], r["model"])].append(r)
@@ -184,35 +196,45 @@ def report(label: str, rows: list[dict]) -> dict:
         minimum = cache_minimum_for(model)
         tag = "" if minimum is None else f" [min {minimum}]"
         rs_pct = "—" if a["read_share"] is None else f"{a['read_share']:.1%}"
-        print(f"{(phase + '/' + model)[:51]:52} {a['docs']:>5} {a['inputTokens']:>10,} "
-              f"{a['cacheReadInputTokens']:>10,} {a['cacheWriteInputTokens']:>9,} {rs_pct:>7}  "
-              f"{verdict(a)}{tag}")
+        print(
+            f"{(phase + '/' + model)[:51]:52} {a['docs']:>5} {a['inputTokens']:>10,} "
+            f"{a['cacheReadInputTokens']:>10,} {a['cacheWriteInputTokens']:>9,} {rs_pct:>7}  "
+            f"{verdict(a)}{tag}"
+        )
 
     # Per-CLASS on the extraction phase only: this is where the prefix-length cliff
     # lives, and averaging across classes is exactly what would hide it.
     ext = [r for r in rows if r["phase"].lower().startswith("extract")]
     if ext:
         print("\n--- extraction, per document class (the prefix-length cliff) ---")
-        print(f"{'class':34} {'docs':>5} {'input/doc':>10} {'cRead/doc':>10} {'cWrite/doc':>11} {'read%':>7}  verdict")
+        print(
+            f"{'class':34} {'docs':>5} {'input/doc':>10} {'cRead/doc':>10} {'cWrite/doc':>11} {'read%':>7}  verdict"
+        )
         by_cls = collections.defaultdict(list)
         for r in ext:
-            for c in (r["classes"] or ["(unknown)"]):
+            for c in r["classes"] or ["(unknown)"]:
                 by_cls[c].append(r)
         for cls, rs in sorted(by_cls.items()):
             a = _agg(rs)
             d = max(a["docs"], 1)
             rs_pct = "—" if a["read_share"] is None else f"{a['read_share']:.1%}"
-            print(f"{cls[:33]:34} {a['docs']:>5} {a['inputTokens'] // d:>10,} "
-                  f"{a['cacheReadInputTokens'] // d:>10,} {a['cacheWriteInputTokens'] // d:>11,} "
-                  f"{rs_pct:>7}  {verdict(a)}")
+            print(
+                f"{cls[:33]:34} {a['docs']:>5} {a['inputTokens'] // d:>10,} "
+                f"{a['cacheReadInputTokens'] // d:>10,} {a['cacheWriteInputTokens'] // d:>11,} "
+                f"{rs_pct:>7}  {verdict(a)}"
+            )
     return overall
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stack", required=True)
-    ap.add_argument("--run", action="append", required=True,
-                    help="runId; repeat for several runs in the same arm")
+    ap.add_argument(
+        "--run",
+        action="append",
+        required=True,
+        help="runId; repeat for several runs in the same arm",
+    )
     ap.add_argument("--label", default="run")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
@@ -229,8 +251,11 @@ def main():
         raise SystemExit("no metering found — check the runIds")
     overall = report(a.label, rows)
     if a.json:
-        json.dump({"label": a.label, "runs": a.run, "overall": overall, "rows": rows},
-                  open(a.json, "w"), indent=2)
+        json.dump(
+            {"label": a.label, "runs": a.run, "overall": overall, "rows": rows},
+            open(a.json, "w"),
+            indent=2,
+        )
         print(f"\nwrote {a.json}")
 
 

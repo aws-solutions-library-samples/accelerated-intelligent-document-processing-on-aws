@@ -283,22 +283,32 @@ def cmd_analyse(a):
             print(f"    A mean {statistics.fmean(x[1] for x in acc):.4f}")
             print(f"    B mean {statistics.fmean(x[0] for x in acc):.4f}")
             st = _paired_stats(acc, "accuracy")
-            print(f"    mean paired delta (B-A) {st['mean_delta']:+.4f}  "
-                  f"sd {st['sd']:.4f}  t {st['t']:+.2f}" if st else "    (too few pairs)")
+            print(
+                f"    mean paired delta (B-A) {st['mean_delta']:+.4f}  "
+                f"sd {st['sd']:.4f}  t {st['t']:+.2f}"
+                if st
+                else "    (too few pairs)"
+            )
             print(f"    B better {better} / worse {worse} / identical {same}")
-            print(f"    sign test on {better + worse} discordant pairs: "
-                  f"p = {_sign_test(better, worse):.4f}")
+            print(
+                f"    sign test on {better + worse} discordant pairs: "
+                f"p = {_sign_test(better, worse):.4f}"
+            )
 
         st = _paired_stats(cost, "cost")
         if st:
             ma = statistics.fmean(x[1] for x in cost)
             mb = statistics.fmean(x[0] for x in cost)
             pct = 100 * st["mean_delta"] / ma if ma else float("nan")
-            print(f"\n  COST/doc: A ${ma:.4f}  B ${mb:.4f}  "
-                  f"delta {st['mean_delta']:+.4f} ({pct:+.1f}%)  t {st['t']:+.2f}  "
-                  f"{'SEPARATES' if abs(st['t'] or 0) > 2 else 'not resolvable'}")
+            print(
+                f"\n  COST/doc: A ${ma:.4f}  B ${mb:.4f}  "
+                f"delta {st['mean_delta']:+.4f} ({pct:+.1f}%)  t {st['t']:+.2f}  "
+                f"{'SEPARATES' if abs(st['t'] or 0) > 2 else 'not resolvable'}"
+            )
 
-        print("\n  TOKENS/doc (kept separate — a cache shift moves tokens BETWEEN these)")
+        print(
+            "\n  TOKENS/doc (kept separate — a cache shift moves tokens BETWEEN these)"
+        )
         print(f"    {'class':26} {'A':>12} {'B':>12} {'delta':>12} {'%':>8}")
         for u in UNITS:
             ma = statistics.fmean(x[1] for x in toks[u]) if toks[u] else 0
@@ -310,15 +320,21 @@ def cmd_analyse(a):
         if a.counter:
             print("\n  SECTION METADATA (did the arm actually engage?)")
             for p, v in counters.items():
-                print(f"    {p:34} A {v['A'][0]}/{v['A'][1]}   B {v['B'][0]}/{v['B'][1]}")
+                print(
+                    f"    {p:34} A {v['A'][0]}/{v['A'][1]}   B {v['B'][0]}/{v['B'][1]}"
+                )
 
         report[corpus] = {
-            "arm_a": arm_a, "arm_b": arm_b, "paired": len(paired),
+            "arm_a": arm_a,
+            "arm_b": arm_b,
+            "paired": len(paired),
             "accuracy": _paired_stats(acc, "accuracy"),
             "cost": _paired_stats(cost, "cost"),
             "tokens": {u: _paired_stats(toks[u], u) for u in UNITS},
             "sign_test_p": _sign_test(better, worse),
-            "counters": {k: {kk: list(vv) for kk, vv in v.items()} for k, v in counters.items()},
+            "counters": {
+                k: {kk: list(vv) for kk, vv in v.items()} for k, v in counters.items()
+            },
         }
 
         # Per-class cache verdict, one arm at a time — this is the mechanism.
@@ -368,8 +384,9 @@ def main():
 
     L = sub.add_parser("launch")
     L.add_argument("--stack", required=True)
-    L.add_argument("--pair", action="append", required=True,
-                   help="testset:armAProfile:armBProfile")
+    L.add_argument(
+        "--pair", action="append", required=True, help="testset:armAProfile:armBProfile"
+    )
     L.add_argument("--n", type=int, default=40)
     L.add_argument("--revision", default=None)
     L.add_argument("--label", default="ab")
@@ -379,8 +396,11 @@ def main():
     A = sub.add_parser("analyse")
     A.add_argument("--stack", required=True)
     A.add_argument("--outdir", default=".")
-    A.add_argument("--counter", action="append",
-                   help="dotted path in section metadata, e.g. forced_tool.honored")
+    A.add_argument(
+        "--counter",
+        action="append",
+        help="dotted path in section metadata, e.g. forced_tool.honored",
+    )
     A.set_defaults(func=cmd_analyse)
 
     a = ap.parse_args()

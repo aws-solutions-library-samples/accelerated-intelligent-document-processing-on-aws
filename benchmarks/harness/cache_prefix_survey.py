@@ -52,7 +52,9 @@ TIERS = [
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def measure_prefix(client, model: str, system_text: str, msg_text: str, tool_config=None) -> int:
+def measure_prefix(
+    client, model: str, system_text: str, msg_text: str, tool_config=None
+) -> int:
     """Actual token count of the span before the cachePoint, per Bedrock."""
     kw = dict(
         modelId=model,
@@ -87,7 +89,9 @@ def survey(preset: str, model: str, forced_tool: bool, pad: str, region: str):
     path = os.path.join(REPO, "config_library", "unified", preset, "config.yaml")
     if not os.path.exists(path):
         return []
-    cfg = merge_config_with_defaults(copy.deepcopy(yaml.safe_load(open(path))), validate=False)
+    cfg = merge_config_with_defaults(
+        copy.deepcopy(yaml.safe_load(open(path))), validate=False
+    )
     ext = cfg["extraction"]
     task = ext.get("task_prompt") or ""
     if "<<CACHEPOINT>>" not in task:
@@ -116,12 +120,20 @@ def survey(preset: str, model: str, forced_tool: bool, pad: str, region: str):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset", action="append", required=True)
-    ap.add_argument("--model", default="us.anthropic.claude-sonnet-4-6",
-                    help="model used only to COUNT tokens; the verdict is per tier")
+    ap.add_argument(
+        "--model",
+        default="us.anthropic.claude-sonnet-4-6",
+        help="model used only to COUNT tokens; the verdict is per tier",
+    )
     ap.add_argument("--region", default="us-west-2")
-    ap.add_argument("--forced-tool", action="store_true",
-                    help="include the forced toolSpec, which renders at position 0")
-    ap.add_argument("--pad-file", default=None, help="file whose text is appended to the prefix")
+    ap.add_argument(
+        "--forced-tool",
+        action="store_true",
+        help="include the forced toolSpec, which renders at position 0",
+    )
+    ap.add_argument(
+        "--pad-file", default=None, help="file whose text is appended to the prefix"
+    )
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
@@ -134,9 +146,11 @@ def main():
         raise SystemExit("nothing measured")
 
     hdr = "  ".join(f"{m:>5}" for m, _ in TIERS)
-    print(f"\ntoken counter: {a.model}"
-          f"{'  + forced toolSpec' if a.forced_tool else ''}"
-          f"{f'  + pad ({len(pad)} chars)' if pad else ''}")
+    print(
+        f"\ntoken counter: {a.model}"
+        f"{'  + forced toolSpec' if a.forced_tool else ''}"
+        f"{f'  + pad ({len(pad)} chars)' if pad else ''}"
+    )
     print(f"\n{'preset / class':52} {'prefix':>7}   {hdr}")
     print(f"{'':52} {'':>7}   " + "  ".join(f"{'':>5}" for _ in TIERS))
     fails = {m: 0 for m, _ in TIERS}
@@ -147,16 +161,29 @@ def main():
             marks.append(f"{'  ok ' if ok else ' MISS'}")
             if not ok:
                 fails[m] += 1
-        print(f"{(r['preset'] + ' / ' + r['class'])[:51]:52} {r['prefix_tokens']:>7}   " + "  ".join(marks))
+        print(
+            f"{(r['preset'] + ' / ' + r['class'])[:51]:52} {r['prefix_tokens']:>7}   "
+            + "  ".join(marks)
+        )
 
     print(f"\n{'minimum':>8}  {'models':44} {'classes that NEVER cache':>26}")
     for m, names in TIERS:
-        print(f"{m:>8}  {names:44} {fails[m]:>4} of {len(rows)}"
-              f"  ({100 * fails[m] / len(rows):.0f}%)")
+        print(
+            f"{m:>8}  {names:44} {fails[m]:>4} of {len(rows)}"
+            f"  ({100 * fails[m] / len(rows):.0f}%)"
+        )
     if a.json:
-        json.dump({"model_counter": a.model, "forced_tool": a.forced_tool,
-                   "pad_chars": len(pad), "rows": rows, "tiers": TIERS},
-                  open(a.json, "w"), indent=2)
+        json.dump(
+            {
+                "model_counter": a.model,
+                "forced_tool": a.forced_tool,
+                "pad_chars": len(pad),
+                "rows": rows,
+                "tiers": TIERS,
+            },
+            open(a.json, "w"),
+            indent=2,
+        )
         print(f"\nwrote {a.json}")
 
 

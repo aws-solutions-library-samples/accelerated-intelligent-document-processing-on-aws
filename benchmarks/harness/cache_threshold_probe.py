@@ -63,7 +63,12 @@ def probe(client, model: str, target: int, calls: int = 2) -> list[dict]:
         r = client.converse(
             modelId=model,
             system=[{"text": prefix}, {"cachePoint": {"type": "default"}}],
-            messages=[{"role": "user", "content": [{"text": "Reply with the single word OK."}]}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "Reply with the single word OK."}],
+                }
+            ],
             inferenceConfig={"maxTokens": 8},
         )
         u = r["usage"]
@@ -87,23 +92,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="us.anthropic.claude-sonnet-4-6")
     ap.add_argument("--region", default="us-west-2")
-    ap.add_argument("--targets", type=int, nargs="+",
-                    default=[400, 800, 950, 1000, 1050, 1100, 1300, 2000])
+    ap.add_argument(
+        "--targets",
+        type=int,
+        nargs="+",
+        default=[400, 800, 950, 1000, 1050, 1100, 1300, 2000],
+    )
     ap.add_argument("--calls", type=int, default=2)
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
     client = boto3.client("bedrock-runtime", region_name=a.region)
     print(f"model={a.model}  region={a.region}\n")
-    print(f"{'target':>7} {'call':>5} {'total_in':>9} {'uncached':>9} {'cWrite':>8} {'cRead':>8}  caching?")
+    print(
+        f"{'target':>7} {'call':>5} {'total_in':>9} {'uncached':>9} {'cWrite':>8} {'cRead':>8}  caching?"
+    )
     rows = []
     for t in a.targets:
         for r in probe(client, a.model, t, a.calls):
             rows.append(r)
             cached = r["cacheWrite"] or r["cacheRead"]
-            print(f"{r['target']:>7} {r['call']:>5} {r['total_in']:>9} {r['inputTokens']:>9} "
-                  f"{r['cacheWrite']:>8} {r['cacheRead']:>8}  "
-                  f"{'YES' if cached else 'no  (silently uncached)'}")
+            print(
+                f"{r['target']:>7} {r['call']:>5} {r['total_in']:>9} {r['inputTokens']:>9} "
+                f"{r['cacheWrite']:>8} {r['cacheRead']:>8}  "
+                f"{'YES' if cached else 'no  (silently uncached)'}"
+            )
         time.sleep(0.5)
 
     # Locate the boundary from what Bedrock actually reported, not from the target.
