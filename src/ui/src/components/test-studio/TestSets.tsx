@@ -16,22 +16,17 @@ import {
   Input,
   Alert,
   Badge,
-  ExpandableSection,
   Select,
-  DatePicker,
-  TimeInput,
   StatusIndicator,
   Link,
 } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
+import useUserRole from '../../hooks/use-user-role';
 import {
-  addDocumentsToTestSet,
-  addDocumentsToTestSetFromUpload,
   deleteTestSets,
   getTestSets,
   estimateReviewEffort,
   getDraftLabelJob,
-  listBucketFiles,
   updateTestSet,
   publishTestSetVersion,
 } from '../../graphql/generated';
@@ -40,28 +35,11 @@ import { getErrorMessage } from '../../utils/errorUtils';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import CreateTestSetWizard from './CreateTestSetWizard';
+import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
 import { LabelAccuracyLegend, renderLabelAccuracy } from './TestSetDetail';
 import { testSetDetailHref, testSetAnnotateHref } from '../../routes/constants';
 
 const client = generateClient();
-
-// Constants
-const MAX_ZIP_SIZE_BYTES = 1073741824; // 1 GB
-
-const BUCKET_OPTIONS: SelectProps.Option[] = [
-  { label: 'Input Bucket', value: 'input' },
-  { label: 'Test Set Bucket', value: 'testset' },
-];
-
-const TIME_FILTER_OPTIONS: SelectProps.Option[] = [
-  { label: 'No filter', value: '' },
-  { label: 'Last 1 hour', value: '1' },
-  { label: 'Last 4 hours', value: '4' },
-  { label: 'Last 24 hours', value: '24' },
-  { label: 'Last 7 days', value: '168' },
-  { label: 'Last 30 days', value: '720' },
-  { label: 'Custom date/time', value: 'custom' },
-];
 
 const DOCUMENT_CLASS_TYPE_OPTIONS: SelectProps.Option[] = [
   { label: 'Unspecified', value: '' },
@@ -91,13 +69,10 @@ interface TestSetItem {
 const TestSets = (): React.JSX.Element => {
   const [testSets, setTestSets] = useState<TestSetItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<TestSetItem[]>([]);
+  // Importing by file pattern searches a whole bucket, so it is Admin-only.
+  const { isAdmin } = useUserRole();
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [filePattern, setFilePattern] = useState('');
-  const [selectedBucket, setSelectedBucket] = useState(BUCKET_OPTIONS[0]);
-  const [matchingFiles, setMatchingFiles] = useState<string[]>([]);
-  const [fileCount, setFileCount] = useState(0);
-  const [showFilesModal, setShowFilesModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -119,19 +94,10 @@ const TestSets = (): React.JSX.Element => {
   // shown when it's installed (available).
   const { available: generatorAvailable, getJobStatus, listActiveJobs } = useSyntheticDataGenerator();
   const [genJobs, setGenJobs] = useState<Record<string, { name: string; status: string; message: string; testSetId?: string }>>({});
-  const [showFileStructure, setShowFileStructure] = useState(() => {
-    return localStorage.getItem('testset-show-file-structure') !== 'false';
-  });
-  const [showAddDocsPatternModal, setShowAddDocsPatternModal] = useState(false);
-  const [showAddDocsUploadModal, setShowAddDocsUploadModal] = useState(false);
+  const [addDocsMode, setAddDocsMode] = useState<AddDocumentsMode | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editDescription, setEditDescription] = useState('');
   const [editDocumentClassType, setEditDocumentClassType] = useState(DOCUMENT_CLASS_TYPE_OPTIONS[0]);
-  const [selectedTimeFilter, setSelectedTimeFilter] = useState(TIME_FILTER_OPTIONS[0]);
-  const [customDate, setCustomDate] = useState('');
-  const [customTime, setCustomTime] = useState('00:00:00');
-  const [addDocsZipFile, setAddDocsZipFile] = useState<File | null>(null);
-  const addDocsFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   /**
    * Quality tier per test set, fetched lazily. The tier is derived from the
@@ -400,44 +366,6 @@ const TestSets = (): React.JSX.Element => {
     };
   }, []); // No dependencies - always runs
 
-  const getModifiedAfterTimestamp = (): string | undefined => {
-    const filterValue = selectedTimeFilter.value;
-    if (!filterValue) return undefined;
-    if (filterValue === 'custom') {
-      if (!customDate) return undefined;
-      return `${customDate}T${customTime || '00:00:00'}.000Z`;
-    }
-    const date = new Date(Date.now() - parseInt(filterValue) * 60 * 60 * 1000);
-    return date.toISOString();
-  };
-
-  // Cleanup polling on unmount
-  const handleCheckFiles = async () => {
-    if (!filePattern.trim()) return;
-
-    setLoading(true);
-    try {
-      const result = await client.graphql({
-        query: listBucketFiles,
-        variables: {
-          bucketType: selectedBucket.value ?? '',
-          filePattern: filePattern.trim(),
-          modifiedAfter: getModifiedAfterTimestamp(),
-        },
-      });
-
-      const files = (result.data.listBucketFiles || []).filter((f): f is string => f !== null);
-      setMatchingFiles(files);
-      setFileCount(files.length);
-      setShowFilesModal(true);
-    } catch (err) {
-      const errorMessage = getErrorMessage(err);
-      setError(`Failed to check files: ${errorMessage}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const validateDescription = (desc: string): boolean => {
     return desc.length <= 500;
   };
@@ -555,133 +483,6 @@ const TestSets = (): React.JSX.Element => {
     } catch (err) {
       console.error('Error publishing test set version:', err);
       setError(`Failed to publish version: ${getErrorMessage(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAddDocuments = async () => {
-    if (!filePattern.trim()) {
-      setError('File pattern is required');
-      return;
-    }
-
-    const targetTestSet = selectedItems[0];
-    if (!targetTestSet) return;
-
-    setLoading(true);
-    try {
-      const result = await client.graphql({
-        query: addDocumentsToTestSet,
-        variables: {
-          testSetId: targetTestSet.id,
-          filePattern: filePattern.trim(),
-          bucketType: selectedBucket.value ?? '',
-          fileCount,
-          modifiedAfter: getModifiedAfterTimestamp(),
-        },
-      });
-
-      const updatedTestSet = result.data.addDocumentsToTestSet;
-
-      if (updatedTestSet) {
-        setTestSets((prev) => {
-          const idx = prev.findIndex((ts) => ts.id === updatedTestSet.id);
-          if (idx >= 0) {
-            const updated = [...prev];
-            updated[idx] = updatedTestSet;
-            return updated;
-          }
-          return prev;
-        });
-        setFilePattern('');
-        setSelectedBucket(BUCKET_OPTIONS[0]);
-        setSelectedTimeFilter(TIME_FILTER_OPTIONS[0]);
-        setCustomDate('');
-        setCustomTime('00:00:00');
-        setFileCount(0);
-        setShowAddDocsPatternModal(false);
-        setError('');
-        setSuccessMessage(`Adding documents to test set "${targetTestSet.name}"...`);
-      } else {
-        setError('Failed to add documents - no data returned');
-      }
-    } catch (err) {
-      console.error('Error adding documents to test set:', err);
-      const errorMessage = getErrorMessage(err);
-      setError(`Failed to add documents: ${errorMessage}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAddDocumentsUpload = async () => {
-    const targetTestSet = selectedItems[0];
-    if (!targetTestSet) return;
-
-    if (!addDocsZipFile) {
-      setError('Zip file is required');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const result = await client.graphql({
-        query: addDocumentsToTestSetFromUpload,
-        variables: {
-          input: {
-            testSetId: targetTestSet.id,
-            fileName: addDocsZipFile.name,
-            fileSize: addDocsZipFile.size,
-          },
-        },
-      });
-
-      const response = result.data.addDocumentsToTestSetFromUpload;
-
-      if (!response || !response.presignedUrl) {
-        throw new Error('Failed to get upload URL from server');
-      }
-
-      const presignedPostData = JSON.parse(response.presignedUrl);
-      const formData = new FormData();
-
-      Object.entries(presignedPostData.fields).forEach(([key, value]) => {
-        formData.append(key, value as string);
-      });
-      formData.append('file', addDocsZipFile);
-
-      const uploadResponse = await fetch(presignedPostData.url, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error(`Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
-      }
-
-      // Update the test set status in UI
-      setTestSets((prev) => {
-        const idx = prev.findIndex((ts) => ts.id === targetTestSet.id);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = { ...updated[idx], status: 'UPDATING' };
-          return updated;
-        }
-        return prev;
-      });
-
-      setSuccessMessage(`Uploading documents to test set "${targetTestSet.name}". Zip file is being processed.`);
-      setError('');
-      setShowAddDocsUploadModal(false);
-      setAddDocsZipFile(null);
-      if (addDocsFileInputRef.current) {
-        addDocsFileInputRef.current.value = '';
-      }
-    } catch (err) {
-      console.error('Error adding documents from upload:', err);
-      const errorMessage = getErrorMessage(err);
-      setError(`Failed to add documents: ${errorMessage}`);
     } finally {
       setLoading(false);
     }
@@ -880,21 +681,21 @@ const TestSets = (): React.JSX.Element => {
               <ButtonDropdown
                 disabled={selectedItems.length === 0 || loading}
                 items={[
-                  { id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems.length !== 1 },
+                  { id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems.length !== 1 || !selectedItems[0]?.fileCount },
                   { id: 'browse', text: 'Browse documents', disabled: selectedItems.length !== 1 },
                   {
                     id: 'add-docs',
                     text: 'Add documents',
                     disabled: selectedItems.length !== 1 || selectedItems[0]?.status !== 'COMPLETED',
                     items: [
-                      { id: 'docs-pattern', text: 'From files in a bucket' },
+                      { id: 'docs-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
                       { id: 'docs-upload', text: 'From a zip upload' },
                     ],
                   },
                   {
                     id: 'publish',
                     text: 'Publish version',
-                    disabled: selectedItems.length !== 1 || selectedItems[0]?.status !== 'COMPLETED',
+                    disabled: selectedItems.length !== 1 || selectedItems[0]?.status !== 'COMPLETED' || !selectedItems[0]?.fileCount,
                   },
                   { id: 'edit', text: 'Edit details', disabled: selectedItems.length !== 1 },
                   { id: 'delete', text: 'Delete' },
@@ -906,18 +707,11 @@ const TestSets = (): React.JSX.Element => {
                   } else if (detail.id === 'browse' && selected) {
                     window.location.hash = testSetDetailHref(selected.id).slice(1);
                   } else if (detail.id === 'docs-pattern') {
-                    setFilePattern(selected?.filePattern || '');
-                    setSelectedBucket(BUCKET_OPTIONS[0]);
-                    setSelectedTimeFilter(TIME_FILTER_OPTIONS[0]);
-                    setCustomDate('');
-                    setCustomTime('00:00:00');
-                    setFileCount(0);
                     setError('');
-                    setShowAddDocsPatternModal(true);
+                    setAddDocsMode('pattern');
                   } else if (detail.id === 'docs-upload') {
-                    setAddDocsZipFile(null);
                     setError('');
-                    setShowAddDocsUploadModal(true);
+                    setAddDocsMode('upload');
                   } else if (detail.id === 'publish') {
                     handlePublishVersion();
                   } else if (detail.id === 'edit' && selected) {
@@ -998,263 +792,17 @@ const TestSets = (): React.JSX.Element => {
         }}
       />
 
-      <Modal
-        visible={showAddDocsPatternModal}
-        onDismiss={() => {
-          setShowAddDocsPatternModal(false);
-          setSelectedBucket(BUCKET_OPTIONS[0]);
-          setSelectedTimeFilter(TIME_FILTER_OPTIONS[0]);
-          setCustomDate('');
-          setCustomTime('00:00:00');
-          setFileCount(0);
-          setFilePattern('');
+      <AddDocumentsModals
+        testSet={selectedItems[0] ?? null}
+        mode={addDocsMode}
+        onDismiss={() => setAddDocsMode(null)}
+        onSubmitted={({ message, testSet }) => {
+          setAddDocsMode(null);
           setError('');
+          setSuccessMessage(message);
+          setTestSets((prev) => prev.map((ts) => (ts.id === testSet.id ? { ...ts, ...testSet } : ts)));
         }}
-        header={`Add Documents to "${selectedItems[0]?.name ?? ''}"`}
-        footer={
-          <Box float="right">
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button
-                variant="link"
-                onClick={() => {
-                  setShowAddDocsPatternModal(false);
-                  setSelectedBucket(BUCKET_OPTIONS[0]);
-                  setSelectedTimeFilter(TIME_FILTER_OPTIONS[0]);
-                  setCustomDate('');
-                  setCustomTime('00:00:00');
-                  setFileCount(0);
-                  setFilePattern('');
-                  setError('');
-                }}
-              >
-                Cancel
-              </Button>
-              <Button variant="primary" loading={loading} onClick={handleAddDocuments} disabled={fileCount === 0}>
-                Add Documents
-              </Button>
-            </SpaceBetween>
-          </Box>
-        }
-      >
-        <SpaceBetween size="m">
-          {error && <Alert type="error">{error}</Alert>}
-
-          <FormField label="Source Bucket" description="Select the bucket to search for files">
-            <Select
-              selectedOption={selectedBucket}
-              onChange={({ detail }) => {
-                setSelectedBucket(detail.selectedOption);
-                setFileCount(0);
-              }}
-              options={BUCKET_OPTIONS}
-            />
-          </FormField>
-
-          <FormField
-            label="File Pattern"
-            description={
-              selectedBucket.value === 'testset'
-                ? 'Use * for one folder level and ** for any depth; the folder path before the first wildcard is exact, the rest ignores case. Examples: test-set-name/input/*, test-set-name/input/**, test-set-prefix*/input/file-prefix*'
-                : 'Use * for one folder level and ** for any depth; the folder path before the first wildcard is exact, the rest ignores case. Examples: prefix*, folder-name/*, folder-name/**/*.pdf, folder-prefix*/file-prefix*'
-            }
-          >
-            <SpaceBetween direction="horizontal" size="xs">
-              <Input
-                value={filePattern}
-                onChange={({ detail }) => {
-                  setFilePattern(detail.value);
-                  setFileCount(0);
-                }}
-                placeholder={selectedBucket.value === 'testset' ? 'test-set-prefix*/input/*' : 'prefix*/*'}
-              />
-              <Button disabled={!filePattern.trim()} loading={loading} onClick={handleCheckFiles}>
-                Check Files
-              </Button>
-            </SpaceBetween>
-          </FormField>
-
-          {selectedBucket.value === 'input' && (
-            <FormField label="Modified after" description="Optional: only include files modified within this time period">
-              <SpaceBetween size="xs">
-                <Select
-                  selectedOption={selectedTimeFilter}
-                  onChange={({ detail }) => {
-                    setSelectedTimeFilter(detail.selectedOption);
-                    setFileCount(0);
-                  }}
-                  options={TIME_FILTER_OPTIONS}
-                />
-                {selectedTimeFilter.value === 'custom' && (
-                  <SpaceBetween size="xs" direction="horizontal">
-                    <DatePicker
-                      value={customDate}
-                      onChange={({ detail }) => {
-                        setCustomDate(detail.value);
-                        setFileCount(0);
-                      }}
-                      placeholder="YYYY/MM/DD"
-                      openCalendarAriaLabel={(selectedDate) => `Choose date${selectedDate ? `, selected date is ${selectedDate}` : ''}`}
-                    />
-                    <TimeInput
-                      value={customTime}
-                      onChange={({ detail }) => {
-                        setCustomTime(detail.value);
-                        setFileCount(0);
-                      }}
-                      format="hh:mm:ss"
-                      placeholder="HH:mm:ss"
-                    />
-                    <Box variant="small" padding={{ top: 'xs' }}>
-                      UTC
-                    </Box>
-                  </SpaceBetween>
-                )}
-              </SpaceBetween>
-            </FormField>
-          )}
-
-          {fileCount > 0 && (
-            <Box>
-              <Badge color="green">
-                {fileCount} {fileCount === 1 ? 'file' : 'files'} found
-              </Badge>
-            </Box>
-          )}
-
-          {selectedBucket.value === 'input' && (
-            <Alert type="info">Files without matching baseline data in the evaluation bucket will be automatically excluded.</Alert>
-          )}
-        </SpaceBetween>
-      </Modal>
-
-      <Modal
-        visible={showAddDocsUploadModal}
-        onDismiss={() => {
-          setShowAddDocsUploadModal(false);
-          setAddDocsZipFile(null);
-          setError('');
-          if (addDocsFileInputRef.current) {
-            addDocsFileInputRef.current.value = '';
-          }
-        }}
-        header={`Add Documents to "${selectedItems[0]?.name ?? ''}" from Upload`}
-        footer={
-          <Box float="right">
-            <SpaceBetween direction="horizontal" size="xs">
-              <Button
-                variant="link"
-                onClick={() => {
-                  setShowAddDocsUploadModal(false);
-                  setAddDocsZipFile(null);
-                  setError('');
-                  if (addDocsFileInputRef.current) {
-                    addDocsFileInputRef.current.value = '';
-                  }
-                }}
-              >
-                Cancel
-              </Button>
-              <Button variant="primary" loading={loading} onClick={handleAddDocumentsUpload} disabled={!addDocsZipFile}>
-                Upload and Add Documents
-              </Button>
-            </SpaceBetween>
-          </Box>
-        }
-      >
-        <SpaceBetween size="m">
-          {error && <Alert type="error">{error}</Alert>}
-
-          <FormField label="Zip File" description="Select a zip file containing documents and baseline data to add">
-            <ExpandableSection
-              headerText="View required file structure"
-              variant="footer"
-              expanded={showFileStructure}
-              onChange={({ detail }) => {
-                setShowFileStructure(detail.expanded);
-                localStorage.setItem('testset-show-file-structure', detail.expanded.toString());
-              }}
-            >
-              <Box margin={{ bottom: 's' }}>
-                <pre
-                  style={{
-                    backgroundColor: '#f8f9fa',
-                    padding: '12px',
-                    borderRadius: '4px',
-                    fontSize: '12px',
-                    overflow: 'auto',
-                  }}
-                >
-                  {`documents.zip
-└── documents/
-    ├── input/
-    │   ├── document1.pdf
-    │   └── document2.pdf
-    └── baseline/
-        ├── document1.pdf/
-        │   └── sections/
-        │       └── 1/
-        │           └── result.json
-        └── document2.pdf/
-            └── sections/
-                └── 1/
-                    └── result.json`}
-                </pre>
-              </Box>
-              <Alert type="info">Each input file must have a corresponding baseline folder with the same name.</Alert>
-            </ExpandableSection>
-            <input
-              ref={addDocsFileInputRef}
-              type="file"
-              accept=".zip"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  if (file.size > MAX_ZIP_SIZE_BYTES) {
-                    setError(`Zip file size (${(file.size / 1024 / 1024 / 1024).toFixed(2)} GB) exceeds maximum limit of 1 GB`);
-                    setAddDocsZipFile(null);
-                    return;
-                  }
-                  setAddDocsZipFile(file);
-                  setError('');
-                } else {
-                  setAddDocsZipFile(null);
-                }
-              }}
-              style={{ width: '100%', padding: '8px' }}
-            />
-            {addDocsZipFile && (
-              <Box margin={{ top: 'xs' }}>
-                <Badge color="blue">
-                  {addDocsZipFile.name} ({(addDocsZipFile.size / 1024 / 1024).toFixed(1)} MB)
-                </Badge>
-              </Box>
-            )}
-          </FormField>
-        </SpaceBetween>
-      </Modal>
-
-      <Modal
-        visible={showFilesModal}
-        onDismiss={() => setShowFilesModal(false)}
-        header={`Matching Files (${matchingFiles.length})`}
-        footer={
-          <Box float="right">
-            <Button onClick={() => setShowFilesModal(false)}>Close</Button>
-          </Box>
-        }
-      >
-        <Box>
-          {matchingFiles.length > 0 ? (
-            <ul style={{ fontSize: '12px' }}>
-              {matchingFiles.map((file) => (
-                <li key={file}>{file}</li>
-              ))}
-            </ul>
-          ) : (
-            <Box textAlign="center">No matching files found</Box>
-          )}
-        </Box>
-      </Modal>
+      />
 
       <Modal
         visible={showEditModal}

@@ -391,7 +391,7 @@ All datasets share these deployment characteristics:
 
 ### GraphQL Schema
 - **Location**: `src/api/schema.graphql`
-- **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `addDocumentsToTestSet`, `addDocumentsToTestSetFromUpload`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
+- **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
 
@@ -487,6 +487,16 @@ That resolver call is what runs the reconcile — new folder gets registered,
 existing folder gets `fileCount`/`status`/`error` refreshed, and a folder
 that has been deleted from S3 gets its row removed. A `contentSignature`
 short-circuit means unchanged folders cost no DDB write.
+
+A registered set whose `input/` is empty is not treated as broken: it
+reconciles to COMPLETED with `fileCount` 0, which is the state a set created
+empty or emptied by **Remove** is in. Its label state becomes `unlabeled`,
+except that a set whose inputs were deleted by hand while its machine-draft
+baselines survived keeps `draft`, so restoring the inputs cannot promote
+unreviewed drafts to ground truth. Such a set keeps a
+zero-byte `<prefix>/.keep` marker so the prefix stays listable and the
+"folder gone" rule above does not delete its row. Deleting the whole prefix
+by hand, marker included, still removes the set.
 
 **Latency caveat.** Each Lambda container memoizes a per-prefix TTL (30 s
 by default) so the UI's 3 s fast poll doesn't repeat two paginated
@@ -592,11 +602,14 @@ state:
 |---|---|---|
 | **Upload documents with ground truth** | A zip with `input/` and matching `baseline/` folders | Ready to publish |
 | **Upload documents only** | A zip with just `input/` | Needs labeling — run [draft labeling](#draft-labeling-unlabeled-documents--ground-truth) next |
-| **From files already in a bucket** | A file pattern (e.g. `*.pdf` or `invoices/**/*.pdf`) over the input or test set bucket | Labeled where baselines exist |
+| **From files already in a bucket** (Admin only) | A file pattern (e.g. `*.pdf` or `invoices/**/*.pdf`) over the input or test set bucket | Labeled where baselines exist |
 | **Generate synthetic documents** | A configuration or a description | Synthetic, labeled |
+| **Start empty** | Just a name | Empty — add documents later from the set's page |
 
-The last option requires the synthetic data generator extension; it is hidden when
-the extension isn't installed.
+Generating requires the synthetic data generator extension; that option is hidden
+when the extension isn't installed. An empty set is created COMPLETED with no
+documents and is immediately usable as a destination for any of the sources under
+[Adding Documents](#adding-documents-to-existing-test-sets).
 
 Every source shares three optional fields:
 
@@ -664,14 +677,15 @@ You can edit a test set's description and document classification type after cre
 
 ### Adding Documents to Existing Test Sets
 
-You can incrementally add documents to a COMPLETED test set — useful for building up test sets over time as new documents are processed and human-reviewed.
+You can incrementally add documents to a COMPLETED test set — useful for building up test sets over time as new documents are processed and human-reviewed, or for growing a set you started empty.
 
-1. Select a single COMPLETED test set in the table
-2. Click **Add Documents** and choose a source:
-   - **From Existing Files**: Select a bucket, enter a file pattern, and optionally filter by modification time
-   - **From Upload**: Upload a zip file containing new documents and their baselines
-3. The test set shows an "Updating..." status while files are being added
-4. After completion, the file count is updated and a result message is displayed
+The same **Add documents** menu is available in two places: on the Test Sets table (select one COMPLETED set, then **Actions → Add documents**) and on the set's own page (open the set, then **Add documents** above its document list). It offers three sources:
+
+- **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
+- **From a zip upload**: Upload a zip file containing new documents and their baselines
+- **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
+
+On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
 
 **Key behaviors:**
 - **Automatic baseline filtering** (Input Bucket): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
@@ -720,9 +734,19 @@ set, and the unreviewed fields stay flagged as machine-generated.
 
 ### Removing documents from a test set
 
-Select a test set and use **Remove documents** to drop documents from the
-working draft. For each named document this deletes its `input/` object and its
-entire `baseline/<file>/` folder, then recounts `fileCount` from S3.
+Open the set, tick the documents in its list, and choose **Remove**. The
+confirmation names the documents, warns when any of them carry reviewed labels
+(that review work cannot be recovered), and says when the set will be left empty.
+For each document this deletes its `input/` object and its entire
+`baseline/<file>/` folder, then recounts `fileCount` from S3.
+
+Removal is refused while the set is busy — a draft-labeling job is running, or a
+bucket or zip add is still being written — because either would be writing files
+for documents that no longer exist.
+
+A set may be emptied this way. It stays listed, COMPLETED with zero documents,
+and can be grown again from **Add documents**. An empty set cannot be run,
+published or draft-labeled until it has documents.
 
 Removal edits the **mutable working draft**. Already-published versions are
 unaffected as metadata records; see the storage caveat under
