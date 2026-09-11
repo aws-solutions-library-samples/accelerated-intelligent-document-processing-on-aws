@@ -104,6 +104,10 @@ def cmd_launch(a):
         raise SystemExit("TestRunnerFunction not found")
     print("runner:", runner)
     out = []
+    # Ids are <set>-<timestamp to the second>; a stack whose runner predates the
+    # #879 fix hands two arms launched within a second the SAME id, and the
+    # second silently replaces the first. Refuse to record such a launch.
+    seen_ids = set()
     for spec in a.pair:
         try:
             testset, off_prof, on_prof = spec.split(":")
@@ -125,6 +129,13 @@ def cmd_launch(a):
             res = json.loads(r["Payload"].read())
             rid = res.get("testRunId")
             print(f"  {testset:26s} {prof:14s} -> {rid or res}")
+            if rid in seen_ids:
+                raise SystemExit(
+                    f"run id {rid} was issued twice: the stack's TestRunner collapses "
+                    f"runs started within one second (#879). Abort the other arms in "
+                    f"Test Studio and relaunch with a gap, or deploy the fix."
+                )
+            seen_ids.add(rid)
             out.append(
                 {
                     "corpus": testset,
