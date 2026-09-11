@@ -55,7 +55,10 @@ def test_runner_stamps_the_fingerprint_of_the_captured_config(runner):
         def __init__(self):
             self.items = []
 
-        def put_item(self, Item):  # noqa: N803 — boto3 kwarg name
+        def put_item(self, Item, ConditionExpression=None):  # noqa: N803 — boto3 kwarg names
+            # The runner reserves the run id with a conditional write (#879);
+            # the fake only records the item.
+            assert ConditionExpression == "attribute_not_exists(PK)"
             self.items.append(Item)
 
     table = Table()
