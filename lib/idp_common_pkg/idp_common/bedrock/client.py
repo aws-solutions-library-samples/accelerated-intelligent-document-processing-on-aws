@@ -174,8 +174,12 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     "anthropic.claude-fable-5",
 }
 
-# Effort levels accepted by Claude models (a superset of the OpenAI Responses
-# levels, which also allow "minimal"). "max"/"xhigh" are Claude-only.
+# Effort levels accepted by Claude models. There are now THREE vocabularies on
+# this file's paths and no two are the same — see GROK_EFFORT_LEVELS and
+# ASTRA_EFFORT_LEVELS. Relative to Claude's set: the OpenAI Responses models
+# (GPT-5.x) also allow "minimal" but not "xhigh"/"max"; Grok adds "none" and
+# rejects "max"; Astra adds "none" and keeps "max". So no constant here is a
+# superset of the others, and none may be reused across families.
 CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
@@ -270,15 +274,100 @@ def is_grok_model(model_id: str) -> bool:
     return _strip_region_and_1m(resolved).startswith(_GROK_BASE_PREFIX)
 
 
+# ---------------------------------------------------------------------------
+# OpenAI GPT-6 Astra
+# ---------------------------------------------------------------------------
+# IMPORTANT: Astra is NOT on the code path the accelerator's other OpenAI models
+# use. GPT-5.4/5.5/5.6 are served ONLY by the ``bedrock-mantle`` Responses API
+# (see openai_responses.py); Astra reaches the ordinary ``bedrock-runtime``
+# Converse API, so its closest sibling in this file is xAI Grok, not GPT-5.x.
+# ``is_openai_responses_model`` matches on ``openai.gpt-5`` and therefore already
+# excludes Astra — test_bedrock_astra.py pins that so a future widening of the
+# GPT-5.x prefix cannot silently steal this model onto the mantle path.
+#
+# Everything below was verified live against ``us.openai.gpt-6-astra`` on
+# bedrock-runtime Converse in us-west-2 on 2026-09-10, and cross-checked against
+# the model card:
+#
+#   * ``inferenceConfig.temperature`` and ``inferenceConfig.topP`` are REJECTED
+#     ("This model doesn't support the temperature field"), so Astra joins the
+#     sampling-param-stripped set — see ``strips_sampling_params``.
+#   * ``maxTokens`` rides in ``inferenceConfig`` (the Converse-standard carrier,
+#     which is already the default for every non-Anthropic family here). The cap
+#     is 128,000: a request for 200,000 is rejected naming the real limit
+#     ("exceeds the model limit of 131072").
+#   * Reasoning is always on. The effort carrier is
+#     ``additionalModelRequestFields.reasoning.effort`` — same shape as Grok.
+#     Claude's ``output_config.effort`` is REJECTED here rather than ignored
+#     ("Unknown parameter: 'output_config'"), and so is a flat
+#     ``reasoning_effort`` key, so the carrier must be exactly right.
+#   * ``document`` content blocks are REJECTED ("This model doesn't support the
+#     document field for user messages") — see
+#     ``document_blocks_unsupported_reason``. Images work.
+#   * ``toolConfig`` works and emits ``toolUse`` under a forced ``toolChoice``,
+#     so agentic and forced-tool extraction are supported (unlike GPT-5.x).
+#   * Explicit ``cachePoint`` blocks raise AccessDeniedException, so Astra is
+#     absent from CACHEPOINT_SUPPORTED_MODELS below. Unlike Grok, though, its
+#     IMPLICIT caching demonstrably works on this path: a repeated 2,707-token
+#     prefix billed ``inputTokens=2`` with ``cacheReadInputTokens=2707``. No
+#     request change is needed to get it, and the existing metering already
+#     records ``cacheReadInputTokens``, so the discount shows up in cost reports
+#     without any code change here.
+#   * Flex/Priority service tiers are REJECTED ("The provided service tier is
+#     not supported for this model"), matching the model card (Standard only), so
+#     no tier-suffixed Astra IDs are offered.
+#   * There is NO in-region form on bedrock-runtime: the bare ``openai.gpt-6-astra``
+#     is rejected ("Invocation of model ID ... with on-demand throughput isn't
+#     supported"). Only ``us.`` (US geo) and ``global.`` (worldwide) CRIS profiles
+#     work. The bare ID IS valid on ``bedrock-mantle`` in us-west-2 only, which the
+#     accelerator deliberately does not use — see the module README.
+_ASTRA_BASE_PREFIX = "openai.gpt-6-astra"
+
+# Effort levels accepted by Astra. NOTE this is a THIRD vocabulary: it is
+# CLAUDE_EFFORT_LEVELS plus "none", and it differs from GROK_EFFORT_LEVELS at the
+# other end — Grok rejects "max" while Astra accepts it. Astra also REJECTS the
+# OpenAI Responses level "minimal" ("Unsupported value: 'minimal' is not
+# supported with the 'us.openai.gpt-6-astra' model. Supported values are:
+# 'none', 'low', 'medium', 'high', 'xhigh', and 'max'"), which is exactly the
+# kind of cross-family confusion this separate constant exists to prevent.
+ASTRA_EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
+
+
+def is_astra_model(model_id: str) -> bool:
+    """True if ``model_id`` names the OpenAI GPT-6 Astra model.
+
+    Handles the ``us.``/``global.`` cross-region inference-profile prefixes and
+    resolves inference-profile **ARNs** first, for the same reason as
+    :func:`is_grok_model`: docs/configuration.md recommends the ARN form for
+    cost-allocation tagging, and Astra's rejections are unconditional (a 400 on
+    ``temperature``, a hard refusal of ``document`` blocks), so failing to
+    recognize the ARN form would fail 100% of requests rather than degrade
+    quietly.
+
+    LIMITATION: ``application-inference-profile/<uuid>`` ARNs are opaque — the
+    underlying foundation model cannot be determined without a
+    GetInferenceProfile call — so those still return False. An Astra application
+    inference profile will therefore bypass these gates.
+    """
+    if not model_id:
+        return False
+    resolved = resolve_model_id_from_arn(model_id)
+    return _strip_region_and_1m(resolved).startswith(_ASTRA_BASE_PREFIX)
+
+
 def strips_sampling_params(model_id: str) -> bool:
     """True if the model REJECTS ``temperature`` / ``topP`` / ``top_k``.
 
-    Covers Claude 4.7+ (where these are deprecated) and xAI Grok (which returns
-    a 400 naming the offending field). Callers must omit the whole
-    ``inferenceConfig`` sampling group for these models rather than passing
-    defaults.
+    Covers Claude 4.7+ (where these are deprecated) and the two Converse
+    families that return a 400 naming the offending field: xAI Grok and OpenAI
+    GPT-6 Astra. Callers must omit the whole ``inferenceConfig`` sampling group
+    for these models rather than passing defaults.
     """
-    return is_claude_4_7_model(model_id) or is_grok_model(model_id)
+    return (
+        is_claude_4_7_model(model_id)
+        or is_grok_model(model_id)
+        or is_astra_model(model_id)
+    )
 
 
 # Converse ``document`` content-block capability gate.
@@ -297,6 +386,11 @@ DOCUMENT_BLOCK_UNSUPPORTED_ROUTES: Dict[str, str] = {
         "xAI Grok models reject Converse document blocks (\"This model doesn't "
         'support documents"); their input modalities are text and image only'
     ),
+    "openai-astra": (
+        "OpenAI GPT-6 Astra rejects Converse document blocks (\"This model "
+        "doesn't support the document field for user messages\"); its input "
+        "modalities are text and image only"
+    ),
 }
 
 
@@ -309,6 +403,8 @@ def document_blocks_unsupported_reason(model_id: Optional[str]) -> Optional[str]
         return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["openai-responses"]
     if model_id and is_grok_model(model_id):
         return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["xai-grok"]
+    if model_id and is_astra_model(model_id):
+        return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["openai-astra"]
     return None
 
 
@@ -326,6 +422,11 @@ _CACHEPOINT_BASE_MODELS = set()
 # They are served via the bedrock-mantle Responses API (see openai_responses.py)
 # and do not support Bedrock prompt-prefix caching; <<CACHEPOINT>> markers are
 # stripped for them during request translation.
+# NOTE: OpenAI GPT-6 Astra (openai.gpt-6-astra) is absent for a different reason —
+# it reaches Converse, but an explicit cachePoint block raises
+# AccessDeniedException. Its IMPLICIT caching works with no request change and is
+# already reflected in cacheReadInputTokens metering, so listing it here would
+# only break requests, not unlock a discount.
 CACHEPOINT_SUPPORTED_MODELS = [
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -403,6 +504,10 @@ CACHEPOINT_SUPPORTED_MODELS = [
 # question is "does this model reach Converse at all", and exactly two routes in
 # invoke_model do not. They are named here so the exclusions are discoverable
 # and testable rather than buried in an `if`.
+#
+# NOTE: OpenAI GPT-6 Astra is deliberately NOT one of them. It reaches Converse
+# and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
+# tool-capable even though its GPT-5.x stablemates on the Responses API are not.
 #
 # NOTE: there is no hard-grammar/strict mode available on bedrock-runtime.
 # ``toolSpec.strict``, ``output_config.format`` and ``response_format`` are all
@@ -1101,8 +1206,9 @@ class BedrockClient:
                 )
                 temperature = 0.0
 
-        # Claude 4.7+ and xAI Grok don't support temperature, top_k, or top_p:
-        # deprecated on Claude, hard-rejected with a 400 on Grok.
+        # Claude 4.7+, xAI Grok and OpenAI GPT-6 Astra don't support temperature,
+        # top_k, or top_p: deprecated on Claude, hard-rejected with a 400 on the
+        # other two.
         is_claude_4_7 = _is_claude_4_7_model(model_id)
         if strips_sampling_params(model_id):
             inference_config = {}
@@ -1274,6 +1380,29 @@ class BedrockClient:
                         reasoning_effort,
                         model_id,
                         ", ".join(GROK_EFFORT_LEVELS),
+                    )
+
+        # Handle OpenAI GPT-6 Astra-specific parameters
+        elif is_astra_model(model_id):
+            # Astra shares Grok's effort CARRIER
+            # (additionalModelRequestFields.reasoning.effort) but not Grok's
+            # vocabulary — see ASTRA_EFFORT_LEVELS. Unlike Grok, Astra REJECTS an
+            # unknown value with a 400 naming the supported set rather than
+            # ignoring it, so dropping out-of-vocabulary values here is what keeps
+            # a stale config from failing every request. top_k is deliberately not
+            # forwarded (Astra rejects the sampling group).
+            if reasoning_effort:
+                effort = str(reasoning_effort).lower().strip()
+                if effort in ASTRA_EFFORT_LEVELS:
+                    additional_model_fields["reasoning"] = {"effort": effort}
+                    logger.info("Using reasoning effort '%s' for %s", effort, model_id)
+                else:
+                    logger.warning(
+                        "Ignoring unsupported Astra reasoning effort '%s' for %s "
+                        "(valid: %s)",
+                        reasoning_effort,
+                        model_id,
+                        ", ".join(ASTRA_EFFORT_LEVELS),
                     )
 
         # Add 1M context headers if needed

@@ -834,6 +834,11 @@ def _validate_agentic_openai(
     extraction path. This is a hard validation error (rather than a silent
     runtime fallback) so the misconfiguration surfaces at config time instead
     of failing obscurely mid-processing.
+
+    NOTE this gate is about the ROUTE, not the vendor: ``openai.gpt-6-astra``
+    reaches Converse and emits ``toolUse``, so it is allowed for agentic
+    extraction. The predicate is ``is_openai_responses_model`` precisely so it
+    tracks the mantle route rather than the "openai." prefix.
     """
     from idp_common.bedrock.openai_responses import is_openai_responses_model
     from idp_common.config.schema_constants import X_AWS_IDP_EXTRACTION_MODEL
@@ -857,7 +862,8 @@ def _validate_agentic_openai(
         result["errors"].append(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
             "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
-            "Set agentic.enabled=false or choose a non-OpenAI model."
+            "Set agentic.enabled=false or choose a Converse model — Claude, Nova, "
+            "xAI Grok, or OpenAI GPT-6 Astra all support agentic extraction."
         )
 
     # Per-class extraction model overrides
@@ -872,7 +878,8 @@ def _validate_agentic_openai(
                 f"Class '{class_name}' overrides extraction with OpenAI Responses "
                 f"model '{override}', which is NOT compatible with agentic extraction "
                 "(extraction.agentic.enabled=true). Set agentic.enabled=false or "
-                "choose a non-OpenAI model for this class."
+                "choose a Converse model for this class — Claude, Nova, xAI Grok, or "
+                "OpenAI GPT-6 Astra all support agentic extraction."
             )
 
 
@@ -881,11 +888,11 @@ def _validate_discovery_openai(
 ) -> None:
     """Error when a model that can't take ``document`` blocks is set for discovery.
 
-    Discovery ingests whole PDFs via Converse ``document`` content blocks. OpenAI
-    GPT-5.x (bedrock-mantle Responses API) and xAI Grok (rejects them outright)
-    both accept text + image only, so routing either here would silently drop the
-    document. Reject at config time. (Neither is offered in the discovery
-    picklists.)
+    Discovery ingests whole PDFs via Converse ``document`` content blocks. Three
+    families accept text + image only — OpenAI GPT-5.x (bedrock-mantle Responses
+    API), xAI Grok and OpenAI GPT-6 Astra (both reject the block outright on
+    Converse) — so routing any of them here would silently drop the document.
+    Reject at config time. (None are offered in the discovery picklists.)
     """
     from idp_common.bedrock.client import document_blocks_unsupported_reason
 

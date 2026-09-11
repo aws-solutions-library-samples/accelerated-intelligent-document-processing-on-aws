@@ -468,6 +468,43 @@ class TestProcessorModelIdSuffixes:
         assert "reasoning" not in arf
 
     @pytest.mark.unit
+    def test_astra_temperature_omitted(self):
+        """GPT-6 Astra hard-rejects `temperature` with a 400 naming the field, the
+        same as Grok — so every Astra chat turn would fail without the gate."""
+        kwargs = self._invoke_with_model("us.openai.gpt-6-astra")
+        assert kwargs["modelId"] == "us.openai.gpt-6-astra"
+        assert "temperature" not in kwargs["inferenceConfig"]
+        assert "topP" not in kwargs["inferenceConfig"]
+
+    @pytest.mark.unit
+    def test_astra_reasoning_effort_uses_reasoning_carrier(self):
+        """Astra reads reasoning.effort and REJECTS Claude's output_config."""
+        kwargs = self._invoke_with_model(
+            "us.openai.gpt-6-astra", reasoning_effort="xhigh"
+        )
+        arf = kwargs.get("additionalModelRequestFields") or {}
+        assert arf.get("reasoning") == {"effort": "xhigh"}
+        assert "output_config" not in arf
+
+    @pytest.mark.unit
+    def test_astra_accepts_max_effort_unlike_grok(self):
+        """Astra and Grok share the carrier but not the vocabulary: `max` is valid
+        for Astra and a 400 for Grok."""
+        kwargs = self._invoke_with_model("us.openai.gpt-6-astra", reasoning_effort="max")
+        arf = kwargs.get("additionalModelRequestFields") or {}
+        assert arf.get("reasoning") == {"effort": "max"}
+
+    @pytest.mark.unit
+    def test_astra_rejects_gpt5_only_effort_value(self):
+        """`minimal` is valid for GPT-5.x on the Responses API and rejected by
+        Astra, so it must be dropped not forwarded."""
+        kwargs = self._invoke_with_model(
+            "us.openai.gpt-6-astra", reasoning_effort="minimal"
+        )
+        arf = kwargs.get("additionalModelRequestFields") or {}
+        assert "reasoning" not in arf
+
+    @pytest.mark.unit
     def test_claude_reasoning_effort_uses_output_config_carrier(self):
         """The other half of the carrier split — and proof that wiring effort on
         this path (it was previously resolved then dropped) works for Claude."""
