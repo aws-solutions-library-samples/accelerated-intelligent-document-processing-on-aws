@@ -5,6 +5,8 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+## [0.6.8]
+
 ### Added
 
 - **OpenAI GPT-6 Astra is selectable, and it is the first OpenAI model that works for Advanced (agentic) extraction and outside the US.** `us.openai.gpt-6-astra` and `global.openai.gpt-6-astra` are available for OCR, classification, extraction (including agentic), assessment, summarization, evaluation and Chat-with-Document; `global.` reaches every Region including EU and APAC and costs about 10% less. It has a 1.05M-token context window, caches prompts implicitly with no `<<CACHEPOINT>>` marker, and takes `reasoning_effort` (`none` through `max`) in place of temperature/top_p. **Not supported:** Discovery and Policy Discovery, in-Region (non-CRIS) inference, `flex`/`priority` service tiers, explicit cache points, and GovCloud. ⚠️ **Cost:** Astra is the priciest model offered ($11/$55 per 1M in/out on `us.`, $10/$50 on `global.`) and bills input above 272K tokens at roughly double the rate, which cost reports cannot express and so under-report. See [OpenAI Models](docs/openai-models.md#gpt-6-astra-converse). (#850)
@@ -102,6 +104,11 @@ SPDX-License-Identifier: MIT-0
 - **Advanced extraction no longer crashes on a class whose `minItems` was set through the Web UI.** The UI stores numeric schema fields as strings, so the completeness check raised `TypeError` and the section lost its schema-constraint report; a value that cannot be read as a number now disables that one constraint. (#797)
 
 - **The Test Sets table no longer prints a four-line explanation in the label-accuracy cell of every unrated set.** "Not rated" is now a clickable trigger with the reason in a popover.
+
+## Templates
+   - us-west-2: `https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.8.yaml`
+   - us-east-1: `https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main_0.6.8.yaml`
+   - eu-central-1: `https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main_0.6.8.yaml`
 
 ## [0.6.7]
 
