@@ -15,6 +15,16 @@ _SDLC_DIR = Path(__file__).resolve().parent.parent
 if str(_SDLC_DIR) not in sys.path:
     sys.path.insert(0, str(_SDLC_DIR))
 
+# Several tests reuse a helper from a sibling test module (the CFN short-form
+# loader in test_config_schema_order, the loader registry in
+# test_cfn_loader_safety). pytest imports test modules under their bare basename
+# but does NOT put this directory on sys.path, so those imports only resolved by
+# luck of collection order — and failed outright when a single file was run on
+# its own. Put the directory on the path so the imports are order-independent.
+_TESTS_DIR = Path(__file__).resolve().parent
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
+
 # The Step 14 tests build the hook Lambda's zip, which imports idp_common. In
 # CodeBuild `make setup` has installed it, but the gate runs pytest from the repo
 # root with no PYTHONPATH — so add the in-repo package for a local/dev run.

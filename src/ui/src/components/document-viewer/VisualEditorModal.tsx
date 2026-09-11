@@ -29,6 +29,8 @@ import type { BoxProps } from '@cloudscape-design/components';
 import PageImageViewer from '../common/PageImageViewer';
 import type { PageImageViewerHandle } from '../common/PageImageViewer';
 import EditHistoryTab from './EditHistoryTab';
+import { SectionClassEvaluation } from '../common/ClassMismatchIndicator';
+import { extractClassificationIndex } from '../common/classification-comparison-utils';
 import ProcessingReportTab from './ProcessingReportTab';
 
 const client = generateClient();
@@ -165,6 +167,15 @@ const VisualEditorModal = ({
   const sectionDocItem = sectionData?.documentItem as Record<string, unknown> | undefined;
   const evaluationStatus = sectionDocItem?.evaluationStatus || sectionDocItem?.EvaluationStatus;
   const isBaselineAvailable = evaluationStatus === 'BASELINE_AVAILABLE' || evaluationStatus === 'COMPLETED';
+
+  // Per-page ground-truth classes for this document, from the same results.json
+  // the field-level comparison already uses — so the class comparison costs no
+  // extra request.
+  const classificationIndex = useMemo(() => extractClassificationIndex(evaluationResults), [evaluationResults]);
+  const sectionPageNumbers = useMemo(
+    () => ((sectionData?.PageIds as Array<string | number> | undefined) ?? []).map((pageId) => Number(pageId)).filter((n) => !Number.isNaN(n)),
+    [sectionData?.PageIds],
+  );
 
   // Construct baseline URI from output URI
   const constructBaselineUri = (outputUri: string | undefined) => {
@@ -1091,11 +1102,43 @@ const VisualEditorModal = ({
                             Viewing extracted values. To change them, close this and use <b>Edit mode</b> on the section.
                           </Box>
                         )}
+                        {/* The section's own class, compared first: every field
+                            below was extracted against this class's schema, so a
+                            class mismatch explains the field mismatches rather than
+                            adding to them.
+
+                            Deliberately NOT behind the Show Evaluation toggle. The
+                            baseline is fetched whenever one exists — see the effect
+                            above, which does not consult the toggle — so this line
+                            costs nothing to render, and gating it alongside the
+                            field-by-field comparison meant the headline signal was
+                            invisible until you found a toggle that defaults to off.
+                            A reviewer went looking for it here, in the obvious
+                            place, and concluded it had not been built. The noisy
+                            part — per-field scores and reasons — stays gated. */}
+                        {baselineData && (
+                          <SectionClassEvaluation
+                            index={classificationIndex}
+                            pageNumbers={sectionPageNumbers}
+                            predictedClass={(localJsonData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                            baselineClass={(localBaselineData?.document_class as Record<string, unknown>)?.type as string | undefined}
+                          />
+                        )}
                         {showEvaluation && baselineData && (
                           <Alert type="info" header="Evaluation Comparison Mode">
                             Showing predicted values with evaluation baseline. Fields with mismatches are highlighted with evaluation scores
                             and reasons.
                           </Alert>
+                        )}
+                        {/* A baseline exists but the comparison is off, so say what
+                            turning it on would add. Without this the toggle is the
+                            only clue the capability exists, and it renders late —
+                            it appears only once the evaluation status resolves. */}
+                        {baselineData && !showEvaluation && (
+                          <Box variant="small" color="text-body-secondary">
+                            This document has an evaluation baseline. Turn on <b>Show Evaluation</b> to compare every field against it, not
+                            just the class.
+                          </Box>
                         )}
                         {inferenceResult ? (
                           <FormFieldRenderer
@@ -1355,7 +1398,11 @@ const VisualEditorModal = ({
           },
           {
             id: 'history',
-            label: 'Revision History',
+            // "Edit history", not "Revision History": these are per-field edits to
+            // extracted values, matching the underlying `_editHistory` data — not
+            // numbered immutable snapshots. "Revision" is reserved for
+            // Configuration Profile revisions, which ARE that.
+            label: 'Edit history',
             content: <EditHistoryTab predictionData={localJsonData} baselineData={localBaselineData} />,
           },
           {

@@ -1,0 +1,25 @@
+
+arm A (baseline) OmniAI-OCR-Benchmark-20260904-223034
+arm B (treated)  OmniAI-OCR-Benchmark-20260905-014538
+paired non-failed documents: 282
+
+class                         grp    n     acc Δ      t  sign p     cost Δ  cost t   cRead Δ   input Δ
+GLOSSARY                     TREAT   23   -0.0145  -1.00   1.000   -0.00271  -13.07    +1,094      -943
+SHIFT_SCHEDULE               TREAT   18   +0.0001  +0.57   1.000   -0.00279  -11.15    +1,129      -994
+BANK_CHECK                   ctrl   51   -0.0011  -1.00   1.000   -0.00131   -3.81      +297        +0
+COMMERCIAL_LEASE_AGREEMENT   ctrl   52   +0.0000      —   1.000   -0.00005   -0.30        +0        +0
+CREDIT_CARD_STATEMENT        ctrl   11   +0.0103  +1.49   0.250   +0.00026   +0.45      -107        +0
+DELIVERY_NOTE                ctrl    8   +0.0000      —   1.000   +0.00063   +0.74      -213        +0
+EQUIPMENT_INSPECTION         ctrl   11   -0.0004  -1.49   0.500   +0.00041   +0.95      -118        +0
+PETITION_FORM                ctrl   51   -0.0002  -1.38   0.289   +0.00046   +2.46       -70        +0
+REAL_ESTATE                  ctrl   57   -0.0003  -0.11   0.375   -0.00004   -0.43       -22        +0
+
+TREATED pooled (2 classes, 41 docs)
+  accuracy Δ -0.0081  sd 0.0521  t -1.00  n=41   better 2 / worse 3  sign p=1.0000
+  cost Δ     -0.00274  t -17.37  n=41
+
+CONTROL pooled (7 classes, 241 docs)
+  accuracy Δ +0.0001  sd 0.0117  t +0.14  n=241   better 9 / worse 10  sign p=1.0000
+  cost Δ     -0.00015  t -1.35  n=241
+
+wrote /tmp/pad/per_class.json

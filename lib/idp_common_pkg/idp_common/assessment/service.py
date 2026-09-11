@@ -23,8 +23,6 @@ from typing import Any, Dict, List, Optional, Union
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
-    DEFS_FIELD,
-    REF_FIELD,
     SCHEMA_DESCRIPTION,
     SCHEMA_ITEMS,
     SCHEMA_PROPERTIES,
@@ -35,6 +33,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_CONFIDENCE_THRESHOLD,
     X_AWS_IDP_LIST_ITEM_DESCRIPTION,
 )
+from idp_common.config.schema_utils import deref_schema
 from idp_common.models import Document
 from idp_common.utils import extract_json_from_text, repair_truncated_json
 
@@ -78,59 +77,6 @@ def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
             f"Could not convert {type(value)} '{value}' to float, using default {default}"
         )
         return default
-
-
-def _deref_schema(
-    node: Any, root: Dict[str, Any], _seen: Optional[set] = None
-) -> Dict[str, Any]:
-    """
-    Resolve a local JSON-Schema ``$ref`` against ``root``'s ``$defs``.
-
-    Class schemas routinely put groups and list-item shapes in ``$defs`` and
-    reference them (``{"$ref": "#/$defs/Signatures"}``), so a consumer that reads
-    ``type``/``description`` straight off the property sees neither. This returns
-    the referenced subschema with any sibling keys on the referencing node
-    layered on top (a local ``description`` overrides the definition's), and
-    follows ``$ref`` chains.
-
-    Anything that is not a resolvable local ``#/$defs/<name>`` reference — a
-    remote ``$ref``, a dangling name, a non-dict node — is returned as-is, so
-    unresolvable schemas degrade to today's behavior rather than raising.
-
-    Args:
-        node: The (possibly ``$ref``-bearing) subschema.
-        root: The document-class schema that owns ``$defs``.
-        _seen: Internal cycle guard.
-
-    Returns:
-        The dereferenced subschema dict (``{}`` for a non-dict node).
-    """
-    if not isinstance(node, dict):
-        return {}
-
-    ref = node.get(REF_FIELD)
-    if not isinstance(ref, str):
-        return node
-
-    prefix = f"#/{DEFS_FIELD}/"
-    if not ref.startswith(prefix):
-        logger.debug(f"Unsupported non-local $ref '{ref}'; using it as-is")
-        return node
-
-    seen = _seen or set()
-    if ref in seen:
-        logger.warning(f"Circular $ref '{ref}' in class schema; stopping resolution")
-        return node
-    seen.add(ref)
-
-    target = root.get(DEFS_FIELD, {}).get(ref[len(prefix) :])
-    if not isinstance(target, dict):
-        logger.warning(f"Dangling $ref '{ref}' in class schema; using it as-is")
-        return node
-
-    # Sibling keys on the referencing node win over the definition's.
-    merged = {**target, **{k: v for k, v in node.items() if k != REF_FIELD}}
-    return _deref_schema(merged, root, seen) if REF_FIELD in target else merged
 
 
 @dataclass
@@ -203,7 +149,21 @@ class AssessmentService:
 
     def _get_class_schema(self, class_label: str) -> Dict[str, Any]:
         """
-        Get JSON Schema for a specific document class.
+        Get the EFFECTIVE JSON Schema for a document class.
+
+        Assessment reads the class schema **from config**, not from the
+        extraction output, so it must derive the multi-instance wrapper
+        independently (GitHub #715, plan D2). Doing it here — the single point
+        assessment loads a schema from — is what makes the prompt's property
+        descriptions, the per-attribute threshold lookup, the ``attr_type ==
+        "list"`` branch that produces ``instances[i]`` row keys,
+        ``resolve_array_item_thresholds`` and the batching module's
+        ``_schema_field_mismatch_reason`` guard all see the same shape extraction
+        produced. Without it, ``instances`` is an unknown key: the whole section
+        collapses to one ``{"confidence": 0.5}`` leaf and the escalation ladder
+        blacklists it permanently.
+
+        A no-op (same object) for every unflagged class.
 
         Args:
             class_label: The document class name
@@ -212,8 +172,11 @@ class AssessmentService:
             JSON Schema dict for the class, or empty dict if not found
         """
         from idp_common.assessment.threshold_resolver import find_class_schema
+        from idp_common.schema.multi_instance import wrap_class_schema
 
-        return find_class_schema(class_label, self.config.classes) or {}
+        return (
+            wrap_class_schema(find_class_schema(class_label, self.config.classes)) or {}
+        )
 
     def _resolve_confidence_escalation_model(self, class_label: str) -> Optional[str]:
         """Pick the stronger confidence model the self-healing ladder escalates to.
@@ -254,7 +217,7 @@ class AssessmentService:
         formatted_lines = []
 
         for prop_name, prop_schema in properties.items():
-            prop_schema = _deref_schema(prop_schema, schema)
+            prop_schema = deref_schema(prop_schema, schema)
             prop_type = prop_schema.get(SCHEMA_TYPE)
             description = prop_schema.get(SCHEMA_DESCRIPTION, "")
 
@@ -262,14 +225,14 @@ class AssessmentService:
                 formatted_lines.append(f"{prop_name}  \t[ {description} ]")
                 nested_props = prop_schema.get(SCHEMA_PROPERTIES, {})
                 for nested_name, nested_schema in nested_props.items():
-                    nested_desc = _deref_schema(nested_schema, schema).get(
+                    nested_desc = deref_schema(nested_schema, schema).get(
                         SCHEMA_DESCRIPTION, ""
                     )
                     formatted_lines.append(f"  - {nested_name}  \t[ {nested_desc} ]")
 
             elif prop_type == TYPE_ARRAY:
                 formatted_lines.append(f"{prop_name}  \t[ {description} ]")
-                items_schema = _deref_schema(prop_schema.get(SCHEMA_ITEMS, {}), schema)
+                items_schema = deref_schema(prop_schema.get(SCHEMA_ITEMS, {}), schema)
 
                 item_desc = prop_schema.get(X_AWS_IDP_LIST_ITEM_DESCRIPTION, "")
                 if item_desc:
@@ -278,7 +241,7 @@ class AssessmentService:
                 if items_schema.get(SCHEMA_TYPE) == TYPE_OBJECT:
                     item_props = items_schema.get(SCHEMA_PROPERTIES, {})
                     for item_name, item_schema in item_props.items():
-                        item_prop_desc = _deref_schema(item_schema, schema).get(
+                        item_prop_desc = deref_schema(item_schema, schema).get(
                             SCHEMA_DESCRIPTION, ""
                         )
                         formatted_lines.append(
@@ -923,6 +886,47 @@ class AssessmentService:
 
         return enhanced_assessment
 
+    def _confidence_output_budget(
+        self, model_id: str, extraction_results: Dict[str, Any]
+    ) -> Optional[int]:
+        """The maxTokens to request for one confidence call (see ``assess_results``).
+
+        Returns None — meaning "the model's full cap" — for every model WITHOUT a
+        measured loop ceiling (``bedrock.sizing.model_list_batch_ceiling``): the
+        budget exists to bound a degeneration that was measured on Nova Lite, and a
+        reasoning model's thinking tokens count inside ``max_tokens``, so budgeting
+        an escalation call to Sonnet 5 at ~3,000 tokens would cap the very rung that
+        exists for its bigger output. Also None when the cap cannot be resolved.
+        """
+        from idp_common.bedrock.model_utils import get_model_max_output_tokens
+        from idp_common.bedrock.sizing import (
+            confidence_output_budget,
+            model_list_batch_ceiling,
+        )
+
+        if model_list_batch_ceiling(model_id) is None:
+            return None
+        try:
+            cap = get_model_max_output_tokens(model_id)
+        except Exception as e:  # noqa: BLE001 - unknown model: no budget, full cap
+            logger.debug(
+                "Confidence output budget: no output cap known for %s (%s); "
+                "requesting the model default",
+                model_id,
+                e,
+            )
+            return None
+        budget = confidence_output_budget(
+            extraction_results, self.config.extraction.geometry.mode, cap
+        )
+        logger.debug(
+            "Confidence output budget: %d tokens for model %s (cap %d)",
+            budget,
+            model_id,
+            cap,
+        )
+        return budget
+
     def assess_results(
         self,
         *,
@@ -973,9 +977,17 @@ class AssessmentService:
         top_k = confidence_cfg.top_k
         top_p = confidence_cfg.top_p
         reasoning_effort = confidence_cfg.reasoning_effort
-        # max_tokens is no longer a config knob — None lets the Bedrock client
-        # resolve the confidence model's maximum output (model_config_limits.yaml).
-        max_tokens = None
+        # max_tokens is not a config knob. Models with a measured loop ceiling
+        # (Nova Lite/Micro) get a BUDGET for this call: what a correct answer over
+        # these fields needs (one leaf per scalar and per list cell, plus overhead),
+        # floored and capped at the model's maximum. Sending the full cap let a
+        # degenerate response — Nova Lite at temperature 0 looping the same row
+        # object 189 times on a 25-row batch — run for 10,000 tokens and ~60 s before
+        # the batcher's truncation path recovered it; the budget cuts that loop at
+        # ~2,000-4,600 tokens and the same recovery applies. Every other model keeps
+        # requesting its maximum output (None). See
+        # ``bedrock.sizing.confidence_output_budget``.
+        max_tokens = self._confidence_output_budget(model_id, extraction_results)
         system_prompt = confidence_cfg.system_prompt
 
         # Get schema for this document class
@@ -1174,6 +1186,11 @@ class AssessmentService:
 
         for attr_name, attr_assessment in assessment_data.items():
             prop_schema = properties.get(attr_name, {})
+            # NOTE: deliberately read off the RAW property, not the dereferenced
+            # one. Honoring a threshold declared on the ``$defs`` definition
+            # rather than the property is a change to threshold *inheritance*
+            # semantics, which belongs with threshold_resolver's rules — not
+            # here. See config/schema_utils.py.
             attr_threshold = _safe_float_conversion(
                 prop_schema.get(
                     X_AWS_IDP_CONFIDENCE_THRESHOLD, default_confidence_threshold
@@ -1181,7 +1198,14 @@ class AssessmentService:
                 default_confidence_threshold,
             )
 
-            prop_type_json = prop_schema.get(SCHEMA_TYPE, TYPE_STRING)
+            # The type MUST be read off the dereferenced subschema: a property
+            # declared as ``{"$ref": "#/$defs/TxnList"}`` carries no ``type``, so
+            # the raw read defaulted an array to TYPE_STRING -> attr_type
+            # "simple", and the list assessment below was collapsed to a single
+            # default 0.5 leaf that reconciliation padded to N null placeholders
+            # no model could ever fill.
+            deref_prop_schema = deref_schema(prop_schema, class_schema)
+            prop_type_json = deref_prop_schema.get(SCHEMA_TYPE, TYPE_STRING)
             if prop_type_json == TYPE_OBJECT:
                 attr_type = "group"
             elif prop_type_json == TYPE_ARRAY:
@@ -1206,8 +1230,13 @@ class AssessmentService:
                         resolve_array_item_thresholds,
                     )
 
+                    # Dereferenced: a ``$ref``-wrapped array property has no
+                    # ``items`` of its own, so the raw schema yielded {} and every
+                    # sub-field silently fell back to the uniform container
+                    # threshold. Reachable only now that such a property is
+                    # correctly typed "list" above.
                     item_thresholds = resolve_array_item_thresholds(
-                        prop_schema, class_schema, attr_threshold
+                        deref_prop_schema, class_schema, attr_threshold
                     )
 
                     enhanced_list = []
@@ -1469,6 +1498,7 @@ class AssessmentService:
                 deadline_epoch=deadline_epoch,
                 max_concurrent_batches=self.config.extraction.agentic.max_concurrent_batches,
                 class_schema=self._get_class_schema(class_label),
+                default_confidence_threshold=self.config.hitl.confidence_threshold,
             )
             enhanced_assessment_data = batched["assessment"]
             confidence_threshold_alerts = batched["alerts"]
@@ -1544,10 +1574,22 @@ class AssessmentService:
                 )
                 + audit_issues
             )
-            if processing_issues:
-                extraction_data["metadata"]["processing_issues"] = [
-                    pi.to_dict() for pi in processing_issues
-                ]
+            # MERGE, do not replace. Extraction already wrote its own issues here
+            # (extraction_incomplete, extraction_validation_failed, ...); this step
+            # owns only the assessment-stage ones. Replacing the list dropped
+            # everything extraction had reported — which mattered most for the
+            # on-by-default validation issue, because `separate` (the recommended
+            # confidence mode) is exactly the mode where this step runs.
+            _inherited = [
+                pi
+                for pi in (
+                    extraction_data.get("metadata", {}).get("processing_issues") or []
+                )
+                if isinstance(pi, dict) and pi.get("stage") != "assessment"
+            ]
+            _merged = _inherited + [pi.to_dict() for pi in processing_issues]
+            if _merged:
+                extraction_data["metadata"]["processing_issues"] = _merged
                 # Append a Processing Issues block to the (extraction-generated)
                 # processing report so the human-readable report on the simple/
                 # separate path also surfaces the root cause — the extraction
@@ -1574,12 +1616,38 @@ class AssessmentService:
 
             # Update the section in the document with confidence threshold alerts
             # and any structured processing issues.
+            #
+            # Deduped again here on purpose. The batched path already collapses
+            # repeats at its merge, which is where the diagnosis lives; this is
+            # the last statement before the list leaves for the tracking item,
+            # which is where the FAILURE lives — a section that will not fit in
+            # DynamoDB's 409,600-byte item ceiling fails the run and the document
+            # is left unaccounted for. Guarding the boundary too means a future
+            # accumulation path cannot reintroduce the fault silently.
+            # dedupe_alerts is idempotent, so on the batched path this is a no-op.
+            #
+            # Imported here, as the other batching imports in this file are.
+            from idp_common.assessment.batching import dedupe_alerts
+
             for doc_section in document.sections:
                 if doc_section.section_id == section_id:
-                    doc_section.confidence_threshold_alerts = (
+                    doc_section.confidence_threshold_alerts = dedupe_alerts(
                         confidence_threshold_alerts
                     )
-                    doc_section.processing_issues = processing_issues
+                    # Replace only the assessment-stage issues, keep the rest.
+                    # The section write that follows in the assessment Lambda
+                    # REPLACES the whole section map, so an unconditional
+                    # `= processing_issues` did not merely skip extraction's
+                    # issues — it deleted them from DynamoDB. Verified live: with
+                    # `confidence.mode: separate` a section whose extraction had
+                    # raised extraction_validation_failed came back with
+                    # ProcessingIssues absent, while the same run under
+                    # `integrated` (no standalone assessment step) kept it.
+                    doc_section.processing_issues = [
+                        pi
+                        for pi in (doc_section.processing_issues or [])
+                        if getattr(pi, "stage", None) != "assessment"
+                    ] + processing_issues
                     break
 
             # Update document with metering data

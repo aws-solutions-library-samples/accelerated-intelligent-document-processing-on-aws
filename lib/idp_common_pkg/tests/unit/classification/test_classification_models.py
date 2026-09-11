@@ -37,7 +37,9 @@ class TestDocumentClassification:
         classification = DocumentClassification(doc_type="invoice")
 
         assert classification.doc_type == "invoice"
-        assert classification.confidence == 1.0
+        # Unscored by default: a confidence has to come from somewhere (the model
+        # returning one, or a caller that can genuinely assert the class).
+        assert classification.confidence is None
         assert classification.metadata == {}
 
     def test_init_with_custom_values(self):

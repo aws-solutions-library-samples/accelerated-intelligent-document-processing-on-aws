@@ -19,6 +19,38 @@ standalone step auto-skips.
 > `granular.*` keys still validate but are ignored. See
 > `docs/migration-granular-retirement.md`.
 
+> **A list row with a nested group or an inner list is not "unscored."**
+> `batching._row_confidence_missing` used to look exactly one level down, so a
+> nested group inside a list row was mistaken for a confidence leaf (a group has no
+> `confidence` key, so the lookup returned `None`) and an inner list was skipped by
+> the `isinstance(v, dict)` filter entirely. Measured live on a 3-record pay
+> statement whose rows carry an `Employee` group and an `Earnings` list: every leaf
+> came back at 0.99–1.0 with OCR geometry and `truncated_calls: 0`, and the section
+> still reported `assessment_incomplete` (**error**) for all 3 rows after burning a
+> `claude-sonnet-5:1m` escalation that recovered 0 — a stronger model reproduces
+> the identical shape, so the ladder had no way out. The predicate now recurses
+> (`_iter_confidence_leaves`). Pre-existing for any list-of-object attribute whose
+> rows contain a group or an inner list; multi-instance sections (GitHub #715) make
+> every record a row, so it became universal there.
+>
+> Two consequences worth knowing: a row whose group carries no leaves at all, next
+> to at least one scored scalar leaf, now counts as scored (the old predicate
+> flagged it); and for a wrapped class the retry unit is the whole record, so one
+> unscored leaf anywhere re-runs that entire record.
+
+> **Multi-instance (#715).** `_get_class_schema` returns the **effective** schema,
+> so a flagged class's `instances` array is a real top-level array property here:
+> the `attr_type == "list"` branch produces `instances[i]` row keys,
+> `resolve_array_item_thresholds` resolves per-record sub-field thresholds, and
+> `batching._schema_field_mismatch_reason` does not blacklist the section. Without
+> the wrap, `instances` is an unknown key and the whole section collapses to one
+> `{"confidence": 0.5}` leaf that the escalation ladder then skips permanently.
+> Two known granularity losses for a flagged class: `_format_property_descriptions`
+> descends one level under an array, so a nested group/list *inside* a record loses
+> its sub-field descriptions in the confidence prompt; and
+> `assessment_function/assessment_validator.py` compares one top-level attribute
+> (`instances`) rather than per-field.
+
 > **Compact reasons (default prompts).** The shipped confidence prompts ask the
 > model to emit `confidence_reason` **only for leaves below 0.9 confidence**;
 > confident leaves emit just `{"confidence": <score>}`. Because output tokens
@@ -107,10 +139,15 @@ extraction:
     top_k: 5
     top_p: 0.1
     reasoning_effort: low               # only if a reasoning-capable model is selected
-    list_batch_size: 25                 # rows per assessment batch for large lists
-    # NOTE: no max_tokens knob — the confidence pass always requests the model's
-    # maximum output (resolved from config_library/model_config_limits.yaml) so
-    # long list assessments are never truncated.
+    list_batch_size: 25                 # CEILING on rows per batch; the size used is
+                                        # derived from the confidence model's output
+                                        # cap, column count and geometry mode
+    # NOTE: no max_tokens knob — each confidence call requests an OUTPUT BUDGET:
+    # what a correct answer over its fields needs (one leaf per scalar and per list
+    # cell, ~40 tokens each, x3 with LLM bounding boxes, plus 1,500 overhead),
+    # floored at 2,000 and capped at the model's maximum from
+    # config_library/model_config_limits.yaml (`bedrock.sizing.confidence_output_budget`).
+    # A response that overruns it is handled by the truncation-aware splitting below.
     system_prompt: "You are an expert document analyst..."
     task_prompt: |
       Assess the confidence of extraction results for this {DOCUMENT_CLASS} document.
@@ -165,8 +202,12 @@ depend on granular assessment for large lists.
 `process_document_section` runs the assessment through the shared
 `idp_common.assessment.batching.assess_results_batched`, which:
 
-1. Finds the single largest list field whose length exceeds
-   `extraction.confidence.list_batch_size` (default 25).
+1. Finds the single largest list field whose length exceeds the effective batch
+   size (derived from the confidence model's output cap, the row's column count and
+   the geometry mode; never larger than the `extraction.confidence.list_batch_size`
+   ceiling, default 25; and never larger than a **per-family loop ceiling** where one
+   was measured — 12 rows for Amazon Nova Lite/Micro, see
+   `bedrock.sizing._MODEL_LIST_BATCH_CEILINGS`).
 2. Slices that list into `list_batch_size` chunks and assesses each chunk
    **sequentially**, passing the SAME scalars/context every time so scalar
    assessments and the document context are preserved (scalars come from the first
@@ -188,6 +229,18 @@ implementation of large-list assessment. When no list exceeds the batch size the
 helper makes a single (still reconciled) call — identical to the previous behavior.
 
 ### Truncation-aware adaptive batch splitting
+
+> **Why the Nova Lite ceiling is 12, not a token count.** Live and in 4/4 offline
+> replays of the same inputs, Nova Lite at temperature 0 asked to score a 25-row,
+> 3-column batch emitted the same `{"Date": {"confidence": 1.0}, ...}` object 189
+> times until it hit its 10,000-token cap — ~60 s and 10,000 output tokens per
+> document before the splitter recovered the rows at 12. The token math allows 41
+> rows for that shape; 13 rows looped 1/5, 8 rows 0/8. Greedy decoding on a long
+> run of near-identical objects is the trigger, not input size (it still looped with
+> no images, with no OCR text, and 2/3 with no text-confidence block). Two guards now apply: the
+> family ceiling above, and — on those two models only — a per-call output budget
+> (a loop is now cut off at the budget, ~2,000–4,600 tokens, instead of the cap, and
+> recovered the same way). Other confidence models keep requesting their maximum.
 
 A configured `list_batch_size` is a *row* count, but the model's real limit is
 its **max output tokens**. When per-row output is large — most notably with
@@ -228,14 +281,29 @@ left 34/68 transaction rows with `confidence: null`). Two additions make advance
 mode complete correctly on the first try:
 
 1. **Token-aware first-pass sizing** (`compute_token_aware_batch_size`). Before
-   the first call, the effective batch size is derived from the confidence
-   model's output cap (`bedrock.model_utils.get_model_max_output_tokens`) and an
-   estimate of per-row output tokens (`extraction.sharding.estimate_tokens` ×
-   a confidence-envelope multiplier × a larger bbox multiplier for
-   `geometry.mode` `llm`/`llm_grounded`). The result **only ever shrinks**
-   `list_batch_size` (never grows it past your ceiling), so a small-cap model
-   (Nova Lite, 10K) starts at ~6–9 rows instead of truncating at 25. Unknown
-   models fall back to the configured size. Recorded as `derived_batch_size`.
+   the first call the batch size is derived from three inputs: the confidence
+   model's output cap (`bedrock.model_utils.get_model_max_output_tokens`), the
+   **column count** of the list's widest sampled row, and whether `geometry.mode`
+   is `llm`/`llm_grounded` (a per-cell bounding box roughly triples per-row
+   output). The estimator itself lives in `bedrock.sizing`
+   (`confidence_rows_per_call`) so this module and `compute_sizing_plan` cannot
+   drift apart. Recorded as `derived_batch_size`.
+
+   There is no correct fixed value. On a 10,000-token-cap model without a loop
+   ceiling (Nova Pro) with bounding boxes the batch that fits is 41 rows for a
+   1-column list, 13 for 3 columns and 5 for 8 (Nova Lite: 12, 12 and 5, because
+   its measured loop ceiling binds first); on a 128K-output model the reliability cap of 50 bounds the derivation
+   instead of the token math. `list_batch_size` is therefore a **ceiling** on the
+   derived size (default 25), never a target — and an *explicit* ceiling is honoured
+   in full, so a deliberate pin above 50 is not clamped.
+
+   Two behaviours changed after v0.6.7, both in the safe direction. The column
+   count is measured across a sample of rows rather than off `rows[0]`, because a
+   first row missing a key made a wide list look narrow and inflated the batch.
+   And an unknown model, or a row shape whose width cannot be measured, now sizes
+   from a conservative fallback cap instead of returning the configured value —
+   silently trusting a permissive configured value on a small-cap model is how a
+   25-row batch reached Nova Lite in the first place.
 
 2. **Model-escalation ladder** (`extraction.confidence.escalation_*`). When rows
    are *still* unscored after token-aware shrink + same-model retries, the
@@ -275,6 +343,24 @@ offending field, records it in `split_stats["schema_mismatch_fields"]`, and emit
 an `assessment_schema_mismatch` **error** naming the field and the real fix:
 correct the class schema or the extraction prompt so the attribute is defined (as
 an array where it should be). A validly array-typed field is never blocked.
+
+The property is dereferenced (`config/schema_utils.deref_schema`) before its
+`type` is read, since a property declared as `{"$ref": "#/$defs/Foo"}` carries
+none — so a `$defs` group is reported as `declared as 'object'` rather than
+mislabelled `'scalar'` (a type the schema contains nowhere).
+
+An **array** declared as a bare `$ref` (hand-authored configs can do this; the
+UI's schema editor only emits objects into `$defs`) used to be a genuine
+dead-end for the same reason one level down: `_assess_core` also read `type` off
+the raw property, treated the attribute as a scalar, and collapsed the model's
+per-row list into one default leaf. That read is dereferenced too, so such a
+field is now row-scored normally — and only because of that is it correct for
+this guard to stop skipping it. Note the two reads are deliberately split: the
+**type** is taken from the dereferenced subschema, while the property's own
+`x-aws-idp-confidence-threshold` is still read from the raw property, because
+honoring a threshold declared on the `$defs` definition instead of the property
+is a change to threshold *inheritance* and belongs with `threshold_resolver`'s
+rules.
 
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the
@@ -973,8 +1059,10 @@ def lambda_handler(event, context):
 
 ### Configuration
 - Set appropriate temperature (0 for deterministic assessment)
-- Output tokens are not configurable — the confidence pass always requests the
-  model maximum (so long list assessments aren't truncated)
+- Output tokens are not configurable — the confidence pass requests the model
+  maximum (so long list assessments aren't truncated), except on Nova Lite/Micro,
+  where each call requests a row-sized output budget (see *Truncation-aware
+  adaptive batch splitting*)
 - Use system prompts to establish assessment criteria
 
 ### Performance

@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import { useCallback, useMemo, useState } from 'react';
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchSharedAuthSession } from '../api/auth-session';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import useInstalledFeatures from './use-installed-features';
 
@@ -72,7 +72,7 @@ export interface JobStatus {
 }
 
 async function _authToken(): Promise<string> {
-  const session = await fetchAuthSession();
+  const session = await fetchSharedAuthSession();
   const jwt = session.tokens?.idToken?.toString();
   if (!jwt) throw new Error('No Cognito idToken available');
   return jwt;

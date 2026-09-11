@@ -47,6 +47,20 @@ The following Nova 2 Lite models are available with service tier suffixes:
 > `:priority` suffixes do not apply.
 > See [OpenAI GPT-5.x Models](openai-models.md).
 
+> **Note:** xAI Grok 4.6 (`us.xai.grok-4.6`, `global.xai.grok-4.6`) also supports
+> the **Standard** tier only, so no `:flex` / `:priority` Grok IDs are offered.
+> This contradicts the AWS model card, which advertises Priority (1.75x) and Flex
+> (0.5x): Converse in fact returns *"The provided service tier is not supported
+> for this model"* for both, on both model IDs, in `us-west-2` and `us-east-1`
+> (verified live 2026-09-02). See [xAI Grok Models](grok-models.md).
+
+> **Note:** OpenAI GPT-6 Astra (`us.openai.gpt-6-astra`,
+> `global.openai.gpt-6-astra`) also supports the **Standard** tier only. Here the
+> model card agrees — it lists Standard alone — and Converse confirms it, returning
+> *"The provided service tier is not supported for this model"* for both `flex` and
+> `priority` (verified live 2026-09-10). No `:flex` / `:priority` Astra IDs are
+> offered. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
+
 ## Configuration
 
 ### Using Model IDs with Service Tier Suffixes

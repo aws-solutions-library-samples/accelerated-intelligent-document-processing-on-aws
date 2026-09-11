@@ -115,7 +115,7 @@ def _load_handler(fake_s3):
     sys.modules["botocore.exceptions"] = fake_exceptions
     try:
         mod = types.ModuleType("testset_notification_handler")
-        exec(compile(code, "<TestSetBucketNotificationFunction>", "exec"), mod.__dict__)
+        exec(compile(code, "<TestSetBucketNotificationFunction>", "exec"), mod.__dict__)  # nosec B102 - executes this repo's own shipped handler source under test
     finally:
         for k, v in saved.items():
             if v is None:

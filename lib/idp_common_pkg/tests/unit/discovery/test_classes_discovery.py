@@ -851,19 +851,560 @@ class TestDiscoveryRejectsOpenAI:
 
     def test_reject_helper_raises_for_gpt5(self):
         from idp_common.discovery.classes_discovery import (
-            _reject_openai_responses_model,
+            _reject_model_without_document_blocks,
         )
 
         for model in ("openai.gpt-5.4", "openai.gpt-5.5"):
             with pytest.raises(ValueError, match="not supported for discovery"):
-                _reject_openai_responses_model(model)
+                _reject_model_without_document_blocks(model)
+
+    def test_reject_helper_raises_for_grok(self):
+        """xAI Grok reaches Converse but rejects ``document`` blocks outright
+        ("This model doesn't support documents"), so discovery must refuse it
+        for the same reason it refuses GPT-5.x."""
+        from idp_common.discovery.classes_discovery import (
+            _reject_model_without_document_blocks,
+        )
+
+        for model in ("us.xai.grok-4.6", "global.xai.grok-4.6"):
+            with pytest.raises(ValueError, match="not supported for discovery"):
+                _reject_model_without_document_blocks(model)
+
+    def test_reject_helper_raises_for_astra(self):
+        """GPT-6 Astra reaches Converse but rejects ``document`` blocks ("This
+        model doesn't support the document field for user messages"), so discovery
+        must refuse it. Note this is the one place Astra is treated like GPT-5.x —
+        for extraction it is allowed where GPT-5.x is not."""
+        from idp_common.discovery.classes_discovery import (
+            _reject_model_without_document_blocks,
+        )
+
+        for model in ("us.openai.gpt-6-astra", "global.openai.gpt-6-astra"):
+            with pytest.raises(ValueError, match="not supported for discovery"):
+                _reject_model_without_document_blocks(model)
 
     def test_reject_helper_allows_supported_models(self):
         from idp_common.discovery.classes_discovery import (
-            _reject_openai_responses_model,
+            _reject_model_without_document_blocks,
         )
 
         # Should not raise.
-        _reject_openai_responses_model("us.anthropic.claude-opus-4-8")
-        _reject_openai_responses_model("us.amazon.nova-pro-v1:0")
-        _reject_openai_responses_model(None)
+        _reject_model_without_document_blocks("us.anthropic.claude-opus-4-8")
+        _reject_model_without_document_blocks("us.amazon.nova-pro-v1:0")
+        _reject_model_without_document_blocks(None)
+
+
+# ---------------------------------------------------------------------------
+# Regression: a discovered class id must be usable by every downstream feature.
+#
+# Discovery's schema prompt asks for "no spaces", but nothing enforced it, and
+# the multi-section auto-detect prompt actively suggested a label WITH a space
+# ("W2 Form") which was then injected as the class name. The resulting ids
+# ("Task cards", "Blank page") persisted fine and only failed much later, in
+# BDA sync, where a blueprint name must match [a-zA-Z0-9-_]+.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestDiscoveredClassIdNormalization:
+    """Tests for class-id normalization on the discovery write path."""
+
+    @pytest.fixture
+    def service(self):
+        with (
+            patch("boto3.resource"),
+            patch("idp_common.bedrock.BedrockClient"),
+            patch(
+                "idp_common.discovery.classes_discovery.ConfigurationReader"
+            ) as mock_config_reader,
+            patch("idp_common.discovery.classes_discovery.ConfigurationManager"),
+            patch.dict("os.environ", {"CONFIGURATION_TABLE_NAME": "test-config-table"}),
+        ):
+            mock_config_reader.return_value.get_merged_configuration.return_value = (
+                IDPConfig()
+            )
+            svc = ClassesDiscovery(
+                input_bucket="b", input_prefix="d.pdf", region="us-west-2"
+            )
+            svc.config_manager = MagicMock()
+            svc.config_manager.get_raw_configuration.return_value = {}
+            return svc
+
+    def _saved_classes(self, service):
+        service.config_manager.save_raw_configuration.assert_called_once()
+        return service.config_manager.save_raw_configuration.call_args[0][1]["classes"]
+
+    def _saved_class(self, service):
+        classes = self._saved_classes(service)
+        assert len(classes) == 1
+        return classes[0]
+
+    def test_class_id_with_space_is_normalized_on_save(self, service):
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Task-cards"
+        assert saved["x-aws-idp-document-type"] == "Task-cards"
+        # The readable original is preserved rather than discarded.
+        assert saved["description"] == "Task cards"
+
+    def test_existing_description_is_not_overwritten(self, service):
+        service._merge_and_save_class(
+            {
+                "$id": "Blank page",
+                "x-aws-idp-document-type": "Blank page",
+                "description": "An intentionally blank separator page",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Blank-page"
+        assert saved["description"] == "An intentionally blank separator page"
+
+    def test_valid_class_id_is_left_untouched(self, service):
+        """Underscores and hyphens are legal — normalizing them would rename
+        classes that already work and orphan their BDA blueprints."""
+        service._merge_and_save_class(
+            {
+                "$id": "Bank_Statement",
+                "x-aws-idp-document-type": "Bank_Statement",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Bank_Statement"
+        assert saved["x-aws-idp-document-type"] == "Bank_Statement"
+        # No description invented for a class that needed no rename.
+        assert "description" not in saved
+
+    def test_dedup_uses_the_normalized_id(self, service):
+        """Re-discovering the same document must update its class, not add a
+        second one under a differently-spelled id."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task-cards",
+                    "x-aws-idp-document-type": "Task-cards",
+                    "description": "first pass",
+                    "type": "object",
+                    "properties": {},
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service)
+        assert saved["$id"] == "Task-cards"
+        assert saved["properties"] == {"a": {"type": "string"}}
+
+    def test_stale_unnormalized_id_is_replaced_not_duplicated(self, service):
+        """The upgrade path: a version saved before this fix still holds the
+        spaced spelling, and that is exactly the config that hit #624.
+
+        Keying the merge on the raw id would leave 'Task cards' in place and
+        add 'Task-cards' beside it — two classes composing the same BDA
+        blueprint name prefix, fighting over one blueprint on every sync.
+        """
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task cards",
+                    "x-aws-idp-document-type": "Task cards",
+                    "description": "saved before normalization",
+                    "type": "object",
+                    "properties": {},
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service)  # asserts exactly one class remains
+        assert saved["$id"] == "Task-cards"
+        assert saved["properties"] == {"a": {"type": "string"}}
+
+    def test_unrelated_classes_are_not_collapsed_by_normalization(self, service):
+        """Only the class being written may be re-keyed.
+
+        Two curated classes can normalize to the same id ('Invoice (Final)'
+        and 'Invoice-Final'). Re-keying every existing entry on its sanitized
+        id would silently drop one of them while saving an unrelated class.
+        """
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {"$id": "Invoice (Final)", "type": "object", "properties": {}},
+                {"$id": "Invoice-Final", "type": "object", "properties": {}},
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved_ids = [c["$id"] for c in self._saved_classes(service)]
+        assert saved_ids == ["Invoice (Final)", "Invoice-Final", "Task-cards"]
+
+    def test_unusable_class_id_is_left_alone_rather_than_invented(self, service):
+        """Nothing valid remains in '???'. Inventing a name would present a
+        fabricated class as if the model had produced it."""
+        service._merge_and_save_class(
+            {
+                "$id": "???",
+                "x-aws-idp-document-type": "???",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        assert self._saved_class(service)["$id"] == "???"
+
+    def test_auto_detect_prompt_does_not_suggest_labels_with_spaces(self, service):
+        """The default auto-detect prompt's own example became the class name,
+        so the example itself has to be a valid id."""
+        import inspect
+
+        source = inspect.getsource(ClassesDiscovery.auto_detect_sections)
+        assert '"W2 Form"' not in source
+        assert '"W2-Form"' in source
+
+    def test_class_name_hint_is_sanitized_before_injection(self, service):
+        """An auto-detected section label reaches the prompt as an explicit
+        instruction that overrides the schema prompt's own 'no spaces' rule."""
+        with (
+            patch("idp_common.utils.s3util.S3Util.get_bytes", return_value=b"x"),
+            patch(
+                "idp_common.bedrock.extract_text_from_response",
+                return_value=json.dumps(
+                    {
+                        "$schema": "http://json-schema.org/draft-07/schema#",
+                        "$id": "W2-Form",
+                        "x-aws-idp-document-type": "W2-Form",
+                        "type": "object",
+                        "properties": {"a": {"type": "string"}},
+                    }
+                ),
+            ),
+        ):
+            service.bedrock_client.invoke_model = MagicMock(
+                return_value={
+                    "response": {"output": {"message": {"content": [{"text": "{}"}]}}},
+                    "metering": {},
+                }
+            )
+
+            service._extract_data_from_document(
+                document_content=b"x",
+                file_extension="pdf",
+                class_name_hint="W2 Form",
+            )
+
+            content = service.bedrock_client.invoke_model.call_args.kwargs["content"]
+            prompt = next(part["text"] for part in content if "text" in part)
+            assert '"W2-Form" as the document class name' in prompt
+            assert "W2 Form" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Regression (#764): re-running Discovery on a class that already exists must
+# not erase the class-level settings an author configured on it.
+#
+# The write path replaced the class dict wholesale, so x-aws-idp-extraction-model,
+# -confidence-threshold, -document-name-regex, -multi-instance, -examples and
+# every other class-level key vanished. Discovery reported success and the class
+# looked right; the regression surfaced in the NEXT document processed, as a
+# different model, a missing escalation, a re-included class or dropped records.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestRediscoveryPreservesAuthoredSettings:
+    """Tests for the merge (not replace) behavior on the discovery write path."""
+
+    @pytest.fixture
+    def service(self):
+        with (
+            patch("boto3.resource"),
+            patch("idp_common.bedrock.BedrockClient"),
+            patch(
+                "idp_common.discovery.classes_discovery.ConfigurationReader"
+            ) as mock_config_reader,
+            patch("idp_common.discovery.classes_discovery.ConfigurationManager"),
+            patch.dict("os.environ", {"CONFIGURATION_TABLE_NAME": "test-config-table"}),
+        ):
+            mock_config_reader.return_value.get_merged_configuration.return_value = (
+                IDPConfig()
+            )
+            svc = ClassesDiscovery(
+                input_bucket="b", input_prefix="d.pdf", region="us-west-2"
+            )
+            svc.config_manager = MagicMock()
+            svc.config_manager.get_raw_configuration.return_value = {}
+            return svc
+
+    def _saved_class(self, service, class_id):
+        classes = service.config_manager.save_raw_configuration.call_args[0][1][
+            "classes"
+        ]
+        matching = [c for c in classes if c.get("$id") == class_id]
+        assert len(matching) == 1, f"expected exactly one {class_id}, got {classes}"
+        return matching[0]
+
+    def test_class_level_settings_survive_rediscovery(self, service):
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Pay-Statement",
+                    "x-aws-idp-document-type": "Pay-Statement",
+                    "type": "object",
+                    "properties": {"EmployeeName": {"type": "string"}},
+                    "x-aws-idp-extraction-model": "us.amazon.nova-pro-v1:0",
+                    "x-aws-idp-extraction-escalation-model": "us.amazon.nova-premier-v1:0",
+                    "x-aws-idp-confidence-threshold": 0.95,
+                    "x-aws-idp-multi-instance": True,
+                    "x-aws-idp-document-name-regex": r"paystub.*\.pdf",
+                    "x-aws-idp-exclude-from-processing": False,
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Pay-Statement",
+                "x-aws-idp-document-type": "Pay-Statement",
+                "type": "object",
+                "properties": {
+                    "EmployeeName": {"type": "string"},
+                    "CheckNumber": {"type": "string"},
+                },
+            }
+        )
+
+        saved = self._saved_class(service, "Pay-Statement")
+        # Discovery's contribution is kept...
+        assert set(saved["properties"]) == {"EmployeeName", "CheckNumber"}
+        # ...and nothing the author set is lost.
+        assert saved["x-aws-idp-extraction-model"] == "us.amazon.nova-pro-v1:0"
+        assert (
+            saved["x-aws-idp-extraction-escalation-model"]
+            == "us.amazon.nova-premier-v1:0"
+        )
+        assert saved["x-aws-idp-confidence-threshold"] == 0.95
+        assert saved["x-aws-idp-multi-instance"] is True
+        assert saved["x-aws-idp-document-name-regex"] == r"paystub.*\.pdf"
+        assert saved["x-aws-idp-exclude-from-processing"] is False
+
+    def test_settings_survive_the_stale_id_rename_too(self, service):
+        """The rename path deletes the old entry, so it has to carry its
+        settings across first — otherwise normalizing an id doubles as a
+        silent reset."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task cards",
+                    "x-aws-idp-document-type": "Task cards",
+                    "type": "object",
+                    "properties": {},
+                    "x-aws-idp-extraction-model": "us.amazon.nova-pro-v1:0",
+                    "x-aws-idp-multi-instance": True,
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service, "Task-cards")
+        assert saved["properties"] == {"a": {"type": "string"}}
+        assert saved["x-aws-idp-extraction-model"] == "us.amazon.nova-pro-v1:0"
+        assert saved["x-aws-idp-multi-instance"] is True
+
+    def test_authored_description_beats_the_one_synthesized_by_the_rename(
+        self, service
+    ):
+        """Renaming stores the original id in ``description`` only as a
+        fallback. It must not overwrite a description the author wrote."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task-cards",
+                    "x-aws-idp-document-type": "Task-cards",
+                    "description": "Maintenance task cards, one job per card",
+                    "type": "object",
+                    "properties": {},
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        saved = self._saved_class(service, "Task-cards")
+        assert saved["description"] == "Maintenance task cards, one job per card"
+
+    def test_a_brand_new_class_is_unaffected(self, service):
+        """No existing class means nothing to carry: the discovered class is
+        saved exactly as produced (after id normalization)."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [{"$id": "Invoice", "type": "object", "properties": {}}]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Pay-Statement",
+                "x-aws-idp-document-type": "Pay-Statement",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service, "Pay-Statement")
+        assert saved == {
+            "$id": "Pay-Statement",
+            "x-aws-idp-document-type": "Pay-Statement",
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+        }
+
+    def test_settings_are_not_leaked_from_an_unrelated_class(self, service):
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Invoice",
+                    "type": "object",
+                    "properties": {},
+                    "x-aws-idp-extraction-model": "us.amazon.nova-pro-v1:0",
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Pay-Statement",
+                "x-aws-idp-document-type": "Pay-Statement",
+                "type": "object",
+                "properties": {},
+            }
+        )
+
+        assert "x-aws-idp-extraction-model" not in self._saved_class(
+            service, "Pay-Statement"
+        )
+        assert (
+            self._saved_class(service, "Invoice")["x-aws-idp-extraction-model"]
+            == "us.amazon.nova-pro-v1:0"
+        )
+
+    def test_a_dangling_instance_array_does_not_break_the_save(self, service):
+        """A re-discovered class whose instance-array property is gone must still
+        save. Carrying the pointer would fail IDPConfig validation inside
+        save_raw_configuration, losing every class in the run instead of one
+        setting — and a shipped preset (ocr-benchmark/BANK_CHECK) sets it."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "BANK_CHECK",
+                    "x-aws-idp-document-type": "BANK_CHECK",
+                    "x-aws-idp-instance-array": "checks",
+                    "x-aws-idp-extraction-model": "us.amazon.nova-pro-v1:0",
+                    "type": "object",
+                    "properties": {
+                        "checks": {"type": "array", "items": {"type": "object"}}
+                    },
+                }
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "BANK_CHECK",
+                "x-aws-idp-document-type": "BANK_CHECK",
+                "type": "object",
+                "properties": {"AccountNumber": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service, "BANK_CHECK")
+        assert "x-aws-idp-instance-array" not in saved
+        # The settings that are NOT coupled to properties still survive.
+        assert saved["x-aws-idp-extraction-model"] == "us.amazon.nova-pro-v1:0"
+        from idp_common.config.models import IDPConfig
+
+        IDPConfig(**{"classes": [saved]})  # the save path does this; must not raise
+
+    def test_two_stale_spellings_pick_a_deterministic_settings_source(self, service):
+        """Both normalize to the same id, so both are removed (pre-existing), but
+        only one can supply the settings. Sorted, so the choice does not depend on
+        DynamoDB's ordering, and the other is named in a warning rather than
+        dropped in silence."""
+        service.config_manager.get_raw_configuration.return_value = {
+            "classes": [
+                {
+                    "$id": "Task.cards",
+                    "type": "object",
+                    "properties": {},
+                    "x-aws-idp-confidence-threshold": 0.42,
+                },
+                {
+                    "$id": "Task cards",
+                    "type": "object",
+                    "properties": {},
+                    "x-aws-idp-confidence-threshold": 0.99,
+                },
+            ]
+        }
+
+        service._merge_and_save_class(
+            {
+                "$id": "Task cards",
+                "x-aws-idp-document-type": "Task cards",
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+            }
+        )
+
+        saved = self._saved_class(service, "Task-cards")
+        # sorted(["Task cards", "Task.cards"]) -> "Task cards" wins, every time.
+        assert saved["x-aws-idp-confidence-threshold"] == 0.99

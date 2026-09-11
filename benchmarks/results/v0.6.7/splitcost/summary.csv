@@ -1,0 +1,11 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,weighted_accuracy,parse_failures,mean_confidence,pct_conf_below_0.9,calibration_separation,wall_s,cost
+split-disabled,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,0.9993,0.0,,120.495909,0.1543
+split-disabled,small_narrow.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,0.9989,0.0,,123.808093,0.1491
+split-disabled,small_narrow.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,0.9991,0.0,,79.564868,0.1411
+split-disabled,small_narrow.pdf,3,COMPLETED,True,3.0,1.0,100,1.0,,,0.9993,0.0,,126.028642,0.1488
+split-disabled,small_narrow.pdf,4,COMPLETED,True,3.0,1.0,100,1.0,,,0.9997,0.0,,121.6072,0.1478
+split-llm,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,0.9992,0.0,,65.478863,0.1432
+split-llm,small_narrow.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,0.9728,2.2,,115.894943,0.1528
+split-llm,small_narrow.pdf,2,COMPLETED,True,3.0,1.0,100,0.5,,,0.9736,2.8,,45.228313,0.1478
+split-llm,small_narrow.pdf,3,COMPLETED,True,3.0,1.0,100,0.5,,,0.9745,2.2,,46.862344,0.1451
+split-llm,small_narrow.pdf,4,COMPLETED,True,3.0,1.0,100,1.0,,,0.9719,2.2,,114.260114,0.153

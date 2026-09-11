@@ -43,7 +43,10 @@
 #                  404-for-admin instead of failing.
 #   args:          safe arguments for the dynamic test. Mutations use
 #                  nonexistent ids (benign validation failure proves the call
-#                  passed authorization).
+#                  passed authorization). An op whose authorization depends on
+#                  the referenced object existing (getStepFunctionExecution)
+#                  has its args replaced at run time by apply_dynamic_args in
+#                  scripts/test_api_rbac.py.
 #   skip_allowed:  true -> dynamic test exercises ONLY the denied cells
 #                  (unauth + disallowed roles); the allowed-role call is
 #                  skipped because it would do real work (start an LLM agent,
@@ -117,9 +120,18 @@ operations:
   getStepFunctionExecution:
     groups: ANY
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver/index.py
     args: { executionArn: "arn:aws:states:us-east-1:000000000000:execution:x:y" }
-    known_gap: GAP-01
+    note: >-
+      Caller-supplied executionArn. The resolver requires it to name this
+      deployment's state machine (STATE_MACHINE_ARN) before calling Step
+      Functions, then enforces the caller's allowedConfigVersions against the
+      config_version in the execution input. Formerly GAP-01. The args here are
+      a placeholder the resolver correctly refuses; the dynamic harness replaces
+      them with a live execution ARN read from listDocuments (see
+      apply_dynamic_args in scripts/test_api_rbac.py) and SKIPs the op when the
+      stack has processed no documents.
   listDocumentVersions:
     groups: ANY
     kind: read
@@ -189,7 +201,14 @@ operations:
     enforced_in: *cfg
     args: {}
   getConfigVersion:
-    groups: [Admin, Author, Viewer]
+    # Annotator included deliberately: the annotate view needs the class list to
+    # correct a misclassified section, and that correction's write side
+    # (reextractTestSetDocument) already accepts Annotator. A caller with no group in
+    # {Admin, Author, Viewer} receives ONLY the class names and descriptions — the
+    # resolver reduces the payload via _class_vocabulary_only, so prompts, model ids
+    # and every other setting stay out of reach of the lowest-privilege role. The
+    # reduction is an allow-list, so a config key added later cannot leak by default.
+    groups: [Admin, Author, Viewer, Annotator]
     kind: read
     scope_checked: true
     enforced_in: *cfg
@@ -219,6 +238,38 @@ operations:
     scope_checked: true
     enforced_in: *cfg
     args: { versionName: "__nope__" }
+  # Configuration Profile revisions. Scope is checked at the PROFILE for all
+  # five: a revision is content inside a profile, never its own RBAC object.
+  listConfigProfileRevisions:
+    groups: [Admin, Author, Viewer]
+    kind: read
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "default" }
+  getConfigProfileRevision:
+    groups: [Admin, Author, Viewer]
+    kind: read
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "default", revision: 1 }
+  restoreConfigProfileRevision:
+    groups: [Admin, Author]
+    kind: mutation
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "__nope__", revision: 1 }
+  labelConfigProfileRevision:
+    groups: [Admin, Author]
+    kind: mutation
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "__nope__", revision: 1 }
+  deleteConfigProfileRevision:
+    groups: [Admin]
+    kind: mutation
+    scope_checked: true
+    enforced_in: *cfg
+    args: { profileName: "__nope__", revision: 1 }
   getPricing:
     groups: [Admin, Author, Viewer]
     kind: read
@@ -383,7 +434,13 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getDraftLabelJob:
-    groups: [Admin, Author]
+    # Annotator included: the ground-truth editor polls this for the outcome of the
+    # re-extract it just started via reextractTestSetDocument, which annotators may
+    # already run. Without it the job completed server-side while the UI reported
+    # "Could not re-extract this document" — observed on a dev stack. Per-set scope
+    # is asserted in the handler, so group membership alone does not expose another
+    # set's jobs.
+    groups: [Admin, Author, Annotator]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", jobId: "__nope__" }
@@ -400,6 +457,35 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
     args: { input: {} }
+  # Internally publishes version 1 of a never-published set (via
+  # publish_test_set_version, bypassing that mutation's Admin/Author gate) so there
+  # is a state to snapshot. Deliberate: an Annotator is the role that starts a
+  # session. It does NOT set the set's active reference — that remains a
+  # publishTestSetVersion decision — so the crossing creates a version and nothing
+  # a future run depends on by default.
+  openTestSetAnnotationDraft:
+    # Annotator opens the version transition that annotating their own set commits to.
+    # An annotator is the role that starts a session, so refusing this would make the
+    # queue unusable for them. The resolver additionally enforces allowedTestSets per
+    # set. Note this is the one annotation operation with a side effect on the *set*
+    # rather than on a document: it snapshots the baselines being annotated away from,
+    # which is what makes the version number refer to bytes.
+    groups: [Admin, Author, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { input: { testSetId: "nonexistent-test-set" } }
+
+  updateTestSetDocumentSections:
+    # Annotator corrects a wrong packet split in their own set — the same kind of
+    # annotation work as reextractTestSetDocument, and the correction most
+    # often needed in practice. The resolver additionally enforces allowedTestSets per set,
+    # and writes only the grouping and class: field values, labelSource and edit
+    # history are preserved.
+    groups: [Admin, Author, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
+
   reextractTestSetDocument:
     # Annotator corrects a misclassified document in their own set; the resolver
     # additionally enforces allowedTestSets per set.
@@ -431,10 +517,15 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "__nope__", fileNames: ["__nope__"] }
   addTestSet:
-    groups: [Admin, Author]
+    groups: [Admin]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { name: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
+  createEmptyTestSet:
+    groups: [Admin, Author]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
+    args: { name: "__nope__" }
   addTestSetFromUpload:
     groups: [Admin, Author]
     kind: mutation
@@ -442,7 +533,7 @@ operations:
     # schema: addTestSetFromUpload(input: TestSetUploadInput!)
     args: { input: {} }
   addDocumentsToTestSet:
-    groups: [Admin, Author]
+    groups: [Admin]
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "__nope__", filePattern: "x", bucketType: "input", fileCount: 0 }
@@ -464,7 +555,7 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetIds: ["__nope__"] }
   listBucketFiles:
-    groups: [Admin, Author]
+    groups: [Admin]
     kind: read
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { bucketType: "input", filePattern: "__nope__" }
@@ -477,6 +568,16 @@ operations:
   # ==========================================================================
   # HITL review (Admin + Reviewer)
   # ==========================================================================
+  updateDocumentSections:
+    # Re-groups a document's pages without reprocessing it, so the extracted values
+    # survive. Admin/Reviewer/Annotator matches completeSectionReview, the sibling that
+    # edits a section's content — processChanges stays narrower because it destroys and
+    # regenerates extraction data. Refused while the document is in flight.
+    groups: [Admin, Reviewer, Annotator]
+    kind: mutation
+    enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
+    args: { objectKey: "__nonexistent__.pdf", sections: [] }
+
   processChanges:
     groups: [Admin, Reviewer]
     kind: mutation
@@ -773,20 +874,16 @@ operations:
 # will then hold the line.
 # ============================================================================
 known_gaps:
-  GAP-01:
-    summary: getStepFunctionExecution has no group or ownership check
-    detail: >
-      Any authenticated user can fetch execution details for any execution ARN
-      the resolver's IAM role can describe. Mitigated by the role being scoped
-      to the stack's state machines; still exposes processing metadata to
-      Reviewers/Viewers.
   GAP-02:
     summary: queryKnowledgeBase has no group check
     detail: >
       Any authenticated user (including Reviewer) can query the knowledge base
       when one is configured.
-# GAP-03, GAP-04, GAP-05 and GAP-06 were RESOLVED (no longer accepted risks — a
-# regression now hard-FAILS the gate):
+# GAP-01, GAP-03, GAP-04, GAP-05 and GAP-06 were RESOLVED (no longer accepted
+# risks — a regression now hard-FAILS the gate):
+#   GAP-01 getStepFunctionExecution now requires the caller-supplied
+#          executionArn to name this deployment's state machine, and enforces
+#          allowedConfigVersions against the execution input's config_version.
 #   GAP-03 listAvailableAgents / sendAgentChatMessage now carry a server-side
 #          _caller_in_groups check (Admin/Author/Viewer; Reviewer excluded)
 #          matching their schema directives — the exclusion is no longer

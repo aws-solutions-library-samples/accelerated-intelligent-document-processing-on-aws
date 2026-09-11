@@ -56,6 +56,37 @@ export interface SplitClassificationMetrics {
   };
 }
 
+/** One section whose classification disagreed with the ground truth. */
+export interface ClassificationError {
+  doc_key?: string;
+  section_id?: string | number | null;
+  /**
+   * `class` — wrong document class, so extraction ran the wrong schema.
+   * `unmatched` — a ground-truth section no predicted section matched (a
+   * splitting difference). `order` — right class and pages, wrong page order.
+   */
+  kind?: 'class' | 'unmatched' | 'order';
+  expected_class?: string | null;
+  predicted_class?: string | null;
+  expected_pages?: number[];
+  predicted_pages?: number[];
+}
+
+/**
+ * Parsed TestRun.classificationErrors.
+ *
+ * `errors` is capped by the aggregation Lambda because the whole run result is
+ * one DynamoDB attribute; `total` is the uncapped count, so a truncated list can
+ * still say how much it is not showing. `{}` on runs aggregated via the Athena
+ * fallback, which has the percentages but not the per-section detail.
+ */
+export interface ClassificationErrors {
+  errors?: ClassificationError[];
+  total?: number;
+  documents_affected?: number;
+  truncated?: boolean;
+}
+
 /**
  * Parsed graded packet metrics from TestRun.gradedPacketMetrics AWSJSON field.
  *

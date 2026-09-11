@@ -13,6 +13,7 @@ import strands
 
 from idp_common.config import get_config
 
+from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .config import get_error_analyzer_model_id
 from .tools import (
@@ -80,4 +81,5 @@ def create_error_analyzer_agent(
         tools=tools,
         system_prompt=config.agents.error_analyzer.system_prompt,
         model=bedrock_model,
+        hooks=with_cost_hook(kwargs.get("hooks"), "error-analyzer", model_id),
     )

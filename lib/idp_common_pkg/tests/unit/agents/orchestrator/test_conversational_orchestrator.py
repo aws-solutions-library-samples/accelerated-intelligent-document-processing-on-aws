@@ -15,24 +15,16 @@ Tests the create_conversational_orchestrator() method to ensure:
 # The above line disables E402 (module level import not at top of file) and I001 (import block sorting) for this file
 
 import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Mock strands modules before importing orchestrator modules
-sys.modules["strands"] = MagicMock()
-sys.modules["strands.models"] = MagicMock()
-sys.modules["strands.hooks"] = MagicMock()
-sys.modules["strands.hooks.events"] = MagicMock()
-sys.modules["strands.agent"] = MagicMock()
-sys.modules["strands.agent.conversation_manager"] = MagicMock()
-sys.modules["strands.tools"] = MagicMock()
-sys.modules["strands.tools.mcp"] = MagicMock()
-
-# Mock bedrock_agentcore modules
-sys.modules["bedrock_agentcore"] = MagicMock()
-sys.modules["bedrock_agentcore.tools"] = MagicMock()
+# `strands` and `bedrock_agentcore` are stubbed by tests/conftest.py, and ONLY
+# when genuinely absent. This module used to force MagicMocks into `sys.modules`
+# here instead, unconditionally and without ever restoring them — which replaced
+# a real installed `strands` for every test module imported after this one, so
+# whether the agentic tests ran against the real library depended on collection
+# order. See the note in tests/conftest.py.
 
 
 @pytest.fixture

@@ -14,12 +14,22 @@ making it suitable for custom date ranges of any length.
 import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Key
+
+# Vendored verbatim from idp_common/config_scope.py: this function has no
+# idp_common layer (it is on the hottest UI query and is kept dependency-free).
+# test_config_scope_vendored.py fails if the copies drift.
+# The sys.path insert makes the sibling import work both in Lambda (where the
+# handler directory is already on the path) and when another suite loads this
+# module by file path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_scope import scope_allows  # noqa: E402
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -249,8 +259,10 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
     """
     # Config-version scope filter (applies to non-admin users)
     if allowed_versions:
+        # Fails CLOSED — see the same filter in list_documents_gsi_resolver: an
+        # unstamped document cannot be proven in scope, so it is not shown.
         doc_version = doc.get("ConfigVersion") or doc.get("ConfigurationVersion")
-        if doc_version and doc_version not in allowed_versions:
+        if not scope_allows(allowed_versions, doc_version):
             return False
 
     # Reviewer-only filter: only HITL-pending or owned documents

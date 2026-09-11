@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import click
 import pytest
 
-from idp_cli.cli import _parse_tags
+from idp_cli.cli import _default_email_mutable_for_new_federated_stack, _parse_tags
 from idp_sdk._core.stack import StackDeployer, build_parameters
 
 
@@ -239,7 +239,7 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
             tags={"Owner": "docs-team", "Environment": "prod"},
         )
@@ -255,7 +255,7 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
             tags={"Owner": "docs-team"},
         )
@@ -269,7 +269,7 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
             tags=None,
         )
@@ -282,9 +282,54 @@ class TestStackTags:
 
         deployer.deploy_stack(
             stack_name="idp-test",
-            template_path="/tmp/template.yaml",
+            template_path="/tmp/template.yaml",  # nosec B108 - test fixture path, deploy is mocked (no file I/O)
             parameters={},
         )
 
         _, kwargs = cfn_mock.create_stack.call_args
         assert "Tags" not in kwargs
+
+
+class TestExternalIdPEmailMutableDefault:
+    """#835: a NEW federated stack gets ExternalIdPEmailMutable=true unless the
+    caller chose; updates, headless and non-federated deploys are untouched.
+
+    The template cannot default the flag to true (a Cognito schema flag is fixed
+    at pool creation, so that would wedge every existing stack's next update),
+    but the CLI knows create from update and can supply the safe value for a
+    new stack only.
+    """
+
+    def _run(self, params, **kw):
+        defaults = {"stack_exists": False, "headless": False}
+        defaults.update(kw)
+        return _default_email_mutable_for_new_federated_stack(params, **defaults)
+
+    def test_new_federated_stack_defaults_true(self):
+        params = {"ExternalIdPType": "OIDC", "ExternalIdPName": "Okta"}
+        assert self._run(params) == "true"
+        assert params["ExternalIdPEmailMutable"] == "true"
+
+    def test_explicit_value_is_respected(self):
+        params = {"ExternalIdPType": "SAML", "ExternalIdPEmailMutable": "false"}
+        assert self._run(params) is None
+        assert params["ExternalIdPEmailMutable"] == "false"
+
+    def test_update_never_injects_it(self):
+        # Flipping the flag on an existing pool fails the update; on an update
+        # the CLI must forward only what the caller asked for.
+        params = {"ExternalIdPType": "OIDC"}
+        assert self._run(params, stack_exists=True) is None
+        assert "ExternalIdPEmailMutable" not in params
+
+    def test_headless_never_injects_it(self):
+        # The headless template strips Cognito and this parameter; passing it
+        # would be a CFN ValidationError.
+        params = {"ExternalIdPType": "OIDC"}
+        assert self._run(params, headless=True) is None
+        assert "ExternalIdPEmailMutable" not in params
+
+    @pytest.mark.parametrize("params", [{}, {"ExternalIdPType": ""}])
+    def test_non_federated_stack_untouched(self, params):
+        assert self._run(dict(params)) is None
+        assert "ExternalIdPEmailMutable" not in params

@@ -9,13 +9,12 @@
 
 import type { StatusIndicatorProps } from '@cloudscape-design/components';
 
-export interface ProcessingIssue {
-  stage?: string;
-  severity?: string; // "error" | "warning" | "info"
-  code?: string;
-  message?: string;
-  rootCause?: string;
-}
+import type { ProcessingIssue } from '../../types/documents';
+
+// `ProcessingIssue` is derived from the generated GraphQL type (see
+// types/documents.ts) and re-exported here so existing importers keep using the
+// nearby path.
+export type { ProcessingIssue };
 
 export interface SectionWithIssues {
   ProcessingIssues?: ProcessingIssue[] | null;

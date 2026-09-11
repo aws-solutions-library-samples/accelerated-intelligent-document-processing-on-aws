@@ -8,6 +8,7 @@ Tests for configuration validation functions.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from idp_common.config.merge_utils import (
@@ -888,6 +889,60 @@ class TestValidateAgenticOpenAI:
         assert "invoice" in result["errors"][0]
         assert "openai.gpt-5.5" in result["errors"][0]
 
+    def test_grok_with_agentic_extraction_is_allowed(self):
+        """The deliberate difference from GPT-5.x: Grok DOES reach Converse and
+        accepts a toolConfig (verified live with all three toolChoice modes), so
+        agentic/advanced extraction is supported. Guards against someone later
+        broadening this validator to reject all third-party models.
+        """
+        config = {
+            "extraction": {
+                "model": "us.xai.grok-4.6",
+                "agentic": {"enabled": True},
+            }
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_agentic_openai(config, result)
+        assert result["valid"] is True
+        assert result["errors"] == []
+
+    @pytest.mark.parametrize(
+        "model_id", ["us.openai.gpt-6-astra", "global.openai.gpt-6-astra"]
+    )
+    def test_astra_with_agentic_extraction_is_allowed(self, model_id):
+        """GPT-6 Astra is an OpenAI model that DOES reach Converse and emits
+        toolUse under a forced toolChoice (verified live), so agentic/advanced
+        extraction is supported for it. This gate is about the mantle ROUTE, not
+        the vendor — pinned here because "openai" in the model ID makes the
+        opposite assumption very easy to make.
+        """
+        config = {
+            "extraction": {
+                "model": model_id,
+                "agentic": {"enabled": True},
+            }
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_agentic_openai(config, result)
+        assert result["valid"] is True
+        assert result["errors"] == []
+
+    def test_astra_per_class_override_with_agentic_is_allowed(self):
+        """Same rule on the per-class override path."""
+        config = {
+            "extraction": {"agentic": {"enabled": True}},
+            "classes": [
+                {
+                    "x-aws-idp-document-type": "invoice",
+                    "x-aws-idp-extraction-model": "us.openai.gpt-6-astra",
+                }
+            ],
+        }
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_agentic_openai(config, result)
+        assert result["valid"] is True
+        assert result["errors"] == []
+
 
 class TestValidateDiscoveryOpenAI:
     """Test _validate_discovery_openai (OpenAI unsupported for discovery)."""
@@ -910,6 +965,49 @@ class TestValidateDiscoveryOpenAI:
         _validate_discovery_openai(config, result)
         assert result["valid"] is False
         assert "discovery.rules.model" in result["errors"][0]
+
+    @pytest.mark.parametrize(
+        ("section", "field"),
+        [
+            ("without_ground_truth", "model_id"),
+            ("with_ground_truth", "model_id"),
+            ("auto_split", "model_id"),
+            ("rules", "model"),
+        ],
+    )
+    def test_grok_discovery_errors(self, section, field):
+        """xAI Grok rejects Converse ``document`` blocks, so it is invalid for
+        every discovery section even though it is a valid Converse model."""
+        from idp_common.config.merge_utils import _validate_discovery_openai
+
+        config = {"discovery": {section: {field: "us.xai.grok-4.6"}}}
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_discovery_openai(config, result)
+        assert result["valid"] is False
+        assert f"discovery.{section}.{field}" in result["errors"][0]
+        assert "us.xai.grok-4.6" in result["errors"][0]
+
+    @pytest.mark.parametrize(
+        ("section", "field"),
+        [
+            ("without_ground_truth", "model_id"),
+            ("with_ground_truth", "model_id"),
+            ("auto_split", "model_id"),
+            ("rules", "model"),
+        ],
+    )
+    def test_astra_discovery_errors(self, section, field):
+        """GPT-6 Astra rejects Converse ``document`` blocks ("This model doesn't
+        support the document field for user messages"), so it is invalid for every
+        discovery section even though it IS valid for agentic extraction."""
+        from idp_common.config.merge_utils import _validate_discovery_openai
+
+        config = {"discovery": {section: {field: "us.openai.gpt-6-astra"}}}
+        result = {"valid": True, "errors": [], "warnings": []}
+        _validate_discovery_openai(config, result)
+        assert result["valid"] is False
+        assert f"discovery.{section}.{field}" in result["errors"][0]
+        assert "us.openai.gpt-6-astra" in result["errors"][0]
 
     def test_gpt_5_6_variant_discovery_errors(self):
         from idp_common.config.merge_utils import _validate_discovery_openai

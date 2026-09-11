@@ -1,0 +1,60 @@
+{
+  "description": "Sirikaro-shape case (issue #625): a 5-item list where every item passes the item-level match_threshold but 4 of the 15 leaves inside are wrong. Per-item score is 2/3 ≈ 0.667 (well above threshold 0.5), so Hungarian pairs every item regardless of whether Stickler's future gate is inclusive `>=` or strict `>` (finding 13 from #625 adversarial review). Under v0.6.3–v0.6.5 semantics: parent Items shows ✓ while drilldown shows Items[1..4].name ✗ — self-contradictory. Under v2.0 (row-level derivation from field_comparisons): parent = ✗, section precision reflects the leaf failures. Pinning this shape prevents regressions to either of Stickler's two rollup views (cm.overall or cm.aggregate) that miss this case.",
+  "section_id": "list-leaves-wrong-1",
+  "classification": "Doc",
+  "page_ids": ["1"],
+  "config": {
+    "classes": [
+      {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "doc",
+        "x-aws-idp-document-type": "Doc",
+        "x-aws-idp-evaluation-model-name": "Doc",
+        "type": "object",
+        "properties": {
+          "Items": {
+            "type": "array",
+            "description": "5-item list — every item Hungarian-paired at score ≈ 0.667, 4 name leaves wrong",
+            "x-aws-idp-evaluation-match-threshold": 0.5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "x-aws-idp-evaluation-method": "EXACT"
+                },
+                "amount": {
+                  "type": "number",
+                  "x-aws-idp-evaluation-method": "NUMERIC_EXACT",
+                  "x-aws-idp-evaluation-threshold": 0.01
+                },
+                "unit": {
+                  "type": "string",
+                  "x-aws-idp-evaluation-method": "EXACT"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "expected": {
+    "Items": [
+      {"name": "Widget A", "amount": 1.0, "unit": "ea"},
+      {"name": "Widget B", "amount": 2.0, "unit": "ea"},
+      {"name": "Widget C", "amount": 3.0, "unit": "ea"},
+      {"name": "Widget D", "amount": 4.0, "unit": "ea"},
+      {"name": "Widget E", "amount": 5.0, "unit": "ea"}
+    ]
+  },
+  "actual": {
+    "Items": [
+      {"name": "Widget A", "amount": 1.0, "unit": "ea"},
+      {"name": "Foo",      "amount": 2.0, "unit": "ea"},
+      {"name": "Bar",      "amount": 3.0, "unit": "ea"},
+      {"name": "Baz",      "amount": 4.0, "unit": "ea"},
+      {"name": "Qux",      "amount": 5.0, "unit": "ea"}
+    ]
+  }
+}

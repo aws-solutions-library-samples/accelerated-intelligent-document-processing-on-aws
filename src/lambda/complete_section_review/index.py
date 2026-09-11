@@ -508,12 +508,19 @@ def record_curve_observations(test_set_id, previous, saved):
         # Key the curve by the config that produced these labels; a later config
         # change must not inherit a curve measured under different confidence
         # semantics.
-        config_version = (previous.get("metadata") or {}).get("config_version")
+        label_meta = previous.get("metadata") or {}
+        config_version = label_meta.get("config_version")
+        # ...and by the revision family that drafted them (#698): the harvest
+        # copies the run's confidence fingerprint onto the label beside the
+        # config version, so a later model swap on the same profile starts a new
+        # curve instead of inheriting this one.
+        fingerprint = label_meta.get("confidence_fingerprint") or None
         accepted = CurveStore(table).add_observations(
             test_set_id,
             observations,
             config_version=config_version,
             source="review",
+            fingerprint=fingerprint,
         )
         logger.info(
             f"Recorded {accepted} confidence-curve observation(s) for test set "

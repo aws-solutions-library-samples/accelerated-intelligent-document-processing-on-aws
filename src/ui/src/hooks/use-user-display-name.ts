@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import { useState, useEffect } from 'react';
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchSharedAuthSession } from '../api/auth-session';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
 const logger = new ConsoleLogger('useUserDisplayName');
@@ -18,7 +18,7 @@ const useUserDisplayName = (): UserDisplayNameReturn => {
   useEffect(() => {
     const fetchDisplayName = async () => {
       try {
-        const session = await fetchAuthSession();
+        const session = await fetchSharedAuthSession();
         const payload = session?.tokens?.idToken?.payload;
         const givenName = payload?.['given_name'] as string | undefined;
         const familyName = payload?.['family_name'] as string | undefined;

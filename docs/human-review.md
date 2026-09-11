@@ -297,7 +297,7 @@ The visual editor provides a comprehensive review experience with a modern tabbe
 - Section filtering with multiselect dropdown to focus on specific sections
 - Full JSON validation before saving
 
-**Revision History Tab**
+**Edit history Tab**
 - Complete audit trail of all edits to the document
 - Timestamps showing when edits were made
 - Reviewer identification showing who made each change

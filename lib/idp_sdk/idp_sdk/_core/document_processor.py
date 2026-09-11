@@ -18,6 +18,52 @@ from idp_sdk._core.stack_info import StackInfo
 
 logger = logging.getLogger(__name__)
 
+# The synthesized top-level property of a class flagged
+# `x-aws-idp-multi-instance` (GenAI IDP #715). Held as a literal rather than
+# imported from `idp_common.schema.multi_instance` so this module stays free of
+# the accelerator's runtime library.
+_INSTANCES_KEY = "instances"
+
+# Keys of a confidence leaf that are not themselves nested fields.
+_CONFIDENCE_LEAF_KEYS = frozenset(
+    {"confidence", "confidence_reason", "confidence_threshold", "geometry"}
+)
+
+
+def _section_instances(inference_result: Dict) -> Optional[list]:
+    """The per-document records of a multi-instance section, or None.
+
+    None means "this section holds one document", which is the normal case, so a
+    caller can treat a non-None value as "iterate these" without inspecting the
+    configuration.
+    """
+    if not isinstance(inference_result, dict):
+        return None
+    value = inference_result.get(_INSTANCES_KEY)
+    if not isinstance(value, list):
+        return None
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _collect_confidence(node, prefix: str, out: Dict) -> None:
+    """Flatten an ``explainability_info`` subtree into ``path -> confidence``.
+
+    Paths use the same convention the rest of the accelerator uses:
+    ``Field``, ``Group.Sub``, ``List[0].Sub``. A top-level scalar attribute
+    therefore keys as just its own name, exactly as before.
+    """
+    if isinstance(node, dict):
+        value = node.get("confidence")
+        if prefix and isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[prefix] = value
+        for key, child in node.items():
+            if key in _CONFIDENCE_LEAF_KEYS:
+                continue
+            _collect_confidence(child, f"{prefix}.{key}" if prefix else key, out)
+    elif isinstance(node, list):
+        for index, child in enumerate(node):
+            _collect_confidence(child, f"{prefix}[{index}]", out)
+
 
 class DocumentProcessor:
     """Processes document metadata and listing operations"""
@@ -72,20 +118,29 @@ class DocumentProcessor:
             split_document = result_data.get("split_document", {})
             explainability_info = result_data.get("explainability_info", [])
 
-            # Extract confidence scores if available
+            # Extract confidence scores if available.
+            #
+            # Walks into groups and lists, so a list attribute's per-row
+            # confidence lands under "Field[0].Sub" instead of being dropped. The
+            # top-level scalar keys are unchanged. This is what makes confidence
+            # available at all for a multi-instance class, whose whole result sits
+            # under one "instances" list.
             confidence = {}
             if explainability_info:
                 for info in explainability_info:
                     if isinstance(info, dict):
-                        for key, value in info.items():
-                            if isinstance(value, dict) and "confidence" in value:
-                                confidence[key] = value["confidence"]
+                        _collect_confidence(info, "", confidence)
 
             return {
                 "document_id": document_id,
                 "section_id": section_id,
                 "document_class": document_class_data.get("type"),
                 "fields": inference_result,
+                # Multi-instance classes return one entry per document found in
+                # the section. Additive: `fields` is still the raw
+                # `inference_result`, so existing callers are unaffected, and a
+                # single-record class gets None here.
+                "instances": _section_instances(inference_result),
                 "confidence": confidence if confidence else None,
                 "page_count": len(split_document.get("page_indices", [])),
                 "metadata": {

@@ -19,6 +19,12 @@
 # 2.28 floor. Keeping it in the layer rather than in each function's
 # requirements.txt also means one copy for the four functions sharing ingest/.
 #
+# The pip install is followed by prune_layer.py, which strips the ~35 MB of
+# pyarrow that `pyarrow.parquet` cannot reach at runtime and then FAILS THE BUILD
+# if the layer is still too large to combine with the pre-2026-08-13 ingest code
+# during an in-place stack update. That transition, not the steady state, is the
+# binding size constraint — see prune_layer.py's module docstring.
+#
 # ARTIFACTS_DIR is supplied by SAM. Lambda puts a layer's `python/` directory on
 # sys.path, so the module must land at $(ARTIFACTS_DIR)/python/variants.py.
 build-SharedLayer:
@@ -33,3 +39,4 @@ build-SharedLayer:
 		--only-binary=:all: \
 		--no-compile \
 		--upgrade
+	python3 prune_layer.py "$(ARTIFACTS_DIR)"

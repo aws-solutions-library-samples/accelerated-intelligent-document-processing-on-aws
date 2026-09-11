@@ -204,11 +204,11 @@ const DocumentDetails = (): React.JSX.Element => {
   };
 
   // Function to handle reprocess confirmation
-  const handleReprocessConfirm = async (version?: string) => {
-    logger.debug('Reprocessing document', objectKey, 'with version', version);
+  const handleReprocessConfirm = async (version?: string, revision?: number) => {
+    logger.debug('Reprocessing document', objectKey, 'with version', version, 'r', revision);
     setIsReprocessLoading(true);
     try {
-      const result = await reprocessDocuments([objectKey], version);
+      const result = await reprocessDocuments([objectKey], version, revision);
       logger.debug('Reprocess result', result);
       // Close the modal
       setIsReprocessModalVisible(false);

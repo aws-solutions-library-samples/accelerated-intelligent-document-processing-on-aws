@@ -59,8 +59,8 @@ const installedFeature = (overrides: Partial<InstalledFeature> = {}): InstalledF
   }) as InstalledFeature;
 
 /** Render the built section through Cloudscape so `info` ReactNodes are realised. */
-function renderNav(installed: InstalledFeature[], catalog: CatalogFeature[] = []) {
-  const section = buildFeaturesNavSection(installed, catalog);
+function renderNav(installed: InstalledFeature[], catalog: CatalogFeature[] = [], canInstall = true) {
+  const section = buildFeaturesNavSection(installed, catalog, canInstall);
   return render(<SideNavigation items={[section]} />);
 }
 
@@ -101,6 +101,34 @@ describe('Extensions nav badges', () => {
 
     expect(screen.getByText('Update')).toBeInTheDocument();
     expect(screen.queryByText('Install')).not.toBeInTheDocument();
+  });
+
+  it('states the state, not the action, for someone who cannot install', () => {
+    // Found on an annotator account: the Extensions section listed two extensions
+    // badged "Install", an action only an Admin can take (subscribeFeature is
+    // Admin-only, and the feature page routes everyone else to AwaitingAdminInstall).
+    // The badge's stated job is to say "this needs action", so for a non-admin it says
+    // which state the extension is in and leaves the verb out.
+    renderNav([], [catalogFeature()], false);
+
+    expect(screen.getByText('Not installed')).toBeInTheDocument();
+    expect(screen.queryByText('Install')).not.toBeInTheDocument();
+  });
+
+  it('says the same about an update a non-admin cannot apply', () => {
+    renderNav([installedFeature({ updateAvailable: true, latestVersion: '0.6.0' })], [catalogFeature({ latestVersion: '0.6.0' })], false);
+
+    expect(screen.getByText('Update available')).toBeInTheDocument();
+    expect(screen.queryByText('Update')).not.toBeInTheDocument();
+  });
+
+  it('keeps the admin wording by default, so existing callers are unchanged', () => {
+    // The parameter defaults to true: a caller that does not know the role must not
+    // silently downgrade every badge to passive wording.
+    renderNav([], [catalogFeature()]);
+
+    expect(screen.getByText('Install')).toBeInTheDocument();
+    expect(screen.queryByText('Not installed')).not.toBeInTheDocument();
   });
 
   it('region-unavailability outranks Install — installing there could not succeed', () => {

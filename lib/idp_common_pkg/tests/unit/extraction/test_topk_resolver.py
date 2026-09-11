@@ -183,3 +183,156 @@ def test_array_item_bbox_and_page_carried_onto_leaf():
         "bbox": [0, 0, 9, 9],
         "page": 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# GROUP (nested object) fields — regression coverage.
+#
+# Before this was handled, a group whose sub-attributes were TopK candidates fell
+# through to the pass-through branch, so the raw candidate dict became the
+# EXTRACTED VALUE and the group produced no confidence leaves at all. Observed
+# live in integrated mode: an "Account Holder Address" group came back as
+# {"Street Number": {"G1": "100", "P1": 0.9, ...}, ...} instead of
+# {"Street Number": "100", ...}, and explainability_info had no entry for it — so
+# every group sub-field was silently corrupted AND invisible to confidence
+# thresholds, alerts and HITL.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestGroupFields:
+    GROUP_SCHEMA = {
+        "properties": {
+            "Address": {
+                "type": "object",
+                "properties": {
+                    "Street": {"type": "string"},
+                    "Zip": {"type": "string"},
+                    "Floor": {"type": "number"},
+                },
+            }
+        }
+    }
+
+    def test_group_subattributes_resolve_to_values(self):
+        raw = {
+            "Address": {
+                "Street": {
+                    "G1": "100 Main Street",
+                    "P1": 0.9,
+                    "G2": "Main St",
+                    "P2": 0.1,
+                },
+                "Zip": {"G1": "90210", "P1": 0.95},
+            }
+        }
+        result, assessment, candidates = resolve_candidates(raw, self.GROUP_SCHEMA)
+        assert result["Address"] == {"Street": "100 Main Street", "Zip": "90210"}
+        assert assessment["Address"] == {
+            "Street": {"confidence": 0.9},
+            "Zip": {"confidence": 0.95},
+        }
+        # Full candidates preserved for audit.
+        assert candidates["Address"]["Street"]["G2"] == "Main St"
+
+    def test_group_numeric_subattribute_is_coerced(self):
+        raw = {"Address": {"Floor": {"G1": "3", "P1": 0.8}}}
+        result, _, _ = resolve_candidates(raw, self.GROUP_SCHEMA)
+        assert result["Address"]["Floor"] == 3.0
+        assert isinstance(result["Address"]["Floor"], float)
+
+    def test_group_behind_a_ref_is_dereferenced(self):
+        schema = {
+            "properties": {"Address": {"$ref": "#/$defs/Addr"}},
+            "$defs": {
+                "Addr": {
+                    "type": "object",
+                    "properties": {"Floor": {"type": "number"}},
+                }
+            },
+        }
+        raw = {"Address": {"Floor": {"G1": "7", "P1": 0.9}}}
+        result, assessment, _ = resolve_candidates(raw, schema)
+        assert result["Address"]["Floor"] == 7.0
+        assert assessment["Address"]["Floor"]["confidence"] == 0.9
+
+    def test_nested_group_inside_group(self):
+        schema = {
+            "properties": {
+                "Outer": {
+                    "type": "object",
+                    "properties": {
+                        "Inner": {
+                            "type": "object",
+                            "properties": {"Leaf": {"type": "string"}},
+                        }
+                    },
+                }
+            }
+        }
+        raw = {"Outer": {"Inner": {"Leaf": {"G1": "v", "P1": 0.6}}}}
+        result, assessment, _ = resolve_candidates(raw, schema)
+        assert result["Outer"]["Inner"]["Leaf"] == "v"
+        assert assessment["Outer"]["Inner"]["Leaf"]["confidence"] == 0.6
+
+    def test_group_inside_a_list_row(self):
+        schema = {
+            "properties": {
+                "Rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "Addr": {
+                                "type": "object",
+                                "properties": {"City": {"type": "string"}},
+                            }
+                        },
+                    },
+                }
+            }
+        }
+        raw = {"Rows": [{"Addr": {"City": {"G1": "Anytown", "P1": 0.9}}}]}
+        result, assessment, _ = resolve_candidates(raw, schema)
+        assert result["Rows"][0]["Addr"] == {"City": "Anytown"}
+        assert assessment["Rows"][0]["Addr"]["City"]["confidence"] == 0.9
+
+    def test_plain_group_without_candidates_passes_through_unchanged(self):
+        """A model that ignored TopK for a group must not be mangled."""
+        raw = {"Address": {"Street": "100 Main Street", "Zip": "90210"}}
+        result, assessment, _ = resolve_candidates(raw, self.GROUP_SCHEMA)
+        assert result["Address"] == {"Street": "100 Main Street", "Zip": "90210"}
+        assert "Address" not in assessment
+
+    def test_mixed_group_keeps_non_candidate_subattributes(self):
+        raw = {
+            "Address": {
+                "Street": {"G1": "100 Main Street", "P1": 0.9},
+                "Zip": "90210",  # model ignored TopK for this one
+            }
+        }
+        result, assessment, _ = resolve_candidates(raw, self.GROUP_SCHEMA)
+        assert result["Address"] == {"Street": "100 Main Street", "Zip": "90210"}
+        assert assessment["Address"] == {"Street": {"confidence": 0.9}}
+
+    def test_group_geometry_is_carried_onto_the_leaf(self):
+        raw = {
+            "Address": {
+                "Street": {
+                    "G1": "100 Main Street",
+                    "P1": 0.9,
+                    "bbox": [1, 2, 3, 4],
+                    "page": 2,
+                }
+            }
+        }
+        _, assessment, _ = resolve_candidates(raw, self.GROUP_SCHEMA)
+        assert assessment["Address"]["Street"]["bbox"] == [1, 2, 3, 4]
+        assert assessment["Address"]["Street"]["page"] == 2
+
+    def test_group_with_no_schema_entry_still_resolves(self):
+        """Auto-generated schemas may not describe the group at all."""
+        raw = {"Unknown": {"Sub": {"G1": "value", "P1": 0.75}}}
+        result, assessment, _ = resolve_candidates(raw, {"properties": {}})
+        assert result["Unknown"] == {"Sub": "value"}
+        assert assessment["Unknown"]["Sub"]["confidence"] == 0.75

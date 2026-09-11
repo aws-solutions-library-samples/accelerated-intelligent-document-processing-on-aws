@@ -225,7 +225,7 @@ def update_status(
             method="POST",
         )
 
-        with urlopen(urllib_request, timeout=30) as response:  # noqa: S310
+        with urlopen(urllib_request, timeout=30) as response:  # noqa: S310  # nosec B310 - APPSYNC_API_URL is a deployment-set env var (https), not user input
             response_body = json.loads(response.read().decode("utf-8"))
 
         if "errors" in response_body:

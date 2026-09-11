@@ -43,7 +43,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Every template that creates IAM roles in an AWS account — the product stacks,
-# the service role operators deploy by hand, and our own SDLC infrastructure.
+# the service role operators deploy by hand, our own SDLC infrastructure, and the
+# throwaway fixtures the live authorization checks deploy (those are meant to be
+# runnable in any partition too, so they get the same treatment).
 # Globbed rather than listed so a new nested stack is covered the day it lands;
 # test_every_role_declaring_template_is_scanned proves the globs stay complete.
 TEMPLATE_GLOBS = (
@@ -54,6 +56,7 @@ TEMPLATE_GLOBS = (
     "feature-platform/**/template.yaml",
     "iam-roles/**/*.yaml",
     "scripts/sdlc/cfn/*.yml",
+    "scripts/security/live_checks/**/template.yaml",
 )
 
 # `sam build` copies each template into <stack>/.aws-sam/build/. Those copies are
@@ -93,7 +96,12 @@ UPDATE_ONLY_ROLE_ACTIONS = (
 # fine for "which properties are present" checks but useless here: the whole
 # point is to look at what Fn::If guards.
 class CfnLoader(yaml.SafeLoader):
-    """SafeLoader (never the unsafe yaml.Loader) plus CFN short-form tags."""
+    """SafeLoader (never the unsafe yaml.Loader) plus CFN short-form tags.
+
+    Kept local rather than taken from idp_sdk._core.cfn_yaml: the long-form
+    normalization below is specific to this file's Fn::If evaluation, and these
+    tests are meant to run from the repo root with nothing installed.
+    """
 
 
 def _intrinsic(loader, tag_suffix, node):
@@ -115,10 +123,17 @@ _NO_VALUE = {"Ref": "AWS::NoValue"}
 
 
 def load_template(path: Path) -> dict:
+    # CfnLoader subclasses yaml.SafeLoader, so no Python-object construction is
+    # possible; input is a developer-committed template from this repo. The
+    # loader is driven directly rather than via `yaml.load(..., Loader=)` —
+    # identical behaviour, minus the call shape scanners flag. See
+    # idp_sdk._core.cfn_yaml.
     with path.open() as f:
-        # nosec B506 - CfnLoader subclasses yaml.SafeLoader; input is a
-        # developer-committed template from this repo.
-        return yaml.load(f, Loader=CfnLoader) or {}  # nosec B506
+        loader = CfnLoader(f)
+        try:
+            return loader.get_single_data() or {}
+        finally:
+            loader.dispose()
 
 
 # --- Three-valued condition evaluation ----------------------------------------
@@ -494,4 +509,51 @@ def test_service_role_docs_list_the_same_iam_actions():
     undocumented = _service_role_iam_actions() - documented
     assert not undocumented, (
         f"IAM actions granted but not documented: {sorted(undocumented)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Finding from review: the AWS_PARTITION env-var wiring had nothing pinning it.
+#
+# query_knowledgebase_resolver builds the Bedrock inference-profile MODEL_ARN
+# itself and reads the partition from AWS_PARTITION, defaulting to "aws". Delete
+# the env var from the template and the resolver silently reverts to the exact
+# bug — every Knowledge Base query failing in GovCloud on an invalid model ARN —
+# with no test failing and the Python arn:aws: gate seeing nothing wrong, because
+# the Python is partition-correct and the TEMPLATE is what broke.
+# ---------------------------------------------------------------------------
+
+_KB_RESOLVER_TEMPLATE = "nested/api-resolvers/template.yaml"
+_KB_RESOLVER_SRC = (
+    "nested/api-resolvers/src/lambda/query_knowledgebase_resolver/index.py"
+)
+
+
+def _repo_root_path():
+    from pathlib import Path
+
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "template.yaml").is_file() and (parent / "publish.py").is_file():
+            return parent
+    raise RuntimeError("repo root not found")
+
+
+def test_kb_resolver_receives_the_partition_from_the_template():
+    """The resolver's MODEL_ARN partition must be injected, not defaulted."""
+    text = (_repo_root_path() / _KB_RESOLVER_TEMPLATE).read_text()
+    assert "AWS_PARTITION: !Ref AWS::Partition" in text, (
+        "query_knowledgebase_resolver builds its Bedrock MODEL_ARN from "
+        "AWS_PARTITION and falls back to 'aws' when unset. Without this env var "
+        "every Knowledge Base query fails in GovCloud on an invalid model ARN, "
+        "and no other test or gate notices."
+    )
+
+
+def test_kb_resolver_uses_the_partition_when_building_model_arn():
+    """And the resolver must actually USE it rather than a literal arn:aws:."""
+    text = (_repo_root_path() / _KB_RESOLVER_SRC).read_text()
+    assert 'os.environ.get("AWS_PARTITION")' in text
+    assert "arn:{AWS_PARTITION}:bedrock:" in text, (
+        "MODEL_ARN must interpolate AWS_PARTITION; a literal arn:aws: cannot "
+        "resolve outside the commercial partition."
     )

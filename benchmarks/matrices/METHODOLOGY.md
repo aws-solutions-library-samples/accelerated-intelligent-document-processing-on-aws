@@ -14,9 +14,62 @@ vary size (rows/pages), list count, row width (token density), text length, and 
 controllable OCR-noise level. Generators are deterministic given their params (no RNG
 that would break reproducibility) so a regenerated corpus is byte-comparable.
 
+> ⚠️ **A generated document can also be wrong, and the ground truth will not say so.**
+> `longdesc_100` rendered its long descriptions as plain strings in a reportlab table
+> cell, which does not wrap — so the text ran past the column edge and **overprinted the
+> Amount column**. Textract read the collision: the OCR of that document contained *zero*
+> amount-shaped lines, and one row came back as `"...recurring monthly charge00ference
+> invoice 0"`, the amount `0.00` stamped over the word `reference`. Every Amount on the
+> document was physically unreadable, so it tested nothing — while the truth file
+> confidently asserted the values that had been drawn over.
+>
+> Fixed by wrapping long description cells in a `Paragraph`. **Results for
+> `desc_len: long` documents are not comparable across that fix** (the page count changes,
+> 3 → 4). The generic lesson: when a metric is unexpectedly *uniform* across every
+> configuration — as `cell_accuracy` was here, exactly 0.500 for all 19 cells — suspect the
+> document before the product.
+
 ### B. Reference (real, labeled)
 Existing stack test sets (`realkie-fcc-verified`, `ocr-benchmark`, `samples-tables`)
 with curated evaluation baselines. Real-world messiness the synthetic set can't emulate.
+
+> **Reference corpora are launched as test sets** ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).
+> A reference doc is a test *set* on the stack, not a PDF under `corpus/docs/`, so
+> `run_matrix.py` submits it through the TestRunner with the cell's config version
+> and the corpus's `n` documents, polls until every document has finished, and
+> `aggregate.py` scores each document with `analyze.score_reference()` (the
+> stack's own evaluation; there is no local truth). Two prerequisites, or the
+> corpus is reported *unlaunchable* with the exact command to fix it and recorded
+> as `docs_unlaunchable`:
+>
+> 1. The suite's cells must be built onto the corpus's **own** base config —
+>    `make_configs.py --suite <suite> --class realkie` and `--class ocr_bench`
+>    (same `--set` overrides as the synthetic class). `doc_matrix.yaml`'s
+>    `class` field names that class.
+> 2. The test set must exist on the stack; a runner rejection is printed and the
+>    run recorded as `NOT_LAUNCHED`.
+>
+> Reference corpora ride along with the suite regardless of `--class`; on a
+> second per-class pass of the same suite (e.g. `--class kv_form` for `kv_form`)
+> pass `--no-reference` so 20-document corpora are not paid for twice.
+>
+> **What this does to a cell's headline number.** `cell_stats` averages over
+> rows, and a reference run contributes one row per document (`sub_doc`). In
+> `core` a cell therefore averages 7 synthetic rows and 40 real-document rows, so
+> most of the cell mean now comes from the two real corpora and `n_runs` counts
+> documents, not the 9 names in the plan. Release comparisons pair rows on
+> `(cell, doc, sub_doc)`, so a corpus is compared document by document. Compare
+> `core` results only with `core` results produced after this change; `coresynth`
+> is the synthetic-only view.
+>
+> `runmap.json` (and the committed `meta.json`) record `docs_named` / `docs_run`
+> / `docs_reference` / `docs_unlaunchable` / `docs_skipped_reference` /
+> `docs_other_class`. Those fields are *absent* on a runmap produced before they
+> existed (or by another launcher): absent means **unknown**, not "nothing was
+> skipped". `docs_other_class` is not a shortfall: a suite may legitimately name
+> documents of several classes (`enforcement` and `forcing` name `kv_form` beside
+> bank-statement docs), and those are run under their own `--class` in a
+> separate invocation.
 
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and
@@ -24,13 +77,13 @@ with curated evaluation baselines. Real-world messiness the synthetic set can't 
 - `make_configs.py` expands `config_matrix.yaml` into full v0.6 configs (one per
   cell × doc-class), validates each with `merge_config_with_defaults(..., validate=True)`,
   strips `managed`, and uploads as `Config#bench-<cell>-<class>` via `idp-cli config-upload`.
-- NEVER mutate `Config#default`. Always run against a named `--config-version`.
+- NEVER mutate `Config#default`. Always run against a named `--config-profile`.
 - PYTHONPATH is pinned to the repo's `idp_common` to avoid a stale sibling checkout
   silently stripping v0.6 fields on upload.
 
 ## 3. Execution
 - `run_matrix.py` launches each (config-cell × doc) via the stack TestRunner
-  (`idp-cli run-inference --test-set bench-<id> --config-version bench-<cell>-<class>`),
+  (`idp-cli run-inference --test-set bench-<id> --config-profile bench-<cell>-<class>`),
   records `runId`s to `results/<run>/runmap.json`, and polls per-doc rows in the
   TrackingTable (`ObjectStatus`/`EvaluationStatus`) until COMPLETED/FAILED.
 - Concurrency is capped and large docs are launched last to limit Bedrock throttling.
@@ -52,8 +105,30 @@ Every run is scored on SEVEN dimensions:
 
 Scoring is **resolver-free** (reads S3 + DDB directly) so it works on any stack version.
 
+### An instrument only exists where the truth file declares it
+
+`accuracy` above promises "per-row cell match on list fields (keyed by SEQ)", and that
+promise is only kept for a document whose truth file carries `rows_typed`. It used to be
+emitted **only** for the value-noise variants, so every other synthetic document —
+including all seven in `core_synth`, the grid the config-guidance paper reports — had no
+per-cell instrument at all, and `cell_accuracy` came back `None`.
+
+That is not a theoretical gap. On `longdesc_100`, simple extraction returned all 100 rows
+with `Amount: null`; `completeness_recall` counts SEQ tags in the *Description* and
+`scalar_accuracy` only looks at document-level fields, so the run scored **recall 1.000 /
+accuracy 1.000 with an entire column empty**. Two studies drew conclusions across that
+blind spot before it was closed.
+
+`rows_typed` is now emitted for every generated bank statement. Two rules follow:
+
+- **A `None` metric is "not measured", never "fine".** Before reporting "no effect",
+  check that the instrument that would have shown the effect was populated — the
+  aggregate prints `cells_compared` alongside `cell_accuracy` for exactly this.
+- **Scoring is retroactive.** It re-reads S3 and DynamoDB, so adding truth or a metric
+  lets an already-completed run be re-scored with no new spend. Prefer that to a re-run.
+
 ## 5. Aggregation + comparison — aggregate.py
-- Rolls per-run scores into `results/<release>/summary.{json,csv}`: one row per
+- Rolls per-run scores into `results/<release>/<suite>/summary.{json,csv}`: one row per
   (cell, doc) with all seven dimensions, plus per-cell and per-doc marginals.
 - Cross-release comparison: diff a release's `summary.json` against `baseline.json`
   on matched (cell, doc) keys; flag deltas beyond thresholds (accuracy −>2%, cost

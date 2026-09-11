@@ -1,0 +1,27 @@
+{
+  "stack": "IDPBench066",
+  "testset": "docsplit",
+  "n": 20,
+  "mode": "off",
+  "top_k": 3,
+  "resources": {
+    "testset_bucket": "idpbench066-testsetbucket-llagukhf8e51",
+    "output_bucket": "idpbench066-outputbucket-po66kdqspf2k",
+    "tracking_table": "IDPBench066-TrackingTable-16FWO0585H781",
+    "config_table": "IDPBench066-ConfigurationTable-1KZRO286U36DG"
+  },
+  "runs": [
+    {
+      "model": "nova2lite",
+      "model_id": "us.amazon.nova-2-lite-v1:0",
+      "version": "bench-clsconf-nova2lite-off",
+      "run_id": "DocSplit-Poly-Seq-20260902-192732"
+    },
+    {
+      "model": "haiku45",
+      "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "version": "bench-clsconf-haiku45-off",
+      "run_id": "DocSplit-Poly-Seq-20260902-193014"
+    }
+  ]
+}

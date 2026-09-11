@@ -272,8 +272,20 @@ class TestExtractionService:
         assert written_content["document_class"]["type"] == "invoice"
         assert written_content["inference_result"]["invoice_number"] == "INV-123"
         assert written_content["inference_result"]["invoice_date"] == "2025-05-08"
-        assert written_content["inference_result"]["total_amount"] == "$100.00"
+        # The model returned the string "$100.00" for a field the schema declares
+        # as `number` — a real type violation that simple mode used to pass
+        # through untouched. Deterministic coercion now repairs it (no extra
+        # inference) and records what it did, so the stored value is a number and
+        # the rewrite is auditable rather than silent.
+        assert written_content["inference_result"]["total_amount"] == 100.0
+        coercion = written_content["metadata"]["coercion"]
+        assert any(
+            c["path"] == "total_amount" and c["from"] == "$100.00" and c["to"] == 100.0
+            for c in coercion["coercions"]
+        ), coercion
         assert written_content["metadata"]["parsing_succeeded"] is True
+        # ...and the result then validates cleanly against the class schema.
+        assert written_content["metadata"]["validation"]["valid"] is True
 
     @patch("idp_common.s3.get_text_content")
     @patch("idp_common.image.prepare_image")

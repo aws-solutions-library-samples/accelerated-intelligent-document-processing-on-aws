@@ -4,6 +4,8 @@ import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { Authenticator } from '@aws-amplify/ui-react';
+
+import { SessionLoading } from './SessionStates';
 import { signInWithRedirect } from 'aws-amplify/auth';
 import Button from '@cloudscape-design/components/button';
 
@@ -84,7 +86,15 @@ const AutoLoginOrAuthenticator = (): React.JSX.Element => {
       }}
       signUpAttributes={['email']}
       hideSignUp={VITE_SHOULD_HIDE_SIGN_UP === 'true'}
-    />
+    >
+      {/* Amplify renders these children once authStatus is 'authenticated', so an
+          <Authenticator /> with NO children renders nothing at all in exactly
+          that state — the mechanism behind the blank page after a valid sign-in.
+          Reaching here while already authenticated means the app is mounting
+          (e.g. `user` has not been populated yet on a reload with a live
+          session), so show that rather than an empty page. */}
+      {() => <SessionLoading />}
+    </Authenticator>
   );
 };
 

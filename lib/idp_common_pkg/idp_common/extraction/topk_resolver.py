@@ -112,15 +112,12 @@ def resolve_candidates(
     defs = schema.get("$defs", {})
 
     for attr_name, value in raw_result.items():
-        attr_schema = props.get(attr_name, {})
+        attr_schema = _deref(props.get(attr_name, {}), defs)
 
         # Resolve item schema for arrays (deref $ref against $defs).
         item_schema: dict[str, Any] = {}
         if attr_schema.get("type") == "array":
-            item_schema = attr_schema.get("items", {})
-            if "$ref" in item_schema:
-                def_name = item_schema["$ref"].split("/")[-1]
-                item_schema = defs.get(def_name, item_schema)
+            item_schema = _deref(attr_schema.get("items", {}), defs)
 
         # Case 1: Wrapped candidate — {"G1": <value>, "P1": <prob>, ...}
         if isinstance(value, dict) and "G1" in value:
@@ -142,12 +139,29 @@ def resolve_candidates(
 
         # Case 2: Direct array — [{sub_attr: {G1, P1, ...}, ...}, ...]
         elif isinstance(value, list) and attr_schema.get("type") == "array":
-            resolved_items, item_assessments = _resolve_list_items(value, item_schema)
+            resolved_items, item_assessments = _resolve_list_items(
+                value, item_schema, defs
+            )
             inference_result[attr_name] = resolved_items
             assessment_data[attr_name] = item_assessments
             candidates_metadata[attr_name] = value
 
-        # Case 3: Non-candidate value (the model ignored TopK for this field) —
+        # Case 3: GROUP (object) field whose SUB-ATTRIBUTES are candidates —
+        # {"Address": {"City": {G1, P1, ...}, "State": {G1, P1, ...}}}.
+        #
+        # This case used to fall through to the pass-through below, which stored
+        # the raw candidate dicts AS THE EXTRACTED VALUE: a group's
+        # `City` came out as `{"G1": "Anytown", "P1": 0.95, ...}` instead of
+        # `"Anytown"`, and the group produced NO confidence leaves at all, so its
+        # fields were also invisible to threshold alerts and HITL. Observed live
+        # on every group field of every document processed in integrated mode.
+        elif isinstance(value, dict) and _looks_like_candidate_group(value):
+            resolved_group, group_assess = _resolve_group(value, attr_schema, defs)
+            inference_result[attr_name] = resolved_group
+            assessment_data[attr_name] = group_assess
+            candidates_metadata[attr_name] = value
+
+        # Case 4: Non-candidate value (the model ignored TopK for this field) —
         # pass the value through with no confidence leaf.
         else:
             inference_result[attr_name] = value
@@ -155,17 +169,96 @@ def resolve_candidates(
     return inference_result, assessment_data, candidates_metadata
 
 
+def _deref(schema: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a one-level ``$ref`` against ``$defs``; return the schema as-is otherwise."""
+    if isinstance(schema, dict) and "$ref" in schema:
+        def_name = schema["$ref"].split("/")[-1]
+        return defs.get(def_name, schema)
+    return schema if isinstance(schema, dict) else {}
+
+
+def _looks_like_candidate_group(value: dict[str, Any], _depth: int = 0) -> bool:
+    """True if this object contains a ``{G1, P1, ...}`` candidate at any depth.
+
+    Structural rather than schema-driven on purpose: a group can arrive without a
+    usable schema entry (auto-generated schemas, ``additionalProperties``), and
+    the consequence of guessing wrong is symmetric — either way the value falls
+    through to pass-through, which is the previous behaviour.
+
+    Recurses so a group nested inside a group is still recognised; depth-bounded
+    purely as a guard against a pathological payload.
+    """
+    if _depth > 8:
+        return False
+    for sub in value.values():
+        if isinstance(sub, dict):
+            if "G1" in sub and "P1" in sub:
+                return True
+            if _looks_like_candidate_group(sub, _depth + 1):
+                return True
+        elif isinstance(sub, list):
+            for item in sub:
+                if isinstance(item, dict) and _looks_like_candidate_group(
+                    item, _depth + 1
+                ):
+                    return True
+    return False
+
+
+def _resolve_group(
+    group: dict[str, Any], attr_schema: dict[str, Any], defs: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve a group (object) field whose sub-attributes are candidates.
+
+    Recurses, so a group nested inside a group also resolves, and a list nested
+    inside a group is handled by the list resolver.
+    """
+    group_props = _deref(attr_schema, defs).get("properties", {})
+    resolved: dict[str, Any] = {}
+    assess: dict[str, Any] = {}
+    for key, val in group.items():
+        sub_schema = _deref(group_props.get(key, {}), defs)
+        if isinstance(val, dict) and "G1" in val:
+            inner = val.get("G1")
+            if sub_schema.get("type") == "array" and isinstance(inner, list):
+                items, item_assess = _resolve_list_items(
+                    inner, _deref(sub_schema.get("items", {}), defs), defs
+                )
+                resolved[key] = items
+                assess[key] = item_assess
+            else:
+                resolved[key] = _coerce_value(inner, sub_schema)
+                assess[key] = {
+                    "confidence": _safe_prob(val.get("P1", 0.0)),
+                    **_geometry_from_candidate(val),
+                }
+        elif isinstance(val, list) and sub_schema.get("type") == "array":
+            items, item_assess = _resolve_list_items(
+                val, _deref(sub_schema.get("items", {}), defs), defs
+            )
+            resolved[key] = items
+            assess[key] = item_assess
+        elif isinstance(val, dict) and _looks_like_candidate_group(val):
+            sub_resolved, sub_assess = _resolve_group(val, sub_schema, defs)
+            resolved[key] = sub_resolved
+            assess[key] = sub_assess
+        else:
+            resolved[key] = val
+    return resolved, assess
+
+
 def _resolve_list_items(
-    items_list: list, item_schema: dict[str, Any]
+    items_list: list, item_schema: dict[str, Any], defs: dict[str, Any] | None = None
 ) -> tuple[list[dict], list[dict]]:
     """Resolve candidate dicts within array items into values + confidence leaves.
 
     Returns ``(resolved_items, item_assessments)`` index-aligned with the input,
     each item assessment being a per-sub-attribute ``{"confidence": P1}`` map.
     """
+    defs = defs or {}
     resolved_items: list[dict] = []
     item_assessments: list[dict] = []
-    item_props = item_schema.get("properties", {})
+    item_props = _deref(item_schema, defs).get("properties", {})
 
     for item in items_list:
         if not isinstance(item, dict):
@@ -175,13 +268,18 @@ def _resolve_list_items(
         resolved_item: dict[str, Any] = {}
         item_assess: dict[str, Any] = {}
         for key, val in item.items():
-            sub_schema = item_props.get(key, {})
+            sub_schema = _deref(item_props.get(key, {}), defs)
             if isinstance(val, dict) and "G1" in val:
                 resolved_item[key] = _coerce_value(val.get("G1"), sub_schema)
                 item_assess[key] = {
                     "confidence": _safe_prob(val.get("P1", 0.0)),
                     **_geometry_from_candidate(val),
                 }
+            elif isinstance(val, dict) and _looks_like_candidate_group(val):
+                # A group nested inside a list row.
+                sub_resolved, sub_assess = _resolve_group(val, sub_schema, defs)
+                resolved_item[key] = sub_resolved
+                item_assess[key] = sub_assess
             else:
                 resolved_item[key] = val
         resolved_items.append(resolved_item)

@@ -8,6 +8,8 @@ query GetTestSetDocuments($testSetId: String!, $limit: Int, $nextToken: String, 
       sections {
         sectionId
         baselineKey
+        documentClass
+        pageIndices
       }
       labelSource
       minConfidence
@@ -16,6 +18,7 @@ query GetTestSetDocuments($testSetId: String!, $limit: Int, $nextToken: String, 
       fieldCount
     }
     nextToken
+    totalCount
     activeLabelJobId
   }
 }

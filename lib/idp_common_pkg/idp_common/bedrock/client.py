@@ -30,6 +30,7 @@ from .model_utils import (
     get_model_max_output_tokens,
     parse_max_tokens_limit_from_error,
     parse_model_id,
+    resolve_model_id_from_arn,
 )
 from .openai_responses import invoke_responses_api, is_openai_responses_model
 from .session import get_bedrock_session
@@ -38,7 +39,29 @@ from .session import get_bedrock_session
 LAMBDA_HOOK_MODEL_ID = "LambdaHook"
 
 
+def numeric_usage(usage: Any) -> Dict[str, Any]:
+    """The numeric members of a Converse ``usage`` block, for metering.
+
+    Metering values are summed across calls (``merge_metering_data``) and priced
+    per unit (``save_reporting_data``), so every value must be a number. Bedrock's
+    ``usage`` has grown structured members — ``cacheDetails`` is a list of
+    ``{"ttl": "5m", "inputTokens": N}`` cache-write breakdowns — and spreading the
+    whole block into metering made every subsequent merge log
+    ``unsupported operand type(s) for +: 'int' and 'list'`` and stored the list
+    where a count belongs. Booleans are excluded too (they are ints in Python).
+    """
+    if not isinstance(usage, dict):
+        return {}
+    return {
+        k: v
+        for k, v in usage.items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+
+
 # Dummy exception classes for requests timeouts if requests is not available
+
+
 class _RequestsReadTimeout(Exception):
     """Fallback exception class when requests library is not available."""
 
@@ -106,9 +129,17 @@ def is_claude_4_7_model(model_id: str) -> bool:
     Args:
         model_id: Bedrock model ID (e.g., 'us.anthropic.claude-opus-4-7:1m')
 
+    Inference-profile ARNs are resolved first. Without this, a config naming
+    ``arn:...:inference-profile/us.anthropic.claude-sonnet-5`` — the form
+    docs/configuration.md recommends for cost allocation, and the only form
+    available in GovCloud — would not be recognized, so ``temperature`` would be
+    sent to a model that rejects it with a 400. Opaque
+    ``application-inference-profile`` ARNs still cannot be resolved offline.
+
     Returns:
         True if the model is a Claude 4.7+ variant
     """
+    model_id = resolve_model_id_from_arn(model_id)
     # Strip region prefix (us., eu., global.)
     parts = model_id.split(".", 1)
     if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
@@ -143,8 +174,12 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     "anthropic.claude-fable-5",
 }
 
-# Effort levels accepted by Claude models (a superset of the OpenAI Responses
-# levels, which also allow "minimal"). "max"/"xhigh" are Claude-only.
+# Effort levels accepted by Claude models. There are now THREE vocabularies on
+# this file's paths and no two are the same — see GROK_EFFORT_LEVELS and
+# ASTRA_EFFORT_LEVELS. Relative to Claude's set: the OpenAI Responses models
+# (GPT-5.x) also allow "minimal" but not "xhigh"/"max"; Grok adds "none" and
+# rejects "max"; Astra adds "none" and keeps "max". So no constant here is a
+# superset of the others, and none may be reused across families.
 CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
@@ -173,6 +208,211 @@ def is_claude_effort_model(model_id: str) -> bool:
     return any(base.startswith(name) for name in _CLAUDE_EFFORT_BASE_NAMES)
 
 
+# ---------------------------------------------------------------------------
+# xAI Grok
+# ---------------------------------------------------------------------------
+# Grok is the first non-Anthropic/non-Nova family to reach the Converse API, so
+# several assumptions that held while only Claude and Nova used this path had to
+# be generalized. Everything below was verified live against
+# ``us.xai.grok-4.6`` on bedrock-runtime Converse in us-west-2 on 2026-09-02:
+#
+#   * ``inferenceConfig.temperature`` and ``inferenceConfig.topP`` are REJECTED
+#     ("This model doesn't support the temperature field"), so Grok joins the
+#     sampling-param-stripped set — see ``strips_sampling_params``.
+#   * ``maxTokens`` must ride in ``inferenceConfig``. Claude's
+#     ``additionalModelRequestFields.max_tokens`` is accepted but SILENTLY
+#     IGNORED (a request capped at 100 there returned 135 output tokens).
+#     Unknown ``additionalModelRequestFields`` keys are silently ignored too, so
+#     the exact carrier matters and a wrong one fails open, not loudly.
+#   * Reasoning is always on. The effort carrier is
+#     ``additionalModelRequestFields.reasoning.effort``; Claude's
+#     ``output_config.effort`` is silently ignored here.
+#   * ``document`` content blocks are REJECTED ("This model doesn't support
+#     documents") — see ``document_blocks_unsupported_reason``. Images work.
+#   * ``toolConfig`` works with all three ``toolChoice`` modes and emits
+#     ``toolUse``, so agentic extraction is supported (unlike GPT-5.x).
+#   * Explicit ``cachePoint`` blocks raise AccessDeniedException, so Grok is
+#     deliberately absent from CACHEPOINT_SUPPORTED_MODELS below. The model card
+#     advertises implicit caching, but 4 back-to-back identical 20,033-token
+#     prompts all reported ``cacheReadInputTokens=0``, so no caching benefit is
+#     claimed.
+#   * Flex/Priority service tiers are REJECTED ("The provided service tier is
+#     not supported for this model") despite the model card advertising both, so
+#     no tier-suffixed Grok IDs are offered.
+_GROK_BASE_PREFIX = "xai.grok"
+
+# Effort levels accepted by Grok. NOTE this is NOT the same vocabulary as
+# CLAUDE_EFFORT_LEVELS: Grok adds "none" and REJECTS "max" ("Unsupported value:
+# 'max' is not supported with the 'us.xai.grok-4.6' model").
+GROK_EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh")
+
+
+def is_grok_model(model_id: str) -> bool:
+    """True if ``model_id`` names an xAI Grok model.
+
+    Handles the ``us.``/``global.`` cross-region inference-profile prefixes.
+    Grok has no in-region form on bedrock-runtime — the bare ``xai.grok-4.6`` is
+    rejected ("Invocation of model ID xai.grok-4.6 with on-demand throughput
+    isn't supported") — but the bare name is matched anyway so the predicate is
+    about the family, not the routing.
+
+    Inference-profile **ARNs** are resolved first. This matters more here than
+    for the Claude predicates: docs/configuration.md actively recommends passing
+    an inference-profile ARN for cost-allocation tagging, and an ARN is the only
+    form available in GovCloud. Because Grok's rejections are unconditional (a
+    400 on temperature, a hard refusal of document blocks), missing the ARN form
+    would fail 100% of requests rather than degrade quietly.
+
+    LIMITATION: ``application-inference-profile/<uuid>`` ARNs are opaque — the
+    underlying foundation model cannot be determined without a
+    GetInferenceProfile call — so those still return False. A Grok application
+    inference profile will therefore bypass these gates.
+    """
+    if not model_id:
+        return False
+    resolved = resolve_model_id_from_arn(model_id)
+    return _strip_region_and_1m(resolved).startswith(_GROK_BASE_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI GPT-6 Astra
+# ---------------------------------------------------------------------------
+# IMPORTANT: Astra is NOT on the code path the accelerator's other OpenAI models
+# use. GPT-5.4/5.5/5.6 are served ONLY by the ``bedrock-mantle`` Responses API
+# (see openai_responses.py); Astra reaches the ordinary ``bedrock-runtime``
+# Converse API, so its closest sibling in this file is xAI Grok, not GPT-5.x.
+# ``is_openai_responses_model`` matches on ``openai.gpt-5`` and therefore already
+# excludes Astra — test_bedrock_astra.py pins that so a future widening of the
+# GPT-5.x prefix cannot silently steal this model onto the mantle path.
+#
+# Everything below was verified live against ``us.openai.gpt-6-astra`` on
+# bedrock-runtime Converse in us-west-2 on 2026-09-10, and cross-checked against
+# the model card:
+#
+#   * ``inferenceConfig.temperature`` and ``inferenceConfig.topP`` are REJECTED
+#     ("This model doesn't support the temperature field"), so Astra joins the
+#     sampling-param-stripped set — see ``strips_sampling_params``.
+#   * ``maxTokens`` rides in ``inferenceConfig`` (the Converse-standard carrier,
+#     which is already the default for every non-Anthropic family here). The cap
+#     is 128,000: a request for 200,000 is rejected naming the real limit
+#     ("exceeds the model limit of 131072").
+#   * Reasoning is always on. The effort carrier is
+#     ``additionalModelRequestFields.reasoning.effort`` — same shape as Grok.
+#     Claude's ``output_config.effort`` is REJECTED here rather than ignored
+#     ("Unknown parameter: 'output_config'"), and so is a flat
+#     ``reasoning_effort`` key, so the carrier must be exactly right.
+#   * ``document`` content blocks are REJECTED ("This model doesn't support the
+#     document field for user messages") — see
+#     ``document_blocks_unsupported_reason``. Images work.
+#   * ``toolConfig`` works and emits ``toolUse`` under a forced ``toolChoice``,
+#     so agentic and forced-tool extraction are supported (unlike GPT-5.x).
+#   * Explicit ``cachePoint`` blocks raise AccessDeniedException, so Astra is
+#     absent from CACHEPOINT_SUPPORTED_MODELS below. Unlike Grok, though, its
+#     IMPLICIT caching demonstrably works on this path: a repeated 2,707-token
+#     prefix billed ``inputTokens=2`` with ``cacheReadInputTokens=2707``. No
+#     request change is needed to get it, and the existing metering already
+#     records ``cacheReadInputTokens``, so the discount shows up in cost reports
+#     without any code change here.
+#   * Flex/Priority service tiers are REJECTED ("The provided service tier is
+#     not supported for this model"), matching the model card (Standard only), so
+#     no tier-suffixed Astra IDs are offered.
+#   * There is NO in-region form on bedrock-runtime: the bare ``openai.gpt-6-astra``
+#     is rejected ("Invocation of model ID ... with on-demand throughput isn't
+#     supported"). Only ``us.`` (US geo) and ``global.`` (worldwide) CRIS profiles
+#     work. The bare ID IS valid on ``bedrock-mantle`` in us-west-2 only, which the
+#     accelerator deliberately does not use — see the module README.
+_ASTRA_BASE_PREFIX = "openai.gpt-6-astra"
+
+# Effort levels accepted by Astra. NOTE this is a THIRD vocabulary: it is
+# CLAUDE_EFFORT_LEVELS plus "none", and it differs from GROK_EFFORT_LEVELS at the
+# other end — Grok rejects "max" while Astra accepts it. Astra also REJECTS the
+# OpenAI Responses level "minimal" ("Unsupported value: 'minimal' is not
+# supported with the 'us.openai.gpt-6-astra' model. Supported values are:
+# 'none', 'low', 'medium', 'high', 'xhigh', and 'max'"), which is exactly the
+# kind of cross-family confusion this separate constant exists to prevent.
+ASTRA_EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
+
+
+def is_astra_model(model_id: str) -> bool:
+    """True if ``model_id`` names the OpenAI GPT-6 Astra model.
+
+    Handles the ``us.``/``global.`` cross-region inference-profile prefixes and
+    resolves inference-profile **ARNs** first, for the same reason as
+    :func:`is_grok_model`: docs/configuration.md recommends the ARN form for
+    cost-allocation tagging, and Astra's rejections are unconditional (a 400 on
+    ``temperature``, a hard refusal of ``document`` blocks), so failing to
+    recognize the ARN form would fail 100% of requests rather than degrade
+    quietly.
+
+    LIMITATION: ``application-inference-profile/<uuid>`` ARNs are opaque — the
+    underlying foundation model cannot be determined without a
+    GetInferenceProfile call — so those still return False. An Astra application
+    inference profile will therefore bypass these gates.
+    """
+    if not model_id:
+        return False
+    resolved = resolve_model_id_from_arn(model_id)
+    return _strip_region_and_1m(resolved).startswith(_ASTRA_BASE_PREFIX)
+
+
+def strips_sampling_params(model_id: str) -> bool:
+    """True if the model REJECTS ``temperature`` / ``topP`` / ``top_k``.
+
+    Covers Claude 4.7+ (where these are deprecated) and the two Converse
+    families that return a 400 naming the offending field: xAI Grok and OpenAI
+    GPT-6 Astra. Callers must omit the whole ``inferenceConfig`` sampling group
+    for these models rather than passing defaults.
+    """
+    return (
+        is_claude_4_7_model(model_id)
+        or is_grok_model(model_id)
+        or is_astra_model(model_id)
+    )
+
+
+# Converse ``document`` content-block capability gate.
+#
+# Discovery and any other path that hands Bedrock a whole PDF relies on
+# ``document`` blocks. Two families cannot accept them and would otherwise
+# silently drop the document and hallucinate an answer, so callers fail loudly
+# instead. Kept beside ``tool_config_unsupported_reason`` (same shape) so every
+# per-model Converse capability gate lives in one place.
+DOCUMENT_BLOCK_UNSUPPORTED_ROUTES: Dict[str, str] = {
+    "openai-responses": (
+        "OpenAI GPT-5.x models are served by the bedrock-mantle Responses API, "
+        "which accepts only text and image input"
+    ),
+    "xai-grok": (
+        "xAI Grok models reject Converse document blocks (\"This model doesn't "
+        'support documents"); their input modalities are text and image only'
+    ),
+    "openai-astra": (
+        "OpenAI GPT-6 Astra rejects Converse document blocks (\"This model "
+        "doesn't support the document field for user messages\"); its input "
+        "modalities are text and image only"
+    ),
+}
+
+
+def document_blocks_unsupported_reason(model_id: Optional[str]) -> Optional[str]:
+    """Explain why ``model_id`` cannot accept Converse ``document`` blocks.
+
+    Returns None when the model can accept them.
+    """
+    if is_openai_responses_model(model_id):
+        return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["openai-responses"]
+    if model_id and is_grok_model(model_id):
+        return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["xai-grok"]
+    if model_id and is_astra_model(model_id):
+        return DOCUMENT_BLOCK_UNSUPPORTED_ROUTES["openai-astra"]
+    return None
+
+
+def supports_document_blocks(model_id: Optional[str]) -> bool:
+    """True if ``model_id`` can accept whole-PDF Converse ``document`` blocks."""
+    return document_blocks_unsupported_reason(model_id) is None
+
+
 # Base model names that support cachePoint (without region prefix)
 # Used to check inference profiles by resolving their underlying foundation model
 _CACHEPOINT_BASE_MODELS = set()
@@ -182,8 +422,12 @@ _CACHEPOINT_BASE_MODELS = set()
 # They are served via the bedrock-mantle Responses API (see openai_responses.py)
 # and do not support Bedrock prompt-prefix caching; <<CACHEPOINT>> markers are
 # stripped for them during request translation.
+# NOTE: OpenAI GPT-6 Astra (openai.gpt-6-astra) is absent for a different reason —
+# it reaches Converse, but an explicit cachePoint block raises
+# AccessDeniedException. Its IMPLICIT caching works with no request change and is
+# already reflected in cacheReadInputTokens metering, so listing it here would
+# only break requests, not unlock a discount.
 CACHEPOINT_SUPPORTED_MODELS = [
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
@@ -249,6 +493,66 @@ CACHEPOINT_SUPPORTED_MODELS = [
     "global.anthropic.claude-opus-5",
     "global.anthropic.claude-opus-5:1m",
 ]
+
+# Converse tool-use (``toolConfig`` / ``toolChoice``) capability gate.
+#
+# Verified live across every currently selectable family (Claude 3.5/3.7/4.x/5
+# and Nova Lite / Pro / 2-Lite): all of them accept a ``toolConfig`` AND all
+# three ``toolChoice`` modes (``auto`` / ``any`` / ``tool``) on the Converse API,
+# and actually emit the ``toolUse`` block. So — unlike CACHEPOINT_SUPPORTED_MODELS
+# above — there is no per-family allow-list to maintain here. The only real
+# question is "does this model reach Converse at all", and exactly two routes in
+# invoke_model do not. They are named here so the exclusions are discoverable
+# and testable rather than buried in an `if`.
+#
+# NOTE: OpenAI GPT-6 Astra is deliberately NOT one of them. It reaches Converse
+# and emits ``toolUse`` under a forced ``toolChoice`` (verified live), so it is
+# tool-capable even though its GPT-5.x stablemates on the Responses API are not.
+#
+# NOTE: there is no hard-grammar/strict mode available on bedrock-runtime.
+# ``toolSpec.strict``, ``output_config.format`` and ``response_format`` are all
+# rejected ("Extra inputs are not permitted") on BOTH Converse and InvokeModel,
+# so a forced ``toolChoice`` is the strongest schema enforcement available.
+TOOL_CONFIG_UNSUPPORTED_ROUTES: Dict[str, str] = {
+    "LambdaHook": (
+        "the LambdaHook route posts a Converse-shaped payload to a customer-owned "
+        "Lambda function, which is not required to implement tool use"
+    ),
+    "openai-responses": (
+        "OpenAI GPT-5.x models are served by the bedrock-mantle Responses API, "
+        "which does not accept a Converse toolConfig (it has its own tools schema)"
+    ),
+}
+
+
+def tool_config_unsupported_reason(model_id: str) -> Optional[str]:
+    """Explain why ``model_id`` cannot carry a Converse ``toolConfig``.
+
+    Args:
+        model_id: Bedrock model ID, the ``LambdaHook`` sentinel, or an
+            inference profile ARN.
+
+    Returns:
+        A human-readable reason string if this model is routed somewhere other
+        than the Converse API, or None if a ``toolConfig`` can be used.
+    """
+    if model_id == LAMBDA_HOOK_MODEL_ID:
+        return TOOL_CONFIG_UNSUPPORTED_ROUTES["LambdaHook"]
+    if is_openai_responses_model(model_id):
+        return TOOL_CONFIG_UNSUPPORTED_ROUTES["openai-responses"]
+    return None
+
+
+def supports_tool_config(model_id: str) -> bool:
+    """True if ``model_id`` reaches the Converse API and can carry a toolConfig.
+
+    Callers that want to degrade gracefully (e.g. fall back to a prose schema in
+    the prompt) should check this first; passing a ``tool_config`` for a model
+    that returns False raises a ValueError rather than silently dropping the
+    schema.
+    """
+    return tool_config_unsupported_reason(model_id) is None
+
 
 # Build set of base model names (without region/tier prefixes) for inference profile resolution.
 # e.g., "us.anthropic.claude-sonnet-4-6" -> "anthropic.claude-sonnet-4-6"
@@ -316,7 +620,40 @@ class BedrockClient:
         # Lambda invocations stay in the calling account, so this client
         # uses default credentials regardless of BEDROCK_ASSUME_ROLE_ARN.
         if self._lambda_client is None:
-            self._lambda_client = boto3.client("lambda", region_name=self.region)
+            # A hook may legitimately run for its whole Lambda timeout — up to
+            # the 900s maximum — because it is free to call a slow third-party
+            # service (an OCR hook wrapping a hosted VLM API takes tens of
+            # seconds per page). boto3 defaults to a 60s read timeout, which
+            # abandoned the in-flight invocation and retried it: the hook kept
+            # running, a *second* invocation started the same paid work, and the
+            # step made no progress. Measured on the Cohere Parse hook, whose
+            # pages take 75s at the median, one 5-page document produced 44
+            # invocations and zero completed pages.
+            #
+            # So: wait as long as a hook can possibly run, and turn botocore's
+            # own retries off. Retrying an invocation is not free — every
+            # attempt re-runs whatever the hook charges for — so it belongs to
+            # `_invoke_lambda_hook_with_retry`, which backs off, logs, and knows
+            # which errors are worth another attempt.
+            # 840s, not the full 900s Lambda maximum: the *calling* function is
+            # itself capped at 900s (OCRFunction is), so waiting the same 900
+            # would let the caller be killed before botocore ever raises — and
+            # Step Functions then retries the whole OCR task, re-running every
+            # page's paid call. Leaving 60s of headroom means the timeout
+            # surfaces as an error inside the caller, which can log it and fail
+            # the page cleanly. A hook is expected to keep its own timeout (and
+            # therefore its internal retry budget) below this.
+            config = Config(
+                connect_timeout=10,
+                read_timeout=840,
+                retries={"max_attempts": 1, "mode": "standard"},
+                # OCR fans pages out across worker threads that share this
+                # client; the default pool of 10 would serialize them.
+                max_pool_connections=50,
+            )
+            self._lambda_client = boto3.client(
+                "lambda", region_name=self.region, config=config
+            )
         return self._lambda_client
 
     @property
@@ -436,6 +773,8 @@ class BedrockClient:
         service_tier: Optional[str] = None,
         model_lambda_hook_arn: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        tool_config: Optional[Dict[str, Any]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Make the instance callable with the same signature as the original function.
@@ -452,6 +791,8 @@ class BedrockClient:
             max_tokens: Optional max_tokens parameter (int or string)
             max_retries: Optional override for the instance's max_retries setting
             service_tier: Optional service tier (priority, standard, flex)
+            tool_config: Optional Converse toolConfig (see invoke_model)
+            tool_choice: Optional Converse toolChoice (see invoke_model)
 
         Returns:
             Bedrock response object with metering information
@@ -474,6 +815,8 @@ class BedrockClient:
             service_tier=service_tier,
             model_lambda_hook_arn=model_lambda_hook_arn,
             reasoning_effort=reasoning_effort,
+            tool_config=tool_config,
+            tool_choice=tool_choice,
         )
 
     def _preprocess_content_for_cachepoint(
@@ -554,6 +897,144 @@ class BedrockClient:
 
         return processed_content
 
+    @staticmethod
+    def _reject_invalid_tool_property_names(tool_config: Dict[str, Any]) -> None:
+        """Fail locally on property names Bedrock will reject, naming the fix.
+
+        Bedrock enforces ``^[a-zA-Z0-9_.-]{1,64}$`` on ``inputSchema`` property
+        keys, so a document class authored for humans (``"Account Number"``) is
+        rejected — four shipped presets contain such names (GitHub #709). Left to
+        the service, that surfaces as a ``ValidationException`` from deep inside a
+        retry ladder, naming a JSON path rather than a config field.
+
+        This does NOT sanitize on the caller's behalf. Renaming here would hand
+        back a response keyed by names the caller never asked for, with no map to
+        reverse it — silently renaming every field of every extraction. The caller
+        must sanitize *and* keep the map, so it can restore the authored names:
+
+            from idp_common.bedrock.tool_schema import (
+                restore_names, sanitize_tool_schema,
+            )
+            clean, name_map = sanitize_tool_schema(class_schema)
+            ...  # send `clean` as the toolSpec inputSchema
+            fields = restore_names(model_output, name_map)
+
+        Raises:
+            ValueError: naming the offending property paths and the helper.
+        """
+        from idp_common.bedrock.tool_schema import (
+            find_document_metadata_keywords,
+            find_invalid_property_names,
+        )
+
+        offenders: List[str] = []
+        metadata: List[str] = []
+        for tool in tool_config.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            spec = tool.get("toolSpec")
+            if not isinstance(spec, dict):
+                continue
+            schema = (spec.get("inputSchema") or {}).get("json")
+            for path in find_invalid_property_names(schema):
+                offenders.append(f"{spec.get('name', '?')}::{path}")
+            for path in find_document_metadata_keywords(schema):
+                metadata.append(f"{spec.get('name', '?')}::{path}")
+
+        if metadata:
+            # Bedrock meta-validates the schema itself: `$id` must be an RFC 3986
+            # URI-reference, and an IDP class schema sets `$id` to the class NAME,
+            # so a class like "Policy Application Form" fails on the spaces. That
+            # surfaced as a ValidationException naming a JSON path, from inside the
+            # retry ladder, after the request was already billed.
+            raise ValueError(
+                f"tool_config carries schema-DOCUMENT metadata that Bedrock "
+                f"meta-validates and will reject: {', '.join(metadata[:8])}. "
+                f"These keywords ($id/$schema/$anchor/$comment and x-aws-idp-* "
+                f"extensions) constrain nothing, so strip them with "
+                f"idp_common.bedrock.tool_schema.strip_non_wire_keywords() (already "
+                f"applied by sanitize_tool_schema)."
+            )
+
+        if offenders:
+            shown = ", ".join(offenders[:8])
+            more = f" (+{len(offenders) - 8} more)" if len(offenders) > 8 else ""
+            raise ValueError(
+                f"tool_config contains {len(offenders)} name(s) that cannot go on "
+                f"the wire as-is (must match ^[a-zA-Z0-9_.-]{{1,64}}$): {shown}{more}. "
+                f"Property names Bedrock rejects outright; a $defs definition name "
+                f"Bedrock accepts but Claude Sonnet 5 will not resolve the $ref to "
+                f"(#783). "
+                f"Run idp_common.bedrock.tool_schema.sanitize_tool_schema() on the "
+                f"class schema and idp_common.bedrock.tool_schema.restore_names() "
+                f"on the response — refusing to rename fields silently, which "
+                f"would change every extracted field name with no way back. Note "
+                f"Bedrock only validates the TOP level, so nested offenders listed "
+                f"here would be accepted today and break later."
+            )
+
+    @staticmethod
+    def _resolve_tool_config(
+        model_id: str,
+        tool_config: Optional[Dict[str, Any]],
+        tool_choice: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and merge the tool-use parameters into one ``toolConfig``.
+
+        Returns None when neither parameter was supplied, so the Converse request
+        is left exactly as it was before tool support existed.
+
+        Args:
+            model_id: The model ID (or ``LambdaHook`` sentinel) being invoked.
+            tool_config: Converse ``toolConfig`` dict, or None.
+            tool_choice: Converse ``toolChoice`` dict to merge in, or None.
+
+        Returns:
+            The effective ``toolConfig`` to put on the wire, or None.
+
+        Raises:
+            ValueError: If the model does not reach the Converse API, or if
+                ``tool_choice`` was given without ``tool_config``.
+        """
+        if tool_config is None and tool_choice is None:
+            return None
+
+        reason = tool_config_unsupported_reason(model_id)
+        if reason:
+            raise ValueError(
+                f"tool_config/tool_choice is not supported for model "
+                f"'{model_id}': {reason}. Refusing to drop the tool schema "
+                f"silently — check supports_tool_config(model_id) first and use "
+                f"a prompt-based schema for this model."
+            )
+
+        if tool_config is None:
+            raise ValueError(
+                "tool_choice was provided without tool_config. The Converse API "
+                "rejects a toolChoice with no tools; pass the toolConfig that "
+                "declares the tool being chosen."
+            )
+
+        BedrockClient._reject_invalid_tool_property_names(tool_config)
+
+        if tool_choice is None:
+            return tool_config
+
+        # Shallow copy: callers are expected to reuse one deterministic,
+        # per-class toolConfig object (see the prompt-cache note in
+        # invoke_model), so never mutate what we were handed.
+        merged = dict(tool_config)
+        existing_choice = merged.get("toolChoice")
+        if existing_choice is not None and existing_choice != tool_choice:
+            logger.warning(
+                "Both tool_config['toolChoice'] (%s) and the tool_choice "
+                "parameter (%s) were provided; the tool_choice parameter wins.",
+                existing_choice,
+                tool_choice,
+            )
+        merged["toolChoice"] = tool_choice
+        return merged
+
     def invoke_model(
         self,
         model_id: str,
@@ -568,6 +1049,8 @@ class BedrockClient:
         service_tier: Optional[str] = None,
         model_lambda_hook_arn: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        tool_config: Optional[Dict[str, Any]] = None,
+        tool_choice: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Invoke a Bedrock model or custom Lambda hook with retry logic.
@@ -590,10 +1073,70 @@ class BedrockClient:
             model_lambda_hook_arn: Lambda function ARN (required when model_id is 'LambdaHook')
             reasoning_effort: Reasoning effort for OpenAI Responses models
                 (minimal/low/medium/high). Ignored by other model families.
+            tool_config: Optional Converse ``toolConfig`` dict, passed through
+                verbatim, e.g.::
+
+                    {"tools": [{"toolSpec": {
+                        "name": "extract_fields",
+                        "description": "...",
+                        "inputSchema": {"json": {...JSON Schema...}},
+                    }}]}
+
+                Omitted from the request entirely when None (the default), so the
+                request is byte-identical to a call that never passed it.
+            tool_choice: Optional Converse ``toolChoice`` dict, e.g.
+                ``{"tool": {"name": "extract_fields"}}``, ``{"any": {}}`` or
+                ``{"auto": {}}``. This is a *member of* ``toolConfig`` in the
+                Converse API; it is accepted separately here purely as a
+                convenience and is merged into a shallow copy of ``tool_config``
+                (the caller's dict is never mutated). If ``tool_config`` already
+                carries a ``toolChoice``, this parameter wins and a warning is
+                logged. Requires ``tool_config``: passing ``tool_choice`` alone
+                raises ValueError, because Converse rejects a ``toolChoice``
+                with no tools.
 
         Returns:
             Response object with metering information (same format for both Bedrock and Lambda)
+
+        Raises:
+            ValueError: If ``tool_config``/``tool_choice`` is passed for a model
+                that does not reach the Converse API — the ``LambdaHook``
+                sentinel or an OpenAI GPT-5.x Responses model. The schema is
+                never silently dropped; use ``supports_tool_config(model_id)``
+                to branch beforehand if you need a text fallback.
+
+        Tool-use notes (read before adding a caller):
+            * **Response may still be text.** Even with a forced ``toolChoice``,
+              treat a text answer as possible: use
+              ``extract_tool_use_from_response()`` and fall back to
+              ``extract_text_from_response()`` when it returns None.
+            * **No strict mode exists on bedrock-runtime.** ``toolSpec.strict``,
+              ``output_config.format`` and ``response_format`` are all rejected
+              ("Extra inputs are not permitted") on both Converse and
+              InvokeModel. A forced ``toolChoice`` is best-effort constrained
+              decoding, not a grammar guarantee — validate the result.
+            * **Property names must be sanitized by the caller.** Converse
+              rejects *top-level* ``inputSchema.json.properties`` keys that do
+              not match ``^[a-zA-Z0-9_.-]{1,64}$`` — so a key like
+              ``"Account Number"`` fails with
+              ``Property keys should match pattern ...``. Several shipped class
+              schemas contain such names. This method does NOT sanitize; the
+              caller must rename and map back (a shared sanitizer is planned).
+              Sanitize recursively even though only the top level is enforced
+              today.
+            * **Keep the toolConfig deterministic per class.** Tools render
+              *before* ``system`` in the prompt-cache prefix, so changing the
+              tool schema invalidates the entire cached prefix (system prompt
+              included). A per-class, stable ``toolConfig`` caches fine; a
+              per-request one destroys cache hits silently.
         """
+        # Resolve tool-use plumbing BEFORE any routing, so that a caller who
+        # passes a schema to a non-Converse route fails loudly here instead of
+        # getting a plausible-looking free-text answer with no schema applied.
+        effective_tool_config = self._resolve_tool_config(
+            model_id=model_id, tool_config=tool_config, tool_choice=tool_choice
+        )
+
         # Route to Lambda hook if model_id is LambdaHook
         if model_id == LAMBDA_HOOK_MODEL_ID:
             return self._invoke_lambda_hook(
@@ -696,13 +1239,15 @@ class BedrockClient:
                 )
                 temperature = 0.0
 
-        # Claude 4.7+ models don't support temperature, top_k, or top_p parameters
+        # Claude 4.7+, xAI Grok and OpenAI GPT-6 Astra don't support temperature,
+        # top_k, or top_p: deprecated on Claude, hard-rejected with a 400 on the
+        # other two.
         is_claude_4_7 = _is_claude_4_7_model(model_id)
-        if is_claude_4_7:
+        if strips_sampling_params(model_id):
             inference_config = {}
             logger.info(
-                f"Skipping temperature/top_p for Claude 4.7+ model: {model_id} "
-                "(these parameters are deprecated for this model)"
+                f"Skipping temperature/top_p for {model_id} "
+                "(these parameters are rejected or deprecated for this model)"
             )
         else:
             # Initialize inference config with temperature
@@ -767,8 +1312,20 @@ class BedrockClient:
                     model_id,
                 )
 
-        # Add to inferenceConfig as maxTokens for Nova models
-        if max_tokens is not None and "amazon" in model_id.lower():
+        # Place maxTokens on the carrier the model actually honors.
+        #
+        # ``inferenceConfig.maxTokens`` is the Converse-standard field and is the
+        # DEFAULT for every family, so a newly added model caps correctly without
+        # a code change. Claude is the exception: it takes the value via
+        # ``additionalModelRequestFields.max_tokens`` (set further below), which
+        # is long-verified behavior and left untouched.
+        #
+        # Getting this wrong fails OPEN, not loudly: Grok accepts
+        # ``additionalModelRequestFields.max_tokens`` and silently ignores it
+        # (verified live 2026-09-02 — a request capped at 100 there returned 135
+        # output tokens), so an unsupported carrier means uncapped output rather
+        # than an error.
+        if max_tokens is not None and "anthropic" not in model_id.lower():
             inference_config["maxTokens"] = max_tokens
 
         # Add additional model fields if needed
@@ -835,6 +1392,52 @@ class BedrockClient:
                     additional_model_fields["inferenceConfig"] = {}
                 additional_model_fields["inferenceConfig"]["topK"] = int(top_k)
 
+        # Handle xAI Grok-specific parameters
+        elif is_grok_model(model_id):
+            # Reasoning is always on for Grok; effort rides in
+            # additionalModelRequestFields.reasoning.effort. Claude's
+            # output_config.effort is silently ignored here, and so is any other
+            # unrecognized key — so an unsupported effort value must be dropped
+            # rather than passed through, or the request quietly loses the
+            # setting instead of failing. top_k is deliberately not forwarded
+            # (Grok rejects the sampling group).
+            if reasoning_effort:
+                effort = str(reasoning_effort).lower().strip()
+                if effort in GROK_EFFORT_LEVELS:
+                    additional_model_fields["reasoning"] = {"effort": effort}
+                    logger.info("Using reasoning effort '%s' for %s", effort, model_id)
+                else:
+                    logger.warning(
+                        "Ignoring unsupported Grok reasoning effort '%s' for %s "
+                        "(valid: %s)",
+                        reasoning_effort,
+                        model_id,
+                        ", ".join(GROK_EFFORT_LEVELS),
+                    )
+
+        # Handle OpenAI GPT-6 Astra-specific parameters
+        elif is_astra_model(model_id):
+            # Astra shares Grok's effort CARRIER
+            # (additionalModelRequestFields.reasoning.effort) but not Grok's
+            # vocabulary — see ASTRA_EFFORT_LEVELS. Unlike Grok, Astra REJECTS an
+            # unknown value with a 400 naming the supported set rather than
+            # ignoring it, so dropping out-of-vocabulary values here is what keeps
+            # a stale config from failing every request. top_k is deliberately not
+            # forwarded (Astra rejects the sampling group).
+            if reasoning_effort:
+                effort = str(reasoning_effort).lower().strip()
+                if effort in ASTRA_EFFORT_LEVELS:
+                    additional_model_fields["reasoning"] = {"effort": effort}
+                    logger.info("Using reasoning effort '%s' for %s", effort, model_id)
+                else:
+                    logger.warning(
+                        "Ignoring unsupported Astra reasoning effort '%s' for %s "
+                        "(valid: %s)",
+                        reasoning_effort,
+                        model_id,
+                        ", ".join(ASTRA_EFFORT_LEVELS),
+                    )
+
         # Add 1M context headers if needed
         use_model_id = model_id
         if model_id and model_id.endswith(":1m"):
@@ -886,6 +1489,11 @@ class BedrockClient:
             "additionalModelRequestFields": additional_model_fields,
         }
 
+        # Add the tool configuration if one was supplied. Left absent otherwise,
+        # so requests without tool use are unchanged.
+        if effective_tool_config is not None:
+            converse_params["toolConfig"] = effective_tool_config
+
         # Add service tier if specified
         if normalized_service_tier:
             converse_params["serviceTier"] = {"type": normalized_service_tier}
@@ -914,7 +1522,8 @@ class BedrockClient:
     def _apply_max_tokens_limit(converse_params: Dict[str, Any], limit: int) -> bool:
         """Clamp the request's maxTokens to `limit` in place, if it exceeds it.
 
-        Handles both carriers: Nova's ``inferenceConfig.maxTokens`` and Claude's
+        Handles both carriers: the Converse-standard ``inferenceConfig.maxTokens``
+        (Nova, xAI Grok, and any other non-Claude family) and Claude's
         ``additionalModelRequestFields.max_tokens``. Returns True if a value was
         actually lowered (so a retry is warranted), False otherwise — the False
         case prevents an infinite retry when no maxTokens was set or it's already
@@ -979,6 +1588,11 @@ class BedrockClient:
                 f"  - additionalModelRequestFields: {converse_params['additionalModelRequestFields']}"
             )
 
+            # Log the tool configuration when tool use is in play. Only emitted
+            # for tool-enabled calls, so existing log output is unchanged.
+            if "toolConfig" in converse_params:
+                logger.info(f"  - toolConfig: {converse_params['toolConfig']}")
+
             # Log guardrail usage if configured
             if "guardrailConfig" in converse_params:
                 logger.debug(
@@ -1028,11 +1642,19 @@ class BedrockClient:
                 "BedrockTotalLatency", total_duration * 1000, "Milliseconds"
             )
 
-            # Create metering data
+            # Create metering data. Keep only NUMERIC usage entries: Bedrock now
+            # returns structured members too (e.g. ``cacheDetails``, a list of
+            # per-TTL cache-write breakdowns) and metering values are summed
+            # (merge_metering_data) and priced (save_reporting_data) as numbers.
             usage = response.get("usage", {})
             response_with_metering = {
                 "response": response,
-                "metering": {f"{context}/bedrock/{model_id}": {**usage, "requests": 1}},
+                "metering": {
+                    f"{context}/bedrock/{model_id}": {
+                        **numeric_usage(usage),
+                        "requests": 1,
+                    }
+                },
             }
 
             return response_with_metering
@@ -1611,6 +2233,65 @@ class BedrockClient:
         ]
         return "".join(text_parts)
 
+    def extract_tool_use_from_response(
+        self, response: Dict[str, Any], tool_name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract the structured ``toolUse.input`` dict from a Bedrock response.
+
+        Accepts either the metering-wrapped response returned by
+        ``invoke_model`` or a raw Converse response, matching
+        ``extract_text_from_response``.
+
+        Like that method, this scans **every** content block rather than
+        indexing ``content[0]``: reasoning models (Claude Sonnet 5 / 4.6+, and
+        any model with extended thinking on) emit one or more
+        ``reasoningContent`` blocks BEFORE the answer block, so the ``toolUse``
+        block is frequently not first.
+
+        A None return is a normal, expected outcome — a model can accept a
+        ``toolConfig`` and still answer in prose (``stopReason`` ``end_turn``
+        rather than ``tool_use``), so callers should fall back to
+        ``extract_text_from_response()`` and parse/validate from there.
+
+        Args:
+            response: Bedrock response object (wrapped or raw).
+            tool_name: Optional tool name to match. When given, ``toolUse``
+                blocks for other tools are skipped — useful when the request
+                declared more than one tool.
+
+        Returns:
+            The tool's ``input`` dict, or None if the response contains no
+            matching ``toolUse`` block with a dict input.
+        """
+        response_obj = response.get("response", response)
+        try:
+            content = response_obj["output"]["message"].get("content", []) or []
+        except (KeyError, TypeError):
+            logger.warning(
+                "Response has no output.message.content; cannot extract toolUse"
+            )
+            return None
+
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            tool_use = item.get("toolUse")
+            if not isinstance(tool_use, dict):
+                continue
+            if tool_name is not None and tool_use.get("name") != tool_name:
+                continue
+            tool_input = tool_use.get("input")
+            if isinstance(tool_input, dict):
+                return tool_input
+            logger.warning(
+                "toolUse block for '%s' had a non-dict input (%s); skipping",
+                tool_use.get("name"),
+                type(tool_input).__name__,
+            )
+
+        return None
+
     def format_prompt(
         self,
         prompt_template: str,
@@ -2018,12 +2699,13 @@ class BedrockClient:
                 "LambdaHookTotalLatency", total_duration * 1000, "Milliseconds"
             )
 
-            # Build response in the same format as Bedrock responses
+            # Build response in the same format as Bedrock responses (numeric
+            # usage entries only — see the Bedrock site).
             response_with_metering = {
                 "response": response_payload,
                 "metering": {
                     f"{context}/lambda_hook/{lambda_arn}": {
-                        **usage,
+                        **numeric_usage(usage),
                         "requests": 1,
                     }
                 },
@@ -2221,7 +2903,9 @@ Args:
     max_tokens: Optional max_tokens parameter (int or string)
     max_retries: Optional override for the instance's max_retries setting
     context: Context prefix for metering key (default: "Unspecified")
-    
+    tool_config: Optional Converse toolConfig dict (see BedrockClient.invoke_model)
+    tool_choice: Optional Converse toolChoice dict (see BedrockClient.invoke_model)
+
 Returns:
     Bedrock response object with metering information
 """

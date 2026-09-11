@@ -1,12 +1,23 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React from 'react';
-import { Button, ButtonDropdown, CollectionPreferences, Link, SpaceBetween, StatusIndicator } from '@cloudscape-design/components';
-import type { CollectionPreferencesProps } from '@cloudscape-design/components';
+import {
+  Button,
+  ButtonDropdown,
+  CollectionPreferences,
+  Link,
+  SegmentedControl,
+  SpaceBetween,
+  StatusIndicator,
+} from '@cloudscape-design/components';
+import type { ButtonDropdownProps, CollectionPreferencesProps } from '@cloudscape-design/components';
 import type { TableProps } from '@cloudscape-design/components';
 
+import { isBaselineAvailable, type ExportScope } from '../document-panel/document-export';
+
 import { TableHeader } from '../common/table';
-import { DOCUMENTS_PATH } from '../../routes/constants';
+import { DOCUMENTS_PATH, testRunResultsHref } from '../../routes/constants';
+import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
@@ -21,6 +32,7 @@ export interface MappedDocument {
   completionTime: string;
   duration: string;
   configVersion: string;
+  configRevision?: number | null;
   evaluationStatus: string;
   confidenceAlertCount: number;
   processingIssueCount: number;
@@ -64,13 +76,113 @@ interface DocumentsCommonHeaderProps {
   setCustomDateRange?: (range: { startDateTime: string; endDateTime: string } | null) => void;
   onCustomDateRange?: () => void;
   downloadToExcel?: () => void;
+  /** Rows currently passing the filter — used for the Excel item's row count. */
+  totalItems?: unknown[];
+  /** Starts a bulk artifact export (ZIP) for the selected documents. */
+  onDownloadSelected?: ((scope: ExportScope) => void) | null;
+  isDownloadInProgress?: boolean;
+  /**
+   * When set, Abort / Reprocess / Delete render disabled with this as their
+   * tooltip. Used by the Test Studio view, where mutating a run's documents would
+   * invalidate the results scored against them. Disabled-with-a-reason rather than
+   * hidden, so the constraint is discoverable instead of the buttons just vanishing.
+   */
+  destructiveDisabledReason?: string | null;
   [key: string]: unknown;
 }
 
+/**
+ * Two download actions live in one menu, split into labeled groups because they
+ * differ in scope: the Excel export covers every filtered row, while the ZIP
+ * exports cover only the selected documents. The Excel item stays enabled while a
+ * ZIP export runs — only the ZIP scopes are held.
+ */
+export const buildDownloadMenuItems = (
+  selectedItems: readonly MappedDocument[],
+  filteredCount: number,
+  includeZipScopes = true,
+  isDownloadInProgress = false,
+): ButtonDropdownProps.ItemOrGroup[] => {
+  const selectedCount = selectedItems.length;
+  const noSelection = selectedCount === 0;
+  const blockedReason = (() => {
+    if (isDownloadInProgress) return 'A download is already in progress';
+    if (noSelection) return 'Select one or more documents in the table';
+    return undefined;
+  })();
+  const zipItem = (id: ExportScope, text: string, extraDisabled?: string): ButtonDropdownProps.Item => ({
+    id,
+    text,
+    iconName: 'download',
+    disabled: !!blockedReason || !!extraDisabled,
+    disabledReason: blockedReason ?? extraDisabled,
+  });
+
+  const listGroup: ButtonDropdownProps.ItemOrGroup = {
+    text: 'Document list',
+    items: [
+      {
+        id: 'excel',
+        text: `Table as Excel (${filteredCount} ${filteredCount === 1 ? 'row' : 'rows'})`,
+        iconName: 'download',
+      },
+    ],
+  };
+  if (!includeZipScopes) return [listGroup];
+
+  return [
+    listGroup,
+    {
+      text: `Selected documents (${selectedCount})`,
+      items: [
+        zipItem('all', 'All data (ZIP)'),
+        zipItem('predictions', 'Predictions (ZIP)'),
+        zipItem(
+          'baselines',
+          'Baselines (ZIP)',
+          !noSelection && !selectedItems.some(isBaselineAvailable) ? 'No selected document has an evaluation baseline' : undefined,
+        ),
+      ],
+    },
+  ];
+};
+
 export const KEY_COLUMN_ID = 'objectKey';
 export const UNIQUE_TRACK_ID = 'uniqueId';
+export const TEST_RUN_COLUMN_ID = 'testRunId';
 
-export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TableProps.ColumnDefinition<MappedDocument>[] => [
+/**
+ * Test Studio copies a run's inputs into the pipeline under a `{testRunId}/`
+ * prefix, so the run id is recoverable from the object key. Mirrors
+ * `_TEST_RUN_KEY_RE` in src/lambda/backfill_gsi_attributes/index.py — the shape is
+ * `<testSetId>-<YYYYMMDD>-<HHMMSS>/`.
+ *
+ * This is only used to label and link rows already known to be test submissions
+ * (the caller queried the TEST view), never to decide whether a row *is* one. That
+ * distinction matters: an ordinary upload can coincidentally share the shape, which
+ * is why the backend requires a matching testrun record before retyping anything.
+ */
+const TEST_RUN_KEY_RE = /^([^/]+-\d{8}-\d{6})\//;
+
+/** The test run id embedded in a test submission's object key, or null. */
+export const testRunIdFromObjectKey = (objectKey: string | undefined): string | null => TEST_RUN_KEY_RE.exec(objectKey ?? '')?.[1] ?? null;
+
+const TEST_RUN_COLUMN: TableProps.ColumnDefinition<MappedDocument> = {
+  id: TEST_RUN_COLUMN_ID,
+  header: 'Test Run',
+  cell: (item) => {
+    const testRunId = testRunIdFromObjectKey(item.objectKey);
+    if (!testRunId) return '-';
+    return <Link href={testRunResultsHref(testRunId)}>{testRunId}</Link>;
+  },
+  sortingComparator: (a, b) => (testRunIdFromObjectKey(a.objectKey) ?? '').localeCompare(testRunIdFromObjectKey(b.objectKey) ?? ''),
+  width: 260,
+};
+
+export const COLUMN_DEFINITIONS_MAIN = (
+  versions: ConfigVersion[] = [],
+  documentView: DocumentView = 'PRODUCTION',
+): TableProps.ColumnDefinition<MappedDocument>[] => [
   {
     id: KEY_COLUMN_ID,
     header: 'Document ID',
@@ -82,6 +194,9 @@ export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TablePr
     sortingField: 'objectKey',
     width: 300,
   },
+  // Second, not first: Document ID stays the leftmost identifier. Column order
+  // comes from this array — `visibleColumns` only controls visibility.
+  ...(documentView === 'TEST' ? [TEST_RUN_COLUMN] : []),
   {
     id: 'objectStatus',
     header: 'Status',
@@ -91,8 +206,14 @@ export const COLUMN_DEFINITIONS_MAIN = (versions: ConfigVersion[] = []): TablePr
   },
   {
     id: 'configVersion',
-    header: 'Config Version',
-    cell: (item) => formatConfigVersionLink(item.configVersion, versions as unknown as ConfigVersion[]),
+    header: 'Config Profile',
+    cell: (item) =>
+      formatConfigVersionLink(
+        item.configVersion,
+        versions as unknown as ConfigVersion[],
+        undefined,
+        item.configRevision as number | null | undefined,
+      ),
     sortingField: 'configVersion',
     width: 150,
   },
@@ -187,7 +308,7 @@ const VISIBLE_CONTENT_OPTIONS = [
       { id: 'initialEventTime', label: 'Submitted' },
       { id: 'completionTime', label: 'Completed' },
       { id: 'duration', label: 'Duration' },
-      { id: 'configVersion', label: 'Config Version' },
+      { id: 'configVersion', label: 'Config Profile' },
       { id: 'evaluationStatus', label: 'Evaluation' },
       { id: 'confidenceAlertCount', label: 'Confidence Alerts' },
       { id: 'processingIssueCount', label: 'Processing Issues' },
@@ -246,7 +367,52 @@ export const DocumentsPreferences = ({
 
 // number of shards per day used by the list documents API
 export const DOCUMENT_LIST_SHARDS_PER_DAY = 6;
+
+/**
+ * `periodsToLoad` sentinel for the Latest option: fetch the newest documents with
+ * no date bounds at all, rather than everything inside a window.
+ *
+ * A sentinel in the same value the other options set keeps one code path for
+ * persistence, the dropdown's display text, and the reload-on-change effect. It is
+ * negative so it cannot collide with a real shard count — but note
+ * `getInitialPeriodsToLoad` in GenAIIDPLayout takes `Math.abs` of the stored value,
+ * so it has to be recognised there before that runs.
+ */
+export const LATEST_PERIODS = -2;
+
+/** Widest window the stored preference may name, in shard periods (30 days). */
+const MAX_STORED_PERIODS = DOCUMENT_LIST_SHARDS_PER_DAY * 30;
+
+/**
+ * Resolve the list's initial load scope from whatever is in localStorage.
+ *
+ * Defaults to Latest rather than a window: with a window, a stack that has been
+ * quiet longer than the window opens on an empty table, which reads as a broken
+ * deployment rather than as "nothing recent". Latest is empty only when the stack
+ * genuinely holds no documents. It matters most for the Reviewer role, whose queue
+ * is age-agnostic — a document pending review for three days was invisible under
+ * the previous 2-hour default.
+ *
+ * Only reachable when nothing is stored, so this changes first-run behaviour
+ * (fresh deployment, new browser, cleared storage) and leaves anyone with a saved
+ * preference on it.
+ */
+export const resolveInitialPeriodsToLoad = (stored: unknown): number => {
+  // Checked before the Math.abs below, which would read the negative Latest
+  // sentinel back as a plausible-looking 2 shard periods (8 hours).
+  if (stored === LATEST_PERIODS) return LATEST_PERIODS;
+
+  const periods = Math.abs(Number(stored));
+  if (!Number.isFinite(periods) || periods > MAX_STORED_PERIODS) return LATEST_PERIODS;
+  // 0 covers both an absent key and an explicit 0, neither of which names a window.
+  return periods > 0 ? periods : LATEST_PERIODS;
+};
+
 const TIME_PERIOD_DROPDOWN_CONFIG: Record<string, TimePeriodConfig> = {
+  // First, because "the most recent work" is the most common intent and the
+  // window options cannot express it: before this, a list with nothing in the last
+  // 30 days was empty with no option left to widen to.
+  'load-latest': { count: LATEST_PERIODS, text: 'Latest' },
   'refresh-2h': { count: 0.5, text: '2 hrs' },
   'refresh-4h': { count: 1, text: '4 hrs' },
   'refresh-8h': { count: DOCUMENT_LIST_SHARDS_PER_DAY / 3, text: '8 hrs' },
@@ -283,6 +449,36 @@ const ABORTABLE_STATUSES = [
   'EVALUATING',
 ];
 
+/**
+ * Switches the list between the two submission partitions. A two-state control
+ * rather than a "show test documents too" toggle because the backend has no
+ * combined view, and because the populations differ by orders of magnitude — on a
+ * stack that runs Test Studio regularly the test documents outnumber real uploads
+ * ~50:1, so merging them would bury the uploads and undo the point of separating
+ * them in the first place.
+ */
+export const DocumentViewSelector = ({
+  documentView,
+  setDocumentView,
+  disabled,
+}: {
+  documentView: DocumentView;
+  setDocumentView: (view: DocumentView) => void;
+  disabled?: boolean;
+}): React.JSX.Element => (
+  <SegmentedControl
+    selectedId={documentView}
+    onChange={({ detail }) => setDocumentView(detail.selectedId as DocumentView)}
+    label="Document source"
+    options={[
+      // "Production" rather than "Uploads": API, CLI and extension submissions land
+      // in this partition too, not just documents uploaded through the web UI.
+      { id: 'PRODUCTION', text: 'Production', disabled },
+      { id: 'TEST', text: 'Test Studio', disabled },
+    ]}
+  />
+);
+
 export const DocumentsCommonHeader = ({
   resourceName = 'Documents',
   selectedItems = [],
@@ -291,6 +487,9 @@ export const DocumentsCommonHeader = ({
   onAbort,
   onClaimReview,
   onReleaseReview,
+  onDownloadSelected,
+  isDownloadInProgress,
+  destructiveDisabledReason,
   _currentUsername,
   ...props
 }: DocumentsCommonHeaderProps): React.JSX.Element => {
@@ -335,6 +534,21 @@ export const DocumentsCommonHeader = ({
   // Check if any selected items can be released (has review owner and HITL not completed)
   const hasReleasableItems = selectedItems.some((item) => item.hitlReviewOwner && !item.hitlCompleted);
 
+  const downloadMenuItems = buildDownloadMenuItems(
+    selectedItems,
+    props.totalItems?.length ?? 0,
+    !!onDownloadSelected,
+    !!isDownloadInProgress,
+  );
+
+  const onDownloadItemClick = ({ detail }: { detail: { id: string } }) => {
+    if (detail.id === 'excel') {
+      props.downloadToExcel?.();
+      return;
+    }
+    onDownloadSelected?.(detail.id as ExportScope);
+  };
+
   return (
     <TableHeader
       title={resourceName}
@@ -352,33 +566,51 @@ export const DocumentsCommonHeader = ({
               ariaLabel="Refresh"
             />
           </span>
-          <span title="Download document list to Excel">
-            <Button
-              iconName="download"
-              variant="normal"
-              loading={props.loading}
-              onClick={() => props.downloadToExcel?.()}
-              ariaLabel="Download"
-            />
-          </span>
+          <ButtonDropdown
+            items={downloadMenuItems}
+            onItemClick={onDownloadItemClick}
+            loading={props.loading}
+            expandToViewport
+            ariaLabel="Download"
+          >
+            Download
+          </ButtonDropdown>
           {onClaimReview && (
             <Button variant="primary" disabled={!hasClaimableItems} onClick={onClaimReview}>
               Start Review
             </Button>
           )}
           {onAbort && (
-            <span title="Abort processing for selected documents">
-              <Button iconName="status-stopped" variant="normal" disabled={!hasAbortableItems} onClick={onAbort} ariaLabel="Abort" />
+            <span title={destructiveDisabledReason || 'Abort processing for selected documents'}>
+              <Button
+                iconName="status-stopped"
+                variant="normal"
+                disabled={!!destructiveDisabledReason || !hasAbortableItems}
+                onClick={onAbort}
+                ariaLabel="Abort"
+              />
             </span>
           )}
           {onReprocess && (
-            <span title="Reprocess selected documents">
-              <Button iconName="redo" variant="normal" disabled={!hasSelectedItems} onClick={onReprocess} ariaLabel="Reprocess" />
+            <span title={destructiveDisabledReason || 'Reprocess selected documents'}>
+              <Button
+                iconName="redo"
+                variant="normal"
+                disabled={!!destructiveDisabledReason || !hasSelectedItems}
+                onClick={onReprocess}
+                ariaLabel="Reprocess"
+              />
             </span>
           )}
           {onDelete && (
-            <span title="Delete selected documents">
-              <Button iconName="remove" variant="normal" disabled={!hasSelectedItems} onClick={onDelete} ariaLabel="Delete" />
+            <span title={destructiveDisabledReason || 'Delete selected documents'}>
+              <Button
+                iconName="remove"
+                variant="normal"
+                disabled={!!destructiveDisabledReason || !hasSelectedItems}
+                onClick={onDelete}
+                ariaLabel="Delete"
+              />
             </span>
           )}
           {onReleaseReview && (

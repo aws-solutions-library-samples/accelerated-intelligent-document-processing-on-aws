@@ -26,7 +26,7 @@ defeat stale-OCR recovery).
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,184 @@ RUNS_PREFIX_SEGMENT = "runs"
 def runs_prefix(input_key: str) -> str:
     """Return the reserved runs prefix for a document, e.g. ``<key>/runs/``."""
     return f"{input_key}/{RUNS_PREFIX_SEGMENT}/"
+
+
+def delete_current_output_objects(
+    s3_client,
+    output_bucket: str,
+    input_key: str,
+    subprefixes: Optional[Sequence[str]] = None,
+) -> int:
+    """
+    Delete the current output objects for a document, preserving run manifests.
+
+    Used to defeat the OCR function's retry-safe recovery
+    (``discover_existing_ocr_pages``) when a document key is being processed
+    again — either via the explicit "Reprocess" resolver, or when an S3 upload
+    reuses an existing filename. Without this cleanup the OCR service reads
+    stale ``pages/*`` artefacts from the previous document, skips OCR, and
+    downstream classification/extraction consume text from the OLD document.
+
+    ``subprefixes``:
+      - ``None`` (default) — purge ``<key>/*``, preserving only
+        ``<key>/runs/``. Used by the Reprocess resolver, where "start
+        over" is the intent. ⚠️ For nested-key deployments (uploads
+        exist at ``foo`` AND ``foo/bar.pdf``) this deletes the ENTIRE
+        nested document — ``foo/bar.pdf/pages/*``,
+        ``foo/bar.pdf/sections/*``, ``foo/bar.pdf/summary/*``,
+        ``foo/bar.pdf/evaluation/*`` AND ``foo/bar.pdf/runs/*`` — not
+        just its version history. The preserved-prefix filter only
+        protects THIS document's ``<key>/runs/``, so anything under a
+        nested document's prefix is unreachable and gets swept. Reprocess
+        accepts that risk because the caller is an authenticated admin
+        action ("start over" is deliberate); other callers should scope
+        via ``subprefixes`` to avoid destroying nested-doc data.
+      - ``("pages/",)`` (or similar list) — purge ONLY those subprefixes
+        under ``<key>/``. Used by queue_sender for re-upload cleanup so a
+        re-upload of ``foo`` cannot destroy nested-document data at
+        ``foo/bar.pdf/*`` (issue #719 follow-up). Reduces blast radius to
+        exactly the subprefixes that reintroduce the bug being fixed.
+        Values are normalized: leading and trailing ``/`` are stripped
+        and one trailing ``/`` re-appended, so both ``pages`` and
+        ``/pages/`` scan ``<key>/pages/`` — never ``<key>/pages`` (which
+        would match sibling prefixes like ``pages_backup/*``).
+
+    Preserves the CURRENT document's ``{input_key}/runs/`` (per-run
+    manifests plus the noncurrent object versions they pin) so its
+    version history survives. On a versioned bucket, ``delete_objects``
+    without VersionId writes delete markers, so the underlying bytes
+    remain retrievable via the manifests.
+
+    Returns:
+        Number of objects successfully deleted (0 if the prefix was
+        empty).
+
+    Raises:
+        ValueError: on bad ``subprefixes`` input — a bare ``str``
+        instead of a sequence, or a sequence containing a non-str
+        entry (``None``, int, ...), or a sequence with an entry that
+        normalizes to empty after stripping slashes (``""``, ``"/"``).
+        Each raises with a message naming the fix so a caller
+        typo doesn't silently reduce to a no-op scan.
+        RuntimeError: if any batch's ``delete_objects`` returns per-key
+        ``Errors`` (visible in the response even with ``Quiet=True``).
+        Silently continuing on partial failures would re-open #719 —
+        OCR's retry-safe recovery only needs ONE complete 4-file page
+        (rawText/result/textConfidence/image) to survive to resurrect
+        stale text. Callers should catch and decide the escalation
+        (queue_sender logs at ERROR so a metric filter can alarm on it).
+    """
+    # Strip any trailing slashes so an accidental ``input_key="foo/"``
+    # (folder pseudo-object shape) doesn't produce ``foo//pages/`` — S3
+    # treats that as a literal prefix that matches nothing, silently
+    # reducing the purge to a no-op and leaving stale artefacts.
+    input_key = input_key.rstrip("/")
+    preserved_prefix = runs_prefix(input_key)
+    if subprefixes is not None:
+        # ``str`` is a Sequence[str] too but iterates over characters —
+        # reject it BEFORE materialization (list(str) would produce a
+        # char list that passes downstream checks and produce per-char
+        # scans). A caller who typo'd ``subprefixes="pages/"`` instead
+        # of ``subprefixes=("pages/",)`` gets a clear error.
+        if isinstance(subprefixes, str):
+            raise ValueError(
+                f"subprefixes must be a sequence of strings (e.g. ``('pages/',)``), "
+                f"not a bare string ``{subprefixes!r}`` — a bare str would iterate "
+                f"over characters and produce per-character prefix scans."
+            )
+        # Materialize iterators (generators aren't Sequences but callers
+        # sometimes pass one anyway) so the two passes below — the
+        # isinstance validation loop and the ``strip`` comprehension —
+        # see the same values. Without this a generator exhausts on the
+        # first pass and the second reduces to an empty scan.
+        subprefixes = list(subprefixes)
+        # Explicit list — normalize both leading and trailing slashes so
+        # ``pages`` / ``/pages`` / ``/pages/`` all produce ``<key>/pages/``
+        # (a bare ``<key>/pages`` would match ``<key>/pages_backup/*``).
+        # Empty tuple ``()`` is an intentional no-op (see below).
+        # Reject non-str entries up front — the docstring advertises
+        # ValueError as the failure mode; without this check a ``None`` /
+        # int / other non-str entry raises AttributeError from
+        # ``.strip('/')`` instead, breaking the documented contract.
+        for i, sp in enumerate(subprefixes):
+            if not isinstance(sp, str):
+                raise ValueError(
+                    f"subprefixes[{i}]={sp!r} is not a str (got "
+                    f"{type(sp).__name__}). Each entry must be a string "
+                    f"like ``'pages/'``."
+                )
+        # An entry like ``""`` or ``"/"`` normalizes to empty, which would
+        # silently reduce to a no-op — indistinguishable from a fresh-key
+        # upload. Callers passing a non-empty list clearly intend to
+        # scope-purge; raise so a bad entry is loud rather than a silent
+        # miss that lets stale ``pages/*`` survive.
+        normalized = [sp.strip("/") for sp in subprefixes]
+        if subprefixes and not all(normalized):
+            raise ValueError(
+                f"subprefixes contains an empty entry (after stripping slashes): "
+                f"{list(subprefixes)!r}. Pass an empty tuple ``()`` for no-op "
+                f"or ``None`` for broad purge — an empty string / bare ``/`` "
+                f"would silently reduce to a no-op and let stale artefacts "
+                f"survive."
+            )
+        prefixes_to_scan = [f"{input_key}/{n}/" for n in normalized]
+    else:
+        # None → broad purge under ``<key>/`` (reprocess semantics).
+        prefixes_to_scan = [f"{input_key}/"]
+    deleted = 0
+    total_errors: List[Dict[str, Any]] = []
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for prefix in prefixes_to_scan:
+        for page in paginator.paginate(Bucket=output_bucket, Prefix=prefix):
+            # Defense-in-depth: even when scanning a subprefix that
+            # structurally cannot include runs/ (e.g. ``pages/``), keep
+            # the filter — it protects future callers that pass ``("",)``
+            # or ``("runs/",)`` and would otherwise nuke the manifests.
+            objects = [
+                obj
+                for obj in page.get("Contents", [])
+                if not obj["Key"].startswith(preserved_prefix)
+            ]
+            if not objects:
+                continue
+            for i in range(0, len(objects), 1000):
+                batch = [{"Key": obj["Key"]} for obj in objects[i : i + 1000]]
+                response = s3_client.delete_objects(
+                    Bucket=output_bucket, Delete={"Objects": batch, "Quiet": True}
+                )
+                errors = response.get("Errors", [])
+                deleted += len(batch) - len(errors)
+                total_errors.extend(errors)
+    if total_errors:
+        # Even one surviving 4-file page (rawText+result+textConfidence
+        # +image) lets discover_existing_ocr_pages re-open #719.
+        # Raise so the caller's error path (queue_sender: logger.error;
+        # reprocess resolver: caller's try/except) fires visibly rather
+        # than logging-and-continuing with a partial success count.
+        # ``or '?'`` guards against a malformed error dict missing Key
+        # or Code — a real occurrence when S3 returns a partial error
+        # entry, and rendering ``None(None)`` in triage output is worse
+        # than a labeled unknown.
+        sample = ", ".join(
+            f"{e.get('Key') or '?'}({e.get('Code') or '?'})" for e in total_errors[:5]
+        )
+        # Report the exact prefix(es) scanned so triage knows what was
+        # actually purged — a narrow subprefixes=("pages/",) scan and a
+        # broad reprocess purge report different failure surface even
+        # for the same ``input_key``.
+        scope = (
+            prefixes_to_scan[0]
+            if len(prefixes_to_scan) == 1
+            else f"{len(prefixes_to_scan)} prefixes: {prefixes_to_scan!r}"
+        )
+        raise RuntimeError(
+            f"delete_objects reported {len(total_errors)} per-key "
+            f"failure(s) while purging s3://{output_bucket}/{scope} "
+            f"({deleted} succeeded, {len(total_errors)} failed; sample: "
+            f"{sample}). Stale artefacts may remain and OCR's retry-safe "
+            f"recovery could re-open #719 on the next run."
+        )
+    return deleted
 
 
 def build_run_id(completion_time: str, workflow_execution_arn: Optional[str]) -> str:

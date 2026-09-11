@@ -36,6 +36,7 @@ from idp_common.evaluation.stickler_backend.comparators import (
 )
 from idp_common.evaluation.stickler_backend.doc_split import (
     DocSplitClassificationMetrics,
+    attach_page_confidence,
     compute_graded_packet_metrics,
     load_sections_for_doc_split,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "LLMComparator",
     "SticklerConfigMapper",
     "StructuredModel",
+    "attach_page_confidence",
     "compute_graded_packet_metrics",
     "get_stickler_model",
     "load_sections_for_doc_split",

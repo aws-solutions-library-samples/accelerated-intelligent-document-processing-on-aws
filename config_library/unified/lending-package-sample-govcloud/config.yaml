@@ -265,8 +265,12 @@ classes:
       EmployeeNumber:
         type: string
         description: >-
-          The unique identifier assigned to the employee by the employer for
-          payroll and  administrative purposes.
+          The employer's unique identifier for the employee. Also labelled 'Employee
+          No.', 'Emp #', 'Employee ID' or 'File No.'. On ADP-style earnings statements
+          the header row reads 'CO. FILE DEPT. CLOCK NUMBER' and the employee number is
+          the value in the FILE column (the second of the five codes) - not the CLOCK
+          value (the employee's clock/badge number) and not the NUMBER value (the check
+          or advice number).
         x-aws-idp-evaluation-method: EXACT
       RegularHourlyRate:
         type: number
@@ -305,8 +309,11 @@ classes:
       PayrollNumber:
         type: string
         description: >-
-          The payroll batch or sequence number for this pay period, used for
-          payroll processing  identification and tracking.
+          The payroll check, advice or voucher number that identifies this specific
+          payment. Also labelled 'Check No.', 'Advice No.', 'Voucher No.' or 'Payroll
+          No.'. On ADP-style earnings statements it is the value in the NUMBER column
+          (the fifth of the five codes in the 'CO. FILE DEPT. CLOCK NUMBER' header row),
+          typically zero-padded.
         x-aws-idp-evaluation-method: EXACT
       YTDStateTax:
         description: >-
@@ -721,15 +728,17 @@ classes:
       statement_end_date:
         format: date
         description: >-
-          The ending date of the statement period in MM/DD/YYYY format,
-          indicating when  the reporting period concluded.
+          The ending date of the statement period, in ISO-8601 format
+          (YYYY-MM-DD) to match this field's `format: date`, indicating when
+          the reporting period concluded.
         type: string
         x-aws-idp-evaluation-method: DATE
       statement_start_date:
         format: date
         description: >-
-          The beginning date of the statement period in MM/DD/YYYY format,
-          indicating  when the reporting period began.
+          The beginning date of the statement period, in ISO-8601 format
+          (YYYY-MM-DD) to match this field's `format: date`, indicating when
+          the reporting period began.
         type: string
         x-aws-idp-evaluation-method: DATE
       account_holder_name:

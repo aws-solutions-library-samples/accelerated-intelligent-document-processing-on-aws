@@ -68,6 +68,10 @@ export interface ReviewEffortEstimate {
   testSetId: string;
   targetAccuracy: number;
   configVersion?: string | null;
+  configVersionSource?: string | null;
+  confidenceFingerprint?: string | null;
+  confidenceFingerprintSource?: string | null;
+  curveSource?: string | null;
   docsToReview: number;
   docsToReviewLow: number;
   docsToReviewHigh: number;
@@ -133,7 +137,7 @@ const CONFIDENCE_COPY: Record<string, { type: 'info' | 'warning' | 'success'; he
   measured: {
     type: 'success',
     header: 'Measured on this set',
-    body: 'Derived from observed confidence-vs-accuracy on these documents under this config version.',
+    body: 'Derived from observed confidence-vs-accuracy on these documents under this configuration profile.',
   },
   unreliable: {
     type: 'warning',
@@ -147,6 +151,10 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
   const [target, setTarget] = useState(DEFAULT_TARGET);
   const [estimate, setEstimate] = useState<ReviewEffortEstimate | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Distinct from "still loading" and from an error: a successful estimate over a
+  // set with no draft labels left to review.
+  const nothingToReview = Boolean(estimate) && (estimate?.totalDocs ?? 0) === 0;
+
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
@@ -186,6 +194,38 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
 
   const banner = CONFIDENCE_COPY[estimate?.estimateConfidence ?? ''] ?? null;
 
+  // Which curve the numbers rest on. An "aggregate" curve served for a known
+  // configuration blends every configuration this set was ever scored or reviewed
+  // under, which estimateConfidence alone cannot reveal (it is genuinely measured).
+  const curveNote = (() => {
+    if (!estimate) return null;
+    if (estimate.curveSource === 'revision' && estimate.configVersion) {
+      return `Curve measured for configuration "${estimate.configVersion}" at its current model and assessment settings.`;
+    }
+    if (estimate.curveSource === 'config' && estimate.configVersion && estimate.confidenceFingerprint) {
+      return `No observations yet for the current model and assessment settings of "${estimate.configVersion}" — using its curve pooled across earlier revisions, which may reflect different confidence semantics.`;
+    }
+    if (estimate.curveSource === 'config' && estimate.configVersion && estimate.confidenceFingerprintSource === 'mixed-revisions') {
+      return `This set's labels were drafted under several revisions of "${estimate.configVersion}" with different model or assessment settings — using the profile's pooled curve.`;
+    }
+    if (estimate.curveSource === 'config' && estimate.configVersion && estimate.confidenceFingerprintSource === 'partial') {
+      return `Some of this set's labels were drafted before revision tracking existed, so their model and assessment settings are unknown — using the curve of "${estimate.configVersion}" pooled across its revisions.`;
+    }
+    if (estimate.curveSource === 'config' && estimate.configVersion) {
+      return `Curve measured for configuration "${estimate.configVersion}" (pooled across its revisions).`;
+    }
+    if (estimate.curveSource === 'aggregate' && estimate.configVersion) {
+      return `No curve measured yet for configuration "${estimate.configVersion}" — using this set's combined curve across every configuration it has been labeled or scored under.`;
+    }
+    if (estimate.curveSource === 'aggregate' && estimate.configVersionSource === 'mixed') {
+      return "This set's labels were drafted under several configurations, so no single configuration curve applies — using its combined curve.";
+    }
+    if (estimate.curveSource === 'aggregate') {
+      return "Using this set's combined curve; no configuration is associated with its labels.";
+    }
+    return null;
+  })();
+
   const chartData = (estimate?.burndown ?? []).map((p) => ({
     docs: p.docsReviewed,
     error: Number((p.residualErrorPct ?? 0).toFixed(2)),
@@ -212,7 +252,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
             <Button variant="link" onClick={onDismiss}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading}>
+            <Button variant="primary" onClick={() => onContinue(strategy, estimate)} disabled={isLoading || nothingToReview}>
               Continue to annotation
             </Button>
           </SpaceBetween>
@@ -222,6 +262,18 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
       <Form>
         <SpaceBetween size="l">
           {error && <Alert type="error">{error}</Alert>}
+
+          {/* Every document already carries ground truth, so there is no review to
+              size. Without this the dialog priced three strategies over nothing —
+              "about 0 of 0 documents (0–0)", "Est. effort —", "Audit sample 0" —
+              with Continue still enabled, next to a screen saying the set was fully
+              labelled. Say the one true thing instead. */}
+          {nothingToReview && !isLoading && !error && (
+            <Alert type="success" header="Nothing to review">
+              Every document in this set already carries ground truth, so there are no draft labels to check. Run a test to score a
+              configuration against it, or add documents and generate draft labels for those.
+            </Alert>
+          )}
 
           {isLoading && !estimate && (
             <Box textAlign="center" padding="l">
@@ -233,6 +285,11 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
             <Alert type={banner.type} header={banner.header}>
               {banner.body}
             </Alert>
+          )}
+          {curveNote && (
+            <Box variant="small" color="text-body-secondary">
+              {curveNote}
+            </Box>
           )}
 
           {estimate?.calibration?.degenerate && (
@@ -256,7 +313,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                 ? ` (AUROC ${estimate.calibration.auroc.toFixed(2)}, where 0.5 is a coin flip)`
                 : ''}
               , so reviewing the documents with the most confidence alerts would find no more errors than reviewing at random. Review
-              everything, or change the confidence model for this config version and re-score.
+              everything, or change the confidence model for this configuration profile and re-score.
             </Alert>
           )}
 

@@ -31,7 +31,8 @@ import {
 import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { addTestSet, addTestSetFromUpload, listBucketFiles, validateTestFileName } from '../../graphql/generated';
+import useUserRole from '../../hooks/use-user-role';
+import { addTestSet, addTestSetFromUpload, createEmptyTestSet, listBucketFiles, validateTestFileName } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
@@ -107,6 +108,9 @@ const CreateTestSetWizard = ({
 
   const isUpload = source === 'upload-labeled' || source === 'upload-documents';
   const isGenerate = source === 'generate';
+  const isEmpty = source === 'empty';
+  // Matching a pattern searches a whole bucket, so that source is Admin-only.
+  const { isAdmin } = useUserRole();
 
   // Shared with the standalone deep-link modal so the two entry points cannot
   // drift. Gated on the branch: inactive it fetches no estimates or test sets.
@@ -197,12 +201,16 @@ const CreateTestSetWizard = ({
       setError('Choose a zip file');
       return;
     }
+    // `name` is load-bearing: without it the resolver derives the set's name from the
+    // zip's filename, so "my-test-set" + Archive.zip produced a set called "Archive"
+    // while the toast below reported the name the server never received.
     const input: {
       fileName: string;
       fileSize: number;
+      name: string;
       description: string;
       documentClassType?: DocumentClassType;
-    } = { fileName: zip.name, fileSize: zip.size, description: description.trim() };
+    } = { fileName: zip.name, fileSize: zip.size, name: name.trim(), description: description.trim() };
     if (documentClassType.value) {
       input.documentClassType = documentClassType.value as DocumentClassType;
     }
@@ -220,10 +228,14 @@ const CreateTestSetWizard = ({
       throw new Error(`Upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
     }
 
+    // Named from the response, not from local state. This previously interpolated the
+    // form's `name` — which was never sent — so it confirmed a name the server had not
+    // used. Reporting the id the server actually created cannot drift from what happened.
+    const createdId = response.testSetId;
     onCreated(
       source === 'upload-documents'
-        ? `Test set "${name.trim()}" created. Once the zip is processed, use "Generate draft labels" to label it.`
-        : `Test set "${name.trim()}" created. The zip is being processed.`,
+        ? `Test set "${name.trim()}" created as ${createdId}. Once the zip is processed, use "Generate draft labels" to label it.`
+        : `Test set "${name.trim()}" created as ${createdId}. The zip is being processed.`,
     );
   };
 
@@ -249,6 +261,19 @@ const CreateTestSetWizard = ({
     }
     await client.graphql({ query: addTestSet, variables });
     onCreated(`Test set "${name.trim()}" created from ${fileCount} matching file(s).`);
+  };
+
+  const submitEmpty = async () => {
+    const variables: { name: string; description: string; documentClassType?: DocumentClassType } = {
+      name: name.trim(),
+      description: description.trim(),
+    };
+    if (documentClassType.value) {
+      variables.documentClassType = documentClassType.value as DocumentClassType;
+    }
+    const result = await client.graphql({ query: createEmptyTestSet, variables });
+    const createdId = result.data?.createEmptyTestSet?.id ?? name.trim();
+    onCreated(`Test set "${name.trim()}" created as ${createdId}, with no documents yet. Open it and use Add documents.`);
   };
 
   const handleSubmit = async () => {
@@ -277,7 +302,8 @@ const CreateTestSetWizard = ({
 
     setIsSubmitting(true);
     try {
-      if (isUpload) await submitUpload();
+      if (isEmpty) await submitEmpty();
+      else if (isUpload) await submitUpload();
       else await submitPattern();
       close();
     } catch (err) {
@@ -297,7 +323,7 @@ const CreateTestSetWizard = ({
    * does, because draft labeling has to be told what to extract.
    */
   const configPrerequisite =
-    source === 'upload-labeled' ? null : (
+    source === 'upload-labeled' || isEmpty ? null : (
       <Alert type="info" header={source === 'generate' ? 'Generation needs a configuration' : 'Labeling needs a configuration'}>
         <SpaceBetween size="xxs">
           <Box>
@@ -324,7 +350,9 @@ const CreateTestSetWizard = ({
             setSource(detail.value as CreateSource);
             setError('');
           }}
-          items={CREATE_SOURCES.filter((s) => s.value !== 'generate' || generatorAvailable).map((s) => ({
+          items={CREATE_SOURCES.filter(
+            (s) => (s.value !== 'generate' || generatorAvailable) && (s.value !== 'existing-files' || isAdmin),
+          ).map((s) => ({
             value: s.value,
             label: s.label,
             description: `${s.description} → ${s.outcome}`,
@@ -334,6 +362,11 @@ const CreateTestSetWizard = ({
       {!generatorAvailable && (
         <Box fontSize="body-s" color="text-body-secondary">
           Synthetic generation needs the data-generator extension installed.
+        </Box>
+      )}
+      {!isAdmin && (
+        <Box fontSize="body-s" color="text-body-secondary">
+          Importing by file pattern from a bucket is available to administrators.
         </Box>
       )}
     </SpaceBetween>
@@ -412,7 +445,10 @@ const CreateTestSetWizard = ({
           <FormField label="Bucket" description="Where to look for the documents.">
             <Select selectedOption={bucket} onChange={({ detail }) => setBucket(detail.selectedOption)} options={BUCKET_OPTIONS} />
           </FormField>
-          <FormField label="File pattern" description="For example *.pdf, or invoices/2024-*.pdf">
+          <FormField
+            label="File pattern"
+            description="* matches within one folder, ** matches any depth, ? matches one character; the folder path before the first wildcard is exact, the rest ignores case. For example *.pdf, invoices/2024-*.pdf, or invoices/**/*.pdf"
+          >
             <Input value={filePattern} onChange={({ detail }) => setFilePattern(detail.value)} placeholder="*.pdf" />
           </FormField>
           <FormField label="Modified after — optional" description="Useful for picking up only recently reviewed documents.">
@@ -472,15 +508,23 @@ const CreateTestSetWizard = ({
           { label: 'Name', value: name || '—' },
           { label: 'Description', value: description || '—' },
           { label: 'Classification type', value: documentClassType.label ?? 'Unspecified' },
-          ...(isUpload
-            ? [{ label: 'Zip file', value: files[0]?.name ?? '—' }]
-            : [
-                { label: 'Bucket', value: bucket.label ?? '' },
-                { label: 'Pattern', value: filePattern || '—' },
-                { label: 'Matching files', value: fileCount > 0 ? String(fileCount) : 'not checked' },
-              ]),
+          ...(isEmpty
+            ? []
+            : isUpload
+              ? [{ label: 'Zip file', value: files[0]?.name ?? '—' }]
+              : [
+                  { label: 'Bucket', value: bucket.label ?? '' },
+                  { label: 'Pattern', value: filePattern || '—' },
+                  { label: 'Matching files', value: fileCount > 0 ? String(fileCount) : 'not checked' },
+                ]),
         ]}
       />
+      {isEmpty && (
+        <Alert type="info" header="Next step after this">
+          This set is created with no documents. Open it and use <strong>Add documents</strong> to bring some in: files in a bucket, a zip
+          upload, or generated documents.
+        </Alert>
+      )}
       {source === 'upload-documents' && (
         <Alert type="info" header="Next step after this">
           This set arrives without ground truth. Open it and choose <strong>Generate draft labels</strong>, then review the documents with
@@ -530,7 +574,12 @@ const CreateTestSetWizard = ({
           cancelButton: 'Cancel',
           previousButton: 'Previous',
           nextButton: 'Next',
-          submitButton: isGenerate ? 'Generate documents' : 'Create test set',
+          // "Create", not "Create test set": the page behind this wizard has its own
+          // "Create test set" button, so both were on screen at once reading identically.
+          // Position disambiguates them for a sighted user and nothing does for a screen
+          // reader — and it is genuinely ambiguous, since one opens the wizard and the
+          // other commits it. The wizard's own footer has all the context it needs.
+          submitButton: isGenerate ? 'Generate documents' : 'Create',
           optional: 'optional',
         }}
         steps={[

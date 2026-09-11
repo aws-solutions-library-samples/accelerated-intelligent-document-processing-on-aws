@@ -1,5 +1,19 @@
-mutation UploadDocument($fileName: String!, $contentType: String, $prefix: String, $bucket: String, $version: String) {
-  uploadDocument(fileName: $fileName, contentType: $contentType, prefix: $prefix, bucket: $bucket, version: $version) {
+mutation UploadDocument(
+  $fileName: String!
+  $contentType: String
+  $prefix: String
+  $bucket: String
+  $version: String
+  $revision: Int
+) {
+  uploadDocument(
+    fileName: $fileName
+    contentType: $contentType
+    prefix: $prefix
+    bucket: $bucket
+    version: $version
+    revision: $revision
+  ) {
     presignedUrl
     objectKey
     usePostMethod

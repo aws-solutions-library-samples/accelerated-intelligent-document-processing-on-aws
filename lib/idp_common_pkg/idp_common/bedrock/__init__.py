@@ -20,7 +20,13 @@ __all__ = [
     "stream_responses_api",
 ]
 
-# Re-export key functions from the default client for backward compatibility
+# Re-export key functions from the default client for backward compatibility.
+# Callers reach these as MODULE functions (`bedrock.extract_text_from_response(...)`),
+# so a method that exists on BedrockClient but is missing from this list raises
+# AttributeError at the call site — see test_module_level_api.py, added after
+# `extract_tool_use_from_response` shipped absent from here and made forced tool
+# use (WS-05) fail every section it was enabled for.
 extract_text_from_response = default_client.extract_text_from_response
+extract_tool_use_from_response = default_client.extract_tool_use_from_response
 generate_embedding = default_client.generate_embedding
 format_prompt = default_client.format_prompt

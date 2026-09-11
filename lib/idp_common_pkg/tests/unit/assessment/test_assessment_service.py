@@ -302,6 +302,106 @@ class TestAssessmentService:
 
     @patch("idp_common.assessment.service.bedrock.extract_text_from_response")
     @patch("idp_common.assessment.service.bedrock.invoke_model")
+    def test_ref_wrapped_array_gets_per_row_leaves_and_subfield_thresholds(
+        self, mock_invoke_model, mock_extract_text
+    ):
+        """An array declared as a bare ``$ref`` into ``$defs`` must score per-row.
+
+        ``_assess_core`` read ``type`` off the raw property, so a
+        ``{"$ref": "#/$defs/TxnList"}`` array defaulted to ``TYPE_STRING`` →
+        ``attr_type == "simple"`` → the per-row list assessment was collapsed to
+        one default ``{"confidence": 0.5}`` leaf, which reconciliation then padded
+        to N null placeholders that no model could fill (GitHub issue #678).
+
+        Also pins the consequence that only becomes reachable once the property is
+        typed correctly: per-sub-field thresholds resolve from the referenced item
+        definition instead of silently falling back to the uniform container
+        threshold.
+        """
+        schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "stmt",
+            "x-aws-idp-document-type": "stmt",
+            "type": "object",
+            "properties": {"txns": {"$ref": "#/$defs/TxnList"}},
+            "$defs": {
+                "TxnList": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "date": {"type": "string"},
+                            "amount": {
+                                "type": "number",
+                                "x-aws-idp-confidence-threshold": 0.99,
+                            },
+                        },
+                    },
+                }
+            },
+        }
+        svc = AssessmentService(
+            region="us-west-2",
+            config={
+                "classes": [schema],
+                "hitl": {"confidence_threshold": 0.8},
+                "assessment": {
+                    "model": "anthropic.claude-3-sonnet-20240229-v1:0",
+                    "default_confidence_threshold": 0.8,
+                    "system_prompt": "You are a document assessment assistant.",
+                    "task_prompt": (
+                        "Assess {DOCUMENT_CLASS}\n"
+                        "{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}\n"
+                        "{EXTRACTION_RESULTS}\n{DOCUMENT_TEXT}"
+                    ),
+                },
+            },
+        )
+
+        body = (
+            '{"txns": ['
+            '{"date": {"confidence": 0.97}, "amount": {"confidence": 0.95}}, '
+            '{"date": {"confidence": 0.92}, "amount": {"confidence": 0.91}}]}'
+        )
+        mock_invoke_model.return_value = {
+            "response": {
+                "stopReason": "end_turn",
+                "output": {"message": {"content": [{"text": body}]}},
+            },
+            "metering": {"Assessment/bedrock/m": {"outputTokens": 50}},
+        }
+        mock_extract_text.return_value = body
+
+        core = svc.assess_results(
+            class_label="stmt",
+            extraction_results={
+                "txns": [
+                    {"date": "1/1", "amount": "10"},
+                    {"date": "1/2", "amount": "20"},
+                ]
+            },
+            document_text="text",
+            page_images=[],
+        )
+
+        txns = core.enhanced_assessment.get("txns")
+        # Per-row leaves — NOT a single collapsed {"confidence": 0.5} dict.
+        assert isinstance(txns, list), f"collapsed to {txns!r}"
+        assert len(txns) == 2
+        assert txns[0]["date"]["confidence"] == 0.97
+        assert txns[1]["amount"]["confidence"] == 0.91
+        # Sub-field thresholds resolved through the $ref, not the 0.8 default.
+        assert txns[0]["amount"]["confidence_threshold"] == 0.99
+        assert txns[0]["date"]["confidence_threshold"] == 0.8
+        # 0.95 and 0.91 are both below the 0.99 sub-field threshold → alerts fire
+        # per row AND per sub-field, which the collapsed leaf could never produce.
+        alerted = {a["attribute_name"] for a in core.confidence_threshold_alerts}
+        assert {"txns[0].amount", "txns[1].amount"} <= alerted
+        # date (0.97, 0.92) clears its own 0.8 threshold → no alert.
+        assert not {a for a in alerted if a.endswith(".date")}
+
+    @patch("idp_common.assessment.service.bedrock.extract_text_from_response")
+    @patch("idp_common.assessment.service.bedrock.invoke_model")
     @patch("idp_common.image.prepare_image")
     def test_assess_results_not_truncated_on_normal_stop(
         self, mock_prepare_image, mock_invoke_model, mock_extract_text, service

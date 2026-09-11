@@ -181,4 +181,4 @@ def _send(event, context, status, physical_resource_id, data=None, reason=""):
         headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
         method="PUT",
     )
-    urllib.request.urlopen(req)  # noqa: S310
+    urllib.request.urlopen(req)  # noqa: S310  # nosec B310 - CloudFormation-supplied custom-resource callback URL (https), not user input

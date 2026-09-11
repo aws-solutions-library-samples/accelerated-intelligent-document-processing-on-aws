@@ -346,7 +346,12 @@ const Navigation = ({
   // visible per the feature platform plan. Catalog entries with
   // showInNav: false (the bundled reference samples) are reachable from the
   // catalog browser at /features, not from their own nav links.
-  const featuresSection = useMemo(() => buildFeaturesNavSection(installedFeatures, catalogFeatures), [installedFeatures, catalogFeatures]);
+  // isAdmin gates the badge wording only: installing is Admin-only, so a
+  // non-admin reads lifecycle state rather than an action they cannot take.
+  const featuresSection = useMemo(
+    () => buildFeaturesNavSection(installedFeatures, catalogFeatures, isAdmin),
+    [installedFeatures, catalogFeatures, isAdmin],
+  );
 
   // Version-check for the "Update available" indicator. Returns
   // isUpdateAvailable=false until settings.Version is loaded.

@@ -110,6 +110,14 @@ export default defineConfig(({ mode }) => ({
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
     include: ['src/**/*.test.{ts,tsx}'],
+    // Above vitest's 5s default, for CI runner variance rather than to license
+    // slow tests. Rendering a Cloudscape table in jsdom costs hundreds of
+    // milliseconds, and the shared CI runner has been observed ~5x slower than a
+    // developer machine — enough that a test passing locally in 1s timed out
+    // there. That failure mode is invisible until the pipeline runs, so it costs a
+    // round-trip every time. The fix for a genuinely slow test is still to make it
+    // cheaper; a real hang still fails, just later.
+    testTimeout: 10000,
   },
 
   // CSS configuration

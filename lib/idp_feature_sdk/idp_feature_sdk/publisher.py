@@ -671,7 +671,7 @@ class FeaturePublisher:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310 - operator-supplied simulator URL in a publish-time CLI, not request input
                 resp.read()
             self.console.log(
                 f"[green]✓[/green] Registered product [bold]{product_code}[/bold] with simulator"

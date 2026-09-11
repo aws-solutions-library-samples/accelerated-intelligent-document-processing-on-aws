@@ -13,6 +13,7 @@ from botocore.exceptions import ClientError
 from deepdiff import DeepDiff
 
 from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
+from idp_common.config.class_names import sanitize_class_name
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.schema_constants import (
     DEFS_FIELD,
@@ -56,6 +57,24 @@ class BdaBlueprintService:
         sanitized = re.sub(r"-+", "-", sanitized)
         # Trim to reasonable length (BDA limit)
         return sanitized[:128].strip("-")
+
+    @staticmethod
+    def _sanitize_class_name(name: str) -> str:
+        """Sanitize a document class id for use inside a BDA blueprint name.
+
+        ``CreateBlueprint`` requires ``blueprintName`` to match
+        ``[a-zA-Z0-9-_]+``, but a class id is user- or LLM-authored and may
+        contain spaces or punctuation (Discovery has been observed emitting
+        ``Task cards``), which fails the API call for every affected class.
+
+        Deliberately not ``_sanitize_project_name``: that one maps ``_`` to
+        ``-``, while BDA permits underscores in a blueprint name. A class id
+        that BDA already accepts must render byte-identically here, otherwise
+        ``_blueprint_lookup`` would stop recognizing the blueprint it created
+        for e.g. ``Bank_Statement`` and orphan cleanup would delete it as
+        unexpected. Only ids that could never have produced a blueprint change.
+        """
+        return sanitize_class_name(name)
 
     def get_or_create_project_for_version(self, version_name: str) -> str:
         """Get or create a BDA project for a specific config version.
@@ -1379,6 +1398,26 @@ class BdaBlueprintService:
                 ID_FIELD, custom_class.get(X_AWS_IDP_DOCUMENT_TYPE, "")
             )
 
+            # A blueprint name must match [a-zA-Z0-9-_]+, so a class id
+            # carrying a space or punctuation has to be reduced before it goes
+            # into one — otherwise CreateBlueprint fails with a raw
+            # ValidationException for every affected class and the version is
+            # left with a project and zero blueprints.
+            bda_class_name = self._sanitize_class_name(docu_class)
+            if not bda_class_name:
+                raise ValueError(
+                    f"Document class '{docu_class}' has no characters that are "
+                    f"valid in a BDA blueprint name ([a-zA-Z0-9-_]). Rename the "
+                    f"class in your configuration before syncing to BDA."
+                )
+            if bda_class_name != docu_class:
+                logger.warning(
+                    "Class '%s' is not a valid BDA blueprint name component; "
+                    "using '%s' for its blueprint name.",
+                    docu_class,
+                    bda_class_name,
+                )
+
             # Set current class context for tracking skipped properties
             self._current_class = docu_class
 
@@ -1433,7 +1472,8 @@ class BdaBlueprintService:
                     classes_modified = True
 
                 blueprint_name = (
-                    f"{self.blueprint_name_prefix}-{docu_class}-{uuid.uuid4().hex[:8]}"
+                    f"{self.blueprint_name_prefix}-{bda_class_name}-"
+                    f"{uuid.uuid4().hex[:8]}"
                 )
                 blueprint_schema = self._transform_json_schema_to_bedrock_blueprint(
                     custom_class
@@ -1487,6 +1527,10 @@ class BdaBlueprintService:
             return {
                 "class": class_name,
                 "status": "failed",
+                # Carry the reason with the result. Callers previously reported
+                # only a failed count, so a per-class cause (an API
+                # ValidationException, say) was visible only in CloudWatch.
+                "error": str(e),
             }
 
     def _process_classes_parallel(
@@ -1528,6 +1572,8 @@ class BdaBlueprintService:
                         # Include warnings if present
                         if result.get("warnings"):
                             status_entry["warnings"] = result["warnings"]
+                        if result.get("error"):
+                            status_entry["error"] = result["error"]
                         classess_status.append(status_entry)
 
                         if result["status"] == "success" and "_internal" in result:
@@ -1617,7 +1663,8 @@ class BdaBlueprintService:
 
             # Create new custom blueprint
             new_blueprint_name = (
-                f"{self.blueprint_name_prefix}-{docu_class}-{uuid.uuid4().hex[:8]}"
+                f"{self.blueprint_name_prefix}-"
+                f"{self._sanitize_class_name(docu_class)}-{uuid.uuid4().hex[:8]}"
             )
 
             result = self.blueprint_creator.create_blueprint(
@@ -1739,8 +1786,12 @@ class BdaBlueprintService:
         }
 
     def _blueprint_lookup(self, existing_blueprints, doc_class):
-        # Create a lookup dictionary for existing blueprints by name prefix
-        _blueprint_prefix = f"{self.blueprint_name_prefix}-{doc_class}"
+        # Create a lookup dictionary for existing blueprints by name prefix.
+        # The class id is sanitized the same way it is when a blueprint is
+        # created, so lookup keeps matching the name that was actually used.
+        _blueprint_prefix = (
+            f"{self.blueprint_name_prefix}-{self._sanitize_class_name(doc_class)}"
+        )
         logger.info(f"blueprint lookup using name {_blueprint_prefix}")
         for blueprint in existing_blueprints:
             blueprint_name = blueprint.get("blueprintName", "")
@@ -2216,7 +2267,13 @@ class BdaBlueprintService:
             for cls in current_classes:
                 doc_class = cls.get(ID_FIELD, cls.get(X_AWS_IDP_DOCUMENT_TYPE, ""))
                 if doc_class:
-                    expected_prefixes.add(f"{self.blueprint_name_prefix}-{doc_class}")
+                    # Must sanitize identically to the creation path, or a
+                    # class whose id needed sanitizing would never match its
+                    # own blueprint and cleanup would delete a live one.
+                    expected_prefixes.add(
+                        f"{self.blueprint_name_prefix}-"
+                        f"{self._sanitize_class_name(doc_class)}"
+                    )
 
             logger.info(
                 f"Found {len(expected_prefixes)} expected class prefixes from IDP config"

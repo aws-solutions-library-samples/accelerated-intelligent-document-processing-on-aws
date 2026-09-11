@@ -7,6 +7,7 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
     WorkflowStartTime
     WorkflowExecutionArn
     ConfigVersion
+    ConfigRevision
     PageCount
     FileCount
     ManifestUri
@@ -17,7 +18,11 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
       Id
       PageIds
       Class
+      Confidence
       OutputJSONUri
+      InstanceCount
+      Excluded
+      ExclusionReason
       ConfidenceThresholdAlerts {
         attributeName
         confidence
@@ -34,6 +39,12 @@ query GetDocumentVersion($objectKey: ID!, $runId: String!) {
     Pages {
       Id
       Class
+      ClassConfidence
+      ClassReason
+      ClassCandidates {
+        Class
+        Probability
+      }
       ImageUri
       TextUri
       OcrPageDataUri

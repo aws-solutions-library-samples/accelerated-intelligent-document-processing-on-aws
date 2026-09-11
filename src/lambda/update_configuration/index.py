@@ -84,7 +84,6 @@ MODEL_MAPPINGS = {
     "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
     "us.anthropic.claude-3-haiku-20240307-v1:0": "eu.anthropic.claude-3-haiku-20240307-v1:0",
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
     "us.anthropic.claude-3-5-sonnet-20241022-v2:0": "eu.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "us.anthropic.claude-3-7-sonnet-20250219-v1:0": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -106,6 +105,19 @@ MODEL_MAPPINGS = {
     # Third-party models (US-only, no EU equivalent - fall back to themselves)
     "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # NOT MAPPED, deliberately: OpenAI GPT-6 Astra and xAI Grok.
+    #
+    # Both have no eu. profile but a global. one that IS callable from the EU, so
+    # "us.openai.gpt-6-astra": "global.openai.gpt-6-astra" looks like the obvious
+    # row to add. It would fix a narrow case — an EU stack whose STORED config
+    # names the us. ID keeps an ID that is not callable there, because
+    # filter_models_by_region only hides it from the picklists while swap_model_ids
+    # is what rewrites a stored value — but get_model_mapping() also walks this
+    # dict BACKWARDS for target_region_type == "us". So the row would rewrite a US
+    # deployment's stored global. ID to the us. one, silently moving a user off the
+    # profile they chose onto a costlier one with fewer Regions. That regression is
+    # worse than the gap it closes. Fixing this properly needs a
+    # direction-aware mapping, not another row here.
 }
 
 
@@ -152,6 +164,14 @@ def filter_models_by_region(data: Any, region_type: str) -> Any:
     # Models that carry no region prefix but are only available in US (and
     # us-gov) regions via the bedrock-mantle endpoint. They must NOT be offered
     # in EU-region deployments where they are not callable. See openai_responses.py.
+    #
+    # NOTE: openai.gpt-6-astra deliberately does NOT belong here, despite the
+    # shared "openai." prefix. Astra is only ever offered in the CRIS-prefixed
+    # forms, and the us./global. rules below already do the right thing: the
+    # `us.` profile is dropped for EU deployments while `global.` is kept, which
+    # matches the model card (global CRIS covers every EU region) and was
+    # verified live against global.openai.gpt-6-astra in eu-west-1. Listing it
+    # here would wrongly hide the model from EU stacks entirely.
     US_ONLY_MODELS = {
         "openai.gpt-5.4",
         "openai.gpt-5.5",
@@ -506,16 +526,20 @@ def generate_physical_id(stack_id: str, logical_id: str) -> str:
 
 
 def _parse_format_version(value: Any) -> tuple:
-    """Parse a 'MAJOR.MINOR' config_format_version string into a comparable tuple.
+    """Parse a 'MAJOR.MINOR' config_format_version stamp into a comparable tuple.
 
-    Returns (0,) for missing/unparseable values (treated as the oldest format).
+    Thin adapter over the migration chain's ``parse_version`` so there is ONE
+    implementation of this comparison: rollback detection here and the
+    never-downgrade guard in the migrations must agree about which stamp is
+    newer, and two copies of an ordering rule is how they stop agreeing.
+
+    Differs only in the fallback: missing/unparseable reads as ``(0,)`` — the
+    oldest format — because this caller compares rather than branching on
+    "unknown".
     """
-    if not value:
-        return (0,)
-    try:
-        return tuple(int(p) for p in str(value).split("."))
-    except (ValueError, TypeError):
-        return (0,)
+    from idp_common.config.migrations._version import parse_version
+
+    return parse_version(value) or (0,)
 
 
 def _is_rollback_to_older_format() -> bool:
@@ -793,9 +817,16 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                             )
                         except Exception:
                             pass
+                        # A stack deployment cuts a revision instead of
+                        # overwriting silently, so an upgrade's configuration
+                        # changes are diffable and can be rolled back.
                         if existing_config:
                             manager.save_configuration(
-                                "Config", config, version=version
+                                "Config",
+                                config,
+                                version=version,
+                                created_by="stack-deployment",
+                                revision_notes="Updated by stack deployment",
                             )
                         else:  # new config
                             manager.save_configuration(
@@ -803,6 +834,8 @@ def handler(event: Dict[str, Any], context: Any) -> None:
                                 config,
                                 version=version,
                                 description=description,
+                                created_by="stack-deployment",
+                                revision_notes="Created by stack deployment",
                             )
                         logger.info(f"Updated config version: {version} configuration")
                 else:

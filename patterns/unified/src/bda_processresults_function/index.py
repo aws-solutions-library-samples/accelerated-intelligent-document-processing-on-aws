@@ -16,7 +16,7 @@ from idp_common.config import get_config
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, HitlMetadata, Page, Section, Status
 from idp_common.s3 import get_s3_client, write_content
-from idp_common.utils import build_s3_uri, parse_s3_uri
+from idp_common.utils import build_s3_uri, parse_confidence, parse_s3_uri
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -31,7 +31,7 @@ ssm_client = boto3.client("ssm")
 bedrock_client = boto3.client("bedrock-data-automation")
 
 
-def is_hitl_enabled(config_version=None):
+def is_hitl_enabled(config_version=None, config_revision=None):
     """Check if HITL is enabled from configuration."""
     try:
         config = get_config(as_model=True, version=config_version)
@@ -43,7 +43,7 @@ def is_hitl_enabled(config_version=None):
         return False  # Default to disabled if config unavailable
 
 
-def is_rule_validation_enabled(config_version=None):
+def is_rule_validation_enabled(config_version=None, config_revision=None):
     """Check if rule validation is enabled and has rules configured."""
     try:
         config = get_config(as_model=True, version=config_version)
@@ -338,11 +338,18 @@ def process_bda_sections(
                 # Create the OutputJSONUri using the utility function
                 extraction_result_uri = build_s3_uri(output_bucket, result_path)
 
-                # Create Section object and add to document
+                # Create Section object and add to document.
+                #
+                # Confidence is left unscored here and filled in later from BDA's
+                # matched-blueprint confidence, which is the real signal for the
+                # class this section was given (see the segment loop in
+                # update_hitl_status_in_dynamodb). A section whose blueprint did
+                # not MATCH therefore stays unscored rather than claiming the 1.0
+                # this used to hardcode.
                 section = Section(
                     section_id=section_id,
                     classification=doc_class,
-                    confidence=1.0,
+                    confidence=None,
                     page_ids=page_ids,
                     extraction_result_uri=extraction_result_uri,
                 )
@@ -1080,6 +1087,7 @@ def process_segments(
     document,
     config_version: str = None,
     config=None,
+    config_revision: int = None,
 ):
     """
     Process each segment, extract key-value details, and invoke human review if needed.
@@ -1145,6 +1153,9 @@ def process_segments(
                 pagespecific_details, confidence_threshold
             )
 
+            blueprint_name = custom_output["matched_blueprint"]["name"]
+            bp_confidence = custom_output["matched_blueprint"]["confidence"]
+
             # Update the corresponding document section with confidence alerts
             # Find the section that contains these page indices (now 1-based)
             page_ids_str = [str(idx) for idx in page_indices_1based]
@@ -1152,16 +1163,26 @@ def process_segments(
                 # Check if this section's pages match the current segment's pages
                 if set(section.page_ids) == set(page_ids_str):
                     section.confidence_threshold_alerts = confidence_threshold_alerts
+                    # BDA's matched-blueprint confidence IS the classification
+                    # confidence in this mode: the matched blueprint is what
+                    # determines the section's class. It was already read below
+                    # for the HITL decision but never stored, so the section
+                    # carried a hardcoded 1.0 (GitHub #673). Note this makes BDA
+                    # mode scored by default, with no extra inference and no
+                    # prompt change — unlike the pipeline mode, where the model
+                    # has to be asked.
+                    section.confidence = parse_confidence(
+                        bp_confidence, context=f"BDA blueprint {blueprint_name}"
+                    )
                     logger.info(
-                        f"Updated section {section.section_id} with {len(confidence_threshold_alerts)} confidence alerts"
+                        f"Updated section {section.section_id} with {len(confidence_threshold_alerts)} confidence alerts, "
+                        f"class confidence {section.confidence}"
                     )
                     break
-            blueprint_name = custom_output["matched_blueprint"]["name"]
-            bp_confidence = custom_output["matched_blueprint"]["confidence"]
 
             # Check if any key-value or blueprint confidence is below threshold
             # Use confidence_threshold_alerts to determine if HITL should be triggered
-            if is_hitl_enabled(config_version):
+            if is_hitl_enabled(config_version, config_revision):
                 low_confidence = (
                     len(confidence_threshold_alerts) > 0
                     or float(bp_confidence) < confidence_threshold
@@ -1202,7 +1223,7 @@ def process_segments(
                 # HITL review will be handled via portal, not A2I
                 item.update({"hitl_corrected_result": custom_decimal_output})
         else:
-            if is_hitl_enabled(config_version):
+            if is_hitl_enabled(config_version, config_revision):
                 std_hitl = "true"
                 # std_hitl = None # HITL for standard output blueprint match is disabled until we have option to choose Blueprint in A2I
             else:
@@ -1288,7 +1309,8 @@ def handle_skip_bda(event):
     
     # Load configuration - use document's version if specified, otherwise use active version
     config_version = getattr(document, 'config_version', None)
-    config = get_config(as_model=True, version=config_version)
+    config_revision = getattr(document, 'config_revision', None)
+    config = get_config(as_model=True, version=config_version, revision=config_revision)
     
     # Update document status to POSTPROCESSING
     document.status = Status.POSTPROCESSING
@@ -1312,7 +1334,7 @@ def handle_skip_bda(event):
     
     # Check if HITL should be triggered based on existing confidence alerts
     hitl_triggered = False
-    if is_hitl_enabled(config_version):
+    if is_hitl_enabled(config_version, config_revision):
         # Check each section for confidence alerts below threshold
         for section in document.sections:
             alerts = section.confidence_threshold_alerts or []
@@ -1334,7 +1356,7 @@ def handle_skip_bda(event):
         working_bucket = output_bucket
     
     # Check if rule validation is enabled for this config version
-    rule_validation_enabled = is_rule_validation_enabled(config_version)
+    rule_validation_enabled = is_rule_validation_enabled(config_version, config_revision)
 
     response = {
         "document": document.serialize_document(working_bucket, "processresults_skip", logger),
@@ -1390,14 +1412,17 @@ def handler(event, context):
         
         # Check if HITL review is needed
         config_version = getattr(document, 'config_version', None)
-        hitl_triggered = is_hitl_enabled(config_version) and any(
+        config_revision = getattr(document, 'config_revision', None)
+        hitl_triggered = is_hitl_enabled(config_version, config_revision) and any(
             section.confidence_threshold_alerts for section in document.sections
         )
         
         return {
             "document": document.serialize_document(working_bucket, "processresults_skip", logger),
             "hitl_triggered": hitl_triggered,
-            "rule_validation_enabled": is_rule_validation_enabled(config_version),
+            "rule_validation_enabled": is_rule_validation_enabled(
+                config_version, config_revision
+            ),
         }
     
     output_bucket = first_response.get("output_bucket")
@@ -1437,12 +1462,19 @@ def handler(event, context):
     document_service = create_document_service()
     existing_document = document_service.get_document(object_key)
     input_config_version = getattr(existing_document, 'config_version', None) if existing_document else None
+    # Reprocessing keeps the revision the document was originally pinned to, so a
+    # re-run reproduces the original output rather than silently adopting whatever
+    # the profile looks like now.
+    input_config_revision = getattr(existing_document, 'config_revision', None) if existing_document else None
 
     # Set config version on the new document object
     document.config_version = input_config_version
+    document.config_revision = input_config_revision
 
     # Load configuration using the input document's version
-    config = get_config(as_model=True, version=input_config_version)
+    config = get_config(
+        as_model=True, version=input_config_version, revision=input_config_revision
+    )
 
     # Get confidence threshold from configuration
     # Used for both creating confidence alerts and triggering HITL
@@ -1583,6 +1615,7 @@ def handler(event, context):
                             document,
                             input_config_version,
                             config,
+                            input_config_revision,
                         )
                         logger.info(f"process_segments returned hitl_result: {hitl_result}")
                         if hitl_result or hitl_triggered:
@@ -1599,6 +1632,7 @@ def handler(event, context):
                             document,
                             input_config_version,
                             config,
+                            input_config_revision,
                         )
                         logger.info(f"process_segments returned hitl_result: {hitl_result}")
                         if hitl_result or hitl_triggered:
@@ -1662,7 +1696,9 @@ def handler(event, context):
         working_bucket = output_bucket
 
     # Check if rule validation is enabled for this config version
-    rule_validation_enabled = is_rule_validation_enabled(input_config_version)
+    rule_validation_enabled = is_rule_validation_enabled(
+        input_config_version, input_config_revision
+    )
 
     response = {
         "document": document.serialize_document(

@@ -5,9 +5,9 @@
 
 Derived from the installed distribution metadata at import time. A hand-maintained
 constant here (as this module previously carried) drifted from what was actually
-installed — the source of truth is the resolver, not a Python literal. Keep the
-``stickler-eval==`` pins in ``pyproject.toml`` and ``setup.py`` aligned; a unit
-test asserts they agree with what's installed.
+installed — the source of truth is the resolver, not a Python literal. The
+``stickler-eval==`` pin lives in ``pyproject.toml``; a unit test asserts it
+agrees with what's installed.
 """
 
 from importlib.metadata import PackageNotFoundError, version

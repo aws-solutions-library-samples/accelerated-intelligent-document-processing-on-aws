@@ -472,6 +472,368 @@ class TestInvocationAndRouting:
         assert mock_send.call_count == 1
 
 
+_SIMPLE_SCHEMA = {
+    "type": "object",
+    "title": "Invoice",
+    "x-aws-idp-document-type": "Invoice",
+    "properties": {
+        "invoice_number": {"type": "string", "x-aws-idp-original-name": "Invoice #"},
+        "total": {"type": "number"},
+    },
+    "required": ["invoice_number"],
+}
+
+
+@pytest.mark.unit
+class TestStrictSchemaNormalization:
+    def test_adds_additional_properties_and_completes_required(self):
+        strict = oar.to_strict_json_schema(_SIMPLE_SCHEMA)
+        assert strict["additionalProperties"] is False
+        assert strict["required"] == ["invoice_number", "total"]
+
+    def test_optional_property_widened_to_nullable(self):
+        strict = oar.to_strict_json_schema(_SIMPLE_SCHEMA)
+        # invoice_number was already required -> type untouched.
+        assert strict["properties"]["invoice_number"]["type"] == "string"
+        # total was optional -> becomes a nullable union so strict mode can
+        # require it without changing semantics.
+        assert strict["properties"]["total"]["type"] == ["number", "null"]
+
+    def test_strips_vendor_extension_keys(self):
+        strict = oar.to_strict_json_schema(_SIMPLE_SCHEMA)
+        assert "x-aws-idp-document-type" not in strict
+        assert "x-aws-idp-original-name" not in strict["properties"]["invoice_number"]
+        # Non-extension metadata is preserved.
+        assert strict["title"] == "Invoice"
+
+    def test_does_not_mutate_input(self):
+        original = json.loads(json.dumps(_SIMPLE_SCHEMA))
+        oar.to_strict_json_schema(_SIMPLE_SCHEMA)
+        assert _SIMPLE_SCHEMA == original
+
+    def test_idempotent(self):
+        once = oar.to_strict_json_schema(_SIMPLE_SCHEMA)
+        twice = oar.to_strict_json_schema(once)
+        assert once == twice
+
+    def test_recurses_into_nested_objects_items_defs_and_anyof(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "header": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}},
+                },
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"amount": {"type": "number"}},
+                        "required": ["amount"],
+                    },
+                },
+                "either": {
+                    "anyOf": [
+                        {"type": "object", "properties": {"a": {"type": "string"}}},
+                        {"type": "null"},
+                    ]
+                },
+            },
+            "$defs": {
+                "Party": {"type": "object", "properties": {"name": {"type": "string"}}}
+            },
+        }
+        strict = oar.to_strict_json_schema(schema)
+        props = strict["properties"]
+        assert props["header"]["additionalProperties"] is False
+        assert props["header"]["required"] == ["id"]
+        items = props["lines"]["items"]
+        assert items["additionalProperties"] is False
+        assert items["required"] == ["amount"]
+        assert props["either"]["anyOf"][0]["additionalProperties"] is False
+        assert strict["$defs"]["Party"]["additionalProperties"] is False
+        assert strict["$defs"]["Party"]["required"] == ["name"]
+
+    def test_ref_property_left_alone(self):
+        # A bare $ref cannot be widened to nullable without rewriting it, so it
+        # stays required. Documented caveat, asserted so it cannot regress silently.
+        schema = {
+            "type": "object",
+            "properties": {"party": {"$ref": "#/$defs/Party"}},
+            "$defs": {"Party": {"type": "object", "properties": {}}},
+        }
+        strict = oar.to_strict_json_schema(schema)
+        assert strict["properties"]["party"] == {"$ref": "#/$defs/Party"}
+        assert strict["required"] == ["party"]
+
+    def test_existing_nullable_union_not_duplicated(self):
+        schema = {"type": "object", "properties": {"a": {"type": ["string", "null"]}}}
+        strict = oar.to_strict_json_schema(schema)
+        assert strict["properties"]["a"]["type"] == ["string", "null"]
+
+    def test_non_dict_schema_raises(self):
+        with pytest.raises(ValueError, match="JSON-Schema dict"):
+            oar.to_strict_json_schema(["not", "a", "schema"])
+
+    def test_non_object_root_raises(self):
+        with pytest.raises(ValueError, match="root must be a JSON-Schema object"):
+            oar.build_output_text_format({"type": "array", "items": {}})
+
+
+@pytest.mark.unit
+class TestOutputSchemaRequestBuilding:
+    def test_no_output_schema_leaves_body_untouched(self):
+        body = oar.build_responses_request(
+            system_prompt="sys",
+            content=[{"text": "hi"}],
+            max_tokens=100,
+            model_id="openai.gpt-5.4",
+        )
+        # The exact key the feature adds must be absent by default.
+        assert "text" not in body
+        assert "response_format" not in body
+        assert set(body) == {
+            "model",
+            "input",
+            "reasoning",
+            "stream",
+            "store",
+            "instructions",
+            "max_output_tokens",
+        }
+
+    def test_explicit_none_is_identical_to_omitted(self):
+        kwargs = dict(
+            system_prompt="sys",
+            content=[{"text": "hi"}],
+            max_tokens=100,
+            model_id="openai.gpt-5.4",
+        )
+        assert oar.build_responses_request(**kwargs) == oar.build_responses_request(
+            **kwargs, output_schema=None, output_schema_name="ignored"
+        )
+
+    def test_output_schema_emits_nested_text_format_with_strict_true(self):
+        body = oar.build_responses_request(
+            system_prompt="sys",
+            content=[{"text": "hi"}],
+            max_tokens=100,
+            model_id="openai.gpt-5.4",
+            output_schema=_SIMPLE_SCHEMA,
+            output_schema_name="invoice",
+        )
+        # Responses API shape is text.format — NOT the Chat Completions
+        # response_format.
+        assert "response_format" not in body
+        fmt = body["text"]["format"]
+        assert fmt["type"] == "json_schema"
+        assert fmt["name"] == "invoice"
+        assert fmt["strict"] is True
+        assert fmt["schema"]["additionalProperties"] is False
+        assert fmt["schema"]["required"] == ["invoice_number", "total"]
+
+    def test_output_schema_does_not_disturb_other_fields(self):
+        body = oar.build_responses_request(
+            system_prompt="sys",
+            content=[{"text": "prefix <<CACHEPOINT>>"}, {"text": "q"}],
+            max_tokens=100,
+            model_id="openai.gpt-5.6-sol",
+            reasoning_effort="high",
+            output_schema=_SIMPLE_SCHEMA,
+        )
+        assert body["reasoning"]["effort"] == "high"
+        assert body["prompt_cache_options"] == {"mode": "explicit"}
+        assert body["max_output_tokens"] == 100
+        assert "temperature" not in body
+
+    def test_schema_name_defaults_and_is_sanitized(self):
+        default = oar.build_responses_request(
+            system_prompt="sys",
+            content=[{"text": "hi"}],
+            max_tokens=100,
+            model_id="openai.gpt-5.4",
+            output_schema=_SIMPLE_SCHEMA,
+        )
+        assert default["text"]["format"]["name"] == oar.DEFAULT_OUTPUT_SCHEMA_NAME
+
+        dirty = oar.build_responses_request(
+            system_prompt="sys",
+            content=[{"text": "hi"}],
+            max_tokens=100,
+            model_id="openai.gpt-5.4",
+            output_schema=_SIMPLE_SCHEMA,
+            output_schema_name="Bank Statement / v2",
+        )
+        assert dirty["text"]["format"]["name"] == "Bank_Statement___v2"
+
+    def test_invalid_schema_raises_before_request(self):
+        with pytest.raises(ValueError):
+            oar.build_responses_request(
+                system_prompt="sys",
+                content=[{"text": "hi"}],
+                max_tokens=100,
+                model_id="openai.gpt-5.4",
+                output_schema="not a dict",
+            )
+
+
+_REFUSAL_RESPONSE = {
+    "status": "completed",
+    "output": [
+        {
+            "type": "message",
+            "content": [{"type": "refusal", "refusal": "I cannot help with that."}],
+        }
+    ],
+    "usage": {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "total_tokens": 140,
+        "input_tokens_details": {"cached_tokens": 25},
+    },
+}
+
+_INCOMPLETE_RESPONSE = {
+    "status": "incomplete",
+    "incomplete_details": {"reason": "max_output_tokens"},
+    "output": [
+        {
+            "type": "message",
+            "content": [{"type": "output_text", "text": '{"invoice_number": "A-1'}],
+        }
+    ],
+    "usage": {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "total_tokens": 140,
+        "input_tokens_details": {"cached_tokens": 25},
+    },
+}
+
+
+@pytest.mark.unit
+class TestOutputSchemaInvocation:
+    @pytest.fixture
+    def client(self):
+        return BedrockClient(region="us-east-2", metrics_enabled=False)
+
+    def _patch_session(self):
+        fake_session = MagicMock()
+        creds = MagicMock()
+        creds.get_frozen_credentials.return_value = MagicMock(
+            access_key="AKIA",
+            secret_key="secret",
+            token=None,  # nosec B106 - dummy test credential
+        )
+        fake_session.get_credentials.return_value = creds
+        return patch.object(oar, "get_bedrock_session", return_value=fake_session)
+
+    def _invoke(self, client, payload, status=200, **kwargs):
+        with (
+            self._patch_session(),
+            patch.object(oar.URLLib3Session, "send") as mock_send,
+            patch.object(oar.time, "sleep"),
+        ):
+            mock_send.return_value = _make_http_response(status, payload)
+            result = oar.invoke_responses_api(
+                client=client,
+                model_id="openai.gpt-5.4",
+                system_prompt="sys",
+                content=[{"text": "hi"}],
+                max_tokens=100,
+                max_retries=1,
+                context="Extraction",
+                **kwargs,
+            )
+        return result, mock_send
+
+    def test_schema_is_sent_on_the_wire(self, client):
+        _, mock_send = self._invoke(
+            client,
+            _SAMPLE_RESPONSE,
+            output_schema=_SIMPLE_SCHEMA,
+            output_schema_name="invoice",
+        )
+        sent = json.loads(mock_send.call_args.args[0].body)
+        assert sent["text"]["format"]["strict"] is True
+        assert sent["text"]["format"]["name"] == "invoice"
+
+    def test_no_schema_sends_no_text_key(self, client):
+        _, mock_send = self._invoke(client, _SAMPLE_RESPONSE)
+        sent = json.loads(mock_send.call_args.args[0].body)
+        assert "text" not in sent
+
+    def test_response_structure_and_metering_unchanged_with_schema(self, client):
+        with_schema, _ = self._invoke(
+            client, _SAMPLE_RESPONSE, output_schema=_SIMPLE_SCHEMA
+        )
+        without, _ = self._invoke(client, _SAMPLE_RESPONSE)
+        # The {"response": ..., "metering": ...} contract is identical either way.
+        assert with_schema == without
+        assert with_schema["response"]["usage"]["inputTokens"] == 75
+        assert (
+            with_schema["metering"]["Extraction/bedrock/openai.gpt-5.4"]["requests"]
+            == 1
+        )
+
+    def test_refusal_raises_with_metering_attached(self, client):
+        with pytest.raises(oar.OutputRefusalError) as exc:
+            self._invoke(client, _REFUSAL_RESPONSE, output_schema=_SIMPLE_SCHEMA)
+        assert "I cannot help with that." in str(exc.value)
+        assert exc.value.refusal == "I cannot help with that."
+        # The request was billed, so the metering must survive the raise.
+        assert (
+            exc.value.metering["Extraction/bedrock/openai.gpt-5.4"]["inputTokens"] == 75
+        )
+        assert isinstance(exc.value, RuntimeError)
+
+    def test_refusal_without_schema_keeps_legacy_behavior(self, client):
+        # Byte-identical legacy path: no exception, empty text, metering intact.
+        result, _ = self._invoke(client, _REFUSAL_RESPONSE)
+        assert result["response"]["output"]["message"]["content"][0]["text"] == ""
+        assert result["response"]["usage"]["inputTokens"] == 75
+
+    def test_incomplete_raises(self, client):
+        with pytest.raises(oar.IncompleteOutputError) as exc:
+            self._invoke(client, _INCOMPLETE_RESPONSE, output_schema=_SIMPLE_SCHEMA)
+        assert exc.value.reason == "max_output_tokens"
+        assert exc.value.metering
+        assert isinstance(exc.value, RuntimeError)
+
+    def test_incomplete_without_schema_keeps_legacy_behavior(self, client):
+        result, _ = self._invoke(client, _INCOMPLETE_RESPONSE)
+        assert result["response"]["stopReason"] == "incomplete"
+        assert result["response"]["usage"]["inputTokens"] == 75
+
+    def test_endpoint_rejection_surfaces_as_schema_error(self, client):
+        payload = {
+            "error": {
+                "message": "Invalid schema for response_format: "
+                "'additionalProperties' is required to be false",
+                "type": "invalid_request_error",
+            }
+        }
+        with pytest.raises(oar.OutputSchemaRejectedError) as exc:
+            self._invoke(client, payload, status=400, output_schema=_SIMPLE_SCHEMA)
+        # The endpoint's own error text is preserved, not swallowed.
+        assert "additionalProperties" in str(exc.value)
+        assert "HTTP 400" in str(exc.value)
+        assert isinstance(exc.value, RuntimeError)
+
+    def test_terminal_4xx_without_schema_is_plain_runtime_error(self, client):
+        with pytest.raises(RuntimeError) as exc:
+            self._invoke(client, {"message": "bad"}, status=400)
+        assert not isinstance(exc.value, oar.OutputSchemaRejectedError)
+
+    def test_refusal_and_incomplete_helpers(self):
+        assert oar._extract_refusal(_SAMPLE_RESPONSE) is None
+        assert oar._extract_refusal(_REFUSAL_RESPONSE) == "I cannot help with that."
+        assert oar._extract_refusal({"refusal": "top level"}) == "top level"
+        assert oar._incomplete_reason(_SAMPLE_RESPONSE) is None
+        assert oar._incomplete_reason(_INCOMPLETE_RESPONSE) == "max_output_tokens"
+        assert oar._incomplete_reason({"status": "incomplete"}) == "unknown"
+
+
 _SSE_STREAM = (
     'data: {"type":"response.created"}\n\n'
     "event: response.output_text.delta\n"

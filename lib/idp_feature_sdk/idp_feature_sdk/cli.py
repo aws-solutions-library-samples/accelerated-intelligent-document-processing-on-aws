@@ -971,7 +971,7 @@ def _seed_simulator_product(
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:  # nosec B310 - operator-supplied simulator base URL in a local dev CLI, not request input
             return resp.status
 
     console.rule("[bold]Seeding marketplace simulator…[/bold]")

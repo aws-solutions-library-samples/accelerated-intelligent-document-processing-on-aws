@@ -8,40 +8,20 @@ Unit tests for agent monitoring functionality.
 # ruff: noqa: E402, I001
 # The above line disables E402 (module level import not at top of file) and I001 (import block sorting) for this file
 
-import sys
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-# Mock strands modules before importing monitoring modules
-mock_strands = MagicMock()
-mock_hooks = MagicMock()
-mock_events = MagicMock()
-
-
-# Create a mock HookProvider class that behaves like the real one
-class MockHookProvider:
-    def __init__(self):
-        self.execution_stats = {
-            "messages_added": 0,
-            "tool_invocations": 0,
-            "model_invocations": 0,
-            "requests_processed": 0,
-            "start_time": None,
-            "end_time": None,
-        }
-        self.messages = []
-        self.message_history = []
-        self.tool_history = []
-        self.model_history = []
-
-
-mock_hooks.HookProvider = MockHookProvider
-mock_hooks.HookRegistry = MagicMock()
-
-sys.modules["strands"] = mock_strands
-sys.modules["strands.hooks"] = mock_hooks
-sys.modules["strands.hooks.events"] = mock_events
+# `strands` is stubbed by tests/conftest.py, and ONLY when genuinely absent.
+#
+# This module used to build its own `strands.hooks` MagicMock — including a
+# hand-written stand-in for `HookProvider`, the class `AgentMonitor` subclasses —
+# and force it into `sys.modules` unconditionally, without ever restoring it. Two
+# problems: `AgentMonitor` was never once tested against the real base class it
+# derives from, and every test module imported after this one inherited the mock,
+# so whether the agentic tests exercised real `strands` depended on collection
+# order. `AgentMonitor` imports and behaves correctly against the real
+# `HookProvider`, so the stand-in is gone. See the note in tests/conftest.py.
 
 from idp_common.agents.common.dynamodb_logger import DynamoDBMessageTracker
 from idp_common.agents.common.monitoring import AgentMonitor, MessageTracker

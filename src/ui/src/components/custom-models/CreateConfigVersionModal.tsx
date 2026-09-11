@@ -41,7 +41,7 @@ const CreateConfigVersionModal = ({
   const [error, setError] = useState<string | null>(null);
   const [description, setDescription] = useState('');
 
-  // Fetch config versions when modal opens
+  // Fetch configuration profiles when modal opens
   const fetchConfigVersions = useCallback(async () => {
     setVersionsLoading(true);
     try {
@@ -69,11 +69,11 @@ const CreateConfigVersionModal = ({
       if (data?.success && data.versions) {
         setConfigVersions(data.versions);
       } else {
-        setError(data?.error?.message || 'Failed to fetch configuration versions.');
+        setError(data?.error?.message || 'Failed to fetch configuration profiles.');
       }
     } catch (err) {
-      console.error('Error fetching config versions:', err);
-      setError('Failed to fetch configuration versions.');
+      console.error('Error fetching configuration profiles:', err);
+      setError('Failed to fetch configuration profiles.');
     } finally {
       setVersionsLoading(false);
     }
@@ -108,23 +108,23 @@ const CreateConfigVersionModal = ({
 
   const validateForm = (): string | null => {
     if (!selectedSourceVersion) {
-      return 'Please select a source configuration version.';
+      return 'Please select a source configuration profile.';
     }
     if (!newVersionName.trim()) {
-      return 'Please enter a name for the new configuration version.';
+      return 'Please enter a name for the new configuration profile.';
     }
     if (!/^[a-zA-Z0-9._-]+$/.test(newVersionName)) {
-      return 'Version name can only contain letters, numbers, periods, hyphens, and underscores.';
+      return 'Profile name can only contain letters, numbers, periods, hyphens, and underscores.';
     }
     if (newVersionName.length > 50) {
-      return 'Version name cannot exceed 50 characters.';
+      return 'Profile name cannot exceed 50 characters.';
     }
     if (newVersionName === 'default') {
-      return 'Cannot use "default" as a version name — it is reserved.';
+      return 'Cannot use "default" as a profile name — it is reserved.';
     }
     // Check if version name already exists
     if (configVersions.some((v) => v.versionName === newVersionName)) {
-      return `A configuration version named "${newVersionName}" already exists. Please choose a different name.`;
+      return `A configuration profile named "${newVersionName}" already exists. Please choose a different name.`;
     }
     if (!useForExtraction && !useForClassification) {
       return 'Please select at least one option: Extraction or Classification.';
@@ -145,7 +145,7 @@ const CreateConfigVersionModal = ({
     try {
       const client = generateClient();
 
-      // Step 1: Fetch the source config version's full configuration
+      // Step 1: Fetch the source configuration profile's full configuration
       const configResponse = (await client.graphql({
         query: `
           query GetConfigVersion($versionName: String!) {
@@ -200,7 +200,7 @@ const CreateConfigVersionModal = ({
         (fullConfig.classification as Record<string, unknown>).model = deploymentArn;
       }
 
-      // Step 3: Save as a new version using the existing updateConfiguration mutation
+      // Step 3: Save as a new profile using the existing updateConfiguration mutation
       // with the saveAsVersion flag
       const configWithFlag = {
         ...fullConfig,
@@ -247,12 +247,12 @@ const CreateConfigVersionModal = ({
           const errorDetails = validationErrors.map((e) => `${e.field}: ${e.message}`).join('; ');
           throw new Error(`Configuration validation failed: ${errorDetails}`);
         }
-        throw new Error(updateData?.error?.message || 'Failed to create configuration version.');
+        throw new Error(updateData?.error?.message || 'Failed to create configuration profile.');
       }
 
       onSuccess(newVersionName);
     } catch (err) {
-      console.error('Error creating config version:', err);
+      console.error('Error creating configuration profile:', err);
       const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred.';
       setError(errorMessage);
     } finally {
@@ -274,7 +274,7 @@ const CreateConfigVersionModal = ({
     <Modal
       visible={visible}
       onDismiss={onDismiss}
-      header="Create Configuration Version with Custom Model"
+      header="Create Configuration Profile with Custom Model"
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
@@ -287,7 +287,7 @@ const CreateConfigVersionModal = ({
               loading={creating}
               disabled={!selectedSourceVersion || !newVersionName.trim() || !atLeastOneChecked}
             >
-              Create Version
+              Create profile
             </Button>
           </SpaceBetween>
         </Box>
@@ -301,29 +301,29 @@ const CreateConfigVersionModal = ({
         )}
 
         <Alert type="info">
-          This will create a new configuration version based on an existing one, with the custom model deployment ARN automatically set for
+          This will create a new configuration profile based on an existing one, with the custom model deployment ARN automatically set for
           the selected pipeline stages.
         </Alert>
 
         <FormField
-          label="Source Configuration Version"
-          description="Select the existing configuration version to copy as the base for the new version"
+          label="Source Configuration Profile"
+          description="Select the existing configuration profile to copy as the base for the new profile"
         >
           <Select
             selectedOption={selectedSourceVersion}
             onChange={({ detail }) => setSelectedSourceVersion(detail.selectedOption as SelectOption)}
             options={versionOptions}
-            placeholder="Select a configuration version"
-            loadingText="Loading configuration versions..."
+            placeholder="Select a configuration profile"
+            loadingText="Loading configuration profiles..."
             statusType={versionsLoading ? 'loading' : 'finished'}
-            empty="No configuration versions available"
+            empty="No configuration profiles available"
             filteringType="auto"
           />
         </FormField>
 
         <FormField
-          label="New Version Name"
-          description="A unique name for the new configuration version (letters, numbers, hyphens, underscores)"
+          label="New Profile Name"
+          description="A unique name for the new configuration profile (letters, numbers, hyphens, underscores)"
           constraintText="Max 50 characters. Cannot be 'default'."
         >
           <Input
@@ -333,7 +333,7 @@ const CreateConfigVersionModal = ({
           />
         </FormField>
 
-        <FormField label="Description" description="Optional description for the new configuration version">
+        <FormField label="Description" description="Optional description for the new configuration profile">
           <Input
             value={description}
             onChange={({ detail }) => setDescription(detail.value)}

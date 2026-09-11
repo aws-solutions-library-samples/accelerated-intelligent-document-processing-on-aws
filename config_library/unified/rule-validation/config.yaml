@@ -36,7 +36,8 @@ classes:
         type: string
         format: date
         description: >-
-          The patient's date of birth in MM/DD/YYYY format from Section A.
+          The patient's date of birth from Section A, in ISO-8601 format
+          (YYYY-MM-DD) to match this field's `format: date`.
         x-aws-idp-evaluation-method: DATE
       member_id:
         type: string

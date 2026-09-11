@@ -27,9 +27,31 @@ from botocore.config import Config
 from idp_common import bedrock, image, s3, utils
 from idp_common.config.models import IDPConfig
 from idp_common.models import Document, Page, Status
-from idp_common.ocr.document_converter import DocumentConverter
+from idp_common.ocr.document_converter import (
+    DocumentConverter,
+    UnsupportedLegacyFormatError,
+)
 
 logger = logging.getLogger(__name__)
+
+# Render resolution used when ocr.image.dpi is not configured. Textract's ability
+# to detect small, faint or skewed glyphs (page numbers, box numbers, hand-filled
+# values) degrades sharply below ~200 dpi: at 150 dpi it silently drops them from
+# its response entirely, with no signal to the caller. See issue #729.
+DEFAULT_DPI = 300
+
+# Ceiling on the rendered page image, applied when ocr.image.target_width /
+# target_height are not configured. This is an out-of-memory guard, NOT a cost
+# control: it is deliberately set high enough that it does not bind for A4 or US
+# Letter at DEFAULT_DPI, so those render at full 300 dpi.
+#
+# Raising the render resolution costs almost nothing downstream. Bedrock
+# downscales images to its own long-edge ceiling before tokenizing, so the LLM
+# token spend saturates - measured end to end, moving from 897x1269 to 2000x2829
+# changed total input tokens by 1.4% (22,598 -> 22,914). What it does buy is OCR
+# accuracy, which improves consistently with resolution.
+DEFAULT_TARGET_WIDTH = 2600
+DEFAULT_TARGET_HEIGHT = 3600
 
 
 class OcrService:
@@ -119,10 +141,6 @@ class OcrService:
             else:
                 self.enhanced_features = False
 
-            # Apply sensible defaults for image sizing when not specified
-            DEFAULT_TARGET_WIDTH = 951
-            DEFAULT_TARGET_HEIGHT = 1268
-
             # Extract resize configuration (type-safe access)
             target_width = self.config.ocr.image.target_width
             target_height = self.config.ocr.image.target_height
@@ -141,8 +159,9 @@ class OcrService:
                     "target_height": DEFAULT_TARGET_HEIGHT,
                 }
                 logger.info(
-                    f"No image sizing configured, applying default limits: "
-                    f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} to optimize resource usage and token consumption"
+                    f"No image sizing configured, applying default ceiling: "
+                    f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} (out-of-memory guard; "
+                    f"does not bind for A4/Letter at {DEFAULT_DPI} dpi)"
                 )
             else:
                 # Handle empty strings by converting to None for validation
@@ -184,8 +203,8 @@ class OcrService:
                         "target_height": DEFAULT_TARGET_HEIGHT,
                     }
                     logger.info(
-                        f"Invalid image sizing configuration provided, applying default limits: "
-                        f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} to optimize resource usage and token consumption"
+                        f"Invalid image sizing configuration provided, applying default ceiling: "
+                        f"{DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} (out-of-memory guard)"
                     )
 
             # Extract preprocessing configuration (type-safe)
@@ -347,7 +366,7 @@ class OcrService:
         )
 
         # Initialize document converter for non-PDF formats
-        self.document_converter = DocumentConverter(dpi=self.dpi or 150)
+        self.document_converter = DocumentConverter(dpi=self.dpi or DEFAULT_DPI)
 
     def process_document(self, document: Document) -> Document:
         """
@@ -1570,8 +1589,8 @@ class OcrService:
                     page_height = page.get_height()
 
                     if is_pdf:
-                        # For PDF files, calculate dimensions at specified DPI (default to 150 if None)
-                        dpi = self.dpi or 150
+                        # For PDF files, calculate dimensions at specified DPI
+                        dpi = self.dpi or DEFAULT_DPI
                         original_width = int(page_width * (dpi / 72))
                         original_height = int(page_height * (dpi / 72))
                     else:
@@ -1591,7 +1610,7 @@ class OcrService:
                         # Extract at reduced size using matrix transformation
                         if is_pdf:
                             # For PDF, combine DPI scaling with size reduction
-                            dpi = self.dpi or 150
+                            dpi = self.dpi or DEFAULT_DPI
                             base_scale = dpi / 72  # Convert PDF points to pixels
                             final_scale = base_scale * scale_factor
                             matrix = final_scale
@@ -1609,7 +1628,7 @@ class OcrService:
                     else:
                         # No resize needed - image is already smaller than targets
                         if is_pdf:
-                            dpi = self.dpi or 150
+                            dpi = self.dpi or DEFAULT_DPI
                             pil_img = page.render(scale=dpi / 72).to_pil()  # type: ignore[attr-defined]
                         else:
                             pil_img = page.render().to_pil()  # type: ignore[attr-defined]
@@ -1622,7 +1641,7 @@ class OcrService:
                 else:
                     # No valid target dimensions - use original extraction
                     if is_pdf:
-                        dpi = self.dpi or 150
+                        dpi = self.dpi or DEFAULT_DPI
                         pil_img = page.render(scale=dpi / 72).to_pil()  # type: ignore[attr-defined]
                     else:
                         pil_img = page.render().to_pil()  # type: ignore[attr-defined]
@@ -1635,7 +1654,7 @@ class OcrService:
             else:
                 # No resize config - extract at original size
                 if is_pdf:
-                    dpi = self.dpi or 150
+                    dpi = self.dpi or DEFAULT_DPI
                     pil_img = page.render(scale=dpi / 72).to_pil()  # type: ignore[attr-defined]
                 else:
                     pil_img = page.render().to_pil()  # type: ignore[attr-defined]
@@ -2009,8 +2028,12 @@ class OcrService:
                     "BDA OCR backend selected but no project ARN is available. "
                     "Set ocr.bda_project_arn in config or the BDA_OCR_PROJECT_ARN "
                     "environment variable (provisioned by the stack's BDA OCR "
-                    "project custom resource). In regions without Bedrock Data "
-                    "Automation, use the Textract OCR backend instead."
+                    "project custom resource). Use the Textract OCR backend "
+                    "instead where this project cannot be provisioned: regions "
+                    "without Bedrock Data Automation, and the GovCloud/China "
+                    "partitions — which do offer BDA, but reject the SYNC "
+                    "document-modality project this backend requires, so the "
+                    "stack deliberately does not create it there."
                 )
             if not self._bda_profile_arn:
                 identity = boto3.client(
@@ -2182,7 +2205,18 @@ class OcrService:
                 text = block.get("Text", "").replace(
                     "|", "\\|"
                 )  # Escape pipe characters
-                confidence = round(block.get("Confidence", 0.0), 1)
+                # Confidence is independently optional: a LambdaHook OCR backend
+                # may return geometry but no confidence scores at all (e.g. the
+                # Cohere Parse hook). Defaulting a missing value to 0.0 would
+                # tell the assessment LLM that every line was maximally
+                # unreliable, so report it as unavailable instead.
+                raw_confidence = block.get("Confidence")
+                confidence = (
+                    round(raw_confidence, 1)
+                    if isinstance(raw_confidence, (int, float))
+                    and not isinstance(raw_confidence, bool)
+                    else "N/A"
+                )
 
                 # Add text type indicator if it's handwriting
                 if block.get("TextType") == "HANDWRITING":
@@ -2817,6 +2851,21 @@ class OcrService:
                         )
                     ]
 
+        except UnsupportedLegacyFormatError:
+            # Deliberately NOT turned into an error page. A format that cannot be
+            # read at all is not the same as a file that failed to parse: a page
+            # reading "Error processing docx document" lets the document complete
+            # classification and extraction with no content, so the real cause
+            # surfaces later as inexplicably empty results (#829). Failing the OCR
+            # task puts the reason in front of whoever uploaded the file. Safe to
+            # raise here: OCRStep retries only named transient errors, so this
+            # fails immediately rather than burning a retry ladder.
+            logger.error(
+                "Unreadable legacy Office format submitted as %s; failing the "
+                "document rather than emitting a blank page",
+                file_type,
+            )
+            raise
         except Exception as e:
             logger.error(f"Error processing {file_type} document: {str(e)}")
             return [

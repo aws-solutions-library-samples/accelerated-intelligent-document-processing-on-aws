@@ -11,6 +11,8 @@ query GetConfigVersions {
       bdaProjectArn
       bdaSyncStatus
       bdaLastSyncedAt
+      latestRevision
+      publishedRevision
     }
     error {
       type

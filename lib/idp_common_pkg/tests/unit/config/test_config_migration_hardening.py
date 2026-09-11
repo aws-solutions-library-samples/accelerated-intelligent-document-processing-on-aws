@@ -22,6 +22,9 @@ import pytest
 import yaml
 
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.config.migrations.v05_to_v06 import (
+    TARGET_VERSION as V05_TO_V06_TARGET,
+)
 from idp_common.config.migrations.v05_to_v06 import migrate_v05_to_v06
 from idp_common.config.models import CONFIG_FORMAT_VERSION, IDPConfig
 
@@ -220,7 +223,9 @@ class TestRepresentativeV05Config:
         # legacy assessment block dropped, integration key gone
         assert "assessment" not in out
         assert "assessment_integration" not in out["extraction"]
-        assert out["config_format_version"] == CONFIG_FORMAT_VERSION
+        assert (
+            out["config_format_version"] == V05_TO_V06_TARGET
+        )  # this step stamps 0.6; the chain then reaches current
 
     def test_validates_into_idpconfig(self):
         cfg = IDPConfig.model_validate(self.V05)

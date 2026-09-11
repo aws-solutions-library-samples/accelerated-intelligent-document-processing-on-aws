@@ -378,6 +378,197 @@ class TestEvaluationService:
             "_confidence": 0.99,
         }
 
+    # ------------------------------------------------------------------
+    # Confidence-envelope unwrapping (issue #713)
+    #
+    # The unwrap exists because assessment output sometimes nests an
+    # object's confidence map under a synthetic key ("Item #6") that has no
+    # counterpart in the extracted value; left in place, every confidence
+    # lookup misses. It used to fire on key count alone, which also
+    # unwrapped any legitimately single-property object and silently
+    # discarded all of its confidence.
+    # ------------------------------------------------------------------
+
+    def test_single_top_level_object_property_keeps_its_confidence(self, service):
+        """Regression (#713): a class with ONE top-level object property.
+
+        By key count this is indistinguishable from a wrapper, so the old
+        heuristic unwrapped it and every confidence score underneath was
+        dropped. The property name appears in the extracted value, which is
+        the evidence that it is a declared field rather than an envelope.
+        """
+        inference_result = {
+            "InvoiceDetails": {
+                "InvoiceID": "INV001",
+                "InvoiceDate": "2024-01-01",
+            }
+        }
+        confidence_scores = {
+            "InvoiceDetails": {
+                "InvoiceID": {"confidence": 0.99, "geometry": []},
+                "InvoiceDate": {"confidence": 0.88, "geometry": []},
+            }
+        }
+
+        rich_values = service._convert_to_rich_values(
+            inference_result, confidence_scores
+        )
+
+        assert rich_values["InvoiceDetails"]["InvoiceID"] == {
+            "_value": "INV001",
+            "_confidence": 0.99,
+        }
+        assert rich_values["InvoiceDetails"]["InvoiceDate"] == {
+            "_value": "2024-01-01",
+            "_confidence": 0.88,
+        }
+
+    def test_single_object_property_in_list_element_keeps_its_confidence(self, service):
+        """Same misfire one level down: a list element with one object field."""
+        inference_result = {
+            "Records": [
+                {"Detail": {"Amount": 100.0, "Currency": "USD"}},
+                {"Detail": {"Amount": 200.0, "Currency": "EUR"}},
+            ]
+        }
+        confidence_scores = {
+            "Records": [
+                {
+                    "Detail": {
+                        "Amount": {"confidence": 0.91, "geometry": []},
+                        "Currency": {"confidence": 0.92, "geometry": []},
+                    }
+                },
+                {
+                    "Detail": {
+                        "Amount": {"confidence": 0.93, "geometry": []},
+                        "Currency": {"confidence": 0.94, "geometry": []},
+                    }
+                },
+            ]
+        }
+
+        rich_values = service._convert_to_rich_values(
+            inference_result, confidence_scores
+        )
+
+        assert rich_values["Records"][0]["Detail"]["Amount"] == {
+            "_value": 100.0,
+            "_confidence": 0.91,
+        }
+        assert rich_values["Records"][1]["Detail"]["Amount"] == {
+            "_value": 200.0,
+            "_confidence": 0.93,
+        }
+        assert rich_values["Records"][1]["Detail"]["Currency"] == {
+            "_value": "EUR",
+            "_confidence": 0.94,
+        }
+
+    def test_synthetic_wrapper_key_is_still_unwrapped(self, service):
+        """The case the unwrap was written for must not regress.
+
+        ``Item #6`` exists only on the confidence side, and its contents name
+        fields that do exist in the value - so it is an envelope and comes off.
+        """
+        inference_result = {
+            "LineItems": [
+                {"LineItemRate": 1000.0, "LineItemDays": "------S"},
+            ]
+        }
+        confidence_scores = {
+            "LineItems": [
+                {
+                    "Item #6": {
+                        "LineItemRate": {"confidence": 1.0, "geometry": []},
+                        "LineItemDays": {"confidence": 0.8, "geometry": []},
+                    }
+                },
+            ]
+        }
+
+        rich_values = service._convert_to_rich_values(
+            inference_result, confidence_scores
+        )
+
+        assert rich_values["LineItems"][0]["LineItemRate"] == {
+            "_value": 1000.0,
+            "_confidence": 1.0,
+        }
+        assert rich_values["LineItems"][0]["LineItemDays"] == {
+            "_value": "------S",
+            "_confidence": 0.8,
+        }
+
+    def test_synthetic_wrapper_around_single_field_is_unwrapped(self, service):
+        """A wrapper holding ONE field is now unwrapped too.
+
+        The old ``>= 2 confidence children`` rule dropped this element's
+        confidence for exactly the reason the unwrap exists. The evidence
+        (key absent from the value, contents naming a real field) does not
+        depend on how many children the envelope has.
+        """
+        inference_result = {"LineItems": [{"LineItemRate": 450.0}]}
+        confidence_scores = {
+            "LineItems": [
+                {
+                    "Item_9": {"LineItemRate": {"confidence": 0.77, "geometry": []}},
+                    "confidence_threshold": 0.9,
+                }
+            ]
+        }
+
+        rich_values = service._convert_to_rich_values(
+            inference_result, confidence_scores
+        )
+
+        assert rich_values["LineItems"][0]["LineItemRate"] == {
+            "_value": 450.0,
+            "_confidence": 0.77,
+        }
+
+    def test_unmatched_single_key_is_left_alone(self, service):
+        """Ambiguous case: a lone key that matches nothing on either side.
+
+        It is absent from the value, but nothing inside it names a field of
+        the value either - so unwrapping would recover no confidence and
+        there is no evidence it is an envelope. Left as-is; the object simply
+        scores without confidence, exactly as it did before.
+        """
+        inference_result = {"Alpha": "a", "Beta": "b"}
+        confidence_scores = {
+            "Mystery": {
+                "Gamma": {"confidence": 0.5, "geometry": []},
+                "Delta": {"confidence": 0.5, "geometry": []},
+            }
+        }
+
+        rich_values = service._convert_to_rich_values(
+            inference_result, confidence_scores
+        )
+
+        assert rich_values == {"Alpha": "a", "Beta": "b"}
+
+    def test_lone_field_confidence_entry_is_not_treated_as_wrapper(self, service):
+        """A leaf confidence entry is a field's own scores, not an envelope.
+
+        Handled before the envelope check, but assert it: a single-field
+        object whose one confidence entry is a leaf must still be annotated.
+        """
+        inference_result = {"Agency": "BUYING TIME, LLC"}
+        confidence_scores = {
+            "Agency": {"confidence": 0.99, "geometry": [], "confidence_threshold": 0.8}
+        }
+
+        rich_values = service._convert_to_rich_values(
+            inference_result, confidence_scores
+        )
+
+        assert rich_values["Agency"] == {
+            "_value": "BUYING TIME, LLC",
+            "_confidence": 0.99,
+        }
+
     def test_clean_null_descriptions(self, service):
         """Test that null descriptions are replaced with empty strings."""
         schema = {

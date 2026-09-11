@@ -22,7 +22,7 @@ const logger = new ConsoleLogger('App', import.meta.env.DEV ? 'DEBUG' : 'WARN');
 const AppContent = (): React.JSX.Element => {
   const awsConfig = useAwsConfig();
   const { authStatus: authState, user } = useAuthenticator((context) => [context.authStatus, context.user]);
-  const { currentSession, currentCredentials } = useCurrentSessionCreds({});
+  const { currentSession, currentCredentials, credentialsStatus, retryCredentials } = useCurrentSessionCreds({});
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const [successMessage, setSuccessMessage] = useState<string | undefined>();
   const [navigationOpen, setNavigationOpen] = useState<boolean>(true);
@@ -43,6 +43,8 @@ const AppContent = (): React.JSX.Element => {
     successMessage,
     currentCredentials,
     currentSession,
+    credentialsStatus,
+    retryCredentials,
     setErrorMessage,
     setSuccessMessage,
     user,

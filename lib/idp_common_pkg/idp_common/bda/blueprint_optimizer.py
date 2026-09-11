@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import boto3
 from pydantic import BaseModel
 
+from idp_common.bda.bda_ocr import build_profile_arn
+from idp_common.config.class_names import sanitize_class_name
+from idp_common.config.class_settings import carry_forward_authored_settings
+
 if TYPE_CHECKING:
     from idp_common.bda.bda_blueprint_creator import BDABlueprintCreator
     from idp_common.bda.bda_blueprint_service import BdaBlueprintService
@@ -152,17 +156,23 @@ class BlueprintOptimizer:
             return self._profile_arn
 
         try:
-            self._account_id = boto3.client("sts").get_caller_identity().get("Account")
+            identity = boto3.client("sts").get_caller_identity()
         except Exception as e:
             raise RuntimeError(
                 f"Cannot resolve AWS account ID for profile ARN: {e}"
             ) from e
+        self._account_id = identity.get("Account")
 
-        region_prefix = self._region.split("-")[0]
-        profile_id = f"{region_prefix}.data-automation-v1"
-        self._profile_arn = (
-            f"arn:aws:bedrock:{self._region}:{self._account_id}"
-            f":data-automation-profile/{profile_id}"
+        # Same fix as bda_service: build via the shared helper so the partition
+        # is honoured (a hardcoded `arn:aws:` never resolves in GovCloud/China)
+        # and ap-* regions get the `apac` geo prefix rather than `ap`. Partition
+        # comes from the caller ARN on the SAME identity call above — no extra
+        # STS round-trip.
+        partition = (identity.get("Arn") or "arn:aws:").split(":")[
+            1
+        ] or "aws"  # arn-partition-ok: fallback used only to PARSE the partition out
+        self._profile_arn = build_profile_arn(
+            self._region, self._account_id or "", partition
         )
         return self._profile_arn
 
@@ -360,8 +370,12 @@ class BlueprintOptimizer:
             schema_copy
         )
 
+        # Sanitized identically to the sync path (and to _blueprint_lookup
+        # above), so a class id with a space produces a name BDA accepts and
+        # the next lookup still finds it.
         blueprint_name = (
-            f"{self.blueprint_service.blueprint_name_prefix}-{class_name}"
+            f"{self.blueprint_service.blueprint_name_prefix}-"
+            f"{sanitize_class_name(class_name)}"
             f"-{uuid.uuid4().hex[:8]}"
         )
 
@@ -708,6 +722,15 @@ class BlueprintOptimizer:
                 classes_by_id[cls_id] = cls
 
         if class_id:
+            # Carry forward the class-level settings the BDA transform does not
+            # produce (extraction/escalation models, confidence thresholds,
+            # classification regexes, multi-instance, few-shot examples).
+            # Assigning the transformed schema straight over the existing class
+            # erased all of them, and the loss only showed up in the next
+            # document processed.
+            existing_class = classes_by_id.get(class_id)
+            if existing_class is not None:
+                carry_forward_authored_settings(existing_class, idp_schema)
             classes_by_id[class_id] = idp_schema
 
         existing_config["classes"] = list(classes_by_id.values())

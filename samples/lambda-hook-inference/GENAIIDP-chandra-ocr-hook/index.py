@@ -162,7 +162,7 @@ def submit_conversion(image_bytes: bytes, image_format: str) -> str:
 
     logger.info(f"Submitting image to {convert_url} ({len(image_bytes)} bytes)")
 
-    with urllib.request.urlopen(req, timeout=60) as response:
+    with urllib.request.urlopen(req, timeout=60) as response:  # nosec B310 - CHANDRA_API_URL env var (https default), not request input
         result = json.loads(response.read().decode("utf-8"))
 
     if not result.get("success"):
@@ -198,7 +198,7 @@ def poll_for_result(check_url: str) -> dict:
             },
         )
 
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:  # nosec B310 - CHANDRA_API_URL env var (https default), not request input
             result = json.loads(response.read().decode("utf-8"))
 
         status = result.get("status", "unknown")

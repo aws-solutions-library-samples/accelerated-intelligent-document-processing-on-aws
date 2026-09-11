@@ -74,7 +74,7 @@ def _load_handler_module(fake_cognito):
     sys.modules["cfnresponse"] = fake_cfnresponse
 
     mod = types.ModuleType("webui_oauth_handler")
-    exec(compile(code, "<WebUIClientOAuthUrlsFunction>", "exec"), mod.__dict__)
+    exec(compile(code, "<WebUIClientOAuthUrlsFunction>", "exec"), mod.__dict__)  # nosec B102 - executes this repo's own shipped handler source under test
     return mod, sent
 
 

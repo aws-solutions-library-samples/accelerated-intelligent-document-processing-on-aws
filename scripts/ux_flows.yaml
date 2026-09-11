@@ -1,0 +1,182 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# User-experience flows for the UX test skill (.claude/skills/ux-test.md).
+#
+# Each flow is something a person does, with an outcome that can be checked in a
+# browser. The agent drives the UI and reports per-flow: does it work, and is it
+# a good experience.
+#
+# Ids match the user stories in the ground-truth correction QA plan, so a finding
+# can be referenced the same way in either place. That numbering exists so
+# stories gathered in review can be logged against the same ids rather
+# than described free-form and reported twice in different words.
+#
+# This file is the FALLBACK and the memory — not the definition of scope. A
+# review normally starts from whatever the user asks for at run time ("look at
+# the annotation flow", "here are three things users struggled with"), and
+# nothing here needs editing to review something new.
+#
+# What it holds that a runtime prompt cannot:
+#   * Preconditions. 6.1 needs a *misclassified* document and no shipped test set
+#     has one; someone asking for a classification review will not think to say
+#     that, and without it the review only ever sees the happy path.
+#   * Regression memory. The flows that broke before keep getting looked at even
+#     when nobody remembers to ask.
+#
+# Add a recurring use case here AFTER reviewing it once, when you know what it
+# actually needs. Written beforehand it tends to encode a guess.
+#
+# Fields:
+#   id          Story id (see above). Stable — findings reference it.
+#   title       What the person is trying to do.
+#   persona     Which group to run as. The session helper creates this user.
+#   priority    p0 = a blocking flow; p1 = important; p2 = nice.
+#   setup       Preconditions the agent must establish or verify before starting.
+#   steps       What to do, in order, in the UI.
+#   expect      Functional pass criteria. Objective — these are pass/fail.
+#   ux_watch    What to judge as an experience. Subjective — these produce
+#               suggestions, not failures. Absent means "apply the general
+#               heuristics in the skill".
+
+flows:
+  - id: '5.1'
+    title: Correct a wrong field value in the annotation queue
+    persona: Admin
+    priority: p0
+    setup:
+      - A test set exists with at least one labeled document.
+      - Reachable from Test Studio → Test sets → (set) → Annotate.
+    steps:
+      - Open the annotation queue for the test set.
+      - Open the first document in the queue.
+      - Change one field's value to something recognisably different.
+      - Save.
+      - Navigate away and reopen the same document.
+    expect:
+      - The queue lists documents and indicates which need review.
+      - The edited value persisted across the reload.
+      - The document is recorded as reviewed, and the queue reflects that.
+    ux_watch:
+      - Is it obvious which field is wrong and why it was flagged, or must the
+        reviewer compare against something not on screen?
+      - After saving, is it clear what happened and what to do next?
+      - Is the reviewer ever unsure whether they are editing ground truth or
+        model output? (These are different things and look similar.)
+
+  - id: '6.1'
+    title: See that a document's class is wrong
+    persona: Admin
+    priority: p0
+    setup:
+      # Do NOT create this by using flow 6.2 — that flow is currently broken and
+      # drops the corrected class, so the fixture never appears and 6.1 looks
+      # untestable. Edit the baseline directly instead:
+      #
+      #   aws s3 cp s3://<testset-bucket>/<set>/baseline/<doc>/sections/1/result.json .
+      #   # change document_class.type to a different class, then put it back
+      #   aws s3 cp result.json s3://<testset-bucket>/<set>/baseline/<doc>/sections/1/result.json
+      #
+      # That makes the ground-truth class disagree with what the pipeline
+      # predicted, which is exactly the condition 6.1 is about.
+      - A document whose baseline ground-truth class differs from the class the
+        pipeline predicted. Create it by editing the baseline result.json in S3
+        (see the comment above), not via flow 6.2.
+    steps:
+      - Open the document's detail page.
+      - Open View Data and enable Show evaluation.
+    expect:
+      - The classification comparison is shown, naming both the expected and the
+        predicted class.
+      - A correctly-classified document does NOT show a mismatch.
+    ux_watch:
+      - Would a reviewer understand that the fields below were extracted with the
+        wrong schema and are therefore untrustworthy — or would they start
+        correcting individual fields one at a time?
+
+  - id: '6.2'
+    title: Correct a wrong class and re-extract
+    persona: Admin
+    priority: p0
+    setup:
+      - A test set document whose class is wrong (see 6.1).
+    steps:
+      - Open the document in the annotation queue.
+      - Change the class to the correct one.
+      - Use the re-extract action offered.
+      - Wait for it to finish.
+    expect:
+      - Only classes the document's own config version defines are offered
+        (plus its current class, even if that class was later removed).
+      - Re-extraction completes and the fields on screen are replaced.
+      - The rest of the test set is unaffected and still reviewable.
+    ux_watch:
+      - Is it clear, before committing, what re-extracting will discard?
+      - If it takes a while, is the wait explained or does the UI look stuck?
+
+  - id: '11.1'
+    title: Find which documents a test run misclassified
+    persona: Admin
+    priority: p0
+    setup:
+      - A completed test run over a set containing at least one misclassified
+        document.
+    steps:
+      - Open Test Studio → Test runs → the run's results.
+      - Locate the classification errors.
+      - Follow a row through to the document.
+    expect:
+      - Misclassified documents are listed with expected and predicted class.
+      - A run with no misclassifications shows no empty/broken panel.
+      - The row links through to where the class can be corrected.
+    ux_watch:
+      - Is the relationship between this panel and the split-accuracy
+        percentages clear, or do they look like two unrelated things?
+      - Can the reader tell a wrong class from a page-order difference, and does
+        the UI make clear only one of them invalidates the extracted fields?
+
+  - id: '4.1'
+    title: Work the queue worst-first
+    persona: Annotator
+    priority: p1
+    setup:
+      - An annotator assigned to exactly one test set with several labeled
+        documents of differing confidence.
+    steps:
+      - Sign in as the annotator.
+      - Open the assigned queue.
+      - Read the order the documents are presented in.
+    expect:
+      - Documents needing the most attention appear first.
+      - Documents with authored ground truth are not presented as work.
+      - The annotator sees only their assigned set, and no navigation to pages
+        they cannot open.
+    ux_watch:
+      - Does the annotator understand *why* this document is first?
+      - Is progress through the queue visible, so the work feels finite?
+
+  - id: '12.1'
+    title: A scoped annotator cannot reach anything else
+    persona: Annotator
+    priority: p1
+    setup:
+      - The same annotator as 4.1.
+    steps:
+      - Attempt to reach Test Studio's set list, configuration, and another
+        test set's queue by URL.
+    expect:
+      - Each attempt is refused or redirected, not partially rendered.
+      - The refusal explains itself rather than showing a raw error.
+    ux_watch:
+      - Does a refused page leave the annotator somewhere useful, or stranded?
+
+# Flows still to add, gathered in review. Listed rather than
+# invented so it is visible that they are known-missing rather than overlooked:
+#
+#   1.3   Creating a set from a partially-labelled folder is refused clearly.
+#   2.1   Draft labeling skips already-labeled documents, visibly.
+#   3.1   The review-effort estimate is legible and appropriately hedged.
+#   5.3   A field's highlighted region matches the field clicked, including in
+#         tables with repeating values. (Known-broken: occurrence_index.)
+#   7.1   A machine draft is never styled as verified ground truth.
+#   10.3  What a published version guarantees. (Known limitation: not immutable.)

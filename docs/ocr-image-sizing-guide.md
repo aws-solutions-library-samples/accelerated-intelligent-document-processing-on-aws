@@ -6,192 +6,140 @@ title: "OCR Image Sizing Best Practices Guide"
 
 ## Overview
 
-The OCR service automatically applies sensible default image size limits to optimize the balance between OCR accuracy and resource consumption. This guide explains the sizing strategy and how to customize it for your specific use cases.
+The OCR service renders each page to an image, sends that image to the OCR
+backend (Textract, Bedrock or BDA), and stores it for the LLM stages
+(classification, extraction, assessment) and the UI to reuse.
 
-## Default Behavior (NEW)
+Resolution is therefore an **accuracy** setting first and a resource setting
+second. This guide explains the defaults and when to change them.
 
-### Automatic Optimization
-- **Default limits**: 951x1268 pixels when no image sizing is configured
-- **Why defaults matter**: Prevents excessive token consumption, memory issues, and processing delays
-- **Backward compatibility**: Existing explicit configurations continue to work unchanged
+## Defaults
 
-### When Defaults Are Applied
+| Setting | Default | Role |
+|---------|---------|------|
+| `ocr.image.dpi` | `300` | Render resolution. The setting that actually controls fidelity. |
+| `ocr.image.target_width` | `2600` | Out-of-memory ceiling. Does not bind for A4/Letter at 300 DPI. |
+| `ocr.image.target_height` | `3600` | Out-of-memory ceiling. Does not bind for A4/Letter at 300 DPI. |
+
+At these defaults an A4 page renders to 2482×3510 and a US Letter page to
+2550×3300 — both at full 300 DPI, with the ceiling never applied. The ceiling
+exists to bound memory on unusually large pages (e.g. Legal, plans), not to
+reduce cost.
+
 ```yaml
 ocr:
   image:
-    # No target_width or target_height specified
-    # → Automatic 951x1268 limits applied
-    dpi: 150
+    # Nothing specified → 300 DPI, capped at 2600x3600
 ```
 
-### When Defaults Are NOT Applied
+## The two knobs interact — read this before lowering either
+
+`target_width`/`target_height` **cannot raise** resolution. The page is rendered
+at `dpi` first, and images are never upscaled. Raising the ceiling without also
+raising `dpi` is a no-op.
+
 ```yaml
 ocr:
   image:
-    # Explicit configuration provided
-    target_width: 1200
-    target_height: 900
-    # → Your explicit values used
+    dpi: 150            # A4 renders to 1240x1754 ...
+    target_width: 2600  # ... so this ceiling never applies. Still 1240x1754.
 ```
 
-## Sizing Recommendations by Use Case
+This is the single most common misconfiguration. If you want more resolution,
+raise `dpi`.
 
-| Use Case | Dimensions | Token Usage/Page | Best For | Configuration |
-|----------|------------|------------------|----------|---------------|
-| **High Accuracy** | 1600×1200 | 500-800 | Forms, tables, handwriting | `target_width: 1600`<br/>`target_height: 1200` |
-| **Standard Documents** | 1200×900 | 300-500 | Printed text, simple layouts | `target_width: 1200`<br/>`target_height: 900` |
-| **Token-Conscious** | 800×600 | 150-300 | Basic text extraction | `target_width: 800`<br/>`target_height: 600` |
-| **Minimal Processing** | 600×450 | 100-200 | Speed over accuracy | `target_width: 600`<br/>`target_height: 450` |
-| **No Limits** | Original | 1000-4000+ | When quality is critical | `target_width: ""`<br/>`target_height: ""` |
+## Do not lower resolution to save tokens
 
-## Cost Impact Analysis
+Lowering resolution saves far less than it appears to, because Bedrock
+downscales images to its own long-edge ceiling before tokenizing. Token spend
+therefore saturates: beyond roughly 1568px on the long edge, extra pixels are
+free.
 
-### Before Default Sizing
-- **Typical page**: 1000-4000+ tokens
-- **10-page document**: 40,000+ tokens
-- **Monthly cost impact**: Can be substantial for high-volume processing
+Measured end to end on a 4-page scanned document (Sonnet 4.5, all three LLM
+stages):
 
-### With Default Sizing (951×1268)
-- **Typical page**: 400-600 tokens
-- **10-page document**: ~5,000 tokens
-- **Cost reduction**: 60-85% on vision model costs
+| Stored page image | Total input tokens |
+|---|---|
+| 897×1269 | 22,598 |
+| 2000×2829 | 22,914 (**+1.4%**) |
 
-### Resource Benefits
-- **Memory usage**: Reduced OutOfMemory errors during concurrent processing
-- **Processing speed**: Faster uploads, downloads, and processing
-- **Network efficiency**: Lower bandwidth consumption
+Meanwhile OCR accuracy improves consistently with resolution. Same document,
+Textract per-page word confidence:
 
-## Configuration Examples
+| Page | 897×1269 | 2482×3510 |
+|---|---|---|
+| 1 | 98.36% (11 words <90%) | 98.92% (5 words <90%) |
+| 2 | 93.46% (41 words <90%) | 95.11% (39 words <90%) |
+| 3 | 95.86% (39 words <90%) | 96.83% (31 words <90%) |
 
-### Use Automatic Defaults (Recommended)
-```yaml
-ocr:
-  image:
-    dpi: 150
-    # No sizing specified = automatic 951×1268 defaults applied
+Below roughly 200 DPI, Textract stops returning small, faint or skewed
+characters **at all** — no low-confidence block, no signal to the caller, the
+text is simply missing from the response. Page numbers, box numbers and
+hand-filled values are the usual casualties. This is what caused
+[issue #729](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/729),
+where a `Page 2` indicator on a photographed form was silently dropped at 150
+DPI and read correctly at 98% confidence at 300 DPI.
+
+If you need to cut LLM cost, reduce the image sent to the *LLM* stages via
+`classification.image` / `extraction.image` /
+`extraction.confidence.image` — those downscale the stored page image for the
+prompt only, leaving OCR at full fidelity.
+
+## When to change the defaults
+
+| Situation | Change |
+|---|---|
+| Clean, high-contrast digital PDFs, very high volume | Lower `dpi` to 200. Do not go below. |
+| Photographed / scanned / folded documents, faint form fills | Keep 300 DPI. This is what the default is for. |
+| Very large pages (Legal, plans) hitting memory limits | Lower `target_width`/`target_height`; leave `dpi` alone. |
+| OOM errors under high concurrency | Lower `ocr.max_workers` before lowering `dpi`. |
+
+### Non-standard page sizes
+
+The ceiling binds on pages larger than Letter/A4. Legal (612×1008pt) renders to
+2550×4200 at 300 DPI, which the 3600px height ceiling scales down to 2185×3600 —
+about 257 effective DPI. Still well above the ~200 DPI floor.
+
+## Resource impact
+
+Raising the default render resolution costs memory and render time, not tokens.
+At 300 DPI an A4 page is ~26 MB in memory while being processed. With the
+default `ocr.max_workers: 20` that is ~520 MB of concurrent image data against
+the OCR function's 4096 MB, so there is headroom — but if you raise
+`max_workers` substantially, watch the function's memory metric.
+
+Textract's synchronous `Bytes` limits are 5 MB and 10,000×10,000 pixels. A
+300 DPI A4 page encodes to roughly 1.0–1.3 MB as JPEG, well inside both.
+
+## How the settings are resolved
+
+- Defaults apply when both `target_width` and `target_height` are unspecified,
+  empty strings, or `None`.
+- Invalid values fall back to the defaults with a warning.
+- A partial configuration (only width **or** only height) disables the ceiling
+  entirely, preserving legacy behavior.
+- Resizing always preserves aspect ratio and never upscales.
+
+## Logging
+
+```
+INFO OCR Service initialized - DPI: 300, Image sizing: 2600x3600
+INFO No image sizing configured, applying default ceiling: 2600x3600 (out-of-memory guard; does not bind for A4/Letter at 300 dpi)
+INFO Page 1 already fits target size, extracted at: 2482x3510
+INFO Using configured image sizing: 1200x1600
+WARNING Invalid resize configuration values: width=abc, height=xyz. Falling back to defaults: 2600x3600
 ```
 
-### High-Volume Text Processing
-```yaml
-ocr:
-  image:
-    dpi: 150
-    target_width: 1200
-    target_height: 900
-    # Balances quality with token efficiency
-```
-
-### Forms and Complex Documents  
-```yaml
-ocr:
-  image:
-    dpi: 150
-    target_width: 1600
-    target_height: 1200
-    # Maximum recommended size for accuracy
-```
-
-### Token-Optimized Processing
-```yaml
-ocr:
-  image:
-    dpi: 150
-    target_width: 800  
-    target_height: 600
-    # Minimizes token usage while maintaining readability
-```
-
-### Working with Configuration Systems
-```yaml
-# Empty strings are treated the same as no configuration
-# This handles configuration systems that return empty strings for unset values
-ocr:
-  image:
-    dpi: 150
-    target_width: ""
-    target_height: ""
-    # → Automatic 951x1268 defaults applied (same as if not specified)
-```
-
-### Partial Configuration (Disables Defaults)
-```yaml
-ocr:
-  image:
-    dpi: 150
-    target_width: 800
-    # target_height missing - disables automatic defaults
-    # → No size limits applied (preserves existing behavior)
-```
-
-## Migration Guide
-
-### For Existing Deployments
-1. **No action required**: Existing configurations continue to work
-2. **Opt into defaults**: Remove `target_width` and `target_height` from config
-3. **Monitor improvements**: Track token usage and processing performance
-
-### Performance Monitoring
-- Monitor token consumption in LLM processing stages
-- Watch for memory usage improvements during concurrent processing
-- Track overall document processing times
+The `Extracted page N at target size` / `already fits target size` lines report
+the dimensions actually sent to OCR — the quickest way to confirm what
+resolution a document was really processed at.
 
 ## Troubleshooting
 
-### OCR Quality Issues
-- **Text unclear**: Increase image dimensions or check source document quality
-- **Tables misaligned**: Try 1600×1200 or higher for complex layouts
-- **Handwriting errors**: Use maximum recommended sizing (1600×1200)
-
-### Performance Issues  
-- **Memory errors**: Ensure sizing limits are applied (not disabled)
-- **Slow processing**: Reduce image dimensions if quality permits
-- **High costs**: Monitor and optimize based on use case requirements
-
-## Best Practices Summary
-
-1. **Start with defaults**: Let automatic sizing optimize your resource usage
-2. **Measure and adjust**: Monitor token usage and accuracy for your specific documents
-3. **Use case specific**: Different document types may benefit from different sizing
-4. **Test thoroughly**: Validate OCR accuracy with your specific document samples
-5. **Monitor costs**: Track token consumption impact of sizing decisions
-
-## Technical Details
-
-### How Defaults Work
-- Applied when both `target_width` and `target_height` are unspecified or `None`
-- Fallback to defaults when invalid values are provided
-- Partial configurations (only width OR height) disable defaults to preserve existing behavior
-
-### Memory Optimization
-- Images are extracted at target size to prevent memory issues
-- Concurrent processing optimized to avoid OutOfMemory errors
-- Aggressive memory cleanup after each page processing
-
-### Aspect Ratio Preservation
-- All resizing preserves original aspect ratio
-- Never upscales images (quality would not improve)
-- Uses intelligent scaling to fit within target dimensions
-
-## Logging and Monitoring
-
-### Configuration Visibility
-```
-INFO OCR Service initialized - DPI: 150, Image sizing: 1600x1200
-```
-
-### Default Application
-```
-INFO No image sizing configured, applying default limits: 1600x1200 to optimize resource usage and token consumption
-```
-
-### Explicit Configuration
-```
-INFO Using configured image sizing: 800x600
-```
-
-### Error Handling
-```
-WARNING Invalid resize configuration values: width=abc, height=xyz. Falling back to defaults: 1600x1200
-```
-
-This comprehensive logging helps you understand exactly what sizing strategy is being applied and troubleshoot any configuration issues.
+| Symptom | Check |
+|---|---|
+| A value visible in the document is missing from OCR text entirely | Resolution. Confirm the `extracted at:` log line, then raise `dpi`. |
+| Raised the ceiling but nothing changed | You also need to raise `dpi` — the ceiling cannot upscale. |
+| Tables misaligned, handwriting errors | Keep 300 DPI; consider enabling `ocr.image.preprocessing` for uneven lighting. |
+| Memory errors | Lower `max_workers`, or lower the ceiling for oversized pages. |
+| High LLM cost | Downscale at `classification.image` / `extraction.image`, not at `ocr.image`. |

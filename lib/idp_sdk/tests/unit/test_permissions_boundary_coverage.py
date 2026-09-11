@@ -38,33 +38,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
+
+from idp_sdk._core.cfn_yaml import load_cfn_template
 
 pytestmark = pytest.mark.unit
-
-
-# --- CFN-aware YAML loader ----------------------------------------------------
-# CloudFormation templates use short intrinsic tags (!Ref, !If, !GetAtt, !Sub).
-# PyYAML's SafeLoader rejects them, so we register a no-op multi-constructor
-# that preserves the tag + value as a {"!Tag": value} dict. This keeps the
-# document structure inspectable while never enabling unsafe Python-object
-# construction (we subclass SafeLoader, NOT the default Loader).
-class _CFNLoader(yaml.SafeLoader):
-    pass
-
-
-def _cfn_multi_constructor(loader, tag_suffix, node):
-    tag = "!" + tag_suffix
-    if isinstance(node, yaml.ScalarNode):
-        value = loader.construct_scalar(node)
-    elif isinstance(node, yaml.SequenceNode):
-        value = loader.construct_sequence(node)
-    else:
-        value = loader.construct_mapping(node)
-    return {tag: value}
-
-
-_CFNLoader.add_multi_constructor("!", _cfn_multi_constructor)
 
 
 def _repo_root() -> Path:
@@ -99,12 +76,9 @@ DEPLOYED_TEMPLATES = [
 
 
 def _load(rel_path: str) -> dict:
-    path = _repo_root() / rel_path
-    with open(path, "r", encoding="utf-8") as f:
-        # Safe: _CFNLoader subclasses yaml.SafeLoader (see above); the multi-
-        # constructor only builds plain scalars/sequences/mappings for CFN
-        # intrinsic tags -- no Python-object construction is possible.
-        return yaml.load(f, Loader=_CFNLoader) or {}  # nosec B506
+    # Intrinsics come back as {"!Tag": value} so the assertions below can tell a
+    # !Ref from a literal; see idp_sdk._core.cfn_yaml for the safety rationale.
+    return load_cfn_template(_repo_root() / rel_path)
 
 
 def _resources(template: dict) -> dict:

@@ -22,7 +22,7 @@ and **Lambda Function URLs** — so the standard template cannot deploy there.
 
 | | **`--govcloud`** (Web UI) | **`--headless`** |
 |---|---|---|
-| **What is removed** | Only CloudFront and Lambda Function URLs | The entire UI and everything that serves it (see below) |
+| **What is removed** | CloudFront, plus the chat-streaming Function URL and its LWA-based handler | The entire UI and everything that serves it (see below) |
 | **Web UI** | ✅ Full React UI, served by API Gateway | ❌ Removed |
 | **Authentication** | Cognito (as in commercial) | IAM; optional OAuth2 for the Jobs API |
 | **Chat / agents / Test Studio / HITL / knowledge base** | ✅ Retained | ❌ Removed |
@@ -80,13 +80,45 @@ Only the two resource families that do not exist in GovCloud:
 - **All `AWS::CloudFront::*` resources** (distribution, origin access control,
   security headers policy) and the CloudFront-only parameters/conditions. The
   Web UI is instead served by API Gateway.
-- **The `AWS::Lambda::Url` resource** — the chat *streaming* endpoint. The UI
-  auto-detects its absence and polls for chat answers instead; the final
-  answer is identical.
+- **The `AWS::Lambda::Url` resource and its handler** — the chat *streaming*
+  endpoint (`ChatStreamProcessorUrl`) plus `ChatStreamProcessorFunction`, its
+  log group, its Lambda permission, and the `ChatStreamInvoke` IAM statement.
+  The handler goes too because it layers in the AWS Lambda Web Adapter, which
+  is published only in the commercial partition (account `753240598075`); since
+  account IDs do not exist across partitions, no `${AWS::Partition}`
+  substitution can make that layer ARN resolvable and the stack rolls back on a
+  403 `lambda:GetLayerVersion`. The UI auto-detects the absent stream URL and
+  polls for chat answers instead; the final answer is identical. The polling
+  path is served by the **retained** `AgentChatProcessorFunction` /
+  `ChatWithDocumentProcessorFunction` behind the UI REST API, so removing the
+  streaming function does not reduce chat functionality — only live token
+  streaming.
 
 Everything else — Cognito authentication, the UI REST API, WAF, agents, MCP,
 Test Studio, HITL, knowledge base, discovery, configuration UI — is retained
-and works as in commercial regions.
+and works as in commercial regions, subject to the capability gaps below.
+
+## GovCloud Capability Gaps (all deploy modes)
+
+These are **not** template transforms. They are partition conditions in the
+templates themselves, so they apply equally to `--govcloud`, `--headless` and
+the untransformed template — there is nothing to opt into or out of.
+
+### Bedrock Data Automation as the OCR backend
+
+The `bda` OCR backend needs a stack-scoped BDA **SYNC** project whose
+`standardOutputConfiguration` carries a `document` block. BDA itself is offered
+in `us-gov-west-1`, but that project shape is not: the API rejects it with
+`ValidationException: Sync project does not support video/audio/document
+modality in Standard Output Configuration`.
+
+`BDAOCRProject` (in the nested unified pattern stack) is therefore gated on
+`ShouldCreateBDAOCRProject` — the `aws` partition only. Outside it the project
+is not created, `BDA_OCR_PROJECT_ARN` is empty, and the OCR service raises a
+clear error *only if* `ocr.backend` is actually set to `bda`. Use
+`ocr.backend: textract` — the built-in default; the GovCloud preset sets no
+`ocr:` key, so the default applies. See
+[the deployment guide](./govcloud-deployment.md#bedrock-data-automation-as-the-ocr-backend).
 
 ## What `--headless` Removes
 

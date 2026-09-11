@@ -278,7 +278,7 @@ const DocumentVersionsPanel = ({ objectKey, viewingRunId = null, onViewVersion }
             },
             {
               id: 'configVersion',
-              header: 'Config Version',
+              header: 'Config Profile',
               cell: (item: DocumentVersion) => item.ConfigVersion || 'N/A',
             },
             {

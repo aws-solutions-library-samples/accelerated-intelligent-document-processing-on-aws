@@ -1,0 +1,30 @@
+==============================================================================
+CORPUS: ocr-benchmark  (n requested = 40)
+  off run=OmniAI-OCR-Benchmark-20260904-113156  docs=40  completed=40
+  on  run=OmniAI-OCR-Benchmark-20260904-113203  docs=40  completed=40
+  paired documents: 40   scored in both arms: 40
+
+  ACCURACY (weighted_overall_score), paired over 40 docs
+    off mean 0.9380
+    on  mean 0.9461
+    mean paired delta +0.0081
+    on better 7 / worse 6 / identical 27
+    sign test on 13 discordant pairs: p = 1.0000
+  INPUT tokens: off 7,759  on 7,900  (+1.82%)
+  OUTPUT tokens: off 1,580  on 1,571  (-0.53%)
+  'extraction_multi_instance_suspected' raised: off 0, on 18
+==============================================================================
+CORPUS: realkie-fcc-verified  (n requested = 40)
+  off run=RealKIE-FCC-Verified-20260904-113203  docs=40  completed=40
+  on  run=RealKIE-FCC-Verified-20260904-113204  docs=40  completed=40
+  paired documents: 40   scored in both arms: 40
+
+  ACCURACY (weighted_overall_score), paired over 40 docs
+    off mean 0.7678
+    on  mean 0.7552
+    mean paired delta -0.0126
+    on better 1 / worse 14 / identical 25
+    sign test on 15 discordant pairs: p = 0.0010
+  INPUT tokens: off 95,020  on 94,262  (-0.80%)
+  OUTPUT tokens: off 6,833  on 6,609  (-3.28%)
+  'extraction_multi_instance_suspected' raised: off 0, on 1

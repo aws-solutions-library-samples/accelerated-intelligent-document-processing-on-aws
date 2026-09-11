@@ -13,6 +13,9 @@ import {
   ExpandableSection,
 } from '@cloudscape-design/components';
 
+import { describePromptCache } from '../common/promptCacheModel';
+import type { PromptCacheSummary } from '../common/promptCacheModel';
+
 interface Violation {
   field: string;
   message: string;
@@ -80,6 +83,8 @@ interface ValidationInfo {
   escalation_scope?: string;
   escalation_fields?: string[];
   resolved_by_escalation?: boolean;
+  escalation_kept?: boolean;
+  escalation_decision?: string;
 }
 
 interface PopulationCheck {
@@ -99,6 +104,7 @@ interface SizingPlan {
   shard_token_budget?: number;
   max_pages_per_shard?: number;
   list_batch_size?: number;
+  prompt_overhead_tokens?: number;
   overrides?: Record<string, unknown>;
 }
 
@@ -152,10 +158,17 @@ interface ProcessingMetadata {
   table_parsing_tool_used?: boolean;
   table_parsing_stats?: TableParsingStats;
   validation?: ValidationInfo;
+  // Scalar cells the extraction agent left null because it could not read them
+  // (#782). Recorded regardless of validation.enabled; a nulled LIST is not
+  // counted here — that is a defect, surfaced as extraction_incomplete.
+  abstained_fields?: { count?: number; paths?: string[] };
   population_check?: PopulationCheck;
   sizing_plan?: SizingPlan;
   assessment_batch_split_stats?: AssessmentBatchSplitStats;
   processing_flow?: ProcessingFlow;
+  // Per-section prompt-cache efficiency (#780): caching / write-only /
+  // never-cached / disabled / no-cache-data, with the token counts behind it.
+  prompt_cache?: PromptCacheSummary;
 }
 
 interface ProcessingIssue {
@@ -333,6 +346,8 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
   // Item 3: how the document was sized/split/batched (model-aware auto-sizing).
   const sizing = metadata.sizing_plan;
   const batchStats = metadata.assessment_batch_split_stats;
+  const promptCache = metadata.prompt_cache;
+  const promptCacheText = promptCache ? describePromptCache(promptCache) : null;
   // Systematic flow (both simple and advanced) + explicit auto-recovery detail.
   const flow = metadata.processing_flow;
   const flowStages = flow?.stages || [];
@@ -342,6 +357,16 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
   const issues: { label: string; detail: string }[] = [];
   if (!succeeded) {
     issues.push({ label: 'Extraction failed', detail: 'The model output could not be parsed into the expected structure.' });
+  }
+  const abstained = metadata.abstained_fields;
+  if (abstained && (abstained.count || 0) > 0) {
+    const sample = (abstained.paths || []).slice(0, 5).join(', ');
+    issues.push({
+      label: 'Required values left blank',
+      detail: `${abstained.count} required value(s) came back null — the extraction agent leaves a cell null rather than guessing when it cannot read it${
+        sample ? `: ${sample}${(abstained.paths || []).length > 5 ? ', …' : ''}` : ''
+      }.`,
+    });
   }
   if (validation && validation.valid === false) {
     const fields = (validation.failed_fields || []).join(', ');
@@ -450,7 +475,7 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
       </Container>
 
       {/* ---- Processing path: how the doc was sized / split / batched ---- */}
-      {(sizing || batchStats || flowStages.length > 0) && (
+      {(sizing || batchStats || promptCache || flowStages.length > 0) && (
         <Container header={<Header variant="h2">Processing Path</Header>}>
           <SpaceBetween size="m">
             {/* Systematic flow graph (rendered for BOTH simple and advanced):
@@ -495,6 +520,9 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                   <Box variant="awsui-key-label">Shard budget (auto)</Box>
                   <Box>
                     ~{(sizing.shard_token_budget || 0).toLocaleString()} tok · {sizing.max_pages_per_shard} pg/shard
+                    {sizing.prompt_overhead_tokens
+                      ? ` · after ~${sizing.prompt_overhead_tokens.toLocaleString()} tok of prompt overhead`
+                      : ''}
                   </Box>
                 </div>
                 <div>
@@ -515,6 +543,14 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                 {batchStats.escalation_model ? `; escalated to ${batchStats.escalation_model}` : ''}.
               </Box>
             ) : null}
+            {promptCacheText && (
+              <Box fontSize="body-s">
+                <StatusIndicator type={promptCacheText.indicator}>{promptCacheText.headline}</StatusIndicator>
+                <Box fontSize="body-s" color="text-body-secondary">
+                  {promptCacheText.detail}
+                </Box>
+              </Box>
+            )}
             {sizing?.overrides && Object.keys(sizing.overrides).length > 0 && (
               <Box fontSize="body-s" color="text-status-inactive">
                 Manual size overrides in effect: {JSON.stringify(sizing.overrides)}
@@ -601,11 +637,16 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                   {validation.escalation_scope === 'field-subset'
                     ? `fields: ${(validation.escalation_fields || []).join(', ') || 'none'}`
                     : 'full section'}
-                  ) — {validation.resolved_by_escalation ? 'resolved' : 'still invalid'}
+                  ) —{' '}
+                  {validation.escalation_kept === false
+                    ? 'rejected, original kept'
+                    : validation.resolved_by_escalation
+                      ? 'resolved'
+                      : 'still invalid'}
                   {validation.initial_error_count !== undefined
                     ? `; errors ${validation.initial_error_count} → ${validation.error_count || 0}`
                     : ''}
-                  .
+                  .{validation.escalation_decision ? ` ${validation.escalation_decision}.` : ''}
                 </Box>
               )}
               {!validation.valid && validation.errors && validation.errors.length > 0 && (

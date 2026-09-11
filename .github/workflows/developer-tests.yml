@@ -8,6 +8,13 @@ on:
     branches:
       - "**" # Run on PR open, update, or synchronize (i.e., any push to PR branch)
 
+# Least-privilege default for the GITHUB_TOKEN. Without this, any job that
+# omits its own `permissions:` block inherits the repository default, which can
+# be write-all. Jobs that need more declare it themselves (see below), and this
+# floor is what any future job gets until it does.
+permissions:
+  contents: read
+
 # Global timeout for all jobs
 # Note: GitHub Actions uses minutes, GitLab uses duration strings
 jobs:

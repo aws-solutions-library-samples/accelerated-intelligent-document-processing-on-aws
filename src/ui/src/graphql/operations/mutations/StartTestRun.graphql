@@ -6,5 +6,8 @@ mutation StartTestRun($input: TestRunInput!) {
     filesCount
     createdAt
     configVersion
+    configRevision
+    testSetVersion
+    testSetDraftVersion
   }
 }

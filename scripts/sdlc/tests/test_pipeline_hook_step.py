@@ -106,7 +106,7 @@ class TestHookHandlerSource:
         # non-empty value is fine here.
         monkeypatch.setenv("WORKING_BUCKET", "test-working-bucket")
         ns = {}
-        exec(  # noqa: S102 — executing our own shipped source under test
+        exec(  # noqa: S102 — executing our own shipped source under test  # nosec B102 - executes this repo's own shipped source under test
             compile(cbd._HOOK_SOURCE, "index.py", "exec"), ns
         )
         event = {
@@ -352,7 +352,7 @@ class TestWorkingBucketWiring:
         monkeypatch.setenv("MARKER_KEY", cbd._HOOK_MARKER_KEY)
         monkeypatch.delenv("WORKING_BUCKET", raising=False)
         ns = {}
-        exec(  # noqa: S102 — our own shipped source under test
+        exec(  # noqa: S102 — our own shipped source under test  # nosec B102 - executes this repo's own shipped source under test
             compile(cbd._HOOK_SOURCE, "index.py", "exec"), ns
         )
         with pytest.raises(RuntimeError, match="WORKING_BUCKET"):

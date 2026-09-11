@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * The document classes a config version defines, as dropdown options.
+ * The document classes a configuration profile defines, as dropdown options.
  *
  * Shared by human review and Test Studio annotation: both correct a misclassified
  * section, and both must offer exactly the classes the bound config knows about,

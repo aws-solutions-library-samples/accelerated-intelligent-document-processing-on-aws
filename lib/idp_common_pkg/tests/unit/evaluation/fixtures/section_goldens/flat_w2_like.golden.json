@@ -162,7 +162,7 @@
       "tp": 3
     },
     "accuracy": 0.6,
-    "f1_score": 0.7499999999999999,
+    "f1_score": 0.75,
     "false_alarm_rate": 0.0,
     "false_discovery_rate": 0.4,
     "precision": 0.6,

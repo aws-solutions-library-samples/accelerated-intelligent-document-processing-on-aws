@@ -132,7 +132,7 @@ def submit_conversion(image_bytes: bytes) -> str:
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=60) as response:
+    with urllib.request.urlopen(req, timeout=60) as response:  # nosec B310 - local test harness against the configured https endpoint
         result = json.loads(response.read().decode("utf-8"))
 
     if not result.get("success"):
@@ -153,7 +153,7 @@ def poll_for_result(check_url: str) -> dict:
             },
         )
 
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:  # nosec B310 - local test harness against the configured https endpoint
             result = json.loads(response.read().decode("utf-8"))
 
         status = result.get("status", "unknown")

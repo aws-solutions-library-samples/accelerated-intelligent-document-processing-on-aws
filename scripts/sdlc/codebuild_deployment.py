@@ -24,6 +24,15 @@ from textwrap import dedent
 import boto3
 from botocore.config import Config as _BotoConfig
 
+# Sibling module — CodeBuild runs this as `python3 scripts/sdlc/...`, so the
+# script's own directory is not necessarily on sys.path for a plain import.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from failure_agent import (  # noqa: E402
+    build_evidence_brief,
+    fetch_full_build_log,
+    run_failure_agent,
+)
+
 # Cap test/monitor commands so a hung inference run cannot consume the
 # CodeBuild job timeout and prevent stack cleanup from running (leaks ~116
 # IAM roles). Known-slow commands (publish, deploy --wait, delete --wait)
@@ -288,6 +297,86 @@ def publish_templates():
     else:
         print("❌ Failed to extract template URL from publish output")
         raise Exception("Failed to extract template URL from publish output")
+
+
+def validate_headless_template(main_template_url):
+    """Validate the `--headless` template variant through real CloudFormation.
+
+    WHY THIS EXISTS. Nothing in CI has ever exercised the `--headless` template
+    transform. The deployment-variant probes all deploy the STANDARD template
+    with different parameters (see the Probe list; `jobsapi` was once called
+    "headless" but tests the EnableJobsApi *parameter*, not the transform), and
+    the transform's only other coverage is offline unit tests. That gap shipped a
+    template CloudFormation rejects outright: the `SuppressAdminInvite` condition
+    referenced the `AdminEmail` parameter that headless removes, so for six weeks
+    EVERY headless deploy failed at validation with
+
+        Template format error: Unresolved dependencies [AdminEmail].
+        Cannot reference resources in the Conditions block of the template
+
+    before creating a single resource. `publish --headless` does run exactly this
+    check — but no CI job invokes it.
+
+    WHY IT IS CHEAP. It reuses the PACKAGED template the publish step just built
+    (`.aws-sam/idp-main.yaml`), so there is no second SAM build: one S3 put plus
+    one ValidateTemplate call. Validating the packaged template also closes the
+    gap the offline unit tests cannot — they transform the *source*
+    `template.yaml`, which differs from the packaged artifact (SAM expansion,
+    nested-stack URLs).
+
+    Deliberately does NOT deploy a headless stack. This proves the template is
+    well-formed and every reference resolves; it does not prove a headless stack
+    stands up. That would need its own ~1h probe.
+
+    Returns (ok: bool, detail: str) and never raises — a failure here must be
+    reported in the verdict, not crash the harness before the primary suite runs.
+    """
+    from urllib.parse import urlparse
+
+    print("🔎 Validating the --headless template variant...")
+
+    packaged = os.path.join(".aws-sam", "idp-main.yaml")
+    if not os.path.exists(packaged):
+        return False, f"packaged template not found at {packaged}"
+
+    # Derive bucket/prefix/region from the published main-template URL
+    # (https://s3.<region>.amazonaws.com/<bucket>/<prefix>/idp-main.yaml) so this
+    # lands beside it rather than recomputing the timestamped prefix.
+    parsed = urlparse(main_template_url)
+    host_parts = parsed.netloc.split(".")
+    region = (
+        host_parts[1]
+        if len(host_parts) > 2
+        else get_env_var("AWS_DEFAULT_REGION", "us-east-1")
+    )
+    path_parts = [p for p in parsed.path.split("/") if p]
+    if len(path_parts) < 2:
+        return False, f"could not parse bucket/prefix from {main_template_url}"
+    bucket, key_prefix = path_parts[0], "/".join(path_parts[1:-1])
+
+    out_path = os.path.join(".aws-sam", "idp-headless.yaml")
+    try:
+        from idp_sdk._core.template_transform import HeadlessTemplateTransformer
+
+        if not HeadlessTemplateTransformer().transform(packaged, out_path):
+            return False, "headless transform reported failure (see log above)"
+    except Exception as e:  # noqa: BLE001
+        return False, f"headless transform raised: {e}"
+
+    key = f"{key_prefix}/idp-headless.yaml" if key_prefix else "idp-headless.yaml"
+    url = f"https://s3.{region}.amazonaws.com/{bucket}/{key}"
+    try:
+        boto3.client("s3", region_name=region).upload_file(
+            out_path, bucket, key, ExtraArgs={"ContentType": "text/yaml"}
+        )
+        boto3.client("cloudformation", region_name=region).validate_template(
+            TemplateURL=url
+        )
+    except Exception as e:  # noqa: BLE001
+        return False, f"{e}"
+
+    print(f"✅ Headless template validated: {url}")
+    return True, url
 
 
 # boto3's default retry mode is "legacy" (max ~4 attempts, no adaptive
@@ -798,6 +887,29 @@ def test_step7_test_studio(stack_name):
         return {"success": False, "error": f"Test Studio test failed: {str(e)}"}
 
 
+def summarize_list_sections(sections, list_field):
+    """Total rows in ``list_field`` across sections, plus a per-section report.
+
+    ``sections`` is ``[(result_json_path, payload), ...]``. Returns
+    ``(total_rows, ["section 1: pages 1-6, 193 rows", ...])``.
+
+    Kept as a pure function so the aggregation that #750 got wrong is unit
+    tested: reading only the first section made a boundary mis-split look like
+    lost extraction rows.
+    """
+    total = 0
+    report = []
+    for path, payload in sections:
+        section_id = path.rsplit("/", 2)[-2]
+        rows = len(payload.get("inference_result", {}).get(list_field) or [])
+        pages = payload.get("split_document", {}).get("page_indices") or []
+        # page_indices are 0-based; report the 1-based page numbers a human sees.
+        page_range = f"{min(pages) + 1}-{max(pages) + 1}" if pages else "unknown"
+        total += rows
+        report.append(f"section {section_id}: pages {page_range}, {rows} rows")
+    return total, report
+
+
 def test_step8_agentic_extraction(stack_name):
     """Step 8: Test agentic extraction with large table"""
     print("Step 8: Testing agentic extraction with Nuveen (532 fund items)...")
@@ -829,48 +941,82 @@ def test_step8_agentic_extraction(stack_name):
             cmd = f"idp-cli download-results --stack-name {stack_name} --batch-id {batch_id} --output-dir {result_dir}"
             run_command(cmd, check=False)
 
-            cmd = (
-                f"find {result_dir} -path '*/sections/*/result.json' -type f | head -1"
-            )
+            # Read EVERY section, not `head -1`. Row completeness and section
+            # count are separate properties and this step used to conflate them:
+            # a classification mis-split (#750) left 193 of 532 rows in
+            # sections/1, and the failure was reported as "expected 532 fund
+            # items, got 193" — an extraction defect that never happened. Each
+            # dimension now fails with its own message so the failure names the
+            # subsystem that actually broke.
+            cmd = f"find {result_dir} -path '*/sections/*/result.json' -type f"
             find_result = run_command(cmd, check=False)
-            result_file = find_result.stdout.strip()
+            result_files = sorted(
+                (p for p in find_result.stdout.split("\n") if p.strip()),
+                key=lambda p: (
+                    int(p.rsplit("/", 2)[-2]) if p.rsplit("/", 2)[-2].isdigit() else 0
+                ),
+            )
 
-            if result_file:
-                with open(result_file, "r") as f:
-                    result_json = json.load(f)
-
-                doc_class = result_json.get("document_class", {}).get("type")
-                if doc_class == "Estimated2024AnnualTaxableDistributions":
-                    print(f"  ✓ Document class correct: {doc_class}")
-                else:
-                    print(f"❌ Unexpected document class: {doc_class}")
-                    return {
-                        "success": False,
-                        "error": f"Agentic extraction test failed: unexpected document class '{doc_class}'",
-                    }
-
-                fund_info = result_json.get("inference_result", {}).get(
-                    "FundInformation", []
-                )
-                fund_count = len(fund_info)
-                if fund_count == 532:
-                    print(f"  ✓ FundInformation count correct: {fund_count} items")
-                    print("✅ Agentic extraction test completed successfully")
-                    return {"success": True}
-                else:
-                    print(
-                        f"❌ FundInformation count mismatch: expected 532, got {fund_count}"
-                    )
-                    return {
-                        "success": False,
-                        "error": f"Agentic extraction test failed: expected 532 fund items, got {fund_count}",
-                    }
-            else:
+            if not result_files:
                 print("❌ Result file not found")
                 return {
                     "success": False,
                     "error": "Agentic extraction test failed: result file not found",
                 }
+
+            sections = []
+            for path in result_files:
+                with open(path, "r") as f:
+                    sections.append((path, json.load(f)))
+
+            doc_class = sections[0][1].get("document_class", {}).get("type")
+            if doc_class == "Estimated2024AnnualTaxableDistributions":
+                print(f"  ✓ Document class correct: {doc_class}")
+            else:
+                print(f"❌ Unexpected document class: {doc_class}")
+                return {
+                    "success": False,
+                    "error": f"Agentic extraction test failed: unexpected document class '{doc_class}'",
+                }
+
+            total_funds, per_section = summarize_list_sections(
+                sections, "FundInformation"
+            )
+            for line in per_section:
+                print(f"    {line}")
+
+            # Nuveen.pdf is ONE document. More than one section means the
+            # classifier split it (boundary detection), which is a different bug
+            # from losing rows — and it is silent otherwise, because each section
+            # can still be 100% complete and the document still reaches COMPLETED.
+            if len(sections) != 1:
+                print(
+                    f"❌ Classification over-split the document: expected 1 section, got {len(sections)}"
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Agentic extraction test failed: classification over-split "
+                        f"Nuveen.pdf into {len(sections)} sections (expected 1); "
+                        f"{'; '.join(per_section)}. This is a document_boundary "
+                        f"defect, not an extraction defect - see #750."
+                    ),
+                }
+
+            if total_funds == 532:
+                print(f"  ✓ FundInformation count correct: {total_funds} items")
+                print("✅ Agentic extraction test completed successfully")
+                return {"success": True}
+
+            print(f"❌ FundInformation count mismatch: expected 532, got {total_funds}")
+            return {
+                "success": False,
+                "error": (
+                    f"Agentic extraction test failed: expected 532 fund items, got "
+                    f"{total_funds} across {len(sections)} section(s) "
+                    f"({'; '.join(per_section)})"
+                ),
+            }
         else:
             print("❌ Could not extract batch ID from output")
             return {
@@ -1139,9 +1285,17 @@ def test_step11_test_compare(stack_name):
                 test_run_ids.append(test_run_id)
                 print(f"Test run {i + 1} ID: {test_run_id}")
 
-                # Wait for test run to complete before starting next one
+                # Wait for test run to complete before starting next one.
+                # 600s, matching Step 7's budget for the same fake-w2 test set:
+                # the wait spans queue -> OCR -> classify -> extract -> assess ->
+                # evaluate, and since eda68b256 moved this step into the parallel
+                # pool it competes with Steps 3-10/13-14 on the shared stack. The
+                # inherited 300s was tuned when it ran sequentially with the
+                # stack to itself and times out under that contention (a 2-doc
+                # run was still in flight at 303s while Step 7's 3-doc run on the
+                # same test set was likewise unfinished at 305s).
                 print(f"Waiting for test run {i + 1} to complete...")
-                cmd = f"idp-cli test-result --stack-name {stack_name} --test-run-id {test_run_id} --wait --timeout 300"
+                cmd = f"idp-cli test-result --stack-name {stack_name} --test-run-id {test_run_id} --wait --timeout 600"
                 result = run_command(cmd, check=False)
 
                 if result.returncode != 0:
@@ -1451,9 +1605,9 @@ def _hook_iam_role(iam, role_name):
         }
     )
     try:
-        role_arn = iam.create_role(
-            RoleName=role_name, AssumeRolePolicyDocument=trust
-        )["Role"]["Arn"]
+        role_arn = iam.create_role(RoleName=role_name, AssumeRolePolicyDocument=trust)[
+            "Role"
+        ]["Arn"]
     except iam.exceptions.EntityAlreadyExistsException:
         role_arn = iam.get_role(RoleName=role_name)["Role"]["Arn"]
     iam.attach_role_policy(
@@ -1537,9 +1691,9 @@ def _wait_lambda_ready(lam, fn_name, attempts=20, delay=3):
         except Exception:  # noqa: BLE001 — transient during creation
             time.sleep(delay)
             continue
-        if (
-            cfg.get("State") in (None, "Active")
-            and cfg.get("LastUpdateStatus") in (None, "Successful")
+        if cfg.get("State") in (None, "Active") and cfg.get("LastUpdateStatus") in (
+            None,
+            "Successful",
         ):
             return True
         time.sleep(delay)
@@ -1579,9 +1733,10 @@ def _find_target_execution(sfn, sm_arn, config_version):
         for ex in page.get("executions", []):
             scanned += 1
             try:
-                raw = sfn.describe_execution(
-                    executionArn=ex["executionArn"]
-                ).get("input") or "{}"
+                raw = (
+                    sfn.describe_execution(executionArn=ex["executionArn"]).get("input")
+                    or "{}"
+                )
                 doc_in = json.loads(raw).get("document") or {}
             except (ValueError, TypeError, KeyError):
                 continue
@@ -1604,9 +1759,7 @@ def _resolve_working_bucket(stack_name):
     from the stack's resources.
     """
     cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
-    for page in cf.get_paginator("list_stack_resources").paginate(
-        StackName=stack_name
-    ):
+    for page in cf.get_paginator("list_stack_resources").paginate(StackName=stack_name):
         for r in page.get("StackResourceSummaries", []):
             if (
                 r.get("ResourceType") == "AWS::S3::Bucket"
@@ -1838,9 +1991,7 @@ def test_step14_pipeline_hooks(stack_name):
         # dispatch closed with AccessDenied; one without WORKING_BUCKET raises
         # inside load_hook_document the moment it is handed a compressed
         # document reference (which is what `postprocessing` always gets).
-        lam.tag_resource(
-            Resource=hook_arn, Tags={"idp:feature-id": _HOOK_FEATURE_ID}
-        )
+        lam.tag_resource(Resource=hook_arn, Tags={"idp:feature-id": _HOOK_FEATURE_ID})
         _wait_lambda_ready(lam, fn_name)
         lam.update_function_configuration(
             FunctionName=fn_name,
@@ -2019,7 +2170,9 @@ def test_step14_pipeline_hooks(stack_name):
                     f"--config-version."
                 ),
             }
-        print(f"  ✓ found our execution ({scanned} scanned): {target_arn.rsplit(':', 1)[-1]}")
+        print(
+            f"  ✓ found our execution ({scanned} scanned): {target_arn.rsplit(':', 1)[-1]}"
+        )
 
         found = {}
         hist_token = None
@@ -2114,7 +2267,9 @@ def test_step14_pipeline_hooks(stack_name):
             }
         print(f"  ✓ marker persisted to the tracking row: {marker_seen}")
 
-        print("✅ Pipeline-hook end-to-end test passed (preprocessing + postprocessing)")
+        print(
+            "✅ Pipeline-hook end-to-end test passed (preprocessing + postprocessing)"
+        )
         outcome["ok"] = True
         return {"success": True}
 
@@ -2139,7 +2294,10 @@ def test_step14_pipeline_hooks(stack_name):
                 print(f"  ⚠️  could not delete hook Lambda {fn_name}: {exc}")
         if created_role:
             for call, kwargs in (
-                (iam.delete_role_policy, {"RoleName": role_name, "PolicyName": "hook-s3-kms"}),
+                (
+                    iam.delete_role_policy,
+                    {"RoleName": role_name, "PolicyName": "hook-s3-kms"},
+                ),
                 (
                     iam.detach_role_policy,
                     {
@@ -2241,6 +2399,12 @@ PARALLEL_TEST_STEPS = [
     # reverted to simple single-pass, which times out on the 532-row/17-page doc.
     # Fixed by converting nuveen.yaml to native v0.6 (mode: advanced); live-
     # validated at ~305s extraction / 532 rows. Re-enabled.
+    #
+    # The "got 193 of 532" failure that followed was not extraction either: the
+    # #653 boundary rules read this document's repeated running header as an
+    # opening header block and split it (#750). Fixed by the BOUNDARY sentence in
+    # nuveen.yaml's class description (the rules' own PRECEDENCE escape hatch),
+    # and the step now checks row completeness and section count separately.
     (
         test_step8_agentic_extraction,
         "Step 8",
@@ -3274,9 +3438,7 @@ def generate_deployment_summary(result, stack_name, template_url):
             codebuild_failures = result.get("codebuild_failures")
             if codebuild_failures is None:
                 try:
-                    codebuild_failures = get_codebuild_failure_details(
-                        stack_name, logs
-                    )
+                    codebuild_failures = get_codebuild_failure_details(stack_name, logs)
                     if codebuild_failures:
                         print(
                             f"✅ Captured {len(codebuild_failures)} CodeBuild "
@@ -3377,13 +3539,6 @@ def generate_deployment_summary(result, stack_name, template_url):
             return _invoke_bedrock(cf_prompt)
 
         # Case A: smoke test failure — deploy succeeded, a test step failed.
-        # Attach a bounded log tail: several tests report only a one-line
-        # error, and the actual mismatch (expected string, missing file,
-        # CLI stderr) is in the build log.
-        log_tail = "\n".join(get_codebuild_logs().split("\n")[-150:])
-        suite_reference = "\n".join(
-            f"• {step}: {desc}" for _, step, _, desc in ALL_TEST_STEPS
-        )
 
         # When a document failed to process, the test's own error is a generic
         # "Unknown error" (the tracking table flattens the real cause). Pull the
@@ -3396,6 +3551,30 @@ def generate_deployment_summary(result, stack_name, template_url):
             workflow_failures = get_workflow_failure_details(stack_name)
         if workflow_failures:
             print(f"✅ Captured {len(workflow_failures)} workflow failure(s)")
+
+        # Tier 1: agentic root-cause analysis. Gated on IDP_FAILURE_AGENT=1;
+        # returns None (never raises) when disabled or unable to finish, in which
+        # case we fall through to the single-shot summary below. The agent can
+        # follow evidence the single-shot path cannot reach — Lambda logs, Step
+        # Functions histories, git history — because it runs while the stack is
+        # still alive. It is strictly advisory: pass/fail was decided in Python.
+        agent_report = run_failure_agent(stack_name, error_text, workflow_failures)
+        if agent_report:
+            return agent_report
+
+        # Tier 2 (fallback): one Bedrock call over the deterministic evidence
+        # bundle. The bundle replaces what used to be a blind `[-150:]` log tail —
+        # in job 28666687 that tail held only the concurrent teardown's bucket
+        # inventory while the real traceback sat ~1,090 lines earlier, so the
+        # model correctly but uselessly reported "root cause not captured".
+        # build_evidence_brief greps the FULL (paginated) log for failure signals
+        # and filters the known noise classes instead.
+        log_tail = build_evidence_brief(
+            stack_name, error_text, workflow_failures, fetch_full_build_log()
+        )
+        suite_reference = "\n".join(
+            f"• {step}: {desc}" for _, step, _, desc in ALL_TEST_STEPS
+        )
 
         test_prompt = dedent(f"""
         An IDP deployment succeeded but a post-deployment smoke test failed.
@@ -3414,9 +3593,13 @@ def generate_deployment_summary(result, stack_name, template_url):
         exception behind a generic "Unknown error"):
         {json.dumps(workflow_failures, indent=2)}
 
-        Last build log lines (context only — note that "exit code -9" / SIGKILL
-        lines are fail-fast collateral from OTHER parallel tests being killed
-        after the first failure, NOT independent failures; do not report them):
+        Evidence brief — failure excerpts grepped from the FULL build log with
+        surrounding context, noise classes (pip output, teardown inventory, table
+        borders) removed. Note that "exit code -9" / SIGKILL lines are fail-fast
+        collateral from OTHER parallel tests being killed after the first
+        failure, NOT independent failures; do not report them. Steps 3-10/13-14
+        run concurrently against one shared stack and share one log stream, so
+        their output interleaves — correlate by timestamp, not adjacency:
         {log_tail}
 
         GROUNDING RULES — follow strictly:
@@ -4951,11 +5134,7 @@ def _is_transient_deploy_race(result):
         rtype = ev.get("resource_type")
         reason = (ev.get("reason") or "").lower()
         for race_type, race_substr, race_statuses in _TRANSIENT_DEPLOY_RACES:
-            if (
-                rtype == race_type
-                and status in race_statuses
-                and race_substr in reason
-            ):
+            if rtype == race_type and status in race_statuses and race_substr in reason:
                 return True
     return False
 
@@ -5380,6 +5559,16 @@ def main():
         failure_reason = f"publish/build failed: {e}"
         ai_summary = generate_publish_failure_summary(str(e))
 
+    # Step 1a: Validate the --headless template variant against real
+    # CloudFormation, reusing the packaged template publish just built. Failure
+    # does NOT short-circuit here — the primary suite still runs so its signal
+    # isn't lost — it is folded into the final verdict below.
+    headless_ok, headless_detail = True, ""
+    if publish_success:
+        headless_ok, headless_detail = validate_headless_template(template_url)
+        if not headless_ok:
+            print(f"❌ Headless template validation failed: {headless_detail}")
+
     if publish_success:
         # Step 2: Launch the deployment-variant probes on their OWN supervisor
         # thread FIRST so their ~30m stack deploys overlap the primary suite's
@@ -5550,6 +5739,14 @@ def main():
                     f"--- Deployment-variant probe: {probe_name} (Step 4b) ---\n"
                     f"{probe_summary}"
                 )
+
+    # Fold the headless-template gate (Step 1a) into the verdict. Applied HERE,
+    # not at the check itself, because stack_success is assigned (not and-ed) by
+    # the primary suite above, so an early False would be overwritten.
+    if not headless_ok:
+        stack_success = False
+        if not failure_reason:
+            failure_reason = f"--headless template validation failed: {headless_detail}"
 
     # Step 5: Print the deterministic consolidated status table FIRST (always
     # renders, Bedrock or not — the GitLab log needs a reliable "every test +

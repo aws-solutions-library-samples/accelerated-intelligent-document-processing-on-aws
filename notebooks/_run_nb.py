@@ -55,7 +55,7 @@ def neutralize_pip(nb_path: Path, tmp_in: Path) -> None:
 
 def main() -> int:
     nb_path = Path(sys.argv[1]).resolve()
-    run_dir = Path("/tmp/nb_runs")
+    run_dir = Path("/tmp/nb_runs")  # nosec B108 - developer-local notebook scratch dir, created with default perms
     run_dir.mkdir(parents=True, exist_ok=True)
     stem = nb_path.name.replace(".ipynb", "")
     if len(sys.argv) > 2:

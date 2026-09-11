@@ -1,0 +1,463 @@
+{
+  "attributes": [
+    {
+      "actual": [
+        {
+          "amount": 100.0,
+          "date": "2026-01-01"
+        },
+        {
+          "amount": 200.0,
+          "date": "2026-01-02"
+        }
+      ],
+      "comparator_type": null,
+      "confidence": null,
+      "confidence_threshold": null,
+      "error_details": null,
+      "evaluation_method": "Hungarian (threshold: 0.50)",
+      "evaluation_threshold": null,
+      "expected": [
+        {
+          "amount": 100.0,
+          "date": "2026-01-01"
+        },
+        {
+          "amount": 200.0,
+          "date": "2026-01-02"
+        },
+        {
+          "amount": 300.0,
+          "date": "2026-01-03"
+        },
+        {
+          "amount": 400.0,
+          "date": "2026-01-04"
+        },
+        {
+          "amount": 500.0,
+          "date": "2026-01-05"
+        }
+      ],
+      "field_comparison_details": [
+        {
+          "actual_key": "Transactions[0].date",
+          "actual_value": "2026-01-01",
+          "evaluation_method": "Exact",
+          "expected_key": "Transactions[0].date",
+          "expected_value": "2026-01-01",
+          "field_path": "Transactions[0].date",
+          "match": true,
+          "reason": "exact match",
+          "score": 1.0,
+          "weight": 1.0,
+          "weighted_score": 1.0
+        },
+        {
+          "actual_key": "Transactions[0].amount",
+          "actual_value": 100.0,
+          "evaluation_method": "NumericExact",
+          "expected_key": "Transactions[0].amount",
+          "expected_value": 100.0,
+          "field_path": "Transactions[0].amount",
+          "match": true,
+          "reason": "exact match",
+          "score": 1.0,
+          "weight": 1.0,
+          "weighted_score": 1.0
+        },
+        {
+          "actual_key": "Transactions[1].date",
+          "actual_value": "2026-01-02",
+          "evaluation_method": "Exact",
+          "expected_key": "Transactions[1].date",
+          "expected_value": "2026-01-02",
+          "field_path": "Transactions[1].date",
+          "match": true,
+          "reason": "exact match",
+          "score": 1.0,
+          "weight": 1.0,
+          "weighted_score": 1.0
+        },
+        {
+          "actual_key": "Transactions[1].amount",
+          "actual_value": 200.0,
+          "evaluation_method": "NumericExact",
+          "expected_key": "Transactions[1].amount",
+          "expected_value": 200.0,
+          "field_path": "Transactions[1].amount",
+          "match": true,
+          "reason": "exact match",
+          "score": 1.0,
+          "weight": 1.0,
+          "weighted_score": 1.0
+        },
+        {
+          "actual_key": null,
+          "actual_value": null,
+          "evaluation_method": "AggregateObject",
+          "expected_key": "Transactions[2]",
+          "expected_value": {
+            "amount": 300.0,
+            "date": "2026-01-03"
+          },
+          "field_path": "Transactions[2]",
+          "match": false,
+          "reason": "false negative (unmatched ground truth)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": null,
+          "actual_value": null,
+          "evaluation_method": "AggregateObject",
+          "expected_key": "Transactions[3]",
+          "expected_value": {
+            "amount": 400.0,
+            "date": "2026-01-04"
+          },
+          "field_path": "Transactions[3]",
+          "match": false,
+          "reason": "false negative (unmatched ground truth)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": null,
+          "actual_value": null,
+          "evaluation_method": "AggregateObject",
+          "expected_key": "Transactions[4]",
+          "expected_value": {
+            "amount": 500.0,
+            "date": "2026-01-05"
+          },
+          "field_path": "Transactions[4]",
+          "match": false,
+          "reason": "false negative (unmatched ground truth)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        }
+      ],
+      "matched": false,
+      "name": "Transactions",
+      "reason": "Values do not match (score: 0.40, comparator: default)",
+      "score": 0.4,
+      "weight": null
+    }
+  ],
+  "document_class": "Bank",
+  "metrics": {
+    "_stickler_counts": {
+      "fa": 0,
+      "fd": 0,
+      "fn": 6,
+      "fp": 0,
+      "tn": 0,
+      "tp": 4
+    },
+    "accuracy": 0.4,
+    "f1_score": 0.5714285714285714,
+    "false_alarm_rate": 0.0,
+    "false_discovery_rate": 0.0,
+    "precision": 1.0,
+    "recall": 0.4,
+    "weighted_overall_score": 0.4
+  },
+  "section_id": "trunc-hallucinate-1",
+  "stickler_comparison_result": {
+    "all_fields_matched": false,
+    "auroc_confidence_metric": 0.5,
+    "confidence_metrics": {
+      "coverage": {
+        "fields_total": 4,
+        "fields_with_confidence": 0,
+        "ratio": 0.0
+      },
+      "fields": {},
+      "overall": {
+        "auroc": {
+          "value": null
+        },
+        "brier_score": {
+          "value": null
+        },
+        "ece": {
+          "bins": [],
+          "value": null
+        }
+      }
+    },
+    "confusion_matrix": {
+      "aggregate": {
+        "derived": {
+          "cm_accuracy": 0.4,
+          "cm_f1": 0.5714285714285715,
+          "cm_precision": 1.0,
+          "cm_recall": 0.4
+        },
+        "fa": 0,
+        "fd": 0,
+        "fn": 6,
+        "fp": 0,
+        "tn": 0,
+        "tp": 4
+      },
+      "fields": {
+        "Transactions": {
+          "aggregate": {
+            "derived": {
+              "cm_accuracy": 0.4,
+              "cm_f1": 0.5714285714285715,
+              "cm_precision": 1.0,
+              "cm_recall": 0.4
+            },
+            "fa": 0,
+            "fd": 0,
+            "fn": 6,
+            "fp": 0,
+            "tn": 0,
+            "tp": 4
+          },
+          "fields": {
+            "amount": {
+              "aggregate": {
+                "derived": {
+                  "cm_accuracy": 0.4,
+                  "cm_f1": 0.5714285714285715,
+                  "cm_precision": 1.0,
+                  "cm_recall": 0.4
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 3,
+                "fp": 0,
+                "tn": 0,
+                "tp": 2
+              },
+              "overall": {
+                "derived": {
+                  "cm_accuracy": 0.4,
+                  "cm_f1": 0.5714285714285715,
+                  "cm_precision": 1.0,
+                  "cm_recall": 0.4
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 3,
+                "fp": 0,
+                "tn": 0,
+                "tp": 2
+              }
+            },
+            "date": {
+              "aggregate": {
+                "derived": {
+                  "cm_accuracy": 0.4,
+                  "cm_f1": 0.5714285714285715,
+                  "cm_precision": 1.0,
+                  "cm_recall": 0.4
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 3,
+                "fp": 0,
+                "tn": 0,
+                "tp": 2
+              },
+              "overall": {
+                "derived": {
+                  "cm_accuracy": 0.4,
+                  "cm_f1": 0.5714285714285715,
+                  "cm_precision": 1.0,
+                  "cm_recall": 0.4
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 3,
+                "fp": 0,
+                "tn": 0,
+                "tp": 2
+              }
+            }
+          },
+          "overall": {
+            "derived": {
+              "cm_accuracy": 0.4,
+              "cm_f1": 0.5714285714285715,
+              "cm_precision": 1.0,
+              "cm_recall": 0.4
+            },
+            "fa": 0,
+            "fd": 0,
+            "fn": 3,
+            "fp": 0,
+            "tn": 0,
+            "tp": 2
+          },
+          "raw_similarity_score": 0.4,
+          "similarity_score": 0.4,
+          "threshold_applied_score": 0.4,
+          "weight": 1.0
+        }
+      },
+      "non_matches": [],
+      "overall": {
+        "all_fields_matched": false,
+        "derived": {
+          "cm_accuracy": 0.4,
+          "cm_f1": 0.5714285714285715,
+          "cm_precision": 1.0,
+          "cm_recall": 0.4
+        },
+        "fa": 0,
+        "fd": 0,
+        "fn": 3,
+        "fp": 0,
+        "similarity_score": 0.4,
+        "tn": 0,
+        "tp": 2
+      }
+    },
+    "field_comparisons": [
+      {
+        "actual_key": "Transactions[0].date",
+        "actual_value": "2026-01-01",
+        "evaluation_method": "Exact",
+        "expected_key": "Transactions[0].date",
+        "expected_value": "2026-01-01",
+        "field_path": "Transactions[0].date",
+        "match": true,
+        "reason": "exact match",
+        "score": 1.0,
+        "weight": 1.0,
+        "weighted_score": 1.0
+      },
+      {
+        "actual_key": "Transactions[0].amount",
+        "actual_value": 100.0,
+        "evaluation_method": "NumericExact",
+        "expected_key": "Transactions[0].amount",
+        "expected_value": 100.0,
+        "field_path": "Transactions[0].amount",
+        "match": true,
+        "reason": "exact match",
+        "score": 1.0,
+        "weight": 1.0,
+        "weighted_score": 1.0
+      },
+      {
+        "actual_key": "Transactions[1].date",
+        "actual_value": "2026-01-02",
+        "evaluation_method": "Exact",
+        "expected_key": "Transactions[1].date",
+        "expected_value": "2026-01-02",
+        "field_path": "Transactions[1].date",
+        "match": true,
+        "reason": "exact match",
+        "score": 1.0,
+        "weight": 1.0,
+        "weighted_score": 1.0
+      },
+      {
+        "actual_key": "Transactions[1].amount",
+        "actual_value": 200.0,
+        "evaluation_method": "NumericExact",
+        "expected_key": "Transactions[1].amount",
+        "expected_value": 200.0,
+        "field_path": "Transactions[1].amount",
+        "match": true,
+        "reason": "exact match",
+        "score": 1.0,
+        "weight": 1.0,
+        "weighted_score": 1.0
+      },
+      {
+        "actual_key": null,
+        "actual_value": null,
+        "evaluation_method": "AggregateObject",
+        "expected_key": "Transactions[2]",
+        "expected_value": {
+          "amount": 300.0,
+          "date": "2026-01-03"
+        },
+        "field_path": "Transactions[2]",
+        "match": false,
+        "reason": "false negative (unmatched ground truth)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": null,
+        "actual_value": null,
+        "evaluation_method": "AggregateObject",
+        "expected_key": "Transactions[3]",
+        "expected_value": {
+          "amount": 400.0,
+          "date": "2026-01-04"
+        },
+        "field_path": "Transactions[3]",
+        "match": false,
+        "reason": "false negative (unmatched ground truth)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": null,
+        "actual_value": null,
+        "evaluation_method": "AggregateObject",
+        "expected_key": "Transactions[4]",
+        "expected_value": {
+          "amount": 500.0,
+          "date": "2026-01-05"
+        },
+        "field_path": "Transactions[4]",
+        "match": false,
+        "reason": "false negative (unmatched ground truth)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      }
+    ],
+    "field_scores": {
+      "Transactions": 0.4
+    },
+    "non_matches": [
+      {
+        "field_path": "Transactions[2]",
+        "ground_truth_value": {
+          "amount": 300.0,
+          "date": "2026-01-03"
+        },
+        "non_match_type": "false_negative",
+        "prediction_value": null,
+        "reason": "unmatched ground truth"
+      },
+      {
+        "field_path": "Transactions[3]",
+        "ground_truth_value": {
+          "amount": 400.0,
+          "date": "2026-01-04"
+        },
+        "non_match_type": "false_negative",
+        "prediction_value": null,
+        "reason": "unmatched ground truth"
+      },
+      {
+        "field_path": "Transactions[4]",
+        "ground_truth_value": {
+          "amount": 500.0,
+          "date": "2026-01-05"
+        },
+        "non_match_type": "false_negative",
+        "prediction_value": null,
+        "reason": "unmatched ground truth"
+      }
+    ],
+    "overall_score": 0.4
+  }
+}

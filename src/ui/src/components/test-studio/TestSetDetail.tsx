@@ -10,7 +10,7 @@
  * corresponding view on that page.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert,
@@ -19,10 +19,12 @@ import {
   Box,
   BreadcrumbGroup,
   Button,
+  ButtonDropdown,
   ContentLayout,
   ExpandableSection,
   FormField,
   Header,
+  Icon,
   Input,
   Link,
   Modal,
@@ -35,22 +37,44 @@ import {
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { getTestSetDocuments, generateDraftLabels, getDraftLabelJob, clearDraftLabels, resetTestSetLabels } from '../../graphql/generated';
+import {
+  getTestSetDocuments,
+  generateDraftLabels,
+  getDraftLabelJob,
+  clearDraftLabels,
+  resetTestSetLabels,
+  removeDocumentsFromTestSet,
+} from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
+import { getErrorMessage } from '../../utils/errorUtils';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
+import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import Navigation from '../genaiidp-layout/navigation';
 import { appLayoutLabels } from '../common/labels';
 import { TEST_STUDIO_PATH, testSetDocumentHref, testSetAnnotateHref } from '../../routes/constants';
 import TestDocThumbnail from './TestDocThumbnail';
 import ReviewEffortModal from './ReviewEffortModal';
 import GenerateDraftLabelsModal from './GenerateDraftLabelsModal';
+import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
+import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
+import RemoveDocumentsModal from './RemoveDocumentsModal';
 import type { TestSetDocumentSectionRef } from './GroundTruthVisualEditor';
 
 const client = generateClient();
 const logger = new ConsoleLogger('TestSetDetail');
 
 const PAGE_SIZE = 50;
+
+/**
+ * After a bucket or zip add, how often the set's size is re-read and for how long.
+ * The copier and extractor report only through the set's status, which this page
+ * does not hold, so the size is the signal that documents have landed.
+ */
+const ARRIVAL_POLL_MS = 5000;
+const ARRIVAL_WATCH_MS = 2 * 60 * 1000;
+/** Generation runs for minutes and reports through its job, so that is polled instead. */
+const GENERATION_POLL_MS = 5000;
 
 export interface TestSetDocumentItem {
   objectKey: string;
@@ -81,6 +105,21 @@ export const renderLabelSource = (labelSource?: string | null): React.JSX.Elemen
   const badge = LABEL_SOURCE_BADGES[labelSource];
   return badge ? <Badge color={badge.color}>{badge.text}</Badge> : <Badge color="grey">{labelSource}</Badge>;
 };
+
+/**
+ * Provenance for a baseline whose bytes are already loaded.
+ *
+ * `renderLabelSource(undefined)` renders "Unlabeled", which is correct for a
+ * document row where the baseline may not exist at all. It is wrong once the file
+ * has been read: the pipeline writes `labelSource` and a hand-uploaded ground-truth
+ * file does not, so absence in a loaded baseline means authored ground truth.
+ *
+ * The server already codifies this — `_attach_label_metadata` falls back to
+ * `uploaded` for exactly this reason — and the editor did not, so the same document
+ * read "Uploaded" in the review queue and "Unlabeled" in the editor header, two
+ * lines below an alert saying "Already ground truth".
+ */
+export const renderLoadedLabelSource = (labelSource?: string | null): React.JSX.Element => renderLabelSource(labelSource || 'uploaded');
 
 /**
  * Confidence as a percentage, colored against the configured alert threshold: red
@@ -118,10 +157,120 @@ export const QUALITY_TIER_COLORS: Record<string, 'green' | 'blue' | 'severity-ne
   gold: 'green',
   silver: 'blue',
   bronze: 'severity-neutral',
-  unrated: 'red',
+  // NOT red. "Unrated" is the absence of a defensible claim, not a fault — and
+  // reviewing a document can legitimately move a set INTO it: once there is
+  // enough evidence to test whether confidence ranks correctness, the estimator
+  // may find it does not, and withdraw the number it had been inferring from a
+  // cross-set prior. Red made that read as "your review broke this set", when in
+  // fact the preceding Bronze figure was the less honest of the two states.
+  unrated: 'severity-neutral',
 };
 
-export const renderQualityTier = (tier?: string | null, reason?: string | null, accuracy?: number | null): React.JSX.Element => {
+/**
+ * What the four tiers mean, all of them at once.
+ *
+ * The per-row popover explains only the tier that row happens to have, so a set
+ * badged "Bronze" told you Bronze was bad without telling you what better looked
+ * like or how to get there. Mirrors TIER_EXPLANATIONS in
+ * `idp_common/evaluation/confidence_curve.py` — if the thresholds move there,
+ * they move here.
+ */
+export const LabelAccuracyLegend = (): React.JSX.Element => (
+  <Popover
+    dismissButton={false}
+    position="bottom"
+    size="large"
+    triggerType="custom"
+    header="Estimated label accuracy"
+    content={
+      <SpaceBetween size="xs">
+        <Box variant="span" fontSize="body-s">
+          An estimate of how often these labels are right, inferred from the confidence scores of the run that produced them. It is not a
+          measurement against a known answer — a tier is earned from evidence on this set, never asserted.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="green">Gold</Badge> — at least 99%, measured on this set rather than extrapolated.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="blue">Silver</Badge> — at least 95%, with the confidence curve at least partly measured here.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="severity-neutral">Bronze</Badge> — below 95%, or still estimated from a cross-set prior. Review or score the set to
+          earn a higher tier.
+        </Box>
+        <Box variant="span" fontSize="body-s">
+          <Badge color="severity-neutral">Unrated</Badge> — confidence does not rank errors on this set, so no accuracy claim is defensible.
+          Reviewing only a subset would not be meaningful.
+        </Box>
+        <Box variant="span" fontSize="body-s" color="text-body-secondary">
+          A set whose labels you uploaded or authored by hand is the reference other runs are scored against, so a low figure here is a
+          statement about the confidence data behind the estimate, not about those labels. Where no estimate exists at all, the column says
+          so rather than implying one.
+        </Box>
+      </SpaceBetween>
+    }
+  >
+    <Box variant="span" fontSize="body-s" color="text-status-info">
+      Est. label accuracy <Icon name="status-info" size="small" />
+    </Box>
+  </Popover>
+);
+
+/**
+ * The accuracy cell, including the cases where there is no estimate to show.
+ *
+ * Separate from `renderQualityTier` because the honest answer depends on WHY the
+ * estimate is missing, and only the caller knows: a machine-drafted set with no
+ * curve yet is genuinely unassessed, whereas a set of human ground truth has
+ * nothing to assess. Rendering both as "-" inverted the trust signal — the
+ * authored set, which is the reference, looked worse than the draft that was
+ * being measured against it.
+ */
+export const renderLabelAccuracy = (
+  entry?: { tier?: string | null; reason?: string | null; accuracy?: number | null } | null,
+  labelState?: string | null,
+  isEstimating?: boolean,
+): React.JSX.Element => {
+  if (entry?.tier) return renderQualityTier(entry.tier, entry.reason, entry.accuracy);
+
+  // Estimates arrive one request per set, after the table has already rendered.
+  // Without this the column asserted a verdict for the second or two the calls
+  // were in flight, then replaced it with a percentage — caught on a live stack,
+  // where a 2000-document set flashed "Ground truth" before settling on
+  // "76.1% est. Bronze".
+  if (isEstimating) return <StatusIndicator type="loading">Estimating</StatusIndicator>;
+
+  if (labelState === 'labeled') {
+    return (
+      <Popover
+        dismissButton={false}
+        position="top"
+        size="medium"
+        triggerType="custom"
+        content={
+          <Box variant="span" fontSize="body-s">
+            No accuracy estimate was returned for this set. Its labels are the reference other runs are scored against, so the absence is
+            not a low rating — there is simply no confidence data here to infer a figure from.
+          </Box>
+        }
+      >
+        <Badge color="green">Ground truth</Badge>
+      </Popover>
+    );
+  }
+
+  return <Box color="text-status-inactive">Not assessed yet</Box>;
+};
+
+export const renderQualityTier = (
+  tier?: string | null,
+  reason?: string | null,
+  accuracy?: number | null,
+  /* Callers that know the estimate is unmeasured pass 0, so the tier's number does
+     not contradict a headline rounded for the same reason. Defaults to the existing
+     precision, leaving every current caller unchanged. */
+  decimals = 1,
+): React.JSX.Element => {
   if (!tier) return <Box color="text-status-inactive">-</Box>;
   const label = tier.charAt(0).toUpperCase() + tier.slice(1);
   const detail = (
@@ -132,12 +281,24 @@ export const renderQualityTier = (tier?: string | null, reason?: string | null, 
       <Box variant="span">{reason || ''}</Box>
     </SpaceBetween>
   );
+  // Unrated: one compact, clickable verdict. The reason is the whole content of
+  // that verdict and used to be printed inline beside a redundant "Unrated" badge,
+  // which made a status cell four lines tall on every unrated row of the Test Sets
+  // table. The dotted text trigger says there is more; one click shows it.
+  if (tier === 'unrated') {
+    return (
+      <Popover dismissButton={false} position="top" size="medium" triggerType="text" content={detail}>
+        <Box variant="span" color="text-body-secondary">
+          Not rated
+        </Box>
+      </Popover>
+    );
+  }
   return (
     <Popover dismissButton={false} position="top" size="medium" triggerType="custom" content={detail}>
       <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
-        {/* Unrated means no accuracy claim is defensible, so don't print one. */}
-        {accuracy !== null && accuracy !== undefined && tier !== 'unrated' ? (
-          <Box variant="span">{(accuracy * 100).toFixed(1)}% est.</Box>
+        {accuracy !== null && accuracy !== undefined ? (
+          <Box variant="span">{(accuracy * 100).toFixed(decimals)}% est.</Box>
         ) : (
           <Box variant="span" color="text-body-secondary">
             Not rated
@@ -176,7 +337,7 @@ export const renderAlertCount = (
   return (
     <Popover dismissButton={false} position="top" size="medium" triggerType="custom" content={detail}>
       <Box color={alertCount > 0 ? 'text-status-error' : 'text-status-success'} fontWeight={alertCount > 0 ? 'bold' : 'normal'}>
-        {alertCount === 0 ? `None of ${fieldCount ?? 0} fields` : `${alertCount} of ${fieldCount ?? 0} fields`}
+        {alertCount === 0 ? `None of ${fieldCount ?? 0} fields flagged` : `${alertCount} of ${fieldCount ?? 0} fields flagged`}
       </Box>
     </Popover>
   );
@@ -219,6 +380,8 @@ const TestSetDetail = (): React.JSX.Element => {
   const [pageTokens, setPageTokens] = useState<(string | null)[]>([null]);
   const [currentPageIndex, setCurrentPageIndex] = useState(1);
   const [hasMore, setHasMore] = useState(false);
+  // The set's size, from the server. The page length is not the total.
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
@@ -239,12 +402,25 @@ const TestSetDetail = (): React.JSX.Element => {
   const [isClearingDrafts, setIsClearingDrafts] = useState(false);
   const [clearedMessage, setClearedMessage] = useState<string | null>(null);
   const [worstFirst, setWorstFirst] = useState(true);
+  const [selectedItems, setSelectedItems] = useState<TestSetDocumentItem[]>([]);
+  const [showRemoveModal, setShowRemoveModal] = useState(false);
+  const [isRemoving, setIsRemoving] = useState(false);
+  const [removedMessage, setRemovedMessage] = useState<string | null>(null);
+  const [addDocsMode, setAddDocsMode] = useState<AddDocumentsMode | null>(null);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  /** Progress of an add in flight, from any of the three sources. */
+  const [arrivalNotice, setArrivalNotice] = useState<{ type: 'info' | 'success' | 'error'; text: string } | null>(null);
+  const arrivalTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { available: generatorAvailable, getJobStatus } = useSyntheticDataGenerator();
 
   const fetchPage = useCallback(
     async (pageIndex: number, tokens: (string | null)[]) => {
       if (!testSetId) return;
       setIsLoading(true);
       setError(null);
+      // Rows may be gone or renumbered after any refetch, so a selection made
+      // against the old page must not survive it.
+      setSelectedItems([]);
       try {
         const response = await client.graphql({
           query: getTestSetDocuments,
@@ -257,6 +433,7 @@ const TestSetDetail = (): React.JSX.Element => {
         const page = response.data?.getTestSetDocuments;
         setDocuments((page?.documents ?? []) as TestSetDocumentItem[]);
         setHasMore(Boolean(page?.nextToken));
+        setTotalCount(page?.totalCount ?? null);
         setPageTokens((prev) => {
           const next = [...prev];
           next[pageIndex] = page?.nextToken ?? null;
@@ -290,6 +467,95 @@ const TestSetDetail = (): React.JSX.Element => {
   const handlePageChange = (pageIndex: number) => {
     setCurrentPageIndex(pageIndex);
     fetchPage(pageIndex, pageTokens);
+  };
+
+  const stopArrivalWatch = () => {
+    if (arrivalTimer.current) {
+      clearInterval(arrivalTimer.current);
+      arrivalTimer.current = null;
+    }
+  };
+  useEffect(() => stopArrivalWatch, []);
+
+  /** After a bucket or zip add: re-read the set's size until it moves, then refetch. */
+  const watchForArrival = (message: string) => {
+    stopArrivalWatch();
+    setRemovedMessage(null);
+    const sizeBefore = totalCount;
+    const startedAt = Date.now();
+    setArrivalNotice({ type: 'info', text: message });
+    arrivalTimer.current = setInterval(async () => {
+      if (Date.now() - startedAt > ARRIVAL_WATCH_MS) {
+        stopArrivalWatch();
+        setArrivalNotice({ type: 'info', text: 'Still adding documents. Refresh in a moment to see them.' });
+        return;
+      }
+      try {
+        const response = await client.graphql({
+          query: getTestSetDocuments,
+          variables: { testSetId: testSetId ?? '', limit: 1 },
+        });
+        const size = response.data?.getTestSetDocuments?.totalCount ?? null;
+        if (size !== null && size !== sizeBefore) {
+          stopArrivalWatch();
+          setArrivalNotice({ type: 'success', text: `Documents are arriving — this set now has ${size} document(s).` });
+          setCurrentPageIndex(1);
+          fetchPage(1, [null]);
+        }
+      } catch (err) {
+        logger.debug('Arrival poll failed; will retry:', err);
+      }
+    }, ARRIVAL_POLL_MS);
+  };
+
+  /** After starting generation into this set: follow the job, then refetch. */
+  const watchGeneration = (jobId: string) => {
+    stopArrivalWatch();
+    setRemovedMessage(null);
+    setArrivalNotice({ type: 'info', text: 'Generating documents into this set. They appear here when the job completes.' });
+    arrivalTimer.current = setInterval(async () => {
+      const job = await getJobStatus(jobId);
+      if (!job) return;
+      if (job.status === 'COMPLETED') {
+        stopArrivalWatch();
+        setArrivalNotice({ type: 'success', text: 'Generation complete — the new documents are in this set.' });
+        setCurrentPageIndex(1);
+        fetchPage(1, [null]);
+      } else if (job.status === 'FAILED') {
+        stopArrivalWatch();
+        setArrivalNotice({ type: 'error', text: `Generation failed: ${job.errorMessage || 'unknown error'}` });
+      } else if (job.statusMessage) {
+        setArrivalNotice({ type: 'info', text: `Generating documents into this set: ${job.statusMessage}` });
+      }
+    }, GENERATION_POLL_MS);
+  };
+
+  const handleRemoveDocuments = async () => {
+    if (!testSetId || selectedItems.length === 0) return;
+    setIsRemoving(true);
+    setError(null);
+    // An arrival notice from an earlier add would otherwise sit beside the
+    // removal message, still announcing the documents that were just removed.
+    stopArrivalWatch();
+    setArrivalNotice(null);
+    try {
+      const response = await client.graphql({
+        query: removeDocumentsFromTestSet,
+        // objectKey is the name relative to input/, which is what the mutation
+        // deletes under; inputKey is the full object key.
+        variables: { testSetId, fileNames: selectedItems.map((d) => d.objectKey) },
+      });
+      setShowRemoveModal(false);
+      setRemovedMessage(response.data?.removeDocumentsFromTestSet?.lastAddResult ?? `Removed ${selectedItems.length} document(s).`);
+      setCurrentPageIndex(1);
+      fetchPage(1, [null]);
+    } catch (err) {
+      logger.error('Error removing documents:', err);
+      setShowRemoveModal(false);
+      setError(`Could not remove the documents: ${getErrorMessage(err)}`);
+    } finally {
+      setIsRemoving(false);
+    }
   };
 
   const handleResetLabels = async () => {
@@ -336,14 +602,14 @@ const TestSetDetail = (): React.JSX.Element => {
     }
   };
 
-  const handleGenerateDraftLabels = async (configVersion?: string, objectKeys?: string[]) => {
+  const handleGenerateDraftLabels = async (configVersion?: string, objectKeys?: string[], configRevision?: number) => {
     if (!testSetId) return;
     setIsStartingLabels(true);
     setError(null);
     try {
       const response = await client.graphql({
         query: generateDraftLabels,
-        variables: { input: { testSetId, configVersion, objectKeys } },
+        variables: { input: { testSetId, configVersion, objectKeys, configRevision } },
       });
       const job = response.data?.generateDraftLabels;
       if (job) {
@@ -477,6 +743,25 @@ const TestSetDetail = (): React.JSX.Element => {
               </Alert>
             )}
 
+            {removedMessage && (
+              <Alert type="success" dismissible onDismiss={() => setRemovedMessage(null)}>
+                {removedMessage}
+              </Alert>
+            )}
+
+            {arrivalNotice && (
+              <Alert
+                type={arrivalNotice.type}
+                dismissible
+                onDismiss={() => {
+                  stopArrivalWatch();
+                  setArrivalNotice(null);
+                }}
+              >
+                {arrivalNotice.text}
+              </Alert>
+            )}
+
             {labelJob && labelJob.status === 'COMPLETED' && (
               <Alert type="success" dismissible onDismiss={() => setLabelJob(null)}>
                 Draft labeling complete — {labelJob.labeled} document(s) labeled
@@ -488,7 +773,16 @@ const TestSetDetail = (): React.JSX.Element => {
             <Table
               header={
                 <Header
-                  counter={`(${filteredDocs.length})`}
+                  counter={
+                    // No count at all while the first page is loading: '(0)' reads
+                    // as "this set is empty", which is a statement we cannot make
+                    // yet and the one that most misleads.
+                    isLoading && filteredDocs.length === 0
+                      ? undefined
+                      : totalCount !== null && totalCount > filteredDocs.length
+                        ? `(${filteredDocs.length} of ${totalCount})`
+                        : `(${filteredDocs.length})`
+                  }
                   description={
                     hasConfidence
                       ? 'Confidence alerts are the fields below their configured threshold — review the documents with the most first.'
@@ -499,11 +793,32 @@ const TestSetDetail = (): React.JSX.Element => {
                       {hasConfidence && (
                         <Button onClick={() => setWorstFirst((prev) => !prev)}>{worstFirst ? 'Sort by name' : 'Sort worst-first'}</Button>
                       )}
+                      <ButtonDropdown
+                        items={[
+                          { id: 'add-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
+                          { id: 'add-upload', text: 'From a zip upload' },
+                          {
+                            id: 'add-generate',
+                            text: 'Generate synthetic documents',
+                            disabled: !generatorAvailable,
+                            disabledReason: 'Install the Test Set Generator extension to generate documents.',
+                          },
+                        ]}
+                        onItemClick={({ detail }) => {
+                          if (detail.id === 'add-pattern') setAddDocsMode('pattern');
+                          else if (detail.id === 'add-upload') setAddDocsMode('upload');
+                          else if (detail.id === 'add-generate') setShowGenerateModal(true);
+                        }}
+                        disabled={isLoading}
+                        expandToViewport
+                      >
+                        Add documents
+                      </ButtonDropdown>
                       <Button
                         iconName="gen-ai"
                         onClick={() => setShowLabelModal(true)}
                         loading={isStartingLabels}
-                        disabled={isLoading || labelJob?.status === 'RUNNING'}
+                        disabled={isLoading || labelJob?.status === 'RUNNING' || totalCount === 0}
                       >
                         Generate draft labels
                       </Button>
@@ -516,9 +831,33 @@ const TestSetDetail = (): React.JSX.Element => {
                       {/* Needed because the harvest only replaces a draft when the
                           new run produces a section for it: a run that splits
                           differently leaves orphan sections behind. */}
-                      <Button onClick={() => setShowClearDraftsModal(true)} disabled={isLoading || labelJob?.status === 'RUNNING'}>
+                      {/* The only action here that destroys work. It sat in the
+                          same row as Refresh and Annotate with identical styling,
+                          so nothing but the label distinguished it. */}
+                      <Button
+                        iconName="remove"
+                        onClick={() => setShowClearDraftsModal(true)}
+                        disabled={isLoading || labelJob?.status === 'RUNNING'}
+                      >
                         Clear draft labels
                       </Button>
+                      <span
+                        title={
+                          selectedItems.length === 0
+                            ? 'Select documents to remove'
+                            : labelJob?.status === 'RUNNING'
+                              ? 'Wait for draft labeling to finish'
+                              : undefined
+                        }
+                      >
+                        <Button
+                          iconName="remove"
+                          onClick={() => setShowRemoveModal(true)}
+                          disabled={selectedItems.length === 0 || isLoading || labelJob?.status === 'RUNNING'}
+                        >
+                          Remove
+                        </Button>
+                      </span>
                       <Button iconName="refresh" onClick={() => fetchPage(currentPageIndex, pageTokens)} disabled={isLoading}>
                         Refresh
                       </Button>
@@ -597,6 +936,14 @@ const TestSetDetail = (): React.JSX.Element => {
                 },
               ]}
               items={visibleDocs}
+              selectionType="multi"
+              selectedItems={selectedItems}
+              onSelectionChange={({ detail }) => setSelectedItems(detail.selectedItems)}
+              ariaLabels={{
+                selectionGroupLabel: 'Document selection',
+                allItemsSelectionLabel: () => 'Select all documents on this page',
+                itemSelectionLabel: (_data, item) => `Select ${item.objectKey}`,
+              }}
               loading={isLoading}
               loadingText="Loading documents"
               trackBy="inputKey"
@@ -619,20 +966,53 @@ const TestSetDetail = (): React.JSX.Element => {
                 <Box textAlign="center" color="inherit">
                   <b>No documents</b>
                   <Box variant="p" color="inherit">
-                    This test set has no documents{filterText ? ' matching the filter' : ''}.
+                    {filterText
+                      ? 'This test set has no documents matching the filter.'
+                      : 'This test set has no documents. Use Add documents to bring some in: files in a bucket, a zip upload, or generated documents.'}
                   </Box>
                 </Box>
               }
             />
 
             <GenerateDraftLabelsModal
+              setTotalCount={totalCount}
               visible={showLabelModal}
               testSetId={testSetId ?? ''}
-              documents={documents}
               submitting={isStartingLabels}
               onDismiss={() => setShowLabelModal(false)}
               onSubmit={handleGenerateDraftLabels}
             />
+
+            <RemoveDocumentsModal
+              visible={showRemoveModal}
+              documents={selectedItems}
+              remaining={Math.max(0, (totalCount ?? filteredDocs.length) - selectedItems.length)}
+              submitting={isRemoving}
+              onDismiss={() => setShowRemoveModal(false)}
+              onConfirm={handleRemoveDocuments}
+            />
+
+            <AddDocumentsModals
+              testSet={testSetId ? { id: testSetId, name: testSetId } : null}
+              mode={addDocsMode}
+              onDismiss={() => setAddDocsMode(null)}
+              onSubmitted={({ message }) => {
+                setAddDocsMode(null);
+                watchForArrival(`${message} This list refreshes when they arrive.`);
+              }}
+            />
+
+            {generatorAvailable && testSetId && (
+              <GenerateSyntheticDataModal
+                visible={showGenerateModal}
+                initialDestination={{ testSetId, label: testSetId }}
+                onDismiss={() => setShowGenerateModal(false)}
+                onStarted={(startedJobId) => {
+                  setShowGenerateModal(false);
+                  watchGeneration(startedJobId);
+                }}
+              />
+            )}
 
             <ReviewEffortModal
               visible={showEffortModal}
@@ -654,8 +1034,10 @@ const TestSetDetail = (): React.JSX.Element => {
                     <Button variant="link" onClick={() => setShowClearDraftsModal(false)}>
                       Cancel
                     </Button>
-                    <Button variant="primary" onClick={handleClearDraftLabels} loading={isClearingDrafts}>
-                      Clear draft labels
+                    {/* Names what will be deleted, so the confirm button is not
+                        interchangeable with every other primary in the app. */}
+                    <Button variant="primary" iconName="remove" onClick={handleClearDraftLabels} loading={isClearingDrafts}>
+                      Delete draft labels
                     </Button>
                   </SpaceBetween>
                 </Box>

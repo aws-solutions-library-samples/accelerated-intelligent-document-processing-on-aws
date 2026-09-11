@@ -1,3 +1,3 @@
-mutation ReprocessDocument($objectKeys: [String!]!, $version: String) {
-  reprocessDocument(objectKeys: $objectKeys, version: $version)
+mutation ReprocessDocument($objectKeys: [String!]!, $version: String, $revision: Int) {
+  reprocessDocument(objectKeys: $objectKeys, version: $version, revision: $revision)
 }

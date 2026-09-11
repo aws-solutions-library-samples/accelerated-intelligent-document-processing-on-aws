@@ -1,0 +1,16 @@
+cell,doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,mean_confidence,pct_conf_below_0.9,calibration_separation,wall_s,cost
+split-llm-legacyprompt,paginated_3pg.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,0.9983,0.0,,65.214413,0.1434
+split-llm-legacyprompt,paginated_3pg.pdf,1,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,0.9982,0.0,,63.553593,0.1428
+split-llm-legacyprompt,paginated_3pg.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,0.9974,0.0,,123.914245,0.1499
+split-llm-legacyprompt,paginated_3pg.pdf,3,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,0.9982,0.0,,63.375673,0.1428
+split-llm-legacyprompt,paginated_3pg.pdf,4,COMPLETED,True,3.0,1.0,100,1.0,,,1.0,,,0.9984,0.0,,63.850802,0.1429
+split-llm-legacyprompt,twodocs_2x20.pdf,0,COMPLETED,True,2.0,1.0,40,1.0,,,1.0,,,0.9997,0.0,,28.161418,0.0789
+split-llm-legacyprompt,twodocs_2x20.pdf,1,COMPLETED,True,2.0,1.0,40,1.0,,,1.0,,,0.9997,0.0,,30.885247,0.0791
+split-llm-legacyprompt,twodocs_2x20.pdf,2,COMPLETED,True,2.0,1.0,40,1.0,,,1.0,,,0.9997,0.0,,31.879043,0.0791
+split-llm-legacyprompt,twodocs_2x20.pdf,3,COMPLETED,True,2.0,1.0,40,1.0,,,1.0,,,0.9997,0.0,,29.981272,0.0789
+split-llm-legacyprompt,twodocs_2x20.pdf,4,COMPLETED,True,2.0,1.0,40,1.0,,,1.0,,,0.9997,0.0,,29.701945,0.079
+split-llm-legacyprompt,small_narrow.pdf,0,COMPLETED,True,3.0,1.0,100,1.0,,,0.0,,,0.973,2.2,,115.22638,0.153
+split-llm-legacyprompt,small_narrow.pdf,1,COMPLETED,True,3.0,1.0,100,0.5,,,0.0,,,0.9737,2.8,,49.724525,0.1476
+split-llm-legacyprompt,small_narrow.pdf,2,COMPLETED,True,3.0,1.0,100,1.0,,,0.0,,,0.9729,2.2,,121.742,0.1529
+split-llm-legacyprompt,small_narrow.pdf,3,COMPLETED,True,3.0,1.0,100,0.5,,,0.0,,,0.9743,2.8,,48.368581,0.1478
+split-llm-legacyprompt,small_narrow.pdf,4,COMPLETED,True,3.0,1.0,100,1.0,,,0.0,,,0.9721,2.2,,132.022337,0.1536

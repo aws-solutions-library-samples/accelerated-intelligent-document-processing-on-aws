@@ -155,6 +155,28 @@ _CAPABILITY_DEFAULTS = [
             "max_output_tokens": None,
         },
     ),
+    # GPT-6 Astra is NOT on the Responses API like the GPT-5.x entry above — it is
+    # an ordinary Converse model (see idp_common/bedrock/client.py). It must be
+    # listed explicitly because it matches none of the substrings here and would
+    # otherwise land on _CAPABILITY_FALLBACK, whose `sampling: True` sends
+    # `temperature` to a model that rejects it with a 400 — failing every step.
+    #
+    # `thinking: None` is a deliberate limitation, not an oversight: Astra carries
+    # effort in `additionalModelRequestFields.reasoning.effort`, and the Converse
+    # branch of _apply_thinking only implements Claude's `enabled_budget` and
+    # `adaptive_effort` styles. Sending no effort is safe (Astra's reasoning is
+    # always on and defaults sensibly); wiring the carrier needs a new style here.
+    # xAI Grok has the identical gap for the identical reason.
+    (
+        "openai.gpt-6-astra",
+        {
+            "api": "converse",
+            "sampling": False,
+            "thinking": None,
+            "efforts": [],
+            "max_output_tokens": 128000,
+        },
+    ),
     (
         "nova",
         {

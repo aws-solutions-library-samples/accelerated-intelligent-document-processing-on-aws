@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from idp_common.config import schema_constants as sc
+from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.synthesis import catalog as catalog_mod
 from idp_common.synthesis import packet_io, schema_author, schema_bridge
 
@@ -114,6 +115,12 @@ def merge_class_into_version(
         if cid:
             by_id[cid] = cls
     if new_id:
+        # Same rule as the discovery and BDA-optimizer write paths: the LLM
+        # authored `properties`, not the class-level settings someone configured
+        # on an existing class of this id, and replacing the dict wholesale
+        # erased them silently (#764).
+        if new_id in by_id:
+            carry_forward_authored_settings(by_id[new_id], schema)
         by_id[new_id] = schema
     existing["classes"] = list(by_id.values())
     config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)

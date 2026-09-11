@@ -5,6 +5,52 @@ SPDX-License-Identifier: MIT-0
 
 The Schema module provides utilities for dynamically generating Pydantic v2 models from JSON Schema definitions. This enables structured extraction where LLM responses are validated against user-defined schemas.
 
+## Two submodules
+
+| Module | Depends on | Purpose |
+|---|---|---|
+| `pydantic_generator.py` | `datamodel-code-generator` (extraction extra) | generate a Pydantic v2 model from a JSON Schema at runtime |
+| `multi_instance.py` | **nothing** (stdlib + `config.schema_constants`) | the `x-aws-idp-multi-instance` schema transform (GitHub #715) |
+
+> ⚠️ **This package's re-exports are LAZY** (PEP 562 `__getattr__` in
+> `__init__.py`), and must stay that way. `pydantic_generator` imports
+> `datamodel_code_generator`, which is an extraction-only dependency absent from
+> most Lambda layers — so an eager re-export made
+> `from idp_common.schema.multi_instance import …` drag the whole code generator in
+> with it, and `config/models.py` (imported by *every* Lambda) needs that helper.
+> The result was `UpdateDefaultConfig` failing a live stack update with
+> `No module named 'datamodel_code_generator'`. Pinned by
+> `tests/unit/schema/test_lazy_package_imports.py`; add any new dependency-free
+> submodule the same way.
+
+## `multi_instance.py` — Synthesize mode (#715)
+
+A class flagged `x-aws-idp-multi-instance: true` has its **effective** schema
+replaced by a List-of-Class wrapper, so a section holding several documents of the
+class extracts every one of them. Pure, idempotent, never mutates its input:
+
+```python
+is_multi_instance(class_schema) -> bool     # tolerates "true" from a config round-trip
+is_wrapped(class_schema) -> bool
+wrap_class_schema(class_schema) -> dict     # no-op (same object) when unflagged
+unwrap_instances(inference_result) -> list[dict] | None
+wrap_instances(records) -> dict
+```
+
+Every stage derives the wrapper independently from **config** (the source of
+truth), at the single point it loads a class schema. Do not persist the wrapped
+schema. Full rationale — why a transform rather than an envelope, where each
+class-level key lands, the `$defs` hoist, and the two empirical gotchas — is in
+[`../extraction/README.md`](../extraction/README.md#synthesize-mode-x-aws-idp-multi-instance-715).
+
+`_ensure_model_covers_schema` in `pydantic_generator.py` is the guard that keeps
+model selection honest for a wrapper: the selected model must declare the schema's
+top-level properties, or the inner `items` model is chosen and ONE record is
+silently validated where a list was requested. ⚠️ It now **raises** when no
+generated model covers them — fail-loud, but a behaviour change: two property
+names that sanitize to the same Python identifier go from "silently validated with
+a merged field" to a hard section failure.
+
 ## Overview
 
 The module uses `datamodel-code-generator` to convert JSON Schema into Pydantic models at runtime. It handles:
@@ -12,6 +58,20 @@ The module uses `datamodel-code-generator` to convert JSON Schema into Pydantic 
 - Generating Pydantic v2 `BaseModel` classes from JSON Schema
 - Optional JSON Schema validation for advanced constraints (`contains`, `if/then/else`, `dependentSchemas`, etc.)
 - Circular reference detection
+- **Description parity with the class schema** (#836). The generator runs with
+  `use_schema_description=True`, so every object's `description` — the class's root
+  description and each reachable `$defs` group — becomes the generated class's
+  docstring, which Pydantic emits as that object's `description` in
+  `model_json_schema()`. The two wrapper subclasses (`create_model(...)` and the
+  validation subclass) copy `__doc__` for the same reason. That JSON schema is the
+  `inputSchema` of the extraction tool the Advanced (agentic) agent sees, so a class
+  author's descriptions reach the model even when the prose copy of the schema in the
+  task prompt is reduced. `tests/unit/schema/test_description_parity.py` asserts
+  parity for every class in every shipped preset (unreferenced `$defs` excluded —
+  nothing can reach them in the class schema either). One known remaining gap: a
+  `description` on the *items* of a scalar array (`items: {type: string,
+  description: ...}`) has no home in `list[str]` and is dropped; the array field's own
+  description survives.
 
 ## Public API
 
@@ -21,6 +81,7 @@ The module uses `datamodel-code-generator` to convert JSON Schema into Pydantic 
 |----------|-------------|
 | `create_pydantic_model_from_json_schema(schema, class_label, ...)` | Main entry point — generates a Pydantic model from a JSON Schema dict |
 | `clean_schema_for_generation(schema, fields_to_remove=None)` | Recursively removes custom extension fields from a JSON Schema |
+| `nullable_leaves_for_transport(schema)` | Copy of a schema with every scalar leaf widened to `[<type>, "null"]`, `required` kept. Used for the model handed to the extraction agent so it can abstain on an unreadable **cell** (`null`) while an omitted key, a nulled list or a misspelled key set still fails (#782) |
 
 ### Exceptions
 

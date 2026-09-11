@@ -31,6 +31,8 @@ import useUserRole from '../../hooks/use-user-role';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { getDocumentConfidenceAlertCount } from '../common/confidence-alerts-utils';
+import { describePromptCache, summarizeCacheUsage } from '../common/promptCacheModel';
+import type { PromptCacheDescription } from '../common/promptCacheModel';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import StepFunctionFlowViewer from '../step-function-flow/StepFunctionFlowViewer';
 import TroubleshootModal from './TroubleshootModal';
@@ -39,7 +41,8 @@ import type { DocumentVersionDetail } from './DocumentVersionsPanel';
 import { DocumentVersionProvider } from '../../contexts/document-version';
 import { claimReview } from '../../graphql/generated';
 import usePolling from '../../hooks/use-polling';
-import { exportDocument, triggerBrowserDownload } from './document-export';
+import useClassificationComparison from '../../hooks/use-classification-comparison';
+import { exportDocument, isBaselineAvailable, triggerBrowserDownload } from './document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
 // Uncomment the line below to enable debugging
@@ -83,6 +86,8 @@ interface MeteringRowItem {
   isTotal: boolean;
   isSubtotal: boolean;
   note?: string;
+  // Per-phase prompt-cache verdict, shown on the phase's subtotal row (#780).
+  cacheNote?: PromptCacheDescription;
 }
 
 interface PricingUnit {
@@ -348,8 +353,11 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     // Add all items for this context
     tableItems.push(...contextGroups[context]);
 
-    // Add subtotal row for this context
+    // Add subtotal row for this context, carrying the phase's prompt-cache
+    // verdict: the cache units are priced above, but a row of numbers does not
+    // say whether the cache point did anything (#780).
     const contextTotal = contextTotals[context] || 0;
+    const cacheSummary = context ? summarizeCacheUsage(meteringData as Record<string, unknown>, context, { exact: true }) : null;
     tableItems.push({
       context: '',
       serviceApi: '',
@@ -361,6 +369,10 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
       isTotal: false,
       isSubtotal: true,
       note: `${context} Subtotal`,
+      cacheNote:
+        cacheSummary && cacheSummary.state !== 'no-cache-data'
+          ? describePromptCache(cacheSummary, { phaseOnly: true, context })
+          : undefined,
     });
   });
 
@@ -392,7 +404,17 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
         {
           id: 'serviceApi',
           header: 'Service/Api',
-          cell: (rowItem: MeteringRowItem) => rowItem.serviceApi,
+          cell: (rowItem: MeteringRowItem) =>
+            rowItem.cacheNote ? (
+              <Box fontSize="body-s">
+                <StatusIndicator type={rowItem.cacheNote.indicator}>{rowItem.cacheNote.headline}</StatusIndicator>
+                <Box fontSize="body-s" color="text-body-secondary">
+                  {rowItem.cacheNote.detail}
+                </Box>
+              </Box>
+            ) : (
+              rowItem.serviceApi
+            ),
         },
         {
           id: 'unit',
@@ -558,7 +580,7 @@ const DocumentAttributes = ({ item, versions }: DocumentAttributesProps): React.
         <SpaceBetween size="xs">
           <div>
             <Box margin={{ bottom: 'xxxs' }} color="text-label">
-              <strong>Config Version</strong>
+              <strong>Config Profile</strong>
             </Box>
             <div>{formatConfigVersionLink(item.configVersion, versions)}</div>
           </div>
@@ -740,7 +762,7 @@ export const DocumentPanel = ({
 
   // Fetch active configuration for dynamic confidence threshold (used by sections panel, etc.)
   const { mergedConfig } = useConfiguration();
-  // Fetch the specific config version that was used to process this document (for flow viewer).
+  // Fetch the specific configuration profile that was used to process this document (for flow viewer).
   // Optimization: skip the extra API call when the document version is 'default' or unset,
   // since useConfiguration() above already fetches the default config.
   const docConfigVersion = localItem?.configVersion || 'default';
@@ -794,7 +816,7 @@ export const DocumentPanel = ({
   };
 
   // Baseline option is only useful if the document has evaluation data
-  const isBaselineAvailableForDoc = localItem?.evaluationStatus === 'BASELINE_AVAILABLE' || localItem?.evaluationStatus === 'COMPLETED';
+  const isBaselineAvailableForDoc = isBaselineAvailable(localItem);
 
   // Kick off a document export for the given scope. Scope 'all' routes through the
   // options modal so the user can opt into page images; other scopes start immediately.
@@ -892,6 +914,12 @@ export const DocumentPanel = ({
       metering: parsedMetering,
     } as typeof localItem;
   }, [viewingRunId, versionDetail, localItem]);
+
+  // Ground-truth-vs-predicted classification, loaded once here and shared by
+  // the Sections and Pages tables so each annotates its Class/Type values from
+  // one request. Empty for a document with no evaluation, in which case neither
+  // table shows anything new.
+  const classificationIndex = useClassificationComparison(displayedItem.evaluationReportUri);
 
   // Create enhanced item with configuration. Use the doc's own version
   // config so the header Confidence Alerts badge reads the threshold the
@@ -1005,7 +1033,7 @@ export const DocumentPanel = ({
             sections: displayedItem.sections,
             pages: displayedItem.pages,
             documentItem: displayedItem,
-            // Use the config version the document was processed with, not the
+            // Use the configuration profile the document was processed with, not the
             // stack's current live config. This drives the Edit Mode class
             // dropdown (so users see the classes the doc was actually
             // classified against) and section confidence-alert thresholds.
@@ -1015,13 +1043,14 @@ export const DocumentPanel = ({
             // Editing is disabled for a historical snapshot; the panels also
             // gate their own edit affordances via useDocumentVersion().isHistorical.
             onDocumentUpdate: viewingRunId ? undefined : setLocalItem,
+            classificationIndex,
           } as Record<string, unknown>)}
         />
-        <PagesPanel {...({ pages: displayedItem.pages, documentItem: displayedItem } as Record<string, unknown>)} />
+        <PagesPanel {...({ pages: displayedItem.pages, documentItem: displayedItem, classificationIndex } as Record<string, unknown>)} />
         <DocumentVersionsPanel objectKey={localItem.objectKey} viewingRunId={viewingRunId} onViewVersion={handleViewVersion} />
         <ChatPanel objectKey={localItem.objectKey} configVersion={docConfigVersion} />
 
-        {/* Step Function Flow Viewer - uses the document's config version, not the active stack config */}
+        {/* Step Function Flow Viewer - uses the document's configuration profile, not the active stack config */}
         {localItem?.executionArn && (
           <StepFunctionFlowViewer
             executionArn={localItem.executionArn}

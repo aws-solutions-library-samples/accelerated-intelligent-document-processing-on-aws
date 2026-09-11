@@ -215,7 +215,7 @@ const CapacityPlanningLayout = () => {
       if (activeVersion) {
         const activeVersionOption = versionOptions.find((option) => option.value === activeVersion.versionName);
         if (activeVersionOption) {
-          console.log('Setting selected config version to active:', activeVersionOption.value);
+          console.log('Setting selected configuration profile to active:', activeVersionOption.value);
           setSelectedConfigVersion(activeVersionOption);
           return;
         }
@@ -1271,7 +1271,7 @@ const CapacityPlanningLayout = () => {
     setHasCalculated(false);
     try {
       // Fetch the latest configuration before calculating
-      // IMPORTANT: Use the selected config version, not 'default'
+      // IMPORTANT: Use the selected configuration profile, not 'default'
       if (selectedConfigVersion) {
         await fetchConfiguration(selectedConfigVersion.value, true);
       }
@@ -1920,9 +1920,9 @@ const CapacityPlanningLayout = () => {
     csvContent += `Export Date:,${new Date().toISOString()}\n`;
     csvContent += `Pattern:,${getDeployedPattern().toUpperCase()}\n`;
 
-    // Configuration version information
+    // Configuration profile information
     const currentVersion = versions.find((v) => v.versionName === selectedConfigVersion?.value);
-    csvContent += `Configuration Version:,${selectedConfigVersion?.value || 'Not selected'}\n`;
+    csvContent += `Configuration Profile:,${selectedConfigVersion?.value || 'Not selected'}\n`;
     if (currentVersion?.description) {
       csvContent += `Version Description:,"${currentVersion.description}"\n`;
     }
@@ -2046,14 +2046,14 @@ const CapacityPlanningLayout = () => {
           variant="h1"
           actions={
             <SpaceBetween direction="horizontal" size="s">
-              <FormField label="Configuration Version">
+              <FormField label="Configuration Profile">
                 <Select
                   selectedOption={selectedConfigVersion}
                   onChange={({ detail }) => setSelectedConfigVersion(detail.selectedOption as SelectOption)}
                   options={getVersionOptions()}
-                  placeholder={versions.length === 0 ? 'Loading versions...' : 'Select config version'}
+                  placeholder={versions.length === 0 ? 'Loading profiles...' : 'Select configuration profile'}
                   disabled={versions.length === 0}
-                  loadingText="Loading versions..."
+                  loadingText="Loading profiles..."
                 />
               </FormField>
               <Button variant="primary" iconName="download" onClick={exportCapacityPlan}>
@@ -2068,11 +2068,11 @@ const CapacityPlanningLayout = () => {
         {/* Configuration Status Alert */}
         {configuration && (
           <Alert type="success">
-            <strong>✓</strong> Using configuration version: <Badge color="green">{selectedConfigVersion?.value || 'default'}</Badge>
+            <strong>✓</strong> Using configuration profile: <Badge color="green">{selectedConfigVersion?.value || 'default'}</Badge>
             {selectedConfigVersion?.label?.includes('Active') && <Badge color="blue">Active</Badge>}
             <Box margin={{ top: 'xs' }}>
               Token calculations and processing times are loaded from your pattern configuration. Update models in{' '}
-              <strong>View/Edit Configuration</strong> to see changes reflected immediately, or select a different configuration version
+              <strong>View/Edit Configuration</strong> to see changes reflected immediately, or select a different configuration profile
               above.
             </Box>
           </Alert>
@@ -2735,7 +2735,7 @@ const CapacityPlanningLayout = () => {
           loading={loading}
           disabled={!selectedConfigVersion || !configuration}
         >
-          {!selectedConfigVersion ? 'Loading configuration version...' : 'Calculate Capacity Requirements'}
+          {!selectedConfigVersion ? 'Loading configuration profile...' : 'Calculate Capacity Requirements'}
         </Button>
 
         {results?.success === false && results?.metrics && (

@@ -157,7 +157,7 @@ def _post_json(url: str, body: Dict[str, Any]) -> Dict[str, Any]:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 — admin API is trusted-env
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 — admin API is trusted-env  # nosec B310 - SIMULATOR_ADMIN_ENDPOINT is a deployment-set env var, not user input
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500] if exc.fp else ""

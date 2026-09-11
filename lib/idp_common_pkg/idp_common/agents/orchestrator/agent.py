@@ -16,6 +16,7 @@ import boto3
 import strands
 from strands import tool
 
+from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .config import get_chat_companion_model_id
 
@@ -63,7 +64,29 @@ def create_orchestrator_agent(
                     # This prevents connection pool conflicts between concurrent sub-agents
                     sub_session = boto3.Session()
 
-                    sub_kwargs = {k: v for k, v in kwargs.items() if k != "session_id"}
+                    # Strip `hooks` and `session_id` — subagents don't
+                    # inherit the orchestrator's hooks. The motivating case
+                    # is the `DynamoDBMemoryHookProvider`: if forwarded, every
+                    # subagent Bedrock invocation would write its internal tool
+                    # chatter to the SAME session_id row that persists the
+                    # top-level user↔assistant turns, contaminating the
+                    # conversation history the orchestrator loads next turn.
+                    # This filter is intentionally BROAD (drops any hook the
+                    # caller passed) rather than narrow (only drop memory hooks)
+                    # because (a) the ControlPlaneCostHook that subagents want
+                    # lives in their own creator functions, not caller kwargs, and (b)
+                    # inspecting hook types to decide would couple the
+                    # orchestrator to specific hook classes. If a future caller
+                    # legitimately wants a hook on both orchestrator AND
+                    # subagents, it must register it in both places explicitly.
+                    # Subagent tool results still flow into the orchestrator's
+                    # message list as `tool_result` content blocks — that's the
+                    # intended memory path across the boundary.
+                    sub_kwargs = {
+                        k: v
+                        for k, v in kwargs.items()
+                        if k not in ("session_id", "hooks")
+                    }
                     specialized_agent = agent_factory.create_agent(
                         agent_id=aid,
                         config=config,
@@ -323,14 +346,14 @@ Example:
         boto_session=session,
     )
 
-    # Get hooks from kwargs if provided
-    hooks = kwargs.get("hooks", [])
-
+    # Append control-plane cost hook to caller-supplied hooks so the
+    # orchestrator's own routing/decision Bedrock calls land in
+    # control_plane_hourly under component="chat-orchestrator".
     orchestrator = strands.Agent(
         system_prompt=system_prompt,
         model=model,
         tools=tools,
-        hooks=hooks,  # Pass hooks during agent creation
+        hooks=with_cost_hook(kwargs.get("hooks"), "chat-orchestrator", model_id),
         callback_handler=None,
     )
 

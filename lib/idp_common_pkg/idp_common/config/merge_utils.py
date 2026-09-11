@@ -446,9 +446,9 @@ def merge_config_with_defaults(
     """
     # Migrate the user config to the current format BEFORE merging (see docstring).
     if migrate:
-        from idp_common.config.migrations.v05_to_v06 import migrate_v05_to_v06
+        from idp_common.config.migrations import migrate_config
 
-        user_config = migrate_v05_to_v06(deepcopy(user_config))
+        user_config = migrate_config(deepcopy(user_config))
 
     # Load system defaults
     defaults = load_system_defaults(pattern)
@@ -633,6 +633,8 @@ def validate_config(
     _validate_task_prompt_placeholders(merged, result)
     _validate_schema_fields(config.get("classes", []), result)
     _validate_agentic_openai(merged, result)
+    _validate_simple_integrated_lists(merged, result)
+    _validate_prompt_cache_prefix(merged, result)
     _validate_discovery_openai(merged, result)
 
     return result
@@ -718,11 +720,29 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
     A model may be named by ARN rather than by bare model ID — GovCloud
     requires an account-scoped inference-profile ARN, and provisioned-throughput
     or application-inference-profile deployments are ARN-only everywhere. ARNs
-    are reduced to the model ID they name before the catalog lookup. An ARN that
-    still does not match (an opaque application-inference-profile UUID, say)
-    yields a warning rather than an error: its underlying model cannot be
-    determined without a Bedrock API call, so it is unverifiable, not wrong.
-    A bare model ID that does not match remains an error — that is a typo.
+    are reduced to the model ID they name before the catalog lookup.
+
+    Three outcomes for a value that doesn't match the catalog:
+
+    - **Bare model ID → error.** That's a typo; nothing else it could be.
+    - **ARN whose resolved resource has model-ID *shape*** (contains a ``.``
+      and isn't a UUID) **→ error.** It looks like a model ID and still doesn't
+      match, so the likely cause is a typo in the ARN's resource-id, partition
+      or account. It is also, by construction, a model with no
+      ``config_library/pricing.yaml`` entry — so cost reporting would be broken
+      for it regardless. To use a model newer than this release, add it to
+      ``config_library/pricing.yaml`` (see ``.claude/skills/add-model.md``,
+      which requires that entry anyway).
+    - **ARN whose resolved resource is opaque** (an application-inference-profile
+      UUID, a provisioned-model name — no ``.``, or UUID-shaped) **→ warning.**
+      Its underlying model can't be determined without a Bedrock API call, so
+      it's unverifiable, not wrong.
+
+    Note this whole function is a no-op when ``config_library/pricing.yaml``
+    isn't on disk: ``_load_valid_bedrock_models`` returns an empty set and we
+    return early. So the strict paths above only fire from a repository
+    checkout — the CLI/SDK run from source, and CI — not from a
+    pip-installed ``idp_common`` in a Lambda.
     """
     valid_models = _load_valid_bedrock_models()
     if not valid_models:
@@ -745,14 +765,40 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         if not model_id:
             continue
 
-        if resolve_model_id_from_arn(model_id) in valid_models:
+        resolved = resolve_model_id_from_arn(model_id)
+        if resolved in valid_models:
             continue
 
         if model_id.startswith("arn:"):
+            # Distinguish an unverifiable opaque resource (a legitimate
+            # application-inference-profile UUID / provisioned-throughput ARN
+            # whose underlying model can only be known via a Bedrock API call)
+            # from a probably-typo'd ARN whose resource DOES look like a
+            # model ID but doesn't match anything in valid_models. Round-7
+            # review fix; round-9 cleanup: dropped dead
+            # ``resolved.startswith("application-inference-profile/")`` and
+            # ``"provisioned-model/"`` guards — ``resolve_model_id_from_arn``
+            # strips those type prefixes, so ``resolved`` never carries
+            # them. UUIDs (which lack dots) fall through to the warning
+            # path naturally via the ``"." in resolved`` check.
+            _looks_like_model_id_shape = "." in resolved and not _looks_like_uuid(
+                resolved
+            )
+            if _looks_like_model_id_shape:
+                # The ARN resolved to a string that looks like a model ID
+                # (has family.name shape) but doesn't match — treat as a typo.
+                result["valid"] = False
+                result["errors"].append(
+                    f"{section}.{field_name} names a Bedrock ARN whose resolved "
+                    f"model ID ({resolved!r}) is not a known Bedrock model. This is "
+                    f"most likely a typo in the ARN's resource-id, partition, or "
+                    f"account. Full ARN: {model_id}"
+                )
+                continue
             result["warnings"].append(
-                f"{section}.{field_name} names a Bedrock ARN that does not resolve to a "
-                f"known model ID: {model_id}. Cost reporting needs a matching entry in "
-                f"the pricing configuration (config_library/pricing.yaml)."
+                f"{section}.{field_name} names a Bedrock ARN whose underlying "
+                f"model can't be determined offline: {model_id}. Cost reporting "
+                f"needs a matching entry in config_library/pricing.yaml."
             )
             continue
 
@@ -762,6 +808,20 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
             f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
             f"Check config_library/pricing.yaml for valid model IDs."
         )
+
+
+def _looks_like_uuid(value: str) -> bool:
+    """Heuristic — reject values that look like a UUID (opaque application
+    inference profile IDs) from being treated as typo'd model IDs."""
+    import re
+
+    return bool(
+        re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            value,
+            re.I,
+        )
+    )
 
 
 def _validate_agentic_openai(
@@ -774,6 +834,11 @@ def _validate_agentic_openai(
     extraction path. This is a hard validation error (rather than a silent
     runtime fallback) so the misconfiguration surfaces at config time instead
     of failing obscurely mid-processing.
+
+    NOTE this gate is about the ROUTE, not the vendor: ``openai.gpt-6-astra``
+    reaches Converse and emits ``toolUse``, so it is allowed for agentic
+    extraction. The predicate is ``is_openai_responses_model`` precisely so it
+    tracks the mantle route rather than the "openai." prefix.
     """
     from idp_common.bedrock.openai_responses import is_openai_responses_model
     from idp_common.config.schema_constants import X_AWS_IDP_EXTRACTION_MODEL
@@ -782,6 +847,10 @@ def _validate_agentic_openai(
     if not isinstance(extraction, dict):
         return
 
+    # NOTE: reads the raw merged dict, where `agentic.enabled` may disagree with
+    # `mode` (reconcile_mode_and_agentic makes `mode` authoritative in IDPConfig).
+    # Behaviour deliberately unchanged here; see _extraction_is_simple for the
+    # mode-first rule.
     agentic_enabled = bool(extraction.get("agentic", {}).get("enabled"))
     if not agentic_enabled:
         return
@@ -793,7 +862,8 @@ def _validate_agentic_openai(
         result["errors"].append(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
             "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
-            "Set agentic.enabled=false or choose a non-OpenAI model."
+            "Set agentic.enabled=false or choose a Converse model — Claude, Nova, "
+            "xAI Grok, or OpenAI GPT-6 Astra all support agentic extraction."
         )
 
     # Per-class extraction model overrides
@@ -808,22 +878,23 @@ def _validate_agentic_openai(
                 f"Class '{class_name}' overrides extraction with OpenAI Responses "
                 f"model '{override}', which is NOT compatible with agentic extraction "
                 "(extraction.agentic.enabled=true). Set agentic.enabled=false or "
-                "choose a non-OpenAI model for this class."
+                "choose a Converse model for this class — Claude, Nova, xAI Grok, or "
+                "OpenAI GPT-6 Astra all support agentic extraction."
             )
 
 
 def _validate_discovery_openai(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
-    """Error when an OpenAI GPT-5.x model is configured for discovery.
+    """Error when a model that can't take ``document`` blocks is set for discovery.
 
-    Discovery ingests whole PDFs via Converse ``document`` content blocks, which
-    the OpenAI Responses API (bedrock-mantle) does not support (text + image
-    only). Routing GPT-5.x here would silently drop the document, so reject it
-    at config time. (These models are also not offered in the discovery
-    picklists.)
+    Discovery ingests whole PDFs via Converse ``document`` content blocks. Three
+    families accept text + image only — OpenAI GPT-5.x (bedrock-mantle Responses
+    API), xAI Grok and OpenAI GPT-6 Astra (both reject the block outright on
+    Converse) — so routing any of them here would silently drop the document.
+    Reject at config time. (None are offered in the discovery picklists.)
     """
-    from idp_common.bedrock.openai_responses import is_openai_responses_model
+    from idp_common.bedrock.client import document_blocks_unsupported_reason
 
     discovery = merged_config.get("discovery", {})
     if not isinstance(discovery, dict):
@@ -832,8 +903,16 @@ def _validate_discovery_openai(
     # Sub-sections that carry a per-section model: model_id for the class/auto
     # discovery sections, model for rules discovery.
     checks = [
-        ("discovery.without_ground_truth.model_id", discovery.get("without_ground_truth", {}), "model_id"),
-        ("discovery.with_ground_truth.model_id", discovery.get("with_ground_truth", {}), "model_id"),
+        (
+            "discovery.without_ground_truth.model_id",
+            discovery.get("without_ground_truth", {}),
+            "model_id",
+        ),
+        (
+            "discovery.with_ground_truth.model_id",
+            discovery.get("with_ground_truth", {}),
+            "model_id",
+        ),
         ("discovery.auto_split.model_id", discovery.get("auto_split", {}), "model_id"),
         ("discovery.rules.model", discovery.get("rules", {}), "model"),
     ]
@@ -841,13 +920,13 @@ def _validate_discovery_openai(
         if not isinstance(section, dict):
             continue
         model_id = section.get(field)
-        if model_id and is_openai_responses_model(model_id):
+        reason = document_blocks_unsupported_reason(model_id) if model_id else None
+        if reason:
             result["valid"] = False
             result["errors"].append(
-                f"{label} is an OpenAI Responses model ('{model_id}'), which is NOT "
-                "supported for discovery — discovery sends whole-PDF document blocks "
-                "that the bedrock-mantle Responses API cannot accept. Choose an "
-                "Anthropic or Nova model."
+                f"{label} is set to '{model_id}', which is NOT supported for "
+                f"discovery — {reason}, but discovery sends whole-PDF document "
+                "blocks. Choose an Anthropic or Nova model."
             )
 
 
@@ -1047,6 +1126,7 @@ def _validate_schema_fields(
         "x-aws-idp-list-item-description",
         "x-aws-idp-page-types",
         "x-aws-idp-source-page-types",
+        "x-aws-idp-instance-array",
     }
 
     non_standard_fields = {}
@@ -1207,3 +1287,210 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
             logger.warning(
                 "Could not validate max_tokens for %s: %s", section_name, str(e)
             )
+
+
+def _extraction_is_simple(extraction: Dict[str, Any]) -> bool:
+    """Whether the merged (un-reconciled) extraction block means Simple mode.
+
+    `extraction.mode` is authoritative when present — `reconcile_mode_and_agentic`
+    in the config model sets `agentic.enabled = (mode == "advanced")`, and the UI
+    writes only `mode` — so a stale `agentic.enabled` must not flip the answer.
+    `agentic.enabled` is the fallback for a legacy config with no `mode`.
+    """
+    mode = extraction.get("mode")
+    if isinstance(mode, str) and mode.strip():
+        return mode.strip().lower() == "simple"
+    return not bool((extraction.get("agentic") or {}).get("enabled"))
+
+
+def _class_declares_list(cls: Dict[str, Any]) -> bool:
+    """Top-level array property, multi-instance wrapper, or a legacy
+    `attributes` entry of `attributeType: list` (the merged dict is not migrated;
+    the runtime path is, so the runtime downgrade WOULD fire for that class)."""
+    from idp_common.config.schema_constants import (
+        ATTRIBUTE_TYPE_LIST,
+        LEGACY_ATTRIBUTE_TYPE,
+        LEGACY_ATTRIBUTES,
+    )
+    from idp_common.schema.multi_instance import is_multi_instance
+
+    if is_multi_instance(cls):  # tolerant of "true"/"false" strings, like the runtime
+        return True
+    props = cls.get("properties") or {}
+    if isinstance(props, dict) and any(
+        isinstance(s, dict) and s.get("type") == "array" for s in props.values()
+    ):
+        return True
+    legacy = cls.get(LEGACY_ATTRIBUTES)
+    return isinstance(legacy, list) and any(
+        isinstance(a, dict) and a.get(LEGACY_ATTRIBUTE_TYPE) == ATTRIBUTE_TYPE_LIST
+        for a in legacy
+    )
+
+
+def _validate_simple_integrated_lists(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Warn (never error) when Simple + integrated confidence meets a class that
+    declares list fields.
+
+    At run time such a section is scored in a separate pass instead — a routing
+    decision, not a failure — but it costs more than the single inference the user
+    configured at Sonnet 5 (~2.5x per 100-row document, since long lists are
+    scored in batches) and the 1S-TopK prompt is not used for that class. Saying
+    so at config time is free. A hard error would wedge a stored config that
+    validated yesterday (the rollback trap), so this is a warning only.
+
+    Surfaces wherever `validate_config` runs: `idp-cli config validate` and the SDK
+    validate operation. The web UI does NOT validate on save; its Prompt Preview
+    pane shows the same decision per class.
+    """
+    from idp_common.config.flags import flag_is_true
+    from idp_common.config.schema_constants import (
+        X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+
+    extraction = merged_config.get("extraction", {})
+    if not isinstance(extraction, dict) or not _extraction_is_simple(extraction):
+        return
+    confidence = extraction.get("confidence") or {}
+    if not isinstance(confidence, dict) or confidence.get("mode") != "integrated":
+        return
+    if not flag_is_true(confidence.get("enabled"), default=True):
+        return  # reconciles to mode "off": no confidence runs at all ("false" too)
+    affected: List[str] = []
+    for cls in merged_config.get("classes") or []:
+        if not isinstance(cls, dict):
+            continue
+        if cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
+            continue  # a per-class prompt override opts the class out
+        if flag_is_true(cls.get(X_AWS_IDP_ALLOW_INTEGRATED_LISTS)):
+            continue  # explicit opt-in: the author verified list completeness
+        if _class_declares_list(cls):
+            affected.append(str(cls.get("$id") or cls.get("name") or "?"))
+    if affected:
+        result["warnings"].append(
+            "extraction.confidence.mode is 'integrated' with simple extraction, but "
+            f"these classes declare list fields: {', '.join(affected)}. Their "
+            "sections will be scored in a separate confidence pass instead "
+            "(Simple + integrated loses list rows silently); the cost relative to "
+            "the single inference depends on the model (about 2.5x at Sonnet 5 on "
+            "a 100-row document, cheaper at Sonnet 4.6). Set "
+            "confidence.mode: separate to make this explicit, use Advanced "
+            "extraction to keep integrated confidence, or set "
+            f"{X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on a class whose lists you "
+            "have verified come back complete."
+        )
+
+
+def _prompt_cache_is_off(value: Any) -> bool:
+    """``extraction.prompt_cache`` as stored: the string, or the YAML/DynamoDB boolean."""
+    if value is False:
+        return True
+    return isinstance(value, str) and value.strip().lower() in (
+        "off",
+        "false",
+        "no",
+        "disabled",
+        "0",
+    )
+
+
+def _validate_prompt_cache_prefix(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Warn (never error) when a class's Simple-mode prompt prefix is shorter than
+    the extraction model's minimum cacheable prefix (#780).
+
+    A ``<<CACHEPOINT>>`` below the minimum creates no cache entry: Bedrock reports
+    ``cacheWrite = 0`` and ``cacheRead = 0``, raises nothing, and bills the prefix
+    at full input price on every request. Measured across the shipped presets, 25%
+    of classes never cache on the Sonnet tier (1,024-token minimum) and none cache
+    on Haiku 4.5 (4,096). Nothing else in the product reports it, so say so here,
+    naming both numbers.
+
+    The estimate is chars/4 with a measured error of about +-10%, so a class whose
+    estimate lands inside that band of the minimum is reported as "may not cache"
+    rather than declared safe. The prompt estimated is the one the service would
+    send: the 1S-TopK confidence prompt under Simple + integrated confidence, else
+    ``task_prompt``; a class with its own ``x-aws-idp-extraction-task-prompt`` is
+    estimated with that. Not counted (both default off, both push the real prefix
+    UP): the forced-tool toolSpec and the multi-instance probe. Classification,
+    assessment and rule-validation prompts are out of scope.
+    """
+    from idp_common.bedrock.prompt_cache import (
+        CACHEPOINT_MARKER,
+        ESTIMATE_TOLERANCE,
+        estimate_prefix_tokens,
+        min_cacheable_prefix_tokens,
+    )
+    from idp_common.config.flags import flag_is_true
+    from idp_common.config.schema_constants import (
+        ID_FIELD,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+
+    extraction = merged_config.get("extraction", {})
+    if not isinstance(extraction, dict) or not _extraction_is_simple(extraction):
+        return  # the Advanced path's prefix is the agentic system prompt, not this
+    if _prompt_cache_is_off(extraction.get("prompt_cache")):
+        return
+    minimum = min_cacheable_prefix_tokens(extraction.get("model"))
+    if minimum is None:
+        return  # unknown model or no published minimum (Nova): nothing to warn about
+
+    # The template the service actually sends (prompt_assembly.select_extraction_task_prompt).
+    confidence = extraction.get("confidence") or {}
+    integrated = (
+        isinstance(confidence, dict)
+        and confidence.get("mode") == "integrated"
+        and flag_is_true(confidence.get("enabled"), default=True)
+    )
+    default_prompt = (
+        (
+            extraction.get("task_prompt_extraction_with_confidence_topk")
+            or extraction.get("task_prompt")
+        )
+        if integrated
+        else extraction.get("task_prompt")
+    ) or ""
+
+    system_prompt = extraction.get("system_prompt") or ""
+    never: List[str] = []
+    near: List[str] = []
+    for cls in merged_config.get("classes") or []:
+        if not isinstance(cls, dict):
+            continue
+        cid = str(cls.get(ID_FIELD) or cls.get(X_AWS_IDP_DOCUMENT_TYPE) or "?")
+        task_prompt = cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT) or default_prompt
+        if CACHEPOINT_MARKER not in task_prompt:
+            continue  # nothing would cache for this class either way
+        est = estimate_prefix_tokens(system_prompt, task_prompt, cls, cid)
+        if est is None:
+            continue
+        if est < minimum:
+            never.append(f"{cid} (~{est} tokens)")
+        elif est < minimum * (1 + ESTIMATE_TOLERANCE):
+            near.append(f"{cid} (~{est} tokens)")
+    model = extraction.get("model")
+    if never:
+        result["warnings"].append(
+            f"Prompt caching will never engage for {len(never)} class(es) on "
+            f"{model}, whose minimum cacheable prefix is {minimum} tokens: "
+            f"{', '.join(never)}. Every request pays full input price on the "
+            "prefix. Add real field descriptions to the class (which also helps "
+            "extraction), pick a model with a lower minimum (512 on Claude Opus 5 / "
+            "Fable 5), or set extraction.prompt_cache: off to stop paying the "
+            "1.25x cache-write premium for nothing."
+        )
+    if near:
+        pct = int(ESTIMATE_TOLERANCE * 100)
+        result["warnings"].append(
+            f"{len(near)} class(es) MAY not cache on {model}: their estimated prompt "
+            f"prefix is within {pct}% of the {minimum}-token minimum, and the estimate "
+            f"itself is only accurate to about {pct}%: {', '.join(near)}. Check "
+            "cacheReadInputTokens on a processed document, or add field descriptions "
+            "to move them clear of the boundary."
+        )

@@ -48,7 +48,9 @@ interface QueueSummary {
 
 const AnnotationQueueLanding = (): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
-  const { allowedTestSets, canAnnotate, loading } = useUserRole();
+  // canWrite is Admin||Author, which is exactly generateDraftLabels' permitted set,
+  // so it decides whether the unblocking step is this user's to take.
+  const { allowedTestSets, canAnnotate, canWrite, loading } = useUserRole();
 
   const sets = allowedTestSets ?? [];
 
@@ -149,9 +151,22 @@ const AnnotationQueueLanding = (): React.JSX.Element => {
                         if (summary.labelJobStatus === 'RUNNING') {
                           return <StatusIndicator type="in-progress">Labeling in progress</StatusIndicator>;
                         }
-                        // Flagged here so nobody opens a queue that cannot be worked.
+                        // Flagged here so nobody opens a queue that cannot be worked —
+                        // and named, because generateDraftLabels is Admin/Author only.
+                        // An annotator-only account was shown the blocker with no way
+                        // to act on it and nobody to take it to, next to an "Open queue"
+                        // link that led to an empty one.
                         if (!summary.hasReviewableWork) {
-                          return <Badge color="severity-neutral">Needs labeling first</Badge>;
+                          return (
+                            <SpaceBetween size="xxs">
+                              <Badge color="severity-neutral">Needs labeling first</Badge>
+                              <Box fontSize="body-s" color="text-body-secondary">
+                                {canWrite
+                                  ? 'Generate draft labels for this set to create review work.'
+                                  : 'Ask an administrator or author to generate draft labels for this set.'}
+                              </Box>
+                            </SpaceBetween>
+                          );
                         }
                         if (summary.remainingDocs === 0) {
                           return <StatusIndicator type="success">All reviewed</StatusIndicator>;
@@ -178,7 +193,17 @@ const AnnotationQueueLanding = (): React.JSX.Element => {
                     },
                     {
                       id: 'action',
-                      content: (item) => <Link href={testSetAnnotateHref(item.id)}>Open queue — most confidence alerts first</Link>,
+                      /* The link stays — a blocked set is still worth looking at — but it
+                         stops promising an ordered queue it cannot deliver. */
+                      content: (item) => {
+                        const summary = summaries[item.id];
+                        const workable = !summary || summary.hasReviewableWork;
+                        return (
+                          <Link href={testSetAnnotateHref(item.id)}>
+                            {workable ? 'Open queue — most confidence alerts first' : 'Open set'}
+                          </Link>
+                        );
+                      },
                     },
                   ],
                 }}

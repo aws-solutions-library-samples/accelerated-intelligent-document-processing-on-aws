@@ -84,6 +84,25 @@ if [ -d "$PROJECT_ROOT/docs/benchmarking" ]; then
     echo "   ✅ Linked $bench_count benchmarking docs"
 fi
 
+# Step 1d: Symlink the docs/release-validation/ folder (index + the per-release
+# validation record) into src/content/docs/release-validation/.
+if [ -d "$PROJECT_ROOT/docs/release-validation" ]; then
+    echo ""
+    echo "🔗 Creating symlinks for release-validation docs..."
+    mkdir -p "$CONTENT_DOCS/release-validation"
+    relval_count=0
+    for md_file in "$PROJECT_ROOT"/docs/release-validation/*.md; do
+        [ -e "$md_file" ] || continue
+        filename=$(basename "$md_file")
+        target="$CONTENT_DOCS/release-validation/$filename"
+        # Path: docs-site/src/content/docs/release-validation/ → 5 levels up
+        [ -L "$target" ] && rm "$target"
+        ln -s "../../../../../docs/release-validation/$filename" "$target"
+        relval_count=$((relval_count + 1))
+    done
+    echo "   ✅ Linked $relval_count release-validation docs"
+fi
+
 # Step 2: Symlink images/ into src/content/images/ (for ../images/ relative paths in docs)
 # Path: docs-site/src/content/ → 3 levels up to project root
 echo ""

@@ -12,7 +12,6 @@ import io
 import json
 import logging
 import os
-import pickle
 
 import boto3
 import numpy as np
@@ -65,22 +64,12 @@ def handler(event, context):
     response = s3_client.get_object(Bucket=DISCOVERY_BUCKET, Key=embeddings_key)
     embeddings = np.load(io.BytesIO(response["Body"].read()))
 
-    # Load cluster data
+    # Load cluster data. Written as JSON by cluster_handler — deliberately not
+    # pickle, which would make this load an arbitrary-code-execution sink.
     response = s3_client.get_object(Bucket=DISCOVERY_BUCKET, Key=cluster_data_key)
-    cluster_data = pickle.loads(response["Body"].read())  # noqa: S301
-
-    # Reconstruct ClusterResult
-    cluster_labels = cluster_data["cluster_labels"]
-    centroids = {
-        int(k): np.array(v) for k, v in cluster_data["centroids"].items()
-    }
-    cluster_result = ClusterResult(
-        cluster_labels=cluster_labels,
-        num_clusters=cluster_data["num_clusters"],
-        cluster_sizes=cluster_data["cluster_sizes"],
-        centroids=centroids,
-        embeddings=embeddings,
-        kdtree=KDTree(embeddings),
+    cluster_data = json.loads(response["Body"].read().decode("utf-8"))
+    cluster_result = ClusterResult.from_artifact(
+        cluster_data, embeddings=embeddings, kdtree=KDTree(embeddings)
     )
 
     # Load config

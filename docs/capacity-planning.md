@@ -154,7 +154,10 @@ The capacity calculation system provides sophisticated analysis through GraphQL 
 - `MaxConcurrentWorkflows`: Maximum parallel executions (default: 100)
 - `DataRetentionInDays`: Data retention period (default: 365)
 - `ErrorThreshold`: Error alerting threshold (default: 1)
-- `ExecutionTimeThresholdMs`: Processing timeout (default: 300000ms)
+- `ExecutionTimeThresholdMs`: Slow-execution alarm threshold (default: 300000 ms); it alerts, it does not stop anything
+- `WorkflowExecutionTimeoutSeconds`: Execution-level bound on a single document's workflow (default: 21600 s, i.e. 6 hours). Raise it if legitimate runs of your largest packets approach it; tripping it discards the execution's completed work
+- `BDACallbackTimeoutSeconds`: BDA completion-callback bound (default: 7200 s); keep it below `WorkflowExecutionTimeoutSeconds`
+- `QueueStalledAgeThresholdSeconds`: Stalled-queue alarm threshold (default: 1800 s). Raise it if bulk uploads against a low `MaxConcurrentWorkflows` alarm while progressing normally
 
 **Processing Configuration**:
 - `LogLevel`: Logging verbosity (DEBUG, INFO, WARN, ERROR)

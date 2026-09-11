@@ -12,6 +12,7 @@ import os
 import time
 
 from idp_common import classification, metrics, get_config
+from idp_common.classification import apply_forced_document_class
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
@@ -41,7 +42,8 @@ def handler(event, context):
     
     # Load configuration - use document's version if specified, otherwise use active version
     config_version = getattr(document, 'config_version', None)
-    config = get_config(as_model=True, version = config_version)
+    config_revision = getattr(document, 'config_revision', None)
+    config = get_config(as_model=True, version=config_version, revision=config_revision)
     # Use default=str to handle Decimal and other non-serializable types
     logger.info(f"Config: {json.dumps(config.model_dump(), default=str)}, version name: {config_version}")
     
@@ -56,6 +58,17 @@ def handler(event, context):
     xray_recorder.put_annotation('document_id', {document.id})
     xray_recorder.put_annotation('processing_stage', 'classification')
     
+    # A reviewer corrected this document's class and asked for it to be
+    # re-extracted. Stamping the class onto every page routes into the existing
+    # skip below, so extraction runs against the class they chose.
+    #
+    # This has to override the model rather than seed it: the request means "the
+    # class you picked is wrong", so classifying again would re-derive the same
+    # wrong answer and silently discard the correction. That is exactly the bug
+    # this exists to fix — the class was previously pinned only in the test set's
+    # baseline, which the harvest then overwrote with the pipeline's own guess.
+    apply_forced_document_class(document)
+
     # Intelligent Classification detection: Skip if pages already have classifications
     pages_with_classification = 0
     for page in document.pages.values():

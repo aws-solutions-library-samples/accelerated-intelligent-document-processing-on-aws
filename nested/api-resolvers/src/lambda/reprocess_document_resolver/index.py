@@ -10,7 +10,8 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from boto3.dynamodb.conditions import Key as DDBKey
 from idp_common.docs_service import create_document_service
-from idp_common.document_versions import runs_prefix
+from idp_common.config_scope import scope_allows
+from idp_common.document_versions import delete_current_output_objects
 
 # Import IDP Common modules
 from idp_common.models import Document, Status
@@ -22,6 +23,12 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # Initialize AWS clients
 sqs_client = boto3.client("sqs")
 s3_client = boto3.client("s3")
+cloudwatch = boto3.client("cloudwatch")
+# Namespace for the ``StaleOutputPurgeFailed`` metric emitted on a
+# partial-purge failure (parity with queue_sender's #719 metric).
+# Set to ``AWS::StackName`` by the template — falls back to ``IDP`` for
+# local test contexts where the env var isn't wired.
+METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 _dynamodb = boto3.resource("dynamodb")
 
 
@@ -100,37 +107,52 @@ def _delete_output_data(input_key):
     This is only called for *full* document reprocessing (the "Reprocess"
     button in the UI).  Step-level reprocessing (classification, extraction)
     goes through a different code path that preserves OCR data intentionally.
+
+    ⚠️ Broad-purge scope note: this calls
+    ``delete_current_output_objects`` with the default
+    ``subprefixes=None`` (broad purge of ``<key>/*`` preserving only
+    ``<key>/runs/``). On deployments where object keys are nested
+    (``foo`` reprocessed while a separate document lives at
+    ``foo/bar.pdf``), the broad purge deletes the ENTIRE nested
+    document — pages/, sections/, summary/, evaluation/, AND runs/ —
+    because the preserved-prefix filter only protects THIS document's
+    runs/. This is accepted for reprocess (deliberate admin "start
+    over" action) but a caller that cannot tolerate nested-doc loss
+    should pass a narrower ``subprefixes`` (see queue_sender for the
+    ``("pages/",)`` example).
     """
-    prefix = f"{input_key}/"
-    # Preserve the reserved runs/ prefix: it holds prior document-version
-    # manifests. Deleting the current output objects (below) only creates S3
-    # delete markers on a versioned bucket, so the noncurrent versions those
-    # manifests pin remain retrievable — the version history survives reprocess.
-    preserved_prefix = runs_prefix(input_key)
     try:
-        paginator = s3_client.get_paginator("list_objects_v2")
-        deleted = 0
-        for page in paginator.paginate(Bucket=output_bucket, Prefix=prefix):
-            objects = [
-                obj
-                for obj in page.get("Contents", [])
-                if not obj["Key"].startswith(preserved_prefix)
-            ]
-            if objects:
-                # delete_objects accepts up to 1000 keys per call
-                for i in range(0, len(objects), 1000):
-                    batch = [{"Key": obj["Key"]} for obj in objects[i : i + 1000]]
-                    s3_client.delete_objects(
-                        Bucket=output_bucket, Delete={"Objects": batch, "Quiet": True}
-                    )
-                    deleted += len(batch)
+        deleted = delete_current_output_objects(s3_client, output_bucket, input_key)
         if deleted:
-            logger.info(f"Deleted {deleted} objects from s3://{output_bucket}/{prefix}")
+            logger.info(
+                f"Deleted {deleted} objects from s3://{output_bucket}/{input_key}/"
+            )
         else:
             logger.info(f"No previous output data found for {input_key}")
     except Exception as e:
-        # Non-fatal: OCR will still run but may recover stale partial data
-        logger.warning(f"Failed to delete previous output data for {input_key}: {e}")
+        # Non-fatal: OCR will still run but may recover stale partial data.
+        # Logged at ERROR AND emitted as a CloudWatch metric so an operator
+        # can alarm on it without depending on log-scraping — parity with
+        # queue_sender's ``StaleOutputPurgeFailed`` metric for the same
+        # symptom on the ingest path. A partial purge means reprocess is
+        # NOT actually "starting over" cleanly (OCR's retry-safe recovery
+        # only needs one surviving complete 4-file page to resurrect
+        # stale text). Metric emit is fire-and-forget so telemetry can't
+        # affect the reprocess action.
+        logger.error(f"Failed to delete previous output data for {input_key}: {e}")
+        try:
+            cloudwatch.put_metric_data(
+                Namespace=METRIC_NAMESPACE,
+                MetricData=[
+                    {
+                        "MetricName": "StaleOutputPurgeFailed",
+                        "Value": 1,
+                        "Unit": "Count",
+                    }
+                ],
+            )
+        except Exception:
+            pass  # telemetry must not affect the reprocess flow
 
 
 def handler(event, context):
@@ -155,6 +177,7 @@ def handler(event, context):
         args = event.get("arguments", {})
         object_keys = args.get("objectKeys", [])
         version = args.get("version")  # Optional version parameter
+        revision = args.get("revision")  # Optional revision of that version
 
         if not object_keys:
             logger.error("objectKeys is required but not provided")
@@ -184,7 +207,7 @@ def handler(event, context):
         if version:
             if not caller["is_admin"]:
                 allowed_versions = _get_user_allowed_config_versions(caller["email"])
-                if allowed_versions and version not in allowed_versions:
+                if not scope_allows(allowed_versions, version):
                     logger.warning(
                         "Rejecting reprocessDocument: caller %s is scoped to %s "
                         "but requested version=%r",
@@ -207,7 +230,7 @@ def handler(event, context):
         success_count = 0
         for object_key in object_keys:
             try:
-                reprocess_document(object_key, version)
+                reprocess_document(object_key, version, revision)
                 success_count += 1
             except Exception as e:
                 logger.error(
@@ -225,7 +248,7 @@ def handler(event, context):
         raise e
 
 
-def reprocess_document(object_key, version=None):
+def reprocess_document(object_key, version=None, revision=None):
     """
     Reprocess a document by creating a fresh Document object and queueing it.
     This exactly mirrors the queue_sender pattern for consistency and avoids
@@ -233,11 +256,14 @@ def reprocess_document(object_key, version=None):
 
     Args:
         object_key: S3 object key of the document to reprocess
-        version: Optional configuration version to use for reprocessing
+        version: Optional Configuration Profile to use for reprocessing
+        revision: Optional revision of that profile. Omit to reprocess under the
+            profile's current configuration.
     """
     logger.info(
         f"Reprocessing document: {object_key}"
         + (f" with version: {version}" if version else "")
+        + (f" r{revision}" if revision is not None else "")
     )
 
     # Verify file exists in S3
@@ -266,6 +292,7 @@ def reprocess_document(object_key, version=None):
         pages={},
         sections=[],
         config_version=version,  # Set the configuration version if provided
+        config_revision=revision,
     )
 
     logger.info(f"Created fresh document object for reprocessing: {object_key}")

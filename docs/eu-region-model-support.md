@@ -19,7 +19,6 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
 | `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-3-haiku-20240307-v1:0` | Direct mapping |
-| `us.anthropic.claude-3-5-haiku-20241022-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
 | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | `eu.anthropic.claude-3-5-sonnet-20241022-v2:0` | Direct mapping |
 | `us.anthropic.claude-3-7-sonnet-20250219-v1:0` | `eu.anthropic.claude-3-7-sonnet-20250219-v1:0` | Direct mapping |
@@ -64,6 +63,42 @@ be called.
 | `openai.gpt-5.6-luna` | `us-east-1`, `us-east-2`, `us-west-2` |
 
 See [OpenAI GPT-5.x model support](#openai-gpt-5x-models-bedrock-mantle) below.
+
+### xAI Grok in EU regions
+
+Grok 4.6 has **no `eu.` inference profile**. It is reachable in EU regions only
+through the **global** cross-region profile:
+
+| Model | EU availability |
+|-------|-----------------|
+| `us.xai.grok-4.6` | **None** — `us.`-prefixed IDs return *"The provided model identifier is invalid"* in `eu-west-1` / `eu-central-1` (verified live) |
+| `global.xai.grok-4.6` | ✅ All EU regions (also APAC, Canada, and more) |
+
+No special-case filtering was needed: the existing region filter already drops
+`us.`-prefixed IDs outside US regions and keeps `global.`-prefixed ones
+everywhere, so EU deployments see exactly `global.xai.grok-4.6` in the model
+dropdowns. The global profile is also the cheaper of the two
+($2.00/$6.00 vs $2.20/$6.60 per 1M). See [xAI Grok Models](grok-models.md).
+
+### OpenAI GPT-6 Astra in EU regions
+
+GPT-6 Astra is the **only OpenAI model usable in EU deployments**. Like Grok it has
+no `eu.` inference profile, and is reachable in EU regions through the **global**
+cross-region profile:
+
+| Model | EU availability |
+|-------|-----------------|
+| `us.openai.gpt-6-astra` | **None** — the US geo profile covers `us-east-1`, `us-east-2`, `us-west-1`, `us-west-2`, `ca-central-1` only |
+| `global.openai.gpt-6-astra` | ✅ All EU regions (`eu-west-1/2/3`, `eu-central-1`, `eu-north-1`) — also APAC, Canada, and South America |
+
+No special-case filtering was needed here either: the region filter drops
+`us.`-prefixed IDs outside US regions and keeps `global.`-prefixed ones, so EU
+deployments see exactly `global.openai.gpt-6-astra`. Verified live against
+`global.openai.gpt-6-astra` in `eu-west-1`. The global profile is also the cheaper
+of the two ($10/$50 vs $11/$55 per 1M). Note this is deliberately **not** added to
+the `US_ONLY_MODELS` set in `update_configuration` — that set is for the bare-ID
+`bedrock-mantle` GPT-5.x models, and listing Astra there would wrongly hide it from
+EU stacks. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 
 ### Available EU Models
 
@@ -110,7 +145,6 @@ The UpdateConfiguration lambda processes default configurations as follows:
 **⚠️ Critical**: Some US models are not directly available in EU regions and use fallback mappings:
 
 - **Nova Premier**: `us.amazon.nova-premier-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- **Claude 3.5 Haiku**: `us.anthropic.claude-3-5-haiku-20241022-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 - **Claude Opus Models**: Both Opus variants → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 
 ### Implications of Fallback Mappings

@@ -419,7 +419,7 @@ const UserManagementLayout = (): React.JSX.Element => {
     },
     {
       id: 'allowedConfigVersions',
-      header: 'Config Version Scope',
+      header: 'Config Profile Scope',
       cell: (item: User) => formatConfigVersions(item.allowedConfigVersions),
     },
     {
@@ -581,16 +581,16 @@ const UserManagementLayout = (): React.JSX.Element => {
               <FormField
                 label={
                   <span>
-                    Configuration Version Scope <em>- optional</em>
+                    Configuration Profile Scope <em>- optional</em>
                   </span>
                 }
-                description="Restrict this user to specific configuration versions. Leave empty for unrestricted access to all versions."
+                description="Restrict this user to specific configuration profiles. Leave empty for unrestricted access to all versions."
               >
                 <Multiselect
                   selectedOptions={selectedConfigVersions}
                   onChange={({ detail }) => setSelectedConfigVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}
-                  placeholder="All versions (unrestricted)"
+                  placeholder="All profiles (unrestricted)"
                   filteringType="auto"
                   tokenLimit={3}
                 />
@@ -639,14 +639,14 @@ const UserManagementLayout = (): React.JSX.Element => {
           <Form>
             <SpaceBetween size="l">
               <FormField
-                label="Configuration Version Scope"
-                description="Select which configuration versions this user can access. Clear all to give unrestricted access."
+                label="Configuration Profile Scope"
+                description="Select which configuration profiles this user can access. Clear all to give unrestricted access."
               >
                 <Multiselect
                   selectedOptions={editScopeVersions}
                   onChange={({ detail }) => setEditScopeVersions(detail.selectedOptions as { label: string; value: string }[])}
                   options={configVersionOptions}
-                  placeholder="All versions (unrestricted)"
+                  placeholder="All profiles (unrestricted)"
                   filteringType="auto"
                   tokenLimit={3}
                 />

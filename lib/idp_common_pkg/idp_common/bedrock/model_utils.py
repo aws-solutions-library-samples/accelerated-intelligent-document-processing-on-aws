@@ -38,6 +38,15 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
         >>> parse_model_id("us.amazon.nova-2-lite-v1:0:priority")
         ("us.amazon.nova-2-lite-v1:0", "priority")
 
+        A version-less model ID still parses. Every Bedrock model ID used here
+        historically ended in a ``:<version>`` segment, so a tier suffix meant a
+        third colon-part; newer families (e.g. ``us.xai.grok-4.6``) carry no
+        version segment, which left a 2-part ID with the tier silently
+        unextracted and the whole string sent to Bedrock as the modelId:
+
+        >>> parse_model_id("us.xai.grok-4.6:flex")
+        ("us.xai.grok-4.6", "flex")
+
     Args:
         model_id: The model ID string, potentially with service tier suffix
 
@@ -51,8 +60,8 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
     # Split on colons
     parts = model_id.split(":")
 
-    # If only 1 or 2 parts, no tier suffix
-    if len(parts) <= 2:
+    # A single part cannot carry a tier suffix.
+    if len(parts) < 2:
         return model_id, None
 
     # Check if last part is a valid service tier

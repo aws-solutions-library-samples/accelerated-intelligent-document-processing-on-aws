@@ -95,9 +95,14 @@ def main():
         help="Output format",
     )
     download_parser.add_argument(
+        "--config-profile",
         "--config-version",
+        dest="config_profile",
         type=str,
-        help="Configuration version to download (default: active version)",
+        help=(
+            "Configuration profile to download (default: active profile). "
+            "--config-version is the former name and still works."
+        ),
     )
 
     # Upload subcommand
@@ -121,9 +126,14 @@ def main():
         help="Skip validation before upload",
     )
     upload_parser.add_argument(
+        "--config-profile",
         "--config-version",
+        dest="config_profile",
         type=str,
-        help="Configuration version to upload to (default: active version)",
+        help=(
+            "Configuration profile to upload to (default: active profile). "
+            "--config-version is the former name and still works."
+        ),
     )
     upload_parser.add_argument(
         "--description",
@@ -201,13 +211,13 @@ def main():
 
         print(f"Downloading configuration from: {args.stack_name}")
         print(f"  Format: {args.format}")
-        if hasattr(args, "config_version") and args.config_version:
-            print(f"  Version: {args.config_version}")
+        if hasattr(args, "config_profile") and args.config_profile:
+            print(f"  Profile: {args.config_profile}")
 
         result = client.config.download(
             output=args.output,
             format=args.format,
-            config_version=getattr(args, "config_version", None),
+            config_profile=getattr(args, "config_profile", None),
         )
 
         if args.output:
@@ -230,17 +240,17 @@ def main():
         print(f"Uploading configuration to: {args.stack_name}")
         print(f"  Config file: {args.config_file}")
         print(f"  Validate: {not args.no_validate}")
-        if hasattr(args, "config_version") and args.config_version:
-            print(f"  Version: {args.config_version}")
+        if hasattr(args, "config_profile") and args.config_profile:
+            print(f"  Profile: {args.config_profile}")
         if hasattr(args, "description") and args.description:
             print(f"  Description: {args.description}")
 
-        # Use "example-config" as a safe fallback version so this example never
+        # Use "example-config" as a safe fallback profile so this example never
         # accidentally overwrites the real "default" configuration. Pass
-        # --config-version explicitly to target a specific version.
+        # --config-profile explicitly to target a specific profile.
         result = client.config.upload(
             config_file=args.config_file,
-            config_version=getattr(args, "config_version", "example-config"),
+            config_profile=getattr(args, "config_profile", None) or "example-config",
             validate=not args.no_validate,
             description=getattr(args, "description", None),
         )

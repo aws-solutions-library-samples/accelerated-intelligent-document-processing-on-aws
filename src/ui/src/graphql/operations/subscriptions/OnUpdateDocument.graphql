@@ -13,7 +13,9 @@ subscription OnUpdateDocument {
       Id
       PageIds
       Class
+      Confidence
       OutputJSONUri
+      InstanceCount
       Excluded
       ExclusionReason
       ConfidenceThresholdAlerts {
@@ -21,10 +23,23 @@ subscription OnUpdateDocument {
         confidence
         confidenceThreshold
       }
+      ProcessingIssues {
+        stage
+        severity
+        code
+        message
+        rootCause
+      }
     }
     Pages {
       Id
       Class
+      ClassConfidence
+      ClassReason
+      ClassCandidates {
+        Class
+        Probability
+      }
       ImageUri
       TextUri
       TextConfidenceUri

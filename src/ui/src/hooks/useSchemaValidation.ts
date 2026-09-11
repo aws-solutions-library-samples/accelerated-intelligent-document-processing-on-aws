@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from 'react';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { SchemaValidationError } from '../types/common';
+import { validateIdpClassExtensions } from '../utils/idpSchemaExtensions';
 
 interface ValidatableAttribute {
   type?: string;
@@ -92,13 +93,19 @@ export const useSchemaValidation = (): UseSchemaValidationReturn => {
         const validate = ajv.compile(EXTRACTION_JSON_SCHEMA);
         const valid = validate(schema);
 
+        const idpErrors = validateIdpClassExtensions(schema);
+
         if (!valid && validate.errors) {
           const errors = validate.errors.map((error) => ({
             path: error.instancePath || '/',
             message: error.message || 'Validation error',
             keyword: error.keyword,
           }));
-          return { valid: false, errors };
+          return { valid: false, errors: [...errors, ...idpErrors] };
+        }
+
+        if (idpErrors.length > 0) {
+          return { valid: false, errors: idpErrors };
         }
 
         return { valid: true, errors: [] };

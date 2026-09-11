@@ -22,10 +22,10 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 s3_client = boto3.client("s3")
 
 
-def is_hitl_enabled(config_version=None):
+def is_hitl_enabled(config_version=None, config_revision=None):
     """Check if HITL is enabled from configuration."""
     try:
-        config = get_config(as_model=True, version=config_version)
+        config = get_config(as_model=True, version=config_version, revision=config_revision)
         return config.hitl.enabled
     except Exception as e:
         logger.warning(f"Failed to get HITL config: {e}")
@@ -56,7 +56,8 @@ def handler(event, context):
 
     # Load configuration - use document's version if specified, otherwise use active version
     config_version = getattr(document, 'config_version', None)
-    config = get_config(as_model=True, version=config_version)
+    config_revision = getattr(document, 'config_revision', None)
+    config = get_config(as_model=True, version=config_version, revision=config_revision)
 
     extraction_results = event.get("ExtractionResults", [])
     execution_arn = event.get("execution_arn", "")
@@ -99,7 +100,7 @@ def handler(event, context):
                 logger.info(
                     f"section.confidence_threshold_alerts: {section.confidence_threshold_alerts}"
                 )
-                hitl_enabled = is_hitl_enabled(config_version)
+                hitl_enabled = is_hitl_enabled(config_version, config_revision)
                 logger.info(f"is_hitl_enabled: {hitl_enabled}")
                 document.sections.append(section)
 

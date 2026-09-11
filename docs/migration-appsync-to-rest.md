@@ -268,8 +268,12 @@ The optional Feature Platform (`EnableFeaturePlatform=true`) is also AppSync-fre
 > export, so the one-time upgrade sequence is **delete the feature stacks →
 > update the host stack → reinstall the features** from a build updated for this
 > release. After that the coupling is gone (features use direct Lambda invoke).
-> External/marketplace features must be rebuilt against the new host exports —
-> see [Migrating an external/marketplace feature](extensions/MIGRATION-PROMPT-appsync-removal.md).
+> External/marketplace features must be rebuilt against the new host exports: a
+> feature's ui-deployer calls `registerFeature` / `registerFeatureHooks` /
+> `applyFeatureConfigPreset` (and their un/remove counterparts) by direct
+> `lambda:InvokeFunction` on the host resolver ARNs exported as
+> `<MainStackName>-<Field>FunctionArn`, with the unchanged AppSync event payload
+> `{info:{fieldName}, arguments, identity}`.
 
 ## 6. Private endpoint & WAF
 
@@ -330,8 +334,14 @@ idp-cli deploy \
 
 The Lambda Web Adapter layer (for chat streaming) ARN is exposed as the
 `LambdaWebAdapterLayerArn` parameter (leave blank to use the region-default LWA
-x86_64 layer); override it for GovCloud or other partitions where the layer is
-published under a different account.
+x86_64 layer, or set it to pin a version).
+
+> **GovCloud / China:** LWA is published **only in the commercial partition**, and
+> AWS account IDs do not exist across partitions — so there is no other-partition
+> publisher account to override this parameter with. The `--govcloud` transform
+> removes the streaming function and this parameter outright, and the UI falls
+> back to its polling chat transport. See
+> [GovCloud Deployment](./govcloud-deployment.md#keeping-the-web-ui-in-govcloud---govcloud).
 
 ## Summary
 
@@ -353,4 +363,3 @@ published under a different account.
 - [Architecture](architecture.md)
 - [GovCloud deployment](govcloud-deployment.md)
 - [API Gateway hosting](apigateway-hosting.md)
-- [Migrating an external/marketplace feature](extensions/MIGRATION-PROMPT-appsync-removal.md)

@@ -25,7 +25,8 @@ from idp_common.assessment.batching import (
 )
 from idp_common.assessment.service import AssessmentCoreResult
 
-NOVA_LITE = "us.amazon.nova-lite-v1:0"  # 10K output cap
+NOVA_LITE = "us.amazon.nova-lite-v1:0"
+NOVA_PRO = "us.amazon.nova-pro-v1:0"  # 10K output cap
 CLAUDE_SONNET = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # 64K output cap
 
 
@@ -65,13 +66,21 @@ def test_token_aware_bbox_shrinks_more_than_ocr_only():
     assert with_bbox <= without_bbox
 
 
-def test_token_aware_unknown_model_falls_back():
-    """An unknown model (no entry in model_config_limits) → keep configured size."""
+def test_token_aware_unknown_model_sizes_conservatively():
+    """An unknown model (no entry in model_config_limits) must NOT keep the
+    configured size — trusting a permissive configured value on a model whose cap
+    is unknown is how a 25-row batch reached a 10,000-token model. It sizes from a
+    conservative fallback cap instead, and never exceeds the configured ceiling."""
     sample = {"date": "2020-01-01", "amount": "1.00"}
     derived = compute_token_aware_batch_size(
         "some.unknown.model-v9:0", sample, "ocr_only", configured_batch_size=25
     )
-    assert derived == 25
+    assert 1 <= derived <= 25
+    # With bbox geometry the same unknown model must size down further still.
+    bbox = compute_token_aware_batch_size(
+        "some.unknown.model-v9:0", sample, "llm_grounded", configured_batch_size=25
+    )
+    assert bbox < derived
 
 
 def test_token_aware_never_returns_zero():
@@ -81,9 +90,10 @@ def test_token_aware_never_returns_zero():
     assert derived >= 1
 
 
-def test_token_aware_no_model_keeps_configured():
-    """No model id → cannot resolve a cap → keep the configured size."""
-    assert compute_token_aware_batch_size(None, {"a": 1}, "ocr_only", 25) == 25
+def test_token_aware_no_model_sizes_conservatively():
+    """No model id → cannot resolve a cap → size conservatively, do NOT fall back to
+    the configured size (see test_token_aware_unknown_model_sizes_conservatively)."""
+    assert 1 <= compute_token_aware_batch_size(None, {"a": 1}, "ocr_only", 25) <= 25
 
 
 def test_token_aware_sizes_by_column_count_not_value_length():
@@ -103,18 +113,18 @@ def test_token_aware_sizes_by_column_count_not_value_length():
         "a": "x" * 200,
         "b": "y" * 200,
     }
-    wide = compute_token_aware_batch_size(NOVA_LITE, wide_short, "ocr_only", 25)
-    narrow = compute_token_aware_batch_size(NOVA_LITE, narrow_long, "ocr_only", 25)
-    # Nova Lite 10K cap, 0.5 fraction, ~40 tok/cell: 6 cols → floor(5000/240)=20.
+    # Nova PRO: the same 10K cap as Nova Lite but no measured loop ceiling, so the
+    # token math is what is asserted here (Nova Lite would clamp both to 12).
+    wide = compute_token_aware_batch_size(NOVA_PRO, wide_short, "ocr_only", 25)
+    narrow = compute_token_aware_batch_size(NOVA_PRO, narrow_long, "ocr_only", 25)
+    # 10K cap, 0.5 fraction, ~40 tok/cell: 6 cols → floor(5000/240)=20.
     assert wide == 20
     # The 2-column row is NOT shrunk more than the 6-column row, even though its
     # values are far longer — value length no longer drives the estimate.
     assert narrow >= wide
     # Nested/list sub-fields are NOT counted as scalar confidence columns.
     with_nested = {**wide_short, "extra": {"nested": "obj"}, "items": [1, 2, 3]}
-    assert (
-        compute_token_aware_batch_size(NOVA_LITE, with_nested, "ocr_only", 25) == wide
-    )
+    assert compute_token_aware_batch_size(NOVA_PRO, with_nested, "ocr_only", 25) == wide
 
 
 # --------------------------------------------------------------------------- #
@@ -592,6 +602,45 @@ def test_schema_mismatch_reason_detects_absent_and_scalar_fields():
     assert _schema_field_mismatch_reason("txns", array_schema) is None
     # No schema threaded in → never blocks (unchanged behavior).
     assert _schema_field_mismatch_reason("anything", None) is None
+
+
+def test_schema_mismatch_reason_names_the_dereferenced_type():
+    """A ``$ref`` property must be reported by its REAL declared type.
+
+    ``{"$ref": "#/$defs/Foo"}`` carries no ``type`` of its own, so the reason
+    used to say "declared as 'scalar'" for what is actually an object group —
+    sending whoever reads the skip reason hunting for a ``type: string`` that
+    does not exist (GitHub issue #678). The skip DECISION is unchanged: a
+    ``$defs`` group resolves to ``object``, still not ``array``.
+    """
+    ref_schema = {
+        "type": "object",
+        "properties": {
+            "signatures": {"$ref": "#/$defs/Signatures"},
+            "txns": {"$ref": "#/$defs/TxnList"},
+        },
+        "$defs": {
+            "Signatures": {
+                "type": "object",
+                "properties": {"sig1": {"type": "boolean"}},
+            },
+            "TxnList": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+    reason = _schema_field_mismatch_reason("signatures", ref_schema)
+    assert reason is not None
+    assert "declared as 'object'" in reason
+    assert "scalar" not in reason
+
+    # A $ref that DOES resolve to an array is validly list-typed → no skip.
+    assert _schema_field_mismatch_reason("txns", ref_schema) is None
+
+    # A dangling $ref still degrades to the un-dereferenced reading.
+    dangling = {"type": "object", "properties": {"x": {"$ref": "#/$defs/Gone"}}}
+    dangling_reason = _schema_field_mismatch_reason("x", dangling)
+    assert dangling_reason is not None
+    assert "declared as 'scalar'" in dangling_reason
 
 
 def test_schema_mismatch_skips_escalation_and_flags_root_cause():

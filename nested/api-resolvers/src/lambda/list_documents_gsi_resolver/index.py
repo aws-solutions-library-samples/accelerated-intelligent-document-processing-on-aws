@@ -18,11 +18,21 @@ Performance: O(matched items) instead of O(total table items)
 import json
 import logging
 import os
+import sys
 import time
 from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+
+# Vendored verbatim from idp_common/config_scope.py: this function has no
+# idp_common layer (it is on the hottest UI query and is kept dependency-free).
+# test_config_scope_vendored.py fails if the copies drift.
+# The sys.path insert makes the sibling import work both in Lambda (where the
+# handler directory is already on the path) and when another suite loads this
+# module by file path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config_scope import scope_allows  # noqa: E402
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -300,12 +310,18 @@ def list_documents(event):
     # Apply config-version scope filtering (post-query filter since ConfigVersion is in GSI projection)
     documents = []
     for item in items:
-        # Filter by config version scope if user has restrictions
+        # Filter by config version scope if user has restrictions.
+        # Fails CLOSED: a document with no ConfigVersion cannot be proven in
+        # scope, so a scoped caller does not see it. It used to be admitted,
+        # which leaked every document processed before config-version stamping
+        # (and any document whose stamp failed) to every scoped user.
         if allowed_versions:
             doc_version = item.get("ConfigVersion") or item.get("ConfigurationVersion")
-            logger.info(f"Scope filter: PK={item.get('PK')}, ConfigVersion='{doc_version}', allowed={allowed_versions}, pass={not doc_version or doc_version in allowed_versions}")
-            if doc_version and doc_version not in allowed_versions:
-                logger.info(f"Scope filter REJECTED: doc_version='{doc_version}' (type={type(doc_version).__name__}, repr={repr(doc_version)}) not in {allowed_versions}")
+            if not scope_allows(allowed_versions, doc_version):
+                logger.info(
+                    f"Scope filter rejected PK={item.get('PK')}: "
+                    f"ConfigVersion={doc_version!r} not in {allowed_versions}"
+                )
                 continue  # Skip documents outside user's scope
         doc = _gsi_item_to_document(item)
         documents.append(doc)
@@ -406,6 +422,11 @@ def _gsi_item_to_document(item):
         "InitialEventTime": item.get("InitialEventTime"),
         "CompletionTime": item.get("CompletionTime"),
         "ConfigVersion": item.get("ConfigVersion") or item.get("ConfigurationVersion"),
+        # int() because DynamoDB numbers come back as Decimal, which the JSON
+        # response encoder rejects.
+        "ConfigRevision": int(item["ConfigRevision"])
+        if item.get("ConfigRevision") is not None
+        else None,
         "EvaluationStatus": item.get("EvaluationStatus"),
         "HITLStatus": item.get("HITLStatus"),
         "HITLTriggered": item.get("HITLTriggered"),

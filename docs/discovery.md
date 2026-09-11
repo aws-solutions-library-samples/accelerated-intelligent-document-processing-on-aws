@@ -43,6 +43,7 @@ https://github.com/user-attachments/assets/b0bc5df0-cd8f-472c-98c6-299ac3a9bd43
   - [Web UI Interface](#web-ui-interface)
   - [API Integration](#api-integration)
   - [Processing Results](#processing-results)
+  - [Class name normalization](#class-name-normalization)
 - [BDA Integration](#bda-integration)
   - [Automated Blueprint Creation](#automated-blueprint-creation)
   - [Intelligent Update Detection](#intelligent-update-detection)
@@ -318,7 +319,7 @@ In Multi-Section Package mode, the UI displays:
 
 1. **PDF Page Thumbnails** — rendered in the browser using `pdfjs-dist`, showing a visual grid of all pages with color-coded highlighting for each defined range
 2. **Page Range Inputs** — editable start/end page numbers for each range
-3. **Document Type Labels** — optional text field per range for labeling the document type (e.g., "W2 Form", "Invoice"). When provided, the label is used as a class name hint for the discovery LLM.
+3. **Document Type Labels** — optional text field per range for labeling the document type (e.g., `W2-Form`, `Invoice`). When provided, the label is used as a class name hint for the discovery LLM. Labels are normalized to the class-name character set before use (see [Class name normalization](#class-name-normalization)).
 
 #### AI Auto-Detect Sections
 
@@ -366,14 +367,14 @@ sections = discovery.auto_detect_sections(
     input_bucket="my-bucket",
     input_prefix="lending_package.pdf"
 )
-# Returns: [{"start": 1, "end": 2, "type": "Letter"}, {"start": 3, "end": 5, "type": "W2 Form"}, ...]
+# Returns: [{"start": 1, "end": 2, "type": "Letter"}, {"start": 3, "end": 5, "type": "W2-Form"}, ...]
 
 # Discover a specific page range with class name hint
 result = discovery.discovery_classes_with_document(
     input_bucket="my-bucket",
     input_prefix="lending_package.pdf",
     page_range="3-5",
-    class_name_hint="W2 Form"
+    class_name_hint="W2-Form"
 )
 
 # Override the Bedrock model for a single call
@@ -452,8 +453,8 @@ idp-cli discover-multidoc --dir /path/to/documents/
 # With explicit files
 idp-cli discover-multidoc -d invoice1.pdf -d invoice2.pdf -d w2_form.pdf -d w2_form2.pdf
 
-# Save results to a configuration version
-idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-version v1
+# Save results to a configuration profile
+idp-cli discover-multidoc --dir /path/to/documents/ --save-to-config --config-profile v1
 ```
 
 See [IDP CLI Reference — `discover-multidoc`](idp-cli.md) for all options.
@@ -575,6 +576,24 @@ The Discovery module supports comprehensive configuration through the deployment
 > selecting one via a hand-edited config is rejected by `idp-cli config-validate`
 > and raises at runtime. Use a Claude or Nova model for Discovery. See
 > [OpenAI GPT-5.x Models](openai-models.md).
+
+> **⚠️ xAI Grok is NOT supported for Discovery either.** Grok 4.6
+> (`us.xai.grok-4.6`, `global.xai.grok-4.6`) reaches the Converse API and works
+> for extraction, but it rejects `document` content blocks outright — *"This
+> model doesn't support documents"* — because its input modalities are text and
+> image only. Both Grok IDs are absent from the discovery model picklists, and
+> selecting one via a hand-edited config is rejected by config validation at save
+> time. Note this does **not** limit Grok for agentic extraction, which it fully
+> supports. See [xAI Grok Models](grok-models.md).
+
+> **⚠️ OpenAI GPT-6 Astra is NOT supported for Discovery either.** Astra
+> (`us.openai.gpt-6-astra`, `global.openai.gpt-6-astra`) reaches the Converse API
+> and is fully supported for extraction — including agentic extraction — but it
+> rejects `document` content blocks: *"This model doesn't support the document
+> field for user messages"*. Its input modalities are text and image only. Both
+> Astra IDs are absent from the discovery model picklists, and selecting one via a
+> hand-edited config is rejected by config validation at save time. See
+> [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 
 **Model Parameters:**
 ```yaml
@@ -752,15 +771,19 @@ discovery:
 **Accessing Discovery:**
 1. Navigate to the main application dashboard
 2. Click on the "Discovery" tab or panel
-3. Select a **Configuration Version** to save discovered classes to, or click
-   **Create new version** to create one on the fly (the new version inherits its
-   settings and existing document classes from a chosen source version)
+3. Select a **Configuration Profile** to save discovered classes to, or click
+   **Create profile** to create one on the fly (the new profile inherits its
+   settings and existing document classes from a chosen source profile)
 4. Choose a **Save mode**:
-   - **Add to existing schema** (default) — keeps the version's existing document
-     classes and adds/updates the discovered ones (a discovered class with the
-     same name overwrites the existing one)
+   - **Add to existing schema** (default) — keeps the profile's existing document
+     classes and adds/updates the discovered ones. A discovered class with the
+     same name has its **properties** replaced by what discovery found, while
+     the class-level settings you configured on it (extraction model, prompts,
+     confidence thresholds, classification regexes, multi-instance, few-shot
+     examples) are **preserved** — see
+     [Re-discovering a class you have configured](#re-discovering-a-class-you-have-configured)
    - **Replace existing schema** — removes all existing document classes in the
-     selected version first, then saves only the newly discovered ones. For
+     selected profile first, then saves only the newly discovered ones. For
      multi-section discovery, the schema is cleared once before the batch runs,
      so all sections in the run are rebuilt into a clean schema. A confirmation
      warning is shown while Replace is selected.
@@ -771,9 +794,9 @@ discovery:
 7. Click **"Start Discovery"** (or "Start Discovery (N sections)" for multi-section)
 8. Monitor progress in real-time in the Discovery Jobs table below
 
-> **Note:** "Save mode" and "Create new version" apply to Single Document,
+> **Note:** "Save mode" and "Create profile" apply to Single Document,
 > Multiple Documents (multi-doc clustering), and Policy Discovery alike. In
-> Replace mode, class discovery clears the version's `classes` list while Policy
+> Replace mode, class discovery clears the profile's `classes` list while Policy
 > Discovery clears its `policy_classes` list.
 
 **Monitoring Progress:**
@@ -781,7 +804,7 @@ discovery:
 - Live elapsed time counter for active jobs
 - Discovered document class name shown as a green badge on success (e.g., `W4-Form`)
 - Failure root cause displayed in expandable error details with user-friendly messages
-- Search/filter bar to find jobs by document name, config version, status, or class name
+- Search/filter bar to find jobs by document name, config profile, status, or class name
 - Time range selector (Last hour, 24 hours, 2 days, 7 days, All time)
 - Pagination with configurable page size
 - Resizable columns and column visibility preferences (settings gear icon)
@@ -789,7 +812,7 @@ discovery:
 
 **Reviewing Results:**
 - Discovered class name prominently displayed as a badge in the Result column
-- Config Version hyperlinked to the configuration editor
+- Config Profile hyperlinked to the configuration editor
 - Original document filename displayed (timestamp prefix stripped)
 - Duration column showing total processing time
 - Export options for configuration integration
@@ -873,6 +896,141 @@ result = discovery.discovery_classes_with_document_and_ground_truth(
 - **Export for Review**: Download configuration for manual review and editing
 - **Merge with Existing**: Combine with current document class definitions
 - **Create New Class**: Add as new document type to existing configuration
+
+### Samples that hold several records of one class
+
+Discovery is the one stage that sees the pages while authoring the schema, so it
+is also asked — in the same model call, as diagnostic metadata that is stripped
+before the schema is validated — how many separate, complete documents of the
+discovered class the sample contains. The question is the one the extraction
+[multi-instance detection probe](extraction-and-confidence.md#multi-instance-sections-x-aws-idp-multi-instance)
+uses ("count complete documents, not pages, sections or repeated headers"), so the
+two signals agree.
+
+When the answer is two or more, the job carries a **suggestion**, never a config
+write:
+
+- **Job details page** (single-document discovery): *"This sample appears to
+  contain N 'X' records"* with an **Enable several documents per section** action.
+  Clicking it sets `x-aws-idp-multi-instance: true` on that class in the job's
+  configuration version (clearing any `x-aws-idp-instance-array` designation) and
+  reminds you that committed evaluation baselines for the class then need
+  `scripts/migrate_multi_instance_baselines.py`. If the class already has the flag
+  (a re-run keeps it), the panel says so instead.
+- **Jobs table**: a blue *"N records in sample"* badge next to the class name.
+- **API / SDK**: the job's `multiInstanceHint` field, a JSON string
+  `{"instance_count", "class_name", "already_multi_instance", "message"}`; the
+  `ClassesDiscovery` result dict carries the same object as `multi_instance_hint`
+  (`None` for one record).
+
+Why suggest rather than set: enabling the flag changes the shape of every result
+for the class (`{"instances": [...]}`), which invalidates baselines and downstream
+consumers, and one sample cannot tell "this class is multi-record" from "this
+packet should have been split into several sections" — those want different fixes
+(`x-aws-idp-multi-instance` versus classification section splitting), and only
+you know which. Not setting it costs nothing until a multi-record document
+arrives, and the extraction-time detection probe is there to catch that.
+
+Measured once, on the shipped `samples/paystub_multi_instance.pdf` (three
+records) and `samples/bank-statement-multipage.pdf` (one document, several pages)
+with the default discovery model at its default temperature of 1.0: the count was
+right in every run (3 in four of four runs, 1 in one of one), and the key never
+reached the saved schema. Three control runs without the question produced the
+same 12 properties each time, while three runs with it produced 12, 11 and 12
+with some property-name variance — too few runs to call an effect, but if you see
+schema drift on a re-run, that is the first thing to suspect.
+
+### Class name normalization
+
+A document class id (`$id` / `x-aws-idp-document-type`) is not only a label: it
+is composed into names in downstream AWS APIs. The strictest consumer is Bedrock
+Data Automation, whose `CreateBlueprint` requires the blueprint name to match
+`[a-zA-Z0-9-_]+` — and the accelerator builds that name as
+`{stack}-{class_id}-{suffix}`. A class id containing a space therefore fails the
+API call outright rather than degrading.
+
+Discovery's prompts ask the model for a name in that character set, but a prompt
+is guidance, not a guarantee. Discovery therefore normalizes the id before
+saving it:
+
+| Discovered id | Saved as |
+|---|---|
+| `Task cards` | `Task-cards` |
+| `Blank page` | `Blank-page` |
+| `Invoice (Final)` | `Invoice-Final` |
+| `Bank_Statement` | `Bank_Statement` (unchanged) |
+| `W2-Form` | `W2-Form` (unchanged) |
+
+Notes:
+
+- **Letters, digits, hyphens and underscores are preserved as-is.** An id that
+  already works is never rewritten, so no BDA blueprint (or anything else keyed
+  on the class name) is orphaned by a rename.
+- **The original text is kept** in the class `description` when the class has no
+  description of its own, so the human-readable name is not lost.
+- **A profile saved before normalization is repaired in place.** If the config
+  already holds the un-normalized spelling of a class (`Task cards`),
+  re-discovering that document replaces that entry rather than adding
+  `Task-cards` beside it — two classes sharing a normalized id would also share
+  a BDA blueprint name prefix. Classes you are not re-discovering are never
+  renamed, including two curated classes that happen to normalize to the same
+  id.
+- **An id with nothing usable in it** (e.g. `???`) is left unchanged and logged
+  as a warning — inventing a name would present a fabricated class as if the
+  model had produced it. Rename it in the Schema Builder before using features
+  that derive resource names from the class id.
+- The Web UI's Schema Builder enforces the same character set when you author or
+  edit a class by hand.
+
+### Re-discovering a class you have configured
+
+Running Discovery again on a document class that already exists in the target
+configuration profile **updates the class's properties and keeps its class-level
+settings**. Discovery owns what it produces — the property list, and the class id
+when there was none. Everything else you configured on that class in the Schema
+Designer or in YAML is carried forward:
+
+| Setting | Kept across re-discovery |
+|---|---|
+| `x-aws-idp-extraction-model`, `-extraction-escalation-model` | ✅ |
+| `x-aws-idp-extraction-system-prompt`, `-extraction-task-prompt` | ✅ |
+| `x-aws-idp-confidence-threshold`, `-confidence-escalation-model` | ✅ |
+| `x-aws-idp-document-name-regex`, `-document-page-content-regex` | ✅ |
+| `x-aws-idp-page-types` (class-level) | ✅ |
+| `x-aws-idp-exclude-from-processing`, `-exclusion-reason` | ✅ |
+| `x-aws-idp-examples` (few-shot) | ✅ |
+| `x-aws-idp-multi-instance` | ✅ |
+| `x-aws-idp-instance-array` | ✅ **only if** the named array property is still in the new schema (see below) |
+| `properties` (the fields and their descriptions) | ❌ — replaced by what discovery found |
+| `description` | ❌ — discovery is asked for one, so its text replaces yours (logged) |
+| `required`, `$defs` | ❌ — they describe the old properties, so they are dropped with them |
+| Per-**property** `x-aws-idp-evaluation-method` / `-evaluation-threshold` | ❌ — replaced with the property |
+| Per-**property** `x-aws-idp-source-page-types` | ❌ — replaced with the property |
+
+The rule is "preserve anything discovery did not produce", so a class-level
+setting added in a future release is covered without changing this list. If
+discovery does replace a setting, it is logged at write time (a `WARNING` naming
+the key) rather than only becoming visible in the next document processed.
+
+Three consequences worth knowing:
+
+- **Per-attribute** settings are not preserved — evaluation method/threshold, and
+  the `x-aws-idp-source-page-types` that drives BLANK-vs-MISSING page handling.
+  A re-discovered attribute can legitimately come back with a different type, and
+  a stale evaluation method on it can score worse than none. Re-apply these after
+  a re-discovery, or use **Replace existing schema** deliberately.
+- **`x-aws-idp-instance-array` is dropped if its property is gone.** It names a
+  top-level array property, and a configuration naming a property that does not
+  exist is rejected outright — keeping it would fail the whole save rather than
+  lose one setting. The drop is logged; re-declare it on the new schema if the
+  class still holds several records per section.
+- Normalizing a class id (`Task cards` → `Task-cards`) carries the old entry's
+  settings across the rename, so repairing an id does not reset the class. If two
+  spellings normalize to the same id, the settings come from one of them (chosen
+  deterministically) and the other is named in a warning.
+
+Use **Replace existing schema** when you *want* a clean rebuild — it removes the
+profile's document classes first, so nothing is carried forward.
 
 ## BDA Integration
 
@@ -1103,7 +1261,7 @@ The Result column shows additional context:
 
 #### Configuration
 
-Blueprint optimization is disabled by default. To enable it, set both `use_bda: true` and `enable_blueprint_optimization: true` in your configuration version via the View/Edit Configuration UI or directly in the config YAML:
+Blueprint optimization is disabled by default. To enable it, set both `use_bda: true` and `enable_blueprint_optimization: true` in your configuration profile via the View/Edit Configuration UI or directly in the config YAML:
 
 ```yaml
 use_bda: true
@@ -1111,7 +1269,7 @@ enable_blueprint_optimization: true
 ```
 
 When enabled, the optimizer uses:
-- The same BDA project as the main blueprint service (per configuration version)
+- The same BDA project as the main blueprint service (per configuration profile)
 - The same blueprint naming convention (`{StackName}-{ClassName}-{hash}`)
 - The discovery bucket for S3 input/output URIs
 - The `bedrock-data-automation` client with `boto3>=1.42.0` (bundled in the Lambda function's `requirements.txt`)

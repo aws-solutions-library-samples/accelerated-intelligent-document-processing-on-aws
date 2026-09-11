@@ -12,6 +12,7 @@ import pytest
 
 # Import standard library modules first
 import json
+import re
 from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
@@ -1820,3 +1821,129 @@ class TestBdaBlueprintService:
         assert "#/$defs/" not in bda_schema["properties"]["address"]["$ref"]
 
         print("✅ All normalization rules are implemented in transform method")
+
+
+# ---------------------------------------------------------------------------
+# Regression: blueprint names must satisfy BDA's [a-zA-Z0-9-_]+ constraint.
+#
+# Discovery can emit class ids containing spaces ("Task cards"), which were
+# composed into blueprint names verbatim and failed CreateBlueprint with a raw
+# ValidationException for every affected class — leaving the config version
+# with a BDA project and zero blueprints.
+#
+# The sanitization has to be applied identically at every site that composes
+# or matches a blueprint name (create, lookup, orphan cleanup, optimizer),
+# and must be a no-op for ids BDA already accepts — underscores included.
+# ---------------------------------------------------------------------------
+
+BDA_BLUEPRINT_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+@pytest.mark.unit
+class TestBlueprintNameSanitization:
+    """Tests for class-id sanitization in composed blueprint names."""
+
+    @pytest.fixture
+    def service(self):
+        with (
+            patch("boto3.resource"),
+            patch("boto3.client"),
+            patch("idp_common.bda.bda_blueprint_service.ConfigurationManager"),
+            patch.dict(
+                "os.environ",
+                {"CONFIGURATION_TABLE_NAME": "test-config-table", "STACK_NAME": "idp"},
+            ),
+        ):
+            svc = BdaBlueprintService(
+                dataAutomationProjectArn="arn:aws:bedrock:us-west-2:123456789012:project/test-project"
+            )
+            svc.blueprint_creator = MagicMock()
+            svc.blueprint_creator.create_blueprint.return_value = {
+                "status": "success",
+                "blueprint": {
+                    "blueprintArn": "arn:aws:bedrock:us-west-2:123456789012:blueprint/bp-1",
+                    "blueprintName": "created-name",
+                },
+            }
+            svc.blueprint_creator.create_blueprint_version_without_project_update.return_value = {
+                "blueprint": {"blueprintVersion": "1"}
+            }
+            svc.config_manager = MagicMock()
+            return svc
+
+    def _created_name(self, service, class_id):
+        """Run the create path for ``class_id`` and return the name BDA got."""
+        result = service._process_single_class(
+            build_json_schema(doc_id=class_id, properties={"a": {"type": "string"}}),
+            existing_blueprints=[],
+        )
+        assert result["status"] == "success", result
+        return service.blueprint_creator.create_blueprint.call_args.kwargs[
+            "blueprint_name"
+        ]
+
+    def test_class_id_with_space_produces_a_valid_blueprint_name(self, service):
+        """The reported failure: 'Task cards' must not reach CreateBlueprint raw."""
+        name = self._created_name(service, "Task cards")
+        assert BDA_BLUEPRINT_NAME_RE.match(name), name
+        assert name.startswith("idp-Task-cards-")
+
+    def test_underscores_are_preserved_so_existing_blueprints_stay_matched(
+        self, service
+    ):
+        """An id BDA already accepts must render byte-identically.
+
+        ``_sanitize_project_name`` would map ``_`` to ``-`` here, renaming a
+        working class's blueprint — after which ``_blueprint_lookup`` would
+        miss it (duplicate create) and orphan cleanup would delete the
+        original. Underscores must survive.
+        """
+        name = self._created_name(service, "Bank_Statement")
+        assert name.startswith("idp-Bank_Statement-")
+
+    def test_lookup_matches_the_name_the_create_path_produced(self, service):
+        """Create and lookup must sanitize identically, or every sync
+        re-creates the blueprint it already made."""
+        created = self._created_name(service, "Task cards")
+        existing = [
+            {"blueprintName": created, "blueprintArn": "arn:aws:bedrock:::bp/1"}
+        ]
+
+        assert service._blueprint_lookup(existing, "Task cards") is not None
+        # And an unsanitized lookup key must not be how it matches.
+        assert service._blueprint_lookup(existing, "Unrelated class") is None
+
+    def test_orphan_cleanup_expects_the_sanitized_prefix(self, service):
+        """Cleanup builds expected prefixes from config; if it used the raw id
+        it would treat a live blueprint as orphaned and delete it."""
+        created = self._created_name(service, "Task cards")
+
+        config_obj = MagicMock()
+        config_obj.classes = [
+            {"$id": "Task cards", "x-aws-idp-document-type": "Task cards"}
+        ]
+        service.config_manager.get_configuration.return_value = config_obj
+        service.blueprint_creator.list_all_blueprints_with_prefix.return_value = [
+            {"blueprintName": created, "blueprintArn": "arn:aws:bedrock:::bp/1"}
+        ]
+
+        result = service.cleanup_orphaned_blueprints(version="v1")
+
+        assert result["success"] is True, result
+        assert result["deleted_count"] == 0, result
+        service.blueprint_creator.delete_blueprint.assert_not_called()
+
+    def test_class_id_with_no_usable_characters_fails_with_an_actionable_error(
+        self, service
+    ):
+        """Sanitizing '???' yields nothing; report why instead of calling the
+        API with a name that cannot be valid."""
+        result = service._process_single_class(
+            build_json_schema(doc_id="???", properties={"a": {"type": "string"}}),
+            existing_blueprints=[],
+        )
+
+        assert result["status"] == "failed"
+        assert "a-zA-Z0-9-_" in result["error"]
+        assert "Rename the class" in result["error"]
+        service.blueprint_creator.create_blueprint.assert_not_called()

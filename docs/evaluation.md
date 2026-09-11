@@ -91,6 +91,7 @@ https://github.com/user-attachments/assets/0ff17f3e-1eb5-4883-9d6f-3d4e4e84cbea
     - [Evaluation Reports for Nested Structures](#evaluation-reports-for-nested-structures)
     - [Evaluation Metrics for Complex Documents](#evaluation-metrics-for-complex-documents)
   - [Document Split Classification Metrics](#document-split-classification-metrics)
+    - [Seeing which pages were misclassified (Web UI)](#seeing-which-pages-were-misclassified-web-ui)
     - [Overview](#overview)
     - [Three Types of Accuracy](#three-types-of-accuracy)
     - [Report Structure](#report-structure)
@@ -383,9 +384,51 @@ The evaluation framework provides different comparison methods optimized for var
 | **Levenshtein** | Text with typos, variations | Yes | 0.7 | Edit distance-based string comparison for detecting character-level differences. Threshold controls minimum similarity score |
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
 | **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
-| **LLM** | Complex semantic equivalence | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score |
+| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
 | **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses document-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
+
+### ⚠️ Do not use `LLM` on a field inside a list
+
+Setting `x-aws-idp-evaluation-method: LLM` on a field **inside a list's items** is
+downgraded to that field's deterministic type default (string → Levenshtein,
+number → NumericExact, boolean → Exact), and a warning names the field.
+
+Lists are matched with the Hungarian algorithm, which compares **every**
+ground-truth row against **every** predicted row to find the best pairing. That
+means an item field's comparator runs `N × M` times, so one Bedrock call per
+comparison costs roughly **N² calls per document**: a 54-row invoice needs about
+3,000 sequential model calls (~45 minutes), which cannot complete inside the
+evaluation Lambda's 15-minute limit no matter how many times it retries. In a
+live deployment this stalled the whole document pipeline.
+
+Use a deterministic method on list fields — it is also the right choice for a
+matching cost function. If you have a genuinely small, bounded list and want the
+semantic comparison anyway, opt in explicitly:
+
+```yaml
+LineItems:
+  type: array
+  items:
+    type: object
+    properties:
+      Description:
+        type: string
+        x-aws-idp-evaluation-method: LLM
+        x-aws-idp-evaluation-allow-llm-in-list: true   # accepts the O(N²) cost
+```
+
+Setting an evaluation method on the **array itself** has no effect and never has
+(lists are scored through their item fields, and row pairing is Hungarian). That
+is now reported as a warning instead of being silently ignored.
+
+> **Scores from the `LLM` method changed in this release.** The comparison prompt
+> includes the document class, field name and field description, but those were
+> not being passed to the model — every comparison was sent with them blank, so
+> the model judged two bare values with no idea what field it was grading.
+> `LLM`-method scores from earlier releases are not directly comparable with
+> current ones. Identical values now also short-circuit to a match without calling
+> the model at all.
 
 ### Threshold Display in Reports
 
@@ -894,6 +937,57 @@ Predicted Section Y: Class=Receipt, Pages=[4, 3]  ❌ No match (wrong order)
 Result: 1/2 sections correct = 50% accuracy
 ```
 
+### Seeing which pages were misclassified (Web UI)
+
+The three accuracies above tell you *how much* classification went wrong. Where
+a document has ground truth, the Web UI tells you *where* — annotated onto the
+class values you are already looking at, rather than in a separate report you
+have to cross-reference.
+
+**Document Sections and Document Pages tables.** A section or page whose class
+disagrees with ground truth carries a **Class mismatch** alert beside its
+Class/Type value. Hovering it shows what ground truth expects, what this run
+assigned, and the page range involved. Nothing is added to a row that matches,
+and nothing at all is added for a document with no ground truth — the tables
+look exactly as they did before. The alert also appears in **Edit mode**, next
+to the class dropdown, which is where the class can actually be corrected.
+
+A section's verdict is derived from **its pages**, not by pairing it with a
+ground-truth section. When the split itself is wrong there is no single
+counterpart section to compare against, but every page still has a ground-truth
+class — so a section that merged two ground-truth documents reports *both*
+classes it spans ("Section spans more than one ground-truth class") instead of
+an unhelpful "no match". A section is flagged even when one of the classes it
+spans equals its own, because in that case the boundary is what is wrong.
+
+**Visual Editor ("View Data").** The class comparison appears above the field
+list on any document that has an evaluation baseline — the class this run
+assigned, the class ground truth expects, and a match/mismatch verdict. Both
+values are shown whether or not they agree.
+
+It is **not** behind the **Show Evaluation** toggle. That toggle defaults to off
+and only appears once the evaluation status resolves, so gating the class verdict
+with it made the headline signal invisible in the place people go looking for it.
+The baseline is loaded whenever one exists, so the single line costs nothing;
+the toggle still controls the noisier per-field scores and reasons.
+
+It reads the same `evaluation/results.json` the field-level comparison loads, and
+falls back to the baseline file's own `document_class.type` for a document with
+no page-level comparison. On a document with no baseline nothing is shown, since
+there is no expected class to compare against.
+
+Why this matters when reading scores: a misclassified page was extracted against
+the **wrong schema**, so its low extraction score is a symptom, not the cause.
+Fixing the classification first avoids tuning extraction prompts against a
+document the pipeline was never reading as the right type. Both the hover and the
+Visual Editor say so inline.
+
+Page numbers shown are 1-based, matching the page viewer. (Internally
+`page_indices` in `results.json` are 0-based — computed as
+`page_id - min(page_id)` — so the UI converts them.) A page ground truth says
+nothing about is left unannotated rather than flagged: an incomplete baseline is
+not a misclassification.
+
 ### Report Structure
 
 Document split metrics are integrated into the unified evaluation report:
@@ -1138,14 +1232,19 @@ The evaluation framework includes comprehensive monitoring through CloudWatch me
 
 The framework calculates the following detailed metrics for each document and section:
 
-**Extraction Accuracy Metrics:**
-- **Precision**: Accuracy of positive predictions (TP / (TP + FP))
-- **Recall**: Coverage of actual positive cases (TP / (TP + FN))
-- **F1 Score**: Harmonic mean of precision and recall
-- **Accuracy**: Overall correctness (TP + TN) / (TP + TN + FP + FN)
-- **False Alarm Rate**: Rate of false positives among negatives (FP / (FP + TN))
-- **False Discovery Rate**: Rate of false positives among positive predictions (FP / (FP + TP))
+**Extraction Accuracy Metrics.** As of v0.6.7, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
+
+- **Precision**: Accuracy of positive predictions — `TP / (TP + FP)` where `FP = FA + FD`
+- **Recall**: Coverage of actual positive cases — `TP / (TP + FN)`
+- **F1 Score**: Harmonic mean of precision and recall — `2·TP / (2·TP + FP + FN)`
+- **Accuracy**: Overall correctness — `(TP + TN) / (TP + FP + FN + TN)`
+- **False Alarm Rate (FAR)**: Rate of hallucinated fields among true-negatives — `FA / (FA + TN)` (Stickler's `fa` = false alarm, distinct from `fd` = false discovery)
+- **False Discovery Rate (FDR)**: Rate of wrong-value fields among positive predictions — `FD / (FD + TP)`
 - **Weighted Overall Score**: Field-importance-weighted aggregate score
+
+The distinction between `fa` (predicted a value where none was expected) and `fd` (predicted a wrong value where one was expected) matters because they represent different failure modes and warrant different remediations — FAR isolates hallucinations, FDR isolates wrong extractions.
+
+**Historical data note:** runs recorded on v0.6.3–v0.6.6 predate this counting semantics and may show inflated or deflated section metrics on list-heavy configs; re-run those evaluations after upgrading for accurate comparison. See [issue #625](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/625).
 
 **Document Split Classification Metrics:**
 - **Page Level Accuracy**: Classification accuracy for individual pages
@@ -1160,6 +1259,7 @@ The evaluation also tracks different evaluation statuses:
 - **RUNNING**: Evaluation is in progress
 - **COMPLETED**: Evaluation finished successfully
 - **FAILED**: Evaluation encountered errors
+- **TIMED_OUT**: Evaluation could not finish within the evaluation Lambda's time limit
 - **NO_BASELINE**: No baseline data available for comparison
 - **BASELINE_COPYING**: Process of copying document to baseline is in progress
 - **BASELINE_AVAILABLE**: Document is available in the baseline
@@ -1398,13 +1498,41 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 ### Stickler Version Information
 
 The solution installs Stickler from PyPI (`stickler-eval==0.5.0`, pinned in
-`lib/idp_common_pkg/pyproject.toml` and `setup.py`). The resolved version is
+`lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from
 `importlib.metadata.version("stickler-eval")` so environment drift and
 pin/constant drift fail loudly instead of silently disagreeing.
 - **Repository**: https://github.com/awslabs/stickler
 - **PyPI**: https://pypi.org/project/stickler-eval/
+
+## When a section fails to evaluate
+
+A section that could not be evaluated at all — as distinct from one that was
+[excluded](#excluded-sections-in-evaluation) or scored badly — is reported with
+an **⚠️ EVALUATION FAILED** block naming the cause, and its metrics are zeroed.
+
+Each failure carries a `failure_type` in the section's metrics, and the report's
+remediation follows it:
+
+| `failure_type` | Cause | What to do |
+|---|---|---|
+| `missing_schema_configuration` | The class is absent from the `evaluation` schema and no baseline data was available to infer one | Add the class to the config, or pass baseline data |
+| `empty_nested_object` | A nested object in the schema has no properties | Give it at least one property, or remove it |
+| `extraction_parsing_failed` | The model's extraction output was not parseable JSON | Check for truncation (`max_tokens`) or commentary around the JSON; re-extract |
+| `baseline_data_validation_error` | The baseline values' types disagree with the schema | Fix the baseline, or widen the schema field type |
+| `schema_configuration_error` | Any other schema/config error | Review the schema against the reported error |
+| `unexpected_error` | Anything else | Read the reported error |
+
+Two things worth knowing when reading such a block:
+
+- **The zeros mean "not scored", not "scored zero".** They are placeholders for
+  a section that was never evaluated, so they look alarming next to a healthy
+  document-level score. They do still count against the document-level
+  aggregates, which is why the block is prominent.
+- A results file written before `failure_type` existed shows the failure reason
+  with no "How to fix" list. That is deliberate: remediation for the wrong cause
+  is worse than none.
 
 ## Excluded Sections in Evaluation
 
@@ -1469,6 +1597,33 @@ annotation table preserves full auditability.
 
 See the end-to-end demo at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
+
+## A failed evaluation no longer discards the document
+
+Evaluation is a **measurement** step: by the time it runs, OCR, classification,
+extraction, assessment and summarization have all succeeded and their output
+objects are written. So an evaluation failure is caught and the document
+continues to the normal end of the workflow with an honest
+`EvaluationStatus` (`FAILED` or `TIMED_OUT`) rather than failing the execution
+and throwing away that work.
+
+Two things changed to make that true:
+
+- **A timeout is retried once, not eight times.** An evaluation Lambda timeout is
+  *deterministic* — the document needs more time than the function has, so every
+  retry burns another full timeout and fails identically. It used to share the
+  transient-error retry policy (8 attempts at 2.5× backoff), which meant one such
+  document held a workflow-concurrency slot for **~5.2 hours** before failing.
+  Genuinely transient faults (throttling, Lambda service errors) still get the
+  full retry budget.
+- **Failures are recorded, not silently swallowed.** The caught error routes
+  through a step that stamps the evaluation status, so a document whose
+  evaluation timed out shows `TIMED_OUT` instead of sitting at `RUNNING`
+  indefinitely.
+
+If you see `TIMED_OUT`, the document's extraction results are intact — only its
+score is missing. Re-run evaluation for that document after reducing the
+comparison work (see the warning about `LLM` methods inside lists, above).
 
 ## Troubleshooting Evaluation Issues
 

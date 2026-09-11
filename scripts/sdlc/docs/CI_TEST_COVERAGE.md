@@ -32,6 +32,12 @@ its `make` target and the skill that documents how to run it.
 | Seller-service test-stack teardown (incl. retained KMS key + table) | `feature-platform/seller-entitlement-service/tests/teardown_test_stack.sh --stack-name …-citest` | `feature-platform/seller-entitlement-service/README.md` |
 | Run security tests + curate a public-safe snapshot | `make security-results [STACK_NAME=… REGION=…]` (offline-only if no stack) | `.claude/skills/curate-security-results.md` |
 
+Once a release has been validated with these tiers, the outcome is recorded — one
+file per release, never overwritten — in
+[`docs/release-validation/`](../../../docs/release-validation/README.md). That is
+the answer to "what was actually run against a live stack for release X, and what
+did it find?", since none of these tiers appear in a pipeline log.
+
 VPC stack-tests auto-discover a suitable VPC via the `run-stack-tests` skill
 (it lists candidates, confirms with you, then passes `VPC_ID`/`SUBNET_IDS`/
 `LAMBDA_SG_ID`/`APIGW_VPCE_ID` as make params).
@@ -88,9 +94,25 @@ the expensive AWS deploy runs only when it's worth it:
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | `code_checks` (lint, typecheck, static RBAC scan, all unit suites, UI vitest) **and** `srt_security_review` (SRT security scan) — run in **parallel** | No | ~minutes |
+| **fast_checks** | `code_checks` (lint, typecheck, static RBAC scan, all unit suites, UI vitest), `srt_security_review` (SRT security scan) **and** `dep_audit` (SCA vs OSV) — run in **parallel** | No | ~minutes |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (Steps 1–13) on the **primary shared stack only**. The deployment-variant probes no longer run here by default — see the ⚠️ note under "deployment-variant probe framework" (run them manually with `make stacktest-*`, or set `IDP_RUN_PROBES=true`). | Yes (deploys) | ~1 hour |
+
+### The GitHub side runs the same two security gates
+
+The repo is mirrored to GitHub and PRs are merged there, so a GitLab-only gate is
+not a gate. `.github/workflows/security-checks.yml` runs `srt_security_review` and
+`dep_audit` on every pull request with the same commands as their GitLab
+counterparts; `.github/workflows/developer-tests.yml` covers lint, typecheck and
+the unit suites.
+
+This was added after twelve HIGH SRT findings reached `develop` through a GitHub
+merge with every visible check green — the SRT and `dep_audit` gates simply never
+ran on that change.
+
+⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
+added to the branch-protection rule for `develop` as *required status checks*, or a
+PR can still be merged while they are red or pending.
 
 **Trigger matrix** — what runs, when:
 
@@ -549,10 +571,17 @@ a validator**, not a copy-pasted deploy/validate/cleanup function.
 
 > **Note:** the Jobs API probe exercises the *additive* `EnableJobsApi` CFN
 > parameter on the STANDARD published template — it does **not** exercise the
-> `idp-cli deploy --headless` template transform (which removes the UI). The
-> `--headless` / `--govcloud` transforms are covered by the offline unit tests
-> in `lib/idp_sdk/tests/unit/` (region-aware `cfn-lint`); a `--headless` *deploy*
-> probe remains a follow-up.
+> `idp-cli deploy --headless` template transform (which removes the UI). (It was
+> itself once *named* the "headless" probe, which is why leftover `-headless`
+> stack names appear in the reaper fixtures; it was renamed `jobsapi` precisely
+> to stop implying transform coverage.) The `--headless` transform is now gated
+> at two tiers: **offline** unit tests in `lib/idp_sdk/tests/unit/`
+> (dangling-parameter + zero-`Error` `cfn-lint`), and **`validate_headless_
+> template`** in the integration tier, which transforms the *packaged*
+> `.aws-sam/idp-main.yaml` and validates it through real CloudFormation
+> `ValidateTemplate` (one S3 put + one API call — no second SAM build, no
+> deploy). A `--headless` *deploy* probe remains a follow-up: these gates prove
+> the template is well-formed, not that a headless stack stands up.
 
 Validators live in `scripts/sdlc/codebuild_deployment.py`:
 `validate_apigw_global_hosting`, `validate_waf_enabled`,
@@ -990,13 +1019,37 @@ additions.
       carries SAM short-form tags, so a full lint of the **published/SAM-baked**
       template still needs the publish pipeline — deferred to the integration
       tier.)*
-- [ ] **`--headless` template-transform smoke.** At minimum, run the
-      `HeadlessTemplateTransformer` + cfn-lint in the fast gate to catch transform
-      breakage without a deploy. (Full headless *deploy* e2e is below.) *(A
-      real-template `HeadlessTemplateTransformer` dangling-ref test already
-      exists in `test_template_transform.py`; the remaining gap is a
-      region-aware `cfn-lint` pass over the transformed headless template like
-      the govcloud one above.)*
+- [x] **`--headless` template-transform smoke.** Closed at two tiers after this
+      gap shipped a headless template CloudFormation rejects outright — the
+      `SuppressAdminInvite` condition referenced the `AdminEmail` parameter the
+      transform removes, so for six weeks every headless deploy died at
+      validation (`Unresolved dependencies [AdminEmail]`) before creating a
+      single resource. **Fast gate (offline, no AWS):**
+      `test_headless_transform_leaves_no_unresolved_parameter_reference`
+      (structural — no surviving `Ref`/`Fn::Sub` in Conditions/Rules/Outputs may
+      point at a removed parameter) and
+      `test_real_template_headless_has_no_cfn_lint_errors` (zero `Error`-level
+      findings; warnings stay ungated since headless legitimately leaves unused
+      conditions and unreachable `Fn::If` branches). Note the pre-existing
+      headless lint probe gates only `E3006`, which is exactly why an `E1020`
+      slipped through. **Integration tier:** `validate_headless_template`
+      transforms the *packaged* `.aws-sam/idp-main.yaml` and validates it via
+      real CloudFormation `ValidateTemplate`, closing the source-vs-packaged gap
+      the offline tests cannot (SAM expansion, nested-stack URLs). Costs one S3
+      put + one API call — it reuses the template the publish step already built.
+      A full headless *deploy* e2e now exists as an ON-DEMAND runner rather
+      than a CI job: `make transform-deploy-test-headless` /
+      `-govcloud` (`scripts/sdlc/transform_deploy_test.py`) deploy the
+      TRANSFORMED template via the documented `idp-cli deploy
+      --headless|--govcloud --from-code .` path, assert each transform's
+      structural promises, and process a real sample document. Deliberately
+      not wired into CI (~1h+ per variant); the validators and result shape
+      already match the probe framework so wiring in is additive. See
+      `.claude/skills/transform-deploy-test.md`. ⚠️ A COMMERCIAL `govcloud`
+      run does NOT prove GovCloud behaviour (partition ARNs, model
+      availability, the BDA project rejection) — that needs
+      `REGION=us-gov-west-1` against a GovCloud account, which the runner
+      supports unchanged.
 - [x] **Register the `pytest.mark.unit` marker repo-wide.** A minimal repo-root
       `pytest.ini` registers the `unit` / `integration` markers, so the ~12
       per-Lambda/resolver dirs without their own config no longer emit

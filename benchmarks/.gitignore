@@ -9,9 +9,11 @@ corpus/configs/
 # raw per-run runmaps; scored summaries are kept (see un-ignores below)
 results/run-*/
 
-# KEEP (committed, tracked):
+# KEEP (committed, tracked) — scored results live at results/<release>/<suite>/
+# (one release dir per release; see results/RETENTION.md)
 !results/baseline.json
-!results/*/summary.json
-!results/*/summary.csv
-!results/*/meta.json
+!results/*/*/summary.json
+!results/*/*/summary.csv
+!results/*/*/cell_stats.csv
+!results/*/*/meta.json
 !paper/figures/*.png

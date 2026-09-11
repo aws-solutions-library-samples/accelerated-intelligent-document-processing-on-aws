@@ -169,7 +169,7 @@ def call_mistral_ocr(image_bytes: bytes, image_format: str) -> dict:
         f"model={MISTRAL_OCR_MODEL})"
     )
 
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:  # nosec B310 - MISTRAL_API_URL env var (https default), not request input
         return json.loads(response.read().decode("utf-8"))
 
 

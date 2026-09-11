@@ -219,6 +219,44 @@ class TestParseModelId:
         assert base_id == "global.amazon.nova-2-lite-v1:0"
         assert tier == "priority"
 
+    @pytest.mark.parametrize("tier", ["flex", "priority"])
+    def test_parse_version_less_model_id_with_tier(self, tier):
+        """A model ID with no ``:<version>`` segment still yields its tier.
+
+        Every Bedrock ID used here historically ended in ``:0``/``:1m``, so a
+        tier suffix meant a THIRD colon-part and the parser bailed out at two.
+        Newer families carry no version segment (e.g. ``us.xai.grok-4.6``),
+        which left the tier unextracted and sent the whole string to Bedrock as
+        the modelId — an invalid identifier.
+        """
+        base_id, parsed_tier = parse_model_id(f"us.xai.grok-4.6:{tier}")
+        assert base_id == "us.xai.grok-4.6"
+        assert parsed_tier == tier
+
+    def test_version_less_model_id_without_tier_is_unchanged(self):
+        base_id, tier = parse_model_id("us.xai.grok-4.6")
+        assert base_id == "us.xai.grok-4.6"
+        assert tier is None
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            # Regression guard for the two-part early-return removal: none of
+            # these carry a tier, and their trailing part must not be eaten.
+            "us.amazon.nova-2-lite-v1:0",
+            "us.anthropic.claude-opus-5:1m",
+            "us.anthropic.claude-sonnet-5",
+            "us.anthropic.claude-sonnet-4-6:1m",
+            "anthropic.claude-sonnet-4-6",
+            "openai.gpt-5.6-sol",
+            "LambdaHook",
+        ],
+    )
+    def test_non_tier_suffixes_are_preserved(self, model_id):
+        base_id, tier = parse_model_id(model_id)
+        assert base_id == model_id
+        assert tier is None
+
 
 @pytest.mark.unit
 class TestResolveModelIdFromArn:

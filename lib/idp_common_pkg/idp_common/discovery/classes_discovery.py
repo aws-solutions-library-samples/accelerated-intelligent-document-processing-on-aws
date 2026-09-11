@@ -5,36 +5,118 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Set, Tuple, cast
 
 import jsonschema
 from jsonschema import Draft202012Validator
 
 from idp_common import bedrock, image
-from idp_common.bedrock.openai_responses import is_openai_responses_model
+from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
+from idp_common.config.class_names import is_valid_class_name, sanitize_class_name
+from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.config.schema_constants import X_AWS_IDP_MULTI_INSTANCE
 from idp_common.utils.s3util import S3Util
 
 logger = logging.getLogger(__name__)
 
 
-def _reject_openai_responses_model(model_id: Optional[str]) -> None:
-    """Reject OpenAI GPT-5.x models for discovery.
+def _reject_model_without_document_blocks(model_id: Optional[str]) -> None:
+    """Reject models that cannot accept Converse ``document`` content blocks.
 
-    Discovery ingests whole PDFs via Converse ``document`` content blocks, which
-    the OpenAI Responses API (bedrock-mantle) does not support — it accepts only
-    text and image input. Routing a GPT-5.x model here would silently drop the
-    document and hallucinate, so fail loudly instead. (These models are also not
-    offered in the discovery model picklists.)
+    Discovery ingests whole PDFs via ``document`` blocks. Three families can't
+    take them — OpenAI GPT-5.x (bedrock-mantle Responses API), xAI Grok ("This
+    model doesn't support documents") and OpenAI GPT-6 Astra ("This model doesn't
+    support the document field for user messages") — and all accept only text and
+    image input. Routing any of them here would silently drop the document and
+    hallucinate, so fail loudly instead. (None are offered in the discovery model
+    picklists.)
     """
-    if is_openai_responses_model(model_id):
+    reason = document_blocks_unsupported_reason(model_id)
+    if reason:
         raise ValueError(
-            f"OpenAI Responses model '{model_id}' is not supported for discovery. "
-            "Discovery sends whole-PDF document blocks, which the bedrock-mantle "
-            "Responses API cannot accept. Choose an Anthropic or Nova model."
+            f"Model '{model_id}' is not supported for discovery: {reason}. "
+            "Discovery sends whole-PDF document blocks. Choose an Anthropic or "
+            "Nova model."
         )
+
+
+#: Top-level key the discovery model is asked to add to its reply with the number
+#: of separate documents of the discovered class in the sample (#765). Same name
+#: as the #753 extraction probe field (``idp_common.extraction.instance_probe``)
+#: and the same question, so the two signals agree. Popped before validation and
+#: never written to the class schema.
+DISCOVERY_INSTANCE_COUNT_KEY = "IDPDocumentInstanceCount"
+
+_INSTANCE_COUNT_INSTRUCTION = (
+    f'\nAlso include ONE extra top-level key "{DISCOVERY_INSTANCE_COUNT_KEY}" next '
+    'to "$id" (an integer; NOT inside "properties"). It is DIAGNOSTIC METADATA, not '
+    "part of the schema: how many separate, complete documents of this class are "
+    "present in the supplied pages? Answer 1 for the normal case of one document. "
+    "Answer more than 1 only when the pages clearly contain several distinct "
+    "documents of this same type - for example statements covering different "
+    "periods, or records for different people - including when a document starts "
+    "part-way down a page. Do not count pages, sections or repeated headers: count "
+    "complete documents.\n"
+)
+
+
+def pop_instance_count(schema: Dict[str, Any]) -> Optional[int]:
+    """Remove the diagnostic count from a model reply and return it (``None`` when
+    absent or unusable). Also removes it from ``properties`` if the model put it
+    where fields go, so it can never become a class field."""
+    raw = schema.pop(DISCOVERY_INSTANCE_COUNT_KEY, None)
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        props.pop(DISCOVERY_INSTANCE_COUNT_KEY, None)
+    required = schema.get("required")
+    if isinstance(required, list) and DISCOVERY_INSTANCE_COUNT_KEY in required:
+        schema["required"] = [r for r in required if r != DISCOVERY_INSTANCE_COUNT_KEY]
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if value < 1 or not value.is_integer():
+        return None
+    return int(value)
+
+
+def build_multi_instance_hint(
+    class_schema: Dict[str, Any], instance_count: Optional[int]
+) -> Optional[Dict[str, Any]]:
+    """The suggestion carried on the discovery result when the sample held two or
+    more records of the class. Discovery only suggests; it never sets
+    ``x-aws-idp-multi-instance`` itself (a wrong auto-set changes the shape of
+    every result for the class and invalidates committed baselines), and one
+    sample cannot tell "this class is multi-record" from "this packet should have
+    been split", so the alternative is named too."""
+    if not instance_count or instance_count < 2:
+        return None
+    class_name = (
+        class_schema.get("$id")
+        or class_schema.get("x-aws-idp-document-type")
+        or "this class"
+    )
+    already = bool(class_schema.get(X_AWS_IDP_MULTI_INSTANCE))
+    message = (
+        f"This sample appears to contain {instance_count} '{class_name}' records. "
+        "If sections of this class can hold several records, enable 'Documents per "
+        f"section: Several' on the class ({X_AWS_IDP_MULTI_INSTANCE}). If instead "
+        "each record should be its own section, configure section splitting in "
+        "classification. Discovery only suggests this; it did not change the class."
+    )
+    if already:
+        message += " Several documents per section is already enabled on this class."
+    return {
+        "instance_count": instance_count,
+        "class_name": class_name,
+        "already_multi_instance": already,
+        "message": message,
+    }
 
 
 class ClassesDiscovery:
@@ -47,6 +129,8 @@ class ClassesDiscovery:
     ):
         self.input_bucket = input_bucket
         self.input_prefix = input_prefix
+        # #765: diagnostic record count from the most recent model reply
+        self._last_instance_count: Optional[int] = None
         self.region = region or os.environ.get("AWS_REGION")
         self.version = version
         try:
@@ -193,7 +277,7 @@ class ClassesDiscovery:
                 want to use a more capable model than the configured default.
 
         Returns:
-            list of dicts: [{"start": 1, "end": 3, "type": "W2 Form"}, ...]
+            list of dicts: [{"start": 1, "end": 3, "type": "W2-Form"}, ...]
 
         Raises:
             Exception: If auto-detection fails
@@ -212,7 +296,7 @@ class ClassesDiscovery:
             auto_split_config = self.discovery_config.auto_split
             # Caller-supplied override takes precedence over configured model_id
             model_id = model_id or auto_split_config.model_id
-            _reject_openai_responses_model(model_id)
+            _reject_model_without_document_blocks(model_id)
             top_p = auto_split_config.top_p
             max_tokens = auto_split_config.max_tokens
 
@@ -229,7 +313,9 @@ class ClassesDiscovery:
                 "For each distinct document section, provide:\n"
                 '- "start": the first page number (1-based)\n'
                 '- "end": the last page number (1-based)\n'
-                '- "type": a short label for the document type (e.g., "W2 Form", "Letter", "Invoice")\n\n'
+                '- "type": a short label for the document type, using only letters, '
+                "digits, hyphens and underscores — no spaces "
+                '(e.g., "W2-Form", "Letter", "Invoice")\n\n'
                 "Return ONLY a JSON array, no other text:\n"
                 '[{"start": 1, "end": 2, "type": "Letter"}, {"start": 3, "end": 3, "type": "Invoice"}]'
             )
@@ -363,7 +449,14 @@ class ClassesDiscovery:
                 # and save to Custom config
                 self._merge_and_save_class(current_class)
 
-            return {"status": "SUCCESS", "schema": current_class}
+            return {
+                "status": "SUCCESS",
+                "schema": current_class,
+                # #765: a suggestion, not a config write (None for one record)
+                "multi_instance_hint": build_multi_instance_hint(
+                    current_class, getattr(self, "_last_instance_count", None)
+                ),
+            }
 
         except Exception as e:
             logger.error(
@@ -453,7 +546,14 @@ class ClassesDiscovery:
                 # and save to Custom config
                 self._merge_and_save_class(current_class)
 
-            return {"status": "SUCCESS", "schema": current_class}
+            return {
+                "status": "SUCCESS",
+                "schema": current_class,
+                # #765: a suggestion, not a config write (None for one record)
+                "multi_instance_hint": build_multi_instance_hint(
+                    current_class, getattr(self, "_last_instance_count", None)
+                ),
+            }
 
         except Exception as e:
             logger.error(
@@ -473,12 +573,22 @@ class ClassesDiscovery:
 
         Steps:
         1. Read existing classes from the target version
-        2. Add/update the new discovered class (deduplicate by $id)
+        2. Add/update the new discovered class (deduplicate by $id), carrying
+           forward any class-level setting discovery did not itself produce
         3. Save back to the target version
 
         Args:
             new_class: The newly discovered class schema to add/update
         """
+        # The class id is generated by the LLM, so it can arrive with spaces or
+        # punctuation despite the prompt asking for neither. Normalize it here —
+        # the single write path for both discovery flows — because the id is
+        # later composed into downstream resource names (BDA blueprint names
+        # must match [a-zA-Z0-9-_]+), where an invalid character fails the call
+        # rather than degrading. Prompt instructions are guidance; this is the
+        # guarantee.
+        synthesized = self._normalize_class_id(new_class)
+
         # Get class identifier for the new class
         new_class_id = new_class.get("$id") or new_class.get("x-aws-idp-document-type")
         logger.info(f"Merging discovered class: {new_class_id}")
@@ -502,6 +612,53 @@ class ClassesDiscovery:
 
         # Add/update the new discovered class
         if new_class_id:
+            # A version written before class ids were normalized can still hold
+            # the un-normalized spelling of this very class ("Task cards"), so
+            # match on the normalized form as well — otherwise re-discovering it
+            # adds a near-duplicate beside the stale entry, and the two would
+            # then compose the same BDA blueprint name prefix and fight over one
+            # blueprint. Only an id that normalizes to *this* one is replaced;
+            # unrelated classes keep their own ids untouched.
+            stale_ids = sorted(
+                cls_id
+                for cls_id in classes_by_id
+                if cls_id != new_class_id
+                and sanitize_class_name(cls_id) == new_class_id
+            )
+            # Whose settings are carried across: the exact-id entry if there is
+            # one, else the first stale spelling. Sorted, so the choice does not
+            # depend on the order DynamoDB happened to return the classes in.
+            existing_class = classes_by_id.get(new_class_id)
+            settings_source = existing_class or (
+                classes_by_id[stale_ids[0]] if stale_ids else None
+            )
+            for stale_id in stale_ids:
+                logger.info(
+                    "Replacing existing class %r with its normalized id %r.",
+                    stale_id,
+                    new_class_id,
+                )
+                if classes_by_id[stale_id] is not settings_source:
+                    # More than one spelling normalizes to this id (or an exact
+                    # entry already existed). Only one can supply the settings, so
+                    # name the ones being dropped rather than losing them quietly.
+                    logger.warning(
+                        "Class %r also normalizes to %r; its class-level settings "
+                        "are NOT carried forward (settings taken from %r). "
+                        "Re-apply anything it alone had set.",
+                        stale_id,
+                        new_class_id,
+                        settings_source.get("$id") if settings_source else None,
+                    )
+                del classes_by_id[stale_id]
+            existing_class = settings_source
+
+            if existing_class is not None:
+                # Discovery owns `properties` and the keys it emits; every
+                # other class-level setting on the existing class was authored
+                # by a human and used to be erased here without a trace.
+                carry_forward_authored_settings(existing_class, new_class, synthesized)
+
             classes_by_id[new_class_id] = new_class
 
         # Convert back to list
@@ -513,6 +670,51 @@ class ClassesDiscovery:
         self.config_manager.save_raw_configuration(
             "Config", existing_custom, version=self.version
         )
+
+    @staticmethod
+    def _normalize_class_id(new_class: Dict[str, Any]) -> Set[str]:
+        """Rewrite a discovered class's id in place to a portable form.
+
+        Both ``$id`` and ``x-aws-idp-document-type`` are normalized so they
+        stay equal to each other; the original text is kept in ``description``
+        (when the class has none) so the human-readable name is not lost.
+        A class id that is already valid is left untouched.
+
+        Returns the keys this method filled in itself. They are not discovery
+        output, so ``carry_forward_authored_settings`` lets an existing
+        authored value override them.
+        """
+        original = new_class.get("$id") or new_class.get("x-aws-idp-document-type")
+        if not original or is_valid_class_name(original):
+            return set()
+
+        sanitized = sanitize_class_name(original)
+        if not sanitized:
+            # Nothing usable to build a name from. Keep the id as-is rather
+            # than inventing one — a placeholder would look like a real class.
+            logger.warning(
+                "Discovered class id %r contains no characters valid in a class "
+                "name ([a-zA-Z0-9-_]); leaving it unchanged. Rename it before "
+                "using features that derive resource names from the class id "
+                "(e.g. BDA sync).",
+                original,
+            )
+            return set()
+
+        logger.info(
+            "Renaming discovered class %r to %r so it is usable by downstream "
+            "features (BDA blueprint names allow only [a-zA-Z0-9-_]).",
+            original,
+            sanitized,
+        )
+        if "$id" in new_class:
+            new_class["$id"] = sanitized
+        if "x-aws-idp-document-type" in new_class:
+            new_class["x-aws-idp-document-type"] = sanitized
+        if not new_class.get("description"):
+            new_class["description"] = original
+            return {"description"}
+        return set()
 
     @staticmethod
     def _extract_json(text: str) -> str:
@@ -598,7 +800,7 @@ class ClassesDiscovery:
         # Get configuration for without ground truth
         # Caller-supplied override takes precedence over configured model_id
         model_id = model_id or self.without_gt_config.model_id
-        _reject_openai_responses_model(model_id)
+        _reject_model_without_document_blocks(model_id)
         system_prompt = (
             self.without_gt_config.system_prompt
             or "You are an expert in processing forms. Extracting data from images and documents"
@@ -617,6 +819,7 @@ class ClassesDiscovery:
         logger.info(f"sample format is : {sample_format}")
 
         validation_feedback = ""
+        self._last_instance_count = None
         for attempt in range(max_retries):
             try:
                 # Add validation feedback if this is a retry
@@ -624,15 +827,19 @@ class ClassesDiscovery:
                 if attempt > 0 and validation_feedback:
                     retry_prompt = f"\n\nPREVIOUS ATTEMPT FAILED: {validation_feedback}\nPlease fix the issue and generate a valid JSON Schema.\n\n"
 
-                # If class_name_hint is provided, instruct the LLM to use it as the class name
+                # If class_name_hint is provided, instruct the LLM to use it as the class name.
+                # The hint originates from auto-detected section labels, so it is
+                # sanitized before injection — otherwise it overrides the schema
+                # prompt's "no spaces" rule with a name BDA sync cannot use.
                 class_hint_instruction = ""
                 if class_name_hint:
+                    hint = sanitize_class_name(class_name_hint) or class_name_hint
                     class_hint_instruction = (
-                        f'\nIMPORTANT: Use "{class_name_hint}" as the document class name. '
-                        f'Set "$id" and "x-aws-idp-document-type" to "{class_name_hint}".\n'
+                        f'\nIMPORTANT: Use "{hint}" as the document class name. '
+                        f'Set "$id" and "x-aws-idp-document-type" to "{hint}".\n'
                     )
 
-                full_prompt = f"{retry_prompt}{user_prompt}{class_hint_instruction}\nFormat the extracted data using the below JSON format:\n{sample_format}"
+                full_prompt = f"{retry_prompt}{user_prompt}{class_hint_instruction}{_INSTANCE_COUNT_INSTRUCTION}\nFormat the extracted data using the below JSON format:\n{sample_format}"
                 # Create content for the user message
                 content = self._create_content_list(
                     prompt=full_prompt,
@@ -659,6 +866,8 @@ class ClassesDiscovery:
 
                 # Parse JSON response
                 schema = json.loads(self._extract_json(content_text))
+                # #765: diagnostic count, never part of the schema
+                self._last_instance_count = pop_instance_count(schema)
 
                 # Validate the schema
                 is_valid, error_msg = self._validate_json_schema(schema)
@@ -730,7 +939,7 @@ class ClassesDiscovery:
         # Get configuration for with ground truth
         # Caller-supplied override takes precedence over configured model_id
         model_id = model_id or self.with_gt_config.model_id
-        _reject_openai_responses_model(model_id)
+        _reject_model_without_document_blocks(model_id)
         system_prompt = (
             self.with_gt_config.system_prompt
             or "You are an expert in processing forms. Extracting data from images and documents"
@@ -757,6 +966,7 @@ class ClassesDiscovery:
         sample_format = self._sample_output_format()
 
         validation_feedback = ""
+        self._last_instance_count = None
         for attempt in range(max_retries):
             try:
                 # Add validation feedback if this is a retry
@@ -764,7 +974,7 @@ class ClassesDiscovery:
                 if attempt > 0 and validation_feedback:
                     retry_prompt = f"\n\nPREVIOUS ATTEMPT FAILED: {validation_feedback}\nPlease fix the issue and generate a valid JSON Schema.\n\n"
 
-                full_prompt = f"{retry_prompt}{base_prompt}\nFormat the extracted data using the below JSON format:\n{sample_format}"
+                full_prompt = f"{retry_prompt}{base_prompt}{_INSTANCE_COUNT_INSTRUCTION}\nFormat the extracted data using the below JSON format:\n{sample_format}"
 
                 # Create content for the user message
                 content = self._create_content_list(
@@ -792,6 +1002,8 @@ class ClassesDiscovery:
 
                 # Parse JSON response
                 schema = json.loads(self._extract_json(content_text))
+                # #765: diagnostic count, never part of the schema
+                self._last_instance_count = pop_instance_count(schema)
 
                 # Validate the schema
                 is_valid, error_msg = self._validate_json_schema(schema)

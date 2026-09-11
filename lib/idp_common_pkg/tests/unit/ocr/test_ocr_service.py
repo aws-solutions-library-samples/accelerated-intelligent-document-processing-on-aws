@@ -35,7 +35,12 @@ for _name in (
             sys.modules[_name] = MagicMock()
 
 from idp_common.models import Document, Status
-from idp_common.ocr.service import OcrService
+from idp_common.ocr.service import (
+    DEFAULT_DPI,
+    DEFAULT_TARGET_HEIGHT,
+    DEFAULT_TARGET_WIDTH,
+    OcrService,
+)
 
 
 @pytest.mark.unit
@@ -121,8 +126,8 @@ class TestOcrService:
             assert service.enhanced_features is False
             # Default image sizing
             assert service.resize_config == {
-                "target_width": 951,
-                "target_height": 1268,
+                "target_width": DEFAULT_TARGET_WIDTH,
+                "target_height": DEFAULT_TARGET_HEIGHT,
             }
             assert service.preprocessing_config is None
 
@@ -132,6 +137,34 @@ class TestOcrService:
             mock_client.assert_any_call(
                 "s3", config=ANY
             )  # Now includes config for connection pool
+
+    def test_default_render_resolution_is_high_enough_for_small_glyphs(self):
+        """Default dpi + ceiling must render A4/Letter at full DEFAULT_DPI.
+
+        Regression guard for issue #729: at 150 dpi Textract silently dropped a
+        page number from its response. The fix relies on TWO defaults together --
+        DEFAULT_DPI raises the render, and the default ceiling must be loose
+        enough not to claw it back. A ceiling that binds here would silently
+        re-break OCR of small glyphs, because images are never upscaled.
+        """
+        for page_w, page_h in ((595, 842), (612, 792)):  # A4, US Letter (points)
+            rendered_w = page_w * DEFAULT_DPI / 72
+            rendered_h = page_h * DEFAULT_DPI / 72
+
+            scale_factor = min(
+                DEFAULT_TARGET_WIDTH / rendered_w, DEFAULT_TARGET_HEIGHT / rendered_h
+            )
+
+            # >= 1.0 means the ceiling does not bind, so no downscale is applied
+            assert scale_factor >= 1.0, (
+                f"default ceiling {DEFAULT_TARGET_WIDTH}x{DEFAULT_TARGET_HEIGHT} "
+                f"downscales a {page_w}x{page_h}pt page rendered at "
+                f"{DEFAULT_DPI} dpi ({rendered_w:.0f}x{rendered_h:.0f})"
+            )
+
+        # Textract needs roughly 200+ dpi to hold onto small, faint or skewed
+        # characters; anything lower reintroduces issue #729.
+        assert DEFAULT_DPI >= 200
 
     def test_init_textract_with_enhanced_features(self):
         """Test initialization with enhanced Textract features."""
@@ -213,8 +246,8 @@ class TestOcrService:
 
             # Verify defaults are applied
             assert service.resize_config == {
-                "target_width": 951,
-                "target_height": 1268,
+                "target_width": DEFAULT_TARGET_WIDTH,
+                "target_height": DEFAULT_TARGET_HEIGHT,
             }
             assert service.dpi == 200
 
@@ -257,8 +290,8 @@ class TestOcrService:
 
             # Verify defaults are applied (empty strings treated same as None)
             assert service.resize_config == {
-                "target_width": 951,
-                "target_height": 1268,
+                "target_width": DEFAULT_TARGET_WIDTH,
+                "target_height": DEFAULT_TARGET_HEIGHT,
             }
             assert service.dpi == 150
 
@@ -301,8 +334,8 @@ class TestOcrService:
 
             # Verify fallback to defaults on invalid values
             assert service.resize_config == {
-                "target_width": 951,
-                "target_height": 1268,
+                "target_width": DEFAULT_TARGET_WIDTH,
+                "target_height": DEFAULT_TARGET_HEIGHT,
             }
             assert service.dpi == 150
 
@@ -683,6 +716,50 @@ class TestOcrService:
         assert "Account: 12345" in confidence["text"]
         assert "97.5" in confidence["text"]
         assert "No confidence data available" not in confidence["text"]
+
+    def test_extract_bedrock_ocr_artifacts_geometry_without_confidence(
+        self, mock_bedrock_config
+    ):
+        """Blocks with geometry but no Confidence must not report 0.0.
+
+        Some OCR backends (e.g. the Cohere Parse hook) return bounding boxes but
+        no confidence scores at all. Defaulting the missing score to 0.0 would
+        tell the assessment LLM every line was maximally unreliable, suppressing
+        extraction confidence document-wide.
+        """
+        with patch("boto3.client"):
+            service = OcrService(backend="bedrock", bedrock_config=mock_bedrock_config)
+        response_payload = {
+            "output": {"message": {"content": [{"text": "Account: 12345"}]}},
+            "textractBlocks": {
+                "DocumentMetadata": {"Pages": 1},
+                "Blocks": [
+                    {"BlockType": "PAGE", "Id": "p1"},
+                    {
+                        "BlockType": "LINE",
+                        "Id": "l1",
+                        "Text": "Account: 12345",
+                        "Geometry": {
+                            "BoundingBox": {
+                                "Left": 0.1,
+                                "Top": 0.2,
+                                "Width": 0.3,
+                                "Height": 0.05,
+                            }
+                        },
+                    },
+                ],
+            },
+        }
+        _, confidence = service._extract_bedrock_ocr_artifacts(response_payload)
+
+        # The row reports the score as unavailable rather than as a real 0.0.
+        rows = [
+            line
+            for line in confidence["text"].split("\n")
+            if line.startswith("| Account")
+        ]
+        assert rows == ["| Account: 12345 | N/A |"]
 
     def test_extract_bedrock_ocr_artifacts_empty_blocks(self, mock_bedrock_config):
         """textractBlocks present but empty -> fall back to placeholder."""

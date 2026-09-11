@@ -57,6 +57,47 @@ class ClusterResult:
             "cluster_ids": self.get_cluster_ids(),
         }
 
+    def to_artifact(self) -> Dict[str, Any]:
+        """Full JSON-safe form for the S3 hand-off between discovery steps.
+
+        Unlike :meth:`to_serializable` (a compact status payload for the state
+        machine) this keeps everything the analyze step needs to rebuild the
+        object — notably the centroids. ``embeddings`` and ``kdtree`` are
+        excluded: the embeddings ride their own ``.npy`` object and the KDTree is
+        rebuilt from them.
+
+        The format is JSON rather than pickle on purpose. The payload is only
+        numbers, so pickle bought nothing, while making the load side an
+        arbitrary-code-execution sink (bandit B301). Integer dict keys become
+        strings because JSON has no integer keys; :meth:`from_artifact` casts
+        them back.
+        """
+        return {
+            "cluster_labels": self.cluster_labels.tolist(),
+            "num_clusters": int(self.num_clusters),
+            "cluster_sizes": {str(k): int(v) for k, v in self.cluster_sizes.items()},
+            "centroids": {str(k): v.tolist() for k, v in self.centroids.items()},
+            "embeddings_shape": list(self.embeddings.shape),
+        }
+
+    @classmethod
+    def from_artifact(
+        cls, data: Dict[str, Any], embeddings: np.ndarray, kdtree: Any
+    ) -> "ClusterResult":
+        """Rebuild a ClusterResult from :meth:`to_artifact` output.
+
+        ``embeddings`` and ``kdtree`` are supplied by the caller because they are
+        not carried in the artifact.
+        """
+        return cls(
+            cluster_labels=np.asarray(data["cluster_labels"]),
+            num_clusters=int(data["num_clusters"]),
+            cluster_sizes={int(k): int(v) for k, v in data["cluster_sizes"].items()},
+            centroids={int(k): np.asarray(v) for k, v in data["centroids"].items()},
+            embeddings=embeddings,
+            kdtree=kdtree,
+        )
+
 
 class ClusteringService:
     """

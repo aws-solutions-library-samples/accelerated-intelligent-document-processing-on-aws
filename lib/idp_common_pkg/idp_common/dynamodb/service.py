@@ -15,7 +15,14 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from idp_common.dynamodb.client import DynamoDBClient
-from idp_common.models import Document, Page, ProcessingIssue, Section, Status
+from idp_common.models import (
+    Document,
+    Page,
+    ProcessingIssue,
+    Section,
+    Status,
+    coerce_revision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +72,136 @@ def convert_decimals_to_native(obj):
     return obj
 
 
-def serialize_confidence_threshold_alerts(section: Section) -> List[Dict[str, Any]]:
+def serialize_page_classification_signals(page: Any) -> Dict[str, Any]:
+    """Serialize a Page's OPTIONAL classification signals for DynamoDB.
+
+    Returns only the keys that have a value: ``ClassConfidence`` (the
+    classifier's confidence in ``Class``, as a Decimal — DynamoDB rejects
+    floats), ``ClassReason`` (the model's stated evidence) and ``Boundary``
+    (the ``start``/``continue`` signal ``sectionSplitting: llm_determined``
+    splits on). A page that produced none of them adds no attributes, so items
+    stay byte-identical to what older code wrote.
+
+    Named ``ClassConfidence`` rather than ``Confidence`` because a page item
+    already carries ``TextConfidenceUri``, which is OCR confidence — a different
+    measurement entirely. The prefix ties this one to the sibling ``Class``.
+
+    Shared by the live doc item writer (update_document) and the run-record
+    writer (create_document_run) so a version snapshot never carries fewer
+    signals than the live document.
+    """
+    signals: Dict[str, Any] = {}
+    if page.confidence is not None:
+        signals["ClassConfidence"] = Decimal(str(float(page.confidence)))
+    if getattr(page, "classification_reason", None):
+        signals["ClassReason"] = page.classification_reason
+    candidates = getattr(page, "classification_candidates", None)
+    if candidates:
+        # Ranked alternatives ("80% W-2, 15% 1099") from topk mode. Stored as a
+        # list of maps rather than a JSON string so the UI can render it without
+        # a parse step, mirroring ConfidenceThresholdAlerts.
+        signals["ClassCandidates"] = [
+            {
+                "Class": str(candidate.get("class", "")),
+                "Probability": Decimal(str(float(candidate.get("probability", 0.0)))),
+            }
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("class")
+        ]
+    if page.document_boundary:
+        signals["Boundary"] = page.document_boundary
+    return signals
+
+
+# Confidence alerts are stored INLINE in the tracking item, and EVERY section's
+# alerts live in the same item's `Sections` list, so the list is bounded here or
+# not at all. Unbounded, it can push the item past DynamoDB's 409,600-byte
+# ceiling — at which point the write fails and the document is left with no
+# result at all, which is how two production documents were lost (#814). That
+# case was duplication and was fixed by deduping; these caps address the part
+# dedupe cannot touch: per-row alerts carry a row index, are legitimately
+# distinct, and are exempt from the collapse (their indexes are slice-local,
+# #813). A wide table with many sub-threshold cells reaches the same ceiling with
+# no duplication at all — 512 rows x 8 columns is ~4,096 alerts, ~450 KB at the
+# ~110 bytes a serialized alert occupies (#821).
+#
+# Nothing is lost that cannot be recovered: this list is a DERIVED convenience
+# copy. Every field's confidence and threshold is in `explainability_info` in the
+# extraction result on S3, and the Web UI's own count already prefers that data,
+# falling back to this list only when it is absent
+# (`confidence-alerts-utils.ts::getDocumentConfidenceAlertCount`).
+#
+# Two layers, because the writers see different things. `update_document_section`
+# writes ONE section atomically (`SET Sections[i] = :section`) and deliberately
+# does not read the item, so it cannot know the document-wide total — the
+# per-section cap is what protects that path. The whole-document writers get the
+# document-wide budget as well, fair-shared across sections.
+_MAX_STORED_ALERTS_PER_SECTION = 50
+_MAX_STORED_ALERTS_PER_DOCUMENT = 1000
+
+
+def _worst_first_subset(
+    alerts: List[Dict[str, Any]], limit: int
+) -> List[Dict[str, Any]]:
+    """The ``limit`` LOWEST-confidence alerts, in their original relative order.
+
+    Lowest-confidence because these are the findings a reviewer most needs to
+    see; original order because a stable list keeps the item from churning
+    between otherwise identical writes. A missing or unreadable ``confidence``
+    sorts last (treated as 1.0), so a scoreless entry never displaces a scored
+    one — the same rule ``dedupe_alerts`` uses when it collapses copies.
+    """
+
+    def _score(index_and_alert: Any) -> Any:
+        index, alert = index_and_alert
+        raw = alert.get("confidence") if isinstance(alert, dict) else None
+        try:
+            score = 1.0 if raw is None else float(raw)
+        except (TypeError, ValueError):
+            score = 1.0
+        return (score, index)
+
+    worst = sorted(enumerate(alerts), key=_score)[:limit]
+    return [alert for _, alert in sorted(worst, key=lambda pair: pair[0])]
+
+
+def allocate_alert_budget(
+    sections: List[Section], total: int = _MAX_STORED_ALERTS_PER_DOCUMENT
+) -> Dict[str, int]:
+    """How many alerts each section may store, keyed by ``section_id``.
+
+    Only for the writers that see the whole document. Returns each section's full
+    demand when the document fits the budget, so the common case is unaffected.
+    Over budget, it is fair-shared: sections are served smallest-demand first,
+    each getting at most an equal share of what is left, so a section with three
+    alerts keeps all three and its unused share flows to the sections that want
+    more. A section can be allotted zero when there are more alerting sections
+    than budget — its true count is still recorded, and the full data is in
+    ``explainability_info`` either way.
+    """
+    demand = {
+        section.section_id: len(section.confidence_threshold_alerts or [])
+        for section in sections or []
+    }
+    if sum(demand.values()) <= total:
+        return demand
+
+    allotted: Dict[str, int] = {}
+    remaining = total
+    # Deterministic order (demand, then id) so two identical documents allot
+    # identically — the write must not depend on dict ordering.
+    order = sorted(demand, key=lambda sid: (demand[sid], str(sid)))
+    for position, section_id in enumerate(order):
+        share = remaining // (len(order) - position)
+        take = min(demand[section_id], share)
+        allotted[section_id] = take
+        remaining -= take
+    return allotted
+
+
+def serialize_confidence_threshold_alerts(
+    section: Section, limit: Optional[int] = None
+) -> List[Dict[str, Any]]:
     """
     Serialize a Section's confidence threshold alerts to the DynamoDB/GraphQL
     camelCase shape (``attributeName``/``confidence``/``confidenceThreshold``).
@@ -74,9 +210,21 @@ def serialize_confidence_threshold_alerts(section: Section) -> List[Dict[str, An
     update_document_section) and the run-record writer (create_document_run) so
     a version snapshot carries the same low-confidence data the live document
     does — the UI's "Low Confidence Fields" count reads this field.
+
+    Capped at ``_MAX_STORED_ALERTS_PER_SECTION``, and at ``limit`` when the
+    caller has a document-wide budget to spend (see ``allocate_alert_budget``).
+    Callers should use ``set_section_alerts`` rather than calling this directly,
+    so the true count travels with a truncated list.
     """
+    alerts = list(section.confidence_threshold_alerts or [])
+    cap = _MAX_STORED_ALERTS_PER_SECTION
+    if limit is not None:
+        cap = min(cap, max(limit, 0))
+    if len(alerts) > cap:
+        alerts = _worst_first_subset(alerts, cap)
+
     alerts_data: List[Dict[str, Any]] = []
-    for alert in section.confidence_threshold_alerts or []:
+    for alert in alerts:
         alerts_data.append(
             convert_floats_to_decimal(
                 {
@@ -87,6 +235,36 @@ def serialize_confidence_threshold_alerts(section: Section) -> List[Dict[str, An
             )
         )
     return alerts_data
+
+
+def set_section_alerts(
+    section_data: Dict[str, Any], section: Section, limit: Optional[int] = None
+) -> None:
+    """Write a section's alerts into its item map, recording the true count.
+
+    One helper for all three writers so a truncated list can never be stored
+    without the figure that says it was truncated. ``ConfidenceThresholdAlerts``
+    holds what fits; ``ConfidenceThresholdAlertsTotal`` appears only when
+    something was dropped, so an unaffected document's item is byte-identical to
+    before. No consumer reads the total yet — it exists so "17 alerts" can be
+    told apart from "17 of 412", by a reader or by whoever surfaces it next.
+    """
+    if not section.confidence_threshold_alerts:
+        return
+    stored = serialize_confidence_threshold_alerts(section, limit=limit)
+    section_data["ConfidenceThresholdAlerts"] = stored
+    total = len(section.confidence_threshold_alerts)
+    if len(stored) < total:
+        section_data["ConfidenceThresholdAlertsTotal"] = total
+        logger.warning(
+            "Section %s: storing %d of %d confidence alerts in the tracking item "
+            "(inline alerts are capped so the item cannot breach DynamoDB's "
+            "409,600-byte limit); full per-field confidence remains in the "
+            "extraction result's explainability_info",
+            section.section_id,
+            len(stored),
+            total,
+        )
 
 
 def serialize_processing_issues(section: Section) -> List[Dict[str, Any]]:
@@ -253,6 +431,14 @@ class DocumentDynamoDBService:
             expression_names["#ConfigVersion"] = "ConfigVersion"
             expression_values[":ConfigVersion"] = document.config_version
 
+        # The revision of that profile the document is pinned to, so a result can
+        # be traced back to the exact configuration that produced it even after
+        # the profile has been saved again.
+        if document.config_revision is not None:
+            set_expressions.append("#ConfigRevision = :ConfigRevision")
+            expression_names["#ConfigRevision"] = "ConfigRevision"
+            expression_values[":ConfigRevision"] = int(document.config_revision)
+
         # Set workflow status based on document status
         if document.status == Status.FAILED:
             workflow_status = "FAILED"
@@ -290,6 +476,13 @@ class DocumentDynamoDBService:
                     "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
                     "OcrPageDataUri": page.ocr_page_data_uri or "",
                 }
+                # Optional classification signals — the confidence in Class, the
+                # model's reason for it, and the "start"/"continue" boundary
+                # signal that sectionSplitting: llm_determined splits on.
+                # Persisted so a surprising classification or section merge can
+                # be audited after the fact instead of re-derived from Lambda
+                # logs. Each is omitted when absent.
+                page_data.update(serialize_page_classification_signals(page))
                 pages_data.append(page_data)
 
             if pages_data:
@@ -299,6 +492,9 @@ class DocumentDynamoDBService:
 
         # Convert sections
         if document.sections:
+            # Every section's alerts land in this one item, so the cap has to be
+            # spent across the document rather than per section (#821).
+            alert_budget = allocate_alert_budget(document.sections)
             sections_data = []
             for section in document.sections:
                 # Convert page IDs to integers for DynamoDB
@@ -318,17 +514,41 @@ class DocumentDynamoDBService:
                     "OutputJSONUri": section.extraction_result_uri or "",
                 }
 
-                # Convert confidence threshold alerts (matching current AppSync interface)
-                if section.confidence_threshold_alerts:
-                    section_data["ConfidenceThresholdAlerts"] = (
-                        serialize_confidence_threshold_alerts(section)
-                    )
+                # Confidence in the section's CLASS (aggregated from its pages),
+                # distinct from the per-field ConfidenceThresholdAlerts below.
+                # Omitted when not scored.
+                if section.confidence is not None:
+                    section_data["Confidence"] = Decimal(str(float(section.confidence)))
+
+                # Convert confidence threshold alerts (matching current AppSync
+                # interface), bounded so the inline list cannot push the item past
+                # DynamoDB's size ceiling (#821). This writer sees every section,
+                # so it spends the document-wide budget.
+                set_section_alerts(
+                    section_data, section, limit=alert_budget.get(section.section_id)
+                )
 
                 # Persist structured processing issues (self-healing observability).
                 if section.processing_issues:
                     section_data["ProcessingIssues"] = serialize_processing_issues(
                         section
                     )
+
+                # How many documents (instances) of this class the section holds.
+                # Omitted when undetermined (0) so items stay byte-identical to
+                # what older code wrote.
+                if section.instance_count:
+                    section_data["InstanceCount"] = section.instance_count
+
+                # Exclusion flags for a section whose class carries
+                # x-aws-idp-exclude-from-processing. This is the write that makes
+                # the UI's "Skipped" badge possible — the badge is the only
+                # explanation a user gets for why an excluded section's panels are
+                # empty. Omitted when not excluded, per the convention above.
+                if section.excluded:
+                    section_data["Excluded"] = True
+                    if section.exclusion_reason:
+                        section_data["ExclusionReason"] = section.exclusion_reason
 
                 sections_data.append(section_data)
 
@@ -489,6 +709,7 @@ class DocumentDynamoDBService:
             trace_id=item.get("TraceId"),
             initial_event_time=item.get("InitialEventTime"),
             config_version=item.get("ConfigVersion"),
+            config_revision=coerce_revision(item.get("ConfigRevision")),
         )
 
         # Convert status
@@ -534,6 +755,25 @@ class DocumentDynamoDBService:
                     text_confidence_uri=page_data.get("TextConfidenceUri"),
                     ocr_page_data_uri=page_data.get("OcrPageDataUri") or None,
                     classification=page_data.get("Class"),
+                    # Stored as a DynamoDB Decimal; back to float for the model.
+                    # Absent => not scored (None), never a presumed 1.0.
+                    confidence=(
+                        float(page_data["ClassConfidence"])
+                        if page_data.get("ClassConfidence") is not None
+                        else None
+                    ),
+                    classification_reason=page_data.get("ClassReason") or None,
+                    classification_candidates=[
+                        {
+                            "class": candidate.get("Class"),
+                            "probability": float(candidate["Probability"])
+                            if candidate.get("Probability") is not None
+                            else None,
+                        }
+                        for candidate in page_data.get("ClassCandidates") or []
+                    ]
+                    or None,
+                    document_boundary=page_data.get("Boundary") or None,
                 )
 
         # Convert sections
@@ -587,10 +827,21 @@ class DocumentDynamoDBService:
                     Section(
                         section_id=section_data.get("Id", ""),
                         classification=section_data.get("Class", ""),
+                        # Confidence in the CLASS. Absent => not scored.
+                        confidence=(
+                            float(section_data["Confidence"])
+                            if section_data.get("Confidence") is not None
+                            else None
+                        ),
                         page_ids=page_ids,
                         extraction_result_uri=section_data.get("OutputJSONUri"),
                         confidence_threshold_alerts=confidence_threshold_alerts,
                         processing_issues=processing_issues,
+                        instance_count=int(section_data.get("InstanceCount") or 0),
+                        # Absent on items written before the flags were persisted,
+                        # and on every non-excluded section.
+                        excluded=bool(section_data.get("Excluded", False)),
+                        exclusion_reason=section_data.get("ExclusionReason"),
                     )
                 )
 
@@ -1074,18 +1325,57 @@ class DocumentDynamoDBService:
                     f"Skipping page ID {page_id} in section {section.section_id} - not an integer"
                 )
 
-        section_data = {
+        section_data: Dict[str, Any] = {
             "Id": section.section_id,
             "PageIds": page_ids,
             "Class": section.classification,
             "OutputJSONUri": section.extraction_result_uri or "",
         }
 
-        # Convert confidence threshold alerts
-        if section.confidence_threshold_alerts:
-            section_data["ConfidenceThresholdAlerts"] = (
-                serialize_confidence_threshold_alerts(section)
-            )
+        # Confidence in the section's CLASS, written here for the same reason the
+        # exclusion flags below are: this is a whole-map replace, so omitting a key
+        # classification already persisted ERASES it. Extraction calls this writer
+        # per section, which would otherwise drop the class confidence moments
+        # after it was stored.
+        if section.confidence is not None:
+            section_data["Confidence"] = Decimal(str(float(section.confidence)))
+
+        # Convert confidence threshold alerts. This writer updates ONE section
+        # atomically and deliberately does not read the item, so it cannot know the
+        # document-wide total — the per-section cap inside the serializer is what
+        # bounds this path (#821).
+        set_section_alerts(section_data, section)
+
+        # Persist structured processing issues. This write REPLACES the whole
+        # section map (`SET #Sections[i] = :section`), so omitting them here does
+        # not merely skip them — it ERASES any issues an earlier stage wrote.
+        # Extraction persists through this path for immediate UI visibility
+        # (patterns/unified/src/extraction_function/index.py:367), so without
+        # this the section status icon stayed blank until the collate step
+        # rewrote the full document.
+        #
+        # The truthiness guard is what CLEARS the attribute when a re-run resolved
+        # every issue: the caller already replaced its own stage's issues (see
+        # ExtractionService._save_results), so an empty list here means "nothing to
+        # report", and a full-map replace with the key omitted deletes the stale
+        # value. Do not "fix" this into an unconditional write of `[]`.
+        if section.processing_issues:
+            section_data["ProcessingIssues"] = serialize_processing_issues(section)
+
+        if section.instance_count:
+            section_data["InstanceCount"] = section.instance_count
+
+        # Exclusion flags, written for the same reason ProcessingIssues are above:
+        # classification sets them, then extraction calls THIS writer for every
+        # section including the excluded ones it short-circuited
+        # (patterns/unified/src/extraction_function/index.py:367). Because this is
+        # a whole-map replace, omitting the keys would erase the flags
+        # classification had already persisted, and the "Skipped" badge would
+        # disappear moments after appearing.
+        if section.excluded:
+            section_data["Excluded"] = True
+            if section.exclusion_reason:
+                section_data["ExclusionReason"] = section.exclusion_reason
 
         # Use SET Sections[index] = :value for atomic section update
         update_expression = f"SET #Sections[{section_index}] = :section"
@@ -1170,6 +1460,8 @@ class DocumentDynamoDBService:
             item["WorkflowExecutionArn"] = document.workflow_execution_arn
         if document.config_version:
             item["ConfigVersion"] = document.config_version
+        if document.config_revision is not None:
+            item["ConfigRevision"] = int(document.config_revision)
         if document.num_pages > 0:
             item["PageCount"] = document.num_pages
         if document.metering:
@@ -1185,6 +1477,9 @@ class DocumentDynamoDBService:
             item["RuleValidationResultUri"] = document.rule_validation_result.output_uri
 
         if document.sections:
+            # Same document-wide alert budget as the live item writer, so a run
+            # snapshot is bounded identically (#821).
+            alert_budget = allocate_alert_budget(document.sections)
             sections_data = []
             for section in document.sections:
                 page_ids = []
@@ -1205,14 +1500,24 @@ class DocumentDynamoDBService:
                 # and an empty Status for every section, because the UI derives
                 # both from these attributes (there is no other source once the
                 # run's outputs have been overwritten).
-                if section.confidence_threshold_alerts:
-                    section_data["ConfidenceThresholdAlerts"] = (
-                        serialize_confidence_threshold_alerts(section)
-                    )
+                if section.confidence is not None:
+                    section_data["Confidence"] = Decimal(str(float(section.confidence)))
+                set_section_alerts(
+                    section_data, section, limit=alert_budget.get(section.section_id)
+                )
                 if section.processing_issues:
                     section_data["ProcessingIssues"] = serialize_processing_issues(
                         section
                     )
+                if section.instance_count:
+                    section_data["InstanceCount"] = section.instance_count
+                # Snapshot the exclusion flags too, so a historical version keeps
+                # the "Skipped" badge instead of showing an unexplained empty
+                # section.
+                if section.excluded:
+                    section_data["Excluded"] = True
+                    if section.exclusion_reason:
+                        section_data["ExclusionReason"] = section.exclusion_reason
                 sections_data.append(section_data)
             item["Sections"] = sections_data
 
@@ -1223,15 +1528,18 @@ class DocumentDynamoDBService:
                     page_id_int = int(page_id)
                 except ValueError:
                     continue
-                pages_data.append(
-                    {
-                        "Id": page_id_int,
-                        "Class": page.classification or "",
-                        "ImageUri": page.image_uri or "",
-                        "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
-                        "OcrPageDataUri": page.ocr_page_data_uri or "",
-                    }
-                )
+                page_snapshot: Dict[str, Any] = {
+                    "Id": page_id_int,
+                    "Class": page.classification or "",
+                    "ImageUri": page.image_uri or "",
+                    "TextUri": page.parsed_text_uri or page.raw_text_uri or "",
+                    "OcrPageDataUri": page.ocr_page_data_uri or "",
+                }
+                # Snapshot the classification signals too (confidence, reason,
+                # boundary), so a historical run can be audited for why its pages
+                # were classified — and its sections split — the way they were.
+                page_snapshot.update(serialize_page_classification_signals(page))
+                pages_data.append(page_snapshot)
             if pages_data:
                 item["Pages"] = pages_data
 

@@ -327,6 +327,31 @@
         }
       ]
     },
+    "createEmptyTestSet": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "name",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "description",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "documentClassType",
+          "non_null": false,
+          "type": "DocumentClassType"
+        }
+      ]
+    },
     "createFinetuningJob": {
       "args": [
         {
@@ -389,6 +414,24 @@
           "name": "sessionId",
           "non_null": true,
           "type": "ID"
+        }
+      ]
+    },
+    "deleteConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
         }
       ]
     },
@@ -594,6 +637,24 @@
     },
     "getCircuitBreakerStatus": {
       "args": []
+    },
+    "getConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
+        }
+      ]
     },
     "getConfigVersion": {
       "args": [
@@ -898,6 +959,38 @@
     "getTestSets": {
       "args": []
     },
+    "labelConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "label",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "notes",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "listAgentJobs": {
       "args": [
         {
@@ -971,6 +1064,17 @@
           "is_list": false,
           "name": "surface",
           "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "listConfigProfileRevisions": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
           "type": "String"
         }
       ]
@@ -1133,6 +1237,17 @@
     },
     "listUsers": {
       "args": []
+    },
+    "openTestSetAnnotationDraft": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "OpenTestSetAnnotationDraftInput"
+        }
+      ]
     },
     "pauseCircuitBreaker": {
       "args": [
@@ -1309,6 +1424,13 @@
           "name": "version",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },
@@ -1320,6 +1442,24 @@
           "name": "testSetId",
           "non_null": true,
           "type": "String"
+        }
+      ]
+    },
+    "restoreConfigProfileRevision": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profileName",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": true,
+          "type": "Int"
         }
       ]
     },
@@ -1837,6 +1977,13 @@
         {
           "elem_non_null": false,
           "is_list": false,
+          "name": "multiInstanceHint",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
           "name": "jobType",
           "non_null": false,
           "type": "String"
@@ -1897,6 +2044,24 @@
           "name": "input",
           "non_null": true,
           "type": "UpdateDocumentSectionInput"
+        }
+      ]
+    },
+    "updateDocumentSections": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "objectKey",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "sections",
+          "non_null": true,
+          "type": "DocumentSectionGroupingInput"
         }
       ]
     },
@@ -1966,6 +2131,17 @@
           "name": "input",
           "non_null": true,
           "type": "UpdateTestSetInput"
+        }
+      ]
+    },
+    "updateTestSetDocumentSections": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "UpdateTestSetDocumentSectionsInput"
         }
       ]
     },
@@ -2111,6 +2287,13 @@
           "name": "version",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "revision",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },
@@ -2287,6 +2470,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "ConfigRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "TraceId",
         "non_null": false,
         "type": "String"
@@ -2320,6 +2510,29 @@
         "name": "trainSplit",
         "non_null": false,
         "type": "Float"
+      }
+    ],
+    "DocumentSectionGroupingInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "sectionId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "classification",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "pageIds",
+        "non_null": true,
+        "type": "String"
       }
     ],
     "FileUploadInfo": [
@@ -2361,9 +2574,23 @@
         "type": "String"
       },
       {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
         "elem_non_null": true,
         "is_list": true,
         "name": "objectKeys",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "documentClass",
         "non_null": false,
         "type": "String"
       }
@@ -2440,6 +2667,15 @@
         "name": "isDeleted",
         "non_null": false,
         "type": "Boolean"
+      }
+    ],
+    "OpenTestSetAnnotationDraftInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
       }
     ],
     "PageInput": [
@@ -2773,6 +3009,20 @@
         "type": "String"
       },
       {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "configRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetVersion",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
         "elem_non_null": true,
         "is_list": true,
         "name": "objectKeys",
@@ -2810,6 +3060,29 @@
         "type": "Int"
       }
     ],
+    "TestSetSectionGroupingInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "sectionId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "documentClass",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "pageIndices",
+        "non_null": true,
+        "type": "Int"
+      }
+    ],
     "TestSetUploadInput": [
       {
         "elem_non_null": false,
@@ -2824,6 +3097,13 @@
         "name": "fileSize",
         "non_null": true,
         "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "name",
+        "non_null": false,
+        "type": "String"
       },
       {
         "elem_non_null": false,
@@ -3070,6 +3350,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "ConfigRevision",
+        "non_null": false,
+        "type": "Int"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "TraceId",
         "non_null": false,
         "type": "String"
@@ -3126,6 +3413,29 @@
         "name": "WorkflowStatus",
         "non_null": false,
         "type": "String"
+      }
+    ],
+    "UpdateTestSetDocumentSectionsInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "testSetId",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "objectKey",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "sections",
+        "non_null": true,
+        "type": "TestSetSectionGroupingInput"
       }
     ],
     "UpdateTestSetInput": [

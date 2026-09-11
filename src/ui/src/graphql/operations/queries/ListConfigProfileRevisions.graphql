@@ -1,0 +1,20 @@
+query ListConfigProfileRevisions($profileName: String!) {
+  listConfigProfileRevisions(profileName: $profileName) {
+    success
+    revisions {
+      revision
+      createdAt
+      createdBy
+      label
+      notes
+      sizeBytes
+      classFingerprint
+      pinned
+      published
+    }
+    error {
+      type
+      message
+    }
+  }
+}

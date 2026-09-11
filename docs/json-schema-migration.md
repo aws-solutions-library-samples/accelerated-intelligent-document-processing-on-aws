@@ -165,6 +165,16 @@ JSON Schema is extended with custom AWS IDP fields:
 ### Document-Level Extensions
 
 - `x-aws-idp-document-type` - Marks a schema as a document type (value is the document class name)
+- `x-aws-idp-multi-instance` - `true` replaces the class's *effective* schema with a
+  list of that class (`{"instances": [ … ]}`), so a section holding several
+  documents of the class extracts every one of them. Mutually exclusive with
+  `x-aws-idp-instance-array`. ⚠️ Changes the shape of `inference_result`, so this
+  class's evaluation baselines must be migrated — see
+  [extraction-and-confidence.md](extraction-and-confidence.md).
+- `x-aws-idp-instance-array` - For a class whose schema is *already* a packet of
+  records: names the top-level array-of-objects property holding one record per
+  document, so the section reports that array's length as its instance count. No
+  schema change and no downstream impact.
 
 ### Attribute-Level Extensions
 

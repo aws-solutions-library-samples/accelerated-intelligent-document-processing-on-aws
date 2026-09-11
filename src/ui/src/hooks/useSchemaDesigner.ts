@@ -12,6 +12,10 @@ import {
   X_AWS_IDP_EXTRACTION_TASK_PROMPT,
   X_AWS_IDP_EXCLUDE_FROM_PROCESSING,
   X_AWS_IDP_EXCLUSION_REASON,
+  X_AWS_IDP_INSTANCE_ARRAY,
+  X_AWS_IDP_MULTI_INSTANCE,
+  X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
+  X_AWS_IDP_EVALUATION_MATCH_THRESHOLD,
 } from '../constants/schemaConstants';
 
 interface JsonSchemaProperty {
@@ -252,6 +256,14 @@ const convertJsonSchemaToClasses = (jsonSchema: JsonSchemaProperty | JsonSchemaP
           ? { [X_AWS_IDP_EXCLUDE_FROM_PROCESSING]: schema[X_AWS_IDP_EXCLUDE_FROM_PROCESSING] }
           : {}),
         ...(schema[X_AWS_IDP_EXCLUSION_REASON] ? { [X_AWS_IDP_EXCLUSION_REASON]: schema[X_AWS_IDP_EXCLUSION_REASON] } : {}),
+        ...(schema[X_AWS_IDP_INSTANCE_ARRAY] ? { [X_AWS_IDP_INSTANCE_ARRAY]: schema[X_AWS_IDP_INSTANCE_ARRAY] } : {}),
+        ...(schema[X_AWS_IDP_MULTI_INSTANCE] ? { [X_AWS_IDP_MULTI_INSTANCE]: schema[X_AWS_IDP_MULTI_INSTANCE] } : {}),
+        ...(schema[X_AWS_IDP_ALLOW_INTEGRATED_LISTS]
+          ? { [X_AWS_IDP_ALLOW_INTEGRATED_LISTS]: schema[X_AWS_IDP_ALLOW_INTEGRATED_LISTS] }
+          : {}),
+        ...(schema[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD] !== undefined
+          ? { [X_AWS_IDP_EVALUATION_MATCH_THRESHOLD]: schema[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD] }
+          : {}),
       };
       allClasses.push(docTypeClass);
 
@@ -338,6 +350,14 @@ const convertJsonSchemaToClasses = (jsonSchema: JsonSchemaProperty | JsonSchemaP
       ? { [X_AWS_IDP_EXCLUDE_FROM_PROCESSING]: jsonSchema[X_AWS_IDP_EXCLUDE_FROM_PROCESSING] }
       : {}),
     ...(jsonSchema[X_AWS_IDP_EXCLUSION_REASON] ? { [X_AWS_IDP_EXCLUSION_REASON]: jsonSchema[X_AWS_IDP_EXCLUSION_REASON] } : {}),
+    ...(jsonSchema[X_AWS_IDP_INSTANCE_ARRAY] ? { [X_AWS_IDP_INSTANCE_ARRAY]: jsonSchema[X_AWS_IDP_INSTANCE_ARRAY] } : {}),
+    ...(jsonSchema[X_AWS_IDP_MULTI_INSTANCE] ? { [X_AWS_IDP_MULTI_INSTANCE]: jsonSchema[X_AWS_IDP_MULTI_INSTANCE] } : {}),
+    ...(jsonSchema[X_AWS_IDP_ALLOW_INTEGRATED_LISTS]
+      ? { [X_AWS_IDP_ALLOW_INTEGRATED_LISTS]: jsonSchema[X_AWS_IDP_ALLOW_INTEGRATED_LISTS] }
+      : {}),
+    ...(jsonSchema[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD] !== undefined
+      ? { [X_AWS_IDP_EVALUATION_MATCH_THRESHOLD]: jsonSchema[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD] }
+      : {}),
   };
   classes.push(mainClass);
 
@@ -799,6 +819,14 @@ export const useSchemaDesigner = (
             ? { [X_AWS_IDP_EXCLUDE_FROM_PROCESSING]: docTypeClass[X_AWS_IDP_EXCLUDE_FROM_PROCESSING] }
             : {}),
           ...(docTypeClass[X_AWS_IDP_EXCLUSION_REASON] ? { [X_AWS_IDP_EXCLUSION_REASON]: docTypeClass[X_AWS_IDP_EXCLUSION_REASON] } : {}),
+          ...(docTypeClass[X_AWS_IDP_INSTANCE_ARRAY] ? { [X_AWS_IDP_INSTANCE_ARRAY]: docTypeClass[X_AWS_IDP_INSTANCE_ARRAY] } : {}),
+          ...(docTypeClass[X_AWS_IDP_MULTI_INSTANCE] ? { [X_AWS_IDP_MULTI_INSTANCE]: docTypeClass[X_AWS_IDP_MULTI_INSTANCE] } : {}),
+          ...(docTypeClass[X_AWS_IDP_ALLOW_INTEGRATED_LISTS]
+            ? { [X_AWS_IDP_ALLOW_INTEGRATED_LISTS]: docTypeClass[X_AWS_IDP_ALLOW_INTEGRATED_LISTS] }
+            : {}),
+          ...(docTypeClass[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD] !== undefined
+            ? { [X_AWS_IDP_EVALUATION_MATCH_THRESHOLD]: docTypeClass[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD] }
+            : {}),
         };
 
         return result;

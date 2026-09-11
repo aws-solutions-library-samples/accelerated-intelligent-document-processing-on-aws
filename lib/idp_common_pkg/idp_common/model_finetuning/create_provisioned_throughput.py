@@ -233,7 +233,7 @@ Examples:
   
   # List all provisioned models
   python create_provisioned_throughput.py --list-models
-        """,
+        """,  # arn-partition-ok: argparse epilog — commercial example ARNs in help text
     )
 
     # Mutually exclusive group for model identification

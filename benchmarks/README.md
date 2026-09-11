@@ -51,9 +51,9 @@ python3 benchmarks/harness/gen_corpus.py
 # 2. run the matrix against a deployed stack (see METHODOLOGY for stack setup)
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite core
 # 3. score + aggregate
-AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run <run-dir> --out benchmarks/results/<release>
+AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run <run-dir> --out benchmarks/results/<release>/<suite>
 # 4. figures (charts land in benchmarks/paper/figures/; copy cited ones into images/)
-python3 benchmarks/harness/aggregate.py --figures benchmarks/results/<release>/summary.json
+python3 benchmarks/harness/aggregate.py --figures benchmarks/results/<release>/<suite>/summary.json
 ```
 
 **Per release cycle — one command** produces the release-vs-release audit-trail entry

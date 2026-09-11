@@ -36,3 +36,13 @@ VALID_CONFIG_TYPES = [
     CONFIG_TYPE_DEFAULT,  # Legacy
     CONFIG_TYPE_CUSTOM,   # Legacy
 ]
+
+# Sentinel record holding a pointer to the active Configuration Profile. Read
+# with a single get_item at queue time instead of scanning every profile.
+ACTIVE_POINTER_VERSION = "__active"
+ACTIVE_POINTER_KEY = f"{CONFIG_TYPE_CONFIG}#{ACTIVE_POINTER_VERSION}"
+
+# Profile names that would collide with a sentinel record and must be refused.
+# Without this guard a user could create a profile literally named "__active"
+# and overwrite the active-profile pointer.
+RESERVED_VERSION_NAMES = frozenset({ACTIVE_POINTER_VERSION})

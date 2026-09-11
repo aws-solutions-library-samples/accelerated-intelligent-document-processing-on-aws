@@ -124,6 +124,86 @@ class TestListAndGet:
         assert section["ConfidenceThresholdAlerts"] == []
         assert section["ProcessingIssues"] == []
 
+    def test_sections_carry_exclusion_flags(self, mod):
+        """The "Skipped" badge is the only explanation a user gets for why an
+        excluded section's panels are empty. This shaping is an explicit
+        allow-list, so an omitted key is silently dropped from every historical
+        view (GitHub #704)."""
+        mod.document_service = MagicMock()
+        mod.document_service.list_document_runs.return_value = [
+            {
+                "RunId": "r1",
+                "SK": "run#r1",
+                "ObjectKey": "k",
+                "Sections": [
+                    {
+                        "Id": "1",
+                        "Class": "Instructions",
+                        "OutputJSONUri": "s3://o/k",
+                        "Excluded": True,
+                        "ExclusionReason": "instructions",
+                    },
+                    {"Id": "2", "Class": "W2", "OutputJSONUri": "s3://o/k2"},
+                ],
+            }
+        ]
+        out = mod.handler(_event("listDocumentVersions", objectKey="k"), None)
+        skipped, normal = out[0]["Sections"]
+        assert skipped["Excluded"] is True
+        assert skipped["ExclusionReason"] == "instructions"
+        # Runs recorded before the flags were snapshotted have no such keys.
+        assert normal["Excluded"] is False
+        assert normal["ExclusionReason"] is None
+
+    def test_classification_confidence_is_shaped_as_a_number(self, mod):
+        """Class confidence and reason survive into a historical view.
+
+        DynamoDB returns numbers as Decimal and this resolver serializes with
+        json.dumps(default=str), which would emit a Float field as the STRING
+        "0.83" — hence the explicit float coercion. Runs recorded before #673
+        have no such keys and must read as not scored (None), not 0.0.
+        """
+        from decimal import Decimal
+
+        mod.document_service = MagicMock()
+        mod.document_service.list_document_runs.return_value = [
+            {
+                "RunId": "r1",
+                "SK": "run#r1",
+                "ObjectKey": "k",
+                "Sections": [
+                    {
+                        "Id": "1",
+                        "Class": "W2",
+                        "OutputJSONUri": "s3://o/k",
+                        "Confidence": Decimal("0.83"),
+                    },
+                    {"Id": "2", "Class": "W2", "OutputJSONUri": "s3://o/k2"},
+                ],
+                "Pages": [
+                    {
+                        "Id": 1,
+                        "Class": "W2",
+                        "ClassConfidence": Decimal("0.83"),
+                        "ClassReason": "Box 1 wage labels",
+                    },
+                    {"Id": 2, "Class": "W2"},
+                ],
+            }
+        ]
+        out = mod.handler(_event("listDocumentVersions", objectKey="k"), None)
+        scored_section, unscored_section = out[0]["Sections"]
+        scored_page, unscored_page = out[0]["Pages"]
+
+        assert scored_section["Confidence"] == 0.83
+        assert isinstance(scored_section["Confidence"], float)
+        assert unscored_section["Confidence"] is None
+        assert scored_page["ClassConfidence"] == 0.83
+        assert isinstance(scored_page["ClassConfidence"], float)
+        assert scored_page["ClassReason"] == "Box 1 wage labels"
+        assert unscored_page["ClassConfidence"] is None
+        assert unscored_page["ClassReason"] is None
+
     def test_get_document_version_includes_files(self, mod, monkeypatch):
         mod.document_service = MagicMock()
         mod.document_service.get_document_run.return_value = {

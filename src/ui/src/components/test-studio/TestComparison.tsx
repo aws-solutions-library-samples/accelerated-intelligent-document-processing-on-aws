@@ -296,9 +296,13 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
       ['Test Set', ...Object.values(completeTestRuns).map((run) => run.testSetName || 'N/A')],
       ['Context', ...Object.values(completeTestRuns).map((run) => run.context || 'N/A')],
       [
-        'Config Version',
+        'Config Profile',
         ...Object.values(completeTestRuns).map((run) =>
-          formatConfigVersionText(run.configVersion as string | undefined, versions as unknown as UtilsConfigVersion[]),
+          formatConfigVersionText(
+            run.configVersion as string | undefined,
+            versions as unknown as UtilsConfigVersion[],
+            run.configRevision as number | undefined,
+          ),
         ),
       ],
       ['Files Processed', ...Object.values(completeTestRuns).map((run) => run.filesCount || 'N/A')],
@@ -804,7 +808,11 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
           {
             testSetName: testRun.testSetName,
             context: testRun.context,
-            configVersion: formatConfigVersionText(testRun.configVersion as string | undefined, versions),
+            configVersion: formatConfigVersionText(
+              testRun.configVersion as string | undefined,
+              versions,
+              testRun.configRevision as number | undefined,
+            ),
             filesCount: testRun.filesCount,
             completedFiles: testRun.completedFiles,
             failedFiles: testRun.failedFiles,
@@ -1048,12 +1056,17 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                   ),
                 },
                 {
-                  metric: 'Config Version',
-                  metricKey: 'Config Version',
+                  metric: 'Config Profile',
+                  metricKey: 'Config Profile',
                   ...Object.fromEntries(
                     Object.entries(completeTestRuns).map(([testRunId, testRun]) => [
                       testRunId,
-                      formatConfigVersionLink(testRun.configVersion as string | undefined, versions as unknown as UtilsConfigVersion[]),
+                      formatConfigVersionLink(
+                        testRun.configVersion as string | undefined,
+                        versions as unknown as UtilsConfigVersion[],
+                        undefined,
+                        testRun.configRevision as number | undefined,
+                      ),
                     ]),
                   ),
                 },
@@ -1182,7 +1195,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
 
                     return (
                       <span style={{ ...style, WebkitPrintColorAdjust: 'exact', colorAdjust: 'exact' }}>
-                        {item.metricKey === 'Config Version' ? (value as React.ReactNode) : String(value)}
+                        {item.metricKey === 'Config Profile' ? (value as React.ReactNode) : String(value)}
                       </span>
                     );
                   },

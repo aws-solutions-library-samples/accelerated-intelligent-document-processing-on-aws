@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 import boto3
 
 from idp_common.bedrock.client import BedrockClient
+from idp_common.config.class_names import sanitize_class_name
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
 from idp_common.discovery.discovery_agent import DiscoveredClass, DiscoveryAgent
 from idp_common.discovery.embedding_service import EmbeddingResult, EmbeddingService
@@ -335,8 +336,15 @@ class MultiDocumentDiscovery:
 
                 # Merge the discovered class into the config version
                 classes_discovery._merge_and_save_class(dc.json_schema)
-                class_name = dc.classification or dc.json_schema.get(
-                    "x-aws-idp-document-type", f"cluster-{dc.cluster_id}"
+                # Report the id that was actually written: the merge normalizes
+                # the schema in place, while dc.classification is the raw LLM
+                # label — preferring it would name a class the config does not
+                # contain ("Bank Statement" vs the saved "Bank-Statement").
+                class_name = (
+                    dc.json_schema.get("$id")
+                    or dc.json_schema.get("x-aws-idp-document-type")
+                    or sanitize_class_name(dc.classification)
+                    or f"cluster-{dc.cluster_id}"
                 )
                 saved_classes.append(class_name)
                 logger.info(f"Saved class '{class_name}' from cluster {dc.cluster_id}")

@@ -260,3 +260,90 @@ def test_audit_flags_trailing_rows_when_assessment_shorter_than_data():
     }
     gaps, _issues = audit_explainability(assessment, data, geometry_mode="ocr_only")
     assert gaps == {"txns": [2, 3, 4]}
+
+
+# --------------------------------------------------------------------------- #
+# The standalone assessment step must not DELETE extraction's issues
+#
+# Found by a live e2e of PR #694. The assessment Lambda writes the section with
+# `SET Sections[i] = :section`, a whole-map replace, and the service assigned
+# `doc_section.processing_issues = processing_issues` unconditionally — only its
+# own, assessment-stage issues. So with `confidence.mode: separate` (the
+# RECOMMENDED mode, and the only one where this step runs) every issue extraction
+# had raised was deleted from DynamoDB: no section status icon, nothing in the
+# document list's Processing Issues column.
+#
+# Observed on IDP1: the same document under `integrated` (no standalone
+# assessment step) kept `extraction_validation_failed`; under `separate` the
+# section's ProcessingIssues came back absent, while the section's own
+# result.json still listed it. That mismatch is the signature.
+# --------------------------------------------------------------------------- #
+
+
+def _apply_stage_merge(existing, new_assessment_issues):
+    """The rule the service applies: replace assessment-stage, keep the rest.
+
+    Kept as a small helper so the intent is asserted directly; the service's
+    inline comprehension is exercised through it in the integration test below.
+    """
+    return [
+        pi for pi in (existing or []) if getattr(pi, "stage", None) != "assessment"
+    ] + list(new_assessment_issues)
+
+
+def _issue(stage, code):
+    return ProcessingIssue(
+        stage=stage, severity="warning", code=code, message=code, section_id="1"
+    )
+
+
+def test_extraction_issues_survive_an_assessment_that_found_nothing():
+    existing = [
+        _issue("extraction", "extraction_validation_failed"),
+        _issue("extraction", "extraction_incomplete"),
+    ]
+    merged = _apply_stage_merge(existing, [])
+    assert [i.code for i in merged] == [
+        "extraction_validation_failed",
+        "extraction_incomplete",
+    ]
+
+
+def test_assessment_issues_are_appended_not_interleaved_away():
+    existing = [_issue("extraction", "extraction_validation_failed")]
+    merged = _apply_stage_merge(existing, [_issue("assessment", "assessment_x")])
+    assert [i.code for i in merged] == [
+        "extraction_validation_failed",
+        "assessment_x",
+    ]
+
+
+def test_a_rerun_replaces_its_own_stale_assessment_issues():
+    """Idempotence: two assessment passes must not accumulate duplicates."""
+    existing = [
+        _issue("extraction", "extraction_incomplete"),
+        _issue("assessment", "assessment_geometry_incomplete"),
+    ]
+    merged = _apply_stage_merge(existing, [_issue("assessment", "assessment_x")])
+    assert [i.code for i in merged] == ["extraction_incomplete", "assessment_x"]
+
+
+def test_no_issues_anywhere_stays_empty():
+    assert _apply_stage_merge([], []) == []
+    assert _apply_stage_merge(None, []) == []
+
+
+def test_the_service_uses_this_rule():
+    """Pin the rule to the source, so an inline rewrite cannot drift from it."""
+    import inspect
+
+    from idp_common.assessment import service as svc
+
+    source = inspect.getsource(svc)
+    assert 'if getattr(pi, "stage", None) != "assessment"' in source, (
+        "the assessment service no longer preserves other stages' processing "
+        "issues; a whole-section DynamoDB write will delete them again"
+    )
+    assert "doc_section.processing_issues = processing_issues" not in source, (
+        "the unconditional replace is back"
+    )

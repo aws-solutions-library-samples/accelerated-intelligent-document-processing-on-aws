@@ -4,7 +4,7 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { SpaceBetween } from '@cloudscape-design/components';
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchSharedAuthSession } from '../../api/auth-session';
 
 import useInstalledFeatures from '../../hooks/use-installed-features';
 import useCatalogFeatures from '../../hooks/use-catalog-features';
@@ -55,7 +55,7 @@ export interface FeaturePageProps {
 }
 
 async function getAuthToken(): Promise<string> {
-  const session = await fetchAuthSession();
+  const session = await fetchSharedAuthSession();
   const jwt = session.tokens?.idToken?.toString();
   if (!jwt) throw new Error('No Cognito idToken available');
   return jwt;

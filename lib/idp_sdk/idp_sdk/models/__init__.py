@@ -29,6 +29,8 @@ from .config import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigRevisionInfo,
+    ConfigRevisionListResult,
     ConfigSyncBdaResult,
     ConfigUploadResult,
     ConfigValidationResult,
@@ -136,6 +138,8 @@ __all__ = [
     "ConfigActivateResult",
     "ConfigVersionInfo",
     "ConfigListResult",
+    "ConfigRevisionInfo",
+    "ConfigRevisionListResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     # Discovery models

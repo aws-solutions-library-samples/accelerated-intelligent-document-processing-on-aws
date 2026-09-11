@@ -187,7 +187,10 @@ def _normalize_model_identifier(model_id: str) -> str:
         Normalized model identifier suitable for CreateModelCustomizationJob
     """
     # If it's already an ARN, return as-is
-    if model_id.startswith("arn:aws:bedrock:"):
+    # Match any partition: "arn:aws-us-gov:bedrock:..." is just as much an
+    # ARN as the commercial form, and treating it as a bare model id would
+    # send a mangled value to CreateModelCustomizationJob.
+    if model_id.startswith("arn:") and ":bedrock:" in model_id:
         return model_id
     
     normalized = model_id

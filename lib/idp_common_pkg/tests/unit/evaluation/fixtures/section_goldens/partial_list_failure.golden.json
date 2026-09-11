@@ -1,0 +1,569 @@
+{
+  "attributes": [
+    {
+      "actual": [
+        {
+          "amount": 1.0,
+          "name": "A"
+        },
+        {
+          "amount": 99.0,
+          "name": "X"
+        },
+        {
+          "amount": 88.0,
+          "name": "Y"
+        },
+        {
+          "amount": 77.0,
+          "name": "Z"
+        },
+        {
+          "amount": 66.0,
+          "name": "W"
+        }
+      ],
+      "comparator_type": null,
+      "confidence": null,
+      "confidence_threshold": null,
+      "error_details": null,
+      "evaluation_method": "Hungarian (threshold: 0.50)",
+      "evaluation_threshold": null,
+      "expected": [
+        {
+          "amount": 1.0,
+          "name": "A"
+        },
+        {
+          "amount": 2.0,
+          "name": "B"
+        },
+        {
+          "amount": 3.0,
+          "name": "C"
+        },
+        {
+          "amount": 4.0,
+          "name": "D"
+        },
+        {
+          "amount": 5.0,
+          "name": "E"
+        }
+      ],
+      "field_comparison_details": [
+        {
+          "actual_key": "Items[0].name",
+          "actual_value": "A",
+          "evaluation_method": "Exact",
+          "expected_key": "Items[0].name",
+          "expected_value": "A",
+          "field_path": "Items[0].name",
+          "match": true,
+          "reason": "exact match",
+          "score": 1.0,
+          "weight": 1.0,
+          "weighted_score": 1.0
+        },
+        {
+          "actual_key": "Items[0].amount",
+          "actual_value": 1.0,
+          "evaluation_method": "NumericExact",
+          "expected_key": "Items[0].amount",
+          "expected_value": 1.0,
+          "field_path": "Items[0].amount",
+          "match": true,
+          "reason": "exact match",
+          "score": 1.0,
+          "weight": 1.0,
+          "weighted_score": 1.0
+        },
+        {
+          "actual_key": "Items[1].name",
+          "actual_value": "X",
+          "evaluation_method": "Exact",
+          "expected_key": "Items[1].name",
+          "expected_value": "B",
+          "field_path": "Items[1].name",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": "Items[1].amount",
+          "actual_value": 99.0,
+          "evaluation_method": "NumericExact",
+          "expected_key": "Items[1].amount",
+          "expected_value": 2.0,
+          "field_path": "Items[1].amount",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": "Items[2].name",
+          "actual_value": "Y",
+          "evaluation_method": "Exact",
+          "expected_key": "Items[2].name",
+          "expected_value": "C",
+          "field_path": "Items[2].name",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": "Items[2].amount",
+          "actual_value": 88.0,
+          "evaluation_method": "NumericExact",
+          "expected_key": "Items[2].amount",
+          "expected_value": 3.0,
+          "field_path": "Items[2].amount",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": "Items[3].name",
+          "actual_value": "Z",
+          "evaluation_method": "Exact",
+          "expected_key": "Items[3].name",
+          "expected_value": "D",
+          "field_path": "Items[3].name",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": "Items[3].amount",
+          "actual_value": 77.0,
+          "evaluation_method": "NumericExact",
+          "expected_key": "Items[3].amount",
+          "expected_value": 4.0,
+          "field_path": "Items[3].amount",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": "Items[4].name",
+          "actual_value": "W",
+          "evaluation_method": "Exact",
+          "expected_key": "Items[4].name",
+          "expected_value": "E",
+          "field_path": "Items[4].name",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        },
+        {
+          "actual_key": "Items[4].amount",
+          "actual_value": 66.0,
+          "evaluation_method": "NumericExact",
+          "expected_key": "Items[4].amount",
+          "expected_value": 5.0,
+          "field_path": "Items[4].amount",
+          "match": false,
+          "reason": "below threshold (0.000 < 0.5)",
+          "score": 0.0,
+          "weight": 1.0,
+          "weighted_score": 0.0
+        }
+      ],
+      "matched": false,
+      "name": "Items",
+      "reason": "Values do not match (score: 0.20, comparator: default)",
+      "score": 0.2,
+      "weight": null
+    }
+  ],
+  "document_class": "Doc",
+  "metrics": {
+    "_stickler_counts": {
+      "fa": 0,
+      "fd": 8,
+      "fn": 0,
+      "fp": 8,
+      "tn": 0,
+      "tp": 2
+    },
+    "accuracy": 0.2,
+    "f1_score": 0.3333333333333333,
+    "false_alarm_rate": 0.0,
+    "false_discovery_rate": 0.8,
+    "precision": 0.2,
+    "recall": 1.0,
+    "weighted_overall_score": 0.2
+  },
+  "section_id": "list-partial-1",
+  "stickler_comparison_result": {
+    "all_fields_matched": false,
+    "auroc_confidence_metric": 0.5,
+    "confidence_metrics": {
+      "coverage": {
+        "fields_total": 10,
+        "fields_with_confidence": 0,
+        "ratio": 0.0
+      },
+      "fields": {},
+      "overall": {
+        "auroc": {
+          "value": null
+        },
+        "brier_score": {
+          "value": null
+        },
+        "ece": {
+          "bins": [],
+          "value": null
+        }
+      }
+    },
+    "confusion_matrix": {
+      "aggregate": {
+        "derived": {
+          "cm_accuracy": 1.0,
+          "cm_f1": 1.0,
+          "cm_precision": 1.0,
+          "cm_recall": 1.0
+        },
+        "fa": 0,
+        "fd": 0,
+        "fn": 0,
+        "fp": 0,
+        "tn": 0,
+        "tp": 2
+      },
+      "fields": {
+        "Items": {
+          "aggregate": {
+            "derived": {
+              "cm_accuracy": 1.0,
+              "cm_f1": 1.0,
+              "cm_precision": 1.0,
+              "cm_recall": 1.0
+            },
+            "fa": 0,
+            "fd": 0,
+            "fn": 0,
+            "fp": 0,
+            "tn": 0,
+            "tp": 2
+          },
+          "fields": {
+            "amount": {
+              "aggregate": {
+                "derived": {
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
+                  "cm_recall": 1.0
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 0,
+                "fp": 0,
+                "tn": 0,
+                "tp": 1
+              },
+              "overall": {
+                "derived": {
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
+                  "cm_recall": 1.0
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 0,
+                "fp": 0,
+                "tn": 0,
+                "tp": 1
+              }
+            },
+            "name": {
+              "aggregate": {
+                "derived": {
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
+                  "cm_recall": 1.0
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 0,
+                "fp": 0,
+                "tn": 0,
+                "tp": 1
+              },
+              "overall": {
+                "derived": {
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
+                  "cm_recall": 1.0
+                },
+                "fa": 0,
+                "fd": 0,
+                "fn": 0,
+                "fp": 0,
+                "tn": 0,
+                "tp": 1
+              }
+            }
+          },
+          "overall": {
+            "derived": {
+              "cm_accuracy": 0.2,
+              "cm_f1": 0.33333333333333337,
+              "cm_precision": 0.2,
+              "cm_recall": 1.0
+            },
+            "fa": 0,
+            "fd": 4,
+            "fn": 0,
+            "fp": 4,
+            "tn": 0,
+            "tp": 1
+          },
+          "raw_similarity_score": 0.2,
+          "similarity_score": 0.2,
+          "threshold_applied_score": 0.2,
+          "weight": 1.0
+        }
+      },
+      "non_matches": [],
+      "overall": {
+        "all_fields_matched": false,
+        "derived": {
+          "cm_accuracy": 0.2,
+          "cm_f1": 0.33333333333333337,
+          "cm_precision": 0.2,
+          "cm_recall": 1.0
+        },
+        "fa": 0,
+        "fd": 4,
+        "fn": 0,
+        "fp": 4,
+        "similarity_score": 0.2,
+        "tn": 0,
+        "tp": 1
+      }
+    },
+    "field_comparisons": [
+      {
+        "actual_key": "Items[0].name",
+        "actual_value": "A",
+        "evaluation_method": "Exact",
+        "expected_key": "Items[0].name",
+        "expected_value": "A",
+        "field_path": "Items[0].name",
+        "match": true,
+        "reason": "exact match",
+        "score": 1.0,
+        "weight": 1.0,
+        "weighted_score": 1.0
+      },
+      {
+        "actual_key": "Items[0].amount",
+        "actual_value": 1.0,
+        "evaluation_method": "NumericExact",
+        "expected_key": "Items[0].amount",
+        "expected_value": 1.0,
+        "field_path": "Items[0].amount",
+        "match": true,
+        "reason": "exact match",
+        "score": 1.0,
+        "weight": 1.0,
+        "weighted_score": 1.0
+      },
+      {
+        "actual_key": "Items[1].name",
+        "actual_value": "X",
+        "evaluation_method": "Exact",
+        "expected_key": "Items[1].name",
+        "expected_value": "B",
+        "field_path": "Items[1].name",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": "Items[1].amount",
+        "actual_value": 99.0,
+        "evaluation_method": "NumericExact",
+        "expected_key": "Items[1].amount",
+        "expected_value": 2.0,
+        "field_path": "Items[1].amount",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": "Items[2].name",
+        "actual_value": "Y",
+        "evaluation_method": "Exact",
+        "expected_key": "Items[2].name",
+        "expected_value": "C",
+        "field_path": "Items[2].name",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": "Items[2].amount",
+        "actual_value": 88.0,
+        "evaluation_method": "NumericExact",
+        "expected_key": "Items[2].amount",
+        "expected_value": 3.0,
+        "field_path": "Items[2].amount",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": "Items[3].name",
+        "actual_value": "Z",
+        "evaluation_method": "Exact",
+        "expected_key": "Items[3].name",
+        "expected_value": "D",
+        "field_path": "Items[3].name",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": "Items[3].amount",
+        "actual_value": 77.0,
+        "evaluation_method": "NumericExact",
+        "expected_key": "Items[3].amount",
+        "expected_value": 4.0,
+        "field_path": "Items[3].amount",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": "Items[4].name",
+        "actual_value": "W",
+        "evaluation_method": "Exact",
+        "expected_key": "Items[4].name",
+        "expected_value": "E",
+        "field_path": "Items[4].name",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      },
+      {
+        "actual_key": "Items[4].amount",
+        "actual_value": 66.0,
+        "evaluation_method": "NumericExact",
+        "expected_key": "Items[4].amount",
+        "expected_value": 5.0,
+        "field_path": "Items[4].amount",
+        "match": false,
+        "reason": "below threshold (0.000 < 0.5)",
+        "score": 0.0,
+        "weight": 1.0,
+        "weighted_score": 0.0
+      }
+    ],
+    "field_scores": {
+      "Items": 0.2
+    },
+    "non_matches": [
+      {
+        "field_path": "Items[1].name",
+        "ground_truth_value": "B",
+        "non_match_type": "false_discovery",
+        "prediction_value": "X",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[1].amount",
+        "ground_truth_value": 2.0,
+        "non_match_type": "false_discovery",
+        "prediction_value": 99.0,
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[2].name",
+        "ground_truth_value": "C",
+        "non_match_type": "false_discovery",
+        "prediction_value": "Y",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[2].amount",
+        "ground_truth_value": 3.0,
+        "non_match_type": "false_discovery",
+        "prediction_value": 88.0,
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[3].name",
+        "ground_truth_value": "D",
+        "non_match_type": "false_discovery",
+        "prediction_value": "Z",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[3].amount",
+        "ground_truth_value": 4.0,
+        "non_match_type": "false_discovery",
+        "prediction_value": 77.0,
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[4].name",
+        "ground_truth_value": "E",
+        "non_match_type": "false_discovery",
+        "prediction_value": "W",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[4].amount",
+        "ground_truth_value": 5.0,
+        "non_match_type": "false_discovery",
+        "prediction_value": 66.0,
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      }
+    ],
+    "overall_score": 0.2
+  }
+}

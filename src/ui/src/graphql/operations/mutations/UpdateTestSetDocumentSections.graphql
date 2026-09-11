@@ -1,0 +1,11 @@
+mutation UpdateTestSetDocumentSections($input: UpdateTestSetDocumentSectionsInput!) {
+  updateTestSetDocumentSections(input: $input) {
+    testSetId
+    objectKey
+    sections {
+      sectionId
+      documentClass
+      pageIndices
+    }
+  }
+}

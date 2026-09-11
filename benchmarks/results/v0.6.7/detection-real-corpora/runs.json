@@ -1,0 +1,26 @@
+[
+  {
+    "corpus": "ocr-benchmark",
+    "profile": "mid-off-ocr",
+    "run_id": "OmniAI-OCR-Benchmark-20260904-113156",
+    "n": 40
+  },
+  {
+    "corpus": "ocr-benchmark",
+    "profile": "mid-on-ocr",
+    "run_id": "OmniAI-OCR-Benchmark-20260904-113203",
+    "n": 40
+  },
+  {
+    "corpus": "realkie-fcc-verified",
+    "profile": "mid-off-rk",
+    "run_id": "RealKIE-FCC-Verified-20260904-113203",
+    "n": 40
+  },
+  {
+    "corpus": "realkie-fcc-verified",
+    "profile": "mid-on-rk",
+    "run_id": "RealKIE-FCC-Verified-20260904-113204",
+    "n": 40
+  }
+]

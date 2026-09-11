@@ -133,6 +133,13 @@ Resources:
   ###########################################################################
   PiiAnonymizerHookFunction:
     Type: AWS::Serverless::Function
+    # makefile build, not the default PythonPipBuilder: that builder requests the
+    # single `manylinux2014_aarch64` platform tag, which Pillow >= 12.3.0 no
+    # longer publishes. hook/Makefile names `manylinux_2_28_aarch64` instead —
+    # correct for AL2023 — so the hook can carry the patched Pillow. See
+    # hook/Makefile for the full rationale.
+    Metadata:
+      BuildMethod: makefile
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref 'AWS::NoValue']
       CodeUri: hook/
@@ -216,6 +223,8 @@ Resources:
                 - kms:DescribeKey
               Resource:
                 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn'
+      LoggingConfig:
+        LogGroup: !Ref PiiAnonymizerHookFunctionLogGroup
 
   ###########################################################################
   # Feature API: HttpApi + Lambda, authorized by main stack's Cognito User
@@ -307,6 +316,8 @@ Resources:
             ApiId: !Ref FeatureApi
             Path: /{proxy+}
             Method: GET
+      LoggingConfig:
+        LogGroup: !Ref FeatureApiFunctionLogGroup
 
   ###########################################################################
   # CloudWatch Log Groups — explicit retention.
@@ -314,19 +325,19 @@ Resources:
   PiiAnonymizerHookFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${PiiAnonymizerHookFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/PiiAnonymizerHookFunction'
       RetentionInDays: 30
 
   FeatureApiFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${FeatureApiFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/FeatureApiFunction'
       RetentionInDays: 30
 
   UiDeployerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${UiDeployerFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/UiDeployerFunction'
       RetentionInDays: 30
 
   ###########################################################################
@@ -402,6 +413,8 @@ Resources:
           HOOK_FUNCTION_ARN: !GetAtt PiiAnonymizerHookFunction.Arn
           CONFIG_PRESET_RELATIVE_KEY: config-preset/pii-preprocessing.yaml
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref UiDeployerFunctionLogGroup
 
   RegisterFeatureResource:
     Type: AWS::CloudFormation::CustomResource

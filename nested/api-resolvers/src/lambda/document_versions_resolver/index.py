@@ -51,6 +51,22 @@ def _caller_groups(event) -> List[str]:
     return list(groups)
 
 
+def _as_float(value: Any) -> Optional[float]:
+    """Coerce a stored DynamoDB number to a GraphQL Float, preserving null.
+
+    DynamoDB returns numbers as ``Decimal``, which this resolver's
+    ``json.dumps(..., default=str)`` would emit as a quoted string — a Float
+    field would then arrive at the UI as ``"0.85"``. ``None`` stays ``None``
+    (not scored) rather than becoming 0.0.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _shape_processing_issues(section: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Shape a run section's stored issues to the GraphQL ProcessingIssue type.
 
@@ -78,6 +94,11 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             "PageIds": s.get("PageIds", []),
             "Class": s.get("Class"),
             "OutputJSONUri": s.get("OutputJSONUri"),
+            # Confidence in the section's CLASS. Coerced to float because
+            # DynamoDB hands back a Decimal, which this resolver's
+            # json.dumps(default=str) would emit as a quoted string for a
+            # GraphQL Float field. None when the run was not scored.
+            "Confidence": _as_float(s.get("Confidence")),
             # Per-section quality data snapshotted by create_document_run. The
             # UI's "Low Confidence Fields" count and section Status read these,
             # so dropping them here makes every historical section look clean.
@@ -86,6 +107,17 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             # checks behave the same as on the live document.
             "ConfidenceThresholdAlerts": s.get("ConfidenceThresholdAlerts") or [],
             "ProcessingIssues": _shape_processing_issues(s),
+            # Multi-instance count, snapshotted by create_document_run. This
+            # allow-list is explicit, so a key omitted here is silently dropped
+            # from every historical view — the same way the confidence alerts
+            # were once lost (see CHANGELOG). Runs recorded before this existed
+            # have no such key; 0 means "undetermined", matching the live doc.
+            "InstanceCount": int(s.get("InstanceCount") or 0),
+            # Exclusion flags, snapshotted by create_document_run. Same allow-list
+            # hazard: omitted here, a historical excluded section loses its
+            # "Skipped" badge and reads as an unexplained empty section.
+            "Excluded": bool(s.get("Excluded", False)),
+            "ExclusionReason": s.get("ExclusionReason"),
         }
         for s in item.get("Sections", []) or []
     ]
@@ -96,6 +128,19 @@ def _shape_version(item: Dict[str, Any]) -> Dict[str, Any]:
             "ImageUri": p.get("ImageUri"),
             "TextUri": p.get("TextUri"),
             "OcrPageDataUri": p.get("OcrPageDataUri"),
+            # Classification signals snapshotted by create_document_run. Like the
+            # section allow-list above, an omitted key here is silently dropped
+            # from every historical view.
+            "ClassConfidence": _as_float(p.get("ClassConfidence")),
+            "ClassReason": p.get("ClassReason") or None,
+            "ClassCandidates": [
+                {
+                    "Class": c.get("Class"),
+                    "Probability": _as_float(c.get("Probability")),
+                }
+                for c in p.get("ClassCandidates") or []
+            ],
+            "Boundary": p.get("Boundary") or None,
         }
         for p in item.get("Pages", []) or []
     ]

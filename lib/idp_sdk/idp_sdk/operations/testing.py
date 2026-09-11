@@ -5,6 +5,7 @@
 
 from typing import List, Optional
 
+from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import IDPProcessingError
 from idp_sdk.models import LoadTestResult, TestComparisonResult, TestRunResult
 
@@ -49,6 +50,8 @@ class TestingOperation:
         schedule_file: Optional[str] = None,
         dest_prefix: str = "load-test",
         config_version: Optional[str] = None,
+        *,
+        config_profile: Optional[str] = None,
         **kwargs,
     ) -> LoadTestResult:
         """Run load test by copying files to input bucket.
@@ -60,14 +63,17 @@ class TestingOperation:
             duration: Duration in minutes
             schedule_file: Optional schedule file for variable load
             dest_prefix: Destination prefix in S3
-            config_version: Configuration version to tag files with (optional).
+            config_version: Configuration profile to tag files with (optional).
                            If provided, files will be tagged with the specified version.
                            If not provided, the active configuration version is used.
+            config_profile: Configuration profile (the current name for
+                config_version; either may be given, not both with different values).
             **kwargs: Additional parameters
 
         Returns:
             LoadTestResult with test statistics
         """
+        config_version = resolve_config_profile(config_profile, config_version)
         from idp_sdk._core.load_test import LoadTester
 
         name = self._client._require_stack(stack_name)

@@ -58,6 +58,16 @@ Both work equally well with this solution. Choose based on what your IdP team pr
 | `ExternalIdPReviewerGroupName` | Optional | IdP group name that maps to Cognito Reviewer role |
 | `ExternalIdPViewerGroupName` | Optional | IdP group name that maps to Cognito Viewer role |
 | `ExternalIdPAutoLogin` | Optional | `true` to auto-redirect to IdP, `false` (default) to show login page |
+| `ExternalIdPEmailMutable` | **Yes, for every new federated stack** | Set `true` when creating a stack that uses an external IdP. Makes the `email` attribute mutable so Cognito can rewrite it on each federated sign-in; with the default `false` a federated user can sign in **only once**. Fixed at User Pool creation — **never change it on an existing stack** (the update fails and can wedge the stack). `idp-cli deploy` sets it to `true` automatically when creating a stack with `ExternalIdPType` set. See [Federated `email` Attribute Mutability](#federated-email-attribute-mutability). |
+
+> **`ExternalIdPEmailMutable` is not in the `idp-cli deploy` examples below on purpose.**
+> When the CLI *creates* a stack with `ExternalIdPType` set it adds
+> `ExternalIdPEmailMutable=true` itself. Do **not** add it to an *update* of an
+> existing stack: the flag is fixed at User Pool creation, and the CLI/SDK now refuse
+> an update that tries to change it (CloudFormation would otherwise fail the update
+> and can leave the stack in `UPDATE_ROLLBACK_FAILED`). Deploying through the
+> CloudFormation console instead? Set the parameter to `true` in the *External
+> Identity Provider (Federation)* section **when creating** the stack.
 
 ## Storing the OIDC Client Secret
 
@@ -576,19 +586,106 @@ This removes the external identity provider, the group mapping Lambda, and rever
 | "RedirectUri is not registered" | Callback URL trailing slash mismatch | Ensure both with and without trailing slash variants are registered |
 | User disabled but can still sign in | IdP SSO session still active in browser | Revoke the user's active sessions in the IdP admin console, or wait for the SSO session to expire |
 | Sign out signs user back in (auto-login) | IdP SSO session persists after Cognito logout | Expected behavior with auto-login enabled — see Auto-Login Behavior below |
-| `error_description=user.email%3A+Attribute+cannot+be+updated` after first login | User Pool was deployed before this fix with `email` schema `Mutable: false`. Cognito rewrites the mapped `email` attribute on every federated login; the second login is rejected. Schema flags are fixed at pool creation and cannot be changed in place. | Redeploy the stack against a new User Pool built from the current `template.yaml` (where `email` is `Mutable: true`). Existing federated users must re-federate against the new pool (no migration path for `EXTERNAL_PROVIDER` records). As a one-shot bridge, an admin can `aws cognito-idp admin-delete-user` the affected user — buys exactly one additional login. **Note:** any per-user state in DynamoDB keyed on the old Cognito `sub` (e.g., `UsersTable` preferences, `AllowedConfigVersions`) will be orphaned after the pool replacement — users will get fresh defaults. If continuity matters, an admin can scan the affected tables and re-key records from the old `sub` to the new one after re-federation. |
+| `error_description=user.email%3A+Attribute+cannot+be+updated` after first login | The pool's `email` schema attribute is immutable (`ExternalIdPEmailMutable` was `false`, the default, when the stack was created). Cognito rewrites the mapped `email` attribute on every federated login, so the second login is rejected. Schema flags are fixed at pool creation and cannot be changed in place. | **New deployments:** set `ExternalIdPEmailMutable=true` at creation (the CLI does this automatically when `ExternalIdPType` is set). **Existing deployments:** do **not** flip the parameter on the running stack — the update fails and can leave the stack in `UPDATE_ROLLBACK_FAILED`. Deploy a **new** stack with the flag set; federated users re-federate against the new pool (no migration path for `EXTERNAL_PROVIDER` records). As a one-shot bridge, an admin can `aws cognito-idp admin-delete-user` the affected user — buys exactly one additional login. **Note:** per-user state in DynamoDB keyed on the old Cognito `sub` (`UsersTable` preferences, `AllowedConfigVersions`) is orphaned by a pool replacement; an admin can re-key those records to the new `sub` after re-federation if continuity matters. See [Federated `email` Attribute Mutability](#federated-email-attribute-mutability). |
+| A federated user signs in but is not added to any Cognito group | The trigger only honours `custom:idp_groups` for a user linked to the provider named by `ExternalIdPName`, and only on a fresh sign-in. Check the trigger's CloudWatch logs for `has no federated identities`, `is not federated through`, or `is not a fresh sign-in`. | Confirm the user signed in through the external IdP (not as a Cognito-native user), and that `ExternalIdPName` matches the provider name in the pool. See "How Group Mapping Decides What to Trust" below. |
+
+## How Group Mapping Decides What to Trust
+
+`ExternalIdPGroupAttributeName` tells Cognito to map your IdP's group claim onto
+the `custom:idp_groups` User Pool attribute. `ExternalIdPGroupMappingFunction` — the
+pre-token-generation trigger — reads that attribute and assigns the corresponding
+Cognito group (`Admin`, `Author`, `Reviewer`, `Viewer`).
+
+The attribute itself is not a trustworthy signal on its own. It is `Mutable: true`,
+and because Cognito applies IdP attribute mapping *as the app client*, a mapped
+attribute must also appear in the client's `WriteAttributes` — which means a user's
+own access token can write it with `UpdateUserAttributes`. Nothing about the stored
+value records who put it there.
+
+The trigger therefore requires two things before it grants any group:
+
+1. **Provenance.** The signing-in user must be linked to the provider named by
+   `ExternalIdPName`. The trigger reads the Cognito-managed `identities` attribute
+   via `AdminGetUser` — a field no client can write — and ignores
+   `custom:idp_groups` entirely for anyone who is not federated through that
+   provider. A Cognito-native user who sets the attribute on their own profile
+   gains nothing.
+2. **Freshness.** Only a fresh sign-in is honoured, never a token refresh. At a
+   fresh federated sign-in Cognito has just rewritten the mapped attribute from the
+   assertion, so the value the trigger reads is the IdP's. On a refresh the stored
+   attribute could be whatever the user last wrote, so the trigger leaves group
+   membership alone and the token carries the membership already synced to Cognito.
+
+Both checks fail closed: if the provenance read fails, or the trigger source is not
+a fresh sign-in, no group is added or removed and no token override is emitted.
+
+**Assert the group claim for every federated user.** One case remains where a
+self-set value could be read as authoritative: a user who is already federated
+through the trusted provider sets `custom:idp_groups` themselves, and their next
+fresh sign-in arrives with the group claim *absent* from the assertion, so Cognito
+has no value to overwrite it with. Configuring the IdP to send the group attribute
+for all users — including users in no group, as an empty value — removes that case.
+
+The `WriteAttributes` list on `UserPoolClient` names only the attributes that must
+be writable: the IdP-mapped ones. Left unset, Cognito's default lets a user write
+every mutable attribute, so naming the set explicitly keeps everything else
+read-only to end users. The Web UI writes no user attributes.
 
 ## Federated `email` Attribute Mutability
 
-The User Pool `email` attribute is declared `Required: true, Mutable: true`. This is required for federation to work across multiple logins:
+Cognito's IdP attribute-mapping pipeline writes mapped attributes (`email`,
+`given_name`, `family_name`, `custom:idp_groups`) on **every** federated sign-in, not
+only when the user record is created, and an immutable attribute cannot be rewritten
+even with an identical value. Whether the pool's `email` attribute is mutable is set by
+the **`ExternalIdPEmailMutable`** parameter when the stack is created:
 
-- Cognito's IdP attribute-mapping pipeline writes mapped attributes (`email`, `email_verified`, `family_name`, etc.) on **every** federated sign-in, not only on user-record creation.
-- If `email` were `Mutable: false`, the second sign-in by any federated user (Okta, Entra ID, PingOne, generic SAML/OIDC) would fail with `user.email: Attribute cannot be updated` — see the AWS Cognito anti-pattern documented at <https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-attributes.html>.
-- `Required: true` is retained: every user record (native or federated) must have an email.
-- The `UserPoolClient` does **not** include `email` in `WriteAttributes`, so authenticated end users cannot self-mutate their own email via the client SDK. Only the IdP mapping pipeline (federated logins) and admin APIs (`admin-update-user-attributes`) can write the field.
-- Cognito-native sign-up and sign-in flows are unaffected by this setting — native users only write `email` once at account creation.
+| `ExternalIdPEmailMutable` at stack creation | Native sign-in | Federated sign-in |
+|---|---|---|
+| `false` (template default) | Works | **Exactly one sign-in per user.** The second attempt is rejected with `user.email: Attribute cannot be updated`; IdP-driven role changes cannot reach an existing federated user. |
+| `true` (**required for federated deployments**) | Works | Works repeatedly; a changed group claim is applied on the next sign-in. |
 
-**Existing deployments:** schema flags are fixed at User Pool creation. Stacks deployed before this fix retain `Mutable: false` and will exhibit the lockout. The only durable remediation is to redeploy with a fresh User Pool; pre-existing `EXTERNAL_PROVIDER` records cannot be migrated and users must re-federate.
+- **Set it to `true` for every new stack that configures an external IdP.**
+  `idp-cli deploy` does this automatically when it creates a stack with
+  `ExternalIdPType` set. In the CloudFormation console the parameter is in the
+  *External Identity Provider (Federation)* section.
+- **Never change it on an existing stack.** A Cognito schema flag is fixed at User
+  Pool creation. Changing it in place fails the update with a misleading
+  `Required custom attributes are not supported` error and can leave the stack in
+  `UPDATE_ROLLBACK_FAILED`. This is why the template default remains `false`: an
+  unconditional `Mutable: true` was shipped once and reverted because it broke every
+  existing stack's next update. Keep whatever value the stack was created with.
+- `Required: true` is retained either way: every user record (native or federated)
+  must have an email, and the app keys user-scoped settings on it.
+- **Self-service email changes are verification-gated when the attribute is mutable.**
+  `email` is in the app client's `WriteAttributes` because it is IdP-mapped, so on a
+  mutable pool a native user's own token could rewrite it — and the API resolves
+  config-version scope from the token's `email` claim. Pools created with
+  `ExternalIdPEmailMutable=true` therefore also set
+  `UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate: [email]`, so
+  a user-initiated change takes effect only after a code sent to the *new* address is
+  confirmed; a user cannot adopt an address they do not control.
+- **Known limitation on a mutable pool: a scoped native user can widen their own
+  config scope.** `allowedConfigVersions` is keyed on email (`UsersTable`
+  `EmailIndex`), and a caller with **no** user row is treated as unrestricted. A
+  non-admin *native* user whose scope was restricted could therefore call
+  `UpdateUserAttributes` directly (the Web UI offers no such control), verify a fresh
+  address they control, and on their next token find no row — losing the restriction,
+  though not gaining a role. This needs a deliberate Cognito API call, applies only to
+  pools created with the flag, and is bounded to profile/document visibility.
+  Mitigations today: keep native accounts on a federated deployment to admins, and
+  manage scoped users through the IdP. The durable fix is to key user scope on the
+  immutable Cognito `sub` rather than email; tracked as a follow-up to
+  [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
+  This is also why the flag stays opt-in for federated deployments rather than
+  defaulting on for every new stack.
+
+**Existing deployments created with `false`:** the only way to a mutable attribute is a
+new User Pool, which in this solution means a new stack. Pre-existing
+`EXTERNAL_PROVIDER` user records cannot be migrated and users must re-federate; their
+new Cognito `sub` orphans per-user rows in `UsersTable` / `AllowedConfigVersions`,
+which an admin can re-key. As a one-shot bridge an admin can
+`aws cognito-idp admin-delete-user` the affected user, which buys exactly one
+additional login. Tracked in [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
 
 ## Auto-Login Behavior
 

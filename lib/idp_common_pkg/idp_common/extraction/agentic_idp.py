@@ -38,10 +38,14 @@ from strands.types.media import (
 )
 
 from idp_common.bedrock.client import (
+    ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
     CLAUDE_EFFORT_LEVELS,
-    is_claude_4_7_model,
+    GROK_EFFORT_LEVELS,
+    is_astra_model,
     is_claude_effort_model,
+    is_grok_model,
+    strips_sampling_params,
 )
 from idp_common.bedrock.model_utils import get_model_max_output_tokens
 from idp_common.bedrock.openai_responses import is_openai_responses_model
@@ -263,6 +267,9 @@ def apply_patches_to_data(
     return patched_dict
 
 
+# NOTE: page_images here (and in the prompt builder below) come from
+# ExtractionService._page_images, which _load_document_images has already
+# fitted to Bedrock's per-image limit (#778). Do not pass raw page bytes in.
 def create_view_image_tool(page_images: list[bytes]) -> Any:
     """
     Create a view_image tool that has access to page images.
@@ -874,6 +881,13 @@ When using batched extraction plan it out and make a todo list with target size 
 
 NEVER STOP early on large documents, always extract all the data.
 
+NEVER return null or an empty list for an array/list field whose rows are visible
+in the document — that silently discards every row, and no other signal will show
+it (the scalar fields still score perfectly). If part of the data is unreadable,
+garbled, or ambiguous, emit EVERY row anyway with the problem cells set to null or
+to the literal text you can see. A partially-correct list is far more useful than
+no list. Difficulty is never a reason to return nothing.
+
 JSON PATCH FORMAT (RFC 6902):
 - {"op": "replace", "path": "/field_name", "value": "new_value"} - Update a field
 - {"op": "add", "path": "/new_field", "value": "value"} - Add a field
@@ -947,7 +961,18 @@ FALLBACK WORKFLOW (use when map_table_to_schema is not suitable):
 - Complex tables with merged cells, nested headers, or irregular structure
 - Tables where column mapping is ambiguous
 - Small tables (< 50 rows) where manual extraction is acceptable
+- Any column that is OCR-corrupted, garbled, or cannot be mapped cleanly
 In these cases, use parse_table + extraction_tool/apply_json_patches as before.
+
+DECLINING THE TOOL IS NOT DECLINING THE TABLE (ABSOLUTE RULE):
+Choosing not to use the table tools obliges you to extract the table DIRECTLY.
+- NEVER return null or an empty list for an array field whose rows are visible
+  in the document. That silently discards every row.
+- If ONE column is unreadable, garbled, or cannot be mapped, still emit EVERY
+  row. Set that single cell to null, or to the literal text you can see. Do not
+  drop the row, and do not drop the whole list, because of one bad column.
+- A partially-correct table is far more useful than no table. "I could not map
+  this cleanly" is never a reason to return nothing.
 
 QUALITY CHECKS:
 - parse_success_rate target: >= {min_parse_success_rate}
@@ -963,11 +988,32 @@ ROW COUNT VALIDATION:
 """
 
 
+# Backoff bounds for the agent call. ``max_delay`` was 1800 — thirty minutes of
+# backoff for a function Lambda kills at 900 seconds — so a single transient
+# ``Read timed out`` could spend the entire invocation asleep and lose the whole
+# shard, which Step Functions then repeats from scratch having persisted nothing.
+# Two bounds now apply, whichever binds first:
+#
+# * ``max_delay=60`` keeps any ONE sleep well inside a single invocation. Delays
+#   run 5, 10, 20, 40, 60, 60, ... rather than doubling to half an hour.
+# * ``max_total_delay=300`` bounds the SUM. A per-sleep cap alone still permits
+#   50 x 60s; five minutes is a third of a 900s invocation, which leaves room for
+#   the work itself.
+#
+# The decorator additionally refuses any sleep that would not finish before the
+# Lambda deadline (``utils.bedrock_utils.set_lambda_deadline_epoch``), so on a
+# short-remaining invocation it gives up sooner than either constant implies.
+# ``max_retries=50`` is left alone: the real bound is time, not attempts.
+_AGENT_MAX_BACKOFF_SECONDS = 60
+_AGENT_MAX_TOTAL_BACKOFF_SECONDS = 300
+
+
 @async_exponential_backoff_retry(
     max_retries=50,
     initial_delay=5,
-    max_delay=1800,
+    max_delay=_AGENT_MAX_BACKOFF_SECONDS,
     jitter=0.5,
+    max_total_delay=_AGENT_MAX_TOTAL_BACKOFF_SECONDS,
 )
 async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
     return await agent.invoke_async(input)
@@ -1028,18 +1074,35 @@ def _accumulate_token_usage(response: Any, token_usage: dict[str, int]) -> None:
 
 
 def _build_system_prompt(
-    base_prompt: str, custom_instruction: str | None, data_format: type[BaseModel]
+    base_prompt: str,
+    custom_instruction: str | None,
+    data_format: type[BaseModel],
+    restate_schema: bool = True,
 ) -> tuple[str, str]:
     """
     Build complete system prompt with custom instructions and schema.
+
+    ``schema_json`` is returned regardless of ``restate_schema`` — it is stored in
+    agent state for ``get_extraction_schema_reminder``, which lets the agent fetch
+    the schema ON DEMAND. So turning the restatement off removes a per-request
+    duplicate without removing the agent's access to the schema.
+
+    Why the restatement is optional (#710): the class schema is already on the
+    wire as ``extraction_tool``'s ``inputSchema``, which Strands derives from the
+    same ``model_json_schema()`` — so this is a byte-for-byte duplicate, measured
+    at ~2,595 of ~5,692 schema tokens per request on the lending ``Payslip``
+    class. It is not obviously safe to drop: restating a schema in prose often
+    improves adherence, which is why this is a knob defaulting to the existing
+    behaviour rather than a removal.
 
     Args:
         base_prompt: The base system prompt (typically SYSTEM_PROMPT constant)
         custom_instruction: Optional custom instructions to append
         data_format: Pydantic model class to extract schema from
+        restate_schema: Append "Expected Schema: ..." to the system prompt.
 
     Returns:
-        Tuple of (complete system prompt with schema, schema_json for state storage)
+        Tuple of (complete system prompt, schema_json for state storage)
     """
     # Generate and clean schema
     schema_json = json.dumps(data_format.model_json_schema(), indent=2)
@@ -1049,7 +1112,11 @@ def _build_system_prompt(
     if custom_instruction:
         final_prompt = f"{final_prompt}\n\nCustom Instructions for this specific task: {custom_instruction}"
 
-    complete_prompt = f"{final_prompt}\n\nExpected Schema:\n{schema_json}"
+    complete_prompt = (
+        f"{final_prompt}\n\nExpected Schema:\n{schema_json}"
+        if restate_schema
+        else final_prompt
+    )
 
     return complete_prompt, schema_json
 
@@ -1061,6 +1128,7 @@ def _build_model_config(
     connect_timeout: float,
     read_timeout: float,
     reasoning_effort: str | None = None,
+    prompt_cache: str = "auto",
 ) -> dict[str, Any]:
     """
     Build model configuration with token limits and caching settings.
@@ -1123,6 +1191,44 @@ def _build_model_config(
                 additional_request_fields = {}
             additional_request_fields["output_config"] = {"effort": effort}
             logger.info("Agentic extraction using reasoning effort '%s'", effort)
+
+    # xAI Grok uses a DIFFERENT carrier and a different vocabulary: reasoning is
+    # always on and effort rides in `reasoning.effort`, accepting
+    # none/low/medium/high/xhigh but NOT Claude's `max`. Claude's
+    # `output_config.effort` is silently ignored by Grok, as is any unrecognized
+    # key — so an out-of-vocabulary value must be dropped, not forwarded.
+    elif reasoning_effort and is_grok_model(model_id):
+        effort = str(reasoning_effort).lower().strip()
+        if effort in GROK_EFFORT_LEVELS:
+            if additional_request_fields is None:
+                additional_request_fields = {}
+            additional_request_fields["reasoning"] = {"effort": effort}
+            logger.info("Agentic extraction using reasoning effort '%s'", effort)
+        else:
+            logger.warning(
+                "Ignoring unsupported Grok reasoning effort '%s' (valid: %s)",
+                reasoning_effort,
+                ", ".join(GROK_EFFORT_LEVELS),
+            )
+
+    # OpenAI GPT-6 Astra shares Grok's `reasoning.effort` carrier but a THIRD
+    # vocabulary: none/low/medium/high/xhigh/max (Claude's set plus `none`;
+    # `minimal` from the GPT-5.x Responses API is rejected). Astra 400s on an
+    # unknown value rather than ignoring it, so dropping out-of-vocabulary values
+    # here is what keeps a stale config from failing every agentic call.
+    elif reasoning_effort and is_astra_model(model_id):
+        effort = str(reasoning_effort).lower().strip()
+        if effort in ASTRA_EFFORT_LEVELS:
+            if additional_request_fields is None:
+                additional_request_fields = {}
+            additional_request_fields["reasoning"] = {"effort": effort}
+            logger.info("Agentic extraction using reasoning effort '%s'", effort)
+        else:
+            logger.warning(
+                "Ignoring unsupported Astra reasoning effort '%s' (valid: %s)",
+                reasoning_effort,
+                ", ".join(ASTRA_EFFORT_LEVELS),
+            )
 
     # Resolve the model's true max output tokens from the single source of truth
     # (config_library/model_config_limits.yaml via get_model_max_output_tokens).
@@ -1189,8 +1295,14 @@ def _build_model_config(
         },
     )
 
-    # Auto-detect caching support based on model capabilities
-    if supports_prompt_caching(model_id):
+    # Auto-detect caching support based on model capabilities — unless the
+    # configuration declined caching outright (extraction.prompt_cache: off, #780).
+    if prompt_cache == "off":
+        logger.info(
+            "Prompt caching disabled by configuration (extraction.prompt_cache: off)",
+            extra={"model_id": model_id},
+        )
+    elif supports_prompt_caching(model_id):
         model_config["cache_prompt"] = "default"
         logger.info(
             "Prompt caching enabled for model",
@@ -1228,26 +1340,27 @@ def _get_inference_params(
 
     Claude 4.7+ models (e.g. ``us.anthropic.claude-opus-4-7``) deprecate the
     ``temperature``, ``top_p`` and ``top_k`` parameters and reject requests
-    that pass them. For these models this helper returns an empty dict so
-    that no inference parameters are forwarded to the Strands ``BedrockModel``
-    / ConverseStream call. See GitHub issue #304.
+    that pass them. xAI Grok rejects them outright with a 400 naming the field.
+    For these models this helper returns an empty dict so that no inference
+    parameters are forwarded to the Strands ``BedrockModel`` / ConverseStream
+    call. See GitHub issue #304.
 
     Args:
-        model_id: Bedrock model identifier (used to detect Claude 4.7+).
+        model_id: Bedrock model identifier.
         temperature: Temperature value from config.
         top_p: Top_p value from config (may be None).
 
     Returns:
-        Dict with only one of temperature or top_p, or an empty dict for
-        Claude 4.7+ models where both are deprecated.
+        Dict with only one of temperature or top_p, or an empty dict for models
+        that reject the sampling group.
     """
-    # Claude 4.7+ models don't support temperature/top_p/top_k. Omit them
+    # Claude 4.7+ and xAI Grok don't accept temperature/top_p/top_k. Omit them
     # entirely so ConverseStream doesn't fail with
-    # "`top_p` is deprecated for this model".
-    if is_claude_4_7_model(model_id):
+    # "`top_p` is deprecated for this model" (Claude) or
+    # "This model doesn't support the topP field" (Grok).
+    if strips_sampling_params(model_id):
         logger.info(
-            "Skipping temperature/top_p for Claude 4.7+ model "
-            "(these parameters are deprecated for this model)",
+            "Skipping temperature/top_p (rejected or deprecated for this model)",
             extra={"model_id": model_id},
         )
         return {}
@@ -1275,6 +1388,8 @@ def _prepare_prompt_content(
     prompt: str | Message | Image.Image,
     page_images: list[bytes] | None,
     existing_data: BaseModel | None,
+    model_id: str | None = None,
+    prompt_cache: str = "auto",
 ) -> list[ContentBlock]:
     """
     Prepare prompt content from various input types.
@@ -1286,6 +1401,10 @@ def _prepare_prompt_content(
         prompt: Input content (text string, PIL Image, or Message dict)
         page_images: Optional list of page image bytes to include
         existing_data: Optional existing extraction data to update
+        model_id: Target model. Used ONLY to decide whether a trailing
+            ``cachePoint`` block may be appended — a model that does not support
+            prompt caching rejects the whole request (see below). When None the
+            cachePoint is appended, preserving the historical behavior.
 
     Returns:
         List of ContentBlock objects ready for agent invocation
@@ -1364,10 +1483,26 @@ def _prepare_prompt_content(
     prompt_content = [
         x for x in prompt_content if x.get("cachePoint", {}).get("type") != "default"
     ]
-    prompt_content += [
-        ContentBlock(text="end of your main task description"),
-        ContentBlock(cachePoint=CachePoint(type="default")),
-    ]
+    prompt_content.append(ContentBlock(text="end of your main task description"))
+
+    # Append the trailing cachePoint ONLY for a model that supports prompt
+    # caching. This is not an optimization — Bedrock rejects the ENTIRE request
+    # for a model that doesn't: "AccessDeniedException: You invoked an
+    # unsupported model or your request did not allow prompt caching". xAI Grok
+    # is such a model, so leaving this unconditional failed every document in
+    # agentic extraction (verified live on stack IDP1, 2026-09-03).
+    #
+    # `model_id is None` keeps the historical behavior for callers that don't
+    # pass it (only the tests, today).
+    if prompt_cache == "off":
+        pass  # extraction.prompt_cache: off — no cache points at all (#780)
+    elif model_id is None or supports_prompt_caching(model_id):
+        prompt_content.append(ContentBlock(cachePoint=CachePoint(type="default")))
+    else:
+        logger.info(
+            "Omitting prompt cachePoint (model does not support prompt caching)",
+            extra={"model_id": model_id},
+        )
     return prompt_content
 
 
@@ -1520,6 +1655,7 @@ async def _run_shard_agent(
     checkpoint_callback: Any | None,
     base_custom_instruction: str | None = None,
     emit_field_assessment: bool = False,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """Run one extraction agent over a single shard.
 
@@ -1553,6 +1689,7 @@ async def _run_shard_agent(
         custom_instruction=combined_instruction,
         checkpoint_callback=checkpoint_callback,
         emit_field_assessment=emit_field_assessment,
+        schema_validator=schema_validator,
     )
 
 
@@ -1571,6 +1708,7 @@ async def default_shard_runner(
     max_tokens: int | None,
     checkpoint_callback: Any | None,
     custom_instruction: str | None,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, "BedrockInvokeModelResponse"]:
     """Strands-backed shard runner used by the runtime backends.
 
@@ -1599,6 +1737,7 @@ async def default_shard_runner(
         # Integrated-assessment mode flows through the payload (set by the
         # service when extraction.confidence.mode == "integrated").
         emit_field_assessment=bool(payload.get("emit_field_assessment")),
+        schema_validator=schema_validator,
     )
 
 
@@ -1631,6 +1770,7 @@ async def concurrent_structured_output_async(
     persistence: Any | None = None,
     runtime: Any | None = None,
     assess_runner: Any | None = None,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Run one extraction agent per input shard, concurrently, and merge results.
@@ -1684,6 +1824,7 @@ async def concurrent_structured_output_async(
         persistence=persistence,
         shard_runner=default_shard_runner,
         assess_runner=assess_runner,
+        schema_validator=schema_validator,
     )
     # Normalise the runtime's plain-dict response into the typed envelope that
     # existing callers expect. The runtime returns a BaseModel; it is an instance
@@ -1902,12 +2043,23 @@ async def structured_output_async(
         map_tool = create_map_table_to_schema_tool()
         tools.append(map_tool)
 
-    # Build system prompt with schema
+    # Build system prompt. The schema restatement is optional (#710): it duplicates
+    # the extraction tool's inputSchema, which Strands derives from the same
+    # model_json_schema(). schema_json is returned either way and stored in agent
+    # state below, so get_extraction_schema_reminder still works when it is off.
+    restate_schema = config.extraction.agentic.restate_schema_in_system_prompt
     final_system_prompt, schema_json = _build_system_prompt(
         base_prompt=system_prompt or SYSTEM_PROMPT,
         custom_instruction=custom_instruction,
         data_format=data_format,
+        restate_schema=restate_schema,
     )
+    if not restate_schema:
+        logger.info(
+            "Schema restatement disabled; the class schema goes on the wire once, "
+            "as the extraction tool's inputSchema (saved ~%d chars of system prompt)",
+            len(schema_json) + len("\n\nExpected Schema:\n"),
+        )
 
     tool_names = [getattr(tool, "__name__", str(tool)) for tool in tools]
     logger.debug(
@@ -1927,11 +2079,16 @@ async def structured_output_async(
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         reasoning_effort=config.extraction.reasoning_effort,
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Prepare prompt content
     prompt_content = _prepare_prompt_content(
-        prompt=prompt, page_images=page_images, existing_data=existing_data
+        prompt=prompt,
+        page_images=page_images,
+        existing_data=existing_data,
+        model_id=model_id,
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Track token usage

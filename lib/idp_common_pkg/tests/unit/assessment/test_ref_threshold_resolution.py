@@ -327,3 +327,104 @@ class TestEnrichAssessmentWithThresholdsRef:
         ssn_alerts = [a for a in alerts if "employee_ssn" in a["attribute_name"]]
         assert len(ssn_alerts) == 1
         assert ssn_alerts[0]["confidence_threshold"] == 0.8
+
+
+class TestRefWrappedArrayContainerParity:
+    """A ``$ref``-wrapped array container must enrich like an inline one.
+
+    The integrated-confidence / BDA path read ``type`` and ``items`` off the RAW
+    property, so a property declared as ``{"$ref": "#/$defs/TxnList"}`` — which
+    carries neither — resolved zero per-sub-field thresholds and fell back to the
+    uniform container threshold. The standalone path resolved them, so the SAME
+    schema and the SAME confidences produced HITL alerts in
+    ``confidence: separate`` and none in ``integrated`` (GitHub issue #678).
+    """
+
+    ITEM = {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string"},
+            "amount": {"type": "number", "x-aws-idp-confidence-threshold": 0.99},
+        },
+    }
+
+    ASSESSMENT = {
+        "txns": [
+            {"date": {"confidence": 0.97}, "amount": {"confidence": 0.95}},
+            {"date": {"confidence": 0.92}, "amount": {"confidence": 0.91}},
+        ]
+    }
+
+    def _variants(self):
+        return {
+            # The hand-authored shape: the ARRAY itself lives in $defs.
+            "ref_container": {
+                "properties": {"txns": {"$ref": "#/$defs/TxnList"}},
+                "$defs": {"TxnList": {"type": "array", "items": self.ITEM}},
+            },
+            # What the UI emits: inline array, item shape behind a $ref.
+            "ref_items": {
+                "properties": {
+                    "txns": {"type": "array", "items": {"$ref": "#/$defs/Txn"}}
+                },
+                "$defs": {"Txn": self.ITEM},
+            },
+            "inline": {
+                "properties": {"txns": {"type": "array", "items": self.ITEM}},
+                "$defs": {},
+            },
+        }
+
+    def test_all_three_shapes_resolve_identically(self):
+        results = {}
+        for label, schema in self._variants().items():
+            enriched, alerts = enrich_assessment_with_thresholds(
+                self.ASSESSMENT, schema, default_confidence_threshold=0.8
+            )
+            row0 = enriched["txns"][0]
+            results[label] = (
+                row0["amount"]["confidence_threshold"],
+                row0["date"]["confidence_threshold"],
+                len(alerts),
+            )
+
+        # The $ref container used to give (0.8, 0.8, 0) — uniform fallback, no
+        # alerts — while the other two gave (0.99, 0.8, 2).
+        assert results["ref_container"] == (0.99, 0.8, 2), results
+        assert results["ref_container"] == results["ref_items"] == results["inline"]
+
+    def test_alerts_name_the_offending_sub_field_per_row(self):
+        schema = self._variants()["ref_container"]
+        _, alerts = enrich_assessment_with_thresholds(
+            self.ASSESSMENT, schema, default_confidence_threshold=0.8
+        )
+        names = {a["attribute_name"] for a in alerts}
+        # amount 0.95/0.91 both breach its own 0.99; date 0.97/0.92 clear 0.8.
+        assert names == {"txns[0].amount", "txns[1].amount"}
+
+    def test_container_threshold_is_still_read_off_the_raw_property(self):
+        """A threshold on the $defs DEFINITION must NOT become the container's.
+
+        That would be a change to threshold *inheritance*, which belongs with
+        ``resolve_threshold_for_path``'s rules — not with this type fix.
+        """
+        schema = {
+            "properties": {"txns": {"$ref": "#/$defs/TxnList"}},
+            "$defs": {
+                "TxnList": {
+                    "type": "array",
+                    "x-aws-idp-confidence-threshold": 0.42,
+                    "items": {
+                        "type": "object",
+                        "properties": {"date": {"type": "string"}},
+                    },
+                }
+            },
+        }
+        enriched, _ = enrich_assessment_with_thresholds(
+            {"txns": [{"date": {"confidence": 0.5}}]},
+            schema,
+            default_confidence_threshold=0.8,
+        )
+        # 0.8 (the caller default), NOT 0.42 from the definition.
+        assert enriched["txns"][0]["date"]["confidence_threshold"] == 0.8

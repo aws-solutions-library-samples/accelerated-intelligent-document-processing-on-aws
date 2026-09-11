@@ -68,8 +68,10 @@ export type AgentJobConnection = {
 };
 
 export type AnnotationQueue = {
+  baseVersion?: Maybe<Scalars['Int']['output']>;
   claimedByOthers: Scalars['Int']['output'];
   documents: Array<AnnotationQueueItem>;
+  draftVersion?: Maybe<Scalars['Int']['output']>;
   inspectedDocs?: Maybe<Scalars['Int']['output']>;
   labelJobLabeled?: Maybe<Scalars['Int']['output']>;
   labelJobStatus?: Maybe<Scalars['String']['output']>;
@@ -87,6 +89,7 @@ export type AnnotationQueueItem = {
   claimedBy?: Maybe<Scalars['String']['output']>;
   claimedByMe: Scalars['Boolean']['output'];
   confidenceThreshold?: Maybe<Scalars['Float']['output']>;
+  documentClasses?: Maybe<Array<Scalars['String']['output']>>;
   fieldCount?: Maybe<Scalars['Int']['output']>;
   inputKey: Scalars['String']['output'];
   labelSource?: Maybe<Scalars['String']['output']>;
@@ -210,6 +213,11 @@ export type CircuitBreakerStatus = {
   state?: Maybe<Scalars['String']['output']>;
 };
 
+export type ClassCandidate = {
+  Class?: Maybe<Scalars['String']['output']>;
+  Probability?: Maybe<Scalars['Float']['output']>;
+};
+
 export type ConfidenceThresholdAlert = {
   attributeName?: Maybe<Scalars['String']['output']>;
   confidence?: Maybe<Scalars['Float']['output']>;
@@ -229,6 +237,37 @@ export type ConfigBootstrapJob = {
   status: Scalars['String']['output'];
   statusMessage?: Maybe<Scalars['String']['output']>;
   testSetId?: Maybe<Scalars['String']['output']>;
+};
+
+export type ConfigProfileRevision = {
+  classFingerprint?: Maybe<Scalars['String']['output']>;
+  createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  label?: Maybe<Scalars['String']['output']>;
+  notes?: Maybe<Scalars['String']['output']>;
+  pinned?: Maybe<Scalars['Boolean']['output']>;
+  published?: Maybe<Scalars['Boolean']['output']>;
+  revision: Scalars['Int']['output'];
+  sizeBytes?: Maybe<Scalars['Int']['output']>;
+};
+
+export type ConfigProfileRevisionMutationResponse = {
+  error?: Maybe<ConfigurationError>;
+  message?: Maybe<Scalars['String']['output']>;
+  revision?: Maybe<Scalars['Int']['output']>;
+  success: Scalars['Boolean']['output'];
+};
+
+export type ConfigProfileRevisionResponse = {
+  config?: Maybe<Scalars['AWSJSON']['output']>;
+  error?: Maybe<ConfigurationError>;
+  success: Scalars['Boolean']['output'];
+};
+
+export type ConfigProfileRevisionsResponse = {
+  error?: Maybe<ConfigurationError>;
+  revisions?: Maybe<Array<Maybe<ConfigProfileRevision>>>;
+  success: Scalars['Boolean']['output'];
 };
 
 export type ConfigSetting = {
@@ -277,7 +316,9 @@ export type ConfigurationVersion = {
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
   description?: Maybe<Scalars['String']['output']>;
   isActive?: Maybe<Scalars['Boolean']['output']>;
+  latestRevision?: Maybe<Scalars['Int']['output']>;
   managed?: Maybe<Scalars['Boolean']['output']>;
+  publishedRevision?: Maybe<Scalars['Int']['output']>;
   updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   versionName: Scalars['String']['output'];
 };
@@ -294,6 +335,7 @@ export type CopyToBaselineResponse = {
 };
 
 export type CreateDocumentInput = {
+  ConfigRevision?: InputMaybe<Scalars['Int']['input']>;
   ConfigVersion?: InputMaybe<Scalars['String']['input']>;
   ExpiresAfter?: InputMaybe<Scalars['AWSTimestamp']['input']>;
   InitialEventTime?: InputMaybe<Scalars['AWSDateTime']['input']>;
@@ -344,6 +386,7 @@ export type DiscoveryJob = {
   errorMessage?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
   statusMessage?: Maybe<Scalars['String']['output']>;
@@ -366,6 +409,7 @@ export type DiscoveryJobListItem = {
   groundTruthKey?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   pageRange?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
@@ -378,6 +422,7 @@ export type DiscoveryJobListItem = {
 export type Document = DynamoDbBase & {
   CompletionTime?: Maybe<Scalars['AWSDateTime']['output']>;
   ConfidenceAlertCount?: Maybe<Scalars['Int']['output']>;
+  ConfigRevision?: Maybe<Scalars['Int']['output']>;
   ConfigVersion?: Maybe<Scalars['String']['output']>;
   EvaluationReportUri?: Maybe<Scalars['String']['output']>;
   EvaluationStatus?: Maybe<Scalars['String']['output']>;
@@ -447,8 +492,15 @@ export type DocumentPage = {
   nextToken?: Maybe<Scalars['String']['output']>;
 };
 
+export type DocumentSectionGroupingInput = {
+  classification?: InputMaybe<Scalars['String']['input']>;
+  pageIds: Array<Scalars['String']['input']>;
+  sectionId: Scalars['String']['input'];
+};
+
 export type DocumentVersion = {
   CompletionTime?: Maybe<Scalars['AWSDateTime']['output']>;
+  ConfigRevision?: Maybe<Scalars['Int']['output']>;
   ConfigVersion?: Maybe<Scalars['String']['output']>;
   EvaluationReportUri?: Maybe<Scalars['String']['output']>;
   FileCount?: Maybe<Scalars['Int']['output']>;
@@ -602,7 +654,9 @@ export type FinetuningJobStatus =
   | 'VALIDATING';
 
 export type GenerateDraftLabelsInput = {
+  configRevision?: InputMaybe<Scalars['Int']['input']>;
   configVersion?: InputMaybe<Scalars['String']['input']>;
+  documentClass?: InputMaybe<Scalars['String']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
 };
@@ -739,10 +793,12 @@ export type Mutation = {
   completeSectionReview?: Maybe<Document>;
   copyToBaseline: CopyToBaselineResponse;
   createDocument?: Maybe<CreateDocumentOutput>;
+  createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
+  deleteConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   deleteConfigVersion?: Maybe<UpdateConfigurationResponse>;
   deleteDiscoveryJob: Scalars['Boolean']['output'];
   deleteDocument: Scalars['Boolean']['output'];
@@ -753,6 +809,8 @@ export type Mutation = {
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
   generateDraftLabels?: Maybe<DraftLabelJob>;
   generateRuleJson?: Maybe<GenerateRuleJsonResponse>;
+  labelConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
+  openTestSetAnnotationDraft?: Maybe<TestSetAnnotationDraft>;
   pauseCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   probeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
   processChanges: ProcessChangesResponse;
@@ -783,6 +841,7 @@ export type Mutation = {
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
   reprocessDocument: Scalars['Boolean']['output'];
   resetTestSetLabels?: Maybe<TestSet>;
+  restoreConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
   restoreDefaultModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   restoreDefaultPricing?: Maybe<UpdatePricingResponse>;
   resumeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
@@ -829,11 +888,13 @@ export type Mutation = {
   updateDiscoveryJobStatus?: Maybe<DiscoveryJob>;
   updateDocument?: Maybe<Document>;
   updateDocumentSection?: Maybe<Document>;
+  updateDocumentSections: ProcessChangesResponse;
   updateDocumentStatus?: Maybe<Document>;
   updateFinetuningJobStatus?: Maybe<FinetuningJob>;
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   updatePricing?: Maybe<UpdatePricingResponse>;
   updateTestSet?: Maybe<TestSet>;
+  updateTestSetDocumentSections?: Maybe<TestSetDocumentSections>;
   updateUser?: Maybe<User>;
   uploadDiscoveryDocument: DisPresignedUrlResponse;
   uploadDocument: PresignedUrlResponse;
@@ -921,6 +982,13 @@ export type MutationCreateDocumentArgs = {
 };
 
 
+export type MutationCreateEmptyTestSetArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  documentClassType?: InputMaybe<DocumentClassType>;
+  name: Scalars['String']['input'];
+};
+
+
 export type MutationCreateFinetuningJobArgs = {
   input: CreateFinetuningJobInput;
 };
@@ -941,6 +1009,12 @@ export type MutationDeleteAgentJobArgs = {
 
 export type MutationDeleteChatSessionArgs = {
   sessionId: Scalars['ID']['input'];
+};
+
+
+export type MutationDeleteConfigProfileRevisionArgs = {
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
 };
 
 
@@ -992,6 +1066,19 @@ export type MutationGenerateDraftLabelsArgs = {
 
 export type MutationGenerateRuleJsonArgs = {
   ruleDescription: Scalars['String']['input'];
+};
+
+
+export type MutationLabelConfigProfileRevisionArgs = {
+  label?: InputMaybe<Scalars['String']['input']>;
+  notes?: InputMaybe<Scalars['String']['input']>;
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
+};
+
+
+export type MutationOpenTestSetAnnotationDraftArgs = {
+  input: OpenTestSetAnnotationDraftInput;
 };
 
 
@@ -1055,12 +1142,19 @@ export type MutationRemoveFeatureConfigPresetArgs = {
 
 export type MutationReprocessDocumentArgs = {
   objectKeys: Array<Scalars['String']['input']>;
+  revision?: InputMaybe<Scalars['Int']['input']>;
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
 
 export type MutationResetTestSetLabelsArgs = {
   testSetId: Scalars['String']['input'];
+};
+
+
+export type MutationRestoreConfigProfileRevisionArgs = {
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
 };
 
 
@@ -1198,6 +1292,7 @@ export type MutationUpdateDiscoveryJobStatusArgs = {
   errorMessage?: InputMaybe<Scalars['String']['input']>;
   jobId: Scalars['ID']['input'];
   jobType?: InputMaybe<Scalars['String']['input']>;
+  multiInstanceHint?: InputMaybe<Scalars['String']['input']>;
   reflectionReport?: InputMaybe<Scalars['String']['input']>;
   status: Scalars['String']['input'];
   statusMessage?: InputMaybe<Scalars['String']['input']>;
@@ -1212,6 +1307,12 @@ export type MutationUpdateDocumentArgs = {
 
 export type MutationUpdateDocumentSectionArgs = {
   input: UpdateDocumentSectionInput;
+};
+
+
+export type MutationUpdateDocumentSectionsArgs = {
+  objectKey: Scalars['String']['input'];
+  sections: Array<DocumentSectionGroupingInput>;
 };
 
 
@@ -1242,6 +1343,11 @@ export type MutationUpdateTestSetArgs = {
 };
 
 
+export type MutationUpdateTestSetDocumentSectionsArgs = {
+  input: UpdateTestSetDocumentSectionsInput;
+};
+
+
 export type MutationUpdateUserArgs = {
   allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
   allowedTestSets?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
@@ -1269,6 +1375,7 @@ export type MutationUploadDocumentArgs = {
   contentType?: InputMaybe<Scalars['String']['input']>;
   fileName: Scalars['String']['input'];
   prefix?: InputMaybe<Scalars['String']['input']>;
+  revision?: InputMaybe<Scalars['Int']['input']>;
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
@@ -1286,8 +1393,16 @@ export type MutationUploadSampleDocumentArgs = {
   version?: InputMaybe<Scalars['String']['input']>;
 };
 
+export type OpenTestSetAnnotationDraftInput = {
+  testSetId: Scalars['String']['input'];
+};
+
 export type Page = {
+  Boundary?: Maybe<Scalars['String']['output']>;
   Class?: Maybe<Scalars['String']['output']>;
+  ClassCandidates?: Maybe<Array<Maybe<ClassCandidate>>>;
+  ClassConfidence?: Maybe<Scalars['Float']['output']>;
+  ClassReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['Int']['output']>;
   ImageUri?: Maybe<Scalars['String']['output']>;
   OcrPageDataUri?: Maybe<Scalars['String']['output']>;
@@ -1371,6 +1486,7 @@ export type Query = {
   getAnnotationQueue?: Maybe<AnnotationQueue>;
   getChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
+  getConfigProfileRevision?: Maybe<ConfigProfileRevisionResponse>;
   getConfigVersion?: Maybe<ConfigurationResponse>;
   getConfigVersions?: Maybe<ConfigurationVersionsResponse>;
   getConfigurationLibraryFile?: Maybe<ConfigurationLibraryFileResponse>;
@@ -1410,6 +1526,7 @@ export type Query = {
    */
   listCatalogFeatures?: Maybe<Array<CatalogFeature>>;
   listChatSessions?: Maybe<ChatSessionConnection>;
+  listConfigProfileRevisions?: Maybe<ConfigProfileRevisionsResponse>;
   listConfigurationLibrary?: Maybe<ConfigurationLibraryResponse>;
   listDiscoveryJobs?: Maybe<DiscoveryJobList>;
   listDocumentVersions?: Maybe<Array<Maybe<DocumentVersion>>>;
@@ -1482,6 +1599,12 @@ export type QueryGetAnnotationQueueArgs = {
 
 export type QueryGetChatMessagesArgs = {
   sessionId: Scalars['ID']['input'];
+};
+
+
+export type QueryGetConfigProfileRevisionArgs = {
+  profileName: Scalars['String']['input'];
+  revision: Scalars['Int']['input'];
 };
 
 
@@ -1601,6 +1724,11 @@ export type QueryListChatSessionsArgs = {
   limit?: InputMaybe<Scalars['Int']['input']>;
   nextToken?: InputMaybe<Scalars['String']['input']>;
   surface?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type QueryListConfigProfileRevisionsArgs = {
+  profileName: Scalars['String']['input'];
 };
 
 
@@ -1736,7 +1864,11 @@ export type ReviewEffortEstimate = {
   baselineError: Scalars['Float']['output'];
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
+  confidenceFingerprint?: Maybe<Scalars['String']['output']>;
+  confidenceFingerprintSource?: Maybe<Scalars['String']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
+  configVersionSource?: Maybe<Scalars['String']['output']>;
+  curveSource?: Maybe<Scalars['String']['output']>;
   docsToReview: Scalars['Int']['output'];
   docsToReviewHigh: Scalars['Int']['output'];
   docsToReviewLow: Scalars['Int']['output'];
@@ -1784,10 +1916,12 @@ export type SampleDocumentUrl = {
 
 export type Section = {
   Class?: Maybe<Scalars['String']['output']>;
+  Confidence?: Maybe<Scalars['Float']['output']>;
   ConfidenceThresholdAlerts?: Maybe<Array<Maybe<ConfidenceThresholdAlert>>>;
   Excluded?: Maybe<Scalars['Boolean']['output']>;
   ExclusionReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['String']['output']>;
+  InstanceCount?: Maybe<Scalars['Int']['output']>;
   OutputJSONUri?: Maybe<Scalars['String']['output']>;
   PageIds?: Maybe<Array<Maybe<Scalars['Int']['output']>>>;
   ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;
@@ -1884,10 +2018,12 @@ export type TestRun = {
   accuracyBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   averageConfidence?: Maybe<Scalars['Float']['output']>;
   avgWeightedOverallScore?: Maybe<Scalars['Float']['output']>;
+  classificationErrors?: Maybe<Scalars['AWSJSON']['output']>;
   completedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   completedFiles?: Maybe<Scalars['Int']['output']>;
   confidenceMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   config?: Maybe<Scalars['AWSJSON']['output']>;
+  configRevision?: Maybe<Scalars['Int']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
   confusionMatrix?: Maybe<Scalars['AWSJSON']['output']>;
   context?: Maybe<Scalars['String']['output']>;
@@ -1898,10 +2034,12 @@ export type TestRun = {
   fieldMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   filesCount: Scalars['Int']['output'];
   gradedPacketMetrics?: Maybe<Scalars['AWSJSON']['output']>;
+  isDraftLabeling?: Maybe<Scalars['Boolean']['output']>;
   overallAccuracy?: Maybe<Scalars['Float']['output']>;
   splitClassificationMetrics?: Maybe<Scalars['AWSJSON']['output']>;
   status: Scalars['String']['output'];
   testRunId: Scalars['String']['output'];
+  testSetDraftVersion?: Maybe<Scalars['Int']['output']>;
   testSetId?: Maybe<Scalars['String']['output']>;
   testSetName?: Maybe<Scalars['String']['output']>;
   testSetVersion?: Maybe<Scalars['Int']['output']>;
@@ -1915,12 +2053,14 @@ export type TestRunComparison = {
 };
 
 export type TestRunInput = {
+  configRevision?: InputMaybe<Scalars['Int']['input']>;
   configVersion?: InputMaybe<Scalars['String']['input']>;
   context?: InputMaybe<Scalars['String']['input']>;
   draftLabeling?: InputMaybe<Scalars['Boolean']['input']>;
   numberOfFiles?: InputMaybe<Scalars['Int']['input']>;
   objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
   testSetId: Scalars['String']['input'];
+  testSetVersion?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type TestRunStatus = {
@@ -1951,6 +2091,23 @@ export type TestSet = {
   name: Scalars['String']['output'];
   source?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
+  updatedAt?: Maybe<Scalars['AWSDateTime']['output']>;
+};
+
+/**
+ * The version transition an annotation session commits to.
+ *
+ * `baseVersion` is the state being left, snapshotted to
+ * `{testSetId}/versions/{baseVersion}/baseline/` so the number refers to bytes rather than
+ * to whatever the labels happen to be later. `draftVersion` is what the session is working
+ * toward, and what the queue link carries so a link identifies its transition.
+ */
+export type TestSetAnnotationDraft = {
+  alreadyOpen?: Maybe<Scalars['Boolean']['output']>;
+  baseVersion: Scalars['Int']['output'];
+  draftVersion: Scalars['Int']['output'];
+  snapshotObjectCount?: Maybe<Scalars['Int']['output']>;
+  testSetId: Scalars['String']['output'];
 };
 
 export type TestSetDocument = {
@@ -1968,13 +2125,22 @@ export type TestSetDocument = {
 
 export type TestSetDocumentSection = {
   baselineKey: Scalars['String']['output'];
+  documentClass?: Maybe<Scalars['String']['output']>;
+  pageIndices?: Maybe<Array<Scalars['Int']['output']>>;
   sectionId: Scalars['String']['output'];
+};
+
+export type TestSetDocumentSections = {
+  objectKey: Scalars['String']['output'];
+  sections: Array<TestSetSectionGrouping>;
+  testSetId: Scalars['String']['output'];
 };
 
 export type TestSetDocumentsPage = {
   activeLabelJobId?: Maybe<Scalars['String']['output']>;
   documents: Array<TestSetDocument>;
   nextToken?: Maybe<Scalars['String']['output']>;
+  totalCount?: Maybe<Scalars['Int']['output']>;
 };
 
 export type TestSetDocumentsUploadInput = {
@@ -1983,11 +2149,24 @@ export type TestSetDocumentsUploadInput = {
   testSetId: Scalars['String']['input'];
 };
 
+export type TestSetSectionGrouping = {
+  documentClass?: Maybe<Scalars['String']['output']>;
+  pageIndices: Array<Scalars['Int']['output']>;
+  sectionId: Scalars['String']['output'];
+};
+
+export type TestSetSectionGroupingInput = {
+  documentClass?: InputMaybe<Scalars['String']['input']>;
+  pageIndices: Array<Scalars['Int']['input']>;
+  sectionId: Scalars['String']['input'];
+};
+
 export type TestSetUploadInput = {
   description?: InputMaybe<Scalars['String']['input']>;
   documentClassType?: InputMaybe<DocumentClassType>;
   fileName: Scalars['String']['input'];
   fileSize: Scalars['Int']['input'];
+  name?: InputMaybe<Scalars['String']['input']>;
 };
 
 export type TestSetUploadResponse = {
@@ -2048,6 +2227,7 @@ export type UpdateConfigurationResponse = {
 export type UpdateDocumentInput = {
   CompletionTime?: InputMaybe<Scalars['AWSDateTime']['input']>;
   ConfidenceAlertCount?: InputMaybe<Scalars['Int']['input']>;
+  ConfigRevision?: InputMaybe<Scalars['Int']['input']>;
   ConfigVersion?: InputMaybe<Scalars['String']['input']>;
   EvaluationReportUri?: InputMaybe<Scalars['String']['input']>;
   EvaluationStatus?: InputMaybe<Scalars['String']['input']>;
@@ -2102,6 +2282,12 @@ export type UpdatePricingResponse = {
   error?: Maybe<ConfigurationError>;
   message?: Maybe<Scalars['String']['output']>;
   success: Scalars['Boolean']['output'];
+};
+
+export type UpdateTestSetDocumentSectionsInput = {
+  objectKey: Scalars['String']['input'];
+  sections: Array<TestSetSectionGroupingInput>;
+  testSetId: Scalars['String']['input'];
 };
 
 export type UpdateTestSetInput = {

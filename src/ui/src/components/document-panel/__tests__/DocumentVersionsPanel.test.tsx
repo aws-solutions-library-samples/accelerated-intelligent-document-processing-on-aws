@@ -133,6 +133,7 @@ describe('DocumentVersionsPanel', () => {
     expect(query).toContain('ConfidenceThresholdAlerts');
     expect(query).toContain('confidenceThreshold');
     expect(query).toContain('ProcessingIssues');
+    expect(query).toContain('InstanceCount');
   });
 
   it('returns to current when the currently-viewed version row is actioned', async () => {

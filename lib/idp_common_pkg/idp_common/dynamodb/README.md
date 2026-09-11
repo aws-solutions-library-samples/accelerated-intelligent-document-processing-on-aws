@@ -52,6 +52,30 @@ S3 object versions into a manifest):
   `VersionCount` (S3 artifact cleanup is the caller's responsibility via
   `document_versions.delete_run_artifacts`).
 
+**Purging output before a re-run:**
+
+```python
+delete_current_output_objects(
+    s3_client, output_bucket: str, input_key: str,
+    subprefixes: Sequence[str] | None = None,
+) -> int   # number of objects deleted
+```
+
+Deletes the *current* output artifacts for a document key. Used by the queue
+sender and the reprocess resolver so a re-upload sharing a filename cannot
+inherit the previous document's results: OCR's retry-safe recovery reads
+`pages/`, and without the purge it would reinstate stale output (issue #719).
+
+⚠️ **`subprefixes` is a safety scope, and it defaults to `None` — meaning
+unscoped.** Both shipped callers pass `("pages/",)` deliberately: scoping to the
+one subprefix OCR recovery actually reads makes it impossible for an upload of
+`foo` to remove a nested document at `foo/bar.pdf/*`. A new caller that omits it
+gets the broad delete, so pass it explicitly.
+
+Failures are swallowed so ingest still proceeds, and emit the
+`StaleOutputPurgeFailed` metric — alarmed, because the alternative is silent stale
+extraction.
+
 > **GSI safety.** Run items deliberately omit the `ItemType` and
 > `InitialEventTime` attributes so they never enter the `TypeDateIndex` GSI
 > (which keys on both), and `VersionCount` is **not** in that GSI's INCLUDE

@@ -144,7 +144,7 @@ can never equal a test set id.
 
 The same `<featureId>-v<version>` string is therefore computed in two places —
 `config_version_name()` in `ui-deployer/handler.py` (which creates the config
-version) and `CONFIG_VERSION_NAME` in `template.yaml` (which the planner records
+the feature id) and `CONFIG_VERSION_NAME` in `template.yaml` (which the planner records
 on each test-set row). Both derive it from `FeatureId` + the publish-time version
 token, so they cannot drift on a version bump, but a rename of either half needs
 the other updated.

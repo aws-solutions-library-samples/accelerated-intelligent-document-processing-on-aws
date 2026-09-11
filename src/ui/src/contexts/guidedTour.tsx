@@ -53,7 +53,7 @@ const buildTutorial = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
         },
         {
           title: 'View / edit configuration',
-          content: 'Review, edit, and activate configuration versions — the document classes and fields IDP extracts.',
+          content: 'Review, edit, and activate configuration profiles — the document classes and fields IDP extracts.',
           hotspotId: 'nav-configuration',
         },
         {
