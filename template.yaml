@@ -12187,6 +12187,10 @@ Resources:
       Name: !Sub "${AWS::StackName}-MultiDocDiscovery"
       DefinitionUri: src/lambda/multi_doc_discovery/statemachine.asl.json
       DefinitionSubstitutions:
+        # Partition for service-integration ARNs (arn:${Partition}:states:::...).
+        # A hardcoded 'aws' is rejected by Step Functions in GovCloud ("resource
+        # belongs to a different partition"); see patterns/unified/template.yaml.
+        Partition: !Ref AWS::Partition
         DiscoveryTrackingTable: !Ref DiscoveryTrackingTable
         PrepareFunction: !GetAtt MultiDocDiscoveryPrepareFunction.Arn
         EmbedFunction: !GetAtt MULTIDOCDISCOVERYSTACK.Outputs.EmbedFunctionArn
@@ -13643,6 +13647,10 @@ Resources:
       Name: !Sub "${AWS::StackName}-FinetuningStateMachine"
       DefinitionUri: src/lambda/finetuning_state_machine/definition.json
       DefinitionSubstitutions:
+        # Partition for service-integration ARNs (arn:${Partition}:states:::...).
+        # A hardcoded 'aws' is rejected by Step Functions in GovCloud ("resource
+        # belongs to a different partition"); see patterns/unified/template.yaml.
+        Partition: !Ref AWS::Partition
         FinetuningListDocumentsArn: !GetAtt FinetuningListDocumentsFunction.Arn
         FinetuningProcessDocumentArn: !GetAtt FinetuningProcessDocumentFunction.Arn
         FinetuningMergeDataArn: !GetAtt FinetuningMergeDataFunction.Arn

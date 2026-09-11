@@ -25,6 +25,17 @@ Parameters:
     AllowedPattern: "^(|arn:aws[a-z-]*::kms:[a-z0-9-]+:[0-9]{12}:key/.+)$"
     ConstraintDescription: Must be empty or a valid KMS key ARN
 
+Mappings:
+  # Console hostnames differ per partition; see ConsoleDomainMap in the main
+  # template.yaml for the same lookup.
+  ConsoleDomainMap:
+    aws:
+      Domain: "console.aws.amazon.com"
+    aws-us-gov:
+      Domain: "console.amazonaws-us-gov.com"
+    aws-cn:
+      Domain: "console.amazonaws.cn"
+
 Conditions:
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
   CreateKmsKey: !Equals [!Ref KmsKeyArn, ""]
@@ -43,13 +54,13 @@ Resources:
           - Sid: Enable IAM User Permissions
             Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
             Action: 'kms:*'
             Resource: '*'
           - Sid: Allow CloudWatch Logs
             Effect: Allow
             Principal:
-              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+              Service: !Sub 'logs.${AWS::Region}.${AWS::URLSuffix}'
             Action:
               - 'kms:Encrypt'
               - 'kms:Decrypt'
@@ -126,5 +137,6 @@ Outputs:
         
   MonitoringLink:
     Description: Direct link to CloudWatch logs for this function
-    Value: !Sub |
-      https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups/log-group/$252Faws$252Flambda$252FGENAIIDP-notebook-demo-extractor
+    Value: !Sub
+      - https://${AWS::Region}.${ConsoleDomain}/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups/log-group/$252Faws$252Flambda$252FGENAIIDP-notebook-demo-extractor
+      - ConsoleDomain: !FindInMap [ConsoleDomainMap, !Ref "AWS::Partition", Domain]

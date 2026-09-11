@@ -230,7 +230,7 @@
     },
     "CompleteJob": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Resource": "arn:${Partition}:states:::dynamodb:updateItem",
       "Comment": "Persist terminal COMPLETED status to DynamoDB as safety net (AppSync update in save_handler provides real-time notification)",
       "Parameters": {
         "TableName": "${DiscoveryTrackingTable}",
@@ -265,7 +265,7 @@
     },
     "FailJob": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Resource": "arn:${Partition}:states:::dynamodb:updateItem",
       "Parameters": {
         "TableName": "${DiscoveryTrackingTable}",
         "Key": {
