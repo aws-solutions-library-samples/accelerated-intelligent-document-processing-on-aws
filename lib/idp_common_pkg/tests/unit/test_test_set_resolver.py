@@ -2165,6 +2165,41 @@ class TestTestSetResolver:
         assert result["confidenceFingerprintSource"] == "mixed-revisions"
         assert result["curveSource"] == "config"
 
+    def test_estimate_treats_an_unstamped_drafting_run_as_unknown_not_same(
+        self, labeling_env
+    ):
+        """Upgrade shape: 199 documents drafted before the stamp existed, one
+        re-extracted after it. The one stamped run must not make the estimate serve
+        that family's curve for labels whose family is unknown."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        table.put_item(
+            Item={"PK": "testrun#job-a", "SK": "metadata", "ConfigVersion": "prof-A"}
+        )  # pre-stamp: no ConfidenceFingerprint
+        table.put_item(
+            Item={
+                "PK": "testrun#job-b",
+                "SK": "metadata",
+                "ConfigVersion": "prof-A",
+                "ConfidenceFingerprint": "fpB",
+            }
+        )
+        for run_id in ("job-a", "job-b"):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": "labeljob#" + run_id,
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "configVersion": "prof-A",
+                }
+            )
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["confidenceFingerprint"] is None
+        assert result["confidenceFingerprintSource"] == "partial"
+        assert result["curveSource"] == "config"
+
     def test_harvest_copies_the_runs_fingerprint_onto_the_label(self, labeling_env):
         table, s3 = labeling_env
         _seed_test_set(table, "ts1", fileCount=1)

@@ -272,8 +272,9 @@ retention pruning, so the comparison stays readable later.
 > as a reported fallback. So after changing a profile's extraction model or
 > assessment configuration, the estimate does not inherit the old curve silently:
 > it says it is using the pooled curve until the new revision family has
-> observations of its own. Revisions cut before this existed contribute only to
-> the pooled curve. See the fuller note in
+> observations of its own — treat the estimate as provisional while that note is
+> showing. Revisions cut before this existed contribute only to the pooled curve.
+> See the fuller note in
 > [Test Studio](./test-studio.md#the-curve-is-measured-and-it-improves).
 
 ### Retention

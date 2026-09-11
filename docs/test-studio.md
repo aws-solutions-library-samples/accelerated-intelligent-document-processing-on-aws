@@ -959,9 +959,12 @@ assessment settings — but not across prompt tweaks.
 > the confidence banner, and the API returns `curveSource` (`revision` | `config` |
 > `aggregate` | `prior`), `configVersionSource` (`argument` | `test-set` | `bound` |
 > `drafting-run` | `mixed`) and `confidenceFingerprint` / `confidenceFingerprintSource`
-> (`drafting-run` | `mixed-revisions` | null). So after a model swap on a profile the
+> (`drafting-run` | `mixed-revisions` | `partial` — some drafting runs predate the
+> fingerprint, so their labels' family is unknown | null). So after a model swap on a profile the
 > estimate does not silently inherit the old curve: it says it is using the pooled
-> curve until the new family has observations of its own.
+> curve until the new family has observations of its own. While that note shows,
+> treat the estimate as provisional — the pooled curve blends the earlier revisions'
+> observations with whatever the new one has so far.
 >
 > Upgrade note: sets whose estimate used to read the combined curve now read the
 > per-configuration one, so an estimate can change and a set can drop out of the

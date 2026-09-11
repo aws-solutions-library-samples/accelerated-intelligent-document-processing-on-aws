@@ -48,7 +48,10 @@ AGGREGATE_KEY = "_aggregate"
 # revisions share one curve only while the fingerprint — a hash of the
 # confidence-relevant subset of the configuration (extraction model and sampling,
 # assessment settings) — is unchanged; a model swap starts a new curve, a prompt
-# tweak does not. ``@`` cannot appear in a profile name (see ConfigurationManager).
+# tweak does not. Profile names are restricted to ``[A-Za-z0-9._-]`` by the API
+# (``configuration_resolver.validate_version_name``) and by
+# ``config.revisions._SAFE_PROFILE_RE``, so ``@`` cannot occur in one; the parser
+# still splits from the right, since the fingerprint is 16 hex characters.
 FINGERPRINT_SEP = "@"
 
 
@@ -74,7 +77,7 @@ def parse_curve_sk(sk: str) -> Tuple[Optional[str], Optional[str]]:
     if not rest or rest == AGGREGATE_KEY:
         return None, None
     if FINGERPRINT_SEP in rest:
-        version, fingerprint = rest.split(FINGERPRINT_SEP, 1)
+        version, fingerprint = rest.rsplit(FINGERPRINT_SEP, 1)
         return version or None, fingerprint or None
     return rest, None
 
@@ -146,7 +149,8 @@ class CurveStore:
         return ConfidenceCurve.from_dict(_item_to_curve_dict(item))
 
     def list_curves(self, test_set_id: str) -> List[Dict[str, Any]]:
-        """All curves recorded for a test set, one per config version."""
+        """All curves recorded for a test set: the aggregate, one per config
+        version (pooled across revisions) and one per (version, fingerprint)."""
         from boto3.dynamodb.conditions import Key
 
         items: List[Dict[str, Any]] = []

@@ -1041,9 +1041,10 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   # The revision family within that profile whose confidence semantics produced
   # the labels: a hash of the confidence-relevant configuration (extraction model
   # and sampling, assessment settings), stamped on the drafting run by the test
-  # runner. Source: "drafting-run" | "mixed-revisions" (the drafting runs disagree;
-  # fingerprint is null and the profile's pooled curve is served) | null (no run
-  # carries one — runs recorded before the stamp existed). (#698)
+  # runner. Source: "drafting-run" | "mixed-revisions" (the drafting runs disagree)
+  # | "partial" (some drafting runs predate the stamp, so their labels' family is
+  # unknown) | null (no run carries one). In every case but the first the
+  # fingerprint is null and the profile's pooled curve is served. (#698)
   confidenceFingerprint: String
   confidenceFingerprintSource: String
   # Which stored curve the numbers rest on: "revision" (this profile's curve for

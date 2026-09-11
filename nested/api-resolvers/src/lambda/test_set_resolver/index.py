@@ -2211,10 +2211,13 @@ def _resolve_set_fingerprint(test_set_id, meta, config_version):
     run records, which the test runner stamps with ``ConfidenceFingerprint``.
 
     Returns ``(fingerprint, source)``: ``("<fp>", "drafting-run")`` when every
-    drafting run of that profile agrees; ``(None, "mixed-revisions")`` when they
-    disagree (the profile's pooled curve is the honest read); ``(None, None)``
-    when no run carries one (runs recorded before the stamp existed, or a
-    configuration named by argument that drafted nothing here).
+    drafting run of that profile carries the same one; ``(None, "mixed-revisions")``
+    when they disagree; ``(None, "partial")`` when some carry one and some carry
+    none (runs recorded before the stamp existed beside a later re-extract — the
+    labels those older runs drafted can only ever have fed the pooled curve, so a
+    missing fingerprint reads as UNKNOWN, never as "the same"); ``(None, None)``
+    when no run carries one. In every case but the first the profile's pooled
+    curve is the honest read, and the caller reports which case it was.
     """
     if not config_version:
         return None, None
@@ -2230,14 +2233,16 @@ def _resolve_set_fingerprint(test_set_id, meta, config_version):
             or {}
         )
         if run.get("ConfigVersion") != config_version:
-            return None
+            return None  # another profile's run
+        # "" = this profile's run but recorded before the stamp existed
         return (
             str(run["ConfidenceFingerprint"])
             if run.get("ConfidenceFingerprint")
-            else None
+            else ""
         )
 
     fingerprints = set()
+    unstamped = 0
     try:
         run_ids = [
             job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
@@ -2249,10 +2254,22 @@ def _resolve_set_fingerprint(test_set_id, meta, config_version):
             run_ids = [meta["labelJobId"]]
         for run_id in run_ids:
             fingerprint = _run_fingerprint(run_id)
+            if fingerprint is None:
+                continue
             if fingerprint:
                 fingerprints.add(fingerprint)
+            else:
+                unstamped += 1
     except Exception as e:  # noqa: BLE001 — the pooled curve is a safe fallback
         logger.warning(f"Could not read labeling runs for {test_set_id}: {e}")
+    if fingerprints and unstamped:
+        # The labels those older runs drafted can only ever have fed the pooled
+        # curve; a missing fingerprint reads as UNKNOWN, never as "the same".
+        logger.info(
+            f"Test set {test_set_id}: {unstamped} drafting run(s) of '{config_version}' "
+            "predate the confidence fingerprint; serving the pooled curve"
+        )
+        return None, "partial"
     if len(fingerprints) == 1:
         return fingerprints.pop(), "drafting-run"
     if len(fingerprints) > 1:

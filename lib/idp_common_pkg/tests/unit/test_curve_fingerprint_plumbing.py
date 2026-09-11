@@ -91,3 +91,17 @@ def test_missing_or_broken_config_yields_no_fingerprint_and_no_failure(runner):
     assert runner._confidence_fingerprint_of(None) is None
     assert runner._confidence_fingerprint_of({"Config": {}}) is None
     assert runner._confidence_fingerprint_of({"Config": "not a dict"}) is None
+
+
+def test_decimalised_body_hashes_like_the_float_body(runner):
+    """The runner stores a Decimal-ised revision body; the curve key must not
+    depend on which numeric type the body arrived with (#758 normalization)."""
+    from decimal import Decimal
+
+    from idp_common.config.revisions import confidence_fingerprint
+
+    dec_body = json.loads(json.dumps(CONFIG_A), parse_float=Decimal)
+    assert confidence_fingerprint(dec_body) == confidence_fingerprint(CONFIG_A)
+    assert runner._confidence_fingerprint_of(
+        {"Config": dec_body}
+    ) == confidence_fingerprint(CONFIG_A)

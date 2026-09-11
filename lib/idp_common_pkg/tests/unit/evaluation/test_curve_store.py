@@ -397,3 +397,33 @@ class TestRevisionFingerprintKeys:
         store.reset("ts1", "v1", "fpA")
         assert store.get_curve("ts1", "v1", "fpA").served_from == "config"
         assert store.get_curve("ts1", "v1").total_observations == 2
+
+
+@pytest.mark.unit
+def test_scoring_and_review_observations_for_one_revision_share_one_key(table):
+    """The all-three-sites invariant (#698): the aggregation function (run item)
+    and the review Lambda (label metadata) must land on the SAME revision curve."""
+    from idp_common.evaluation.curve_store import curve_sk
+
+    # what the aggregation function does with the run item's fingerprint
+    run = {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpA"}
+    CurveStore(table).add_ece_bins(
+        "ts1",
+        [{"range": [0.9, 1.0], "count": 4, "accuracy": 1.0}],
+        config_version=run["ConfigVersion"],
+        fingerprint=run.get("ConfidenceFingerprint") or None,
+    )
+    # what the review Lambda does with the label metadata the harvest wrote
+    label_meta = {"config_version": "prof-A", "confidence_fingerprint": "fpA"}
+    CurveStore(table).add_observations(
+        "ts1",
+        [(0.3, False)] * 2,
+        config_version=label_meta["config_version"],
+        source="review",
+        fingerprint=label_meta.get("confidence_fingerprint") or None,
+    )
+    item = table.get_item(Key={"PK": "testset#ts1", "SK": curve_sk("prof-A", "fpA")})[
+        "Item"
+    ]
+    assert int(item["scoringObservations"]) == 4
+    assert int(item["reviewObservations"]) == 2

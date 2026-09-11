@@ -205,12 +205,11 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
     if (estimate.curveSource === 'config' && estimate.configVersion && estimate.confidenceFingerprint) {
       return `No observations yet for the current model and assessment settings of "${estimate.configVersion}" — using its curve pooled across earlier revisions, which may reflect different confidence semantics.`;
     }
-    if (
-      estimate.curveSource === 'config' &&
-      estimate.configVersionSource !== 'mixed' &&
-      estimate.confidenceFingerprintSource === 'mixed-revisions'
-    ) {
+    if (estimate.curveSource === 'config' && estimate.configVersion && estimate.confidenceFingerprintSource === 'mixed-revisions') {
       return `This set's labels were drafted under several revisions of "${estimate.configVersion}" with different model or assessment settings — using the profile's pooled curve.`;
+    }
+    if (estimate.curveSource === 'config' && estimate.configVersion && estimate.confidenceFingerprintSource === 'partial') {
+      return `Some of this set's labels were drafted before revision tracking existed, so their model and assessment settings are unknown — using the curve of "${estimate.configVersion}" pooled across its revisions.`;
     }
     if (estimate.curveSource === 'config' && estimate.configVersion) {
       return `Curve measured for configuration "${estimate.configVersion}" (pooled across its revisions).`;
