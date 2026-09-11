@@ -97,22 +97,49 @@ def _find_fn(stack, substr):
     return None
 
 
+def _require_profiles(stack, profiles):
+    """Fail before launching anything if a profile is not on the stack.
+
+    The runner now refuses such a run itself (#878), but an older stack queued
+    it and every document then failed in OCR; checking here costs one GetItem
+    per profile and gives a message that names the fix.
+    """
+    table = _find_table(stack, "ConfigurationTable")
+    ddb = lib.ddb()
+    for prof in sorted(set(profiles)):
+        r = ddb.get_item(
+            TableName=table,
+            Key={"Configuration": {"S": f"Config#{prof}"}},
+            ProjectionExpression="PublishedRevision",
+        )
+        if "Item" not in r:
+            raise SystemExit(
+                f"configuration profile {prof!r} does not exist on {stack}; upload "
+                f"it first (idp-cli config-upload --stack-name {stack} "
+                f"--config-profile {prof} --config-file ...)"
+            )
+
+
 def cmd_launch(a):
     lam = lib.session().client("lambda", region_name=lib.REGION)
     runner = _find_fn(a.stack, "TestRunnerFunction")
     if not runner:
         raise SystemExit("TestRunnerFunction not found")
     print("runner:", runner)
+    pairs = []
+    for spec in a.pair:
+        try:
+            pairs.append(spec.split(":"))
+            testset, off_prof, on_prof = pairs[-1]
+        except ValueError:
+            raise SystemExit(f"--pair wants testset:offProfile:onProfile, got {spec!r}")
+    _require_profiles(a.stack, [p for _, off, on in pairs for p in (off, on)])
     out = []
     # Ids are <set>-<timestamp to the second>; a stack whose runner predates the
     # #879 fix hands two arms launched within a second the SAME id, and the
     # second silently replaces the first. Refuse to record such a launch.
     seen_ids = set()
-    for spec in a.pair:
-        try:
-            testset, off_prof, on_prof = spec.split(":")
-        except ValueError:
-            raise SystemExit(f"--pair wants testset:offProfile:onProfile, got {spec!r}")
+    for testset, off_prof, on_prof in pairs:
         for prof in (off_prof, on_prof):
             payload = {
                 "arguments": {
@@ -318,7 +345,14 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     lp = sub.add_parser("launch")
     lp.add_argument("--n", type=int, default=40, help="documents per arm (first N)")
-    lp.add_argument("--revision", type=int, default=1)
+    lp.add_argument(
+        "--revision",
+        type=int,
+        default=None,
+        help="pin this revision of each profile; default: the runner records the "
+        "profile's published revision (r1 was assumed before, which is only "
+        "true for a profile saved exactly once)",
+    )
     lp.add_argument(
         "--pair",
         action="append",

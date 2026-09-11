@@ -1362,6 +1362,7 @@ revisions:
 - **Tracking**: Each run records both the profile and the pinned revision, shown in the run list, results, comparison view, and exports
 - **Comparison**: Compare two runs of the *same* profile at different revisions — this is how you tell "the prompt change helped" from "the ground truth moved", because each run also pins the test-set version it scored against
 - **Retention**: A revision pinned by a run is exempt from revision pruning, so a comparison stays readable later
+- **Validation**: A run that names a profile that does not exist, or a revision whose body cannot be read (deleted, pruned, or never cut), is rejected when submitted rather than queued to fail per document
 - **Context Generation**: Test context automatically includes the selected version information
 
 For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
