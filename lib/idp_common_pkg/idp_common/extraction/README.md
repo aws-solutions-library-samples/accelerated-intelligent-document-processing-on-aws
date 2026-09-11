@@ -804,9 +804,17 @@ has it). A test asserts the two are byte-identical, and another pins the two
 load-bearing clauses, because dropping either quietly degrades detection rather
 than failing.
 
-Simple extraction only (prompt and forced-tool paths) — Advanced (agentic)
-extraction validates through a generated Pydantic model and shards by field, so an
-auxiliary property would be dropped on some paths and duplicated on others.
+Covered paths: Simple extraction (prompt and forced-tool) and the **unsharded**
+Advanced (agentic) call. Agentic is driven by a generated Pydantic model rather than
+the wire schema dict, so `_agentic_probe_model` generates the probe onto the
+transport model (the same `augment_schema_with_probe` copy, through
+`_transport_model`) and the answer is popped from the dumped fields immediately
+after the call — before validation/escalation and before the integrated field
+assessment is lifted, from which the probe key is also removed. Sharded agentic
+sections are not probed: each shard would answer for its own pages, and neither
+sum (double-counts a document spanning a boundary) nor max (under-counts records
+spread across shards) is right (#772, options 2/3 remain open). A resumed run keeps
+its existing model.
 
 ## Synthesize mode (`x-aws-idp-multi-instance`, #715)
 
