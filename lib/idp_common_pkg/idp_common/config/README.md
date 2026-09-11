@@ -309,8 +309,10 @@ is the pre-revision behavior.
 
 `confidence_fingerprint()` hashes only the configuration that determines what a
 confidence number *means* (extraction model/sampling, assessment). It is recorded on
-every revision so confidence curves can eventually be branched per semantics rather
-than per profile; nothing keys off it yet.
+every revision, and Test Studio's confidence curves are keyed by it (#698): the test
+runner recomputes it from the configuration body it captures for a run and stamps
+it on the run item, so the curve key never depends on the value stored in the
+revision index.
 
 Both fingerprints normalize numerics (`_canonical_numbers`) before hashing, because
 a configuration arrives here by two routes that disagree about numeric type: from a
@@ -322,9 +324,10 @@ precisely what a fingerprint exists to rule out. `bool` is special-cased because
 is an `int` subclass and `enabled: true` must not collapse into `enabled: 1`.
 
 Fingerprints recorded by revisions cut before this normalization landed may differ
-from the value the same configuration hashes to now. That is harmless while nothing
-keys off them, but anything that starts comparing stored fingerprints must treat a
-mismatch on a pre-normalization revision as "unknown" rather than "changed".
+from the value the same configuration hashes to now. The curve keys are unaffected
+(they are recomputed from the captured body, never read from the index), but
+anything that compares *stored* index fingerprints must treat a mismatch on a
+pre-normalization revision as "unknown" rather than "changed".
 
 ## Rollback-safe DynamoDB serialization
 

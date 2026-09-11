@@ -2103,6 +2103,117 @@ class TestTestSetResolver:
         assert result["curveSource"] == "config"
         assert result["calibration"]["totalObservations"] == 40
 
+    def test_estimate_reads_the_drafting_revisions_curve_when_stamped(
+        self, labeling_env
+    ):
+        """#698: the run item carries the revision fingerprint; the estimate must
+        serve that revision family's curve and say so, and fall back to the
+        profile's pooled curve (saying so) when the family has no observations."""
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        table.put_item(
+            Item={
+                "PK": "testrun#job-a",
+                "SK": "metadata",
+                "ConfigVersion": "prof-A",
+                "ConfidenceFingerprint": "fpA",
+            }
+        )
+        # no revision curve yet -> pooled profile curve, reported
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["confidenceFingerprint"] == "fpA"
+        assert result["confidenceFingerprintSource"] == "drafting-run"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+        # observations recorded for the revision family -> its own curve
+        CurveStore(table).add_observations(
+            "ts1", [(0.3, True)] * 10, config_version="prof-A", fingerprint="fpA"
+        )
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["curveSource"] == "revision"
+        assert result["calibration"]["totalObservations"] == 10
+
+    def test_estimate_reports_mixed_revisions_and_serves_the_pooled_curve(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        for run_id, fp in (("job-a", "fpA"), ("job-b", "fpB")):
+            table.put_item(
+                Item={
+                    "PK": "testrun#" + run_id,
+                    "SK": "metadata",
+                    "ConfigVersion": "prof-A",
+                    "ConfidenceFingerprint": fp,
+                }
+            )
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": "labeljob#" + run_id,
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "configVersion": "prof-A",
+                }
+            )
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["configVersion"] == "prof-A"
+        assert result["confidenceFingerprint"] is None
+        assert result["confidenceFingerprintSource"] == "mixed-revisions"
+        assert result["curveSource"] == "config"
+
+    def test_harvest_copies_the_runs_fingerprint_onto_the_label(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(
+            Bucket="output-bucket",
+            Key="ts1-run/a.pdf/sections/1/result.json",
+            Body=json.dumps({"inference_result": {"vendor": "Acme"}}).encode(),
+        )
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf"],
+            {
+                "a.pdf": [
+                    {
+                        "Id": "1",
+                        "OutputJSONUri": "s3://output-bucket/ts1-run/a.pdf/sections/1/result.json",
+                    }
+                ]
+            },
+        )
+        table.update_item(
+            Key={"PK": "testrun#ts1-run", "SK": "metadata"},
+            UpdateExpression="SET ConfidenceFingerprint = :f, ConfigVersion = :v",
+            ExpressionAttributeValues={":f": "fpA", ":v": "prof-A"},
+        )
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#ts1-run",
+                "testSetId": "ts1",
+                "jobId": "ts1-run",
+                "status": "RUNNING",
+                "configVersion": "prof-A",
+                "total": 1,
+                "labeled": 0,
+            }
+        )
+        test_set_index.get_draft_label_job({"testSetId": "ts1", "jobId": "ts1-run"})
+        body = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert body["metadata"]["config_version"] == "prof-A"
+        assert body["metadata"]["confidence_fingerprint"] == "fpA"
+
     def test_estimate_explicit_configuration_argument_wins(self, labeling_env):
         table, s3 = labeling_env
         self._seed_two_configs(table, s3)

@@ -135,9 +135,18 @@ correct. `observations_from_baseline_review` derives those pairs by diffing the
 drafted label against the saved one — which is why the review Lambda must read
 the previous baseline **before** overwriting it.
 
-Curves are keyed by `(test set, config version)` since confidence semantics shift
-across models and prompts, with fallback to the set aggregate and then the global
-prior.
+Curves are keyed by `(test set, config version, confidence fingerprint)` since
+confidence semantics shift across models and assessment settings (`curve_sk`:
+`curve#<profile>@<fingerprint>`, #698). Every observation is also folded into the
+profile's pooled key `curve#<profile>`, the set aggregate `curve#_aggregate` and the
+global prior, and `get_curve(test_set_id, config_version, fingerprint)` reads them
+in that order, reporting which one it served in `served_from` (`revision` |
+`config` | `aggregate` | `none`). The fingerprint is computed by the test runner
+from the configuration it captures (`ConfidenceFingerprint` on the run item), copied
+onto draft labels by the harvest (`metadata.confidence_fingerprint`), and read from
+those two records by the aggregation function, the review Lambda and the estimate —
+all three at once, because keying only one site would split the scoring and review
+observations across two keys.
 
 **Safety.** `estimate_for_target` never returns a bare number. It reports an
 `EstimateConfidence` state (`prior` / `partially-measured` / `measured` /

@@ -316,3 +316,84 @@ def test_curve_dict_round_trips_through_storage_shape(table):
     restored = store.get_curve("ts1", "v1")
     assert isinstance(restored, ConfidenceCurve)
     assert restored.total_observations == 2
+
+
+@pytest.mark.unit
+class TestRevisionFingerprintKeys:
+    """#698: curves are keyed by (profile, confidence fingerprint); the pooled
+    profile key and the aggregate keep accumulating as read fallbacks."""
+
+    def test_sort_keys_and_their_parse(self):
+        from idp_common.evaluation.curve_store import curve_sk, parse_curve_sk
+
+        assert curve_sk(None) == "curve#_aggregate"
+        assert curve_sk("v1") == "curve#v1"
+        assert curve_sk("v1", "abc") == "curve#v1@abc"
+        assert curve_sk(None, "abc") == "curve#_aggregate", (
+            "no fingerprint without a profile"
+        )
+        assert parse_curve_sk("curve#_aggregate") == (None, None)
+        assert parse_curve_sk("curve#v1") == ("v1", None)
+        assert parse_curve_sk("curve#v1@abc") == ("v1", "abc")
+
+    def test_an_observation_lands_in_revision_pooled_and_aggregate_curves(self, table):
+        store = CurveStore(table)
+        store.add_observations(
+            "ts1", [(0.3, False)] * 5, config_version="v1", fingerprint="fpA"
+        )
+        assert store.get_curve("ts1", "v1", "fpA").total_observations == 5
+        assert store.get_curve("ts1", "v1").total_observations == 5
+        assert store.get_curve("ts1").total_observations == 5
+        assert store.get_global_prior().total_observations == 5
+        assert store.get_curve("ts1", "v1", "fpA").served_from == "revision"
+
+    def test_a_model_swap_starts_a_new_curve_and_says_the_pooled_one_was_served(
+        self, table
+    ):
+        store = CurveStore(table)
+        store.add_observations(
+            "ts1", [(0.3, False)] * 5, config_version="v1", fingerprint="fpA"
+        )
+        # same profile, new confidence semantics: no observations yet
+        curve = store.get_curve("ts1", "v1", "fpB")
+        assert curve.total_observations == 5, "falls back to the profile pooled curve"
+        assert curve.served_from == "config"
+        assert curve.confidence_fingerprint == "fpB"
+        # ...and once fpB has its own observations, only those are served
+        store.add_ece_bins(
+            "ts1",
+            [{"range": [0.9, 1.0], "count": 3, "accuracy": 1.0}],
+            config_version="v1",
+            fingerprint="fpB",
+        )
+        curve = store.get_curve("ts1", "v1", "fpB")
+        assert curve.served_from == "revision" and curve.total_observations == 3
+        assert store.get_curve("ts1", "v1").total_observations == 8, "pooled keeps both"
+
+    def test_read_without_a_fingerprint_is_unchanged(self, table):
+        store = CurveStore(table)
+        store.add_observations("ts1", [(0.3, False)] * 5, config_version="v1")
+        assert store.get_curve("ts1", "v1").served_from == "config"
+        assert store.get_curve("ts1", "v9").served_from == "aggregate"
+        assert store.get_curve("ts1").served_from == "aggregate"
+        assert store.get_curve("ts2", "v1").served_from == "none"
+
+    def test_list_curves_reports_the_fingerprint(self, table):
+        store = CurveStore(table)
+        store.add_observations(
+            "ts1", [(0.3, False)] * 2, config_version="v1", fingerprint="fpA"
+        )
+        keys = {
+            (c["configVersion"], c["confidenceFingerprint"])
+            for c in store.list_curves("ts1")
+        }
+        assert keys == {(None, None), ("v1", None), ("v1", "fpA")}
+
+    def test_reset_targets_one_revision_curve(self, table):
+        store = CurveStore(table)
+        store.add_observations(
+            "ts1", [(0.3, False)] * 2, config_version="v1", fingerprint="fpA"
+        )
+        store.reset("ts1", "v1", "fpA")
+        assert store.get_curve("ts1", "v1", "fpA").served_from == "config"
+        assert store.get_curve("ts1", "v1").total_observations == 2

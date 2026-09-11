@@ -69,6 +69,8 @@ export interface ReviewEffortEstimate {
   targetAccuracy: number;
   configVersion?: string | null;
   configVersionSource?: string | null;
+  confidenceFingerprint?: string | null;
+  confidenceFingerprintSource?: string | null;
   curveSource?: string | null;
   docsToReview: number;
   docsToReviewLow: number;
@@ -197,8 +199,21 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
   // under, which estimateConfidence alone cannot reveal (it is genuinely measured).
   const curveNote = (() => {
     if (!estimate) return null;
+    if (estimate.curveSource === 'revision' && estimate.configVersion) {
+      return `Curve measured for configuration "${estimate.configVersion}" at its current model and assessment settings.`;
+    }
+    if (estimate.curveSource === 'config' && estimate.configVersion && estimate.confidenceFingerprint) {
+      return `No observations yet for the current model and assessment settings of "${estimate.configVersion}" — using its curve pooled across earlier revisions, which may reflect different confidence semantics.`;
+    }
+    if (
+      estimate.curveSource === 'config' &&
+      estimate.configVersionSource !== 'mixed' &&
+      estimate.confidenceFingerprintSource === 'mixed-revisions'
+    ) {
+      return `This set's labels were drafted under several revisions of "${estimate.configVersion}" with different model or assessment settings — using the profile's pooled curve.`;
+    }
     if (estimate.curveSource === 'config' && estimate.configVersion) {
-      return `Curve measured for configuration "${estimate.configVersion}".`;
+      return `Curve measured for configuration "${estimate.configVersion}" (pooled across its revisions).`;
     }
     if (estimate.curveSource === 'aggregate' && estimate.configVersion) {
       return `No curve measured yet for configuration "${estimate.configVersion}" — using this set's combined curve across every configuration it has been labeled or scored under.`;

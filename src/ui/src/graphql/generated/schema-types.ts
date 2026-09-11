@@ -1864,6 +1864,8 @@ export type ReviewEffortEstimate = {
   baselineError: Scalars['Float']['output'];
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
+  confidenceFingerprint?: Maybe<Scalars['String']['output']>;
+  confidenceFingerprintSource?: Maybe<Scalars['String']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
   configVersionSource?: Maybe<Scalars['String']['output']>;
   curveSource?: Maybe<Scalars['String']['output']>;
