@@ -1278,6 +1278,13 @@ Resources:
                 default: "simple"
                 order: 1
                 description: "'simple' (default): single-pass extraction — fast and cheap, best for short documents. 'advanced': the robust, sharded extraction engine for large documents, big tables, and completeness (exposes the Advanced extraction settings below). Recommended with Anthropic Claude models."
+              prompt_cache:
+                type: string
+                title: Prompt caching
+                enum: ["auto", "off"]
+                default: "auto"
+                order: 1.05
+                description: "'auto' (default): every <<CACHEPOINT>> marker in the extraction prompts becomes a Bedrock cache point on models that support it. 'off': send no cache points. A cache write is billed at 1.25x input price and pays back only when a second request with the same prefix arrives inside the 5-minute TTL, so a low-volume deployment that processes one document of a class per TTL pays about +25% on the prefix for nothing — choose 'off' there. Each model also has a minimum cacheable prefix (512 to 4,096 tokens); below it a cache point silently does nothing, which 'idp-cli config validate' warns about per class. Applies to extraction only."
               agentic:
                 type: object
                 sectionLabel: Advanced extraction settings

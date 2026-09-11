@@ -996,6 +996,8 @@ class TestTestSetResolver:
         )["Item"]
         assert written["ItemType"] == "testset_version"
         assert written["versionNumber"] == 1
+        # No configuration identifiable for an uploaded set with no labeling job.
+        assert written.get("configVersion") is None
         # The metadata pointers were advanced and the active reference set
         meta = publish_table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
             "Item"
@@ -2047,6 +2049,7 @@ class TestTestSetResolver:
         )
 
         assert result["estimateConfidence"] == "prior"
+        assert result["curveSource"] == "prior"
         assert result["totalDocs"] == 2
         # A prior-driven estimate reports a range, not a bare point value.
         assert result["docsToReviewLow"] <= result["docsToReview"]
@@ -2070,6 +2073,148 @@ class TestTestSetResolver:
             "partially-measured",
             "unreliable",
         )
+
+    def _seed_two_configs(self, table, s3):
+        """A set drafted under prof-A, with curves for prof-A (all wrong at 0.3)
+        and prof-B (all right at 0.3). The aggregate therefore holds 80 mixed
+        observations; each per-configuration curve holds 40."""
+        from idp_common.evaluation.curve_store import CurveStore
+
+        _seed_test_set(table, "ts1", fileCount=1, labelJobId="job-a")
+        table.put_item(
+            Item={"PK": "testrun#job-a", "SK": "metadata", "ConfigVersion": "prof-A"}
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        store = CurveStore(table)
+        store.add_observations("ts1", [(0.3, False)] * 40, config_version="prof-A")
+        store.add_observations("ts1", [(0.3, True)] * 40, config_version="prof-B")
+
+    def test_estimate_reads_the_drafting_runs_configuration_curve(self, labeling_env):
+        """#759: boundConfigVersion was never written, so the estimate always read
+        the set-wide aggregate. The drafting run names the configuration; its own
+        curve (40 observations) must be served, not the 80-observation blend."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] == "prof-A"
+        assert result["configVersionSource"] == "drafting-run"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+
+    def test_estimate_explicit_configuration_argument_wins(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+
+        result = test_set_index.estimate_review_effort(
+            {"testSetId": "ts1", "configVersion": "prof-B"}
+        )
+
+        assert result["configVersion"] == "prof-B"
+        assert result["configVersionSource"] == "argument"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+
+    def test_estimate_reports_the_aggregate_fallback_when_the_config_curve_is_empty(
+        self, labeling_env
+    ):
+        """A configuration with no curve of its own still gets the set's aggregate
+        (better than the global prior), but the estimate must SAY so: the number is
+        measured, yet under configurations that may no longer exist."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+
+        result = test_set_index.estimate_review_effort(
+            {"testSetId": "ts1", "configVersion": "prof-C"}
+        )
+
+        assert result["configVersion"] == "prof-C"
+        assert result["curveSource"] == "aggregate"
+        assert result["calibration"]["totalObservations"] == 80
+
+    def test_estimate_with_no_identifiable_configuration_uses_the_aggregate(
+        self, labeling_env
+    ):
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)  # no labelJobId, no bound field
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        CurveStore(table).add_observations("ts1", [(0.3, False)] * 40)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] is None
+        assert result["configVersionSource"] is None
+        assert result["curveSource"] == "aggregate"
+
+    def test_estimate_reports_mixed_when_labeling_jobs_disagree(self, labeling_env):
+        """#759 review: the labelJobId pointer is rewritten by every labeling job,
+        including a one-document re-extract under another profile. Reading only
+        the pointer would call prof-B's curve the set's own while the review
+        observations sit under prof-A. All labeling jobs are read instead; when
+        they disagree the aggregate is served and labeled 'mixed'."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        for job, version in (("job-a", "prof-A"), ("job-b", "prof-B")):
+            table.put_item(
+                Item={"PK": "testset#ts1", "SK": f"labeljob#{job}", "jobId": job}
+            )
+            table.put_item(
+                Item={
+                    "PK": f"testrun#{job}",
+                    "SK": "metadata",
+                    "ConfigVersion": version,
+                }
+            )
+        # The pointer names the LAST job (the one-document re-extract).
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelJobId = :j",
+            ExpressionAttributeValues={":j": "job-b"},
+        )
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] is None
+        assert result["configVersionSource"] == "mixed"
+        assert result["curveSource"] == "aggregate"
+        assert result["calibration"]["totalObservations"] == 80
+
+    def test_estimate_uses_the_sets_declared_configuration(self, labeling_env):
+        """Sets created by the confbench planner or the synthetic-data generator
+        carry meta.configVersion and no labeling job; the UI already treats it as
+        the set's configuration, so the estimate must too."""
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1, configVersion="prof-B")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        store = CurveStore(table)
+        store.add_observations("ts1", [(0.3, False)] * 40, config_version="prof-A")
+        store.add_observations("ts1", [(0.3, True)] * 40, config_version="prof-B")
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] == "prof-B"
+        assert result["configVersionSource"] == "test-set"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+
+    def test_estimate_survives_a_deleted_drafting_run(self, labeling_env):
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1, labelJobId="gone")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        CurveStore(table).add_observations("ts1", [(0.3, False)] * 40)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] is None
+        assert result["configVersionSource"] is None
+        assert result["curveSource"] == "aggregate"
 
     def test_estimate_review_effort_recommends_reviewing_everything_when_overconfident(
         self, labeling_env
@@ -7456,3 +7601,18 @@ class TestPatternImportIsAdminOnly:
         with pytest.raises(Exception) as excinfo:
             test_set_index.handler(self._event(field, ["Author"]), {})
         assert "requires Admin" not in str(excinfo.value)
+
+
+@pytest.mark.unit
+def test_publish_snapshot_records_the_drafting_configuration(publish_table):
+    """#759: the snapshot's configVersion used to read the never-written
+    boundConfigVersion and so was always null."""
+    _seed_test_set(publish_table, "ts1", fileCount=3, labelJobId="job-a")
+    publish_table.put_item(
+        Item={"PK": "testrun#job-a", "SK": "metadata", "ConfigVersion": "prof-A"}
+    )
+    test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+    written = publish_table.get_item(Key={"PK": "testset#ts1", "SK": "version#000001"})[
+        "Item"
+    ]
+    assert written["configVersion"] == "prof-A"
