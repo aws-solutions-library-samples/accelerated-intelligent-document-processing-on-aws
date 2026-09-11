@@ -212,20 +212,47 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 
+# Templates the ARN-partition gate does NOT scan, each with its reason. This is
+# a per-PATH exemption, never a per-rule one: every rule still runs on everything
+# else. Keep it short, and justify each entry here.
+#
+#   scripts/sdlc/cfn/ — the SDLC pipeline's own infrastructure (CodePipeline,
+#     the GitLab-runner credential vendor, the builder IAM role). It deploys only
+#     in the commercial CI account by construction: it names a commercial
+#     cross-account principal (arn:aws:iam::<account>:role/gitlab-runners-prod)
+#     that has no counterpart in another partition. Mirrors the /scripts/sdlc/
+#     exclusion in scripts/check_python_arn_partitions.py. If the harness ever
+#     grows a GovCloud probe, drop this and fix the templates.
+ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/
+
 check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partitions
 	@echo "Checking CloudFormation templates for hardcoded ARN partitions and service principals..."
+	@# Templates are discovered by CONTENT (anything declaring AWSTemplateFormatVersion),
+	@# via the same script as `make cfn-lint`. The hardcoded glob list this replaced
+	@# never looked at nested/, samples/, notebooks/, scripts/ or iam-roles/.
 	@FOUND_ISSUES=0; \
-	for template in template.yaml patterns/*/template.yaml patterns/*/sagemaker_classifier_endpoint.yaml options/*/template.yaml feature-platform/*/template.yaml; do \
-		if [ -f "$$template" ]; then \
+	TEMPLATES=$$(scripts/discover_templates.sh cfn); \
+	if [ -z "$$TEMPLATES" ]; then \
+		echo -e "$(RED)ERROR: no CloudFormation templates discovered — check scripts/discover_templates.sh$(NC)"; \
+		exit 1; \
+	fi; \
+	for template in $$TEMPLATES; do \
+		SKIP=0; \
+		for exempt in $(ARN_PARTITION_EXEMPT); do \
+			case "$$template" in $$exempt*) SKIP=1;; esac; \
+		done; \
+		if [ $$SKIP -eq 1 ]; then \
+			echo "Skipping $$template (ARN_PARTITION_EXEMPT — see Makefile for the reason)"; \
+		elif [ -f "$$template" ]; then \
 			echo "Checking $$template..."; \
-			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" || true); \
+			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" || true); \
 			if [ -n "$$ARN_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded 'arn:aws:' references in $$template:$(NC)"; \
 				echo "$$ARN_MATCHES" | sed 's/^/  /'; \
 				echo -e "$(YELLOW)  These should use 'arn:\$${AWS::Partition}:' instead for GovCloud compatibility$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
+			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
 			if [ -n "$$SERVICE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded service principal references in $$template:$(NC)"; \
 				echo "$$SERVICE_MATCHES" | sed 's/^/  /'; \
@@ -244,7 +271,7 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 			fi; \
 		fi; \
 	done; \
-	for asl in patterns/*/statemachine/*.asl.json options/*/statemachine/*.asl.json feature-platform/*/statemachine/*.asl.json; do \
+	for asl in $$(scripts/discover_templates.sh asl); do \
 		if [ -f "$$asl" ]; then \
 			echo "Checking $$asl..."; \
 			ASL_MATCHES=$$(grep -n "arn:aws:" "$$asl" | grep -v "arn:\$${Partition}:" || true); \
@@ -308,14 +335,12 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 	@# Templates are discovered by CONTENT, not by filename. A hardcoded glob list
 	@# is how check-arn-partitions came to miss nested/, samples/ and notebooks/;
 	@# anything declaring AWSTemplateFormatVersion is a CloudFormation template and
-	@# gets linted, so a new one cannot be added without being covered.
-	@TEMPLATES=$$(find . \
-			\( -name node_modules -o -name .aws-sam -o -name .venv -o -name .git \
-			   -o -name build -o -name dist -o -name __pycache__ \) -prune -o \
-			\( -name '*.yaml' -o -name '*.yml' \) -print 2>/dev/null \
-		| xargs grep -l "^AWSTemplateFormatVersion" 2>/dev/null | sort); \
+	@# gets linted, so a new one cannot be added without being covered. The
+	@# discovery lives in scripts/discover_templates.sh and is shared with
+	@# check-arn-partitions so the two gates see the same set.
+	@TEMPLATES=$$(scripts/discover_templates.sh cfn); \
 	if [ -z "$$TEMPLATES" ]; then \
-		echo -e "$(RED)ERROR: no CloudFormation templates discovered — check the find filters.$(NC)"; \
+		echo -e "$(RED)ERROR: no CloudFormation templates discovered — check scripts/discover_templates.sh$(NC)"; \
 		exit 1; \
 	fi; \
 	echo "$$TEMPLATES" | sed 's|^\./||;s|^|  |'; \

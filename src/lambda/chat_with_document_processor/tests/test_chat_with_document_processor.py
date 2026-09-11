@@ -10,11 +10,15 @@ Covers the three critical behaviors of the processor:
 2. **RBAC scope denial** — when the caller's ``allowedConfigVersions`` does
    not include the document's ``ConfigVersion``, the processor publishes a
    single ``assistant_error`` and does not call Bedrock.
-3. **Missing fields** — incomplete events return early with ``assistant_error``.
+3. **RBAC fail-closed** — when the scope cannot be *evaluated* at all (no
+   ``USERS_TABLE_NAME``, no caller identity), the processor denies rather than
+   treating the caller as unrestricted.
+4. **Missing fields** — incomplete events return early with ``assistant_error``.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -47,6 +51,29 @@ def _make_stream_events(deltas: list[str]) -> list[dict]:
     events.append({"contentBlockStop": {}})
     events.append({"messageStop": {"stopReason": "end_turn"}})
     return events
+
+
+def _dynamodb_resource(tracking_table, users_items: list[dict] | None = None):
+    """A ``boto3.resource('dynamodb')`` double that dispatches by table name.
+
+    The processor reads TWO tables: TrackingTable (the document) and UsersTable
+    (the RBAC scope). A single MagicMock for both makes the scope lookup return
+    a MagicMock and only *accidentally* fail open, which would hide a
+    regression in the fail-closed contract. Dispatching keeps the real
+    ``_get_user_allowed_config_versions`` body under test.
+    """
+    users_table = MagicMock()
+    users_table.query.return_value = {"Items": list(users_items or [])}
+    # Captured eagerly: tests that override USERS_TABLE_NAME to exercise the
+    # unset case must not also repoint this dispatch at the tracking table.
+    users_table_name = os.environ["USERS_TABLE_NAME"]
+
+    def _table(name):
+        return users_table if name == users_table_name else tracking_table
+
+    resource = MagicMock()
+    resource.Table.side_effect = _table
+    return resource
 
 
 def _install_capture_sink(index, publishes: list[dict]) -> None:
@@ -99,8 +126,7 @@ class TestProcessorHappyPath:
                 ],
             }
         }
-        dyn_resource = MagicMock()
-        dyn_resource.Table.return_value = tracking_table
+        dyn_resource = _dynamodb_resource(tracking_table)
 
         # Pretend the cached fulltext already exists so we don't need to
         # exercise the page-assembly branch.
@@ -184,8 +210,7 @@ class TestProcessorOpenAIResponses:
                 ],
             }
         }
-        dyn_resource = MagicMock()
-        dyn_resource.Table.return_value = tracking_table
+        dyn_resource = _dynamodb_resource(tracking_table)
 
         s3 = MagicMock()
         s3.head_object.return_value = {}
@@ -271,8 +296,7 @@ class TestProcessorRBAC:
                 "Pages": [],
             }
         }
-        dyn_resource = MagicMock()
-        dyn_resource.Table.return_value = tracking_table
+        dyn_resource = _dynamodb_resource(tracking_table)
 
         bedrock = MagicMock()
         publishes: list[dict] = []
@@ -304,6 +328,116 @@ class TestProcessorRBAC:
         err = [p for p in publishes if p.get("method") == "assistant_error"][0]
         assert err["status"] == "ERROR"
         assert "configuration" in err["content"].lower()
+
+
+class TestProcessorScopeFailsClosed:
+    """AppSec: an *unevaluatable* scope must DENY, not mean "unrestricted".
+
+    Returning ``None`` (unrestricted) when the lookup cannot even be attempted
+    silently disables config-version RBAC for every caller as soon as the stack
+    wiring drifts — AUTH.T07, fail-open scope lookup. The pii-anonymizer
+    feature API (``_caller_allowed_versions``) is the reference for this
+    contract.
+    """
+
+    def _run_with_env(self, users_table_name: str, caller_sub: str) -> tuple:
+        import index
+
+        tracking_table = MagicMock()
+        tracking_table.get_item.return_value = {
+            "Item": {
+                "PK": "doc#uploads/restricted.pdf",
+                "SK": "none",
+                "ConfigVersion": "secret-v1",
+                "Pages": [],
+            }
+        }
+        dyn_resource = _dynamodb_resource(tracking_table)
+
+        bedrock = MagicMock()
+        publishes: list[dict] = []
+        _install_capture_sink(index, publishes)
+
+        with (
+            patch.dict(os.environ, {"USERS_TABLE_NAME": users_table_name}),
+            patch.object(index, "_dynamodb", dyn_resource),
+            patch.object(index, "_get_bedrock_runtime", return_value=bedrock),
+        ):
+            result = index.handler(
+                {
+                    "sessionId": "s-1",
+                    "turnId": "t-1",
+                    "prompt": "leak the doc",
+                    "s3Uri": "uploads/restricted.pdf",
+                    "modelId": "",
+                    "callerSub": caller_sub,
+                },
+                None,
+            )
+        return result, publishes, bedrock
+
+    @pytest.mark.unit
+    def test_unset_users_table_denies_instead_of_unrestricted(self):
+        result, publishes, bedrock = self._run_with_env("", "caller-sub")
+
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
+        err = [p for p in publishes if p.get("method") == "assistant_error"]
+        assert err, f"expected an assistant_error, got {publishes}"
+        assert err[0]["status"] == "ERROR"
+        assert err[0]["isProcessing"] is False
+
+    @pytest.mark.unit
+    def test_missing_caller_identity_denies(self):
+        result, publishes, bedrock = self._run_with_env("users-table", "")
+
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
+        assert any(p.get("method") == "assistant_error" for p in publishes)
+
+    @pytest.mark.unit
+    def test_lookup_helper_raises_rather_than_returning_none(self):
+        """Guard the helper's contract directly, not just the handler branch."""
+        import index
+
+        with patch.dict(os.environ, {"USERS_TABLE_NAME": ""}):
+            with pytest.raises(index.ScopeLookupError):
+                index._get_user_allowed_config_versions("caller-sub")
+
+        with patch.dict(os.environ, {"USERS_TABLE_NAME": "users-table"}):
+            with pytest.raises(index.ScopeLookupError):
+                index._get_user_allowed_config_versions("")
+
+    @pytest.mark.unit
+    def test_absent_scope_row_is_still_unrestricted(self):
+        """Scoping is opt-in: a user with no UsersTable row is NOT denied.
+
+        The fail-closed change must not turn "this user has no restriction"
+        into a denial, or it locks out every ordinary user.
+        """
+        import index
+
+        tracking_table = MagicMock()
+        dyn_resource = _dynamodb_resource(tracking_table, users_items=[])
+
+        with patch.object(index, "_dynamodb", dyn_resource):
+            assert index._get_user_allowed_config_versions("caller-sub") is None
+
+    @pytest.mark.unit
+    def test_scope_row_returns_allowed_versions(self):
+        import index
+
+        tracking_table = MagicMock()
+        dyn_resource = _dynamodb_resource(
+            tracking_table,
+            users_items=[{"allowedConfigVersions": ["lending", "uc?-prod"]}],
+        )
+
+        with patch.object(index, "_dynamodb", dyn_resource):
+            assert index._get_user_allowed_config_versions("caller-sub") == [
+                "lending",
+                "uc?-prod",
+            ]
 
 
 class TestProcessorValidation:
@@ -360,8 +494,7 @@ class TestProcessorModelIdSuffixes:
                 ],
             }
         }
-        dyn_resource = MagicMock()
-        dyn_resource.Table.return_value = tracking_table
+        dyn_resource = _dynamodb_resource(tracking_table)
 
         s3 = MagicMock()
         s3.head_object.return_value = {}

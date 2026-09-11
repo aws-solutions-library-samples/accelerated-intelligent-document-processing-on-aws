@@ -41,7 +41,38 @@ EVERY template change MUST follow these rules:
 2. **Service endpoints**: Use `!Sub "service.${AWS::URLSuffix}"`
    - NEVER hardcode `amazonaws.com` — GovCloud uses `amazonaws.com` but China uses `amazonaws.com.cn`
 3. **Condition checks**: Use `!If [HasPermissionsBoundary, ...]` for permissions boundaries
-4. Run `make check-arn-partitions` before committing to verify compliance
+4. **Step Functions service integrations**: in an ASL file, write
+   `arn:${Partition}:states:::dynamodb:updateItem` and add
+   `Partition: !Ref AWS::Partition` to the state machine's `DefinitionSubstitutions`.
+   Step Functions rejects a hardcoded `aws` partition in GovCloud outright
+   ("resource belongs to a different partition").
+5. Run `make check-arn-partitions` before committing to verify compliance
+
+### How `make check-arn-partitions` finds what it scans
+
+Templates and state machines are discovered by **content**, not filename:
+`scripts/discover_templates.sh cfn` lists every `*.yaml`/`*.yml` that declares
+`AWSTemplateFormatVersion`; `scripts/discover_templates.sh asl` lists every
+`*.json` with a `"StartAt"` key. Both gates (`check-arn-partitions` and
+`cfn-lint`) call the same script, so a new template anywhere in the repo is
+covered the moment it exists — the old hardcoded glob list never looked at
+`nested/`, `samples/`, `notebooks/`, `scripts/`, `iam-roles/` or `src/lambda/`,
+which is how six hardcoded `arn:aws:states:::` integrations shipped.
+`.gitignore` is honoured (git ls-files), so build output and `scratch/`
+worktrees are not scanned.
+
+When the gate flags a line that is genuinely fine:
+
+- **Prose** (`Description:`, `Comment:`, cfn_nag/cdk_nag `reason:`, `#` comments)
+  is already filtered by key. A literal inside a *folded* multi-line
+  `Description: >` block is not, because only the key line carries the key —
+  reword the example (`vpce.<URLSuffix>`) rather than adding a filter.
+- **Infrastructure that can only exist in one partition** is exempted by
+  directory in `ARN_PARTITION_EXEMPT` in the Makefile, each entry with a
+  written justification. Today that is only `scripts/sdlc/cfn/` (the SDLC
+  pipeline's own commercial-account infrastructure, naming a commercial
+  cross-account principal). Exempt a path, never a rule — a rule switched off
+  for every template loses its future value.
 
 ## Lambda Resource Pattern
 ```yaml

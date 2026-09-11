@@ -133,7 +133,7 @@ STATUS: dict[str, tuple[int, str]] = {
     "UI.T04": (2, "Mitigated"),
     "UI.T05": (2, "Mitigated"),
     "UI.T06": (6, "Open"),
-    "UI.T07": (3, "Open"),
+    "UI.T07": (3, "Mitigated"),
     # Reporting / analytics
     "RPT.T01": (2, "Mitigated"),
     "RPT.T02": (6, "Mitigated"),
