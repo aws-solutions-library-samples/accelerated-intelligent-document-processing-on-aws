@@ -64,9 +64,12 @@ def _dynamodb_resource(tracking_table, users_items: list[dict] | None = None):
     """
     users_table = MagicMock()
     users_table.query.return_value = {"Items": list(users_items or [])}
+    # Captured eagerly: tests that override USERS_TABLE_NAME to exercise the
+    # unset case must not also repoint this dispatch at the tracking table.
+    users_table_name = os.environ["USERS_TABLE_NAME"]
 
     def _table(name):
-        return users_table if name == os.environ["USERS_TABLE_NAME"] else tracking_table
+        return users_table if name == users_table_name else tracking_table
 
     resource = MagicMock()
     resource.Table.side_effect = _table
@@ -349,8 +352,6 @@ class TestProcessorScopeFailsClosed:
                 "Pages": [],
             }
         }
-        # Build the resource double BEFORE overriding the env var so it still
-        # dispatches on the name the processor was configured with.
         dyn_resource = _dynamodb_resource(tracking_table)
 
         bedrock = MagicMock()
