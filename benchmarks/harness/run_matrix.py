@@ -400,7 +400,11 @@ def run_complete(status, expected_docs):
 
 
 def plan_coverage(named_docs, doc_ids, refs):
-    """Split a suite's named documents into measured / unlaunchable / other-class.
+    """Split a suite's named documents into synthetic / reference / other-class.
+
+    The second bucket used to be called "unlaunchable" — reference corpora had
+    no launch path. They are launched now (as test sets, see reference_plan);
+    what makes one unlaunchable today is only a missing cell index.
 
     Kept as a pure function so the split is testable without a stack — the first
     attempt at this fix computed the unlaunchable set *after* ``_docs_for_class``
@@ -547,6 +551,15 @@ def main():
         help="Write configs verbatim to the ConfigurationTable (bypass idp-cli's "
         "v0.5->v0.6 migration). REQUIRED for v0.5.16 stacks.",
     )
+    ap.add_argument(
+        "--no-reference",
+        action="store_true",
+        help="Do not launch the reference corpora the suite names. Reference "
+        "corpora ride along with the suite regardless of --class (they have "
+        "their own base config); use this on a SECOND per-class pass of the same "
+        "suite (e.g. --class kv_form) so 20-document corpora are not paid for "
+        "twice.",
+    )
     ap.add_argument("--max-inflight", type=int, default=6)
     ap.add_argument("--poll-interval", type=int, default=30)
     ap.add_argument("--timeout-min", type=int, default=60)
@@ -597,6 +610,16 @@ def main():
         return path, yaml.safe_load(open(path))["cells"]
 
     ref_launchable, ref_missing = reference_plan(ref_named, specs, _index_for)
+    if a.no_reference and (ref_launchable or ref_missing):
+        print(
+            f"--no-reference: skipping reference corpora "
+            f"{sorted(set(ref_launchable) | set(ref_missing))} "
+            "(recorded in the runmap as docs_skipped_reference)"
+        )
+        skipped_reference = sorted(set(ref_launchable) | set(ref_missing))
+        ref_launchable, ref_missing = {}, {}
+    else:
+        skipped_reference = []
     unlaunchable = sorted(ref_missing)
     if unlaunchable:
         setflags = "".join(f" --set {o}" for o in a.overrides)
@@ -674,7 +697,15 @@ def main():
         print(f"  registered bench-{d}")
     # 2. upload configs (unique versions), but only after proving each file on
     #    disk really holds the axes its index advertises.
-    ref_cells = [c for p in ref_launchable.values() for c in p["cells"]]
+    # bank_real shares the synthetic class's cells, so dedupe by version before
+    # verifying — the upload loop below dedupes the same way.
+    seen_versions = {c["version"] for c in cells}
+    ref_cells = []
+    for p in ref_launchable.values():
+        for c in p["cells"]:
+            if c["version"] not in seen_versions:
+                seen_versions.add(c["version"])
+                ref_cells.append(c)
     verify_config_axes(cells + ref_cells)
 
     # The stack must not move underneath the grid. Checked here and again
@@ -724,6 +755,9 @@ def main():
                 "docs_named": named_docs,
                 "docs_run": doc_ids + sorted(ref_launchable),
                 "docs_reference": sorted(ref_launchable),
+                # Named by the suite but deliberately not launched (--no-reference,
+                # a second per-class pass). Distinct from unlaunchable.
+                "docs_skipped_reference": skipped_reference,
                 "docs_unlaunchable": unlaunchable,
                 "docs_other_class": other_class,
                 "runs": runmap,

@@ -220,7 +220,9 @@ toolSpec are byte-identical to earlier releases.
   `core_docs` — runs nothing for it. Not fixed here (out of scope for this
   feature); filed as GitHub #766, which has since made the shortfall **visible**
   (the launcher names it and records it in the runmap) without adding a launch
-  path — so this remains the way to get numbers on a real corpus.
+  path — so at the time this remained the way to get numbers on a real corpus.
+  (A launch path was added later in PR #866: `run_matrix.py` now runs reference
+  corpora as test sets.)
 - **A harness bug was found and fixed mid-study, and it mattered.**
   `analyze.py` collected scalar fields from the **top level** of
   `inference_result`, so a wrapped result — whose only top-level key is

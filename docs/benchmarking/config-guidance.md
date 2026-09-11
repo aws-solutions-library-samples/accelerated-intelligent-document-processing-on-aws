@@ -1140,8 +1140,9 @@ for s in multiinstance midetect migate; do
   AWS_PROFILE=default python3 benchmarks/harness/aggregate.py --run benchmarks/results/run-<stamp> --out benchmarks/results/<rel>/$s
 done
 
-# §7 detection on REAL labeled corpora — via Test Studio, because run_matrix.py silently
-# skips reference corpora (GitHub #766). Two profiles per corpus differing ONLY in
+# §7 detection on REAL labeled corpora — via Test Studio, because at the time run_matrix.py
+# could not launch reference corpora (GitHub #766; a launcher was added later in PR #866).
+# Two profiles per corpus differing ONLY in
 # extraction.multi_instance_detection.enabled; numberOfFiles takes the same first N.
 python3 benchmarks/harness/detection_ab_teststudio.py --stack <STACK> launch --n 40 \
     --pair ocr-benchmark:mid-off-ocr:mid-on-ocr \

@@ -65,6 +65,9 @@ def score_all(run_dir):
             )
         except Exception as e:
             sc = {"status": "SCORE_ERROR", "success": False, "error": str(e)}
+        # Synthetic rows let the scorer's "doc" (the PDF file name) win — the
+        # committed baselines are keyed that way, so changing it would break
+        # release pairing. Reference rows do the opposite; see score_reference_run.
         rows.append({**_key(r), **sc})
     return rm, rows
 
@@ -395,7 +398,10 @@ def _paired_quality_deltas(cur_summary, base_summary):
     def index(summary):
         out = {}
         for r in summary.get("rows", []):
-            out[(r.get("cell"), r.get("doc"), r.get("repeat", 0))] = r
+            # sub_doc is the document inside a reference-corpus run (#766); without
+            # it a 20-document corpus collapsed onto one key and the paired delta
+            # compared one arbitrary document.
+            out[(r.get("cell"), r.get("doc"), r.get("sub_doc"), r.get("repeat", 0))] = r
         return out
 
     cur_rows, base_rows = index(cur_summary), index(base_summary)
@@ -545,7 +551,13 @@ def _by_cell_doc(rows):
     """
     out = {}
     for r in rows:
-        out.setdefault(f"{r['cell']}|{r['doc']}", []).append(r)
+        key = f"{r['cell']}|{r['doc']}"
+        # A reference-corpus run contributes one row per document; pooling them
+        # under the corpus would make "spread" the difference between two real
+        # documents, not run-to-run noise. Pair per document, pool repeats only.
+        if r.get("sub_doc"):
+            key += f"|{r['sub_doc']}"
+        out.setdefault(key, []).append(r)
     return out
 
 
@@ -787,8 +799,8 @@ def figures_compare(new_path, base_path, new_label="new", base_label="baseline")
 
     # Paired per-(cell,doc) accuracy + recall: a scatter on the identity line, so
     # any point off the diagonal is a real per-run change rather than an average.
-    rn = {(r["cell"], r["doc"]): r for r in new["rows"]}
-    rb = {(r["cell"], r["doc"]): r for r in base["rows"]}
+    rn = {(r["cell"], r["doc"], r.get("sub_doc")): r for r in new["rows"]}
+    rb = {(r["cell"], r["doc"], r.get("sub_doc")): r for r in base["rows"]}
     keys = [k for k in rb if k in rn]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
     for ax, key, title in (

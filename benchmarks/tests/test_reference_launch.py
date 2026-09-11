@@ -74,6 +74,14 @@ def test_reference_docs_pass_the_class_filter_by_their_declared_class(docm):
         ["tiny_form", "bank_real", "realkie"], docm, "bank_statement"
     )
     assert "bank_real" in keep and "realkie" in other
+    # ...and plan_coverage must then pull it out of the synthetic list BEFORE the
+    # missing-PDF check, or a bank_real run exits on "no PDF for ['bank_real']".
+    runnable, refs, other_class = run_matrix.plan_coverage(
+        ["tiny_form", "bank_real", "realkie"], keep, run_matrix.reference_ids(docm)
+    )
+    assert runnable == ["tiny_form"]
+    assert sorted(refs) == ["bank_real", "realkie"]
+    assert other_class == []
 
 
 def test_reference_index_path_uses_the_corpus_class_and_the_same_override_slug(docm):
@@ -163,3 +171,30 @@ def test_synthetic_rows_still_carry_the_key_shape():
     )
     assert k["sub_doc"] is None and k["repeat"] == 2
     assert "sub_doc" in aggregate.CSV_COLS
+
+
+def _row(cell, doc, sub_doc, acc, repeat=0):
+    return {
+        "cell": cell,
+        "doc": doc,
+        "sub_doc": sub_doc,
+        "repeat": repeat,
+        "success": True,
+        "weighted_accuracy": acc,
+    }
+
+
+def test_release_comparison_pairs_reference_rows_per_document():
+    """Twenty documents of one corpus must pair document-by-document, not collapse
+    onto the corpus key (last one wins) or pool into a cross-document spread."""
+    base = {"rows": [_row("c", "realkie", "a", 0.5), _row("c", "realkie", "b", 0.9)]}
+    cur = {"rows": [_row("c", "realkie", "a", 0.6), _row("c", "realkie", "b", 0.9)]}
+    deltas = aggregate._paired_quality_deltas(cur, base)
+    key = ("c", "weighted_accuracy")
+    assert key in deltas and sorted(round(d, 3) for d in deltas[key]) == [0.0, 0.1]
+    groups = aggregate._by_cell_doc(cur["rows"])
+    assert set(groups) == {"c|realkie|a", "c|realkie|b"}
+    # synthetic rows keep their two-part key
+    assert set(aggregate._by_cell_doc([_row("c", "tiny_form.pdf", None, 1.0)])) == {
+        "c|tiny_form.pdf"
+    }
