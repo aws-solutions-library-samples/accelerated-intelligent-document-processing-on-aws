@@ -2589,7 +2589,7 @@ Resources:
           - id: W92
             reason: "Function does not require reserved concurrency as it scales based on demand"
           - id: F38
-            reason: "PassRole permission is required to delegate the execution role to the Bedrock AgentCore Gateway service securely"
+            reason: "PassRole is required to delegate the execution role to the Bedrock AgentCore Gateway service, and is scoped to the single AgentCoreGatewayExecutionRole ARN"
           - id: F3
             reason: "Wildcard actions required for AgentCore Gateway lifecycle management (create, update, delete) and CloudWatch Logs delivery configuration"
           - id: W11
@@ -2631,12 +2631,22 @@ Resources:
                 - logs:DeleteDeliveryDestination
                 - logs:DescribeDeliveryDestinations
                 - logs:DescribeDeliverySources
-                - iam:PassRole
-                - iam:CreateRole
-                - iam:AttachRolePolicy
-                - iam:GetRole
                 - cognito-idp:DescribeUserPool
               Resource: "*"
+            # AppSec finding b2b397a9 (Security Invariant scenario 1.1,
+            # iam-role-without-privilege-escalation): this function is a
+            # configuration custom resource and must not be able to grant itself
+            # permissions. Its IAM access is limited to reading and passing the
+            # gateway execution role that CloudFormation creates for it — no
+            # iam:CreateRole, iam:AttachRolePolicy, iam:PutRolePolicy or
+            # iam:UpdateAssumeRolePolicy. The execution role's trust policy and
+            # inline policy are defined by AgentCoreGatewayExecutionRole below,
+            # so the function never needs to mutate any role.
+            - Effect: Allow
+              Action:
+                - iam:GetRole
+                - iam:PassRole
+              Resource: !GetAtt AgentCoreGatewayExecutionRole.Arn
             - Effect: Allow
               Action:
                 - kms:Encrypt
