@@ -132,7 +132,15 @@ def extract_images_from_messages(messages: list) -> list[dict]:
                         f"Downloaded image from S3: {s3_uri} ({len(img_bytes)} bytes)"
                     )
                 except Exception as e:
-                    logger.error(f"Failed to download image from {s3_uri}: {e}")
+                    # Do not swallow this. The accelerator sends one page image
+                    # per invocation, so continuing here would return empty text
+                    # with pages=0 and no error — the pipeline would record a
+                    # blank page as a successful OCR and no retry layer would
+                    # engage. Failing loudly is what gets the page retried.
+                    logger.error(
+                        f"Failed to download image from {s3_uri}: {e}", exc_info=True
+                    )
+                    raise
             elif "bytes" in source:
                 images.append({"bytes": source["bytes"], "format": img_format})
     return images
@@ -164,6 +172,14 @@ def call_cohere_parse(image_bytes: bytes, image_format: str) -> dict:
         raise ValueError(
             "COHERE_API_KEY environment variable is required. "
             "Get your API key from https://dashboard.cohere.com/api-keys"
+        )
+
+    # The API key travels in an Authorization header to whatever COHERE_API_URL
+    # names, so refuse anything but HTTPS: a misconfigured (or tampered) endpoint
+    # would otherwise send the key in clear text, or to another host entirely.
+    if not COHERE_API_URL.lower().startswith("https://"):
+        raise ValueError(
+            f"COHERE_API_URL must be an https:// URL, got: {COHERE_API_URL!r}"
         )
 
     mime_type = IMAGE_MIME_TYPES.get(image_format.lower(), "image/jpeg")
@@ -220,12 +236,23 @@ def call_cohere_parse(image_bytes: bytes, image_format: str) -> dict:
             )
             time.sleep(wait)
             delay *= 2
-        except urllib.error.URLError as e:
+        # A socket read timeout raises a bare TimeoutError, which is NOT a
+        # URLError subclass — and with pages taking 50-90s against a 120s
+        # REQUEST_TIMEOUT it is the likeliest transient failure of all, so it
+        # must be retried rather than propagate on the first attempt. OSError
+        # covers the reset/broken-pipe family; a truncated body surfaces as
+        # JSONDecodeError and is equally worth one more try.
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            json.JSONDecodeError,
+        ) as e:
             if attempt == MAX_RETRIES:
-                logger.error(f"Cohere Parse request failed: {e}")
+                logger.error(f"Cohere Parse request failed: {type(e).__name__}: {e}")
                 raise
             logger.warning(
-                f"Cohere Parse connection error (attempt {attempt + 1}/"
+                f"Cohere Parse {type(e).__name__} (attempt {attempt + 1}/"
                 f"{MAX_RETRIES + 1}): {e}; retrying in {delay:.1f}s"
             )
             time.sleep(delay)
@@ -265,10 +292,26 @@ def _retry_after_seconds(error: urllib.error.HTTPError) -> float | None:
 #   first spanned column and leaving the rest empty. Repeating the text across
 #   the span would show the extraction model the same label two or three times
 #   as if they were distinct column values.
-# * `rowspan` is NOT expanded — a spanning cell appears only in the row where
-#   it is declared, which is how Markdown tables behave anyway.
-# * Nested tables cannot be represented in Markdown at all, so a table
-#   containing another table falls back to its original HTML.
+# * `rowspan` makes the table unrepresentable, so it falls back to raw HTML.
+#   Markdown has no vertical span: the rows a spanning cell covers each carry
+#   one fewer cell, so every value after it shifts a column left and lands
+#   under the wrong header — silently, since the row still has a plausible
+#   cell count. Wrong values filed under the wrong field are worse than an
+#   unparsed table, which at least leaves the LLM to read the HTML.
+# * Nested tables cannot be represented in Markdown either, so a table
+#   containing another table also falls back to its original HTML.
+# * A pipe inside a cell is replaced with U+2502 (│) rather than escaped as
+#   `\|`. The downstream deterministic table parser splits rows on a bare `|`
+#   and does not honour the escape, so `x\|y` becomes two cells: the row gains
+#   a column, the last value is truncated away and the rest are misattributed.
+#   One visually identical codepoint is a far smaller loss.
+
+
+# Block-level tags inside a cell imply a visual break, so they must not run two
+# values together ("<div>one</div><div>two</div>" is "one two", not "onetwo").
+_CELL_BREAK_TAGS = frozenset(
+    {"br", "div", "p", "li", "ul", "ol", "tr", "span", "h1", "h2", "h3", "h4"}
+)
 
 
 class _HTMLTableParser(HTMLParser):
@@ -277,11 +320,13 @@ class _HTMLTableParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         # One entry per table: {"rows": [[cell, ...], ...],
-        #                       "row_is_header": [bool, ...], "nested": bool}
+        #                       "row_is_header": [bool, ...], "caption": str,
+        #                       "unrepresentable": bool}
         self.tables: list[dict] = []
         self._table_depth = 0
         self._in_thead = False
         self._cell_parts: list[str] | None = None
+        self._caption_parts: list[str] | None = None
         self._colspan = 1
 
     # -- structure ---------------------------------------------------------
@@ -289,11 +334,17 @@ class _HTMLTableParser(HTMLParser):
         if tag == "table":
             self._table_depth += 1
             if self._table_depth == 1:
-                self.tables.append({"rows": [], "row_is_header": [], "nested": False})
+                self.tables.append(
+                    {
+                        "rows": [],
+                        "row_is_header": [],
+                        "caption": "",
+                        "unrepresentable": False,
+                    }
+                )
             else:
-                # Nested table: mark the enclosing one unrepresentable.
-                if self.tables:
-                    self.tables[-1]["nested"] = True
+                # Nested table: Markdown cannot express it.
+                self._mark_unrepresentable()
             return
 
         if self._table_depth != 1 or not self.tables:
@@ -301,17 +352,24 @@ class _HTMLTableParser(HTMLParser):
 
         if tag == "thead":
             self._in_thead = True
+        elif tag == "caption":
+            self._caption_parts = []
         elif tag == "tr":
             self.tables[-1]["rows"].append([])
             self.tables[-1]["row_is_header"].append(self._in_thead)
         elif tag in ("td", "th"):
+            attrs_map = dict(attrs)
+            # A vertical span shifts every later cell in the covered rows into
+            # the wrong column, so refuse the whole table rather than emit
+            # plausible-looking rows with values under the wrong headers.
+            if _positive_int(attrs_map.get("rowspan"), default=1) > 1:
+                self._mark_unrepresentable()
             self._cell_parts = []
-            self._colspan = _positive_int(dict(attrs).get("colspan"), default=1)
+            self._colspan = _positive_int(attrs_map.get("colspan"), default=1)
             if tag == "th":
                 self._mark_current_row_as_header()
-        elif tag == "br":
-            if self._cell_parts is not None:
-                self._cell_parts.append(" ")
+        elif tag in _CELL_BREAK_TAGS and self._cell_parts is not None:
+            self._cell_parts.append(" ")
 
     def handle_endtag(self, tag):
         if tag == "table":
@@ -323,20 +381,46 @@ class _HTMLTableParser(HTMLParser):
 
         if tag == "thead":
             self._in_thead = False
-        elif tag in ("td", "th") and self._cell_parts is not None:
-            text = _clean_cell("".join(self._cell_parts))
-            table = self.tables[-1]
-            if not table["rows"]:  # cell outside any <tr>
-                table["rows"].append([])
-                table["row_is_header"].append(self._in_thead)
-            # Spanned columns keep the text in the first one only.
-            table["rows"][-1].extend([text] + [""] * (self._colspan - 1))
-            self._cell_parts = None
-            self._colspan = 1
+        elif tag == "caption":
+            if self._caption_parts is not None:
+                self.tables[-1]["caption"] = _clean_cell("".join(self._caption_parts))
+                self._caption_parts = None
+        elif tag in ("td", "th"):
+            self._flush_cell()
+        elif tag in _CELL_BREAK_TAGS and self._cell_parts is not None:
+            self._cell_parts.append(" ")
 
     def handle_data(self, data):
-        if self._table_depth == 1 and self._cell_parts is not None:
+        if self._table_depth != 1:
+            return
+        if self._caption_parts is not None:
+            self._caption_parts.append(data)
+        elif self._cell_parts is not None:
             self._cell_parts.append(data)
+
+    def close(self):
+        # Malformed HTML can end without closing its last cell; keep its text
+        # rather than dropping the value silently.
+        super().close()
+        self._flush_cell()
+
+    def _flush_cell(self) -> None:
+        """Commit the cell being built, if any, to the current row."""
+        if self._cell_parts is None or not self.tables:
+            return
+        text = _clean_cell("".join(self._cell_parts))
+        table = self.tables[-1]
+        if not table["rows"]:  # cell outside any <tr>
+            table["rows"].append([])
+            table["row_is_header"].append(self._in_thead)
+        # Spanned columns keep the text in the first one only.
+        table["rows"][-1].extend([text] + [""] * (self._colspan - 1))
+        self._cell_parts = None
+        self._colspan = 1
+
+    def _mark_unrepresentable(self) -> None:
+        if self.tables:
+            self.tables[-1]["unrepresentable"] = True
 
     def _mark_current_row_as_header(self) -> None:
         """Flag the row being built as a header row (a `<th>` was seen in it)."""
@@ -356,8 +440,16 @@ def _positive_int(value, default: int = 1) -> int:
 
 
 def _clean_cell(text: str) -> str:
-    """Collapse whitespace and escape pipes so the cell is Markdown-safe."""
-    return " ".join(text.split()).replace("|", "\\|")
+    """
+    Collapse whitespace and make a cell safe to sit inside a Markdown row.
+
+    A literal pipe becomes U+2502 (│) rather than an escaped ``\\|``: the
+    downstream deterministic table parser splits on a bare ``|`` and does not
+    honour the escape, so escaping would add a phantom column, truncate the
+    row's last value and misattribute the rest. Substituting a look-alike
+    codepoint keeps the row shape and the reading.
+    """
+    return " ".join(text.split()).replace("|", "│")
 
 
 def _rows_to_markdown(rows: list[list[str]], row_is_header: list[bool]) -> str:
@@ -374,17 +466,17 @@ def _rows_to_markdown(rows: list[list[str]], row_is_header: list[bool]) -> str:
     width = max(len(row) for row, _ in kept)
     padded = [(row + [""] * (width - len(row)), is_header) for row, is_header in kept]
 
-    header_index = next((i for i, (_, is_hdr) in enumerate(padded) if is_hdr), None)
-    if header_index is not None:
-        # The first header row becomes the Markdown header; everything else —
-        # including any additional header rows — stays in the body so no cell
-        # is dropped.
-        header = padded[header_index][0]
-        body = [row for i, (row, _) in enumerate(padded) if i != header_index]
+    if padded[0][1]:
+        # The first row is the header row. Any later header-ish row stays in the
+        # body so no cell is dropped.
+        header = padded[0][0]
+        body = [row for row, _ in padded[1:]]
     else:
-        # Markdown requires a header row; with no <thead>/<th> to identify one,
-        # synthesize an empty header so no data row is silently promoted into
-        # (and thus dropped from) the header.
+        # Markdown requires a header row, and it has to be the first one. With
+        # no leading <thead>/<th>, synthesize an empty header: promoting a later
+        # header row would reorder the table, printing the rows above it after
+        # it. An empty header costs nothing — the deterministic table parser
+        # renames blank columns to _unnamed_N.
         header, body = [""] * width, [row for row, _ in padded]
 
     lines = [
@@ -399,9 +491,15 @@ def html_table_to_markdown(html: str) -> str:
     """
     Convert every ``<table>`` in ``html`` to a Markdown pipe table.
 
-    Returns the original HTML unchanged when it contains nothing convertible
-    (no rows parsed, or a nested table that Markdown cannot represent), so no
-    content is ever lost.
+    Input is expected to be a table fragment — this is what Cohere Parse puts in
+    a table block's ``html`` field. Cell text and ``<caption>`` are carried over;
+    any prose *outside* a ``<table>`` is not, so do not call this on a whole
+    document body.
+
+    Returns the original HTML unchanged whenever the table cannot be represented
+    faithfully — no rows parsed, a nested table, or a ``rowspan`` — so a table is
+    either converted correctly or handed on intact for the LLM to read. It is
+    never converted into rows whose values sit under the wrong headers.
     """
     if not html or not html.strip():
         return ""
@@ -416,12 +514,18 @@ def html_table_to_markdown(html: str) -> str:
 
     rendered = []
     for table in parser.tables:
-        if table["nested"]:
-            logger.info("Nested HTML table is not representable in Markdown; kept HTML")
+        if table["unrepresentable"]:
+            logger.info(
+                "HTML table uses rowspan or nesting, which Markdown cannot "
+                "represent faithfully; kept the raw HTML"
+            )
             return html
         markdown = _rows_to_markdown(table["rows"], table["row_is_header"])
-        if markdown:
-            rendered.append(markdown)
+        if not markdown:
+            continue
+        if table["caption"]:
+            markdown = f"{table['caption']}\n\n{markdown}"
+        rendered.append(markdown)
 
     if not rendered:
         return html
@@ -565,9 +669,19 @@ def _rendered_blocks(page: dict) -> list[tuple[str, dict | None]]:
     return rendered
 
 
-def cohere_page_to_textract(page: dict) -> tuple[str, list[dict]]:
+def cohere_page_to_textract(
+    page: dict, id_prefix: str = "cohere"
+) -> tuple[str, list[dict]]:
     """
     Convert a single Cohere Parse page object into (markdown, textract_blocks).
+
+    Args:
+        page: One entry from a Parse response's ``pages`` list.
+        id_prefix: Namespace for the generated Block ``Id``s. Every Parse
+            response covers a single image and numbers its page ``index`` from
+            0, so a multi-image invocation would otherwise mint the same ids
+            twice — and the OCR service indexes blocks by ``Id`` to resolve
+            LINE->WORD relationships, where a collision silently drops blocks.
 
     Returns:
         Tuple of (page markdown text, list of Textract-format Block dicts).
@@ -580,7 +694,7 @@ def cohere_page_to_textract(page: dict) -> tuple[str, list[dict]]:
     def next_id() -> str:
         nonlocal block_id
         block_id += 1
-        return f"cohere-{page.get('index', 0)}-{block_id}"
+        return f"{id_prefix}-{page.get('index', 0)}-{block_id}"
 
     # PAGE block. Parse gives no page dimensions, but geometry is already
     # normalized, so a full-page box is always correct.
@@ -617,9 +731,17 @@ def cohere_page_to_textract(page: dict) -> tuple[str, list[dict]]:
     return markdown, blocks
 
 
-def build_textract_response(parse_response: dict) -> tuple[str, dict, int]:
+def build_textract_response(
+    parse_response: dict, id_prefix: str = "cohere"
+) -> tuple[str, dict, int]:
     """
     Build a Textract-format response from a full Cohere Parse API response.
+
+    Args:
+        parse_response: A full ``POST /v2/parse`` response body.
+        id_prefix: Namespace for generated Block ``Id``s — pass a distinct value
+            per image when one invocation parses several (see
+            ``cohere_page_to_textract``).
 
     Returns:
         Tuple of (combined markdown text, textract-format dict with "Blocks"
@@ -632,7 +754,7 @@ def build_textract_response(parse_response: dict) -> tuple[str, dict, int]:
     for page in pages:
         if not isinstance(page, dict):
             continue
-        markdown, blocks = cohere_page_to_textract(page)
+        markdown, blocks = cohere_page_to_textract(page, id_prefix=id_prefix)
         if markdown:
             all_text.append(markdown)
         all_blocks.extend(blocks)
@@ -712,7 +834,7 @@ def lambda_handler(event, context):
         logger.info(f"Parsing image {i + 1}/{len(images)}...")
         parse_response = call_cohere_parse(img["bytes"], img["format"])
         text, textract_response, pages_processed = build_textract_response(
-            parse_response
+            parse_response, id_prefix=f"cohere-img{i}"
         )
         if text:
             all_text.append(text)

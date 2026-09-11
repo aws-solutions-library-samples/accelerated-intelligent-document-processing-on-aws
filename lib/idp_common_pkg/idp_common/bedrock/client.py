@@ -508,9 +508,17 @@ class BedrockClient:
             # attempt re-runs whatever the hook charges for — so it belongs to
             # `_invoke_lambda_hook_with_retry`, which backs off, logs, and knows
             # which errors are worth another attempt.
+            # 840s, not the full 900s Lambda maximum: the *calling* function is
+            # itself capped at 900s (OCRFunction is), so waiting the same 900
+            # would let the caller be killed before botocore ever raises — and
+            # Step Functions then retries the whole OCR task, re-running every
+            # page's paid call. Leaving 60s of headroom means the timeout
+            # surfaces as an error inside the caller, which can log it and fail
+            # the page cleanly. A hook is expected to keep its own timeout (and
+            # therefore its internal retry budget) below this.
             config = Config(
                 connect_timeout=10,
-                read_timeout=900,
+                read_timeout=840,
                 retries={"max_attempts": 1, "mode": "standard"},
                 # OCR fans pages out across worker threads that share this
                 # client; the default pool of 10 would serialize them.

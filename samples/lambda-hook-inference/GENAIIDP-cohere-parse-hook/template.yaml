@@ -31,8 +31,12 @@ Parameters:
   CohereApiUrl:
     Type: String
     Default: "https://api.cohere.com/v2/parse"
+    AllowedPattern: "^https://.+"
+    ConstraintDescription: Must be an https:// URL.
     Description: >
-      Cohere Parse endpoint URL. Defaults to the hosted API.
+      Cohere Parse endpoint URL. Defaults to the hosted API. Must be HTTPS —
+      the API key is sent to whatever this names, so a plain-HTTP or
+      substituted endpoint would leak it.
 
   CohereParseModel:
     Type: String
@@ -64,7 +68,7 @@ Parameters:
 
   MaxRetries:
     Type: String
-    Default: "4"
+    Default: "2"
     AllowedPattern: "^([0-9]|10)$"
     Description: >
       Retry attempts for throttled (429) and 5xx responses. Cohere's Parse rate
@@ -85,7 +89,13 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: .
-      Timeout: 300
+      # Must exceed the hook's own worst-case retry budget, or the retries can
+      # never be spent: the function is killed mid-ladder and the caller retries
+      # from scratch, re-running the paid Cohere call. With REQUEST_TIMEOUT=120
+      # and MAX_RETRIES=2 that budget is 3 x 120s + 3s backoff ~= 363s. Kept
+      # below the 840s the caller waits (see BedrockClient.lambda_client), so a
+      # failure surfaces as this function's error rather than a caller timeout.
+      Timeout: 600
       MemorySize: 512
       Environment:
         Variables:

@@ -43,13 +43,17 @@ class TestLambdaHookClientConfig:
     invocations and zero completed pages.
     """
 
-    def test_read_timeout_covers_the_maximum_lambda_timeout(self):
+    def test_read_timeout_outlasts_a_hook_but_not_the_caller(self):
         client = BedrockClient(region="us-east-1")
         with patch("boto3.client") as mock_boto:
             _ = client.lambda_client
         config = mock_boto.call_args.kwargs["config"]
-        # A hook may run for the full 900s Lambda maximum.
-        assert config.read_timeout >= 900
+        # Far above boto3's 60s default, so a slow hook is waited out...
+        assert config.read_timeout >= 600
+        # ...but strictly below the 900s cap of the calling Lambda (OCRFunction),
+        # so the SDK raises inside the caller instead of the caller being killed
+        # and Step Functions retrying the whole task, re-running paid work.
+        assert config.read_timeout < 900
 
     def test_botocore_retries_are_disabled(self):
         """Retrying an invocation re-runs paid work, so the library owns it.

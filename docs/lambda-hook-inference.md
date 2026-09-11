@@ -356,8 +356,14 @@ grounding matters to you.
 the accelerator's deterministic table parser (agentic extraction) reads Markdown
 pipe tables. Without conversion every table would silently fall back to pure-LLM
 extraction and lose the row-completeness guarantee — so the hook converts them
-(`CONVERT_HTML_TABLES=false` to opt out). `colspan` is expanded; a nested table is
-left as HTML because Markdown cannot represent one.
+(`CONVERT_HTML_TABLES=false` to opt out). `colspan` is expanded into the first
+spanned column. A table Markdown *cannot* represent faithfully — one using
+`rowspan`, or a nested table — is left as raw HTML rather than converted: Markdown
+has no vertical span, so the covered rows would each lose a cell and every later
+value would shift one column left, landing under the wrong header with a plausible
+cell count and no warning. A pipe inside a cell becomes U+2502 (│) rather than an
+escaped `\|`, because the deterministic table parser splits on a bare `|` and would
+otherwise gain a phantom column and truncate the row's last value.
 
 **Geometry.** The hook requests `output_format=blocks` and attaches each table's
 or figure's normalized box to every line derived from it. The OCR service
@@ -400,7 +406,7 @@ placeholder either. Set it explicitly, as above.
 | `COHERE_PARSE_MODEL` | `parse-v5.0` | Parse model id |
 | `OUTPUT_FORMAT` | `blocks` | `blocks` (table/figure geometry) or `markdown` (no usable geometry) |
 | `CONVERT_HTML_TABLES` | `true` | Convert HTML tables to Markdown pipe tables |
-| `MAX_RETRIES` | `4` | Retry attempts for 429 / 5xx responses |
+| `MAX_RETRIES` | `2` | Retry attempts for 429 / 5xx / timeout / connection errors |
 | `RETRY_BASE_DELAY` | `1` | Initial backoff in seconds, doubled per attempt |
 | `REQUEST_TIMEOUT` | `120` | Per-request timeout (seconds) |
 

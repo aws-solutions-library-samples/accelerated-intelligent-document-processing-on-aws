@@ -14,6 +14,7 @@ or
     pytest test_translation.py
 """
 
+import json
 import os
 import sys
 
@@ -128,12 +129,74 @@ def test_table_description_is_never_emitted():
     print("test_table_description_is_never_emitted: PASS")
 
 
-def test_html_table_escapes_pipes_and_collapses_whitespace():
+def test_html_table_substitutes_pipes_and_collapses_whitespace():
+    """A cell's pipe becomes U+2502, not an escaped \\| .
+
+    The downstream deterministic table parser splits rows on a bare "|" and does
+    not honour the escape, so "x\\|y" would become two cells: the row gains a
+    column, its last value is truncated away and the rest are misattributed.
+    """
     html = "<table><tr><td>a | b</td><td>multi\n  line<br>text</td></tr></table>"
     md = index.html_table_to_markdown(html)
-    assert "a \\| b" in md
+    assert "a \u2502 b" in md
+    assert "\\|" not in md
     assert "multi line text" in md
-    print("test_html_table_escapes_pipes_and_collapses_whitespace: PASS")
+    # Every rendered row must have the same cell count as the header.
+    rows = [line for line in md.split("\n") if line.startswith("|")]
+    counts = {len(r.split("|")) for r in rows}
+    assert len(counts) == 1, f"ragged row widths: {counts}"
+    print("test_html_table_substitutes_pipes_and_collapses_whitespace: PASS")
+
+
+def test_rowspan_falls_back_to_html():
+    """Markdown has no vertical span, so a rowspan table is kept as HTML.
+
+    Padding the short rows at the end instead would shift every later value one
+    column left, filing it under the wrong header with a plausible cell count
+    and no warning.
+    """
+    html = (
+        "<table><thead><tr><th>Date</th><th>Desc</th><th>Amt</th></tr></thead>"
+        '<tbody><tr><td rowspan="2">06/09</td><td>ATM</td><td>10</td></tr>'
+        "<tr><td>FEE</td><td>2</td></tr></tbody></table>"
+    )
+    assert index.html_table_to_markdown(html) == html
+    print("test_rowspan_falls_back_to_html: PASS")
+
+
+def test_caption_is_kept():
+    html = "<table><caption>Summary of fees</caption><tr><td>a</td></tr></table>"
+    md = index.html_table_to_markdown(html)
+    assert "Summary of fees" in md
+    assert "| a |" in md
+    print("test_caption_is_kept: PASS")
+
+
+def test_block_elements_in_a_cell_do_not_run_values_together():
+    html = "<table><tr><td><div>one</div><div>two</div></td></tr></table>"
+    md = index.html_table_to_markdown(html)
+    assert "one two" in md
+    assert "onetwo" not in md
+    print("test_block_elements_in_a_cell_do_not_run_values_together: PASS")
+
+
+def test_unclosed_final_cell_is_not_dropped():
+    md = index.html_table_to_markdown("<table><tr><td>a</td><td>b")
+    assert "b" in md
+    print("test_unclosed_final_cell_is_not_dropped: PASS")
+
+
+def test_header_row_must_be_first_or_it_is_left_in_place():
+    """A <th> partway down must not be hoisted above the rows preceding it."""
+    html = (
+        "<table><tr><td>early</td></tr>"
+        "<tr><th>Header</th></tr>"
+        "<tr><td>late</td></tr></table>"
+    )
+    md = index.html_table_to_markdown(html)
+    body = [line for line in md.split("\n")[2:]]
+    assert body == ["| early |", "| Header |", "| late |"], body
+    print("test_header_row_must_be_first_or_it_is_left_in_place: PASS")
 
 
 def test_nested_table_falls_back_to_html():
@@ -432,13 +495,97 @@ def test_retry_after_parsing():
     print("test_retry_after_parsing: PASS")
 
 
+# ---------------------------------------------------------------------------
+# Retry behaviour and configuration guards
+# ---------------------------------------------------------------------------
+
+
+def _count_attempts(exc, max_retries=2):
+    """Run call_cohere_parse with urlopen always raising `exc`; count attempts."""
+    import unittest.mock as mock
+
+    attempts = {"n": 0}
+
+    def boom(*_a, **_kw):
+        attempts["n"] += 1
+        raise exc
+
+    with (
+        mock.patch.object(index, "COHERE_API_KEY", "test-key"),
+        mock.patch.object(index, "MAX_RETRIES", max_retries),
+        mock.patch.object(index, "RETRY_BASE_DELAY", 0),
+        mock.patch.object(index.urllib.request, "urlopen", boom),
+    ):
+        try:
+            index.call_cohere_parse(b"x", "png")
+        except Exception:
+            pass
+    return attempts["n"]
+
+
+def test_read_timeout_is_retried():
+    """A socket read timeout raises bare TimeoutError, not URLError.
+
+    With pages taking 50-90s against a 120s REQUEST_TIMEOUT this is the single
+    likeliest transient failure, so it must not propagate on the first attempt.
+    """
+    import urllib.error
+
+    assert not issubclass(TimeoutError, urllib.error.URLError)
+    assert _count_attempts(TimeoutError("timed out")) == 3
+    print("test_read_timeout_is_retried: PASS")
+
+
+def test_truncated_body_and_connection_errors_are_retried():
+    assert _count_attempts(json.JSONDecodeError("bad", "", 0)) == 3
+    assert _count_attempts(ConnectionResetError("reset")) == 3
+    print("test_truncated_body_and_connection_errors_are_retried: PASS")
+
+
+def test_non_https_endpoint_is_refused():
+    """The API key travels to whatever COHERE_API_URL names."""
+    import unittest.mock as mock
+
+    with (
+        mock.patch.object(index, "COHERE_API_KEY", "test-key"),
+        mock.patch.object(index, "COHERE_API_URL", "http://evil.example/v2/parse"),
+    ):
+        try:
+            index.call_cohere_parse(b"x", "png")
+        except ValueError as e:
+            assert "https" in str(e)
+        else:
+            raise AssertionError("expected a ValueError for a non-https endpoint")
+    print("test_non_https_endpoint_is_refused: PASS")
+
+
+def test_block_ids_are_unique_across_images():
+    """Every Parse response numbers its single page 0, so ids must be namespaced.
+
+    OcrService indexes blocks by Id to resolve LINE->WORD relationships; a
+    collision silently drops blocks.
+    """
+    _, a, _ = index.build_textract_response(BLOCKS_RESPONSE, id_prefix="cohere-img0")
+    _, b, _ = index.build_textract_response(BLOCKS_RESPONSE, id_prefix="cohere-img1")
+    ids_a = {blk["Id"] for blk in a["Blocks"]}
+    ids_b = {blk["Id"] for blk in b["Blocks"]}
+    assert ids_a and ids_b
+    assert not (ids_a & ids_b), "block Ids collide across images"
+    print("test_block_ids_are_unique_across_images: PASS")
+
+
 if __name__ == "__main__":
     test_html_table_with_header()
     test_html_table_without_header_synthesizes_one()
     test_html_table_thead_with_td_cells_is_the_header()
     test_html_table_colspan_and_ragged_rows()
     test_table_description_is_never_emitted()
-    test_html_table_escapes_pipes_and_collapses_whitespace()
+    test_html_table_substitutes_pipes_and_collapses_whitespace()
+    test_rowspan_falls_back_to_html()
+    test_caption_is_kept()
+    test_block_elements_in_a_cell_do_not_run_values_together()
+    test_unclosed_final_cell_is_not_dropped()
+    test_header_row_must_be_first_or_it_is_left_in_place()
     test_nested_table_falls_back_to_html()
     test_non_table_html_is_preserved()
     test_blocks_response_translation()
@@ -449,4 +596,8 @@ if __name__ == "__main__":
     test_missing_and_degenerate_geometry_is_dropped()
     test_empty_pages()
     test_retry_after_parsing()
+    test_read_timeout_is_retried()
+    test_truncated_body_and_connection_errors_are_retried()
+    test_non_https_endpoint_is_refused()
+    test_block_ids_are_unique_across_images()
     print("\nAll translation tests passed.")

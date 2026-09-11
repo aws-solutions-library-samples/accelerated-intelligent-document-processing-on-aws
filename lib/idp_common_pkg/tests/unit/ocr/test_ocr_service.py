@@ -753,8 +753,13 @@ class TestOcrService:
         }
         _, confidence = service._extract_bedrock_ocr_artifacts(response_payload)
 
-        assert "| Account: 12345 | N/A |" in confidence["text"]
-        assert "0.0" not in confidence["text"]
+        # The row reports the score as unavailable rather than as a real 0.0.
+        rows = [
+            line
+            for line in confidence["text"].split("\n")
+            if line.startswith("| Account")
+        ]
+        assert rows == ["| Account: 12345 | N/A |"]
 
     def test_extract_bedrock_ocr_artifacts_empty_blocks(self, mock_bedrock_config):
         """textractBlocks present but empty -> fall back to placeholder."""

@@ -2214,6 +2214,7 @@ class OcrService:
                 confidence = (
                     round(raw_confidence, 1)
                     if isinstance(raw_confidence, (int, float))
+                    and not isinstance(raw_confidence, bool)
                     else "N/A"
                 )
 

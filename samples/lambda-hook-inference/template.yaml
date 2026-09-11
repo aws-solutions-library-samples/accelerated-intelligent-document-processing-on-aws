@@ -103,7 +103,11 @@ Parameters:
   CohereApiUrl:
     Type: String
     Default: "https://api.cohere.com/v2/parse"
-    Description: Cohere Parse endpoint URL.
+    AllowedPattern: "^https://.+"
+    ConstraintDescription: Must be an https:// URL.
+    Description: >
+      Cohere Parse endpoint URL. Must be HTTPS — the API key is sent to
+      whatever this names.
 
   CohereParseModel:
     Type: String
@@ -293,7 +297,10 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: GENAIIDP-cohere-parse-hook/
-      Timeout: 300
+      # Exceeds the hook's worst-case retry budget (3 x REQUEST_TIMEOUT +
+      # backoff ~= 363s) so the ladder can actually be spent, and stays under
+      # the 840s the caller waits. See the standalone template for the full note.
+      Timeout: 600
       MemorySize: 512
       Environment:
         Variables:
@@ -302,7 +309,7 @@ Resources:
           COHERE_PARSE_MODEL: !Ref CohereParseModel
           OUTPUT_FORMAT: !Ref CohereOutputFormat
           CONVERT_HTML_TABLES: !Ref CohereConvertHtmlTables
-          MAX_RETRIES: "4"
+          MAX_RETRIES: "2"
           RETRY_BASE_DELAY: "1"
           REQUEST_TIMEOUT: "120"
           LOG_LEVEL: INFO
