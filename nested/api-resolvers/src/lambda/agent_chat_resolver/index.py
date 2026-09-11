@@ -122,7 +122,12 @@ def handler(event, context):
         prompt = arguments.get("prompt")
         session_id = arguments.get("sessionId")
         method = arguments.get("method", "chat")
-        enable_code_intelligence = arguments.get("enableCodeIntelligence", True)
+        # Default off: the Code Intelligence Agent sends repository context to a
+        # third-party MCP service, so callers must opt in explicitly. Require a
+        # literal boolean True — the dispatcher's schema rejects non-booleans on
+        # the HTTP path, but direct (IAM) invocations are not validated, and
+        # bool("false") is True.
+        enable_code_intelligence = arguments.get("enableCodeIntelligence") is True
         tool_metadata = arguments.get("toolMetadata")
 
         # Validate required parameters

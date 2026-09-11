@@ -21,7 +21,9 @@ export const AgentChatProvider = ({ children, initialMode = 'chat' }: AgentChatP
     error: null,
     expandedSections: new Set(),
     lastMessageCount: 0,
-    enableCodeIntelligence: true,
+    // Off by default: the Code Intelligence Agent sends repository context to a
+    // third-party MCP service, so it must be an explicit user opt-in.
+    enableCodeIntelligence: false,
     inputValue: '',
     mode: initialMode,
   });
@@ -44,7 +46,7 @@ export const AgentChatProvider = ({ children, initialMode = 'chat' }: AgentChatP
       error: null,
       expandedSections: new Set(),
       lastMessageCount: 0,
-      enableCodeIntelligence: true,
+      enableCodeIntelligence: false,
       inputValue: '',
       mode: prevState.mode,
     }));
