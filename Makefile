@@ -297,6 +297,14 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 		echo -e "$(YELLOW)NOTE: cfn-lint $$HAVE installed, gate is pinned to $(CFN_LINT_VERSION).$(NC)"; \
 		echo -e "$(YELLOW)      A newer release may report findings CI does not, or miss ones it does.$(NC)"; \
 	fi
+	@# cfn-lint's DECODER logs one ERROR per nested TemplateURL it cannot read.
+	@# Those point at .aws-sam/packaged.yaml, a build artifact absent from any clean
+	@# checkout, so CI emitted 15 red ERROR lines every run for an expected,
+	@# already-handled condition (E3043 is off; the wiring is asserted by
+	@# scripts/tests/test_nested_stack_parameters.py). Only that exact message is
+	@# filtered, and the count is reported, so a genuine decode failure for a real
+	@# template still surfaces.
+	@#
 	@# Templates are discovered by CONTENT, not by filename. A hardcoded glob list
 	@# is how check-arn-partitions came to miss nested/, samples/ and notebooks/;
 	@# anything declaring AWSTemplateFormatVersion is a CloudFormation template and
@@ -311,10 +319,18 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 		exit 1; \
 	fi; \
 	echo "$$TEMPLATES" | sed 's|^\./||;s|^|  |'; \
+	OUT=$$(mktemp); \
 	echo "$$TEMPLATES" | xargs cfn-lint \
 		--ignore-checks $(CFN_LINT_IGNORE) \
-		--non-zero-exit-code error; \
+		--non-zero-exit-code error >"$$OUT" 2>&1; \
 	STATUS=$$?; \
+	NOISE="cfnlint\.decode\.decode - ERROR - Template file not found:.*\.aws-sam/packaged\.ya\?ml"; \
+	MISSING=$$(grep -c "$$NOISE" "$$OUT" || true); \
+	grep -v "$$NOISE" "$$OUT" || true; \
+	rm -f "$$OUT"; \
+	if [ "$$MISSING" -gt 0 ]; then \
+		echo "  ($$MISSING nested TemplateURL(s) unbuilt — expected on a clean checkout)"; \
+	fi; \
 	if [ $$STATUS -ne 0 ]; then \
 		echo -e "$(RED)❌ cfn-lint found template ERRORS (warnings alone do not fail this gate)$(NC)"; \
 		exit 1; \
