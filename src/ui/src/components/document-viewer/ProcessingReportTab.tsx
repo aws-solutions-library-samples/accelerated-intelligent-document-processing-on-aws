@@ -101,6 +101,7 @@ interface SizingPlan {
   shard_token_budget?: number;
   max_pages_per_shard?: number;
   list_batch_size?: number;
+  prompt_overhead_tokens?: number;
   overrides?: Record<string, unknown>;
 }
 
@@ -511,6 +512,9 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                   <Box variant="awsui-key-label">Shard budget (auto)</Box>
                   <Box>
                     ~{(sizing.shard_token_budget || 0).toLocaleString()} tok · {sizing.max_pages_per_shard} pg/shard
+                    {sizing.prompt_overhead_tokens
+                      ? ` · after ~${sizing.prompt_overhead_tokens.toLocaleString()} tok of prompt overhead`
+                      : ''}
                   </Box>
                 </div>
                 <div>

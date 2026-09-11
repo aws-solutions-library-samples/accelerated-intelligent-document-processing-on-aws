@@ -1125,22 +1125,19 @@ token saving that loses list rows is a loss.
 
 - **Smaller in dollars.** All three copies sit inside the prompt-cache prefix, so on
   a repeated-class workload they are cache reads at roughly a tenth of input price.
-- **It does NOT reduce shard count.** An earlier version of this section claimed the
-  reclaimed tokens free "the same context budget that `context_buffer` /
-  `shard_token_budget` manage", so removing them could keep a document out of an
-  extra shard. **That is not how the code works.** `plan_shards` budgets against
-  **OCR page text only**, and `compute_sizing_plan` derives that budget as
-  `max_input × (1 - context_buffer)` minus an output reserve and an image reserve —
-  prompt overhead (this restatement, the prose schema, the toolSpec, few-shot
-  examples) is subtracted nowhere. It is absorbed by the blanket `context_buffer`
-  (default 0.30), so the reclaimed tokens come off a safety reserve that is already
-  ~60,000 tokens on a 200K-window model and were already unused. `max_pages_per_shard`
-  (default 5) closes shards on page count regardless.
-
-  So with the current design this is a per-request token reduction with **no**
-  shard-count, cost or latency mechanism behind it. Making the shard budget subtract
-  measured prompt overhead — which would make this knob pay for itself — is
-  [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
+- **Shard-count headroom, since #775.** `compute_sizing_plan` now subtracts the
+  MEASURED per-request prompt overhead — system prompt, the task prompt with the
+  class schema rendered in, few-shot text, the forced toolSpec, and on the Advanced
+  path the agent system prompt, the tool schema and this restatement — from the
+  shard budget (`ExtractionService._prompt_overhead_tokens`, chars/4 like the page
+  text), so `context_buffer` is a safety margin *on top of* what the prompt really
+  costs. Turning the restatement off therefore frees one schema copy's worth of
+  shard budget, which is the mechanism this knob was always assumed to have; before
+  #775 the overhead was subtracted nowhere and came off a blanket reserve that was
+  already unused, so no shard count could move. Whether that headroom changes a
+  given document's shard count still depends on it sitting near a boundary, and
+  `max_pages_per_shard` (default 5) closes shards on page count regardless. The
+  processing report shows `prompt_overhead_tokens` beside the shard budget.
 
 A fourth copy is stored in agent state for the reminder tool, but it is only
 transmitted if that tool is invoked, so it is not a per-request cost.

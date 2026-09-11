@@ -1024,10 +1024,14 @@ class ExtractionConfig(BaseModel):
             "is the ONE knob for model-aware auto-sizing: shard token/page budgets "
             "and confidence list-batch sizes are derived from the model's input "
             "and output limits minus this buffer (see idp_common.bedrock.sizing), "
-            "so you don't hand-set per-model sizes. Raise it (e.g. 0.5) if you see "
+            "so you don't hand-set per-model sizes. The shard budget ALSO subtracts "
+            "the measured per-request prompt overhead (system prompt, rendered "
+            "schema, few-shot text, tool schema), so this buffer is a pure safety "
+            "margin on top of what the prompt really costs rather than the thing "
+            "that silently absorbs it. Raise it (e.g. 0.5) if you see "
             "context-overflow or truncation; lower it (e.g. 0.15) to pack more per "
-            "shard/batch on a roomy model. The derived sizes are logged and shown "
-            "in the processing report."
+            "shard/batch on a roomy model. The derived sizes, including the "
+            "prompt overhead, are logged and shown in the processing report."
         ),
     )
     model: str = Field(
@@ -1075,6 +1079,7 @@ class ExtractionConfig(BaseModel):
             if lowered in ("auto", "on", "true", "yes", "enabled", "1"):
                 return "auto"
         return v
+
     system_prompt: str = Field(
         default="",
         description="System prompt for extraction (populated from system defaults)",

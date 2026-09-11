@@ -148,6 +148,11 @@ class SizingPlan:
     # Output side
     list_batch_size: int
     geometry_mode: str | None = None
+    # Measured per-request prompt overhead (system prompt, rendered task prompt
+    # with the class schema, few-shot text, forced toolSpec, agentic restatement)
+    # that was SUBTRACTED from the shard budget. 0 when the caller could not
+    # measure it (then the blanket buffer alone absorbs it, as before #775).
+    prompt_overhead_tokens: int = 0
     # Whether each value was auto-derived (True) or came from an explicit override.
     overrides: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
@@ -164,6 +169,7 @@ class SizingPlan:
             "max_pages_per_shard": self.max_pages_per_shard,
             "list_batch_size": self.list_batch_size,
             "geometry_mode": self.geometry_mode,
+            "prompt_overhead_tokens": self.prompt_overhead_tokens,
             "overrides": self.overrides,
         }
 
@@ -280,6 +286,15 @@ def compute_sizing_plan(
     shard_token_budget_override: int | None = None,
     max_pages_per_shard_override: int | None = None,
     list_batch_size_override: int | None = None,
+    # Measured tokens of everything in the request that is NOT page text: system
+    # prompt, the task prompt with the class schema rendered in, few-shot text,
+    # the forced toolSpec, the agentic schema restatement. Subtracted from the
+    # shard budget so page text is budgeted against the room actually left
+    # (#775). ``context_buffer`` then stays a pure safety margin ON TOP of it,
+    # instead of being the thing that silently absorbs it — which meant a
+    # prompt-heavy configuration was over-budgeted and prompt de-duplication
+    # could never change a shard count.
+    prompt_overhead_tokens: int = 0,
     log_label: str = "extraction",
 ) -> SizingPlan:
     """Derive shard + list-batch sizing from the model's context/output windows.
@@ -304,8 +319,10 @@ def compute_sizing_plan(
         usable_output, int(usable_input * _MAX_OUTPUT_RESERVE_FRACTION_OF_INPUT)
     )
     image_reserve = int(max_images_per_agent) * _TOKENS_PER_IMAGE
+    prompt_overhead = max(0, int(prompt_overhead_tokens or 0))
     derived_shard_budget = max(
-        _MIN_SHARD_TOKEN_BUDGET, usable_input - output_reserve - image_reserve
+        _MIN_SHARD_TOKEN_BUDGET,
+        usable_input - output_reserve - image_reserve - prompt_overhead,
     )
     shard_token_budget = (
         int(shard_token_budget_override)
@@ -360,6 +377,7 @@ def compute_sizing_plan(
         max_pages_per_shard=max_pages_per_shard,
         list_batch_size=list_batch_size,
         geometry_mode=geometry_mode,
+        prompt_overhead_tokens=prompt_overhead,
         overrides=overrides,
     )
 
@@ -368,7 +386,8 @@ def compute_sizing_plan(
     logger.info(
         "Model-aware sizing (%s): model=%s resolved=%s buffer=%.2f "
         "input_window=%d output_cap=%d | usable_in=%d usable_out=%d "
-        "image_reserve=%d(%dimg) output_reserve=%d -> shard_token_budget=%d "
+        "image_reserve=%d(%dimg) output_reserve=%d prompt_overhead=%d "
+        "-> shard_token_budget=%d "
         "max_pages_per_shard=%d | confidence_model=%s(cap=%d resolved=%s) "
         "cols=%s per_row_out=%d(geometry=%s) -> list_batch_size=%d(estimate) "
         "| overrides=%s",
@@ -383,6 +402,7 @@ def compute_sizing_plan(
         image_reserve,
         max_images_per_agent,
         output_reserve,
+        prompt_overhead,
         shard_token_budget,
         max_pages_per_shard,
         conf_model or "(unknown)",

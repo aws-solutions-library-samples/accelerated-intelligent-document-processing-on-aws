@@ -724,7 +724,10 @@ class ExtractionService:
         passed as overrides so they still win. Logged once per section.
         """
         cached = getattr(self, "_sizing_plan", None)
-        if cached is not None:
+        overhead = self._prompt_overhead_tokens()
+        # Recompute a plan memoized before the prompt context existed (overhead
+        # unknown then, measurable now); otherwise serve the cached plan.
+        if cached is not None and (cached.prompt_overhead_tokens or not overhead):
             return cached
         from idp_common.bedrock.sizing import compute_sizing_plan
 
@@ -757,10 +760,76 @@ class ExtractionService:
             list_batch_size_override=lbs
             if (lbs and lbs != _LEGACY_LIST_BATCH_DEFAULT)
             else None,
+            prompt_overhead_tokens=overhead,
             log_label="extraction",
         )
         self._sizing_plan = plan
         return plan
+
+    def _prompt_overhead_tokens(self) -> int:
+        """Estimated tokens of everything in one extraction request that is NOT
+        page text, so the shard budget can subtract it (#775).
+
+        Counted (chars/4, the same estimator ``plan_shards`` uses for page text):
+        the system prompt; the task prompt the service would send (per-class
+        override, else the mode-selected template) with the class schema prose,
+        class label and few-shot text rendered in and the document placeholders
+        emptied; the forced toolSpec when enabled (Simple); on the Advanced path
+        the agent's system prompt plus the tool schema, and the restated schema
+        again when ``restate_schema_in_system_prompt`` is on. Images are the
+        sizing plan's own image reserve and are not counted here.
+
+        Returns 0 until ``_initialize_extraction_context`` has run for the
+        section (nothing to measure yet); ``_get_sizing_plan`` recomputes once
+        it has. Best-effort: any failure returns 0 and the blanket
+        ``context_buffer`` absorbs the overhead as it did before.
+        """
+        if not self._class_schema or not self._attribute_descriptions:
+            return 0
+        try:
+            from idp_common.extraction.prompt_assembly import (
+                select_extraction_task_prompt,
+            )
+
+            ex = self.config.extraction
+            template = self._class_schema.get(
+                X_AWS_IDP_EXTRACTION_TASK_PROMPT
+            ) or select_extraction_task_prompt(ex)
+            few_shot_text = ""
+            if "{FEW_SHOT_EXAMPLES}" in (template or ""):
+                few_shot_text = " ".join(
+                    str(block.get("text") or "")
+                    for block in self._build_few_shot_examples_content()
+                    if isinstance(block, dict)
+                )
+            rendered = (
+                (template or "")
+                .replace(
+                    "{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}", self._attribute_descriptions
+                )
+                .replace("{DOCUMENT_CLASS}", self._class_label or "")
+                .replace("{FEW_SHOT_EXAMPLES}", few_shot_text)
+                .replace("{DOCUMENT_TEXT}", "")
+                .replace("{DOCUMENT_IMAGE}", "")
+                .replace("<<CACHEPOINT>>", "")
+            )
+            total = estimate_tokens(ex.system_prompt or "") + estimate_tokens(rendered)
+            # The class schema goes on the wire a second time as a tool schema:
+            # the forced toolSpec (Simple) or the agent's extraction tool
+            # (Advanced), each about the size of the prose rendering.
+            schema_tokens = estimate_tokens(self._attribute_descriptions)
+            if ex.agentic.enabled:
+                from idp_common.extraction.agentic_idp import SYSTEM_PROMPT
+
+                total += estimate_tokens(SYSTEM_PROMPT) + schema_tokens
+                if getattr(ex.agentic, "restate_schema_in_system_prompt", True):
+                    total += schema_tokens
+            elif getattr(getattr(ex, "forced_tool", None), "enabled", False):
+                total += schema_tokens
+            return int(total)
+        except Exception as e:  # noqa: BLE001 - never break sizing on an estimate
+            logger.debug("Prompt overhead estimate unavailable: %s", e)
+            return 0
 
     def _shard_token_budget(self) -> int:
         """Per-shard input-token budget.

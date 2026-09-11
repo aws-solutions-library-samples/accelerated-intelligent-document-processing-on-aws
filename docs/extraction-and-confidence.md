@@ -208,15 +208,15 @@ the schema again mid-run.
 > benchmark suite it cost no completeness and no accuracy — and it did not save
 > anything measurable either. Two reasons, both worth knowing before you tune:
 > the copies sit inside the **prompt cache**, so they are billed at roughly a tenth
-> of input price; and reclaiming them does **not** make a long document split into
-> fewer parts, because the schema text is not counted when the pipeline decides how
-> to split a document — the tokens come out of a safety margin that was already
-> unused. Earlier versions of this page and of the setting's own description said
-> the payoff was context-window headroom; that was wrong, and making it true is
-> tracked in
-> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
-> Treat this as a setting for measuring the question on your own documents, not as
-> a recommended optimisation.
+> of input price; and reclaiming them frees shard budget only since
+> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775):
+> the pipeline now subtracts the measured prompt overhead (system prompt, rendered
+> schema, few-shot text, tool schema, this restatement) when it decides how to split
+> a document, where before the schema text was not counted at all. Whether the
+> freed headroom changes a given document's shard count depends on it sitting near
+> a boundary, and the page ceiling still closes shards regardless. Treat this as a
+> setting for measuring the question on your own documents, not as a recommended
+> optimisation.
 
 **Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
 **Configuration → Prompt Preview → System Prompt** tab ends with the
@@ -334,7 +334,7 @@ failures a single huge request would hit — and runs shards in parallel.
 
 ```yaml
 extraction:
-  context_buffer: 0.30            # ONE knob: keep 30% of each model window free (auto-sizes everything below)
+  context_buffer: 0.30            # ONE knob: keep 30% of each model window free ON TOP of the measured prompt overhead (auto-sizes everything below)
   agentic:
     enabled: true
     runtime: step_functions       # DEFAULT for agentic: per-shard Lambdas defeat the 900s timeout + resume
@@ -343,7 +343,7 @@ extraction:
     max_pages_per_shard: 5        # page ceiling per shard (timeout-critical; fixed default, not model-derived)
 ```
 
-- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer` — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically. The confidence list-batch size is also derived, but from the **confidence** model's *output* cap, the row's column count and the geometry mode — **not** from `context_buffer`, which governs only the input-window budgets. The derived sizes are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
+- **Model-aware auto-sizing (default).** `shard_token_budget: 0` means the per-shard OCR-token budget is derived from the extraction model's context window minus `context_buffer`, minus an output reserve and an image reserve, **minus the measured prompt overhead** for the class (system prompt, the task prompt with the schema rendered in, few-shot text, the tool schema and the Advanced-path restatement; #775) — a 1M-context model (`:1m`) shards much larger than a 200K one, automatically, and a prompt-heavy class shards smaller instead of failing at the window. The confidence list-batch size is also derived, but from the **confidence** model's *output* cap, the row's column count and the geometry mode — **not** from `context_buffer`, which governs only the input-window budgets. The derived sizes, including `prompt_overhead_tokens`, are logged and shown in the **Processing Report**. Non-zero values pin an explicit override.
 - **`max_pages_per_shard` is the timeout lever.** It stays a small fixed default (5) rather than model-derived: the 900s Lambda limit is about *sequential agent turns per shard* (wall-clock), not context tokens, so a roomy token budget must not collapse a large doc back into one giant shard. Fewer pages/shard ⇒ fewer turns ⇒ each shard Lambda finishes well under 900s.
 - **Advanced defaults to the resumable runtime.** `runtime: step_functions` is now the agentic default: each shard is its own Lambda iteration in a nested Step Functions **Distributed Map**, so a very large section is not bound by the single-Lambda 15-minute limit and Step Functions **retries only the incomplete shards** (completed shards are reused from S3). `in_process` (asyncio within one Lambda) remains available but is still bound by that one Lambda's 900s.
 - **Confidence *and* bounding-box grounding are sharded too.** Each shard runs its confidence assessment **and grounds its own rows' bounding boxes against only its own pages** — so both scale per-shard and run concurrently. The final merge only concatenates already-scored, already-grounded rows (plus a fast top-up for any rows the assessment LLM omitted); it does **not** re-assess or re-ground the whole section. This keeps the merge step fast even on very large tables (previously a single full-section grounding sweep over thousands of rows could approach the merge Lambda's 900s limit).
