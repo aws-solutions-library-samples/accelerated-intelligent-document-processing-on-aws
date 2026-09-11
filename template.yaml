@@ -3269,6 +3269,16 @@ Resources:
 
   IDPCommonBaseLayer:
     Type: AWS::Lambda::LayerVersion
+    Metadata:
+      # publish.py substitutes this placeholder at build time. cfn-lint sees the
+      # literal token and rejects it as an invalid bucket name (E1161/E3031);
+      # there is nothing to fix, so suppress it HERE rather than disabling those
+      # rule classes across all 30 templates.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1161
+            - E3031
     Properties:
       LayerName: !Sub "${AWS::StackName}-idp-common-base"
       Description: "IDP Common base layer (core + docs_service + image)"
@@ -3281,6 +3291,16 @@ Resources:
 
   IDPCommonReportingLayer:
     Type: AWS::Lambda::LayerVersion
+    Metadata:
+      # publish.py substitutes this placeholder at build time. cfn-lint sees the
+      # literal token and rejects it as an invalid bucket name (E1161/E3031);
+      # there is nothing to fix, so suppress it HERE rather than disabling those
+      # rule classes across all 30 templates.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1161
+            - E3031
     Properties:
       LayerName: !Sub "${AWS::StackName}-idp-common-reporting"
       Description: "IDP Common reporting layer (core + docs_service + reporting)"
@@ -3293,6 +3313,16 @@ Resources:
 
   IDPCommonAgentsLayer:
     Type: AWS::Lambda::LayerVersion
+    Metadata:
+      # publish.py substitutes this placeholder at build time. cfn-lint sees the
+      # literal token and rejects it as an invalid bucket name (E1161/E3031);
+      # there is nothing to fix, so suppress it HERE rather than disabling those
+      # rule classes across all 30 templates.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1161
+            - E3031
     Properties:
       LayerName: !Sub "${AWS::StackName}-idp-common-agents"
       Description: "IDP Common agents layer (core + agents)"

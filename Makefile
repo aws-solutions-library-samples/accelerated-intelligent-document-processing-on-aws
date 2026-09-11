@@ -95,7 +95,7 @@ setup: ## Install all packages into current Python environment (no venv)
 	echo "Installing capacity planning test dependencies..." && \
 	$$SETUP_PIP install -r src/lambda/calculate_capacity/requirements-test.txt && \
 	echo "Installing cfn-lint for CloudFormation template validation..." && \
-	$$SETUP_PIP install cfn-lint && \
+	$$SETUP_PIP install cfn-lint==$(CFN_LINT_VERSION) && \
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
@@ -120,7 +120,7 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo "Installing capacity planning test dependencies..."
 	$(VENV_DIR)/bin/pip install -r src/lambda/calculate_capacity/requirements-test.txt
 	@echo "Installing cfn-lint for CloudFormation template validation..."
-	$(VENV_DIR)/bin/pip install cfn-lint
+	$(VENV_DIR)/bin/pip install cfn-lint==$(CFN_LINT_VERSION)
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
@@ -128,8 +128,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -168,6 +168,16 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@# validate-buildspec and cfn-lint were in `lint`/`fastlint` but NOT here, so
+	@# neither CI ran them — the same gap this target exists to prevent.
+	@if ! make validate-buildspec; then \
+		echo -e "$(RED)ERROR: buildspec validation failed$(NC)"; \
+		exit 1; \
+	fi
+	@if ! make cfn-lint; then \
+		echo -e "$(RED)ERROR: CloudFormation template validation failed$(NC)"; \
+		exit 1; \
+	fi
 	@echo "GovCloud ARN partition check"
 	@if ! make check-arn-partitions; then \
 		echo -e "$(RED)ERROR: Hardcoded ARN partitions/service principals found (breaks GovCloud)$(NC)"; \
@@ -258,6 +268,74 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 	@# Python was never scanned, which is how a hardcoded arn:aws: reached runtime
 	@# and broke every Bedrock Data Automation invoke in GovCloud (issue #527).
 	@$(PYTHON) scripts/check_python_arn_partitions.py
+
+# Pin the linter. An UNPINNED tool on a blocking gate is the one realistic way
+# this red-lines develop with no code change: cfn-lint ships new rules and
+# refreshed resource specs often, and any check promoted to ERROR class would
+# fail every build until someone triaged it. Everything comparable here is
+# pinned (ruff, node, npm, actions by SHA), so this is too. Bump deliberately.
+CFN_LINT_VERSION := 1.51.0
+#
+# E3043 (parent's Parameters vs the nested stack's) cannot work in CI: TemplateURL
+# points at .aws-sam/packaged.yaml, a BUILD artifact absent from a fresh checkout,
+# so cfn-lint logs "Template file not found" and skips the check. In a *built*
+# local tree it does run, and then reports false positives against a stale
+# packaged.yaml. So it is noise in both environments — off, with the parent/nested
+# parameter wiring asserted directly by
+# scripts/tests/test_nested_stack_parameters.py instead.
+CFN_LINT_IGNORE := E3043
+
+cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings advisory)
+	@echo "Validating CloudFormation templates with cfn-lint..."
+	@command -v cfn-lint >/dev/null 2>&1 || { \
+		echo -e "$(RED)ERROR: cfn-lint not installed. Run 'make setup' or$(NC)"; \
+		echo -e "$(RED)       pip install cfn-lint==$(CFN_LINT_VERSION)$(NC)"; \
+		exit 1; \
+	}
+	@HAVE=$$(cfn-lint --version 2>/dev/null | awk '{print $$NF}'); \
+	if [ "$$HAVE" != "$(CFN_LINT_VERSION)" ]; then \
+		echo -e "$(YELLOW)NOTE: cfn-lint $$HAVE installed, gate is pinned to $(CFN_LINT_VERSION).$(NC)"; \
+		echo -e "$(YELLOW)      A newer release may report findings CI does not, or miss ones it does.$(NC)"; \
+	fi
+	@# cfn-lint's DECODER logs one ERROR per nested TemplateURL it cannot read.
+	@# Those point at .aws-sam/packaged.yaml, a build artifact absent from any clean
+	@# checkout, so CI emitted 15 red ERROR lines every run for an expected,
+	@# already-handled condition (E3043 is off; the wiring is asserted by
+	@# scripts/tests/test_nested_stack_parameters.py). Only that exact message is
+	@# filtered, and the count is reported, so a genuine decode failure for a real
+	@# template still surfaces.
+	@#
+	@# Templates are discovered by CONTENT, not by filename. A hardcoded glob list
+	@# is how check-arn-partitions came to miss nested/, samples/ and notebooks/;
+	@# anything declaring AWSTemplateFormatVersion is a CloudFormation template and
+	@# gets linted, so a new one cannot be added without being covered.
+	@TEMPLATES=$$(find . \
+			\( -name node_modules -o -name .aws-sam -o -name .venv -o -name .git \
+			   -o -name build -o -name dist -o -name __pycache__ \) -prune -o \
+			\( -name '*.yaml' -o -name '*.yml' \) -print 2>/dev/null \
+		| xargs grep -l "^AWSTemplateFormatVersion" 2>/dev/null | sort); \
+	if [ -z "$$TEMPLATES" ]; then \
+		echo -e "$(RED)ERROR: no CloudFormation templates discovered — check the find filters.$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$$TEMPLATES" | sed 's|^\./||;s|^|  |'; \
+	OUT=$$(mktemp); \
+	echo "$$TEMPLATES" | xargs cfn-lint \
+		--ignore-checks $(CFN_LINT_IGNORE) \
+		--non-zero-exit-code error >"$$OUT" 2>&1; \
+	STATUS=$$?; \
+	NOISE="cfnlint\.decode\.decode - ERROR - Template file not found:.*\.aws-sam/packaged\.ya\?ml"; \
+	MISSING=$$(grep -c "$$NOISE" "$$OUT" || true); \
+	grep -v "$$NOISE" "$$OUT" || true; \
+	rm -f "$$OUT"; \
+	if [ "$$MISSING" -gt 0 ]; then \
+		echo "  ($$MISSING nested TemplateURL(s) unbuilt — expected on a clean checkout)"; \
+	fi; \
+	if [ $$STATUS -ne 0 ]; then \
+		echo -e "$(RED)❌ cfn-lint found template ERRORS (warnings alone do not fail this gate)$(NC)"; \
+		exit 1; \
+	fi; \
+	echo -e "$(GREEN)✅ cfn-lint: no template errors$(NC)"
 
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright

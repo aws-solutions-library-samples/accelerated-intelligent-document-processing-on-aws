@@ -94,7 +94,7 @@ the expensive AWS deploy runs only when it's worth it:
 
 | Stage | Jobs | AWS? | Cost |
 |-------|------|------|------|
-| **fast_checks** | `code_checks` (lint, typecheck, static RBAC scan, all unit suites, UI vitest), `srt_security_review` (SRT security scan) **and** `dep_audit` (SCA vs OSV) — run in **parallel** | No | ~minutes |
+| **fast_checks** | `code_checks` (lint, typecheck, buildspec + CloudFormation template validation, static RBAC scan, service-role permission check, first-party dependency-confusion check, all unit suites, UI vitest), `srt_security_review` (SRT security scan) **and** `dep_audit` (SCA vs OSV) — run in **parallel** | No | ~minutes |
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (Steps 1–13) on the **primary shared stack only**. The deployment-variant probes no longer run here by default — see the ⚠️ note under "deployment-variant probe framework" (run them manually with `make stacktest-*`, or set `IDP_RUN_PROBES=true`). | Yes (deploys) | ~1 hour |
 
