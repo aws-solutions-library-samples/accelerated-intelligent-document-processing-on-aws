@@ -135,28 +135,111 @@ def test_a_larger_class_schema_shrinks_the_shard_budget():
 
 
 def test_the_forced_tool_schema_counts_on_the_simple_path():
+    """The sanitized toolSpec actually sent, not a prose proxy."""
+    import json
+
+    from idp_common.extraction.forced_tool import build_extraction_tool_config
+
     schema = _schema(30, 20)
     plain, forced = _service(schema), _service(schema, forced=True)
     _init_context(plain, schema)
     _init_context(forced, schema)
     extra = forced._prompt_overhead_tokens() - plain._prompt_overhead_tokens()
-    assert extra == estimate_tokens(plain._attribute_descriptions)
+    assert extra == estimate_tokens(json.dumps(build_extraction_tool_config(schema)[0]))
 
 
 def test_the_agentic_restatement_is_the_knob_that_pays_for_itself():
     """#710's restate_schema_in_system_prompt knob: turning it off now really
-    frees shard budget (one schema copy), which is the mechanism #710 assumed and
-    the code did not implement."""
+    frees shard budget — exactly one copy of the REAL tool schema (the transport
+    model's model_json_schema(), ~1.9x the prose on real classes), which is the
+    mechanism #710 assumed and the code did not implement."""
+    import json
+
     schema = _schema(30, 20)
-    on, off = (
-        _service(schema, mode="advanced", restate=True),
-        _service(schema, mode="advanced", restate=False),
-    )
+    on = _service(schema, mode="advanced", restate=True)
+    off = _service(schema, mode="advanced", restate=False)
     _init_context(on, schema)
     _init_context(off, schema)
+    tool_schema = json.dumps(
+        on._transport_model(schema, "Statement").model_json_schema(), indent=2
+    )
     saved = on._prompt_overhead_tokens() - off._prompt_overhead_tokens()
-    assert saved == estimate_tokens(on._attribute_descriptions)
+    assert saved == estimate_tokens(tool_schema)
     assert off._shard_token_budget() == on._shard_token_budget() + saved
+
+
+def test_the_estimate_is_memoized_per_section_and_reset_with_the_context():
+    schema = _schema(10, 10)
+    svc = _service(schema)
+    _init_context(svc, schema)
+    first = svc._prompt_overhead_tokens()
+    svc._attribute_descriptions = "changed"  # would change a fresh estimate
+    assert svc._prompt_overhead_tokens() == first  # memoized
+    svc._reset_context()
+    assert svc._prompt_overhead_tokens() == 0  # nothing to measure again
+
+
+def test_few_shot_text_is_sized_without_fetching_example_images(monkeypatch):
+    """The estimate must never cost an S3 round trip: only attributesPrompt is
+    read; the image loader is not touched."""
+    from idp_common.utils import few_shot_example_builder as fs
+
+    def _boom(*_a, **_k):
+        raise AssertionError("few-shot image loader must not be called by the estimate")
+
+    monkeypatch.setattr(fs, "_get_image_files_from_path", _boom)
+    schema = _schema(5, 5)
+    schema["x-aws-idp-examples"] = [
+        {
+            "name": "ex1",
+            "attributesPrompt": "example text " * 400,
+            "imagePath": "s3://nowhere/ex1.png",
+        }
+    ]
+    plain = _service(_schema(5, 5))
+    _init_context(plain, _schema(5, 5))
+    with_examples = _service(schema)
+    _init_context(with_examples, schema)
+    assert "{FEW_SHOT_EXAMPLES}" in with_examples.config.extraction.task_prompt
+    assert (
+        with_examples._prompt_overhead_tokens()
+        > plain._prompt_overhead_tokens() + 1_000
+    )
+
+
+def test_shipped_lending_payslip_magnitudes_stay_in_range():
+    """Pins the real numbers the docs quote: on the default model the text-only
+    budget is 18,400 and the lending Payslip's Advanced overhead lands the budget
+    in the 10k–14k band the CHANGELOG describes."""
+    import os
+
+    import yaml
+
+    from idp_common.config.merge_utils import merge_config_with_defaults
+
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 5))
+    with open(
+        os.path.join(repo, "config_library/unified/lending-package-sample/config.yaml")
+    ) as fh:
+        preset = yaml.safe_load(fh)
+    preset["extraction"] = {
+        **preset.get("extraction", {}),
+        "mode": "advanced",
+        "model": MODEL,
+    }
+    cfg = merge_config_with_defaults(preset, validate=False)
+    svc = ExtractionService(region="us-west-2", config=cfg)
+    payslip = next(
+        c
+        for c in cfg["classes"]
+        if (c.get("$id") or c.get("x-aws-idp-document-type")) == "Payslip"
+    )
+    _init_context(svc, payslip)
+    base = compute_sizing_plan(model_id=MODEL).shard_token_budget
+    assert base == 18_400
+    overhead = svc._prompt_overhead_tokens()
+    assert 4_000 <= overhead <= 9_000, overhead
+    assert 9_000 <= svc._shard_token_budget() <= 14_500
 
 
 def test_a_class_prompt_override_is_what_gets_measured():

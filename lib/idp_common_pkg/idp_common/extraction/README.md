@@ -1130,14 +1130,20 @@ token saving that loses list rows is a loss.
   class schema rendered in, few-shot text, the forced toolSpec, and on the Advanced
   path the agent system prompt, the tool schema and this restatement — from the
   shard budget (`ExtractionService._prompt_overhead_tokens`, chars/4 like the page
-  text), so `context_buffer` is a safety margin *on top of* what the prompt really
-  costs. Turning the restatement off therefore frees one schema copy's worth of
+  text), so `context_buffer` is a safety margin *on top of* the prompt text and
+  schema copies. The other agent tool specs (~3k tokens) and the table-guidance
+  instruction are not counted and stay inside the buffer, so the estimate runs low. Turning the restatement off therefore frees one schema copy's worth of
   shard budget, which is the mechanism this knob was always assumed to have; before
   #775 the overhead was subtracted nowhere and came off a blanket reserve that was
-  already unused, so no shard count could move. Whether that headroom changes a
-  given document's shard count still depends on it sitting near a boundary, and
-  `max_pages_per_shard` (default 5) closes shards on page count regardless. The
-  processing report shows `prompt_overhead_tokens` beside the shard budget.
+  already unused, so no shard count could move. Magnitudes on the shipped default
+  model (Sonnet 5, 200K in / 128K out): the text-only budget is **18,400 tokens**
+  (140,000 usable minus an 89,600 output reserve and a 32,000 image reserve), and
+  the shipped presets' Advanced-mode overhead is roughly 4k–8k, so budgets land
+  near 10k–14k. Processed pages measure ~650–1,060 OCR tokens, so a five-page
+  shard is 3k–5k tokens and `max_pages_per_shard` (default 5) still closes shards
+  on page count by a wide margin; only unusually dense pages (>2k tokens each)
+  would now split a page-bound shard. The processing report shows
+  `prompt_overhead_tokens` beside the shard budget.
 
 A fourth copy is stored in agent state for the reminder tool, but it is only
 transmitted if that tool is invoked, so it is not a per-request cost.

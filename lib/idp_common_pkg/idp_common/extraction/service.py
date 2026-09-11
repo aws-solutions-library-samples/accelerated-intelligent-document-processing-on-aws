@@ -264,6 +264,9 @@ class ExtractionService:
         self._integrated_downgrade_checked = False
         # Memoized model-aware SizingPlan for the current section (item 2).
         self._sizing_plan: Any = None
+        # Memoized per-section prompt-overhead estimate (#775); None = not yet
+        # measured (the prompt context did not exist when last asked).
+        self._prompt_overhead_cache: int | None = None
         # The Document for the current section, stashed by _prepare_section_context
         # so per-shard grounding can load each shard's OCR pageData without
         # threading `document` through _invoke_extraction_model. Reset per section.
@@ -724,10 +727,12 @@ class ExtractionService:
         passed as overrides so they still win. Logged once per section.
         """
         cached = getattr(self, "_sizing_plan", None)
+        if cached is not None and cached.prompt_overhead_tokens:
+            return cached
         overhead = self._prompt_overhead_tokens()
-        # Recompute a plan memoized before the prompt context existed (overhead
-        # unknown then, measurable now); otherwise serve the cached plan.
-        if cached is not None and (cached.prompt_overhead_tokens or not overhead):
+        # A plan memoized before the prompt context existed carries no overhead;
+        # recompute it once the overhead is measurable, otherwise serve it.
+        if cached is not None and not overhead:
             return cached
         from idp_common.bedrock.sizing import compute_sizing_plan
 
@@ -771,36 +776,60 @@ class ExtractionService:
         page text, so the shard budget can subtract it (#775).
 
         Counted (chars/4, the same estimator ``plan_shards`` uses for page text):
-        the system prompt; the task prompt the service would send (per-class
-        override, else the mode-selected template) with the class schema prose,
-        class label and few-shot text rendered in and the document placeholders
-        emptied; the forced toolSpec when enabled (Simple); on the Advanced path
-        the agent's system prompt plus the tool schema, and the restated schema
-        again when ``restate_schema_in_system_prompt`` is on. Images are the
-        sizing plan's own image reserve and are not counted here.
 
-        Returns 0 until ``_initialize_extraction_context`` has run for the
-        section (nothing to measure yet); ``_get_sizing_plan`` recomputes once
-        it has. Best-effort: any failure returns 0 and the blanket
-        ``context_buffer`` absorbs the overhead as it did before.
+        - the task prompt the service would send — the per-class override, else
+          the mode-selected template — with the class schema prose, class label
+          and the few-shot ``attributesPrompt`` texts rendered in and the document
+          placeholders emptied;
+        - Simple: the (per-class or global) system prompt, plus the sanitized
+          forced ``toolSpec`` when forcing is enabled;
+        - Advanced: the agent's own system prompt (the task prompt travels as its
+          custom instruction), the real ``model_json_schema()`` of the transport
+          model that becomes the extraction tool's input schema, and that schema
+          again when ``restate_schema_in_system_prompt`` is on.
+
+        Not counted, so the estimate runs LOW and ``context_buffer`` still covers
+        it: the other agent tool specs (~3k tokens), the table-guidance custom
+        instruction, and page images (the plan's own image reserve). Few-shot
+        images are never fetched here — only their text is sized. Returns 0 until
+        ``_initialize_extraction_context`` has run; memoized per section
+        (``_reset_context`` clears it) so the estimate is computed once and
+        identically in every Lambda that plans, runs or merges this section's
+        shards.
         """
+        if self._prompt_overhead_cache is not None:
+            return self._prompt_overhead_cache
         if not self._class_schema or not self._attribute_descriptions:
             return 0
         try:
+            import json as _json
+
+            from idp_common.config.schema_constants import X_AWS_IDP_EXAMPLES
             from idp_common.extraction.prompt_assembly import (
                 select_extraction_task_prompt,
             )
+            from idp_common.utils.few_shot_example_builder import (
+                LEGACY_ATTRIBUTES_PROMPT,
+                X_AWS_IDP_ATTRIBUTES_PROMPT,
+                _example_field,
+            )
 
             ex = self.config.extraction
-            template = self._class_schema.get(
+            schema = self._class_schema
+            template = schema.get(
                 X_AWS_IDP_EXTRACTION_TASK_PROMPT
             ) or select_extraction_task_prompt(ex)
             few_shot_text = ""
             if "{FEW_SHOT_EXAMPLES}" in (template or ""):
                 few_shot_text = " ".join(
-                    str(block.get("text") or "")
-                    for block in self._build_few_shot_examples_content()
-                    if isinstance(block, dict)
+                    str(
+                        _example_field(
+                            e, X_AWS_IDP_ATTRIBUTES_PROMPT, LEGACY_ATTRIBUTES_PROMPT
+                        )
+                        or ""
+                    )
+                    for e in (schema.get(X_AWS_IDP_EXAMPLES) or [])
+                    if isinstance(e, dict)
                 )
             rendered = (
                 (template or "")
@@ -813,22 +842,44 @@ class ExtractionService:
                 .replace("{DOCUMENT_IMAGE}", "")
                 .replace("<<CACHEPOINT>>", "")
             )
-            total = estimate_tokens(ex.system_prompt or "") + estimate_tokens(rendered)
-            # The class schema goes on the wire a second time as a tool schema:
-            # the forced toolSpec (Simple) or the agent's extraction tool
-            # (Advanced), each about the size of the prose rendering.
-            schema_tokens = estimate_tokens(self._attribute_descriptions)
+            total = estimate_tokens(rendered)
+            wire_schema = self._wire_class_schema or schema
             if ex.agentic.enabled:
                 from idp_common.extraction.agentic_idp import SYSTEM_PROMPT
 
+                tool_schema = _json.dumps(
+                    self._transport_model(
+                        wire_schema, self._class_label or "class"
+                    ).model_json_schema(),
+                    indent=2,
+                )
+                schema_tokens = estimate_tokens(tool_schema)
                 total += estimate_tokens(SYSTEM_PROMPT) + schema_tokens
                 if getattr(ex.agentic, "restate_schema_in_system_prompt", True):
                     total += schema_tokens
-            elif getattr(getattr(ex, "forced_tool", None), "enabled", False):
-                total += schema_tokens
-            return int(total)
+            else:
+                system_prompt = (
+                    schema.get(X_AWS_IDP_EXTRACTION_SYSTEM_PROMPT)
+                    or ex.system_prompt
+                    or ""
+                )
+                total += estimate_tokens(system_prompt)
+                if getattr(getattr(ex, "forced_tool", None), "enabled", False):
+                    from idp_common.extraction.forced_tool import (
+                        build_extraction_tool_config,
+                    )
+
+                    total += estimate_tokens(
+                        _json.dumps(build_extraction_tool_config(wire_schema)[0])
+                    )
+            self._prompt_overhead_cache = int(total)
+            return self._prompt_overhead_cache
         except Exception as e:  # noqa: BLE001 - never break sizing on an estimate
-            logger.debug("Prompt overhead estimate unavailable: %s", e)
+            logger.warning(
+                "Prompt overhead estimate unavailable (%s); the shard budget falls "
+                "back to the blanket context_buffer for this section",
+                e,
+            )
             return 0
 
     def _shard_token_budget(self) -> int:
@@ -1036,6 +1087,7 @@ class ExtractionService:
         self._assessment_deadline_epoch = None
         # Memoized model-aware SizingPlan for the current section (item 2).
         self._sizing_plan = None
+        self._prompt_overhead_cache = None
         self._document = None
         self._agent_table_tool_note = None
         # Reason a Simple + integrated section was downgraded to a separate
