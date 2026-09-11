@@ -17,6 +17,14 @@ what was actually exercised against live AWS infrastructure, and what was found.
 
 <!-- APPEND NEW ROWS ABOVE THIS LINE (newest first). -->
 
+## Producing a record
+
+The whole battery is driven by one request to the assistant — e.g. *"validate the 0.6.8
+release"* — via the
+[`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md)
+skill, which fixes the tier list below, the order, the stacks, the redaction rules, and the
+two PRs that carry the results. The per-tier make targets remain runnable on their own.
+
 ## What is covered
 
 | Tier | What only a live stack can prove | Make target |

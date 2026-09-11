@@ -178,7 +178,8 @@ Filename map (`.cline` → `.claude`): `backend.md`→`backend-lambda.md`,
 `review.md`→`code-review.md`, `testing.md`→`testing-qa.md`,
 `pr-review.md`→`pr-review.md`, `changelog.md`→`prepare-changelog.md`,
 `release.md`→`cut-release-changelog.md`, `srt.md`→`srt-security-scan.md`,
-`dependabot.md`→`dependabot-prs.md`.
+`dependabot.md`→`dependabot-prs.md`. Newer skills keep the same name on both
+sides (e.g. `release-validation.md`, `curate-security-results.md`, `ux-test.md`).
 
 When **adding** a new skill: create it in `.claude/skills/`, then add a symlink
 from the desired `.cline/skills/` name to it
