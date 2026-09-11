@@ -735,6 +735,66 @@ Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across
 - **Performance**: Reduced processing time for cached content
 - **Token Efficiency**: Particularly beneficial for long system prompts or few-shot examples
 
+#### Minimum cacheable prefix — per model, and not monotonic
+
+A `<<CACHEPOINT>>` only creates a cache entry if the prefix before it clears the
+model's **minimum cacheable prefix**. Below it Bedrock reports `cacheWrite = 0` and
+`cacheRead = 0`, raises nothing, and bills the prefix at full input price on every
+request. The minimum is model-dependent and **newer is not safer**:
+
+| Model | Minimum cacheable prefix |
+|---|---:|
+| Claude Opus 5, Fable 5 | 512 tokens |
+| Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
+| Claude Opus 4.7 | 2,048 tokens |
+| Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
+| Amazon Nova | ≤ 355 tokens (below any shipped class) |
+
+Measured across the shipped presets, 25% of classes never cache on the 1,024-token
+tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on extraction
+gets no caching at all and, until now, no indication of it.
+
+`idp-cli config validate` (and the SDK validate operation) now **warns per class**
+when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up
+to the marker, with the class schema substituted — is under the configured extraction
+model's minimum, naming both numbers. The estimate is chars/4, accurate to about
+±10% against Bedrock's own count on the surveyed classes, so a class whose estimate
+lands within 10% of the minimum is reported as "may not cache" rather than declared
+safe. Remedies: add real field descriptions to the class (which also helps
+extraction), pick a model with a lower minimum, or turn caching off (below).
+
+What the warning does **not** cover, deliberately: the classification, assessment
+(confidence) and rule-validation prompts, which also carry `<<CACHEPOINT>>` markers
+and keep them regardless of the setting below; the Advanced (agentic) extraction
+path, whose prefix is the agent's own system prompt; the forced-tool `toolSpec` and
+the multi-instance detection probe (both off by default, both make the real prefix
+*longer*, so the estimate errs toward warning); application inference-profile ARNs
+(not resolved to a base model, so no warning); and the newer tokenizer introduced
+with Claude Opus 4.7 and shared by Opus 4.8, Opus 5 and Fable 5, which produces up to
+about 1.35× the tokens the estimate assumes — again in the direction of a spurious
+warning, never a missed one.
+
+#### Turning caching off (`extraction.prompt_cache: off`)
+
+A cache **write** is billed at 1.25× input price and only pays back when a second
+request with the same prefix arrives inside the 5-minute TTL — break-even is exactly
+the second request. A deployment that processes one document of a class per TTL
+pays about **+25% on the prefix for nothing**. Decline it with:
+
+```yaml
+extraction:
+  prompt_cache: off     # auto (default) | off
+```
+
+`off` sends no cache points on either extraction path (Simple and Advanced) and
+suppresses the validation warning above. The setting is also in the Web UI under
+**Configuration → Extraction → Prompt caching**. A bare `off` in YAML parses as the
+boolean `false`; both spellings (and `"off"` quoted) are accepted. It applies to
+**extraction only**: classification, assessment and rule-validation prompts keep
+their cache points. Per-class cache read/write token counts
+are already in the metering data and priced; a per-class cache-efficiency view in the
+Processing Report remains open in [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780).
+
 For pricing details on cached tokens, see [cost-calculator.md](cost-calculator.md).
 
 ## Regex-Based Classification (Pattern-2)

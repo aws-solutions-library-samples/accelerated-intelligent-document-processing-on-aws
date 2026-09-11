@@ -459,6 +459,12 @@ class ExtractionService:
         """
         content: list[dict[str, Any]] = []
 
+        # extraction.prompt_cache: off — send no cache points. The marker is
+        # removed here, before any content is built, so every Simple-mode path
+        # (default prompt, per-class override, shards) honours it (#780).
+        if self.config.extraction.prompt_cache == "off":
+            prompt_template = prompt_template.replace("<<CACHEPOINT>>", "")
+
         # Handle FEW_SHOT_EXAMPLES placeholder first
         if "{FEW_SHOT_EXAMPLES}" in prompt_template:
             parts = prompt_template.split("{FEW_SHOT_EXAMPLES}")
