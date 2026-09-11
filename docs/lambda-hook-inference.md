@@ -155,7 +155,9 @@ Your Lambda function must return a **Converse API-compatible** response:
 | `usage.outputTokens` | No | Output token count (for cost tracking) |
 | `usage.totalTokens` | No | Total token count |
 
-If `usage` is not provided, zeros will be recorded for metering.
+If `usage` is not provided, zeros will be recorded for metering. `usage` values must be
+JSON numbers: metering sums and prices them, so non-numeric members (strings, booleans,
+lists, objects) are ignored rather than recorded.
 
 ### Optional: structured OCR output (confidence + geometry)
 
