@@ -586,6 +586,7 @@ def compute_token_aware_batch_size(
         confidence_per_row_tokens,
         confidence_rows_for_per_row_tokens,
         confidence_rows_per_call,
+        model_list_batch_ceiling,
     )
 
     ceiling = configured_batch_size if configured_batch_size > 0 else None
@@ -618,7 +619,7 @@ def compute_token_aware_batch_size(
     num_columns = count_row_columns(sample_row)
     if num_columns is not None:
         result = confidence_rows_per_call(
-            output_cap, num_columns, geometry_mode, ceiling
+            output_cap, num_columns, geometry_mode, ceiling, model_id=model_id
         )
         per_row_tokens = confidence_per_row_tokens(num_columns, geometry_mode)
     else:
@@ -657,6 +658,9 @@ def compute_token_aware_batch_size(
                 per_row_tokens, confidence_per_row_tokens(1, geometry_mode)
             )
         result = confidence_rows_for_per_row_tokens(output_cap, per_row_tokens, ceiling)
+        family = model_list_batch_ceiling(model_id)
+        if family is not None:
+            result = max(1, min(result, family))
 
     # Logged unconditionally. Previously suppressed when the result equalled the
     # configured value, which hid the sizing decision from exactly the operator most

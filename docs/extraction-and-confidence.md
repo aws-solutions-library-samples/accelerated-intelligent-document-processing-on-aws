@@ -94,13 +94,17 @@ extraction:
   reasoning_effort: low       # reasoning-capable models only (see note below)
 ```
 
-> **Output tokens:** extraction and the confidence pass always request the
+> **Output tokens:** extraction and the confidence pass by default request the
 > selected model's **maximum** output — there is no `max_tokens` config knob for
 > them. Bedrock's default-when-omitted truncates, so the client sets it
 > explicitly from the per-model limits (seeded from
 > `config_library/model_config_limits.yaml` and editable in the web UI under
 > **View / Edit Model Limits**); completeness matters more than an output cap
-> here. (`classification` / `summarization` keep their `max_tokens` knob.)
+> here. The one exception is a confidence call on Amazon Nova Lite/Micro, which
+> requests an *output budget* sized to its rows (see the self-healing note under
+> [Large-list batching](#large-list-batching-list_batch_size)) because that model
+> was measured looping to its cap. (`classification` / `summarization` keep their
+> `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
 > 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
@@ -1230,11 +1234,22 @@ extraction:
 >
 > 1. **Token-aware first-pass sizing.** The first batch is sized from three inputs:
 >    the confidence model's output cap, the **column count** of the list's widest
->    row, and whether the geometry mode adds a bounding box per cell. On Nova Lite
->    (10,000-token cap) with `llm_grounded` that is 13 rows for a 3-column list and
->    5 for 8 columns; without bounding boxes three times as many fit. This only ever
+>    row, and whether the geometry mode adds a bounding box per cell. On a
+>    10,000-token-cap model (Nova Pro) with `llm_grounded` that is 13 rows for a
+>    3-column list and 5 for 8 columns; without bounding boxes three times as many
+>    fit. This only ever
 >    *shrinks* `list_batch_size` — it never grows past your configured ceiling, so
->    raising the ceiling above the derived size has no effect.
+>    raising the ceiling above the derived size has no effect. Where a model family
+>    has a **measured loop ceiling** it applies too: Amazon Nova Lite/Micro score at
+>    most **12 rows per call**, because at temperature 0 a 25-row batch made Nova Lite
+>    repeat the same row object until it hit its 10,000-token cap on every run (~60 s
+>    and 10,000 output tokens per document), while 13 rows looped occasionally and 8
+>    never. On those two models each call also requests only the **output budget**
+>    a correct answer needs (about 40 tokens per scalar or list cell, three times
+>    that with LLM bounding boxes, plus overhead; floor 2,000, cap the model's
+>    maximum) rather than the model's full cap, so a degenerate response is cut off
+>    early and recovered by the steps below instead of running to the cap. Every
+>    other confidence model keeps requesting its maximum output.
 > 2. **Recursive splitting.** Any batch that still truncates is halved and
 >    re-assessed until it fits.
 > 3. **Model escalation.** If rows are *still* unscored after shrinking + retries,
