@@ -59,6 +59,21 @@ Parameters:
     Type: Number
     Default: 30000
 
+  WorkflowExecutionTimeoutSeconds:
+    Type: Number
+    Default: 21600
+    MinValue: 300
+    MaxValue: 31536000
+    Description: >-
+      Execution-level timeout of the document processing state machine, in
+      seconds (default 21600 = 6 hours). Bounds an execution that stops making
+      progress for a reason the per-state guards do not cover; without it the
+      ceiling is the Standard-workflow maximum of one year, during which the
+      execution emits no ExecutionsFailed and no ExecutionTime and holds a
+      workflow-concurrency slot. Tripping it ends the execution TIMED_OUT, which
+      releases the slot, marks the document FAILED with WorkflowStatus TIMED_OUT,
+      and raises WorkflowTimeoutsAlarm.
+
   BDACallbackTimeoutSeconds:
     Type: Number
     Default: 7200
@@ -6434,6 +6449,9 @@ Resources:
         # integer, which is why that file is not parseable as JSON without
         # resolving substitutions first.
         BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
+        # Execution-level bound (top-level TimeoutSeconds in the ASL; also an
+        # UNQUOTED placeholder, see above).
+        WorkflowExecutionTimeoutSeconds: !Ref WorkflowExecutionTimeoutSeconds
         # Pipeline branch functions
         OCRFunctionArn: !GetAtt OCRFunction.Arn
         ClassificationFunctionArn: !GetAtt ClassificationFunction.Arn

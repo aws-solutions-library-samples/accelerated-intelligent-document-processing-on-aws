@@ -91,6 +91,36 @@ def _delete_superseded_original(object_key: str) -> None:
         logger.error("Failed to delete superseded original %s: %s", object_key, e)
 
 
+def _record_workflow_timeout(object_key: str) -> None:
+    """Make an execution-level timeout (#757) recognisable on the tracking item.
+
+    The document service derives ``WorkflowStatus`` from the document status, so a
+    TIMED_OUT execution would otherwise be indistinguishable from any other FAILED
+    one. Overwrite it with the real terminal status; the cause is always the same
+    (the execution exceeded ``WorkflowExecutionTimeoutSeconds``), so the status is
+    the reason. Best effort: a failure here must not fail the tracker, which still
+    has to release the concurrency slot.
+    """
+    logger.warning(
+        "Execution for %s ended TIMED_OUT: it exceeded the execution-level bound "
+        "WorkflowExecutionTimeoutSeconds. Its completed work is discarded; raise "
+        "the bound if legitimate runs of this size approach it.",
+        object_key,
+    )
+    if not TRACKING_TABLE:
+        return
+    try:
+        dynamodb.Table(TRACKING_TABLE).update_item(
+            Key={"PK": f"doc#{object_key}", "SK": "none"},
+            UpdateExpression="SET WorkflowStatus = :s",
+            ExpressionAttributeValues={":s": "TIMED_OUT"},
+        )
+    except ClientError as e:
+        logger.error(
+            "Could not record WorkflowStatus TIMED_OUT for %s: %s", object_key, e
+        )
+
+
 def update_document_completion(
     object_key: str, workflow_status: str, output_data: Dict[str, Any]
 ) -> Document:
@@ -213,6 +243,8 @@ def update_document_completion(
         f"and {len(document.sections)} sections"
     )
     updated_doc = document_service.update_document(document)
+    if workflow_status == "TIMED_OUT":
+        _record_workflow_timeout(object_key)
 
     # Save reporting data to reporting bucket if available
     if REPORTING_BUCKET and SAVE_REPORTING_FUNCTION_NAME:

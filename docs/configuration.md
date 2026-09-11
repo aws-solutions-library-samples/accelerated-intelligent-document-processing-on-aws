@@ -388,6 +388,8 @@ Key parameters that can be configured during CloudFormation deployment:
 - `DataRetentionInDays`: Set retention period for documents and tracking records (default: 365 days)
 - `ErrorThreshold`: Number of workflow errors that trigger alerts (default: 1)
 - `ExecutionTimeThresholdMs`: Maximum acceptable execution time before alerting (default: 300000 ms)
+- `WorkflowExecutionTimeoutSeconds`: Execution-level bound on one document's workflow; an execution still running after it ends `TIMED_OUT`, releases its concurrency slot, and fires `WorkflowTimeoutsAlarm` (default: 21600 s, i.e. 6 hours). See [Monitoring](./monitoring.md#workflowexecutiontimeoutseconds--the-execution-level-bound)
+- `BDACallbackTimeoutSeconds`: How long the BDA step waits for its asynchronous completion callback before failing (default: 7200 s); keep it below `WorkflowExecutionTimeoutSeconds`
 - `QueueStalledAgeThresholdSeconds`: How long the oldest queued document may wait *with no queue progress at all* before `DocumentQueueStalledAlarm` fires (default: 1800 s). Not a backlog limit — see [Monitoring](./monitoring.md#documentqueuestalledalarm--why-it-is-not-a-queue-depth-alarm)
 - `LogLevel`: Set logging level (DEBUG, INFO, WARN, ERROR). At `INFO` or `DEBUG`, access logging is also enabled on the web UI's REST API stage (request metadata only — no request/response bodies), capturing requests that fail before reaching a Lambda (e.g. authorizer 401/403s, WAF blocks)
 - `WAFAllowedIPv4Ranges`: IP restrictions for web UI access (default: allow all)

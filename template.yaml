@@ -476,6 +476,25 @@ Parameters:
       produce alarms you consider normal.
     MinValue: 60
 
+  WorkflowExecutionTimeoutSeconds:
+    Type: Number
+    Default: 21600
+    Description: >-
+      Execution-level timeout of the document processing workflow, in seconds
+      (default 21600 = 6 hours). Any execution still running after this is ended
+      TIMED_OUT: its concurrency slot is released, the document is marked FAILED
+      with WorkflowStatus TIMED_OUT, and WorkflowTimeoutsAlarm fires. Without it
+      a stalled execution runs for up to one year while holding a slot. Measured
+      on a production stack over 30 days, the longest successful execution took
+      37 minutes (median under one minute), so 6 hours is roughly ten times
+      that. It does not shorten a single state's roughly five-hour Lambda retry
+      storm, which the per-state Retry policies end on their own; it does bound
+      a hang, a lost callback, or a storm that compounds across states. Raise it
+      if legitimate large-packet runs approach it: tripping it discards the
+      execution's completed work.
+    MinValue: 300
+    MaxValue: 31536000
+
   BDACallbackTimeoutSeconds:
     Type: Number
     Default: 7200
@@ -1504,6 +1523,7 @@ Metadata:
           - ErrorThreshold
           - ExecutionTimeThresholdMs
           - QueueStalledAgeThresholdSeconds
+          - WorkflowExecutionTimeoutSeconds
           - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
@@ -1556,6 +1576,8 @@ Metadata:
         default: "Bedrock Hub-Account Role Session Name"
       PermissionsBoundaryArn:
         default: "Permissions Boundary ARN"
+      WorkflowExecutionTimeoutSeconds:
+        default: "Workflow Execution Timeout (seconds; default 6 hours)"
       BDACallbackTimeoutSeconds:
         default: "BDA Callback Timeout (seconds)"
       MaxConcurrentWorkflows:
@@ -2749,6 +2771,7 @@ Resources:
         LogLevel: !Ref LogLevel
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
         BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
+        WorkflowExecutionTimeoutSeconds: !Ref WorkflowExecutionTimeoutSeconds
         BedrockGuardrailId: !Ref BedrockGuardrailId
         BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
         BedrockHubRoleArn: !Ref BedrockHubRoleArn
@@ -7505,6 +7528,28 @@ Resources:
         - !Ref AlertsTopic
       TreatMissingData: notBreaching
 
+  # An execution that hits WorkflowExecutionTimeoutSeconds ends TIMED_OUT, which
+  # is a distinct metric from ExecutionsFailed, so WorkflowErrorsAlarm cannot see
+  # it. Any timed-out execution is worth a look: either work hung (the bound did
+  # its job) or a legitimately long packet needs a larger bound.
+  WorkflowTimeoutsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a workflow execution exceeds WorkflowExecutionTimeoutSeconds (${WorkflowExecutionTimeoutSeconds}s) and is ended TIMED_OUT"
+      MetricName: ExecutionsTimedOut
+      Namespace: AWS/States
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+      AlarmActions:
+        - !Ref AlertsTopic
+      TreatMissingData: notBreaching
+
   SlowExecutionsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -8180,6 +8225,13 @@ Resources:
                       }
                     ],
                     [
+                      {
+                        "expression": "m4/PERIOD(m4)*60",
+                        "label": "Timed out per Minute",
+                        "id": "e4"
+                      }
+                    ],
+                    [
                       "AWS/States",
                       "ExecutionsStarted",
                       "StateMachineArn",
@@ -8208,6 +8260,17 @@ Resources:
                       ".",
                       {
                         "id": "m3",
+                        "stat": "Sum",
+                        "visible": false
+                      }
+                    ],
+                    [
+                      ".",
+                      "ExecutionsTimedOut",
+                      ".",
+                      ".",
+                      {
+                        "id": "m4",
                         "stat": "Sum",
                         "visible": false
                       }
