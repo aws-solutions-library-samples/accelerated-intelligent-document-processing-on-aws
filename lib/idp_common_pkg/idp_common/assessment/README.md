@@ -289,9 +289,10 @@ mode complete correctly on the first try:
    (`confidence_rows_per_call`) so this module and `compute_sizing_plan` cannot
    drift apart. Recorded as `derived_batch_size`.
 
-   There is no correct fixed value. On Nova Lite (10,000-token cap) with bounding
-   boxes the batch that fits is 41 rows for a 1-column list, 13 for 3 columns and
-   5 for 8; on a 128K-output model the reliability cap of 50 bounds the derivation
+   There is no correct fixed value. On a 10,000-token-cap model without a loop
+   ceiling (Nova Pro) with bounding boxes the batch that fits is 41 rows for a
+   1-column list, 13 for 3 columns and 5 for 8 (Nova Lite: 12, 12 and 5, because
+   its measured loop ceiling binds first); on a 128K-output model the reliability cap of 50 bounds the derivation
    instead of the token math. `list_batch_size` is therefore a **ceiling** on the
    derived size (default 25), never a target — and an *explicit* ceiling is honoured
    in full, so a deliberate pin above 50 is not clamped.
@@ -1058,8 +1059,10 @@ def lambda_handler(event, context):
 
 ### Configuration
 - Set appropriate temperature (0 for deterministic assessment)
-- Output tokens are not configurable — the confidence pass always requests the
-  model maximum (so long list assessments aren't truncated)
+- Output tokens are not configurable — the confidence pass requests the model
+  maximum (so long list assessments aren't truncated), except on Nova Lite/Micro,
+  where each call requests a row-sized output budget (see *Truncation-aware
+  adaptive batch splitting*)
 - Use system prompts to establish assessment criteria
 
 ### Performance

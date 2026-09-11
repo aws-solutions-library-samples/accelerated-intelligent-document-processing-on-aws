@@ -909,7 +909,7 @@ class AssessmentService:
         try:
             cap = get_model_max_output_tokens(model_id)
         except Exception as e:  # noqa: BLE001 - unknown model: no budget, full cap
-            logger.info(
+            logger.debug(
                 "Confidence output budget: no output cap known for %s (%s); "
                 "requesting the model default",
                 model_id,

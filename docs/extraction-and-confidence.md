@@ -94,7 +94,7 @@ extraction:
   reasoning_effort: low       # reasoning-capable models only (see note below)
 ```
 
-> **Output tokens:** extraction and the confidence pass always request the
+> **Output tokens:** extraction and the confidence pass by default request the
 > selected model's **maximum** output — there is no `max_tokens` config knob for
 > them. Bedrock's default-when-omitted truncates, so the client sets it
 > explicitly from the per-model limits (seeded from
