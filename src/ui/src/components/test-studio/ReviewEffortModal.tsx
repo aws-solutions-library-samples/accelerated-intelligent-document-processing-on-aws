@@ -68,6 +68,8 @@ export interface ReviewEffortEstimate {
   testSetId: string;
   targetAccuracy: number;
   configVersion?: string | null;
+  configVersionSource?: string | null;
+  curveSource?: string | null;
   docsToReview: number;
   docsToReviewLow: number;
   docsToReviewHigh: number;
@@ -190,6 +192,26 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
 
   const banner = CONFIDENCE_COPY[estimate?.estimateConfidence ?? ''] ?? null;
 
+  // Which curve the numbers rest on. An "aggregate" curve served for a known
+  // configuration blends every configuration this set was ever scored or reviewed
+  // under, which estimateConfidence alone cannot reveal (it is genuinely measured).
+  const curveNote = (() => {
+    if (!estimate) return null;
+    if (estimate.curveSource === 'config' && estimate.configVersion) {
+      return `Curve measured for configuration "${estimate.configVersion}".`;
+    }
+    if (estimate.curveSource === 'aggregate' && estimate.configVersion) {
+      return `No curve measured yet for configuration "${estimate.configVersion}" — using this set's combined curve across every configuration it has been labeled or scored under.`;
+    }
+    if (estimate.curveSource === 'aggregate' && estimate.configVersionSource === 'mixed') {
+      return "This set's labels were drafted under several configurations, so no single configuration curve applies — using its combined curve.";
+    }
+    if (estimate.curveSource === 'aggregate') {
+      return "Using this set's combined curve; no configuration is associated with its labels.";
+    }
+    return null;
+  })();
+
   const chartData = (estimate?.burndown ?? []).map((p) => ({
     docs: p.docsReviewed,
     error: Number((p.residualErrorPct ?? 0).toFixed(2)),
@@ -249,6 +271,11 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
             <Alert type={banner.type} header={banner.header}>
               {banner.body}
             </Alert>
+          )}
+          {curveNote && (
+            <Box variant="small" color="text-body-secondary">
+              {curveNote}
+            </Box>
           )}
 
           {estimate?.calibration?.degenerate && (

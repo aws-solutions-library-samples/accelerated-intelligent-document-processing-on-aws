@@ -1862,6 +1862,8 @@ export type ReviewEffortEstimate = {
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
   configVersion?: Maybe<Scalars['String']['output']>;
+  configVersionSource?: Maybe<Scalars['String']['output']>;
+  curveSource?: Maybe<Scalars['String']['output']>;
   docsToReview: Scalars['Int']['output'];
   docsToReviewHigh: Scalars['Int']['output'];
   docsToReviewLow: Scalars['Int']['output'];
