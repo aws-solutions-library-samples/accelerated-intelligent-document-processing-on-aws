@@ -175,17 +175,23 @@ def model_supports_cache_point(model_id: Optional[str]) -> Optional[bool]:
 #     CACHEPOINT_SUPPORTED_MODELS.
 #   * ``openai.gpt-5.4`` / ``openai.gpt-5.5`` — bedrock-mantle Responses API,
 #     automatic: any prefix over ~1,024 tokens is reused with no request change.
-#   * ``openai.gpt-5.6`` (Sol/Terra/Luna) — bedrock-mantle, EXPLICIT breakpoints,
-#     but the client translates ``<<CACHEPOINT>>`` into the Responses API's
-#     ``prompt_cache_options`` / ``prompt_cache_breakpoint`` fields, so a cache
-#     point does reach the model — just not as a Converse block.
 #
-# xAI Grok is deliberately ABSENT: its model card advertises implicit caching, but
-# four back-to-back identical 20,033-token prompts all reported
-# cacheReadInputTokens=0, so no caching benefit is claimed for it.
+# Deliberately ABSENT:
+#   * ``openai.gpt-5.6`` (Sol/Terra/Luna) — bedrock-mantle with EXPLICIT
+#     breakpoints: ``openai_responses.py`` only sends ``prompt_cache_options`` /
+#     ``prompt_cache_breakpoint`` when a ``<<CACHEPOINT>>`` marker is present, so
+#     for these models "no marker" really does mean "no caching" and the remedy
+#     IS to add one. Listing them here would tell a user the opposite. (The
+#     ``no-cache-point`` state they land in even WITH a marker — because the
+#     marker is translated, not sent as a Converse block — is a separate,
+#     pre-existing reporting gap, not something this set should paper over.)
+#   * xAI Grok — its model card advertises implicit caching, but four
+#     back-to-back identical 20,033-token prompts all reported
+#     cacheReadInputTokens=0, so no caching benefit is claimed for it.
 _IMPLICIT_CACHE_BASE_NAMES = (
     "openai.gpt-6-astra",
-    "openai.gpt-5",
+    "openai.gpt-5.4",
+    "openai.gpt-5.5",
 )
 
 

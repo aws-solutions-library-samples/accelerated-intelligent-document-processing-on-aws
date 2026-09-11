@@ -250,6 +250,8 @@ default_cell:
   ocr_dpi: '300'                      # the shipped default since #740
   multi_instance: 'off'               # shipped default (opt-in per class)
   multi_instance_detection: 'on'      # shipped default since #753
+  shard_pages: default                # shipped 5-page agentic shard; astracap's
+                                      # `wide25` cells vary it (see the axis note)
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -693,6 +695,11 @@ suites:
   # `git checkout ec3eb05ae -- benchmarks/results/v0.6.5-advverify/` (and
   # `benchmarks/results/v0.6.6-advverify-post668/`).
   advverify: {cells: [core-tt-adv-int, core-tt-adv-sep], docs: [longdesc_100], repeats: 4}
+  # `all` includes the >11-page fixtures (scale_1200/1600/3200 and, since #850,
+  # dense_250 at 26 pages), which every SIMPLE-mode cell on a 200K-context model is
+  # EXPECTED to reject (ExtractionInputTooLarge) — page images cost ~12,000 tokens
+  # each (see doc_matrix.yaml above `dense_250`). Read those as the size ceiling,
+  # not as regressions.
   full:    {cells: "core_cells+sweeps", docs: "all", repeats: 1}
   scaling: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: "scaling_series", repeats: 1}
   # Simple-mode arm of `scaling` alone: re-measures the single-response completeness cliff

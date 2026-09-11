@@ -50,11 +50,11 @@ export function minCacheablePrefixTokens(modelId?: string | null): number | null
 // _IMPLICIT_CACHE_BASE_NAMES in idp_common/bedrock/prompt_cache.py:
 //   - openai.gpt-6-astra: Converse, implicit (an explicit cachePoint is rejected)
 //   - openai.gpt-5.4/5.5: bedrock-mantle, automatic over ~1,024 tokens
-//   - openai.gpt-5.6:     bedrock-mantle, explicit — but the client translates
-//                         <<CACHEPOINT>> into the Responses API's own fields
-// xAI Grok is deliberately absent: its advertised implicit caching was never
-// observed to engage.
-const IMPLICIT_CACHE_PATTERNS: RegExp[] = [/openai\.gpt-6-astra/, /openai\.gpt-5/];
+// Deliberately absent: openai.gpt-5.6 (Sol/Terra/Luna), whose caching is EXPLICIT —
+// the client only sends a breakpoint when a <<CACHEPOINT>> marker is present, so
+// for it "no marker" really is "no caching" and the remedy is to add one; and
+// xAI Grok, whose advertised implicit caching was never observed to engage.
+const IMPLICIT_CACHE_PATTERNS: RegExp[] = [/openai\.gpt-6-astra/, /openai\.gpt-5\.4/, /openai\.gpt-5\.5/];
 
 export function modelCachesImplicitly(modelId?: string | null): boolean {
   if (!modelId) return false;

@@ -121,8 +121,11 @@ describe('describePromptCache', () => {
     expect(modelCachesImplicitly(ASTRA)).toBe(true);
     expect(modelCachesImplicitly('global.openai.gpt-6-astra')).toBe(true);
     expect(modelCachesImplicitly('openai.gpt-5.4')).toBe(true);
-    expect(modelCachesImplicitly('openai.gpt-5.6-sol')).toBe(true);
+    expect(modelCachesImplicitly('openai.gpt-5.5')).toBe(true);
     expect(modelCachesImplicitly(SONNET)).toBe(false);
+    // GPT-5.6 caches only via an explicit breakpoint derived from a <<CACHEPOINT>>
+    // marker, so "no marker" is "no caching" — it must not be called implicit.
+    expect(modelCachesImplicitly('openai.gpt-5.6-sol')).toBe(false);
     // Grok advertises implicit caching but it was never observed to engage.
     expect(modelCachesImplicitly('us.xai.grok-4.6')).toBe(false);
     expect(modelCachesImplicitly(null)).toBe(false);

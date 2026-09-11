@@ -175,7 +175,6 @@ ASTRA = "us.openai.gpt-6-astra"
         "openai.gpt-6-astra",
         "openai.gpt-5.4",
         "openai.gpt-5.5",
-        "openai.gpt-5.6-sol",
         "arn:aws:bedrock:us-west-2:1:inference-profile/us.openai.gpt-6-astra",
     ],
 )
@@ -196,6 +195,12 @@ def test_implicit_cache_models_are_recognized(model_id):
         # Grok's model card advertises implicit caching but it was never observed
         # to engage, so no caching benefit is claimed for it.
         "us.xai.grok-4.6",
+        # GPT-5.6 caches only through an EXPLICIT breakpoint, which the client
+        # derives from a <<CACHEPOINT>> marker — so "no marker" really is "no
+        # caching" and the remedy is to add one. Calling it implicit would give
+        # the user the wrong advice.
+        "openai.gpt-5.6-sol",
+        "us.openai.gpt-5.6-terra",
         None,
         "",
     ],

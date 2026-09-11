@@ -132,8 +132,8 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
 | `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
 | `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
-| `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 3 docs × **5 repeats** | **Does a ~4× more expensive frontier model earn its price for IDP?** See below |
-| `astracap` | The same pair on one 445-page / ~200K-token document, repeats=2 | The **capability** arm: a document too large for a 200K-context model in simple mode. Expensive — opt in deliberately |
+| `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 4 docs (3–26 pages) × **5 repeats** (100 runs) | **Does a ~4× more expensive frontier model earn its price for IDP?** See below |
+| `astracap` | The same pair plus the 25-page-shard arms on `scale_3200` (66 pages, ~790K tokens), repeats=2 | The **ceiling** arm: a document too large for *both* models in simple mode, so the finding is where the 1.05M window stops helping and sharding takes over. Expensive — opt in deliberately |
 | `full` | core + all one-axis sweeps — including the **extraction-model sweep**, which is what puts a model in the published guide | The deep study for the paper (expensive) |
 
 **Feature A/B suites.** Each pairs two cells that differ on exactly **one** config knob,
@@ -215,11 +215,11 @@ Two things to know before reading the output:
 - **Sharding is the alternative to buying a bigger window.** On the agentic path the
   5-page-per-shard default is a *timeout* guard, not a context proxy — its field doc
   says a roomy token budget "must NOT collapse a large doc back into one giant shard",
-  and `0` is documented as unsuitable for large docs. So the suite does **not** run an
-  unbounded arm (it would measure a Lambda timeout); `astra-adv-wide` /
-  `sonnet5-adv-wide` raise it to 25 pages instead, which is the tuning a user could
-  adopt. If sharded Sonnet 5 matches Astra's completeness for less, the honest
-  recommendation is "shard, don't buy".
+  and `0` is documented as unsuitable for large docs. So neither suite runs an
+  unbounded arm (it would measure a Lambda timeout); `astracap` instead adds
+  `astra-adv-wide` / `sonnet5-adv-wide`, which raise it to 25 pages — the tuning a
+  user could adopt. If sharded Sonnet 5 matches Astra's completeness for less, the
+  honest recommendation is "shard, don't buy".
 - **`repeats: 5` also measures Astra's implicit prompt caching**, the one mechanism
   that can close a 4× gap: runs 2–5 re-send an identical prefix, so
   `cacheReadInputTokens` should be non-zero from the second run and cost per document
