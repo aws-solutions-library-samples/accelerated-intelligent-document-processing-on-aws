@@ -283,7 +283,8 @@ export default defineConfig({
               label: "EU Region Model Support",
               slug: "eu-region-model-support",
             },
-            { label: "OpenAI GPT-5.x Models", slug: "openai-models" },
+            { label: "OpenAI Models", slug: "openai-models" },
+            { label: "xAI Grok Models", slug: "grok-models" },
           ],
         },
         {

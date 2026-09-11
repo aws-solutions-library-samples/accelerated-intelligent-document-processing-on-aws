@@ -152,8 +152,12 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     "anthropic.claude-fable-5",
 }
 
-# Effort levels accepted by Claude models (a superset of the OpenAI Responses
-# levels, which also allow "minimal"). "max"/"xhigh" are Claude-only.
+# Effort levels accepted by Claude models. There are now THREE vocabularies on
+# this file's paths and no two are the same — see GROK_EFFORT_LEVELS and
+# ASTRA_EFFORT_LEVELS. Relative to Claude's set: the OpenAI Responses models
+# (GPT-5.x) also allow "minimal" but not "xhigh"/"max"; Grok adds "none" and
+# rejects "max"; Astra adds "none" and keeps "max". So no constant here is a
+# superset of the others, and none may be reused across families.
 CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 

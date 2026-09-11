@@ -488,9 +488,12 @@ pricing:
   # price per unit per model ID with no way to express a usage-dependent band, and
   # model_config_limits.yaml intentionally allows the full 1.05M window, so costs
   # for prompts above 272K are UNDER-REPORTED here — up to 2x on input and 1.5x on
-  # output. Two ways to remove the discrepancy if it matters for your account:
-  # cap max_input_tokens at 272000 in model_config_limits.yaml, or edit these rows
-  # to the long-band rates (which then over-reports small requests instead).
+  # output. Note the auto-sizers cross that boundary by DEFAULT: the agentic shard
+  # budget is 613,400 tokens and the summarization budget 892,500 (both derived
+  # from the 1.05M window). Two ways to remove the discrepancy if it matters for
+  # your account: cap max_input_tokens at 272000 in model_config_limits.yaml
+  # (which shrinks both budgets with it), or edit these rows to the long-band
+  # rates (which then over-reports small requests instead).
   #
   # cacheWriteInputTokens is a REAL charge here, unlike the Grok rows below: the
   # model card prices a 30-minute cache write, and implicit caching genuinely

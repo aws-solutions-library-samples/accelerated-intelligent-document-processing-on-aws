@@ -146,8 +146,16 @@ model_limits:
   # (global), while ANY request above 272K moves the WHOLE request into the long
   # band at $22/$20 input and $82.50/$75 output. config_library/pricing.yaml
   # records only the short-band rates, so cost reports UNDER-REPORT (by up to 2x
-  # on input, 1.5x on output) for prompts that cross 272K. Lower this value to
-  # 272000 if predictable cost matters more than window size for your workload.
+  # on input, 1.5x on output) for prompts that cross 272K.
+  #
+  # Crossing it is the DEFAULT, not an edge case, because the auto-sizers derive
+  # their budgets from this very number:
+  #   * bedrock/sizing.py gives Astra a 613,400-token agentic shard budget — the
+  #     largest of any model offered (2.3x the band boundary).
+  #   * summarization/service.py budgets 892,500 tokens (85% of the window) before
+  #     it truncates anything (3.3x the boundary).
+  # Lower this value to 272000 if predictable cost matters more than window size:
+  # both budgets shrink with it, keeping every request in the cheap band.
   - pattern: "openai\\.gpt-6-astra"
     max_output_tokens: 128000
     max_input_tokens: 1050000

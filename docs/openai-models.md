@@ -80,12 +80,27 @@ Astra bills in **two context bands**, and the band applies to the whole request:
 `config_library/pricing.yaml` records only the **short-band** rates — the metering
 schema has one price per unit per model and cannot express a usage-dependent
 band. So for prompts above 272K tokens the accelerator's cost reports
-**under-report** actual spend (up to 2× on input, 1.5× on output). Two ways to
+**under-report** actual spend (up to 2× on input, 1.5× on output).
+
+**You do not have to do anything unusual to cross that line** — the accelerator's
+own auto-sizing derives its budgets from the declared window, so two ordinary
+paths go over it by default:
+
+| Path | Derived budget with Astra | vs the 272K boundary |
+|---|---|---|
+| Agentic extraction shard budget (`idp_common/bedrock/sizing.py`) | **613,400 tokens** — the largest of any model offered (Claude Opus 5 `:1m` is 578,400; Grok 90,500) | 2.3× over |
+| Summarization prompt budget (`idp_common/summarization/service.py`) | **892,500 tokens** (85% of the window) before any truncation | 3.3× over |
+
+So a large document summarized or agentically extracted with Astra will typically
+bill in the long band while the cost report shows short-band rates. Two ways to
 remove the discrepancy:
 
 - **Cap the window** — set `max_input_tokens: 272000` for the
-  `openai\.gpt-6-astra` pattern in `model_config_limits.yaml`. Cost stays exactly
-  as reported; large documents shard as they do for other models.
+  `openai\.gpt-6-astra` pattern in `model_config_limits.yaml`. Both budgets above
+  are derived from that number, so capping it keeps every request in the short band
+  and cost stays exactly as reported; large documents shard as they do for other
+  models. This is the recommended setting if predictable cost matters more than
+  window size.
 - **Reprice for the long band** — edit the two `bedrock/*.openai.gpt-6-astra`
   rows to the long-band rates, which then over-reports ordinary requests.
 
@@ -154,7 +169,7 @@ No additional permissions are required. The generation Lambda roles already gran
 `application-inference-profile/*`, which covers Astra. The `bedrock-mantle:*`
 actions those roles also hold are for GPT-5.x and are unused by Astra.
 
-# OpenAI GPT-5.x Models (GPT-5.4 / GPT-5.5 / GPT-5.6)
+## OpenAI GPT-5.x Models (GPT-5.4 / GPT-5.5 / GPT-5.6)
 
 The accelerator also supports OpenAI's GPT-5.x models on Bedrock:
 **GPT-5.4** (`openai.gpt-5.4`), **GPT-5.5** (`openai.gpt-5.5`), and the
@@ -178,7 +193,7 @@ code changes are required.
 > Discovery**, and are available in **US regions only**. GPT-5.6 adds prompt
 > caching (see below). See the support matrix below.
 
-## At a glance
+### GPT-5.x at a glance
 
 | | GPT-5.4 | GPT-5.5 | GPT-5.6 Sol | GPT-5.6 Terra | GPT-5.6 Luna |
 |---|---|---|---|---|---|
@@ -196,7 +211,7 @@ There are **no** `eu.*` or `global.*` variants and **no** `:1m` context suffix �
 the model IDs carry no region prefix. GPT-5.6 Sol is **not** available in
 `us-west-2` (Terra and Luna are). GovCloud (`us-gov-west-1`) offers GPT-5.4 only.
 
-## Prompt caching
+### GPT-5.x prompt caching
 
 `GPT-5.4`/`GPT-5.5` cache **automatically** — any prompt prefix over ~1,024
 tokens is eligible for reuse with **no request changes** (the cache is populated
@@ -223,7 +238,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 > extraction with `input_tokens=4508` / `cached=3193` reports
 > `inputTokens=1315` + `cacheReadInputTokens=3193` (which reconcile to 4508).
 
-## What is supported
+### What is supported (GPT-5.x)
 
 | Capability | Supported? | Notes |
 |---|---|---|
@@ -239,7 +254,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 | Reasoning effort control | ✅ | New `reasoning_effort` config field (see below) |
 | Guardrails | ✅ | Applied via the standard headers on the mantle endpoint |
 
-## What is NOT supported
+### What is NOT supported (GPT-5.x)
 
 | Capability | Supported? | Why / what happens |
 |---|---|---|
@@ -252,7 +267,7 @@ via `cacheReadInputTokens` / `cacheWriteInputTokens`.
 | `temperature` / `top_p` / `top_k` | ❌ | These are reasoning models; sampling parameters are ignored. Use `reasoning_effort` instead. |
 | EU / global cross-region inference | ❌ | US (and us-gov) in-region only; hidden in EU-region deployments. |
 
-## Reasoning effort
+### GPT-5.x reasoning effort
 
 GPT-5.x are reasoning models — they reject `temperature` / `top_p` / `top_k` and
 are instead tuned with **reasoning effort**. Each model-selectable service (OCR,
@@ -294,7 +309,7 @@ extraction:
   reasoning_effort: "low"    # Claude: low | medium | high | xhigh | max
 ```
 
-## Regional availability and routing
+### GPT-5.x regional availability and routing
 
 GPT-5.4 is available in `us-east-1`, `us-east-2`, `us-west-2`, and
 `us-gov-west-1`; GPT-5.5 in `us-east-1` and `us-east-2`. For GPT-5.6, Sol is in
@@ -309,7 +324,7 @@ pin the region explicitly, set `BEDROCK_MANTLE_REGION`. EU-region deployments
 **hide** these models from the configuration picklists entirely (they are not
 callable there). See [EU Region Model Support](eu-region-model-support.md).
 
-## IAM
+### GPT-5.x IAM
 
 Lambda execution roles that perform generation are granted the
 `bedrock-mantle:CreateInference` action (plus `GetProject` / `ListProjects` /
@@ -318,7 +333,7 @@ Lambda execution roles that perform generation are granted the
 cross-account hub role, that role must also grant these `bedrock-mantle` actions
 — see [Cross-Account Bedrock](cross-account-bedrock.md).
 
-## Environment variables
+### GPT-5.x environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|

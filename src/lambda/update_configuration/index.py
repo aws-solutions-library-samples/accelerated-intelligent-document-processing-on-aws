@@ -105,6 +105,19 @@ MODEL_MAPPINGS = {
     # Third-party models (US-only, no EU equivalent - fall back to themselves)
     "us.meta.llama4-maverick-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.meta.llama4-scout-17b-instruct-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # NOT MAPPED, deliberately: OpenAI GPT-6 Astra and xAI Grok.
+    #
+    # Both have no eu. profile but a global. one that IS callable from the EU, so
+    # "us.openai.gpt-6-astra": "global.openai.gpt-6-astra" looks like the obvious
+    # row to add. It would fix a narrow case — an EU stack whose STORED config
+    # names the us. ID keeps an ID that is not callable there, because
+    # filter_models_by_region only hides it from the picklists while swap_model_ids
+    # is what rewrites a stored value — but get_model_mapping() also walks this
+    # dict BACKWARDS for target_region_type == "us". So the row would rewrite a US
+    # deployment's stored global. ID to the us. one, silently moving a user off the
+    # profile they chose onto a costlier one with fewer Regions. That regression is
+    # worse than the gap it closes. Fixing this properly needs a
+    # direction-aware mapping, not another row here.
 }
 
 
