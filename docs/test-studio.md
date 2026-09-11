@@ -937,17 +937,23 @@ The curve comes from three sources of increasing fidelity:
 Curves are stored per **Configuration Profile**, because confidence means
 different things across models and prompts.
 
-> **Known limitation: the estimate currently reads one curve per test set, not one
-> per configuration.** Observations *are* recorded per profile, but the estimate
-> reads the set's combined curve, so it blends observations from every
-> configuration the set has been labeled or scored under. Revisions of a profile
-> also share a curve, which is right for a prompt tweak and wrong after a model
-> swap. The practical consequence: **after changing a profile's extraction model or
-> assessment configuration, treat that set's review-effort estimate as unreliable
-> until fresh observations accumulate** — the number is measured, but partly under
-> configurations that no longer exist. `estimateConfidence` will not warn you about
-> this, because the curve it describes is genuinely populated.
+> **Which curve the estimate reads.** The estimate resolves the set's configuration
+> from, in order: the `configVersion` argument, the set's bound configuration, and
+> the configuration the set's **draft-labeling run** resolved (`labelJobId` →
+> that run's `ConfigVersion`). It then reads that configuration's own curve. If that
+> curve is empty it falls back to the set's combined curve across every
+> configuration it has ever been labeled or scored under, and **reports that it did**:
+> the modal shows a note under the confidence banner, and the API returns
+> `curveSource` (`config` | `aggregate` | `prior`) and `configVersionSource`
+> (`argument` | `bound` | `drafting-run`). Revisions of a profile still share one
+> curve, which is right for a prompt tweak and wrong after a model swap — after
+> changing a profile's extraction model or assessment configuration, treat its
+> estimate as unreliable until fresh observations accumulate (tracked in #698).
 >
+> Upgrade note: sets whose estimate used to read the combined curve now read the
+> per-configuration one, so an estimate can change and a set can drop out of the
+> **gold** tier when its own curve is thinner than the blend was. That is the honest
+> reading, not a regression.
 > Every revision already records a *confidence fingerprint* (a hash of the
 > confidence-relevant configuration — extraction model and sampling parameters,
 > assessment settings), which is what a future release will key curves on. There is

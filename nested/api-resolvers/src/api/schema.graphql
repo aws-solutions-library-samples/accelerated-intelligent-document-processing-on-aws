@@ -1028,7 +1028,14 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   # Plain-language reason for the tier, for a tooltip.
   qualityTierReason: String
   targetAccuracy: Float!
+  # The Configuration Profile the estimate's curve is keyed by, and where it came
+  # from: "argument" | "bound" | "drafting-run" | null (none identifiable).
   configVersion: String
+  configVersionSource: String
+  # Which stored curve the numbers rest on: "config" (this configuration's own
+  # curve), "aggregate" (the set-wide blend of every configuration — served when
+  # the per-configuration curve is empty), or "prior" (nothing stored for the set).
+  curveSource: String
   docsToReview: Int!
   # Range, not a point: a prior-driven estimate should not imply precision.
   docsToReviewLow: Int!

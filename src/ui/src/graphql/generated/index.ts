@@ -338,6 +338,8 @@ export const estimateReviewEffort = /* GraphQL */ `
       qualityTierReason
       targetAccuracy
       configVersion
+      configVersionSource
+      curveSource
       docsToReview
       docsToReviewLow
       docsToReviewHigh

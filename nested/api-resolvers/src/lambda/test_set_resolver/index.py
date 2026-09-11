@@ -844,7 +844,9 @@ def publish_test_set_version(args, event=None):
         "notes": notes or "",
         "source": meta.get("source"),
         "fileCount": meta.get("fileCount"),
-        "configVersion": meta.get("boundConfigVersion"),
+        # The configuration the set's labels were produced under (#759): the
+        # bound field was never written, so this used to be always null.
+        "configVersion": _resolve_set_config_version(meta)[0],
         "createdAt": now,
         "createdBy": created_by,
     }
@@ -1420,16 +1422,9 @@ def reextract_test_set_document(args, event=None):
     # resolved the version there even when the original call passed none. (This
     # previously read a labelJobConfigVersion attribute that was never written, so
     # the fallback silently did nothing.)
-    config_version = input_data.get("configVersion")
-    if not config_version and meta.get("labelJobId"):
-        tracking = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
-        drafting_run = (
-            tracking.get_item(
-                Key={"PK": f"testrun#{meta['labelJobId']}", "SK": "metadata"}
-            ).get("Item")
-            or {}
-        )
-        config_version = drafting_run.get("ConfigVersion")
+    config_version, _ = _resolve_set_config_version(
+        meta, input_data.get("configVersion")
+    )
     result = generate_draft_labels(
         {
             "input": {
@@ -2210,6 +2205,38 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     return state
 
 
+def _resolve_set_config_version(meta, explicit=None):
+    """The Configuration Profile a test set's labels were produced under.
+
+    Returns ``(config_version, source)`` where source is ``"argument"`` (caller
+    passed one), ``"bound"`` (the set's ``boundConfigVersion`` — designed for a
+    binding flow that was never built, so in practice absent), ``"drafting-run"``
+    (the ``ConfigVersion`` the test runner resolved for the set's draft-labeling
+    run, ``testrun#{labelJobId}``), or ``None`` when nothing identifies one.
+
+    One home for this so the review-effort estimate, re-extraction and version
+    snapshots agree on which configuration a set belongs to (#759). Before this,
+    the estimate read only ``boundConfigVersion`` — never written anywhere — so it
+    always fell back to the set's aggregate curve, a blend of every configuration
+    the set had ever been labeled or scored under.
+    """
+    if explicit:
+        return explicit, "argument"
+    if meta.get("boundConfigVersion"):
+        return meta["boundConfigVersion"], "bound"
+    if meta.get("labelJobId"):
+        tracking = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+        drafting_run = (
+            tracking.get_item(
+                Key={"PK": f"testrun#{meta['labelJobId']}", "SK": "metadata"}
+            ).get("Item")
+            or {}
+        )
+        if drafting_run.get("ConfigVersion"):
+            return drafting_run["ConfigVersion"], "drafting-run"
+    return None, None
+
+
 def estimate_review_effort(args):
     """Server-side estimate for the "set up team annotation" flow.
 
@@ -2231,15 +2258,23 @@ def estimate_review_effort(args):
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
 
-    # Default to the config the set is bound to, so the curve matches the confidence
-    # semantics that produced these labels.
-    if not config_version:
-        config_version = meta.get("boundConfigVersion")
+    # Resolve the configuration whose confidence semantics produced these labels
+    # (argument > bound field > the drafting run's resolved version), so the
+    # per-configuration curve is read rather than the set-wide blend (#759).
+    config_version, config_version_source = _resolve_set_config_version(
+        meta, config_version
+    )
 
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
     store = CurveStore(tracking_table)
     curve = store.get_curve(test_set_id, config_version)
     prior = store.get_global_prior()
+    if config_version and curve.served_from != "config":
+        logger.warning(
+            f"estimateReviewEffort({test_set_id}): no curve stored for configuration "
+            f"'{config_version}' ({config_version_source}); serving the set's "
+            f"{curve.served_from} curve instead"
+        )
 
     (
         doc_confidences,
@@ -2283,6 +2318,13 @@ def estimate_review_effort(args):
     result["testSetId"] = test_set_id
     result["targetAccuracy"] = target_accuracy
     result["configVersion"] = config_version
+    result["configVersionSource"] = config_version_source
+    # Which curve the numbers rest on. "aggregate" with a configVersion present
+    # means the per-configuration curve is empty and the estimate is blending
+    # every configuration this set was ever scored or reviewed under.
+    result["curveSource"] = (
+        "prior" if curve.served_from in (None, "none") else curve.served_from
+    )
     result["reliabilityTable"] = curve.reliability_table(prior)
     # Surfaced so a caller can say how much of the set was actually inspected.
     result["sampledDocs"] = sampled_docs
