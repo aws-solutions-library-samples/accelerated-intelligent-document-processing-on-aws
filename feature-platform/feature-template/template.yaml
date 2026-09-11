@@ -57,8 +57,8 @@ Parameters:
 
   LogLevel:
     Type: String
-    Default: INFO
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    Default: WARN
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
 
   PermissionsBoundaryArn:
     Type: String

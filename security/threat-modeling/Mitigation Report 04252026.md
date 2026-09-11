@@ -117,16 +117,21 @@ No hardcoded `DEBUG` or `TRACE` found in any production code path.
 
 **Residual risk:** None for product defaults. Customers explicitly opting into DEBUG accept the logging behavior.
 
-**Customer action required:** Keep `LogLevel=INFO` (default) for production deployments.
+~~**Customer action required:** Keep `LogLevel=INFO` (default) for production deployments.~~
+**Superseded 2026-09-11** (see the update below): leave `LogLevel` at its `WARN` default, or set
+`ERROR`; do **not** run production at `INFO`.
 
 **Update 2026-09-11 — default changed to `WARN`.** The acceptance above rested
 on `INFO` being a safe default, which the residual-risk review revised: at
 `INFO` the accelerator can emit S3 **presigned URLs** (and document/PII values)
 into CloudWatch, so `INFO` is not a safe production default even though nothing
 in the code hard-codes `DEBUG`. The `LogLevel` default is now `WARN` in
-`template.yaml` and `nested/bedrockkb/template.yaml`; `patterns/unified/template.yaml`
-already defaulted to `WARN`, which is the evidence that the safer default is
-operationally acceptable. Everything else in this finding stands — the parameter
+`template.yaml`, `nested/bedrockkb`, `nested/multi-doc-discovery`,
+`feature-platform/main-stack-extensions` and the feature scaffold;
+`patterns/unified/template.yaml` already defaulted to `WARN`, which is the
+evidence that the safer default is operationally acceptable. The installable
+feature stacks still pin `INFO` in their `feature.yaml`; that is tracked
+separately (see `scripts/tests/test_log_level_default.py`). Everything else in this finding stands — the parameter
 remains customer-configurable and every handler still respects `LOG_LEVEL`.
 **Consequence to note:** API Gateway access logging on the Web UI REST stage is
 gated on `LogLevel` being `INFO`/`DEBUG` (finding API-GW-006), so it is now off

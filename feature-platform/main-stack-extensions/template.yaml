@@ -280,8 +280,8 @@ Parameters:
 
   LogLevel:
     Type: String
-    Default: 'INFO'
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    Default: 'WARN'
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
 
   LogRetentionDays:
     Type: Number
