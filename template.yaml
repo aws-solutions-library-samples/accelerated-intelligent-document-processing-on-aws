@@ -482,14 +482,16 @@ Parameters:
     Description: >-
       Execution-level timeout of the document processing workflow, in seconds
       (default 21600 = 6 hours). Any execution still running after this is ended
-      TIMED_OUT: its concurrency slot is released, the document is marked, and
-      WorkflowTimeoutsAlarm fires. Measured on a production stack over 30 days the
-      median execution took under a minute, p90 under five, and the longest
-      successful one 37 minutes; the only executions over an hour were failed
-      retry storms of about five hours, so the default is roughly ten times the
-      longest observed success. Raise it for very large packets (hundreds of
-      pages, long agentic table extraction) if legitimate runs approach it;
-      tripping it discards the execution's completed work, so err generous.
+      TIMED_OUT: its concurrency slot is released, the document is marked FAILED
+      with WorkflowStatus TIMED_OUT, and WorkflowTimeoutsAlarm fires. Without it
+      a stalled execution runs for up to one year while holding a slot. Measured
+      on a production stack over 30 days, the longest successful execution took
+      37 minutes (median under one minute), so 6 hours is roughly ten times
+      that. It does not shorten a single state's roughly five-hour Lambda retry
+      storm, which the per-state Retry policies end on their own; it does bound
+      a hang, a lost callback, or a storm that compounds across states. Raise it
+      if legitimate large-packet runs approach it: tripping it discards the
+      execution's completed work.
     MinValue: 300
     MaxValue: 31536000
 
@@ -8223,6 +8225,13 @@ Resources:
                       }
                     ],
                     [
+                      {
+                        "expression": "m4/PERIOD(m4)*60",
+                        "label": "Timed out per Minute",
+                        "id": "e4"
+                      }
+                    ],
+                    [
                       "AWS/States",
                       "ExecutionsStarted",
                       "StateMachineArn",
@@ -8251,6 +8260,17 @@ Resources:
                       ".",
                       {
                         "id": "m3",
+                        "stat": "Sum",
+                        "visible": false
+                      }
+                    ],
+                    [
+                      ".",
+                      "ExecutionsTimedOut",
+                      ".",
+                      ".",
+                      {
+                        "id": "m4",
                         "stat": "Sum",
                         "visible": false
                       }

@@ -1,5 +1,5 @@
 {
-  "Comment": "Unified IDP Document Processing Workflow - routes between BDA and step-by-step pipeline based on use_bda config flag. TimeoutSeconds is the execution-level bound (WorkflowExecutionTimeoutSeconds): an execution that stops making progress for a reason no per-state guard covers otherwise runs up to the Standard-workflow ceiling of one year, emitting neither ExecutionsFailed nor ExecutionTime while holding a concurrency slot (#757). Tripping it ends the execution TIMED_OUT, which the status-change rule routes to the workflow tracker and WorkflowTimeoutsAlarm sees.",
+  "Comment": "Unified IDP Document Processing Workflow - routes between BDA and step-by-step pipeline based on use_bda config flag. TimeoutSeconds (WorkflowExecutionTimeoutSeconds) bounds a stalled execution, which otherwise runs for up to one year while holding a concurrency slot (#757).",
   "StartAt": "PreprocessingHook",
   "TimeoutSeconds": ${WorkflowExecutionTimeoutSeconds},
   "States": {

@@ -99,5 +99,19 @@ def test_a_timed_out_execution_is_alarmable(parent):
     assert {"!Ref": "AlertsTopic"} in props["AlarmActions"]
     # The status-change rule that drives the workflow tracker must include TIMED_OUT,
     # or the timed-out document keeps its slot and its RUNNING status.
-    text = PARENT.read_text()
-    assert "- TIMED_OUT" in text
+    rule = parent["Resources"]["WorkflowStateChangeRule"]["Properties"]["EventPattern"]
+    assert "TIMED_OUT" in rule["detail"]["status"]
+
+
+def test_the_dashboard_plots_timed_out_executions(parent):
+    """A TIMED_OUT run emits neither ExecutionsFailed nor ExecutionTime, so the
+    executions widget must carry its own series or the dashboard shows nothing."""
+    dashboards = [
+        r
+        for r in parent["Resources"].values()
+        if r.get("Type") == "AWS::CloudWatch::Dashboard"
+    ]
+    assert dashboards, "parent template declares a dashboard"
+    body = str(dashboards[0]["Properties"]["DashboardBody"])
+    assert "ExecutionsTimedOut" in body
+    assert "Timed out per Minute" in body

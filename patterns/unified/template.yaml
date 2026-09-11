@@ -71,7 +71,8 @@ Parameters:
       ceiling is the Standard-workflow maximum of one year, during which the
       execution emits no ExecutionsFailed and no ExecutionTime and holds a
       workflow-concurrency slot. Tripping it ends the execution TIMED_OUT, which
-      releases the slot, marks the document, and raises WorkflowTimeoutsAlarm.
+      releases the slot, marks the document FAILED with WorkflowStatus TIMED_OUT,
+      and raises WorkflowTimeoutsAlarm.
 
   BDACallbackTimeoutSeconds:
     Type: Number
