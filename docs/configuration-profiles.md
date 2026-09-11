@@ -228,6 +228,13 @@ falling back to the profile's current configuration: substituting a different
 configuration under the name you asked for would look like a success, and its
 numbers would go into a comparison. Label or pin the revisions you need to keep.
 
+For a test run the check happens **when the run is submitted**: `startTestRun`
+(Test Studio, `idp-cli run-inference --test-set`, a direct invocation) rejects a
+profile that does not exist and a revision whose body cannot be read — `Revision
+r3 of configuration profile 'lending' is not available (deleted, pruned, or never
+existed)` — instead of queuing a run whose every document would fail in OCR
+minutes later.
+
 Naming a new profile per attempt also works and predates revisions, but every one
 of those profiles then appears in the profile pickers and `allowedConfigVersions`
 scope lists of the whole deployment.

@@ -153,6 +153,12 @@ def handler(event, context):
         effective_config_version = config_version or _active_config_version(
             config_table
         )
+        # A profile the caller named must exist. Without this the run was created
+        # anyway — an empty captured config, the profile stamped onto every
+        # document — and each document then failed in OCR, minutes later, with
+        # an error that pointed at IAM rather than at the missing profile (#878).
+        if config_version:
+            _require_profile(config_table, config_version)
         # Resolve the profile's current revision when the caller did not name one,
         # for the same reason the version is resolved here: the run must record
         # which configuration it actually ran, not "whatever was current".
@@ -492,6 +498,17 @@ def _published_revision(config_table, config_version):
         return None
 
 
+def _require_profile(config_table, config_version):
+    """Raise ``ValueError`` unless the configuration profile head exists."""
+    table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
+    item = table.get_item(
+        Key={"Configuration": f"Config#{config_version}"},
+        ProjectionExpression="Configuration",
+    ).get("Item")
+    if not item:
+        raise ValueError(f"Configuration profile '{config_version}' not found")
+
+
 def _pin_revision(config_table, config_version, revision):
     """Mark a revision as pinned so retention cannot prune it.
 
@@ -519,30 +536,41 @@ def _capture_config(config_table, config_version=None, config_revision=None):
 
     # A pinned revision is captured from its stored body, so the run records the
     # configuration it actually scored rather than the profile's current state.
+    #
+    # A revision that cannot be read fails the run HERE, at submit time. It used
+    # to be a warning with a fallback to the profile head — "capture is for the
+    # record, not for processing" — but the revision was still stamped onto every
+    # document, and the pipeline (rightly) refuses to process a pinned revision
+    # it cannot read, so the run was doomed: N failed documents instead of one
+    # error at submit (#878).
     if config_version and config_revision is not None:
-        try:
-            from idp_common.config.configuration_manager import ConfigurationManager
+        from idp_common.config.configuration_manager import ConfigurationManager
 
+        try:
             body = ConfigurationManager(table_name=config_table).get_revision(
                 config_version, config_revision
             )
-            if body is not None:
-                # A revision body is JSON, so it carries Python floats (e.g.
-                # temperature: 0.0). The captured config is written straight into
-                # the run's DynamoDB item, and the DynamoDB resource client
-                # rejects floats outright — "Float types are not supported. Use
-                # Decimal types instead." — which failed every startTestRun that
-                # pinned a revision. The config read from DynamoDB never hit this
-                # because it comes back as Decimal already.
-                config["Config"] = json.loads(json.dumps(body), parse_float=Decimal)
-                _pin_revision(config_table, config_version, config_revision)
-                return config
-            logger.warning(
-                f"Revision r{config_revision} of '{config_version}' is not retained; "
-                f"capturing the profile's current configuration instead"
-            )
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"Could not capture revision r{config_revision}: {e}")
+            raise ValueError(
+                f"Could not read revision r{config_revision} of configuration "
+                f"profile '{config_version}': {e}"
+            ) from e
+        if body is None:
+            raise ValueError(
+                f"Revision r{config_revision} of configuration profile "
+                f"'{config_version}' is not available (deleted, pruned, or never "
+                f"existed)"
+            )
+        # A revision body is JSON, so it carries Python floats (e.g.
+        # temperature: 0.0). The captured config is written straight into the
+        # run's DynamoDB item, and the DynamoDB resource client rejects floats
+        # outright — "Float types are not supported. Use Decimal types
+        # instead." — which failed every startTestRun that pinned a revision.
+        # The config read from DynamoDB never hit this because it comes back as
+        # Decimal already.
+        config["Config"] = json.loads(json.dumps(body), parse_float=Decimal)
+        _pin_revision(config_table, config_version, config_revision)
+        return config
 
     # Get Config (versioned) - this is what's used for comparisons
     try:

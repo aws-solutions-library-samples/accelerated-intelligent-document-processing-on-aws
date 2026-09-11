@@ -319,6 +319,19 @@ class ConfigRevisionStore:
             if code in ("NoSuchKey", "404", "NotFound"):
                 logger.warning(f"Revision body not found: s3://{self.bucket}/{key}")
                 return None
+            if code in ("AccessDenied", "403", "Forbidden"):
+                # S3 answers a GetObject for a MISSING key with 403, not 404, when
+                # the caller has no s3:ListBucket on the bucket. So this is as
+                # likely "the revision was never cut / was pruned" as a real
+                # permission problem — and it is not mapped to None, because a
+                # genuine IAM defect must never read as "revision missing" (#878).
+                raise PermissionError(
+                    f"Could not read revision body s3://{self.bucket}/{key} "
+                    f"({code}). Either the object does not exist and this role has "
+                    f"no s3:ListBucket on the bucket (S3 reports a missing key as "
+                    f"403 without it), or the role lacks s3:GetObject on "
+                    f"{REVISION_S3_PREFIX}/*."
+                ) from e
             raise
         try:
             return json.loads(gzip.decompress(raw).decode("utf-8"))
