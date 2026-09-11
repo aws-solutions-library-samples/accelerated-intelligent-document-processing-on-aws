@@ -158,6 +158,13 @@ axes:
     sonnet5_1m:   {extraction.model: us.anthropic.claude-sonnet-5:1m}
     nova_pro:     {extraction.model: us.amazon.nova-pro-v1:0}
     nova_lite:    {extraction.model: us.amazon.nova-lite-v1:0}
+    # Claude Opus 5 — the most capable Claude, selectable in the product since it
+    # shipped, and until now absent from every model axis in this file, so no
+    # published guidance covered it. 200K context / 128K output ($5/$25 per 1M),
+    # which makes it the natural mid-point between Sonnet 5 and Astra: the "is a
+    # premium model worth it?" question has two candidate answers, not one, and a
+    # guide that omits this one cannot recommend Astra honestly.
+    opus5:        {extraction.model: us.anthropic.claude-opus-5}
     # OpenAI GPT-6 Astra. Converse (NOT the bedrock-mantle path GPT-5.x uses), so
     # it works in both simple and advanced mode. 1.05M context, 128K output.
     # PRICE: $11/$55 per 1M in/out on `us.`, $10/$50 on `global.` — about 4x Sonnet
@@ -274,6 +281,28 @@ core_cells:
   - {id: core-bda-simple-sep,  ocr: bda,             extraction_mode: simple,   assessment: separate}
   - {id: core-bda-adv-sep,     ocr: bda,             extraction_mode: advanced, assessment: separate}
   - {id: core-llm-simple-sep,  ocr: bedrock_llm,     extraction_mode: simple,   assessment: separate}
+
+# -----------------------------------------------------------------------------
+# MODEL-PREMIUM cells (#850). Kept OUT of `core_cells` on purpose, for the same
+# reason multi_instance_cells is: `core_cells` is consumed by `core`, `coresynth`,
+# `corefast` and `full`, so anything added there multiplies the standard release
+# grid and the release-vs-release A/B gate. Adding these seven inline took
+# coresynth from 133 to 182 runs and corefast (the release gate) from 171 to 234 —
+# a 37% cost rise nobody asked for.
+#
+# They would also have injected GUARANTEED FAILURES: `coresynth` includes
+# large_narrow (17 pages, ~203K estimated input) and `sonnet5-simple-sep` cannot
+# take that in one request. A release grid whose baseline contains expected
+# failures cannot be read as a regression gate.
+#
+# The model question is answered two ways instead, both deliberate:
+#   * `astravalue` / `astracap` — the dedicated head-to-head, on documents chosen
+#     for it (see those suites).
+#   * the `extraction_model` SWEEP — one axis, everything else held at the core
+#     default, which is what feeds the model section of the Configuration Guidance
+#     paper. That is where `astra` and `opus5` belong for the published guide.
+# -----------------------------------------------------------------------------
+model_premium_cells:
   # --- OpenAI GPT-6 Astra premium study (#850). Matched pairs: each Astra cell
   # differs from its Sonnet 5 partner ONLY in extraction.model, so a delta is the
   # model. Sonnet 5 is the comparator rather than the matrix default sonnet46
@@ -360,7 +389,14 @@ sweeps:
   assessment:       ["off", separate, integrated]
   geometry:         [ocr_only, llm, llm_grounded]
   escalation:       ["off", "on"]           # run on the low-confidence corpus to expose cost
-  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m]
+  # Adding a model here puts it in `full` AND in the Configuration Guidance paper's
+  # model section — that is the difference between "selectable" and "measured".
+  # opus5 and astra were both missing: opus5 had never been in any axis, astra was
+  # added for its own head-to-head suite but not to the sweep, so neither appeared
+  # in published guidance. astra_global is deliberately NOT swept: it is the same
+  # weights at ~10% less, a price/region choice the `astravalue` suite settles, not
+  # a quality axis worth a full grid.
+  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, astra]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
   classification_model: [nova_2_lite, sonnet5]
   reasoning_effort: [low, medium, high]

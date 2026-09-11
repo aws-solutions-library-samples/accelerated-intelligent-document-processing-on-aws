@@ -125,16 +125,16 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | Suite | Scope | Use |
 |-------|-------|-----|
 | `smoke` | 2 cells × 2 tiny docs | Per-PR gate (minutes) |
-| `corefast` | 10 decision cells × 3 docs (≤100 rows) × **3 repeats** (90 runs/side) | **Release-vs-release A/B** — the grid that completes on *both* the previous published release and the new one (see notes) |
-| `coresynth` | 10 decision cells × 7 synthetic docs (**70 runs**) | **Standard single-release run** — the cross-config grid the Configuration Guidance paper reports |
-| `core` | `coresynth` + the two 20-document reference corpora (**470 runs**) | Adds real-world labeled accuracy; ~7× the cost of `coresynth`, so opt in deliberately |
+| `corefast` | 19 decision cells × 3 docs (≤100 rows) × **3 repeats** (171 runs/side) | **Release-vs-release A/B** — the grid that completes on *both* the previous published release and the new one (see notes) |
+| `coresynth` | 19 decision cells × 7 synthetic docs (**133 runs**) | **Standard single-release run** — the cross-config grid the Configuration Guidance paper reports |
+| `core` | `coresynth` + the two 20-document reference corpora | Adds real-world labeled accuracy; several times the cost of `coresynth`, so opt in deliberately |
 | `scaling` | simple vs advanced across the size series | The completeness-cliff study |
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
 | `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
 | `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
 | `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 3 docs × **5 repeats** | **Does a ~4× more expensive frontier model earn its price for IDP?** See below |
 | `astracap` | The same pair on one 445-page / ~200K-token document, repeats=2 | The **capability** arm: a document too large for a 200K-context model in simple mode. Expensive — opt in deliberately |
-| `full` | core + all one-axis sweeps | The deep study for the paper (expensive) |
+| `full` | core + all one-axis sweeps — including the **extraction-model sweep**, which is what puts a model in the published guide | The deep study for the paper (expensive) |
 
 **Feature A/B suites.** Each pairs two cells that differ on exactly **one** config knob,
 on **one** deployed stack with identical code — which attributes a delta to the feature
@@ -154,6 +154,29 @@ more, because each is judged on a *rate* and a single sample cannot resolve one.
 `kv_form` belongs to a different document class, so suites naming it need a second
 invocation with `--class kv_form` (configs are per class; the harness prints which docs
 it skipped and why).
+
+### Which models are actually measured
+
+"Selectable in the product" and "covered by the published guidance" are different
+things, and the difference is the **`extraction_model` sweep** — the one-axis sweep
+`full` runs, which is what the [Configuration Guidance](./config-guidance.md) model
+section is computed from. A model only appears there if it is in that sweep:
+
+| Model | In the sweep | Note |
+|---|---|---|
+| Nova Lite, Nova Pro | ✅ | the cheap end |
+| Claude Sonnet 5, Sonnet 5 `:1m` | ✅ | the shipped default |
+| **Claude Opus 5** | ✅ | **added 2026-09-11** — the most capable Claude had never been in *any* model axis, so no published guidance covered it |
+| **OpenAI GPT-6 Astra** | ✅ | **added 2026-09-11** — also has its own head-to-head suite below |
+| `global.openai.gpt-6-astra` | ❌ deliberately | same weights ~10% cheaper; a price/region choice `astravalue` settles, not a quality axis worth a full grid |
+| Claude Sonnet 4.6 | held as the sweep's control | the fixed baseline every sweep varies against |
+| xAI Grok 4.6 | ❌ | not yet measured — see `docs/grok-models.md` for its documented capabilities |
+
+The premium cells below live in their own `model_premium_cells` registry, **not** in
+`core_cells`, because `core_cells` feeds `core` / `coresynth` / `corefast` / `full`:
+putting seven model-pinned cells there inflated the standard grid by 37% and — on any
+document over ~11 pages — added cells that are *expected* to fail, which makes a
+release regression gate unreadable.
 
 ### Is a premium model worth it? (`astravalue` / `astracap`)
 

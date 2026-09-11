@@ -253,11 +253,18 @@ def cells_for_suite(matrix, suite):
     # records of one class in ONE section, so a suite saying `cells: "core_cells"`
     # must not pick them up and spend money measuring nothing.
     multi = {c["id"]: c for c in matrix.get("multi_instance_cells") or []}
+    # Model-premium cells (#850) are their own registry for the same reason again:
+    # they pin a specific extraction model, so a suite saying `cells: "core_cells"`
+    # must not pick them up — that would multiply the standard release grid AND, on
+    # documents above ~11 pages, add cells that are EXPECTED to fail.
+    premium = {c["id"]: c for c in matrix.get("model_premium_cells") or []}
     out = []
     if spec == "core_cells":
         out = list(core.values())
     elif spec == "multi_instance_cells":
         out = list(multi.values())
+    elif spec == "model_premium_cells":
+        out = list(premium.values())
     elif spec == "core_cells+sweeps":
         out = list(core.values())
         # add one-axis sweeps as cells (default + varied axis)
@@ -270,13 +277,13 @@ def cells_for_suite(matrix, suite):
         # the run — it produces a one-armed "A/B" whose delta is undefined, and
         # nothing downstream can tell that from a suite that was declared with
         # one cell. A typo'd cell id is exactly how a control arm disappears.
-        known = {**core, **controls, **multi}
+        known = {**core, **controls, **multi, **premium}
         missing = [i for i in spec if i not in known]
         if missing:
             raise SystemExit(
                 f"suite '{suite}' names cell(s) not defined in core_cells, "
-                f"control_cells or multi_instance_cells: {missing}. Add them "
-                f"there or fix the suite."
+                f"control_cells, multi_instance_cells or model_premium_cells: "
+                f"{missing}. Add them there or fix the suite."
             )
         out = [known[i] for i in spec]
     return out
