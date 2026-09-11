@@ -58,7 +58,7 @@ The headless deployment of the IDP solution provisions additional lambda functio
    - Log Group `{stack-name}-ApiHandlerLogGroup-{cfn-id}`
    
 2. Batch Pre-Processor
-   - Log Group: `/aws/lambda/{stack-name}-BatchPreProcessorFunction-{cfn-id}`
+   - Log Group: `/{stack-name}/lambda/BatchPreProcessorFunction`
 
 3. Job Tracker 
    - Log Group: `{stack-name}-JobTrackerLogGroup-{cfn-id}`

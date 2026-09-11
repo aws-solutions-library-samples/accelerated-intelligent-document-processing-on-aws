@@ -58,6 +58,8 @@ Resources:
           CLIENT_SECRET: !Ref ClientSecret
           MOCK_USER: !Ref MockUser
           ISSUER: !Sub https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}/idp
+      LoggingConfig:
+        LogGroup: !Ref IdpFunctionLogGroup
       Code:
         ZipFile: |
           """Minimal OIDC provider. RS256 signing uses only the standard library:
@@ -220,6 +222,16 @@ Resources:
                   return json_response(info)
 
               return json_response({"error": "not_found", "path": path}, 404)
+
+  # This whole stack is throwaway — make verify-idp-federation creates and
+  # deletes it — but declare the log group anyway so that if a run is
+  # interrupted and the stack survives, its logs still expire rather than being
+  # kept forever by Lambda's auto-created group (issue #826).
+  IdpFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /${AWS::StackName}/lambda/IdpFunction
+      RetentionInDays: 1
 
   IdpFunctionPermission:
     Type: AWS::Lambda::Permission
