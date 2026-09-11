@@ -203,9 +203,11 @@ async def chat_agent(request: Request) -> StreamingResponse:
                     "sessionId": session_id,
                     "prompt": str(body.get("prompt") or ""),
                     "method": str(body.get("method") or "chat"),
-                    "enableCodeIntelligence": bool(
-                        body.get("enableCodeIntelligence", True)
-                    ),
+                    # Default off: opt-in only (third-party MCP data flow).
+                    # `is True`, not bool(): this body is raw client JSON with no
+                    # schema validation on this route, and bool("false") is True.
+                    "enableCodeIntelligence": body.get("enableCodeIntelligence")
+                    is True,
                     "callerSub": caller_sub,
                     "timestamp": now_iso(),
                 },
