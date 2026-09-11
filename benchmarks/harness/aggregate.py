@@ -47,6 +47,9 @@ def score_all(run_dir):
         if not r.get("run_id"):
             rows.append({**_key(r), "status": "NOT_LAUNCHED", "success": False})
             continue
+        if r.get("reference"):
+            rows.extend(score_reference_run(res, r))
+            continue
         truth = (
             json.load(open(r["truth"]))
             if r.get("truth") and os.path.exists(r["truth"])
@@ -66,10 +69,57 @@ def score_all(run_dir):
     return rm, rows
 
 
+def reference_doc_names(prefixes, run_id):
+    """``<run_id>/<doc>/`` S3 prefixes -> document names, in a stable order."""
+    names = []
+    for p in prefixes:
+        rest = p[len(run_id) + 1 :] if p.startswith(run_id + "/") else p
+        name = rest.strip("/")
+        if name:
+            names.append(name)
+    return sorted(names)
+
+
+def score_reference_run(res, r, list_prefixes=None, score=None):
+    """One reference-corpus run holds ``n_docs`` documents; score each (#766).
+
+    Every row keeps the corpus id as ``doc`` and carries the document under
+    ``sub_doc``, so cell_stats' per-cell roll-up averages over the corpus the
+    way it averages over repeats — a 20-document real corpus contributes a mean
+    weighted accuracy, not 20 phantom "documents" in the summary. No local truth
+    exists for these: ``analyze.score_doc`` with ``truth=None`` dispatches to
+    ``score_reference``, which reads the stack's own evaluation. A run whose S3
+    prefix holds no documents is reported as such rather than vanishing.
+    """
+    list_prefixes = list_prefixes or lib.list_doc_prefixes
+    score = score or analyze.score_doc
+    names = reference_doc_names(
+        list_prefixes(res["output_bucket"], r["run_id"]), r["run_id"]
+    )
+    if not names:
+        return [{**_key(r), "status": "NO_DOCS", "success": False}]
+    rows = []
+    for name in names:
+        try:
+            sc = score(
+                res["output_bucket"], res["tracking_table"], r["run_id"], name, None
+            )
+        except Exception as e:
+            sc = {"status": "SCORE_ERROR", "success": False, "error": str(e)}
+        rows.append({**_key(r), "sub_doc": name, **sc})
+    expected = int(r.get("n_docs") or 0)
+    if expected and len(names) != expected:
+        for row in rows:
+            row["coverage_note"] = f"{len(names)} of {expected} documents found"
+    return rows
+
+
 def _key(r):
     return {
         "cell": r["cell"],
         "doc": r["doc"],
+        # Set only on rows expanded from a reference-corpus run (#766).
+        "sub_doc": None,
         "repeat": r.get("repeat", 0),
         "resolved": r.get("resolved", {}),
         "run_id": r.get("run_id"),
@@ -79,6 +129,7 @@ def _key(r):
 CSV_COLS = [
     "cell",
     "doc",
+    "sub_doc",
     "repeat",
     "status",
     "success",
@@ -281,6 +332,7 @@ def _meta(rm):
         # complete.
         "docs_named": rm.get("docs_named"),
         "docs_run": rm.get("docs_run"),
+        "docs_reference": rm.get("docs_reference"),
         "docs_unlaunchable": rm.get("docs_unlaunchable"),
         "docs_other_class": rm.get("docs_other_class"),
         # NOTE: `commit` is the LOCAL repo HEAD at scoring time, which is not

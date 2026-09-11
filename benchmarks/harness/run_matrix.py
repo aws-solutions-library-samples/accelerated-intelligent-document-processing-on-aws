@@ -227,9 +227,13 @@ def _find_fn(stack, needle):
     return None
 
 
-def launch(stack, testset_id, version, context):
+def launch(stack, testset_id, version, context, number_of_files=1):
     """Invoke the TestRunner Lambda directly and return its testRunId (which is
-    the S3/DDB run-id prefix the scorer keys on)."""
+    the S3/DDB run-id prefix the scorer keys on).
+
+    ``number_of_files`` is 1 for a synthetic doc (one PDF per registered test
+    set) and the corpus's ``n`` for a reference test set; the runner takes the
+    FIRST n documents deterministically, so repeats and cells see the same n."""
     lam = lib.session().client("lambda", region_name=lib.REGION)
     runner = _find_fn(stack, "TestRunnerFunction")
     resolver = _find_fn(stack, "TestSetResolverFunction")
@@ -250,7 +254,7 @@ def launch(stack, testset_id, version, context):
             "input": {
                 "testSetId": testset_id,
                 "configVersion": version,
-                "numberOfFiles": 1,
+                "numberOfFiles": number_of_files,
                 "context": context,
             }
         }
@@ -258,9 +262,13 @@ def launch(stack, testset_id, version, context):
     try:
         resp = lam.invoke(FunctionName=runner, Payload=json.dumps(payload))
         result = json.loads(resp["Payload"].read())
-    except Exception:
+    except Exception as e:
+        print(f"    launch error for {testset_id}: {e}")
         return None
     if "errorMessage" in result:
+        # A reference test set that is not on this stack fails HERE, not later:
+        # say which one, or the row is just NOT_LAUNCHED with no cause.
+        print(f"    runner rejected {testset_id}: {result['errorMessage']}")
         return None
     return result.get("testRunId")
 
@@ -326,12 +334,69 @@ def load_plan(suite, klass, overrides=()):
 def reference_ids(docm=None):
     """Ids of the reference corpora — real labeled test SETS living on the stack.
 
-    They have no PDF under ``corpus/docs`` and this harness launches one local PDF
-    per run, so it cannot run them at all (#766).
+    They have no PDF under ``corpus/docs``; they are launched through the
+    TestRunner as a test set with the cell's config version (#766, see
+    ``reference_plan``).
     """
     if docm is None:
         docm = yaml.safe_load(open(DOC_MATRIX))
     return {d["id"] for d in docm.get("reference", [])}
+
+
+def reference_specs(docm=None):
+    """``{id: spec}`` for every reference corpus in the document matrix."""
+    if docm is None:
+        docm = yaml.safe_load(open(DOC_MATRIX))
+    return {d["id"]: d for d in docm.get("reference", [])}
+
+
+def reference_index_path(suite, spec, overrides=()):
+    """The make_configs index a reference corpus's cells come from.
+
+    A reference doc's cells are the suite's cells built onto the CORPUS's own
+    base config (``--class <spec.class>``), namespaced by the same ``--set``
+    overrides as the synthetic class — so one suite run compares like with like
+    across synthetic and real documents.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from make_configs import override_slug
+
+    klass = spec.get("class") or spec["id"]
+    return os.path.join(
+        CONFIGS, f"_index_{suite}_{klass}{override_slug(list(overrides))}.yaml"
+    )
+
+
+def reference_plan(named_docs, specs, index_for):
+    """Decide which reference corpora a suite run can launch.
+
+    Returns ``(launchable, unlaunchable)``: ``launchable`` maps corpus id to
+    ``{"spec", "cells"}`` for every reference doc the suite names whose cell
+    index exists; ``unlaunchable`` maps the rest to the path that was missing.
+    ``index_for(spec) -> (path, cells_or_None)`` is injected so this is testable
+    without a corpus on disk. Pure: the split used to be computed after the
+    class filter had already removed these docs, which made it always empty
+    (see plan_coverage); keeping the decision in one function with the inputs
+    passed in is what stops that from happening again.
+    """
+    launchable, unlaunchable = {}, {}
+    for doc_id in named_docs:
+        spec = specs.get(doc_id)
+        if spec is None:
+            continue
+        path, cells = index_for(spec)
+        if cells:
+            launchable[doc_id] = {"spec": spec, "cells": cells}
+        else:
+            unlaunchable[doc_id] = path
+    return launchable, unlaunchable
+
+
+def run_complete(status, expected_docs):
+    """A run is done when every document it was asked for has finished or
+    failed. One per synthetic run; ``n`` for a reference corpus — polling for
+    ``>= 1`` on a 20-document set would call it done after the first."""
+    return status["obj_done"] + status["failed"] >= max(1, int(expected_docs or 1))
 
 
 def plan_coverage(named_docs, doc_ids, refs):
@@ -376,7 +441,7 @@ def _docs_for_class(doc_ids, docm, klass):
         if spec is None:
             keep.append(doc_id)  # unknown: let the existing missing-PDF error fire
             continue
-        doc_class = spec.get("gen") or spec.get("config")
+        doc_class = spec.get("gen") or spec.get("class") or spec.get("config")
         if doc_class is None or doc_class == klass:
             keep.append(doc_id)
         else:
@@ -516,29 +581,68 @@ def main():
     # class filter removes reference docs first, because a reference doc's "class"
     # is its config. Checking for the PDF here would always come up empty and the
     # warning would never fire.
-    doc_ids, unlaunchable, other_class = plan_coverage(
+    doc_ids, ref_named, other_class = plan_coverage(
         named_docs, doc_ids, reference_ids()
     )
+    # Reference corpora ARE launchable now — through the TestRunner, as a test
+    # set with the cell's config built onto the corpus's own base (#766). What
+    # can still stop one is a missing cell index for its class; that is reported
+    # with the exact command that fixes it, and recorded in the runmap.
+    specs = reference_specs()
+
+    def _index_for(spec):
+        path = reference_index_path(a.suite, spec, a.overrides)
+        if not os.path.exists(path):
+            return path, None
+        return path, yaml.safe_load(open(path))["cells"]
+
+    ref_launchable, ref_missing = reference_plan(ref_named, specs, _index_for)
+    unlaunchable = sorted(ref_missing)
     if unlaunchable:
+        setflags = "".join(f" --set {o}" for o in a.overrides)
         print(
             f"\n!! {len(unlaunchable)} of the {len(named_docs)} document(s) named by "
-            f"suite '{a.suite}' CANNOT be launched by this harness and are NOT "
-            f"measured: {unlaunchable}\n"
-            "   They are reference corpora — test SETS on the stack, not PDFs under "
-            f"{os.path.relpath(DOCS, REPO)} — and run_matrix has no launch path for "
-            "them (#766).\n"
-            "   Run them through Test Studio (see benchmarks/harness/"
-            "detection_ab_teststudio.py) and treat this run as synthetic-only.\n"
+            f"suite '{a.suite}' are reference corpora with NO cell index built and "
+            f"are NOT measured: {unlaunchable}\n"
+            "   Build their cells (the suite's cells onto each corpus's own base "
+            "config), then rerun:"
         )
-
+        for d in unlaunchable:
+            klass = specs[d].get("class") or d
+            print(
+                f"     make_configs.py --suite {a.suite} --class {klass}{setflags}"
+                f"   # -> {os.path.relpath(ref_missing[d], REPO)}"
+            )
+        print()
+    ref_pairs = [
+        (c, d, r)
+        for d, plan in ref_launchable.items()
+        for c in plan["cells"]
+        for r in range(repeats)
+    ]
     pairs = [(c, d, r) for c in cells for d in doc_ids for r in range(repeats)]
+    ref_docs_total = sum(
+        int(p["spec"].get("n", 1)) * len(p["cells"]) * repeats
+        for p in ref_launchable.values()
+    )
     print(
         f"plan: {len(cells)} cells x {len(doc_ids)} docs x {repeats} = {len(pairs)} runs"
+        + (
+            f" + {len(ref_pairs)} reference-corpus run(s) covering {ref_docs_total} "
+            f"document(s): {sorted(ref_launchable)}"
+            if ref_pairs
+            else ""
+        )
         + (f"  ({len(unlaunchable)} doc(s) not launchable)" if unlaunchable else "")
     )
 
     if a.estimate:
         print("(estimate) doc ids:", doc_ids)
+        for d, p in ref_launchable.items():
+            print(
+                f"(estimate) reference corpus {d}: test set {p['spec']['testset']}, "
+                f"{p['spec'].get('n', 1)} docs x {len(p['cells'])} cells x {repeats}"
+            )
         if unlaunchable:
             print("(estimate) NOT launchable, not measured:", unlaunchable)
         print("(estimate) cell ids:", [c["cell"] for c in cells])
@@ -570,12 +674,13 @@ def main():
         print(f"  registered bench-{d}")
     # 2. upload configs (unique versions), but only after proving each file on
     #    disk really holds the axes its index advertises.
-    verify_config_axes(cells)
+    ref_cells = [c for p in ref_launchable.values() for c in p["cells"]]
+    verify_config_axes(cells + ref_cells)
 
     # The stack must not move underneath the grid. Checked here and again
     # before every launch — see assert_stack_unchanged.
     stack_expected = assert_stack_quiesced(a.stack)
-    for c in {cc["version"]: cc for cc in cells}.values():
+    for c in {cc["version"]: cc for cc in cells + ref_cells}.values():
         ok = upload_config(
             a.stack, c["version"], c["path"], res=res, native=a.native_upload
         )
@@ -584,10 +689,84 @@ def main():
     # 3. launch with an in-flight cap; poll
     runmap = []
     inflight = []
+    expected_docs = {}  # run_id -> documents the run must finish (1, or n)
 
     def poll_done(rid):
         st = lib.poll_run(res["tracking_table"], rid)
-        return st["obj_done"] + st["failed"] >= 1  # 1 doc/run
+        return run_complete(st, expected_docs.get(rid, 1))
+
+    def _write_runmap():
+        json.dump(
+            {
+                "stack": a.stack,
+                "suite": a.suite,
+                "class": a.klass,
+                # The `--set` overrides this grid ran with. Recorded because
+                # (suite, class) alone does NOT identify a measurement: the same
+                # suite is legitimately run twice in one release with different
+                # overrides — `cost` at the cross-version control model for a
+                # release A/B and at the shipped default for the config paper, or
+                # `advsplitcost` once per mitigation being tested. Without this,
+                # two committed result directories for one suite are
+                # indistinguishable from their metadata, and the only way to tell
+                # which was which is to read `rows[].resolved` per row.
+                "overrides": list(a.overrides or []),
+                "resources": res,
+                # What the suite ASKED for vs. what this run measures. Without
+                # these a runmap cannot be told apart from one that covered the
+                # whole suite, which is how a 7-of-9 grid got read as complete
+                # (#766). Scoring reads `runs`; these are for whoever reads the
+                # result later. Absent on a runmap written before this existed, or
+                # by another launcher — absent is "unknown", not "nothing skipped".
+                # `docs_reference` are corpora launched as test sets (n docs per
+                # run); `docs_unlaunchable` are reference corpora whose cell index
+                # was not built; `docs_other_class` belong to another --class.
+                "docs_named": named_docs,
+                "docs_run": doc_ids + sorted(ref_launchable),
+                "docs_reference": sorted(ref_launchable),
+                "docs_unlaunchable": unlaunchable,
+                "docs_other_class": other_class,
+                "runs": runmap,
+            },
+            open(os.path.join(outdir, "runmap.json"), "w"),
+            indent=2,
+        )
+
+    # Reference corpora first: they are the longest runs (n documents each), so
+    # starting them early keeps the in-flight cap busy while the one-page
+    # synthetic runs drain behind them.
+    for c, d, rep in ref_pairs:
+        spec = ref_launchable[d]["spec"]
+        inflight = [x for x in inflight if not poll_done(x)]
+        while len(inflight) >= a.max_inflight:
+            time.sleep(a.poll_interval)
+            inflight = [x for x in inflight if not poll_done(x)]
+        assert_stack_unchanged(a.stack, stack_expected, len(runmap))
+        ctx = f"bench-{c['cell']}-{d}-r{rep}"
+        n = int(spec.get("n", 1))
+        rid = launch(a.stack, spec["testset"], c["version"], ctx, number_of_files=n)
+        runmap.append(
+            {
+                "cell": c["cell"],
+                "resolved": c["resolved"],
+                "doc": d,
+                "repeat": rep,
+                "run_id": rid,
+                # One run, n documents: aggregate.score_all lists the run's
+                # documents on S3 and scores each with analyze.score_reference
+                # (no local truth — the stack's own evaluation is the score).
+                "reference": True,
+                "testset": spec["testset"],
+                "n_docs": n,
+                "doc_name": None,
+                "truth": None,
+            }
+        )
+        if rid:
+            inflight.append(rid)
+            expected_docs[rid] = n
+        print(f"  launched {ctx} ({spec['testset']}, {n} docs) -> {rid}")
+        _write_runmap()
 
     for c, d, rep in pairs:
         # No missing-PDF check here: it is done once, above, before anything is
@@ -621,40 +800,7 @@ def main():
         if rid:
             inflight.append(rid)
         print(f"  launched {ctx} -> {rid}")
-        json.dump(
-            {
-                "stack": a.stack,
-                "suite": a.suite,
-                "class": a.klass,
-                # The `--set` overrides this grid ran with. Recorded because
-                # (suite, class) alone does NOT identify a measurement: the same
-                # suite is legitimately run twice in one release with different
-                # overrides — `cost` at the cross-version control model for a
-                # release A/B and at the shipped default for the config paper, or
-                # `advsplitcost` once per mitigation being tested. Without this,
-                # two committed result directories for one suite are
-                # indistinguishable from their metadata, and the only way to tell
-                # which was which is to read `rows[].resolved` per row.
-                "overrides": list(a.overrides or []),
-                "resources": res,
-                # What the suite ASKED for vs. what this run can measure. Without
-                # these a runmap cannot be told apart from one that covered the
-                # whole suite, which is how a 7-of-9 grid got read as complete
-                # (#766). Scoring reads `runs`; these are for whoever reads the
-                # result later. Absent on a runmap written before this existed, or
-                # by another launcher — absent is "unknown", not "nothing skipped".
-                # `docs_other_class` is separate because a suite legitimately names
-                # documents of several classes and runs them under their own
-                # --class; `docs_unlaunchable` is work that CANNOT be run here.
-                "docs_named": named_docs,
-                "docs_run": doc_ids,
-                "docs_unlaunchable": unlaunchable,
-                "docs_other_class": other_class,
-                "runs": runmap,
-            },
-            open(os.path.join(outdir, "runmap.json"), "w"),
-            indent=2,
-        )
+        _write_runmap()
 
     # 4. drain
     print("draining...")

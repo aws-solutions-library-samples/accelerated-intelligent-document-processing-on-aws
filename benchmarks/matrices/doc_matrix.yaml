@@ -64,10 +64,16 @@ synthetic:
   - {id: repeathdr_3pg,   gen: bank_statement, rows: 100,  cols: 3, lists: 1, repeat_header: true, tag: shape=runninghdr}
 
 # --- B. Reference, real labeled sets (already in the stack testset bucket) ------
+# Reference corpora are test SETS on the stack (no local PDF). run_matrix launches
+# each through the TestRunner with the cell's config version and `n` documents,
+# and scores every document with analyze.score_reference (#766). `class` names the
+# make_configs.py --class whose base config the cell axes are merged onto — build
+# it before running a suite that names the corpus:
+#   make_configs.py --suite <suite> --class realkie [--set ...]
 reference:
-  - {id: realkie,   testset: realkie-fcc-verified, config: realkie-fcc-verified, n: 20, tag: real=forms}
-  - {id: ocr_bench, testset: ocr-benchmark,        config: ocr-benchmark,        n: 20, tag: real=mixed}
-  - {id: bank_real, testset: samples-tables,       config: bank-statement-sample, n: 1, tag: real=bankstmt}
+  - {id: realkie,   class: realkie,        testset: realkie-fcc-verified, config: realkie-fcc-verified, n: 20, tag: real=forms}
+  - {id: ocr_bench, class: ocr_bench,      testset: ocr-benchmark,        config: ocr-benchmark,        n: 20, tag: real=mixed}
+  - {id: bank_real, class: bank_statement, testset: samples-tables,       config: bank-statement-sample, n: 1, tag: real=bankstmt}
 
 # --- Doc groupings referenced by suites in config_matrix.yaml ------------------
 # NOTE: core_docs are all bank_statement-class (transaction-list) documents, scored
