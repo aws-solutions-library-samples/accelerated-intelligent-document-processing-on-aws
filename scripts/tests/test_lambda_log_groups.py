@@ -763,7 +763,17 @@ def _discover_unlisted_templates(root: Path | None = None) -> list[str]:
     """
     root = root or REPO_ROOT
     listed = {root / rel for rel in TEMPLATES}
-    skip_dirs = {".aws-sam", "node_modules", ".venv", "build", "dist", ".git"}
+    # `scratch/` is the repo's gitignored local-work directory; it can hold whole
+    # git worktrees (scratch/wt-*/), which are full copies of every template.
+    skip_dirs = {
+        ".aws-sam",
+        "node_modules",
+        ".venv",
+        "build",
+        "dist",
+        ".git",
+        "scratch",
+    }
     unlisted = []
     for pattern in ("*.yaml", "*.yml"):
         for path in _walk_yaml(pattern, root):

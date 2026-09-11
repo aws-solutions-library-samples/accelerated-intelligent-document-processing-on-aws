@@ -254,7 +254,7 @@ Parameters:
     Default: ""
     Description: >
       VPC-aware S3 endpoint URL injected by parent stack when private mode is
-      active (e.g. https://bucket.<vpce-id>.s3.<region>.vpce.amazonaws.com).
+      active (e.g. https://bucket.<vpce-id>.s3.<region>.vpce.<URLSuffix>).
       When set, presigner Lambdas use this endpoint with virtual-host
       addressing so browser uploads target the VPC interface endpoint.
       Empty in public mode.
