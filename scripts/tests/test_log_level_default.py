@@ -33,6 +33,15 @@ SAFE_DEFAULT = "WARN"
 # Templates a customer can deploy directly, so their own default is what a
 # customer actually gets. Nested templates the root always passes ``LogLevel``
 # to are covered by the root's default and are not listed here.
+#
+# NOT covered, deliberately: the ``feature-platform/*`` feature stacks. Their
+# templates also default to ``INFO``, but changing that would be a no-op —
+# each feature's ``feature.yaml`` pins ``defaultParameters.LogLevel: INFO``,
+# which the installer passes explicitly, so the template default is never
+# reached. Fixing those means editing the ``feature.yaml`` values (six
+# features, ``pii-anonymizer`` first), which is a separate change with its own
+# blast radius. Finding #9's residual risk survives there until then; add them
+# to ``TEMPLATES`` when it is fixed.
 TEMPLATES = (
     "template.yaml",
     "patterns/unified/template.yaml",
