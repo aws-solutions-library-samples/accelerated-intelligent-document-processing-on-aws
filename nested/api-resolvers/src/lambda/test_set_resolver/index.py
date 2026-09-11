@@ -2205,6 +2205,82 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     return state
 
 
+def _resolve_set_fingerprint(test_set_id, meta, config_version):
+    """The confidence fingerprint of the revision family that drafted a set's
+    labels under ``config_version`` (#698), read from the ``labeljob#`` items'
+    run records, which the test runner stamps with ``ConfidenceFingerprint``.
+
+    Returns ``(fingerprint, source)``: ``("<fp>", "drafting-run")`` when every
+    drafting run of that profile carries the same one; ``(None, "mixed-revisions")``
+    when they disagree; ``(None, "partial")`` when some carry one and some carry
+    none (runs recorded before the stamp existed beside a later re-extract — the
+    labels those older runs drafted can only ever have fed the pooled curve, so a
+    missing fingerprint reads as UNKNOWN, never as "the same"); ``(None, None)``
+    when no run carries one. In every case but the first the profile's pooled
+    curve is the honest read, and the caller reports which case it was.
+    """
+    if not config_version:
+        return None, None
+    tracking = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+
+    def _run_fingerprint(run_id):
+        if not run_id:
+            return None
+        run = (
+            tracking.get_item(Key={"PK": f"testrun#{run_id}", "SK": "metadata"}).get(
+                "Item"
+            )
+            or {}
+        )
+        if run.get("ConfigVersion") != config_version:
+            return None  # another profile's run
+        # "" = this profile's run but recorded before the stamp existed
+        return (
+            str(run["ConfidenceFingerprint"])
+            if run.get("ConfidenceFingerprint")
+            else ""
+        )
+
+    fingerprints = set()
+    unstamped = 0
+    try:
+        run_ids = [
+            job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
+            for job in _label_jobs(test_set_id)
+        ]
+        # Same legacy fallback as the version resolver: a set drafted before
+        # labeljob# items existed names its run only through the pointer.
+        if not run_ids and meta.get("labelJobId"):
+            run_ids = [meta["labelJobId"]]
+        for run_id in run_ids:
+            fingerprint = _run_fingerprint(run_id)
+            if fingerprint is None:
+                continue
+            if fingerprint:
+                fingerprints.add(fingerprint)
+            else:
+                unstamped += 1
+    except Exception as e:  # noqa: BLE001 — the pooled curve is a safe fallback
+        logger.warning(f"Could not read labeling runs for {test_set_id}: {e}")
+    if fingerprints and unstamped:
+        # The labels those older runs drafted can only ever have fed the pooled
+        # curve; a missing fingerprint reads as UNKNOWN, never as "the same".
+        logger.info(
+            f"Test set {test_set_id}: {unstamped} drafting run(s) of '{config_version}' "
+            "predate the confidence fingerprint; serving the pooled curve"
+        )
+        return None, "partial"
+    if len(fingerprints) == 1:
+        return fingerprints.pop(), "drafting-run"
+    if len(fingerprints) > 1:
+        logger.info(
+            f"Test set {test_set_id} was drafted under several revisions of "
+            f"'{config_version}' ({sorted(fingerprints)}); serving the pooled curve"
+        )
+        return None, "mixed-revisions"
+    return None, None
+
+
 def _resolve_set_config_version(test_set_id, meta, explicit=None):
     """The Configuration Profile a test set's labels were produced under.
 
@@ -2305,19 +2381,30 @@ def estimate_review_effort(args):
         test_set_id, meta, config_version
     )
 
+    # ...and the revision family within it (#698): a model swap or assessment
+    # change on the same profile changes what a confidence number means, so the
+    # curve is read per fingerprint and falls back to the pooled profile curve.
+    fingerprint, fingerprint_source = _resolve_set_fingerprint(
+        test_set_id, meta, config_version
+    )
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
     store = CurveStore(tracking_table)
-    curve = store.get_curve(test_set_id, config_version)
+    curve = store.get_curve(test_set_id, config_version, fingerprint)
     prior = store.get_global_prior()
-    if config_version and curve.served_from != "config":
-        fallback = (
-            "the set's aggregate curve"
-            if curve.served_from == "aggregate"
-            else "no stored curve at all (the estimate leans on the global prior)"
+    wanted = "revision" if fingerprint else "config"
+    if config_version and curve.served_from != wanted:
+        fallback = {
+            "config": "the profile's curve pooled across its revisions",
+            "aggregate": "the set's aggregate curve",
+        }.get(
+            curve.served_from,
+            "no stored curve at all (the estimate leans on the global prior)",
         )
         logger.warning(
             f"estimateReviewEffort({test_set_id}): no curve stored for configuration "
-            f"'{config_version}' ({config_version_source}); serving {fallback}"
+            f"'{config_version}' ({config_version_source}"
+            f"{', revision ' + fingerprint if fingerprint else ''}); "
+            f"serving {fallback}"
         )
 
     (
@@ -2363,9 +2450,14 @@ def estimate_review_effort(args):
     result["targetAccuracy"] = target_accuracy
     result["configVersion"] = config_version
     result["configVersionSource"] = config_version_source
-    # Which curve the numbers rest on. "aggregate" with a configVersion present
-    # means the per-configuration curve is empty and the estimate is blending
-    # every configuration this set was ever scored or reviewed under.
+    result["confidenceFingerprint"] = fingerprint
+    result["confidenceFingerprintSource"] = fingerprint_source
+    # Which curve the numbers rest on. "revision" is the curve for this profile's
+    # current confidence-relevant settings; "config" with a fingerprint present
+    # means that revision family has no observations yet and the estimate is
+    # pooling every revision of the profile; "aggregate" with a configVersion
+    # present means the per-configuration curve is empty and the estimate is
+    # blending every configuration this set was ever scored or reviewed under.
     result["curveSource"] = (
         "prior" if curve.served_from in (None, "none") else curve.served_from
     )
@@ -2646,6 +2738,7 @@ def _harvest_label_job(job, deadline=None):
                 file_name,
                 doc.get("Sections") or [],
                 config_version=job.get("configVersion") or doc.get("ConfigVersion"),
+                confidence_fingerprint=run.get("ConfidenceFingerprint") or None,
             )
             # TestSetId on the pipeline document is how completeSectionReview knows
             # to write back to the baseline, tag the label reviewed-human and record
@@ -2744,7 +2837,12 @@ def _harvest_label_job(job, deadline=None):
 
 
 def _write_draft_labels_for_doc(
-    test_set_bucket, test_set_id, file_name, sections, config_version=None
+    test_set_bucket,
+    test_set_id,
+    file_name,
+    sections,
+    config_version=None,
+    confidence_fingerprint=None,
 ):
     """Write one document's sections into the test-set baseline as draft labels.
 
@@ -2781,11 +2879,17 @@ def _write_draft_labels_for_doc(
         # metadata.config_version, so without it review observations land in the
         # version-agnostic curve while scoring observations go to the per-version
         # one, and the two halves of the calibration signal never combine.
-        if config_version:
+        if config_version or confidence_fingerprint:
             metadata = result.get("metadata")
             if not isinstance(metadata, dict):
                 metadata = {}
-            metadata.setdefault("config_version", config_version)
+            if config_version:
+                metadata.setdefault("config_version", config_version)
+            # The revision family that drafted these labels, from the run item
+            # (#698): completeSectionReview keys the curve on it beside the
+            # config version, so a later model swap starts a new curve.
+            if confidence_fingerprint:
+                metadata.setdefault("confidence_fingerprint", confidence_fingerprint)
             result["metadata"] = metadata
         if min_conf is not None:
             result["minConfidence"] = min_conf

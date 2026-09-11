@@ -283,6 +283,11 @@ def _record_confidence_curve(
         # That is precisely the false confidence the quality tiers exist to prevent,
         # so these observations are refused rather than recorded.
         run_config = run.get("ConfigVersion")
+        # The revision family the run's confidence numbers belong to — stamped on
+        # the run item by the test runner from the configuration it captured
+        # (#698). Absent on runs recorded before that: the observation then lands
+        # only in the profile's pooled curve.
+        run_fingerprint = run.get("ConfidenceFingerprint") or None
         test_set = (
             table.get_item(Key={"PK": f"testset#{test_set_id}", "SK": "metadata"}).get(
                 "Item"
@@ -304,7 +309,7 @@ def _record_confidence_curve(
         from idp_common.evaluation.curve_store import CurveStore
 
         accepted = CurveStore(table).add_ece_bins(
-            test_set_id, bins, config_version=run_config
+            test_set_id, bins, config_version=run_config, fingerprint=run_fingerprint
         )
         logger.info(
             f"Recorded {accepted} confidence-curve observation(s) for test set "
