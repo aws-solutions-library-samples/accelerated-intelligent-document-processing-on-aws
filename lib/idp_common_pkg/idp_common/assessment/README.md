@@ -142,9 +142,12 @@ extraction:
     list_batch_size: 25                 # CEILING on rows per batch; the size used is
                                         # derived from the confidence model's output
                                         # cap, column count and geometry mode
-    # NOTE: no max_tokens knob — the confidence pass always requests the model's
-    # maximum output (resolved from config_library/model_config_limits.yaml) so
-    # long list assessments are never truncated.
+    # NOTE: no max_tokens knob — each confidence call requests an OUTPUT BUDGET:
+    # what a correct answer over its fields needs (one leaf per scalar and per list
+    # cell, ~40 tokens each, x3 with LLM bounding boxes, plus 1,500 overhead),
+    # floored at 2,000 and capped at the model's maximum from
+    # config_library/model_config_limits.yaml (`bedrock.sizing.confidence_output_budget`).
+    # A response that overruns it is handled by the truncation-aware splitting below.
     system_prompt: "You are an expert document analyst..."
     task_prompt: |
       Assess the confidence of extraction results for this {DOCUMENT_CLASS} document.
@@ -200,8 +203,11 @@ depend on granular assessment for large lists.
 `idp_common.assessment.batching.assess_results_batched`, which:
 
 1. Finds the single largest list field whose length exceeds the effective batch
-   size (derived, and never larger than the `extraction.confidence.list_batch_size`
-   ceiling, default 25).
+   size (derived from the confidence model's output cap, the row's column count and
+   the geometry mode; never larger than the `extraction.confidence.list_batch_size`
+   ceiling, default 25; and never larger than a **per-family loop ceiling** where one
+   was measured — 12 rows for Amazon Nova Lite/Micro, see
+   `bedrock.sizing._MODEL_LIST_BATCH_CEILINGS`).
 2. Slices that list into `list_batch_size` chunks and assesses each chunk
    **sequentially**, passing the SAME scalars/context every time so scalar
    assessments and the document context are preserved (scalars come from the first
@@ -223,6 +229,17 @@ implementation of large-list assessment. When no list exceeds the batch size the
 helper makes a single (still reconciled) call — identical to the previous behavior.
 
 ### Truncation-aware adaptive batch splitting
+
+> **Why the Nova Lite ceiling is 12, not a token count.** Live and in 4/4 offline
+> replays of the same inputs, Nova Lite at temperature 0 asked to score a 25-row,
+> 3-column batch emitted the same `{"Date": {"confidence": 1.0}, ...}` object 189
+> times until it hit its 10,000-token cap — ~60 s and 10,000 output tokens per
+> document before the splitter recovered the rows at 12. The token math allows 41
+> rows for that shape; 13 rows looped 1/5, 8 rows 0/8. Greedy decoding on a long
+> run of near-identical objects is the trigger, not input size (no images, no OCR
+> text and no text-confidence block made no difference). Two guards now apply: the
+> family ceiling above, and the per-call output budget (a loop is now cut off at the
+> budget — ~2,000–4,600 tokens — instead of the cap, and recovered the same way).
 
 A configured `list_batch_size` is a *row* count, but the model's real limit is
 its **max output tokens**. When per-row output is large — most notably with

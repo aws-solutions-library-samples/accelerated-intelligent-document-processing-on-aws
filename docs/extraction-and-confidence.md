@@ -1218,7 +1218,16 @@ extraction:
 >    (10,000-token cap) with `llm_grounded` that is 13 rows for a 3-column list and
 >    5 for 8 columns; without bounding boxes three times as many fit. This only ever
 >    *shrinks* `list_batch_size` — it never grows past your configured ceiling, so
->    raising the ceiling above the derived size has no effect.
+>    raising the ceiling above the derived size has no effect. Where a model family
+>    has a **measured loop ceiling** it applies too: Amazon Nova Lite/Micro score at
+>    most **12 rows per call**, because at temperature 0 a 25-row batch made Nova Lite
+>    repeat the same row object until it hit its 10,000-token cap on every run (~60 s
+>    and 10,000 output tokens per document), while 13 rows looped occasionally and 8
+>    never. Each call also requests only the **output budget** a correct answer needs
+>    (about 40 tokens per scalar or list cell, three times that with LLM bounding
+>    boxes, plus overhead; floor 2,000, cap the model's maximum) rather than the
+>    model's full cap, so a degenerate response is cut off early and recovered by
+>    the steps below instead of running to the cap.
 > 2. **Recursive splitting.** Any batch that still truncates is halved and
 >    re-assessed until it fits.
 > 3. **Model escalation.** If rows are *still* unscored after shrinking + retries,

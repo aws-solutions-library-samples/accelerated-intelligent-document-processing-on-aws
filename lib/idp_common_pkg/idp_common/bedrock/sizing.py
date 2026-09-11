@@ -30,6 +30,8 @@ Pure/importable (no boto3/PIL); safe to call from any path.
 
 from __future__ import annotations
 
+import re
+
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -126,6 +128,31 @@ _MIN_LIST_BATCH = 1
 # LATENCY risk (one slow call), independent of whether the tokens fit. The
 # self-healing ladder can always shrink further; starting moderate is safer.
 _ABS_MAX_LIST_BATCH = 50
+# Per-model-family ceilings on rows per confidence call, applied UNDER the token
+# math and under the operator's ``list_batch_size``. These are not token limits:
+# they are where a model's greedy decoding was MEASURED to degenerate on the
+# repetitive output a confidence batch asks for. Nova Lite (v1) at temperature 0,
+# asked to score 25 near-identical rows, emitted the same
+# ``{"Date": {"confidence": 1.0}, ...}`` object 189 times until it hit its
+# 10,000-token cap — on 4/4 offline replays and on every live small_narrow run
+# (each costing ~60 s and 10,000 output tokens before the adaptive splitter
+# recovered the rows at 12). The same inputs at 13 rows: 0/4 offline, 1/5 live;
+# at 8 rows: 0/8. The fit-by-tokens answer for that row shape is 41, so no token
+# constant expresses this. Measured on nova-lite; nova-micro is the smaller
+# sibling and gets the same ceiling; Nova Pro/Premier/Nova 2 are unmeasured and
+# deliberately NOT listed (an unmeasured cap would be a guess in either direction).
+_MODEL_LIST_BATCH_CEILINGS: tuple[tuple[str, int], ...] = (
+    (r"amazon\.nova-(lite|micro)", 12),
+)
+# Floor and per-call overhead for the OUTPUT budget a confidence call requests
+# (``confidence_output_budget``). A degenerate response — the repetition loop
+# above — otherwise runs to the model's full cap; requesting only what a correct
+# answer needs turns a 10,000-token / 60 s failure into a ~2,000-token / 8 s one,
+# and the adaptive splitter recovers either way. The overhead covers the scalar
+# and group leaves, the JSON envelope and a code fence; the floor keeps a
+# scalar-only document from ever being budgeted below what a verbose answer needs.
+_CONFIDENCE_OUTPUT_OVERHEAD_TOKENS = 1_500
+_MIN_CONFIDENCE_OUTPUT_BUDGET = 2_000
 
 
 @dataclass
@@ -243,11 +270,29 @@ def confidence_rows_for_per_row_tokens(
     return max(_MIN_LIST_BATCH, min(limit, derived))
 
 
+def model_list_batch_ceiling(model_id: str | None) -> int | None:
+    """The measured per-family ceiling on rows per confidence call, or None.
+
+    See :data:`_MODEL_LIST_BATCH_CEILINGS` for why this exists and how it was
+    measured; it bounds what the SYSTEM derives and also what the operator's
+    ``list_batch_size`` allows, because above it the model does not truncate on
+    tokens — it loops until the cap, whatever the cap is.
+    """
+    if not model_id:
+        return None
+    lowered = model_id.lower()
+    for pattern, ceiling in _MODEL_LIST_BATCH_CEILINGS:
+        if re.search(pattern, lowered):
+            return ceiling
+    return None
+
+
 def confidence_rows_per_call(
     output_cap: int | None,
     num_columns: int | None,
     geometry_mode: str | None,
     ceiling: int | None = None,
+    model_id: str | None = None,
 ) -> int:
     """Rows one confidence call can score without truncating.
 
@@ -255,10 +300,62 @@ def confidence_rows_per_call(
     model's output cap, the geometry mode and the column count. On Nova Lite
     (10,000 cap) with bounding boxes it is 41 rows for a 1-column list, 13 for 3
     columns and 5 for 8; on Sonnet 5 (128,000) the reliability ceiling binds first.
+    When ``model_id`` names a family with a measured degeneration ceiling
+    (:func:`model_list_batch_ceiling`), the result never exceeds it.
     """
-    return confidence_rows_for_per_row_tokens(
+    rows = confidence_rows_for_per_row_tokens(
         output_cap, confidence_per_row_tokens(num_columns, geometry_mode), ceiling
     )
+    family = model_list_batch_ceiling(model_id)
+    if family is not None:
+        rows = max(_MIN_LIST_BATCH, min(rows, family))
+    return rows
+
+
+def confidence_output_budget(
+    extraction_results: Any,
+    geometry_mode: str | None,
+    output_cap: int | None,
+) -> int:
+    """maxTokens to request for ONE confidence call over ``extraction_results``.
+
+    A correct answer emits one leaf per scalar and one leaf per cell of every
+    list row (:func:`confidence_per_row_tokens` per row, which is already ~2x the
+    measured clean cost), plus :data:`_CONFIDENCE_OUTPUT_OVERHEAD_TOKENS`. The
+    budget is that sum, never below :data:`_MIN_CONFIDENCE_OUTPUT_BUDGET` and
+    never above the model's cap. Requesting only this — instead of the model's
+    full cap — bounds the cost of a degenerate response (see
+    :data:`_MODEL_LIST_BATCH_CEILINGS`): a loop is cut off after the budget and
+    the batcher's truncation path recovers the rows exactly as before.
+
+    Rows are counted at every depth (a list of instances carrying their own
+    lists is scored row by row too); a list whose items are scalars counts one
+    leaf per item.
+    """
+    per_cell = confidence_per_row_tokens(1, geometry_mode)
+    leaves = 0.0
+
+    def _walk(node: Any) -> None:
+        nonlocal leaves
+        if isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    _walk(item)
+                else:
+                    leaves += 1
+        else:
+            leaves += 1
+
+    _walk(extraction_results)
+    budget = int(leaves * per_cell) + _CONFIDENCE_OUTPUT_OVERHEAD_TOKENS
+    budget = max(_MIN_CONFIDENCE_OUTPUT_BUDGET, budget)
+    cap = int(output_cap) if (output_cap and output_cap > 0) else None
+    if cap is not None:
+        budget = min(budget, cap)
+    return budget
 
 
 def compute_sizing_plan(
@@ -331,7 +428,10 @@ def compute_sizing_plan(
     _, conf_max_out, conf_resolved = _resolve_limits(conf_model)
     per_row = confidence_per_row_tokens(list_columns, geometry_mode)
     derived_list_batch = confidence_rows_per_call(
-        conf_max_out if conf_resolved else None, list_columns, geometry_mode
+        conf_max_out if conf_resolved else None,
+        list_columns,
+        geometry_mode,
+        model_id=conf_model,
     )
     list_batch_size = (
         int(list_batch_size_override)
