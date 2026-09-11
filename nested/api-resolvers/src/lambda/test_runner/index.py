@@ -4,7 +4,7 @@
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
@@ -160,7 +160,7 @@ def handler(event, context):
 
         # The run id is reserved when its metadata is written (below), so a
         # collision with a run submitted in the same second is caught there.
-        submitted_at = datetime.utcnow()
+        submitted_at = datetime.now(timezone.utc)
 
         # Resolve first, then capture, so the version is recorded on the run whether
         # or not the caller named one. Passing the resolved name through also keeps
@@ -301,7 +301,7 @@ def handler(event, context):
             "status": "QUEUED",
             "filesCount": files_to_process,
             "completedFiles": 0,
-            "createdAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
 
     except Exception as e:
@@ -653,7 +653,7 @@ def _store_test_run_metadata(
     table = dynamodb.Table(tracking_table)  # type: ignore[attr-defined]
 
     try:
-        created_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         item = {
             "PK": f"testrun#{test_run_id}",
             "SK": "metadata",

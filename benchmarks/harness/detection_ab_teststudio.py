@@ -129,13 +129,15 @@ def cmd_launch(a):
             res = json.loads(r["Payload"].read())
             rid = res.get("testRunId")
             print(f"  {testset:26s} {prof:14s} -> {rid or res}")
-            if rid in seen_ids:
+            # A failed invoke has no id (rid is None); only a real id can collide.
+            if rid and rid in seen_ids:
                 raise SystemExit(
                     f"run id {rid} was issued twice: the stack's TestRunner collapses "
                     f"runs started within one second (#879). Abort the other arms in "
                     f"Test Studio and relaunch with a gap, or deploy the fix."
                 )
-            seen_ids.add(rid)
+            if rid:
+                seen_ids.add(rid)
             out.append(
                 {
                     "corpus": testset,

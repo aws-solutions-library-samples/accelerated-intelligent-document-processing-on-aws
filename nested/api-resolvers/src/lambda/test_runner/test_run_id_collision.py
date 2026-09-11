@@ -24,7 +24,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -36,7 +36,7 @@ os.environ.setdefault("TRACKING_TABLE", "tracking")
 os.environ.setdefault("CONFIG_TABLE", "config")
 os.environ.setdefault("FILE_COPY_QUEUE_URL", "https://sqs.example/queue")
 
-SUBMITTED_AT = datetime(2026, 9, 11, 13, 11, 20)
+SUBMITTED_AT = datetime(2026, 9, 11, 13, 11, 20, tzinfo=timezone.utc)
 
 # What the UI (documents-table-config.tsx) and the GSI backfill Lambda expect.
 ID_SHAPE = re.compile(r"^[^/]+-\d{8}-\d{6}$")
@@ -54,8 +54,8 @@ def _load(name):
 
 class _FrozenDatetime(datetime):
     @classmethod
-    def utcnow(cls):
-        return SUBMITTED_AT
+    def now(cls, tz=None):
+        return SUBMITTED_AT if tz is None else SUBMITTED_AT.astimezone(tz)
 
 
 @pytest.fixture
