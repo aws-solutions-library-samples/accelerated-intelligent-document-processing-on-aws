@@ -237,6 +237,11 @@ per-class cache verdict, and `benchmarks/harness/cache_audit.py` can be pointed 
 any existing run to classify it as *caching normally* / *write-only (paying 1.25× for
 nothing)* / *never cached*.
 
+The product now applies the same classification itself: per phase on the document cost
+table and per class in the section's Processing Report tab and result.json
+(`metadata.prompt_cache`), queryable in Athena through the `document_sections_*` tables
+— see [configuration.md](../configuration.md#reading-cache-efficiency-back-per-phase-and-per-class).
+
 ## Reproduce
 
 ```bash

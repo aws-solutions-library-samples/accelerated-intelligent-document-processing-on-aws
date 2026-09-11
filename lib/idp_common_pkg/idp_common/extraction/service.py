@@ -3632,6 +3632,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
             report_lines.append("")
 
+        # Prompt cache: what the cache point actually did for this section (#780).
+        if metadata.get("prompt_cache"):
+            from idp_common.bedrock.prompt_cache import describe_cache_state
+
+            report_lines.append("Prompt cache (this section):")
+            report_lines.append(f"  - {describe_cache_state(metadata['prompt_cache'])}")
+            report_lines.append("")
+
         # Assessment batch-splitting (only present when the confidence model
         # truncated its output and batches had to shrink to recover coverage).
         if "assessment_batch_split_stats" in metadata:
@@ -5668,6 +5676,26 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         return merged_assessment, regenerated_alerts, split_stats
 
+    def _record_prompt_cache_metadata(
+        self, metadata: dict[str, Any], metering: dict[str, Any]
+    ) -> None:
+        """Add ``metadata["prompt_cache"]`` — the section's cache read / write /
+        uncached input tokens and one of the states caching, write-only,
+        never-cached, disabled, no-cache-data (#780). Reporting only: never fails
+        the section, and adds nothing when the section made no Bedrock call."""
+        try:
+            from idp_common.bedrock.prompt_cache import summarize_cache_usage
+
+            summary = summarize_cache_usage(
+                metering,
+                context_prefix="Extraction",
+                disabled=self.config.extraction.prompt_cache == "off",
+            )
+            if summary is not None:
+                metadata["prompt_cache"] = summary
+        except Exception as e:  # noqa: BLE001 - reporting only
+            logger.debug("Could not summarize prompt-cache usage: %s", e)
+
     def _save_results(
         self,
         document: Document,
@@ -6051,6 +6079,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
         except Exception as e:  # noqa: BLE001 - reporting only
             logger.debug("Could not build processing_flow: %s", e)
+
+        # Prompt-cache efficiency for THIS section (#780 item 2). Captured here,
+        # before result.metering is folded into the document total below, because
+        # the metering key carries phase and model but not class.
+        self._record_prompt_cache_metadata(metadata, result.metering or {})
 
         # Generate user-friendly processing report
         processing_report = self._generate_processing_report(metadata)
