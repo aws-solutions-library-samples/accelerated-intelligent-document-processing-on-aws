@@ -12329,9 +12329,44 @@ Resources:
             #     attacker-controlled https:// origin is blocked. Realtime
             #     subscriptions (wss) and localhost:* (dev) retained. The
             #     `amplify://` and `blob:` schemes are not used.
+            #   - script-src: the blanket `https:` source is GONE (AppSec review
+            #     of v0.6.x — UI.T01: it permitted script from ANY https origin,
+            #     which defeats the directive). The only cross-origin source left
+            #     is the one host the app actually loads script from:
+            #     cdn.jsdelivr.net. `@monaco-editor/react` does NOT bundle
+            #     Monaco — its loader fetches
+            #     https://cdn.jsdelivr.net/npm/monaco-editor@<version>/min/vs at
+            #     runtime and nothing in src/ui calls `loader.config()` to point
+            #     it at a self-hosted copy, so dropping `https:` outright blanks
+            #     every Monaco editor in the UI (Configuration, Pricing, Model
+            #     limits, schema preview, page-text editor, document viewer).
+            #     Self-hosting Monaco out of the Web UI bucket would let this
+            #     last source go too; until then it is pinned to ONE origin —
+            #     and to that origin's `/npm/` prefix, which excludes
+            #     jsDelivr's `/gh/` and `/wp/` proxies (arbitrary GitHub repos
+            #     and WordPress plugins). A CSP path only prefix-matches when it
+            #     ends in `/`, and the version is chosen by
+            #     @monaco-editor/loader rather than by us, so pinning the
+            #     version too would turn a dependency bump into a blank editor.
+            #   - style-src's `https:` is NOT narrowed here on purpose: this
+            #     change is scoped to the script-src finding, a stylesheet is a
+            #     materially weaker primitive than a script, and the narrowing
+            #     is only observable by loading the app. It rides with the
+            #     Monaco self-hosting follow-up.
             #   - script-src/style-src: 'unsafe-inline' and 'unsafe-eval'
             #     retained pending Monaco editor compatibility work
             #     (tracked as Talos finding #12 phase 2).
+            #   - KEEP IN SYNC with the APIGateway-hosting copy of this policy in
+            #     nested/api-resolvers/template.yaml (Mappings -> WebUiSecurity ->
+            #     ContentSecurityPolicy), which serves the SPA when there is no
+            #     CloudFront distribution (GovCloud / private-network). The only
+            #     intended difference is `frame-ancestors`: 'self' here (matching
+            #     FrameOptions SAMEORIGIN below) vs 'none' there (matching that
+            #     mode's X-Frame-Options: DENY).
+            #     scripts/tests/test_csp_policies_in_sync.py enforces this — it
+            #     compares the two policies directive-by-directive, so editing
+            #     one alone fails the build instead of quietly leaving GovCloud
+            #     deployments a directive short.
             #   - img-src: retains `https:` to allow user-supplied
             #     document thumbnails from any S3 / CloudFront origin.
             #   - connect-src: includes https://*.on.aws for the chat streaming
@@ -12353,7 +12388,7 @@ Resources:
             #     any subdomain depth, which is why the app worked throughout.
             #     Removed rather than corrected, so the policy says what it does.
             #     Do not re-add a host with a wildcard anywhere but the front.
-            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
+            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
 
           StrictTransportSecurity:
             Override: true

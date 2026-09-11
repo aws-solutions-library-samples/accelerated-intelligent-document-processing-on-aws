@@ -26,9 +26,9 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 | High risk (6–7) | 29 |
 | Medium risk (3–5) | 41 |
 | Low risk (1–2) | 15 |
-| Mitigated | 62 (67%) |
+| Mitigated | 63 (68%) |
 | Partially mitigated | 22 (24%) |
-| Open (real gap, needs work) | **5 (6%)** |
+| Open (real gap, needs work) | **4 (4%)** |
 | Accepted risk | 4 (4%) |
 
 > **Counts are generated, not hand-maintained.** `deliverables/threat-model.tc.json`
@@ -42,14 +42,13 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 ### Open items requiring action
 
-The five **Open** threats are gaps with no effective control today:
+The four **Open** threats are gaps with no effective control today:
 
 | ID | Threat | Where |
 |----|--------|-------|
 | CHAT.T03 | Chat streaming Function URL enforces neither RBAC group nor session ownership | [companion-chat.md](feature-threats/companion-chat.md) |
 | CHAT.T06 | `/chat/agent` trusts a client-supplied `callerSub` over the SigV4 identity | [companion-chat.md](feature-threats/companion-chat.md) |
 | UI.T06 | Presigned read URLs are bucket-scoped, not key-scoped; callable by any authenticated user | [web-ui.md](feature-threats/web-ui.md) |
-| UI.T07 | No CSP emitted in `WebUIHosting=APIGateway` (incl. GovCloud) deployments | [web-ui.md](feature-threats/web-ui.md) |
 | JOB.T02 | Jobs API is outside the automated authorization test harness | [jobs-api.md](feature-threats/jobs-api.md) |
 
 ## Directory Structure
