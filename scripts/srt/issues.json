@@ -1413,7 +1413,7 @@
     "isCustomResource": false,
     "firstDetectedAt": "2026-07-21T19:49:25.735Z",
     "assessmentCount": 1,
-    "suppressionReason": "Accepted: bedrock-agentcore:* on Resource '*' is required \u2014 CreateAgentRuntime transitively creates/deletes runtime endpoints and other sub-resources, so an action allow-list breaks create/delete; these control-plane APIs do not support resource-level permissions and the runtime ARN does not exist at create time. iam:PassRole/CreateServiceLinkedRole and logs are scoped."
+    "suppressionReason": "Partially accepted: the bedrock-agentcore:* action wildcard was removed \u2014 the role now grants only the five runtime APIs the handler calls. Two of them, CreateAgentRuntime and ListAgentRuntimes, declare no resource type in the IAM service authorization reference, so they remain on Resource '*'; Get/Update/DeleteAgentRuntime are scoped to this account/region's runtime/* ARNs (the runtime id is service-generated, so the id segment stays a wildcard). iam:PassRole/CreateServiceLinkedRole and logs are scoped."
   },
   {
     "source": "security-matrix",
