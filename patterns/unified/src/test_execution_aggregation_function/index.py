@@ -10,11 +10,13 @@ This function is invoked by the TestResultsResolver to offload heavy Stickler pr
 
 import json
 import logging
+import math
 import os
 import re
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -138,6 +140,37 @@ _seen_collision_names: "OrderedDict[tuple, None]" = OrderedDict()
 _seen_collision_lock = threading.Lock()
 
 
+def average_weighted_overall_score(
+    doc_weighted_scores: Optional[Dict[str, Any]],
+) -> Optional[float]:
+    """Mean of the per-document weighted overall scores, or None if there are none.
+
+    The run-level companion to ``weighted_overall_scores``. Each document's score
+    already honours the config's ``x-aws-idp-evaluation-weight`` field weights
+    (Stickler computes it per document); this is an unweighted mean ACROSS
+    documents, so every document counts equally regardless of how many fields it
+    has. That is deliberate — it matches what the Test Studio UI has always
+    displayed as "Avg Weighted Score" — but it is a choice, so callers wanting a
+    field-count-weighted roll-up should not assume this is it.
+
+    Only finite numbers count, mirroring the UI's
+    ``parseWeightedOverallScoresFinite``. A single NaN would otherwise make the
+    whole mean NaN, which reads as "no score" in some clients and as a broken
+    number in others; skipping it keeps this figure equal to the one the UI
+    computes from the same map.
+    """
+    if not doc_weighted_scores:
+        return None
+    scores = [
+        float(score)
+        for score in doc_weighted_scores.values()
+        if isinstance(score, (int, float, Decimal)) and math.isfinite(score)
+    ]
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Lambda handler for test execution aggregation.
@@ -163,13 +196,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         result = aggregate_test_run_with_stickler(test_run_id, tracking_table_name)
 
-        # Calculate average weighted score from document-level scores
-        weighted_scores = result.get("weighted_overall_scores", {})
-        avg_weighted_score = None
-        if weighted_scores:
-            scores = [score for score in weighted_scores.values() if score is not None]
-            if scores:
-                avg_weighted_score = sum(scores) / len(scores)
+        # The average weighted score is part of the returned metrics now, rather
+        # than being computed here purely to log it and then discarded.
+        avg_weighted_score = result.get("avg_weighted_overall_score")
 
         # Format avg_weighted_score
         avg_weighted_score_str = (
@@ -283,6 +312,11 @@ def _record_confidence_curve(
         # That is precisely the false confidence the quality tiers exist to prevent,
         # so these observations are refused rather than recorded.
         run_config = run.get("ConfigVersion")
+        # The revision family the run's confidence numbers belong to — stamped on
+        # the run item by the test runner from the configuration it captured
+        # (#698). Absent on runs recorded before that: the observation then lands
+        # only in the profile's pooled curve.
+        run_fingerprint = run.get("ConfidenceFingerprint") or None
         test_set = (
             table.get_item(Key={"PK": f"testset#{test_set_id}", "SK": "metadata"}).get(
                 "Item"
@@ -304,7 +338,7 @@ def _record_confidence_curve(
         from idp_common.evaluation.curve_store import CurveStore
 
         accepted = CurveStore(table).add_ece_bins(
-            test_set_id, bins, config_version=run_config
+            test_set_id, bins, config_version=run_config, fingerprint=run_fingerprint
         )
         logger.info(
             f"Recorded {accepted} confidence-curve observation(s) for test set "
@@ -1240,6 +1274,12 @@ def _transform_stickler_metrics(
         # top-level accuracy fields consistently.
         "overall_accuracy": _optional_accuracy(metrics),
         "weighted_overall_scores": doc_weighted_scores,
+        # Run-level roll-up of the per-document scores above. Previously every
+        # consumer had to average the dict itself (the Test Studio UI does so in
+        # seven places), which meant each one owned a copy of the definition.
+        "avg_weighted_overall_score": average_weighted_overall_score(
+            doc_weighted_scores
+        ),
         "average_confidence": average_confidence,  # Now computed from Stickler if available
         "confidence_metrics": confidence_metrics,  # NEW: Full calibration metrics (v0.4.0+)
         "accuracy_breakdown": {
@@ -1589,6 +1629,7 @@ def _empty_metrics() -> Dict[str, Any]:
     return {
         "overall_accuracy": None,
         "weighted_overall_scores": {},
+        "avg_weighted_overall_score": None,
         "average_confidence": None,
         "accuracy_breakdown": {
             # All ``None`` on the error path so external Athena / BI

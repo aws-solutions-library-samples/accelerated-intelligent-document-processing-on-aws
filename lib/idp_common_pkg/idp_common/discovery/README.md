@@ -122,6 +122,21 @@ them by `$id` (falling back to `x-aws-idp-document-type`), and inserts each newl
 discovered class — overwriting only a class with the same identifier. It never
 deletes classes the user curated.
 
+### Multi-record samples produce a suggestion, not a setting (#765)
+
+Both single-document flows append `_INSTANCE_COUNT_INSTRUCTION` to the prompt: the
+model adds a top-level `IDPDocumentInstanceCount` integer (same field name and
+question as the extraction probe in `idp_common.extraction.instance_probe`) that
+`pop_instance_count()` removes from the reply — and from `properties`, should the
+model put it there — before validation, so it can never become a class field. The
+result dict gains `multi_instance_hint`: `None` for one record, otherwise
+`build_multi_instance_hint()` → `{"instance_count", "class_name",
+"already_multi_instance", "message"}`. `already_multi_instance` reflects the class
+*after* the merge, so a re-run on a class the author flagged (kept by the
+carry-forward below) reports the flag as on. Discovery never writes
+`x-aws-idp-multi-instance` itself; the Web UI job details page offers the one-click
+apply and the processor carries the hint on the job as `multiInstanceHint` (JSON).
+
 ### Re-discovering an existing class preserves its authored settings
 
 Overwriting a class with the same identifier is a **merge**, not an assignment.

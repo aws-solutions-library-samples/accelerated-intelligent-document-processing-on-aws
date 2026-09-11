@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from xml.etree.ElementTree import (  # nosec B405 - constructing XML in-memory for tests, no parsing
     Element,
@@ -49,6 +50,32 @@ def test_convert_csv_to_pages():
     assert isinstance(pages[0][0], bytes)
     assert "Name" in pages[0][1]
     assert "John" in pages[0][1]
+
+
+@pytest.mark.unit
+def test_convert_legacy_xls_to_pages():
+    """A legacy .xls workbook is actually read, not silently blanked.
+
+    Without `xlrd` declared in the `[ocr]` extra, `pd.read_excel` raises
+    "Missing optional dependency 'xlrd'" for the BIFF format, the handler at the
+    bottom of `convert_excel_to_pages` swallows it, and the document completes as a
+    single empty page reading "Error reading Excel file" — so a format that is
+    advertised in the changelog, accepted by the upload picker, and routed by
+    `ocr/service.py` produced no content. An import assertion would not catch this;
+    only reading a real .xls file does.
+
+    The fixture is synthetic, generated with `xlwt` (two sheets, six cells).
+    """
+    converter = DocumentConverter(dpi=72)
+
+    fixture = Path(__file__).parent / "fixtures" / "two_sheets.xls"
+    pages = converter.convert_excel_to_pages(fixture.read_bytes())
+
+    all_text = " ".join(text for _, text in pages)
+    assert "Error reading Excel file" not in all_text
+    # Content from both sheets survives the conversion.
+    assert "Widget" in all_text
+    assert "GrandTotal" in all_text
 
 
 @pytest.mark.unit

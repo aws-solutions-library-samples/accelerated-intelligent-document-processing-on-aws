@@ -1,0 +1,294 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Minimal OIDC identity provider for verification only. Serves real OIDC
+  discovery, an auto-approving /authorize, a /token endpoint issuing RS256-signed
+  id_tokens, a /userinfo endpoint, and JWKS. Cognito performs genuine discovery,
+  code exchange, signature validation and attribute mapping against it.
+
+  NOT for production: /authorize approves without authenticating anyone.
+
+Parameters:
+  RsaN:
+    Type: String
+    Description: RSA modulus as a decimal string
+  RsaE:
+    Type: String
+    Description: RSA public exponent as a decimal string
+  RsaD:
+    Type: String
+    Description: RSA private exponent as a decimal string
+  ClientId:
+    Type: String
+    Default: idp-verification-client
+  ClientSecret:
+    Type: String
+    NoEcho: true
+  MockUser:
+    Type: String
+    Description: JSON describing the user /authorize signs in
+    Default: '{"sub":"fed-1","email":"fed-admin@example.invalid","given_name":"Fed","family_name":"Admin","memberOf":"IdP-Admins"}'
+
+Resources:
+  IdpFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  IdpFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt IdpFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          RSA_N: !Ref RsaN
+          RSA_E: !Ref RsaE
+          RSA_D: !Ref RsaD
+          CLIENT_ID: !Ref ClientId
+          CLIENT_SECRET: !Ref ClientSecret
+          MOCK_USER: !Ref MockUser
+          ISSUER: !Sub https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}/idp
+      LoggingConfig:
+        LogGroup: !Ref IdpFunctionLogGroup
+      Code:
+        ZipFile: |
+          """Minimal OIDC provider. RS256 signing uses only the standard library:
+          PKCS#1 v1.5 padding plus a modular exponentiation, so the Lambda needs
+          no dependencies beyond the runtime."""
+          import base64
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.parse
+
+          N = int(os.environ["RSA_N"])
+          E = int(os.environ["RSA_E"])
+          D = int(os.environ["RSA_D"])
+          CLIENT_ID = os.environ["CLIENT_ID"]
+          CLIENT_SECRET = os.environ["CLIENT_SECRET"]
+          ISSUER = os.environ["ISSUER"]
+          KID = "verification-key-1"
+
+          # SHA-256 DigestInfo prefix from RFC 8017 section 9.2 step 2.
+          SHA256_DER_PREFIX = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+          def b64u(raw: bytes) -> str:
+              return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+          def int_to_b64u(value: int) -> str:
+              length = (value.bit_length() + 7) // 8
+              return b64u(value.to_bytes(length, "big"))
+
+
+          def rs256_sign(message: bytes) -> bytes:
+              digest_info = SHA256_DER_PREFIX + hashlib.sha256(message).digest()
+              k = (N.bit_length() + 7) // 8
+              # EMSA-PKCS1-v1_5: 0x00 0x01 <0xFF padding> 0x00 <DigestInfo>
+              padding = b"\xff" * (k - len(digest_info) - 3)
+              em = b"\x00\x01" + padding + b"\x00" + digest_info
+              signature = pow(int.from_bytes(em, "big"), D, N)
+              return signature.to_bytes(k, "big")
+
+
+          def jwt(claims: dict) -> str:
+              header = {"alg": "RS256", "typ": "JWT", "kid": KID}
+              signing_input = (
+                  b64u(json.dumps(header, separators=(",", ":")).encode())
+                  + "."
+                  + b64u(json.dumps(claims, separators=(",", ":")).encode())
+              ).encode()
+              return signing_input.decode() + "." + b64u(rs256_sign(signing_input))
+
+
+          def user() -> dict:
+              return json.loads(os.environ["MOCK_USER"])
+
+
+          def json_response(body, status=200):
+              return {
+                  "statusCode": status,
+                  "headers": {"Content-Type": "application/json",
+                              "Cache-Control": "no-store"},
+                  "body": json.dumps(body),
+              }
+
+
+          def handler(event, context):
+              path = event.get("path") or "/"
+              # The API Gateway stage is part of the issuer, so strip it.
+              if path.startswith("/idp"):
+                  path = path[4:] or "/"
+              method = (event.get("httpMethod") or "GET").upper()
+              print(f"{method} {path}")
+
+              if path == "/.well-known/openid-configuration":
+                  return json_response({
+                      "issuer": ISSUER,
+                      "authorization_endpoint": f"{ISSUER}/authorize",
+                      "token_endpoint": f"{ISSUER}/token",
+                      "userinfo_endpoint": f"{ISSUER}/userinfo",
+                      "jwks_uri": f"{ISSUER}/.well-known/jwks.json",
+                      "response_types_supported": ["code"],
+                      "grant_types_supported": ["authorization_code"],
+                      "subject_types_supported": ["public"],
+                      "id_token_signing_alg_values_supported": ["RS256"],
+                      "scopes_supported": ["openid", "email", "profile"],
+                      "token_endpoint_auth_methods_supported": [
+                          "client_secret_basic", "client_secret_post"
+                      ],
+                      "claims_supported": [
+                          "sub", "email", "email_verified", "given_name",
+                          "family_name", "memberOf",
+                      ],
+                  })
+
+              if path == "/.well-known/jwks.json":
+                  return json_response({"keys": [{
+                      "kty": "RSA", "use": "sig", "alg": "RS256", "kid": KID,
+                      "n": int_to_b64u(N), "e": int_to_b64u(E),
+                  }]})
+
+              if path == "/authorize":
+                  q = event.get("queryStringParameters") or {}
+                  redirect_uri = q.get("redirect_uri")
+                  state = q.get("state", "")
+                  if not redirect_uri:
+                      return json_response({"error": "invalid_request"}, 400)
+                  # No authentication: this provider exists to exercise the
+                  # relying party, and returns whoever MOCK_USER names.
+                  params = {"code": "verification-code", "state": state}
+                  location = redirect_uri + ("&" if "?" in redirect_uri else "?")
+                  location += urllib.parse.urlencode(params)
+                  return {"statusCode": 302, "headers": {"Location": location},
+                          "body": ""}
+
+              if path == "/token":
+                  body = event.get("body") or ""
+                  if event.get("isBase64Encoded"):
+                      body = base64.b64decode(body).decode()
+                  form = dict(urllib.parse.parse_qsl(body))
+                  auth = (event.get("headers") or {}).get("Authorization", "")
+                  client_id = form.get("client_id")
+                  client_secret = form.get("client_secret")
+                  if auth.startswith("Basic "):
+                      decoded = base64.b64decode(auth[6:]).decode()
+                      client_id, _, client_secret = decoded.partition(":")
+                      client_id = urllib.parse.unquote(client_id)
+                      client_secret = urllib.parse.unquote(client_secret)
+                  if client_id != CLIENT_ID or client_secret != CLIENT_SECRET:
+                      print(f"client auth failed for {client_id!r}")
+                      return json_response({"error": "invalid_client"}, 401)
+                  u = user()
+                  now = int(time.time())
+                  claims = {
+                      "iss": ISSUER, "sub": u["sub"], "aud": CLIENT_ID,
+                      "iat": now, "exp": now + 3600, "auth_time": now,
+                      "email": u["email"], "email_verified": True,
+                      "given_name": u.get("given_name", ""),
+                      "family_name": u.get("family_name", ""),
+                  }
+                  if u.get("memberOf") is not None:
+                      claims["memberOf"] = u["memberOf"]
+                  return json_response({
+                      "access_token": "verification-access-token",
+                      "token_type": "Bearer", "expires_in": 3600,
+                      "id_token": jwt(claims),
+                  })
+
+              if path == "/userinfo":
+                  u = user()
+                  info = {
+                      "sub": u["sub"], "email": u["email"], "email_verified": True,
+                      "given_name": u.get("given_name", ""),
+                      "family_name": u.get("family_name", ""),
+                  }
+                  # Only present when the mock user has one, so a sign-in whose
+                  # assertion omits the group claim can be exercised too.
+                  if u.get("memberOf") is not None:
+                      info["memberOf"] = u["memberOf"]
+                  return json_response(info)
+
+              return json_response({"error": "not_found", "path": path}, 404)
+
+  # This whole stack is throwaway — make verify-idp-federation creates and
+  # deletes it — but declare the log group anyway so that if a run is
+  # interrupted and the stack survives, its logs still expire rather than being
+  # kept forever by Lambda's auto-created group (issue #826).
+  IdpFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /${AWS::StackName}/lambda/IdpFunction
+      RetentionInDays: 1
+
+  IdpFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref IdpFunction
+      Principal: !Sub apigateway.${AWS::URLSuffix}
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/*/*
+
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${AWS::StackName}-oidc
+      EndpointConfiguration: { Types: [REGIONAL] }
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: '{proxy+}'
+
+  ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IdpFunction.Arn}/invocations
+
+  RootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !GetAtt Api.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IdpFunction.Arn}/invocations
+
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [ProxyMethod, RootMethod]
+    Properties:
+      RestApiId: !Ref Api
+      StageName: idp
+
+Outputs:
+  Issuer:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}/idp
+  FunctionName:
+    Value: !Ref IdpFunction
+  ClientId:
+    Value: !Ref ClientId

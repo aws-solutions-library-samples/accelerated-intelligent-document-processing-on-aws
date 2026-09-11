@@ -38,9 +38,11 @@ from strands.types.media import (
 )
 
 from idp_common.bedrock.client import (
+    ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
     CLAUDE_EFFORT_LEVELS,
     GROK_EFFORT_LEVELS,
+    is_astra_model,
     is_claude_effort_model,
     is_grok_model,
     strips_sampling_params,
@@ -265,6 +267,9 @@ def apply_patches_to_data(
     return patched_dict
 
 
+# NOTE: page_images here (and in the prompt builder below) come from
+# ExtractionService._page_images, which _load_document_images has already
+# fitted to Bedrock's per-image limit (#778). Do not pass raw page bytes in.
 def create_view_image_tool(page_images: list[bytes]) -> Any:
     """
     Create a view_image tool that has access to page images.
@@ -983,11 +988,32 @@ ROW COUNT VALIDATION:
 """
 
 
+# Backoff bounds for the agent call. ``max_delay`` was 1800 — thirty minutes of
+# backoff for a function Lambda kills at 900 seconds — so a single transient
+# ``Read timed out`` could spend the entire invocation asleep and lose the whole
+# shard, which Step Functions then repeats from scratch having persisted nothing.
+# Two bounds now apply, whichever binds first:
+#
+# * ``max_delay=60`` keeps any ONE sleep well inside a single invocation. Delays
+#   run 5, 10, 20, 40, 60, 60, ... rather than doubling to half an hour.
+# * ``max_total_delay=300`` bounds the SUM. A per-sleep cap alone still permits
+#   50 x 60s; five minutes is a third of a 900s invocation, which leaves room for
+#   the work itself.
+#
+# The decorator additionally refuses any sleep that would not finish before the
+# Lambda deadline (``utils.bedrock_utils.set_lambda_deadline_epoch``), so on a
+# short-remaining invocation it gives up sooner than either constant implies.
+# ``max_retries=50`` is left alone: the real bound is time, not attempts.
+_AGENT_MAX_BACKOFF_SECONDS = 60
+_AGENT_MAX_TOTAL_BACKOFF_SECONDS = 300
+
+
 @async_exponential_backoff_retry(
     max_retries=50,
     initial_delay=5,
-    max_delay=1800,
+    max_delay=_AGENT_MAX_BACKOFF_SECONDS,
     jitter=0.5,
+    max_total_delay=_AGENT_MAX_TOTAL_BACKOFF_SECONDS,
 )
 async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
     return await agent.invoke_async(input)
@@ -1102,6 +1128,7 @@ def _build_model_config(
     connect_timeout: float,
     read_timeout: float,
     reasoning_effort: str | None = None,
+    prompt_cache: str = "auto",
 ) -> dict[str, Any]:
     """
     Build model configuration with token limits and caching settings.
@@ -1184,6 +1211,25 @@ def _build_model_config(
                 ", ".join(GROK_EFFORT_LEVELS),
             )
 
+    # OpenAI GPT-6 Astra shares Grok's `reasoning.effort` carrier but a THIRD
+    # vocabulary: none/low/medium/high/xhigh/max (Claude's set plus `none`;
+    # `minimal` from the GPT-5.x Responses API is rejected). Astra 400s on an
+    # unknown value rather than ignoring it, so dropping out-of-vocabulary values
+    # here is what keeps a stale config from failing every agentic call.
+    elif reasoning_effort and is_astra_model(model_id):
+        effort = str(reasoning_effort).lower().strip()
+        if effort in ASTRA_EFFORT_LEVELS:
+            if additional_request_fields is None:
+                additional_request_fields = {}
+            additional_request_fields["reasoning"] = {"effort": effort}
+            logger.info("Agentic extraction using reasoning effort '%s'", effort)
+        else:
+            logger.warning(
+                "Ignoring unsupported Astra reasoning effort '%s' (valid: %s)",
+                reasoning_effort,
+                ", ".join(ASTRA_EFFORT_LEVELS),
+            )
+
     # Resolve the model's true max output tokens from the single source of truth
     # (config_library/model_config_limits.yaml via get_model_max_output_tokens).
     # Agentic extraction always requests the model maximum — its multi-step tool
@@ -1249,8 +1295,14 @@ def _build_model_config(
         },
     )
 
-    # Auto-detect caching support based on model capabilities
-    if supports_prompt_caching(model_id):
+    # Auto-detect caching support based on model capabilities — unless the
+    # configuration declined caching outright (extraction.prompt_cache: off, #780).
+    if prompt_cache == "off":
+        logger.info(
+            "Prompt caching disabled by configuration (extraction.prompt_cache: off)",
+            extra={"model_id": model_id},
+        )
+    elif supports_prompt_caching(model_id):
         model_config["cache_prompt"] = "default"
         logger.info(
             "Prompt caching enabled for model",
@@ -1337,6 +1389,7 @@ def _prepare_prompt_content(
     page_images: list[bytes] | None,
     existing_data: BaseModel | None,
     model_id: str | None = None,
+    prompt_cache: str = "auto",
 ) -> list[ContentBlock]:
     """
     Prepare prompt content from various input types.
@@ -1441,7 +1494,9 @@ def _prepare_prompt_content(
     #
     # `model_id is None` keeps the historical behavior for callers that don't
     # pass it (only the tests, today).
-    if model_id is None or supports_prompt_caching(model_id):
+    if prompt_cache == "off":
+        pass  # extraction.prompt_cache: off — no cache points at all (#780)
+    elif model_id is None or supports_prompt_caching(model_id):
         prompt_content.append(ContentBlock(cachePoint=CachePoint(type="default")))
     else:
         logger.info(
@@ -1600,6 +1655,7 @@ async def _run_shard_agent(
     checkpoint_callback: Any | None,
     base_custom_instruction: str | None = None,
     emit_field_assessment: bool = False,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """Run one extraction agent over a single shard.
 
@@ -1633,6 +1689,7 @@ async def _run_shard_agent(
         custom_instruction=combined_instruction,
         checkpoint_callback=checkpoint_callback,
         emit_field_assessment=emit_field_assessment,
+        schema_validator=schema_validator,
     )
 
 
@@ -1651,6 +1708,7 @@ async def default_shard_runner(
     max_tokens: int | None,
     checkpoint_callback: Any | None,
     custom_instruction: str | None,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, "BedrockInvokeModelResponse"]:
     """Strands-backed shard runner used by the runtime backends.
 
@@ -1679,6 +1737,7 @@ async def default_shard_runner(
         # Integrated-assessment mode flows through the payload (set by the
         # service when extraction.confidence.mode == "integrated").
         emit_field_assessment=bool(payload.get("emit_field_assessment")),
+        schema_validator=schema_validator,
     )
 
 
@@ -1711,6 +1770,7 @@ async def concurrent_structured_output_async(
     persistence: Any | None = None,
     runtime: Any | None = None,
     assess_runner: Any | None = None,
+    schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Run one extraction agent per input shard, concurrently, and merge results.
@@ -1764,6 +1824,7 @@ async def concurrent_structured_output_async(
         persistence=persistence,
         shard_runner=default_shard_runner,
         assess_runner=assess_runner,
+        schema_validator=schema_validator,
     )
     # Normalise the runtime's plain-dict response into the typed envelope that
     # existing callers expect. The runtime returns a BaseModel; it is an instance
@@ -2018,6 +2079,7 @@ async def structured_output_async(
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         reasoning_effort=config.extraction.reasoning_effort,
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Prepare prompt content
@@ -2026,6 +2088,7 @@ async def structured_output_async(
         page_images=page_images,
         existing_data=existing_data,
         model_id=model_id,
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Track token usage

@@ -3,11 +3,14 @@
 
 import json
 import logging
+import os
+import time
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import boto3
+from boto3.dynamodb.conditions import Key as DDBKey
 
 # Configure detailed logging
 logger = logging.getLogger()
@@ -15,6 +18,18 @@ logger.setLevel(logging.INFO)
 
 # Create boto3 client with logging
 stepfunctions = boto3.client("stepfunctions")
+
+# DynamoDB resource for caller config-version scope lookups
+_dynamodb = boto3.resource("dynamodb")
+
+# Caller scope cache (TTL-based, per Lambda container) — mirrors
+# configuration_resolver so a burst of flow-viewer polls costs one Query.
+_user_scope_cache: Dict[str, Dict[str, Any]] = {}
+_USER_SCOPE_CACHE_TTL = 60  # seconds
+
+# ARN of this stack's document-processing state machine. Every executionArn the
+# caller supplies must belong to it.
+_STATE_MACHINE_ARN = os.environ.get("STATE_MACHINE_ARN", "")
 
 # --- inline log sanitizer ---------------------------------------------------
 # Minimal inline redactor. Kept here rather than importing from idp_common to
@@ -50,6 +65,165 @@ def _sanitize_for_log(obj):
     return obj
 
 
+def _unauthorized(message: str) -> PermissionError:
+    """Build the denial the dispatcher turns into a 403.
+
+    http_api_dispatcher maps a resolver's ``PermissionError`` (or a message
+    beginning "Unauthorized"/"Forbidden") to HTTP 403 with errorType
+    "Unauthorized", which is what the UI keys on. Both are satisfied here so the
+    denial survives either match.
+    """
+    return PermissionError(f"Unauthorized: {message}")
+
+
+def _state_machine_name_from_arn(arn: str) -> str:
+    """Return the state-machine name an ARN refers to, or '' if unparseable.
+
+    Handles both a state-machine ARN (`...:stateMachine:NAME`) and an execution
+    ARN (`...:execution:NAME:EXECUTION_ID`). A distributed-map child execution
+    carries `NAME/mapRunLabel` in that position, so the label is trimmed.
+    """
+    parts = arn.split(":") if isinstance(arn, str) else []
+    if len(parts) < 7:
+        return ""
+    return parts[6].split("/")[0]
+
+
+def _require_execution_in_this_stack(execution_arn: str) -> None:
+    """Reject an executionArn that is not one of this stack's executions.
+
+    The caller supplies the ARN, so without this the operation reads any
+    execution the function's IAM role can describe. That role is scoped to
+    `<stack-name>-*` state machines, which still spans a sibling deployment whose
+    stack name shares this one's prefix (`idp` matching `idp-prod-...`). Matching
+    the state-machine name exactly closes that.
+    """
+    if not _STATE_MACHINE_ARN:
+        # No configured state machine to compare against. Fail closed rather than
+        # fall back to the IAM prefix: an unset env var must not widen access.
+        logger.error(
+            "STATE_MACHINE_ARN is not set; cannot verify the requested execution "
+            "belongs to this stack"
+        )
+        raise _unauthorized("Execution ARN cannot be verified")
+
+    expected = _state_machine_name_from_arn(_STATE_MACHINE_ARN)
+    requested = _state_machine_name_from_arn(execution_arn)
+    if not requested or requested != expected:
+        logger.warning(
+            "Rejected executionArn for state machine %r (this stack runs %r)",
+            requested,
+            expected,
+        )
+        raise _unauthorized("Execution does not belong to this deployment")
+
+
+def _get_caller_info(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the caller's email and groups from the resolver event identity."""
+    identity = event.get("identity") or {}
+    claims = identity.get("claims") or {}
+    groups = claims.get("cognito:groups", [])
+    if isinstance(groups, str):
+        groups = [groups]
+    username = claims.get("cognito:username", "") or claims.get("sub", "")
+    email = claims.get("email", "") or identity.get("username", "") or username
+    return {"email": email, "groups": groups, "is_admin": "Admin" in groups}
+
+
+def _get_user_allowed_config_versions(caller_email: str) -> Optional[List[str]]:
+    """Look up the caller's allowedConfigVersions from UsersTable, with caching.
+
+    Returns None for an unrestricted caller. Mirrors the lookup in
+    configuration_resolver, including its fail-open behaviour on a failed
+    lookup (tracked as AUTH.T07) so a scoped caller is treated consistently
+    across resolvers rather than being blocked here and allowed there.
+    """
+    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
+    if not users_table_name or not caller_email:
+        return None
+
+    now = time.time()
+    cached = _user_scope_cache.get(caller_email)
+    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
+        return cached["scope"]
+
+    try:
+        users_table = _dynamodb.Table(users_table_name)
+        response = users_table.query(
+            IndexName="EmailIndex",
+            KeyConditionExpression=DDBKey("email").eq(caller_email),
+        )
+        items = response.get("Items", [])
+        if items:
+            scope = items[0].get("allowedConfigVersions")
+            result = list(scope) if scope and len(scope) > 0 else None
+        else:
+            result = None
+    except Exception as e:
+        logger.warning(f"Failed to look up caller scope for {caller_email}: {e}")
+        result = None
+
+    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
+    return result
+
+
+def _config_version_of_execution(execution_response: Dict[str, Any]) -> Optional[str]:
+    """Read the config version the execution processed its document under.
+
+    The workflow input is `{"document": <compressed wrapper>}` and the wrapper
+    carries `config_version` (see Document.compress). Returns None when the input
+    is absent or does not name one.
+    """
+    raw_input = execution_response.get("input")
+    if not raw_input:
+        return None
+    try:
+        document = (json.loads(raw_input) or {}).get("document") or {}
+    except Exception as e:
+        logger.warning(f"Could not parse execution input for scope check: {e}")
+        return None
+    version = document.get("config_version")
+    return version if isinstance(version, str) and version else None
+
+
+def _enforce_config_version_scope(
+    event: Dict[str, Any], execution_response: Dict[str, Any]
+) -> None:
+    """Apply the caller's config-version scope to the execution they asked for.
+
+    A caller restricted to named configuration versions must not read the
+    processing detail of a document handled under a version outside that set —
+    the execution input and step history name the document and the S3 location of
+    its full state. Unrestricted callers are unaffected.
+    """
+    caller = _get_caller_info(event)
+    if caller["is_admin"]:
+        return
+
+    allowed = _get_user_allowed_config_versions(caller["email"])
+    if allowed is None:
+        return
+
+    version = _config_version_of_execution(execution_response)
+    if version is None:
+        # Scoped caller, and nothing in the execution says which version it ran
+        # under. There is no version to authorize against, so deny.
+        logger.warning(
+            "Denying scoped caller %s: execution names no config version",
+            caller["email"],
+        )
+        raise _unauthorized("Execution is outside your configuration scope")
+
+    if version not in allowed:
+        logger.warning(
+            "Denying caller %s: execution ran under config version %r, allowed %s",
+            caller["email"],
+            version,
+            sorted(allowed),
+        )
+        raise _unauthorized("Execution is outside your configuration scope")
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Lambda handler to get Step Functions execution details
@@ -68,6 +242,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         execution_arn = event["arguments"]["executionArn"]
         logger.info(f"Getting execution details for: {execution_arn}")
 
+        # Authorization, in two parts. The caller names the execution, so bound it
+        # to this deployment before calling Step Functions at all, then bound it to
+        # the caller's configuration scope once the input tells us which version
+        # the document ran under.
+        _require_execution_in_this_stack(execution_arn)
+
         # Get execution details with detailed logging
         logger.info(f"Calling describe_execution API for {execution_arn}")
         start_time = datetime.now()
@@ -82,6 +262,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             logger.error(f"describe_execution API call failed: {str(api_error)}")
             logger.error(f"Error details: {traceback.format_exc()}")
             raise api_error
+
+        _enforce_config_version_scope(event, execution_response)
 
         api_duration = (datetime.now() - start_time).total_seconds()
         logger.info(f"describe_execution API call took {api_duration:.2f} seconds")
@@ -223,6 +405,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             f"Successfully retrieved and processed execution details for {execution_arn} in {total_duration:.2f} seconds"
         )
         return execution_details
+
+    except PermissionError:
+        # An authorization denial must reach the dispatcher as a raised
+        # PermissionError so it becomes a 403. The catch-all below turns
+        # exceptions into a 200 with an error payload, which would render a
+        # denial as an ordinary "failed to retrieve" message.
+        raise
 
     except Exception as e:
         logger.error(f"Error getting Step Functions execution: {str(e)}")

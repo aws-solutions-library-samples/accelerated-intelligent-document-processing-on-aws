@@ -73,15 +73,21 @@ def pytest_configure(config):
         ):
             sys.modules.pop(module_name, None)
 
-    # Remove any modules that imported the mocked modules so they get re-imported fresh
+    # Remove any modules that imported the mocked modules so they get re-imported
+    # fresh. PIL is only ever popped when it is itself a mock: dropping the REAL
+    # `PIL.Image` from sys.modules while its plugin modules (PIL.PngImagePlugin,
+    # ...) stay cached yields a fresh Image module whose plugin registry is empty
+    # — `Image.open` then raises UnidentifiedImageError on a valid PNG for every
+    # later test in the session (seen as tests/unit/extraction/
+    # test_image_downscale_metadata.py failing only when tests/unit/assessment
+    # ran first). CI never hit it because this hook returns early there.
     modules_to_reload = [
         "idp_common.extraction.agentic_idp",
         "idp_common.extraction.service",
-        "PIL",
-        "PIL.Image",
-        "PIL.ImageEnhance",
-        "PIL.ImageOps",
     ]
+    for module_name in ("PIL", "PIL.Image", "PIL.ImageEnhance", "PIL.ImageOps"):
+        if isinstance(sys.modules.get(module_name), MagicMock):
+            modules_to_reload.append(module_name)
 
     for module_name in modules_to_reload:
         sys.modules.pop(module_name, None)

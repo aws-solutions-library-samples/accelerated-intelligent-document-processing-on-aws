@@ -17,6 +17,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -50,6 +59,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -81,6 +99,15 @@
       "ResultPath": "$.clusterResult",
       "Next": "AnalyzeClusters",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",
@@ -125,6 +152,15 @@
             "Retry": [
               {
                 "ErrorEquals": [
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
+              {
+                "ErrorEquals": [
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
@@ -163,6 +199,15 @@
       "ResultPath": "$.saveResult",
       "Next": "CompleteJob",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",

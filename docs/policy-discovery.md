@@ -246,6 +246,15 @@ All Policy Discovery settings live under the `discovery.rules` section of the Co
 > rejected by config validation and guarded at runtime. See
 > [xAI Grok Models](grok-models.md).
 
+> **⚠️ OpenAI GPT-6 Astra is NOT supported for Policy/Rule Discovery.** Astra is
+> excluded for exactly the same reason as Grok: it supports the Converse-based
+> Strands path, but rule discovery also sends whole-PDF `document` blocks, which
+> Astra rejects (*"This model doesn't support the document field for user
+> messages"*). Both `us.openai.gpt-6-astra` and `global.openai.gpt-6-astra` are
+> absent from the Policy Discovery picklists, rejected by config validation, and
+> guarded at runtime. See
+> [OpenAI Models](openai-models.md#gpt-6-astra-converse).
+
 **Parameter Guidelines:**
 - **Temperature: `0.0`** — deterministic rule extraction; re-running on the same document should give the same rules
 - **Top P: `0.0` / Top K: `5`** — strict decoding, minimizes off-rule hallucination

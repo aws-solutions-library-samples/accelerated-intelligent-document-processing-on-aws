@@ -142,6 +142,37 @@ describe('useSchemaDesigner unknown-extension preservation', () => {
     expect(cls!['x-aws-idp-multi-instance']).toBe(true);
   });
 
+  it('exportSchema preserves x-aws-idp-allow-integrated-lists and the evaluation match threshold', () => {
+    // The Prompt Preview alert tells the user to set the flag; the Schema
+    // Builder must not erase it on the next unrelated edit (it did — the three
+    // allow-lists did not know the key, and the same loss hit the evaluation
+    // match threshold).
+    const { result } = renderHook(() => useSchemaDesigner());
+
+    let classId = '';
+    act(() => {
+      const cls = result.current.addClass('Invoice');
+      classId = cls.id;
+    });
+    act(() => {
+      result.current.updateClass(classId, {
+        'x-aws-idp-document-type': true,
+        'x-aws-idp-allow-integrated-lists': true,
+        'x-aws-idp-evaluation-match-threshold': 0.8,
+      });
+    });
+    act(() => {
+      result.current.updateClass(classId, { description: 'an invoice' });
+    });
+
+    const exported = result.current.exportSchema();
+    expect(exported).not.toBeNull();
+    const cls = exported!.find((c) => c.$id === 'Invoice');
+    expect(cls).toBeDefined();
+    expect(cls!['x-aws-idp-allow-integrated-lists']).toBe(true);
+    expect(cls!['x-aws-idp-evaluation-match-threshold']).toBe(0.8);
+  });
+
   it('updateAttribute removes a key when the update value is undefined', () => {
     // Documents the existing semantics so we don't accidentally regress them
     // when changing the preservation behavior above.

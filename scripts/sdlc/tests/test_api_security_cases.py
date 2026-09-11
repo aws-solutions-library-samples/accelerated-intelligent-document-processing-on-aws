@@ -425,3 +425,142 @@ def test_tls_weak_protocol_accepted_fails(monkeypatch):
     sec.run_tls_suite(CTX, rec, results)
     weak = [r for r in rec.rows if r["principal"] in ("TLS1.0", "TLS1.1")]
     assert weak and all(not r["passed"] for r in weak)  # weak TLS accepted = fail
+
+
+# --------------------------------------------------------------------------- #
+# 2.1 Caller-supplied resource reference (getStepFunctionExecution)
+# --------------------------------------------------------------------------- #
+LIVE_ARN = (
+    "arn:aws:states:us-west-2:123456789012:execution:"
+    "IDP-PATTERNSTACK-ABC-DocumentProcessingWorkflow:11111111-2222-3333-4444-555555555555"
+)
+
+
+def _ref_call(outcomes):
+    """Fake `call` keyed by the executionArn argument.
+
+    `outcomes` maps a predicate name to (status, errorType, in_band, rid):
+      "foreign"  -> the ARN naming another state machine
+      "own"      -> this deployment's own ARN, Admin token
+      "scoped"   -> this deployment's own ARN, scoped token
+    """
+
+    def _call(api_base, field, args, token):
+        arn = args.get("executionArn", "")
+        if "-sibling-deployment" in arn:
+            return outcomes["foreign"]
+        if token == "scoped-token":  # nosec B105 - fake token label in a test double, not a credential
+            return outcomes["scoped"]
+        return outcomes["own"]
+
+    return _call
+
+
+def _ref_tokens():
+    return {"Admin": "admin-token", "scoped": "scoped-token"}
+
+
+def test_caller_ref_all_bounded_passes():
+    rec, results = _Recorder(), []
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, _ref_tokens(),
+        live_execution_arn=LIVE_ARN,
+        call=_ref_call({
+            "foreign": (403, "Unauthorized", None, "r1"),
+            "own": (200, None, None, "r2"),
+            "scoped": (403, "Unauthorized", None, "r3"),
+        }),
+    )
+    assert all(r["passed"] for r in rec.rows), rec.rows
+    principals = {r["principal"] for r in rec.rows}
+    assert principals == {"foreign-state-machine", "own-state-machine",
+                          "scoped(out-of-scope)"}
+    assert all(sec.SEC_OBJREF in r["detail"] for r in rec.rows)
+
+
+def test_caller_ref_foreign_arn_served_fails():
+    """The finding this suite exists to catch: another state machine's execution
+    is returned instead of refused."""
+    rec, results = _Recorder(), []
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, _ref_tokens(),
+        live_execution_arn=LIVE_ARN,
+        call=_ref_call({
+            "foreign": (200, None, None, "r1"),
+            "own": (200, None, None, "r2"),
+            "scoped": (403, "Unauthorized", None, "r3"),
+        }),
+    )
+    foreign = rec.by_principal("foreign-state-machine")
+    assert len(foreign) == 1 and not foreign[0]["passed"]
+
+
+def test_caller_ref_own_arn_refused_fails():
+    """Refusing everything must not look like success."""
+    rec, results = _Recorder(), []
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, _ref_tokens(),
+        live_execution_arn=LIVE_ARN,
+        call=_ref_call({
+            "foreign": (403, "Unauthorized", None, "r1"),
+            "own": (403, "Unauthorized", None, "r2"),
+            "scoped": (403, "Unauthorized", None, "r3"),
+        }),
+    )
+    own = rec.by_principal("own-state-machine")
+    assert len(own) == 1 and not own[0]["passed"]
+
+
+def test_caller_ref_out_of_scope_served_fails():
+    rec, results = _Recorder(), []
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, _ref_tokens(),
+        live_execution_arn=LIVE_ARN,
+        call=_ref_call({
+            "foreign": (403, "Unauthorized", None, "r1"),
+            "own": (200, None, None, "r2"),
+            "scoped": (200, None, None, "r3"),
+        }),
+    )
+    scoped = rec.by_principal("scoped(out-of-scope)")
+    assert len(scoped) == 1 and not scoped[0]["passed"]
+
+
+def test_caller_ref_in_band_denial_counts_as_refused():
+    """A config-scope denial can arrive in-band with HTTP 200."""
+    rec, results = _Recorder(), []
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, _ref_tokens(),
+        live_execution_arn=LIVE_ARN,
+        call=_ref_call({
+            "foreign": (403, "Unauthorized", None, "r1"),
+            "own": (200, None, None, "r2"),
+            "scoped": (200, None, "Unauthorized", "r3"),
+        }),
+    )
+    assert all(r["passed"] for r in rec.rows), rec.rows
+
+
+def test_caller_ref_skips_without_a_live_arn():
+    rec, results = _Recorder(), []
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, _ref_tokens(), live_execution_arn=None, call=_ref_call({})
+    )
+    assert len(rec.rows) == 1
+    assert rec.rows[0]["http_status"] == "SKIP" and rec.rows[0]["passed"]
+
+
+def test_caller_ref_skips_scope_check_without_a_scoped_user():
+    rec, results = _Recorder(), []
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, {"Admin": "admin-token"},
+        live_execution_arn=LIVE_ARN,
+        call=_ref_call({
+            "foreign": (403, "Unauthorized", None, "r1"),
+            "own": (200, None, None, "r2"),
+            "scoped": (200, None, None, "r3"),
+        }),
+    )
+    scoped = rec.by_principal("out-of-scope")
+    assert len(scoped) == 1 and scoped[0]["http_status"] == "SKIP"
+    assert all(r["passed"] for r in rec.rows)

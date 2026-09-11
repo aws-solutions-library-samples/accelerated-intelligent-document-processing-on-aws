@@ -27,25 +27,62 @@ def test_larger_input_window_gives_larger_shard_budget():
 
 
 def test_context_buffer_reduces_budgets():
-    """A larger context buffer leaves less usable window → smaller budgets."""
+    """A larger context buffer leaves less usable window → smaller shard budget.
+
+    The list batch is deliberately NOT buffer-dependent: it is bounded by the
+    confidence model's OUTPUT cap and its own safety fraction, not by the
+    extraction model's context window, so the buffer must not move it."""
     low = compute_sizing_plan(model_id=SONNET5_1M, context_buffer=0.15)
     high = compute_sizing_plan(model_id=SONNET5_1M, context_buffer=0.6)
     assert high.shard_token_budget < low.shard_token_budget
-    assert high.list_batch_size <= low.list_batch_size
+    assert high.list_batch_size == low.list_batch_size
 
 
 def test_bbox_geometry_shrinks_list_batch():
     """Per-row output is larger with bbox geometry → smaller list batch.
 
-    Use a high context buffer so the derived sizes land below the reliability
-    cap (otherwise both clamp to the cap and the geometry effect is hidden)."""
-    ocr = compute_sizing_plan(
-        model_id=NOVA_LITE, geometry_mode="ocr_only", context_buffer=0.85
-    )
-    bbox = compute_sizing_plan(
-        model_id=NOVA_LITE, geometry_mode="llm_grounded", context_buffer=0.85
-    )
+    This assertion used to need ``context_buffer=0.85`` to mean anything: with a
+    flat per-ROW token figure, Nova Lite derived 58 rows under bbox and 175
+    without, and BOTH clamped to the reliability cap of 50 — so the geometry
+    effect was invisible at any realistic buffer and the test passed vacuously.
+    Sizing per CELL puts both values below the cap, so the effect is real (for
+    Nova Lite the ocr_only value is now its 12-row loop ceiling and the bbox value
+    the per-cell math, 6 — still ordered, still both under 50)."""
+    ocr = compute_sizing_plan(model_id=NOVA_LITE, geometry_mode="ocr_only")
+    bbox = compute_sizing_plan(model_id=NOVA_LITE, geometry_mode="llm_grounded")
     assert bbox.list_batch_size < ocr.list_batch_size
+    assert bbox.list_batch_size < 50 and ocr.list_batch_size < 50
+
+
+def test_list_batch_uses_the_confidence_model_not_the_extraction_model():
+    """Regression: the list batch is a CONFIDENCE-pass figure.
+
+    It used to be derived from ``usable_output`` of the EXTRACTION model, so a
+    Sonnet-5-extracts / Nova-Lite-scores stack computed 128,000 x 0.7 / 120 = 746,
+    clamped to 50, and reported "50 rows" while the assessment path actually used
+    13. Passing the confidence model must dominate the extraction model."""
+    nova_scores = compute_sizing_plan(
+        model_id=SONNET5_1M, confidence_model_id=NOVA_LITE, geometry_mode="llm_grounded"
+    )
+    sonnet_scores = compute_sizing_plan(
+        model_id=SONNET5_1M,
+        confidence_model_id=SONNET5_1M,
+        geometry_mode="llm_grounded",
+    )
+    assert nova_scores.list_batch_size < sonnet_scores.list_batch_size
+    # Same extraction model in both, so the difference is entirely the scorer.
+    assert nova_scores.max_input_tokens == sonnet_scores.max_input_tokens
+
+
+def test_more_columns_shrink_the_list_batch():
+    """A wide row costs more output per row, so fewer rows fit in one call."""
+    narrow = compute_sizing_plan(
+        model_id=NOVA_LITE, confidence_model_id=NOVA_LITE, list_columns=3
+    )
+    wide = compute_sizing_plan(
+        model_id=NOVA_LITE, confidence_model_id=NOVA_LITE, list_columns=12
+    )
+    assert wide.list_batch_size < narrow.list_batch_size
 
 
 def test_list_batch_capped_for_reliability():

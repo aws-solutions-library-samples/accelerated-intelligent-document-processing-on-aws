@@ -11,7 +11,10 @@ in ``scripts/test_api_rbac.py``. That harness already covers checklist items
 matrix, negative + positive) via ``run_group_matrix`` + ``run_token_negatives``.
 This module adds the remaining items:
 
-  * **2.1  IDOR** — a second user (User B) must not read/modify User A's data.
+  * **2.1  IDOR** — a second user (User B) must not read/modify User A's data,
+           and an operation that takes a resource identifier from the caller
+           must refuse an identifier outside the deployment / the caller's
+           configuration scope.
   * **2.3  Token expiry** — an expired token is rejected (structural + optional
            live wait via ``IDP_SECTEST_WAIT_EXPIRY``).
   * **2.4  Logout revocation** — after global sign-out, a previously-issued
@@ -52,6 +55,7 @@ SEC_LOGOUT = "SEC-2.4-LOGOUT-REVOCATION"
 SEC_DELETED = "SEC-2.5-DELETED-RESOURCE"
 SEC_INPUT = "SEC-3-INPUT-VALIDATION"
 SEC_TLS = "SEC-4-TLS"
+SEC_OBJREF = "SEC-2.1-CALLER-SUPPLIED-REF"
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +546,135 @@ def run_tls_suite(ctx, record, results):
 
 # ---------------------------------------------------------------------------
 # helpers
+# ---------------------------------------------------------------------------
+# 2.1 Caller-supplied resource reference — outside the deployment / the scope
+# ---------------------------------------------------------------------------
+def run_caller_supplied_ref_suite(
+    ctx, record, results, tokens, live_execution_arn=None, call=None
+):
+    """An operation handed a resource id by the caller must bound what it accepts.
+
+    ``getStepFunctionExecution`` takes an ``executionArn`` straight from the
+    request. The group matrix proves an authenticated caller of any role CAN read
+    an execution of this deployment; it cannot prove the resolver refuses one it
+    should not serve, because for an ANY-auth op the matrix reads every denial as
+    a failure. This suite asserts the two denials:
+
+      * an ARN naming a DIFFERENT state machine — the resolver's IAM grant is a
+        ``<stack-name>-*`` prefix, which also covers a sibling deployment whose
+        stack name extends this one's, so IAM alone does not draw this line;
+      * an execution outside a config-version-scoped caller's ``allowedConfigVersions``.
+
+    Both need a live ARN from this stack (the harness resolves one from
+    listDocuments -> getDocument); without one every check SKIPs rather than
+    failing, since a stack that has processed nothing has no execution to name.
+    """
+    print("\n=== CALLER-SUPPLIED RESOURCE REFERENCE ===")
+    admin = tokens.get("Admin")
+    scoped = tokens.get("scoped")
+    if not admin or call is None or not live_execution_arn:
+        record(
+            results,
+            "getStepFunctionExecution",
+            "caller-ref",
+            "SKIP",
+            True,
+            f"{SEC_OBJREF}: no live execution ARN in this stack — skipped",
+        )
+        print("  SKIP (no live execution ARN)")
+        return
+
+    # A sibling deployment's ARN: same account, same region, a state-machine name
+    # that the resolver's IAM prefix would still cover.
+    parts = live_execution_arn.split(":")
+    foreign = ":".join(parts[:6] + [parts[6] + "-sibling-deployment"] + parts[7:])
+    st, et, ib, rid = call(
+        ctx["api_base"], "getStepFunctionExecution", {"executionArn": foreign}, admin
+    )
+    denied = _denied(st, et, ib)
+    record(
+        results,
+        "getStepFunctionExecution",
+        "foreign-state-machine",
+        st,
+        denied,
+        f"{SEC_OBJREF}: ARN naming another state machine must be refused; "
+        f"got {st}/{et}/{ib}",
+        et,
+        ib,
+        rid,
+    )
+    print(
+        f"  Admin, ARN of another state machine -> {st}/{et or ib} "
+        f"({'OK refused' if denied else 'SERVED — not bounded'})"
+    )
+
+    # The same op with the stack's OWN ARN must still be served, so the check
+    # above cannot pass by refusing everything.
+    st, et, ib, rid = call(
+        ctx["api_base"],
+        "getStepFunctionExecution",
+        {"executionArn": live_execution_arn},
+        admin,
+    )
+    served = not _denied(st, et, ib)
+    record(
+        results,
+        "getStepFunctionExecution",
+        "own-state-machine",
+        st,
+        served,
+        f"{SEC_OBJREF}: this deployment's own execution must still be served; "
+        f"got {st}/{et}/{ib}",
+        et,
+        ib,
+        rid,
+    )
+    print(
+        f"  Admin, this stack's own execution -> {st} "
+        f"({'OK served' if served else 'WRONGLY REFUSED'})"
+    )
+
+    if not scoped:
+        record(
+            results,
+            "getStepFunctionExecution",
+            "out-of-scope",
+            "SKIP",
+            True,
+            f"{SEC_OBJREF}: scoped user unavailable — skipped",
+        )
+        print("  SKIP out-of-scope check (scoped user unavailable)")
+        return
+
+    # The scoped user is restricted to SCOPE_VERSION; the seeded document ran
+    # under the active version, so this execution is outside their scope unless
+    # the two happen to coincide.
+    st, et, ib, rid = call(
+        ctx["api_base"],
+        "getStepFunctionExecution",
+        {"executionArn": live_execution_arn},
+        scoped,
+    )
+    denied = _denied(st, et, ib)
+    record(
+        results,
+        "getStepFunctionExecution",
+        "scoped(out-of-scope)",
+        st,
+        denied,
+        f"{SEC_OBJREF}: a config-scoped caller must not read an execution "
+        f"outside their scope; got {st}/{et}/{ib}",
+        et,
+        ib,
+        rid,
+    )
+    print(
+        f"  scoped Author, out-of-scope execution -> {st}/{et or ib} "
+        f"({'OK refused' if denied else 'SERVED — scope not applied'})"
+    )
+
+
 # ---------------------------------------------------------------------------
 def _denied(status, et, in_band=None):
     return status in (401, 403) or et == "Unauthorized" or in_band == "Unauthorized"

@@ -119,6 +119,11 @@ def handler(event, context):
 
         # Determine actual file count to process
         test_set_file_count = test_set["fileCount"]
+        if int(test_set_file_count or 0) <= 0:
+            raise ValueError(
+                f"Test set '{test_set_id}' has no documents to run; add documents "
+                "to it first"
+            )
         files_to_process = test_set_file_count
 
         if object_keys:
@@ -563,6 +568,21 @@ def _capture_config(config_table, config_version=None, config_revision=None):
     return config
 
 
+def _confidence_fingerprint_of(config):
+    """``confidence_fingerprint`` of a captured ``{"Config": <body>}``, or None.
+    Best effort — a run must never fail over a curve key."""
+    body = config.get("Config") if isinstance(config, dict) else None
+    if not isinstance(body, dict) or not body:
+        return None
+    try:
+        from idp_common.config.revisions import confidence_fingerprint
+
+        return confidence_fingerprint(body)
+    except Exception as e:  # noqa: BLE001 — never fail a run over a curve key
+        logger.warning(f"Could not compute confidence fingerprint: {e}")
+        return None
+
+
 def _store_test_run_metadata(
     tracking_table,
     test_run_id,
@@ -628,6 +648,15 @@ def _store_test_run_metadata(
         # rather than ambiguous.
         if config_revision is not None:
             item["ConfigRevision"] = int(config_revision)
+
+        # The confidence fingerprint of the configuration this run captured: a
+        # hash of the confidence-relevant subset (extraction model and sampling,
+        # assessment settings). Test Studio keys confidence curves by it (#698),
+        # and this is the only Lambda in that loop with the configuration in
+        # hand, so it is computed here and copied onto labels by the harvest.
+        fingerprint = _confidence_fingerprint_of(config)
+        if fingerprint:
+            item["ConfidenceFingerprint"] = fingerprint
 
         table.put_item(Item=item)
         logger.info(f"Stored test run metadata for {test_run_id}")

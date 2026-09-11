@@ -36,8 +36,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 from idp_common.bedrock.client import (
+    ASTRA_EFFORT_LEVELS,
     CLAUDE_EFFORT_LEVELS,
     GROK_EFFORT_LEVELS,
+    is_astra_model,
     is_claude_effort_model,
     is_grok_model,
     strips_sampling_params,
@@ -456,14 +458,15 @@ def _invoke_bedrock_stream_and_emit(
         those are separate: ``performanceConfig.latency`` only accepts
         ``optimized``/``standard``; ``serviceTier.type`` accepts
         ``priority``/``flex``/``default``.)
-      * Claude 4.7+ and xAI Grok → ``temperature`` / ``top_p`` are skipped
-        (Bedrock rejects them for these models — deprecated on Claude, a hard
-        400 naming the field on Grok).
+      * Claude 4.7+, xAI Grok and OpenAI GPT-6 Astra → ``temperature`` /
+        ``top_p`` are skipped (Bedrock rejects them for these models —
+        deprecated on Claude, a hard 400 naming the field on the other two).
       * Reasoning effort → routed to the carrier the model actually reads:
         ``output_config.effort`` for effort-capable Claude, ``reasoning.effort``
-        for Grok. Values outside a model's vocabulary are dropped rather than
-        forwarded, because Bedrock silently ignores unrecognized
-        ``additionalModelRequestFields`` keys.
+        for Grok and GPT-6 Astra. Values outside a model's vocabulary are
+        dropped rather than forwarded, because Bedrock silently ignores
+        unrecognized ``additionalModelRequestFields`` keys (and Astra rejects
+        an unknown effort value outright).
 
     When idp_common grows a streaming helper, this function should delegate
     to it.
@@ -472,10 +475,10 @@ def _invoke_bedrock_stream_and_emit(
     """
     client = _get_bedrock_runtime()
 
-    # Claude 4.7+ and Grok reject temperature/top_p; everything else gets
-    # temperature. Grok returns a 400 naming the field, so this is not optional:
-    # chat.temperature always resolves to a float (never None), which means
-    # every Grok chat turn would fail without this gate.
+    # Claude 4.7+, Grok and GPT-6 Astra reject temperature/top_p; everything else
+    # gets temperature. Grok and Astra return a 400 naming the field, so this is
+    # not optional: chat.temperature always resolves to a float (never None),
+    # which means every Grok/Astra chat turn would fail without this gate.
     inference_config: dict = {"maxTokens": max_tokens}
     if not strips_sampling_params(selected_model_id) and temperature is not None:
         inference_config["temperature"] = temperature
@@ -496,13 +499,17 @@ def _invoke_bedrock_stream_and_emit(
     # branch), so the documented knob did nothing for Converse models. The two
     # families use different carriers and different vocabularies, and Bedrock
     # ignores unknown additionalModelRequestFields keys silently — so an
-    # out-of-vocabulary value must be dropped, not passed through.
+    # out-of-vocabulary value must be dropped, not passed through. Astra shares
+    # Grok's carrier but a wider vocabulary (it accepts `max`), and it 400s on an
+    # unknown value instead of ignoring it, so the per-family check matters more.
     if reasoning_effort:
         effort = str(reasoning_effort).lower().strip()
         effort_field: tuple[str, dict] | None = None
         if is_claude_effort_model(use_model_id) and effort in CLAUDE_EFFORT_LEVELS:
             effort_field = ("output_config", {"effort": effort})
         elif is_grok_model(use_model_id) and effort in GROK_EFFORT_LEVELS:
+            effort_field = ("reasoning", {"effort": effort})
+        elif is_astra_model(use_model_id) and effort in ASTRA_EFFORT_LEVELS:
             effort_field = ("reasoning", {"effort": effort})
         if effort_field:
             if additional_model_fields is None:

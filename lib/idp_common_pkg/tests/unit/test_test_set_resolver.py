@@ -336,7 +336,7 @@ class TestTestSetResolver:
             "arguments": {},
             "identity": {"claims": {"cognito:groups": ["Viewer"]}},
         }
-        with pytest.raises(Exception, match="requires Admin or Author group"):
+        with pytest.raises(Exception, match="requires Admin group"):
             test_set_index.handler(event, {})
 
     def test_handler_allows_direct_lambda_invoke_no_identity(self):
@@ -996,6 +996,8 @@ class TestTestSetResolver:
         )["Item"]
         assert written["ItemType"] == "testset_version"
         assert written["versionNumber"] == 1
+        # No configuration identifiable for an uploaded set with no labeling job.
+        assert written.get("configVersion") is None
         # The metadata pointers were advanced and the active reference set
         meta = publish_table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
             "Item"
@@ -1006,7 +1008,7 @@ class TestTestSetResolver:
 
     def test_publish_increments_and_can_skip_active(self, publish_table):
         """Second publish is v2; setAsActiveReference=false leaves active alone."""
-        _seed_test_set(publish_table, "ts1")
+        _seed_test_set(publish_table, "ts1", fileCount=5)
         test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
 
         result = test_set_index.publish_test_set_version(
@@ -1031,7 +1033,7 @@ class TestTestSetResolver:
         number is reserved by an atomic ADD, so interleaved reads still yield
         distinct versions and two surviving items.
         """
-        _seed_test_set(publish_table, "ts1")
+        _seed_test_set(publish_table, "ts1", fileCount=5)
 
         real_get_item = test_set_index.db_client.get_item
         second_result = {}
@@ -1075,7 +1077,12 @@ class TestTestSetResolver:
         reservation hands out v1 while the pointers already say v5.
         """
         _seed_test_set(
-            publish_table, "ts1", publishedVersion=5, activeReference=5, latestVersion=0
+            publish_table,
+            "ts1",
+            fileCount=5,
+            publishedVersion=5,
+            activeReference=5,
+            latestVersion=0,
         )
 
         result = test_set_index.publish_test_set_version(
@@ -1104,7 +1111,7 @@ class TestTestSetResolver:
     def test_publish_race_on_deleted_test_set_raises(self, publish_table):
         """A set deleted between the metadata read and the reservation must not
         be resurrected by update_item's upsert semantics."""
-        _seed_test_set(publish_table, "ts1")
+        _seed_test_set(publish_table, "ts1", fileCount=5)
         real_get_item = test_set_index.db_client.get_item
 
         def delete_after_read(key):
@@ -2042,6 +2049,7 @@ class TestTestSetResolver:
         )
 
         assert result["estimateConfidence"] == "prior"
+        assert result["curveSource"] == "prior"
         assert result["totalDocs"] == 2
         # A prior-driven estimate reports a range, not a bare point value.
         assert result["docsToReviewLow"] <= result["docsToReview"]
@@ -2065,6 +2073,294 @@ class TestTestSetResolver:
             "partially-measured",
             "unreliable",
         )
+
+    def _seed_two_configs(self, table, s3):
+        """A set drafted under prof-A, with curves for prof-A (all wrong at 0.3)
+        and prof-B (all right at 0.3). The aggregate therefore holds 80 mixed
+        observations; each per-configuration curve holds 40."""
+        from idp_common.evaluation.curve_store import CurveStore
+
+        _seed_test_set(table, "ts1", fileCount=1, labelJobId="job-a")
+        table.put_item(
+            Item={"PK": "testrun#job-a", "SK": "metadata", "ConfigVersion": "prof-A"}
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        store = CurveStore(table)
+        store.add_observations("ts1", [(0.3, False)] * 40, config_version="prof-A")
+        store.add_observations("ts1", [(0.3, True)] * 40, config_version="prof-B")
+
+    def test_estimate_reads_the_drafting_runs_configuration_curve(self, labeling_env):
+        """#759: boundConfigVersion was never written, so the estimate always read
+        the set-wide aggregate. The drafting run names the configuration; its own
+        curve (40 observations) must be served, not the 80-observation blend."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] == "prof-A"
+        assert result["configVersionSource"] == "drafting-run"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+
+    def test_estimate_reads_the_drafting_revisions_curve_when_stamped(
+        self, labeling_env
+    ):
+        """#698: the run item carries the revision fingerprint; the estimate must
+        serve that revision family's curve and say so, and fall back to the
+        profile's pooled curve (saying so) when the family has no observations."""
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        table.put_item(
+            Item={
+                "PK": "testrun#job-a",
+                "SK": "metadata",
+                "ConfigVersion": "prof-A",
+                "ConfidenceFingerprint": "fpA",
+            }
+        )
+        # no revision curve yet -> pooled profile curve, reported
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["confidenceFingerprint"] == "fpA"
+        assert result["confidenceFingerprintSource"] == "drafting-run"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+        # observations recorded for the revision family -> its own curve
+        CurveStore(table).add_observations(
+            "ts1", [(0.3, True)] * 10, config_version="prof-A", fingerprint="fpA"
+        )
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["curveSource"] == "revision"
+        assert result["calibration"]["totalObservations"] == 10
+
+    def test_estimate_reports_mixed_revisions_and_serves_the_pooled_curve(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        for run_id, fp in (("job-a", "fpA"), ("job-b", "fpB")):
+            table.put_item(
+                Item={
+                    "PK": "testrun#" + run_id,
+                    "SK": "metadata",
+                    "ConfigVersion": "prof-A",
+                    "ConfidenceFingerprint": fp,
+                }
+            )
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": "labeljob#" + run_id,
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "configVersion": "prof-A",
+                }
+            )
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["configVersion"] == "prof-A"
+        assert result["confidenceFingerprint"] is None
+        assert result["confidenceFingerprintSource"] == "mixed-revisions"
+        assert result["curveSource"] == "config"
+
+    def test_estimate_treats_an_unstamped_drafting_run_as_unknown_not_same(
+        self, labeling_env
+    ):
+        """Upgrade shape: 199 documents drafted before the stamp existed, one
+        re-extracted after it. The one stamped run must not make the estimate serve
+        that family's curve for labels whose family is unknown."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        table.put_item(
+            Item={"PK": "testrun#job-a", "SK": "metadata", "ConfigVersion": "prof-A"}
+        )  # pre-stamp: no ConfidenceFingerprint
+        table.put_item(
+            Item={
+                "PK": "testrun#job-b",
+                "SK": "metadata",
+                "ConfigVersion": "prof-A",
+                "ConfidenceFingerprint": "fpB",
+            }
+        )
+        for run_id in ("job-a", "job-b"):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": "labeljob#" + run_id,
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "configVersion": "prof-A",
+                }
+            )
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+        assert result["confidenceFingerprint"] is None
+        assert result["confidenceFingerprintSource"] == "partial"
+        assert result["curveSource"] == "config"
+
+    def test_harvest_copies_the_runs_fingerprint_onto_the_label(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(
+            Bucket="output-bucket",
+            Key="ts1-run/a.pdf/sections/1/result.json",
+            Body=json.dumps({"inference_result": {"vendor": "Acme"}}).encode(),
+        )
+        _seed_completed_run(
+            table,
+            "ts1-run",
+            "ts1",
+            ["a.pdf"],
+            {
+                "a.pdf": [
+                    {
+                        "Id": "1",
+                        "OutputJSONUri": "s3://output-bucket/ts1-run/a.pdf/sections/1/result.json",
+                    }
+                ]
+            },
+        )
+        table.update_item(
+            Key={"PK": "testrun#ts1-run", "SK": "metadata"},
+            UpdateExpression="SET ConfidenceFingerprint = :f, ConfigVersion = :v",
+            ExpressionAttributeValues={":f": "fpA", ":v": "prof-A"},
+        )
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#ts1-run",
+                "testSetId": "ts1",
+                "jobId": "ts1-run",
+                "status": "RUNNING",
+                "configVersion": "prof-A",
+                "total": 1,
+                "labeled": 0,
+            }
+        )
+        test_set_index.get_draft_label_job({"testSetId": "ts1", "jobId": "ts1-run"})
+        body = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert body["metadata"]["config_version"] == "prof-A"
+        assert body["metadata"]["confidence_fingerprint"] == "fpA"
+
+    def test_estimate_explicit_configuration_argument_wins(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+
+        result = test_set_index.estimate_review_effort(
+            {"testSetId": "ts1", "configVersion": "prof-B"}
+        )
+
+        assert result["configVersion"] == "prof-B"
+        assert result["configVersionSource"] == "argument"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+
+    def test_estimate_reports_the_aggregate_fallback_when_the_config_curve_is_empty(
+        self, labeling_env
+    ):
+        """A configuration with no curve of its own still gets the set's aggregate
+        (better than the global prior), but the estimate must SAY so: the number is
+        measured, yet under configurations that may no longer exist."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+
+        result = test_set_index.estimate_review_effort(
+            {"testSetId": "ts1", "configVersion": "prof-C"}
+        )
+
+        assert result["configVersion"] == "prof-C"
+        assert result["curveSource"] == "aggregate"
+        assert result["calibration"]["totalObservations"] == 80
+
+    def test_estimate_with_no_identifiable_configuration_uses_the_aggregate(
+        self, labeling_env
+    ):
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)  # no labelJobId, no bound field
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        CurveStore(table).add_observations("ts1", [(0.3, False)] * 40)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] is None
+        assert result["configVersionSource"] is None
+        assert result["curveSource"] == "aggregate"
+
+    def test_estimate_reports_mixed_when_labeling_jobs_disagree(self, labeling_env):
+        """#759 review: the labelJobId pointer is rewritten by every labeling job,
+        including a one-document re-extract under another profile. Reading only
+        the pointer would call prof-B's curve the set's own while the review
+        observations sit under prof-A. All labeling jobs are read instead; when
+        they disagree the aggregate is served and labeled 'mixed'."""
+        table, s3 = labeling_env
+        self._seed_two_configs(table, s3)
+        for job, version in (("job-a", "prof-A"), ("job-b", "prof-B")):
+            table.put_item(
+                Item={"PK": "testset#ts1", "SK": f"labeljob#{job}", "jobId": job}
+            )
+            table.put_item(
+                Item={
+                    "PK": f"testrun#{job}",
+                    "SK": "metadata",
+                    "ConfigVersion": version,
+                }
+            )
+        # The pointer names the LAST job (the one-document re-extract).
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelJobId = :j",
+            ExpressionAttributeValues={":j": "job-b"},
+        )
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] is None
+        assert result["configVersionSource"] == "mixed"
+        assert result["curveSource"] == "aggregate"
+        assert result["calibration"]["totalObservations"] == 80
+
+    def test_estimate_uses_the_sets_declared_configuration(self, labeling_env):
+        """Sets created by the confbench planner or the synthetic-data generator
+        carry meta.configVersion and no labeling job; the UI already treats it as
+        the set's configuration, so the estimate must too."""
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1, configVersion="prof-B")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        store = CurveStore(table)
+        store.add_observations("ts1", [(0.3, False)] * 40, config_version="prof-A")
+        store.add_observations("ts1", [(0.3, True)] * 40, config_version="prof-B")
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] == "prof-B"
+        assert result["configVersionSource"] == "test-set"
+        assert result["curveSource"] == "config"
+        assert result["calibration"]["totalObservations"] == 40
+
+    def test_estimate_survives_a_deleted_drafting_run(self, labeling_env):
+        from idp_common.evaluation.curve_store import CurveStore
+
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1, labelJobId="gone")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        CurveStore(table).add_observations("ts1", [(0.3, False)] * 40)
+
+        result = test_set_index.estimate_review_effort({"testSetId": "ts1"})
+
+        assert result["configVersion"] is None
+        assert result["configVersionSource"] is None
+        assert result["curveSource"] == "aggregate"
 
     def test_estimate_review_effort_recommends_reviewing_everything_when_overconfident(
         self, labeling_env
@@ -5269,21 +5565,23 @@ class TestTestSetResolver:
         assert row["fileCount"] == 2
         assert "error" not in row
 
-    def test_reconcile_hard_fails_when_all_inputs_deleted(self, labeling_env):
-        """The one hard-fail condition reconcile still emits.
+    def test_reconcile_treats_an_emptied_set_as_healthy(self, labeling_env):
+        """A set with no documents is a legitimate state, not a broken one.
 
-        ``No input files found`` is genuinely broken — every input file has
-        been deleted from S3 while the row survives. Operator should see
-        FAILED so the state doesn't hide.
+        A set can be created empty, and removing its last document leaves it
+        empty, so ``No input files found`` reconciles to COMPLETED with a zero
+        count and no labels — clearing a FAILED verdict an earlier reconcile
+        may have written.
         """
         table, s3 = labeling_env
 
-        # No input files in S3 at all.
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/.keep", Body=b"")
         _seed_test_set(
             table,
             "ts1",
             name="ts1",
-            status="COMPLETED",
+            status="FAILED",
+            error="No input files found",
             fileCount=1,
             labelState="labeled",
             source="uploaded",
@@ -5300,8 +5598,13 @@ class TestTestSetResolver:
             s3, "test-set-bucket", "ts1", existing_row
         )
         assert result is not None
-        assert result["status"] == "FAILED"
-        assert result["error"] == "No input files found"
+        assert result["status"] == "COMPLETED"
+        assert result["fileCount"] == 0
+        assert result["labelState"] == "unlabeled"
+        assert not result.get("error")
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "COMPLETED"
+        assert "error" not in row
 
     def test_reconcile_clears_error_when_baseline_added_back(self, labeling_env):
         """A row FAILED yesterday must recover when the missing baseline arrives."""
@@ -6287,7 +6590,10 @@ class TestTestSetResolver:
             s3, "test-set-bucket", "ts1", existing_row
         )
         row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
-        assert row["status"] == "FAILED"
+        # An emptied set is a healthy (COMPLETED, zero-document) state now, but
+        # with its draft baselines still in S3 the draft signal must survive.
+        assert row["status"] == "COMPLETED"
+        assert row["fileCount"] == 0
         assert row["labelState"] == "draft", (
             "no_inputs branch destroyed the draft signal — a subsequent "
             "recovery would silently bless machine drafts as ground truth"
@@ -7209,3 +7515,250 @@ class TestStatusUpdatedAtIsWritten:
                         )
                         break
                 break
+
+
+class TestMembershipEditing:
+    """Removing documents down to empty, creating a set empty, and the guards
+    that keep an edit from racing a job that is still writing to the set."""
+
+    def _remove(self, meta, file_names=("a.pdf",)):
+        s3 = MagicMock()
+        with (
+            patch.object(test_set_index.db_client, "get_item", return_value=meta),
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            test_set_index.remove_documents_from_test_set(
+                {"testSetId": "ts1", "fileNames": list(file_names)}
+            )
+        return s3
+
+    def test_remove_refuses_while_draft_labeling(self):
+        with pytest.raises(Exception, match="being draft-labeled"):
+            self._remove(
+                {"id": "ts1", "status": "COMPLETED", "labelJobStatus": "RUNNING"}
+            )
+
+    def test_remove_refuses_while_the_set_is_being_written(self):
+        with pytest.raises(Exception, match="is busy \\(UPDATING\\)"):
+            self._remove({"id": "ts1", "status": "UPDATING"})
+
+    @pytest.mark.parametrize("bad", ["", "/etc", "a//b"])
+    def test_remove_rejects_malformed_names_before_deleting(self, bad):
+        with pytest.raises(Exception, match="Invalid document name"):
+            self._remove({"id": "ts1", "status": "COMPLETED"}, file_names=[bad])
+
+    def test_guards_run_before_any_delete(self):
+        s3 = MagicMock()
+        with (
+            patch.object(
+                test_set_index.db_client,
+                "get_item",
+                return_value={
+                    "id": "ts1",
+                    "status": "COMPLETED",
+                    "labelJobStatus": "RUNNING",
+                },
+            ),
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            with pytest.raises(Exception):
+                test_set_index.remove_documents_from_test_set(
+                    {"testSetId": "ts1", "fileNames": ["a.pdf"]}
+                )
+        s3.delete_objects.assert_not_called()
+
+    def test_removing_the_last_document_leaves_a_keep_marker(self, labeling_env):
+        """The prefix must stay listable or getTestSets reaps the row as an orphan."""
+        table, s3 = labeling_env
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=1,
+            createdAt="2026-01-01T00:00:00Z",
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=b"{}",
+        )
+
+        with patch.object(test_set_index, "s3_client", s3):
+            result = test_set_index.remove_documents_from_test_set(
+                {"testSetId": "ts1", "fileNames": ["a.pdf"]}
+            )
+
+        assert result["fileCount"] == 0
+        keys = {
+            o["Key"]
+            for o in s3.list_objects_v2(Bucket="test-set-bucket", Prefix="ts1/").get(
+                "Contents", []
+            )
+        }
+        assert keys == {"ts1/.keep"}
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["fileCount"] == 0
+
+    def test_removing_some_documents_writes_no_marker(self, labeling_env):
+        table, s3 = labeling_env
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="COMPLETED",
+            fileCount=2,
+            createdAt="2026-01-01T00:00:00Z",
+        )
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+
+        with patch.object(test_set_index, "s3_client", s3):
+            result = test_set_index.remove_documents_from_test_set(
+                {"testSetId": "ts1", "fileNames": ["a.pdf"]}
+            )
+
+        assert result["fileCount"] == 1
+        keys = {
+            o["Key"]
+            for o in s3.list_objects_v2(Bucket="test-set-bucket", Prefix="ts1/").get(
+                "Contents", []
+            )
+        }
+        assert keys == {"ts1/input/b.pdf"}
+
+    def test_create_empty_test_set_writes_the_row_then_the_marker(self):
+        s3 = MagicMock()
+        with (
+            patch.object(test_set_index.db_client, "put_item") as mock_put,
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            result = test_set_index.create_empty_test_set(
+                {
+                    "name": "My Empty Set",
+                    "description": "grown later",
+                    "documentClassType": "SINGLE_CLASS",
+                }
+            )
+
+        item = mock_put.call_args.args[0]
+        assert mock_put.call_args.kwargs["condition_expression"] == (
+            "attribute_not_exists(PK)"
+        )
+        assert item["PK"] == "testset#my-empty-set"
+        assert item["status"] == "COMPLETED"
+        assert item["fileCount"] == 0
+        assert item["labelState"] == "unlabeled"
+        assert item["documentClassType"] == "SINGLE_CLASS"
+        s3.put_object.assert_called_once_with(
+            Bucket="b", Key="my-empty-set/.keep", Body=b""
+        )
+        assert result["id"] == "my-empty-set"
+        assert result["fileCount"] == 0
+        assert result["status"] == "COMPLETED"
+
+    def test_create_empty_test_set_refuses_an_existing_id(self):
+        class Duplicate(Exception):
+            error_code = "ConditionalCheckFailedException"
+
+        s3 = MagicMock()
+        with (
+            patch.object(
+                test_set_index.db_client, "put_item", side_effect=Duplicate("dup")
+            ),
+            patch.object(test_set_index, "s3_client", s3),
+            patch.dict(os.environ, {"TEST_SET_BUCKET": "b"}),
+        ):
+            with pytest.raises(Exception, match="already exists"):
+                test_set_index.create_empty_test_set({"name": "Taken"})
+        s3.put_object.assert_not_called()
+
+    def test_create_empty_test_set_validates_the_name(self):
+        with pytest.raises(Exception, match="Test set name can only contain"):
+            test_set_index.create_empty_test_set({"name": "bad/name"})
+
+    def test_publish_refuses_an_empty_set(self, publish_table):
+        _seed_test_set(publish_table, "ts1", fileCount=0)
+        with pytest.raises(Exception, match="has no documents"):
+            test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+        assert "Item" not in publish_table.get_item(
+            Key={"PK": "testset#ts1", "SK": "version#000001"}
+        )
+
+
+@pytest.mark.unit
+class TestPatternImportIsAdminOnly:
+    """Matching a pattern searches a whole bucket, so Authors cannot do it.
+
+    An Author probing patterns would learn which documents exist — including
+    ones the document list hides from a profile-scoped account — and an import
+    copies them with their baselines. Authors keep zip upload, generation and
+    empty sets.
+    """
+
+    def _event(self, field, groups):
+        return {
+            "info": {"fieldName": field},
+            "arguments": {"filePattern": "**", "bucketType": "input"},
+            "identity": {
+                "claims": {"cognito:groups": groups, "email": "u@example.com"}
+            },
+        }
+
+    @pytest.mark.parametrize(
+        "field", ["listBucketFiles", "addTestSet", "addDocumentsToTestSet"]
+    )
+    def test_author_is_refused(self, field):
+        with (
+            patch.object(test_set_index, "find_matching_files") as find,
+            patch.object(test_set_index.db_client, "put_item") as put,
+            patch.object(test_set_index.db_client, "get_item") as get,
+        ):
+            with pytest.raises(Exception, match="requires Admin group"):
+                test_set_index.handler(self._event(field, ["Author"]), {})
+        find.assert_not_called()
+        put.assert_not_called()
+        get.assert_not_called()
+
+    @patch.dict(os.environ, {"INPUT_BUCKET": "input-bucket"})
+    def test_admin_passes(self):
+        with patch.object(
+            test_set_index, "find_matching_files", return_value=["a.pdf"]
+        ):
+            assert test_set_index.handler(
+                self._event("listBucketFiles", ["Admin"]), {}
+            ) == ["a.pdf"]
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "addTestSetFromUpload",
+            "addDocumentsToTestSetFromUpload",
+            "createEmptyTestSet",
+        ],
+    )
+    def test_authors_keep_the_other_ways_of_adding_documents(self, field):
+        # Reaching the handler body (and failing on the fake arguments there) is
+        # the point: the group gate let the Author through.
+        with pytest.raises(Exception) as excinfo:
+            test_set_index.handler(self._event(field, ["Author"]), {})
+        assert "requires Admin" not in str(excinfo.value)
+
+
+@pytest.mark.unit
+def test_publish_snapshot_records_the_drafting_configuration(publish_table):
+    """#759: the snapshot's configVersion used to read the never-written
+    boundConfigVersion and so was always null."""
+    _seed_test_set(publish_table, "ts1", fileCount=3, labelJobId="job-a")
+    publish_table.put_item(
+        Item={"PK": "testrun#job-a", "SK": "metadata", "ConfigVersion": "prof-A"}
+    )
+    test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+    written = publish_table.get_item(Key={"PK": "testset#ts1", "SK": "version#000001"})[
+        "Item"
+    ]
+    assert written["configVersion"] == "prof-A"

@@ -223,6 +223,7 @@ class TestAggregation:
 
         assert metrics["overall_accuracy"] is None
         assert metrics["weighted_overall_scores"] == {}
+        assert metrics["avg_weighted_overall_score"] is None
         assert metrics["average_confidence"] is None
         assert metrics["document_count"] == 0
         assert "accuracy_breakdown" in metrics
@@ -234,6 +235,40 @@ class TestAggregation:
         # so the UI never has to distinguish "field absent" from "0 excluded".
         assert metrics["excluded_documents"] == []
         assert metrics["excluded_document_count"] == 0
+
+    def test_average_weighted_overall_score(self, mock_env):
+        """Run-level roll-up of the per-document weighted scores.
+
+        An unweighted mean ACROSS documents, so it matches the figure the Test
+        Studio UI has always shown as "Avg Weighted Score". Documents with no
+        score (``None``) are skipped rather than counted as zero — otherwise a
+        single unscored document would silently drag the run-level number down.
+        """
+        index = import_test_module()
+
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7}
+        ) == pytest.approx(0.8)
+
+        # None scores are excluded from both numerator and denominator.
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": None}
+        ) == pytest.approx(0.8)
+
+        # So are non-finite ones — a single NaN would otherwise make the whole
+        # run-level mean NaN. Matches the UI's parseWeightedOverallScoresFinite.
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": float("nan")}
+        ) == pytest.approx(0.8)
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": float("-inf")}
+        ) == pytest.approx(0.8)
+        assert index.average_weighted_overall_score({"doc1.pdf": float("nan")}) is None
+
+        # No usable scores → None, never 0.0 (which would read as "perfectly bad").
+        assert index.average_weighted_overall_score({}) is None
+        assert index.average_weighted_overall_score(None) is None
+        assert index.average_weighted_overall_score({"doc1.pdf": None}) is None
 
     def test_calculate_false_alarm_rate(self, mock_env):
         """Test false alarm rate calculation.
@@ -2230,6 +2265,10 @@ class TestConfidenceCurveRecording:
         every config that drafted labels rather than only the newest.
         """
         recorded = []
+        fingerprints = []
+        # Exposed for the #698 test: the run item's ConfidenceFingerprint must
+        # reach the store beside the config version.
+        self.last_fingerprints = fingerprints
 
         class FakeTable:
             def get_item(self, Key):  # noqa: N803 — boto3 kwarg name
@@ -2243,8 +2282,11 @@ class TestConfidenceCurveRecording:
             def __init__(self, _table):
                 pass
 
-            def add_ece_bins(self, test_set_id, bins, config_version=None):
+            def add_ece_bins(
+                self, test_set_id, bins, config_version=None, fingerprint=None
+            ):
                 recorded.append((test_set_id, bins, config_version))
+                fingerprints.append(fingerprint)
                 return len(bins)
 
         payload = (
@@ -2258,6 +2300,26 @@ class TestConfidenceCurveRecording:
         ):
             index._record_confidence_curve("run-2", "tracking", payload)
         return recorded
+
+    def test_passes_the_runs_confidence_fingerprint_to_the_store(self, mock_env):
+        """#698: the run item carries the revision fingerprint the test runner
+        stamped; the scoring observation must be keyed by it as well as the
+        configuration, or scoring and review observations land on different
+        curves."""
+        index = import_test_module()
+        recorded = self._run(
+            index,
+            {
+                ("testrun#run-2", "metadata"): {
+                    "TestSetId": "ts1",
+                    "ConfigVersion": "v2",
+                    "ConfidenceFingerprint": "abc123",
+                },
+                ("testset#ts1", "metadata"): {"labelState": "labeled"},
+            },
+        )
+        assert recorded == [("ts1", self.BINS, "v2")]
+        assert self.last_fingerprints == ["abc123"]
 
     def test_records_a_run_scored_against_reviewed_labels(self, mock_env):
         index = import_test_module()
@@ -2430,7 +2492,9 @@ class TestConfidenceCurveRecording:
             def __init__(self, _t):
                 pass
 
-            def add_ece_bins(self, test_set_id, bins, config_version=None):
+            def add_ece_bins(
+                self, test_set_id, bins, config_version=None, fingerprint=None
+            ):
                 recorded.append((test_set_id, config_version))
                 return len(bins)
 

@@ -43,7 +43,9 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Every template that creates IAM roles in an AWS account — the product stacks,
-# the service role operators deploy by hand, and our own SDLC infrastructure.
+# the service role operators deploy by hand, our own SDLC infrastructure, and the
+# throwaway fixtures the live authorization checks deploy (those are meant to be
+# runnable in any partition too, so they get the same treatment).
 # Globbed rather than listed so a new nested stack is covered the day it lands;
 # test_every_role_declaring_template_is_scanned proves the globs stay complete.
 TEMPLATE_GLOBS = (
@@ -54,6 +56,7 @@ TEMPLATE_GLOBS = (
     "feature-platform/**/template.yaml",
     "iam-roles/**/*.yaml",
     "scripts/sdlc/cfn/*.yml",
+    "scripts/security/live_checks/**/template.yaml",
 )
 
 # `sam build` copies each template into <stack>/.aws-sam/build/. Those copies are

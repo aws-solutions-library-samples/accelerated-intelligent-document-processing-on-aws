@@ -12,6 +12,7 @@ query ListDiscoveryJobs {
       discoveredClassName
       statusMessage
       pageRange
+      multiInstanceHint
       jobType
       currentStep
       totalDocuments

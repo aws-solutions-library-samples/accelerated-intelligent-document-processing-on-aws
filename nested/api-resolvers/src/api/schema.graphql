@@ -452,6 +452,10 @@ type DiscoveryJobListItem @aws_cognito_user_pools @aws_iam {
   discoveredClassName: String
   statusMessage: String
   pageRange: String
+  # #765: JSON suggestion when the sample held several records of the discovered
+  # class ({instance_count, class_name, already_multi_instance, message}); the
+  # class setting itself is never changed by discovery.
+  multiInstanceHint: String
   # Multi-document discovery fields
   jobType: String
   currentStep: String
@@ -670,6 +674,7 @@ type DiscoveryJob @aws_cognito_user_pools @aws_iam {
   errorMessage: String
   discoveredClassName: String
   statusMessage: String
+  multiInstanceHint: String
   # Multi-document discovery fields
   jobType: String
   currentStep: String
@@ -753,6 +758,14 @@ type TestRun @aws_cognito_user_pools @aws_iam {
   failedFiles: Int
   overallAccuracy: Float
   weightedOverallScores: AWSJSON
+  # Run-level mean of ``weightedOverallScores`` — the "Avg Weighted Score" the UI
+  # shows. Unlike ``overallAccuracy`` (an unweighted micro-average over every
+  # field comparison) each document's score honours the config's
+  # ``x-aws-idp-evaluation-weight`` weights, so the two figures legitimately
+  # differ. Provided because callers previously had to average
+  # ``weightedOverallScores`` themselves; an API client that only wants the
+  # headline number no longer has to fetch the whole per-document map.
+  avgWeightedOverallScore: Float
   # Count of documents in this run whose sections all have no extractable
   # schema (auto-detected no-op) — those docs are excluded from
   # ``weightedOverallScores`` and from the histogram / lowest-scores UI.
@@ -1028,7 +1041,27 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   # Plain-language reason for the tier, for a tooltip.
   qualityTierReason: String
   targetAccuracy: Float!
+  # The Configuration Profile the estimate's curve is keyed by, and where it came
+  # from: "argument" | "test-set" | "bound" | "drafting-run" | "mixed" (the set's
+  # labeling jobs disagree; configVersion is null) | null (none identifiable).
   configVersion: String
+  configVersionSource: String
+  # The revision family within that profile whose confidence semantics produced
+  # the labels: a hash of the confidence-relevant configuration (extraction model
+  # and sampling, assessment settings), stamped on the drafting run by the test
+  # runner. Source: "drafting-run" | "mixed-revisions" (the drafting runs disagree)
+  # | "partial" (some drafting runs predate the stamp, so their labels' family is
+  # unknown) | null (no run carries one). In every case but the first the
+  # fingerprint is null and the profile's pooled curve is served. (#698)
+  confidenceFingerprint: String
+  confidenceFingerprintSource: String
+  # Which stored curve the numbers rest on: "revision" (this profile's curve for
+  # the current confidence-relevant settings), "config" (the profile pooled across
+  # its revisions — served when the revision family has no observations yet, or
+  # when no fingerprint is known), "aggregate" (the set-wide blend of every
+  # configuration — served when the per-configuration curve is empty), or "prior"
+  # (nothing stored for the set).
+  curveSource: String
   docsToReview: Int!
   # Range, not a point: a prior-driven estimate should not imply precision.
   docsToReviewLow: Int!
@@ -1380,6 +1413,7 @@ type Mutation {
     errorMessage: String
     discoveredClassName: String
     statusMessage: String
+    multiInstanceHint: String
     jobType: String
     currentStep: String
     totalDocuments: Int
@@ -1516,11 +1550,16 @@ type Mutation {
   abortTestRuns(testRunIds: [String!]!): AbortWorkflowResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   addTestSet(name: String!, description: String, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String, documentClassType: DocumentClassType): TestSet
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   addTestSetFromUpload(input: TestSetUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
-  addDocumentsToTestSet(testSetId: String!, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String): TestSet
+  # A set with no documents yet, grown later from its page: files in a bucket
+  # (Admin), a zip upload, or generated documents. Created COMPLETED with
+  # fileCount 0.
+  createEmptyTestSet(name: String!, description: String, documentClassType: DocumentClassType): TestSet
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+  addDocumentsToTestSet(testSetId: String!, filePattern: String!, bucketType: String!, fileCount: Int!, modifiedAfter: String): TestSet
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   addDocumentsToTestSetFromUpload(input: TestSetDocumentsUploadInput!): TestSetUploadResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   updateTestSet(input: UpdateTestSetInput!): TestSet
@@ -1918,7 +1957,7 @@ type Query @aws_cognito_user_pools @aws_iam {
   getAnnotationQueue(testSetId: String!, limit: Int, includeCompleted: Boolean): AnnotationQueue
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Annotator"])
   listBucketFiles(bucketType: String!, filePattern: String!, modifiedAfter: String): [String]
-    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
   validateTestFileName(fileName: String!): TestSetValidationResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
 

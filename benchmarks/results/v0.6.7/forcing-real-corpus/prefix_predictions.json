@@ -1,0 +1,62 @@
+{
+  "ocrb/BANK_CHECK": {
+    "off": 1443,
+    "on": 1964,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  },
+  "ocrb/COMMERCIAL_LEASE_AGREEMENT": {
+    "off": 1266,
+    "on": 1744,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  },
+  "ocrb/CREDIT_CARD_STATEMENT": {
+    "off": 1194,
+    "on": 1672,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  },
+  "ocrb/DELIVERY_NOTE": {
+    "off": 1747,
+    "on": 2383,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  },
+  "ocrb/EQUIPMENT_INSPECTION": {
+    "off": 1324,
+    "on": 1837,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  },
+  "ocrb/GLOSSARY": {
+    "off": 963,
+    "on": 1256,
+    "pred_off": "NO CACHE",
+    "pred_on": "CACHES"
+  },
+  "ocrb/PETITION_FORM": {
+    "off": 1158,
+    "on": 1549,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  },
+  "ocrb/REAL_ESTATE": {
+    "off": 1279,
+    "on": 1851,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  },
+  "ocrb/SHIFT_SCHEDULE": {
+    "off": 1014,
+    "on": 1313,
+    "pred_off": "NO CACHE",
+    "pred_on": "CACHES"
+  },
+  "rk/Invoice": {
+    "off": 1270,
+    "on": 1787,
+    "pred_off": "CACHES",
+    "pred_on": "CACHES"
+  }
+}

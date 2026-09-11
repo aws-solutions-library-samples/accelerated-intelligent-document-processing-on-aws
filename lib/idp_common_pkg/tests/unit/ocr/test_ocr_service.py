@@ -717,6 +717,50 @@ class TestOcrService:
         assert "97.5" in confidence["text"]
         assert "No confidence data available" not in confidence["text"]
 
+    def test_extract_bedrock_ocr_artifacts_geometry_without_confidence(
+        self, mock_bedrock_config
+    ):
+        """Blocks with geometry but no Confidence must not report 0.0.
+
+        Some OCR backends (e.g. the Cohere Parse hook) return bounding boxes but
+        no confidence scores at all. Defaulting the missing score to 0.0 would
+        tell the assessment LLM every line was maximally unreliable, suppressing
+        extraction confidence document-wide.
+        """
+        with patch("boto3.client"):
+            service = OcrService(backend="bedrock", bedrock_config=mock_bedrock_config)
+        response_payload = {
+            "output": {"message": {"content": [{"text": "Account: 12345"}]}},
+            "textractBlocks": {
+                "DocumentMetadata": {"Pages": 1},
+                "Blocks": [
+                    {"BlockType": "PAGE", "Id": "p1"},
+                    {
+                        "BlockType": "LINE",
+                        "Id": "l1",
+                        "Text": "Account: 12345",
+                        "Geometry": {
+                            "BoundingBox": {
+                                "Left": 0.1,
+                                "Top": 0.2,
+                                "Width": 0.3,
+                                "Height": 0.05,
+                            }
+                        },
+                    },
+                ],
+            },
+        }
+        _, confidence = service._extract_bedrock_ocr_artifacts(response_payload)
+
+        # The row reports the score as unavailable rather than as a real 0.0.
+        rows = [
+            line
+            for line in confidence["text"].split("\n")
+            if line.startswith("| Account")
+        ]
+        assert rows == ["| Account: 12345 | N/A |"]
+
     def test_extract_bedrock_ocr_artifacts_empty_blocks(self, mock_bedrock_config):
         """textractBlocks present but empty -> fall back to placeholder."""
         with patch("boto3.client"):

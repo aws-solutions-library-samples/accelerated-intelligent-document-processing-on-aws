@@ -112,6 +112,10 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   // xAI Grok (Converse). Cross-region inference profiles only — there is no
   // in-region or eu. form, so EU deployments use the global. entry below.
   { label: 'us.xai.grok-4.6', value: 'us.xai.grok-4.6' },
+  // OpenAI GPT-6 Astra (Converse — NOT the bedrock-mantle path the GPT-5.x
+  // entries below use). Cross-region inference profiles only; EU deployments use
+  // the global. entry below.
+  { label: 'us.openai.gpt-6-astra', value: 'us.openai.gpt-6-astra' },
   // OpenAI GPT-5.x (bedrock-mantle Responses API) - US regions only
   { label: 'openai.gpt-5.4', value: 'openai.gpt-5.4' },
   { label: 'openai.gpt-5.5', value: 'openai.gpt-5.5' },
@@ -162,6 +166,7 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: 'global.anthropic.claude-opus-5', value: 'global.anthropic.claude-opus-5' },
   { label: 'global.anthropic.claude-opus-5:1m', value: 'global.anthropic.claude-opus-5:1m' },
   { label: 'global.xai.grok-4.6', value: 'global.xai.grok-4.6' },
+  { label: 'global.openai.gpt-6-astra', value: 'global.openai.gpt-6-astra' },
 ];
 
 // Per-class extraction prompt overrides (override extraction.system_prompt /
@@ -204,6 +209,15 @@ export const X_AWS_IDP_INSTANCE_ARRAY = 'x-aws-idp-instance-array';
  * must be migrated. Must stay in sync with schema_constants.py.
  */
 export const X_AWS_IDP_MULTI_INSTANCE = 'x-aws-idp-multi-instance';
+
+/**
+ * Class-level opt-IN that keeps Simple + integrated (1S-TopK) confidence on a
+ * class that declares list fields. Without it such a class is scored in a
+ * separate pass, because Simple + integrated silently drops list rows (measured
+ * at 100+ rows on the shipped default model). Must stay in sync with
+ * schema_constants.py.
+ */
+export const X_AWS_IDP_ALLOW_INTEGRATED_LISTS = 'x-aws-idp-allow-integrated-lists';
 
 /**
  * Declares the named page sub-types a class can include. Each entry has a

@@ -1013,8 +1013,10 @@ max_tokens: 4096
 ```
 
 Extraction and the confidence pass have no `max_tokens` knob at all — they
-always request the model's maximum output so long lists and large documents are
-never truncated.
+request the model's maximum output so long lists and large documents are never
+truncated (the one exception: a confidence call on Amazon Nova Lite/Micro requests
+a budget sized to its rows, because that model was measured looping to its cap —
+see the self-healing note in the extraction-and-confidence guide).
 
 ## Token Efficiency and Cost Optimization
 
@@ -1357,7 +1359,7 @@ Confidence results automatically appear in the web interface with color-coded di
 
 1. **Enable Selectively**: Disable confidence (`enabled: false` or `mode: off`) for non-critical document types to control costs
 2. **Use Advanced (agentic) for Complex Documents**: For very large documents and big tables, prefer agentic extraction — it shards both extraction and confidence assessment and yields the best-calibrated confidence
-3. **Tune `list_batch_size` for Large Lists**: Lower it if a chunk under-enumerates; raise it to cut inference count
+3. **Lower `list_batch_size` for Large Lists** if a chunk under-enumerates. It is a ceiling on a derived size, so raising it does not cut the inference count
 4. **Configure Appropriate Image Dimensions**: Use original resolution for maximum accuracy
 5. **Monitor Resource Usage**: Track processing time and costs when using confidence features
 

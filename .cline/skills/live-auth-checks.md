@@ -1,0 +1,1 @@
+../../.claude/skills/live-auth-checks.md
