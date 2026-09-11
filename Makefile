@@ -311,8 +311,19 @@ CFN_LINT_VERSION := 1.51.0
 # parameter wiring asserted directly by
 # scripts/tests/test_nested_stack_parameters.py instead.
 CFN_LINT_IGNORE := E3043
+#
+# Warnings (W*/I*) never fail the gate, and by default they are not LISTED
+# either: ~112 of them are a single false-positive class (W1030/W1031 — an
+# optional `Default: ""` parameter such as LambdaSecurityGroupId "is not a valid
+# sg-... id", which cfn-lint reports without noticing the referencing resource is
+# behind a DeployInVPC condition) plus a handful of W1028/W1001 condition
+# inferences of the same shape. Printed in full they buried the one line that
+# matters. The rules stay ENABLED — a genuinely malformed hardcoded id or ARN is
+# still detected — but only a per-rule count is shown. Set
+# CFN_LINT_SHOW_WARNINGS=1 (or run `make cfn-lint-warnings`) to list them.
+CFN_LINT_SHOW_WARNINGS ?=
 
-cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings advisory)
+cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings counted, listed by cfn-lint-warnings)
 	@echo "Validating CloudFormation templates with cfn-lint..."
 	@command -v cfn-lint >/dev/null 2>&1 || { \
 		echo -e "$(RED)ERROR: cfn-lint not installed. Run 'make setup' or$(NC)"; \
@@ -351,8 +362,25 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 	STATUS=$$?; \
 	NOISE="cfnlint\.decode\.decode - ERROR - Template file not found:.*\.aws-sam/packaged\.ya\?ml"; \
 	MISSING=$$(grep -c "$$NOISE" "$$OUT" || true); \
-	grep -v "$$NOISE" "$$OUT" || true; \
+	FILTERED=$$(mktemp); \
+	grep -v "$$NOISE" "$$OUT" >"$$FILTERED" || true; \
 	rm -f "$$OUT"; \
+	WARNINGS=$$(grep -cE '^[WI][0-9]{4} ' "$$FILTERED" || true); \
+	if [ -n "$(CFN_LINT_SHOW_WARNINGS)" ]; then \
+		cat "$$FILTERED"; \
+	else \
+		awk '/^[WI][0-9]{4} /{skip=2; next} skip>0{skip--; next} {print}' "$$FILTERED"; \
+	fi; \
+	if [ "$$WARNINGS" -gt 0 ]; then \
+		BYRULE=$$(grep -oE '^[WI][0-9]{4}' "$$FILTERED" | sort | uniq -c | sort -rn \
+			| awk '{printf "%s%s x%d", (NR>1 ? ", " : ""), $$2, $$1}'); \
+		if [ -n "$(CFN_LINT_SHOW_WARNINGS)" ]; then \
+			echo -e "$(YELLOW)  $$WARNINGS advisory warning(s) listed above ($$BYRULE); none fail this gate$(NC)"; \
+		else \
+			echo -e "$(YELLOW)  $$WARNINGS advisory warning(s) not listed ($$BYRULE) — run 'make cfn-lint-warnings' to see them$(NC)"; \
+		fi; \
+	fi; \
+	rm -f "$$FILTERED"; \
 	if [ "$$MISSING" -gt 0 ]; then \
 		echo "  ($$MISSING nested TemplateURL(s) unbuilt — expected on a clean checkout)"; \
 	fi; \
@@ -361,6 +389,9 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 		exit 1; \
 	fi; \
 	echo -e "$(GREEN)✅ cfn-lint: no template errors$(NC)"
+
+cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
+	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
