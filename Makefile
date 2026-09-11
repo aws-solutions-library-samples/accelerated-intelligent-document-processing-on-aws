@@ -438,6 +438,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/chat_stream_processor && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
 	cd src/lambda/bda_ocr_project && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
