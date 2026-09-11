@@ -9,6 +9,7 @@ import pytest
 from idp_common.bedrock.prompt_cache import (
     cache_state,
     describe_cache_state,
+    model_supports_cache_point,
     summarize_cache_usage,
 )
 
@@ -133,3 +134,44 @@ def test_state_table(read, write, has_units, disabled, expected):
         cache_state(read, write, has_cache_units=has_units, disabled=disabled)
         == expected
     )
+
+
+def test_zero_zero_with_no_cache_point_sent_is_not_called_inert():
+    """Claude returns cacheReadInputTokens: 0 with no cache point in the request, so
+    a marker-less prompt or an unsupported model must not read as 'inert'."""
+    units = {"inputTokens": 949, "cacheReadInputTokens": 0, "cacheWriteInputTokens": 0}
+    s = summarize_cache_usage({_key(): units}, cache_point_sent=False)
+    assert s["state"] == "no-cache-point"
+    assert "no cache point reached the model" in describe_cache_state(s)
+    # unknown (inference profile) falls back to the evidence in the usage block
+    assert (
+        summarize_cache_usage({_key(): units}, cache_point_sent=None)["state"]
+        == "never-cached"
+    )
+    # 'off' still wins the naming: zero/zero is the intended outcome
+    assert (
+        summarize_cache_usage({_key(): units}, disabled=True, cache_point_sent=False)[
+            "state"
+        ]
+        == "disabled"
+    )
+    # ...and measured caching beats everything
+    units["cacheWriteInputTokens"] = 7
+    assert (
+        summarize_cache_usage({_key(): units}, cache_point_sent=False)["state"]
+        == "write-only"
+    )
+
+
+def test_model_support_mirrors_the_client_list_and_leaves_profiles_unknown():
+    assert model_supports_cache_point(SONNET) is True
+    assert model_supports_cache_point("us.amazon.nova-lite-v1:0") is True  # Nova caches
+    assert model_supports_cache_point("xai.grok-4") is False
+    assert model_supports_cache_point("us.openai.gpt-6-astra") is False
+    assert (
+        model_supports_cache_point(
+            "arn:aws:bedrock:us-west-2:1:application-inference-profile/abc"
+        )
+        is None
+    )
+    assert model_supports_cache_point(None) is None

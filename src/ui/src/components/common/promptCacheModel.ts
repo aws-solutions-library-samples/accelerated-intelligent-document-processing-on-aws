@@ -8,7 +8,7 @@
 // derived here from the document's metering map, which is keyed by phase and
 // model only.
 
-export type PromptCacheState = 'caching' | 'write-only' | 'never-cached' | 'disabled' | 'no-cache-data';
+export type PromptCacheState = 'caching' | 'write-only' | 'never-cached' | 'disabled' | 'no-cache-point' | 'no-cache-data';
 
 export interface PromptCacheSummary {
   state?: PromptCacheState | string;
@@ -19,6 +19,8 @@ export interface PromptCacheSummary {
   read_share?: number | null;
   model_ids?: string[];
   min_cacheable_prefix_tokens?: number | null;
+  // Backend-only: whether a cache point reached the model at all.
+  cache_point_sent?: boolean | null;
 }
 
 export type StatusType = 'success' | 'warning' | 'info' | 'stopped';
@@ -27,6 +29,21 @@ const num = (v: unknown): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
+
+// Published per-model minimum cacheable prefix; mirrors _MIN_PREFIX_TIERS in
+// idp_common/bedrock/prompt_cache.py (first match wins; Nova needs no entry).
+const MIN_PREFIX_TIERS: Array<[RegExp, number]> = [
+  [/claude-(opus-5|fable-5)/, 512],
+  [/claude-opus-4-7/, 2048],
+  [/claude-(opus-4-6|opus-4-5|haiku-4-5)/, 4096],
+  [/claude-(sonnet-5|sonnet-4|opus-4-8|opus-4-1|opus-4|3-7-sonnet)/, 1024],
+];
+
+export function minCacheablePrefixTokens(modelId?: string | null): number | null {
+  if (!modelId) return null;
+  const hit = MIN_PREFIX_TIERS.find(([re]) => re.test(modelId));
+  return hit ? hit[1] : null;
+}
 
 export function cacheState(read: number, write: number, hasCacheUnits: boolean, disabled = false): PromptCacheState {
   if (read > 0) return 'caching';
@@ -37,9 +54,15 @@ export function cacheState(read: number, write: number, hasCacheUnits: boolean, 
 }
 
 // Sum the Bedrock cache units of every metering key whose context starts with
-// `contextPrefix` ("Extraction" also covers ExtractionEscalation). Returns null
-// when the phase made no Bedrock call.
-export function summarizeCacheUsage(metering: Record<string, unknown>, contextPrefix: string): PromptCacheSummary | null {
+// `contextPrefix` ("Extraction" also covers ExtractionEscalation), or equals it
+// when `exact` is set (the cost table lists each context on its own row, so a
+// prefix match would count escalation tokens twice). Returns null when the
+// phase made no Bedrock call.
+export function summarizeCacheUsage(
+  metering: Record<string, unknown>,
+  contextPrefix: string,
+  opts: { exact?: boolean } = {},
+): PromptCacheSummary | null {
   let input = 0;
   let read = 0;
   let write = 0;
@@ -49,7 +72,8 @@ export function summarizeCacheUsage(metering: Record<string, unknown>, contextPr
   const models = new Set<string>();
   Object.entries(metering).forEach(([key, units]) => {
     const parts = key.split('/');
-    if (parts.length < 3 || parts[1] !== 'bedrock' || !parts[0].startsWith(contextPrefix)) return;
+    const contextMatches = opts.exact ? parts[0] === contextPrefix : parts[0].startsWith(contextPrefix);
+    if (parts.length < 3 || parts[1] !== 'bedrock' || !contextMatches) return;
     if (!units || typeof units !== 'object') return;
     const u = units as Record<string, unknown>;
     models.add(parts.slice(2).join('/'));
@@ -64,6 +88,8 @@ export function summarizeCacheUsage(metering: Record<string, unknown>, contextPr
   });
   if (models.size === 0) return null;
   const denominator = input + read + write;
+  const modelIds = Array.from(models).sort();
+  const minimum = modelIds.map(minCacheablePrefixTokens).find((v) => v !== null) ?? null;
   return {
     state: cacheState(read, write, hasCacheUnits),
     input_tokens: input,
@@ -71,8 +97,8 @@ export function summarizeCacheUsage(metering: Record<string, unknown>, contextPr
     cache_write_input_tokens: write,
     requests: sawRequests ? requests : null,
     read_share: denominator ? read / denominator : null,
-    model_ids: Array.from(models).sort(),
-    min_cacheable_prefix_tokens: null,
+    model_ids: modelIds,
+    min_cacheable_prefix_tokens: minimum,
   };
 }
 
@@ -83,8 +109,14 @@ export interface PromptCacheDescription {
 }
 
 // `phaseOnly` marks a per-phase view (no per-class metadata), where zero/zero
-// cannot distinguish an inert cache point from `prompt_cache: off`.
-export function describePromptCache(summary: PromptCacheSummary, opts: { phaseOnly?: boolean } = {}): PromptCacheDescription {
+// cannot distinguish an inert cache point from one that was never sent.
+// `context` is the phase; the extraction.prompt_cache knob is only mentioned
+// for Extraction, since it governs nothing else.
+export function describePromptCache(
+  summary: PromptCacheSummary,
+  opts: { phaseOnly?: boolean; context?: string } = {},
+): PromptCacheDescription {
+  const isExtraction = !opts.context || opts.context.startsWith('Extraction');
   const read = num(summary.cache_read_input_tokens);
   const write = num(summary.cache_write_input_tokens);
   const uncached = num(summary.input_tokens);
@@ -99,7 +131,9 @@ export function describePromptCache(summary: PromptCacheSummary, opts: { phaseOn
       return {
         indicator: 'warning',
         headline: `Prompt cache: write-only — paid 1.25× to write ${write.toLocaleString()} tokens, no read landed`,
-        detail: `${counts}. Expected when a class is processed once per 5-minute TTL; a low-volume deployment can set extraction.prompt_cache: off.`,
+        detail: `${counts}. Expected when a class is processed once per 5-minute TTL${
+          isExtraction ? '; a low-volume deployment can set extraction.prompt_cache: off' : ''
+        }.`,
       };
     case 'never-cached': {
       const models = (summary.model_ids || []).join(', ') || 'the model';
@@ -108,12 +142,20 @@ export function describePromptCache(summary: PromptCacheSummary, opts: { phaseOn
         ? `${models}'s minimum cacheable prefix of ${num(min).toLocaleString()} tokens`
         : `${models}'s minimum cacheable prefix`;
       const why = opts.phaseOnly
-        ? `Either no cache point was sent (extraction.prompt_cache: off) or the prompt prefix is below ${floor}.`
+        ? `Either no cache point reached the model for this phase${
+            isExtraction ? ' (no <<CACHEPOINT>> marker, extraction.prompt_cache: off, or an unsupported model)' : ''
+          } or the prompt prefix is below ${floor}.`
         : `The prompt prefix is probably below ${floor}; run "idp-cli config validate" for the per-class estimate.`;
       return { indicator: 'warning', headline: 'Prompt cache: never cached — the cache point was inert', detail: `${counts}. ${why}` };
     }
     case 'disabled':
       return { indicator: 'stopped', headline: 'Prompt cache: off by configuration (extraction.prompt_cache: off)', detail: counts };
+    case 'no-cache-point':
+      return {
+        indicator: 'info',
+        headline: 'Prompt cache: no cache point reached the model',
+        detail: `${counts}. The prompt has no <<CACHEPOINT>> marker or the model does not support prompt caching.`,
+      };
     default:
       return { indicator: 'info', headline: 'Prompt cache: no cache usage reported by this model or backend', detail: counts };
   }

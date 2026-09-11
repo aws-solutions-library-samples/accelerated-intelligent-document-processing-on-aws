@@ -131,7 +131,33 @@ def estimate_prefix_tokens(
 
 CACHE_UNIT_READ = "cacheReadInputTokens"
 CACHE_UNIT_WRITE = "cacheWriteInputTokens"
-CACHE_STATES = ("caching", "write-only", "never-cached", "disabled", "no-cache-data")
+CACHE_STATES = (
+    "caching",
+    "write-only",
+    "never-cached",
+    "disabled",
+    "no-cache-point",
+    "no-cache-data",
+)
+
+
+def model_supports_cache_point(model_id: Optional[str]) -> Optional[bool]:
+    """Whether the client would send a ``cachePoint`` for this model at all.
+
+    Mirrors ``BedrockClient._is_model_cachepoint_supported`` without a client: an
+    exact member of ``CACHEPOINT_SUPPORTED_MODELS`` is ``True``, an inference-profile
+    ARN is ``None`` (the client resolves it live; unknown here, so never reported as
+    unsupported), anything else is ``False`` — the client strips the markers for it.
+    """
+    if not model_id:
+        return None
+    from idp_common.bedrock.client import CACHEPOINT_SUPPORTED_MODELS
+
+    if model_id in CACHEPOINT_SUPPORTED_MODELS:
+        return True
+    if "inference-profile" in model_id:
+        return None
+    return False
 
 
 def cache_state(
@@ -140,15 +166,25 @@ def cache_state(
     *,
     has_cache_units: bool,
     disabled: bool = False,
+    cache_point_sent: Optional[bool] = None,
 ) -> str:
     """Classify one metering aggregate. Measured reads or writes win over the
-    configuration flag: if tokens were cached, caching happened."""
+    configuration flag: if tokens were cached, caching happened.
+
+    ``cache_point_sent=False`` means the caller knows no cache point reached the
+    model (no ``<<CACHEPOINT>>`` marker in the prompt, or a model the client does
+    not send cache points to). That matters because Claude models report
+    ``cacheReadInputTokens: 0`` even when no cache point was sent, so zero/zero
+    alone cannot tell an inert cache point from an absent one.
+    """
     if cache_read > 0:
         return "caching"
     if cache_write > 0:
         return "write-only"
     if disabled:
         return "disabled"
+    if cache_point_sent is False:
+        return "no-cache-point"
     if has_cache_units:
         return "never-cached"
     return "no-cache-data"
@@ -159,6 +195,7 @@ def summarize_cache_usage(
     *,
     context_prefix: str = "Extraction",
     disabled: bool = False,
+    cache_point_sent: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     """Sum the Bedrock cache units of every metering key in one phase and classify.
 
@@ -200,8 +237,13 @@ def summarize_cache_usage(
             break
     return {
         "state": cache_state(
-            read, write, has_cache_units=has_cache_units, disabled=disabled
+            read,
+            write,
+            has_cache_units=has_cache_units,
+            disabled=disabled,
+            cache_point_sent=cache_point_sent,
         ),
+        "cache_point_sent": cache_point_sent,
         "input_tokens": int(input_tokens),
         "cache_read_input_tokens": int(read),
         "cache_write_input_tokens": int(write),
@@ -245,6 +287,11 @@ def describe_cache_state(summary: Mapping[str, Any]) -> str:
         )
     if state == "disabled":
         return f"off by configuration (extraction.prompt_cache: off; {counts})"
+    if state == "no-cache-point":
+        return (
+            f"no cache point reached the model ({counts}); the prompt has no "
+            f"<<CACHEPOINT>> marker or the model does not support prompt caching"
+        )
     return f"no cache usage reported by this model or backend ({counts})"
 
 

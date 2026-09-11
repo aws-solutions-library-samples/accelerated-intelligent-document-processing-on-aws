@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { cacheState, describePromptCache, summarizeCacheUsage } from '../promptCacheModel';
+import { cacheState, describePromptCache, minCacheablePrefixTokens, summarizeCacheUsage } from '../promptCacheModel';
 
 const SONNET = 'us.anthropic.claude-sonnet-4-6';
 
@@ -55,6 +55,20 @@ describe('summarizeCacheUsage (mirrors idp_common.bedrock.prompt_cache)', () => 
     expect(summarizeCacheUsage({}, 'Extraction')).toBeNull();
   });
 
+  it('exact matching keeps escalation tokens out of the Extraction row and names the minimum', () => {
+    const metering = {
+      [`Extraction/bedrock/${SONNET}`]: { inputTokens: 100, cacheReadInputTokens: 0, cacheWriteInputTokens: 900 },
+      'ExtractionEscalation/bedrock/us.anthropic.claude-opus-4-8': { inputTokens: 50, cacheReadInputTokens: 900, cacheWriteInputTokens: 0 },
+    };
+    const exact = summarizeCacheUsage(metering, 'Extraction', { exact: true });
+    expect(exact?.state).toBe('write-only');
+    expect(exact?.cache_read_input_tokens).toBe(0);
+    expect(exact?.min_cacheable_prefix_tokens).toBe(1024);
+    expect(minCacheablePrefixTokens('us.anthropic.claude-haiku-4-5-20251001-v1:0')).toBe(4096);
+    expect(minCacheablePrefixTokens('us.anthropic.claude-opus-5')).toBe(512);
+    expect(minCacheablePrefixTokens('us.amazon.nova-lite-v1:0')).toBeNull();
+  });
+
   it('measured caching beats the disabled flag', () => {
     expect(cacheState(5, 0, true, true)).toBe('caching');
     expect(cacheState(0, 0, true, true)).toBe('disabled');
@@ -91,5 +105,26 @@ describe('describePromptCache', () => {
 
     expect(describePromptCache({ ...base, state: 'disabled' }).indicator).toBe('stopped');
     expect(describePromptCache({ ...base, state: 'no-cache-data' }).indicator).toBe('info');
+  });
+
+  it('has a distinct state for a cache point that never reached the model', () => {
+    const base = { input_tokens: 949, cache_read_input_tokens: 0, cache_write_input_tokens: 0, read_share: 0, model_ids: [SONNET] };
+    const noPoint = describePromptCache({ ...base, state: 'no-cache-point', cache_point_sent: false });
+    expect(noPoint.indicator).toBe('info');
+    expect(noPoint.headline).toContain('no cache point reached the model');
+  });
+
+  it('only names the extraction knob on Extraction rows', () => {
+    const base = { input_tokens: 949, cache_read_input_tokens: 0, cache_write_input_tokens: 0, read_share: 0, model_ids: [SONNET] };
+    const classification = describePromptCache({ ...base, state: 'never-cached' }, { phaseOnly: true, context: 'Classification' });
+    expect(classification.detail).not.toContain('prompt_cache');
+    expect(classification.detail).toContain('no cache point reached the model for this phase');
+    const extraction = describePromptCache({ ...base, state: 'never-cached' }, { phaseOnly: true, context: 'Extraction' });
+    expect(extraction.detail).toContain('extraction.prompt_cache: off');
+    const summarizationWriteOnly = describePromptCache(
+      { ...base, state: 'write-only', cache_write_input_tokens: 10 },
+      { phaseOnly: true, context: 'Summarization' },
+    );
+    expect(summarizationWriteOnly.detail).not.toContain('prompt_cache');
   });
 });

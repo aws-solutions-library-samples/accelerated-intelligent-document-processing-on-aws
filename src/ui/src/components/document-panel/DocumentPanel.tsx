@@ -357,7 +357,7 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     // verdict: the cache units are priced above, but a row of numbers does not
     // say whether the cache point did anything (#780).
     const contextTotal = contextTotals[context] || 0;
-    const cacheSummary = context ? summarizeCacheUsage(meteringData as Record<string, unknown>, context) : null;
+    const cacheSummary = context ? summarizeCacheUsage(meteringData as Record<string, unknown>, context, { exact: true }) : null;
     tableItems.push({
       context: '',
       serviceApi: '',
@@ -370,7 +370,9 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
       isSubtotal: true,
       note: `${context} Subtotal`,
       cacheNote:
-        cacheSummary && cacheSummary.state !== 'no-cache-data' ? describePromptCache(cacheSummary, { phaseOnly: true }) : undefined,
+        cacheSummary && cacheSummary.state !== 'no-cache-data'
+          ? describePromptCache(cacheSummary, { phaseOnly: true, context })
+          : undefined,
     });
   });
 
@@ -404,9 +406,12 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
           header: 'Service/Api',
           cell: (rowItem: MeteringRowItem) =>
             rowItem.cacheNote ? (
-              <span title={rowItem.cacheNote.detail}>
+              <Box fontSize="body-s">
                 <StatusIndicator type={rowItem.cacheNote.indicator}>{rowItem.cacheNote.headline}</StatusIndicator>
-              </span>
+                <Box fontSize="body-s" color="text-body-secondary">
+                  {rowItem.cacheNote.detail}
+                </Box>
+              </Box>
             ) : (
               rowItem.serviceApi
             ),

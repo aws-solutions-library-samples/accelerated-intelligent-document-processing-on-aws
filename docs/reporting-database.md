@@ -291,11 +291,11 @@ document_sections/
 
 ### Prompt-cache efficiency per class
 
-Every section result carries `metadata.prompt_cache` (see
+Every section that made a Bedrock extraction call carries `metadata.prompt_cache` (see
 [configuration.md](configuration.md#reading-cache-efficiency-back-per-phase-and-per-class)),
 so each `document_sections_<class>` table has the columns
 `"metadata.prompt_cache.state"` (`caching` | `write-only` | `never-cached` | `disabled`
-| `no-cache-data`), `"metadata.prompt_cache.read_share"`,
+| `no-cache-point` | `no-cache-data`), `"metadata.prompt_cache.cache_point_sent"`, `"metadata.prompt_cache.read_share"`,
 `"metadata.prompt_cache.input_tokens"`, `"metadata.prompt_cache.cache_read_input_tokens"`,
 `"metadata.prompt_cache.cache_write_input_tokens"`, `"metadata.prompt_cache.requests"`
 and `"metadata.prompt_cache.min_cacheable_prefix_tokens"`. Column names contain dots,
