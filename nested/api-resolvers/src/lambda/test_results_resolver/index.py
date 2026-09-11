@@ -3,6 +3,7 @@
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -400,11 +401,9 @@ def handle_cache_update_request(event, context):
                 # Falls back to computing the mean locally so the field is populated
                 # on the Athena aggregation path too, which has no aggregation
                 # Lambda to supply it.
-                "avgWeightedOverallScore": aggregated_metrics.get(
-                    "avg_weighted_overall_score"
-                )
-                or _average_weighted_overall_score(
-                    aggregated_metrics.get("weighted_overall_scores")
+                "avgWeightedOverallScore": _resolve_avg_weighted_overall_score(
+                    aggregated_metrics.get("avg_weighted_overall_score"),
+                    aggregated_metrics.get("weighted_overall_scores"),
                 ),
                 "averageConfidence": aggregated_metrics.get("average_confidence"),
                 "confidenceMetrics": aggregated_metrics.get("confidence_metrics"),
@@ -455,15 +454,36 @@ def _average_weighted_overall_score(doc_weighted_scores):
     available: the Athena aggregation path, and test runs whose metrics were
     cached before ``avgWeightedOverallScore`` existed. Coerces via ``float`` because
     cached scores come back from DynamoDB as ``Decimal``.
+
+    Only finite numbers count, matching both the aggregation Lambda's copy and the
+    UI's ``parseWeightedOverallScoresFinite``, so all three arrive at the same
+    number for the same map.
     """
     if not doc_weighted_scores:
         return None
     scores = [
-        float(score) for score in doc_weighted_scores.values() if score is not None
+        float(score)
+        for score in doc_weighted_scores.values()
+        if isinstance(score, (int, float, Decimal)) and math.isfinite(score)
     ]
     if not scores:
         return None
     return sum(scores) / len(scores)
+
+
+def _resolve_avg_weighted_overall_score(supplied, doc_weighted_scores):
+    """Prefer the run-level average already computed upstream; recompute if absent.
+
+    Tested against ``is None`` rather than for truthiness on purpose: a run where
+    every document scored 0.0 has a legitimate average of 0.0, and a falsy check
+    would discard it and recompute — which yields ``None`` whenever the
+    per-document map is itself missing from the cache, turning a real "0" into
+    "unknown". ``float`` normalises the DynamoDB ``Decimal`` so the field has one
+    type across both response paths.
+    """
+    if supplied is not None:
+        return float(supplied)
+    return _average_weighted_overall_score(doc_weighted_scores)
 
 
 def float_to_decimal(obj):
@@ -706,9 +726,9 @@ def get_test_results(test_run_id):
             "weightedOverallScores": cached_metrics.get("weightedOverallScores", {}),
             # Recomputed when absent, so runs cached before this field existed
             # return a value rather than null.
-            "avgWeightedOverallScore": cached_metrics.get("avgWeightedOverallScore")
-            or _average_weighted_overall_score(
-                cached_metrics.get("weightedOverallScores")
+            "avgWeightedOverallScore": _resolve_avg_weighted_overall_score(
+                cached_metrics.get("avgWeightedOverallScore"),
+                cached_metrics.get("weightedOverallScores"),
             ),
             "averageConfidence": cached_metrics.get("averageConfidence"),
             "confidenceMetrics": cached_metrics.get("confidenceMetrics"),

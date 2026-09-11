@@ -10,9 +10,11 @@ This function is invoked by the TestResultsResolver to offload heavy Stickler pr
 
 import json
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -49,11 +51,19 @@ def average_weighted_overall_score(
     has. That is deliberate — it matches what the Test Studio UI has always
     displayed as "Avg Weighted Score" — but it is a choice, so callers wanting a
     field-count-weighted roll-up should not assume this is it.
+
+    Only finite numbers count, mirroring the UI's
+    ``parseWeightedOverallScoresFinite``. A single NaN would otherwise make the
+    whole mean NaN, which reads as "no score" in some clients and as a broken
+    number in others; skipping it keeps this figure equal to the one the UI
+    computes from the same map.
     """
     if not doc_weighted_scores:
         return None
     scores = [
-        float(score) for score in doc_weighted_scores.values() if score is not None
+        float(score)
+        for score in doc_weighted_scores.values()
+        if isinstance(score, (int, float, Decimal)) and math.isfinite(score)
     ]
     if not scores:
         return None

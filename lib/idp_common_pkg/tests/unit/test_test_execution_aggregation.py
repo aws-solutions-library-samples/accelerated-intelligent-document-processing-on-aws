@@ -255,6 +255,16 @@ class TestAggregation:
             {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": None}
         ) == pytest.approx(0.8)
 
+        # So are non-finite ones — a single NaN would otherwise make the whole
+        # run-level mean NaN. Matches the UI's parseWeightedOverallScoresFinite.
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": float("nan")}
+        ) == pytest.approx(0.8)
+        assert index.average_weighted_overall_score(
+            {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": float("-inf")}
+        ) == pytest.approx(0.8)
+        assert index.average_weighted_overall_score({"doc1.pdf": float("nan")}) is None
+
         # No usable scores → None, never 0.0 (which would read as "perfectly bad").
         assert index.average_weighted_overall_score({}) is None
         assert index.average_weighted_overall_score(None) is None

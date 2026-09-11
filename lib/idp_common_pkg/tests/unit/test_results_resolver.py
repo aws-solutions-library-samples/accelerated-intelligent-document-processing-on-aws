@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import Mock, patch
 
 import pytest
@@ -1014,3 +1015,101 @@ def test_status_poll_retries_once_throttle_window_expires():
 
     assert result["status"] == "EVALUATING"
     mock_sqs.send_message.assert_called_once()
+
+
+@pytest.mark.unit
+def test_average_weighted_overall_score():
+    """The resolver's local roll-up of the per-document weighted scores.
+
+    Mirrors ``average_weighted_overall_score`` in the test execution aggregation
+    Lambda; the two are separate copies because this Lambda ships without
+    ``idp_common``, so the behaviour has to be pinned on both sides.
+    """
+    assert index._average_weighted_overall_score(
+        {"doc1.pdf": 0.9, "doc2.pdf": 0.7}
+    ) == pytest.approx(0.8)
+
+    # DynamoDB hands back Decimal, which must average to a plain float.
+    averaged = index._average_weighted_overall_score(
+        {"doc1.pdf": Decimal("0.9"), "doc2.pdf": Decimal("0.7")}
+    )
+    assert averaged == pytest.approx(0.8)
+    assert isinstance(averaged, float)
+
+    # None and non-finite values are excluded from numerator AND denominator, so
+    # one unscored document can't drag the run-level figure down and one NaN
+    # can't poison the whole mean. Matches the UI's parseWeightedOverallScoresFinite.
+    assert index._average_weighted_overall_score(
+        {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": None}
+    ) == pytest.approx(0.8)
+    assert index._average_weighted_overall_score(
+        {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": float("nan")}
+    ) == pytest.approx(0.8)
+    assert index._average_weighted_overall_score(
+        {"doc1.pdf": 0.9, "doc2.pdf": 0.7, "doc3.pdf": float("inf")}
+    ) == pytest.approx(0.8)
+
+    # No usable scores -> None, never 0.0 (which would read as "perfectly bad").
+    assert index._average_weighted_overall_score({}) is None
+    assert index._average_weighted_overall_score(None) is None
+    assert index._average_weighted_overall_score({"doc1.pdf": None}) is None
+
+
+@pytest.mark.unit
+def test_resolve_avg_weighted_overall_score_keeps_a_legitimate_zero():
+    """A supplied 0.0 is a real score and must survive the fallback.
+
+    The regression this pins: a truthiness check would treat 0.0 as "absent" and
+    recompute, which returns None when the per-document map isn't in the cache —
+    silently turning a run that scored 0 into a run with no score at all.
+    """
+    assert index._resolve_avg_weighted_overall_score(0.0, None) == 0.0
+    assert index._resolve_avg_weighted_overall_score(Decimal("0"), {}) == 0.0
+
+    # A supplied value always wins over recomputation, even when both exist.
+    assert index._resolve_avg_weighted_overall_score(
+        0.5, {"doc1.pdf": 0.9}
+    ) == pytest.approx(0.5)
+
+    # Absent -> recompute from the per-document map.
+    assert index._resolve_avg_weighted_overall_score(
+        None, {"doc1.pdf": 0.9, "doc2.pdf": 0.7}
+    ) == pytest.approx(0.8)
+
+    # Absent with nothing to recompute from -> None.
+    assert index._resolve_avg_weighted_overall_score(None, None) is None
+
+
+@pytest.mark.unit
+def test_pre_existing_cache_gets_avg_weighted_score_recomputed():
+    """Runs cached before ``avgWeightedOverallScore`` existed still report it.
+
+    ``_PRE_GRADED_CACHE`` is the real shape of a historical cache entry: it has
+    ``weightedOverallScores`` but no run-level average. Without the recompute
+    fallback the field would resolve to null for every run that predates it.
+    """
+    test_run_id = "run-pre-avg-weighted"
+    cache = dict(_PRE_GRADED_CACHE)
+    cache["weightedOverallScores"] = {"doc1.pdf": Decimal("0.9"), "doc2.pdf": None}
+    assert "avgWeightedOverallScore" not in cache
+
+    mock_table = Mock()
+    mock_table.get_item.return_value = {
+        "Item": _stale_cache_metadata(test_run_id, cache)
+    }
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TRACKING_TABLE": "tracking",
+                "TEST_RESULT_CACHE_UPDATE_QUEUE_URL": "https://sqs.test/q",
+            },
+        ),
+        patch.object(index.dynamodb, "Table", return_value=mock_table),
+        patch.object(index, "sqs", Mock()),
+        patch.object(index, "_get_test_run_config", return_value={}),
+    ):
+        result = index.get_test_results(test_run_id)
+
+    assert result["avgWeightedOverallScore"] == pytest.approx(0.9)
