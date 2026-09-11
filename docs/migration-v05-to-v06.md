@@ -82,7 +82,7 @@ your custom delta **before** it is merged onto the v0.6 defaults (whose default
 | `assessment.hitl_enabled` | `hitl.enabled` | Moved to top-level. |
 | `assessment.default_confidence_threshold` | `hitl.confidence_threshold` | Moved to top-level. |
 | `assessment.granular.*` | **Dropped** | Granular assessment retired → `list_batch_size` (see below). |
-| `assessment.max_tokens` | **Dropped** | v0.6 always requests the model's maximum output. |
+| `assessment.max_tokens` | **Dropped** | v0.6 requests the model's maximum output (from v0.6.8, a confidence call on Nova Lite/Micro requests a row-sized budget instead). |
 | any other `assessment.*` key | **Dropped** | The entire `assessment` block is retired; leftover keys are ignored on read. |
 
 When both an explicit v0.6 key and a migrated legacy value are present (a hybrid

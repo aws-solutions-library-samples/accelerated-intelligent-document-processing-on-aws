@@ -651,7 +651,10 @@ Different Bedrock models implement these parameters with varying defaults, namin
     — so leaving it unset (the default everywhere) means "use the model's max
     output". Set a positive value only to cap output below the model max. OCR
     passes `None` (no config knob); extraction/confidence have no `max_tokens`
-    field at all and always request the model maximum. The limits
+    field at all and request the model maximum — except a confidence call on Nova
+    Lite/Micro, which passes a row-sized output budget
+    (`sizing.confidence_output_budget`) because that model was measured looping to
+    its cap. The limits
     come from the DynamoDB Configuration Table when `CONFIGURATION_TABLE_NAME`
     is set (seeded from `config_library/model_config_limits.yaml` at deploy and
     editable in the web UI under "View / Edit Model Limits"; cached ~60s per
