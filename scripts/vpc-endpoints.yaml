@@ -124,7 +124,6 @@ Parameters:
     AllowedValues: ["true", "false"]
     Description: Create the logs (CloudWatch Logs) Interface endpoint. Set to "false" if already exists.
 
-
   CreateBedrockRuntimeEndpoint:
     Type: String
     Default: "true"
@@ -428,7 +427,6 @@ Resources:
           Value: !Ref IDPStackName
         - Key: Environment
           Value: !Ref EnvironmentTag
-
 
   BedrockRuntimeVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint

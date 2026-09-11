@@ -95,7 +95,7 @@ setup: ## Install all packages into current Python environment (no venv)
 	echo "Installing capacity planning test dependencies..." && \
 	$$SETUP_PIP install -r src/lambda/calculate_capacity/requirements-test.txt && \
 	echo "Installing cfn-lint for CloudFormation template validation..." && \
-	$$SETUP_PIP install cfn-lint && \
+	$$SETUP_PIP install cfn-lint==$(CFN_LINT_VERSION) && \
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
@@ -120,7 +120,7 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo "Installing capacity planning test dependencies..."
 	$(VENV_DIR)/bin/pip install -r src/lambda/calculate_capacity/requirements-test.txt
 	@echo "Installing cfn-lint for CloudFormation template validation..."
-	$(VENV_DIR)/bin/pip install cfn-lint
+	$(VENV_DIR)/bin/pip install cfn-lint==$(CFN_LINT_VERSION)
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
@@ -128,8 +128,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -168,6 +168,16 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@# validate-buildspec and cfn-lint were in `lint`/`fastlint` but NOT here, so
+	@# neither CI ran them — the same gap this target exists to prevent.
+	@if ! make validate-buildspec; then \
+		echo -e "$(RED)ERROR: buildspec validation failed$(NC)"; \
+		exit 1; \
+	fi
+	@if ! make cfn-lint; then \
+		echo -e "$(RED)ERROR: CloudFormation template validation failed$(NC)"; \
+		exit 1; \
+	fi
 	@echo "GovCloud ARN partition check"
 	@if ! make check-arn-partitions; then \
 		echo -e "$(RED)ERROR: Hardcoded ARN partitions/service principals found (breaks GovCloud)$(NC)"; \
@@ -259,16 +269,34 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 	@# and broke every Bedrock Data Automation invoke in GovCloud (issue #527).
 	@$(PYTHON) scripts/check_python_arn_partitions.py
 
-# Placeholder tokens that publish.py substitutes at build time. cfn-lint sees the
-# literal token and rejects it as an invalid bucket name; there is nothing to fix.
-CFN_LINT_IGNORE := E1161 E3031
+# Pin the linter. An UNPINNED tool on a blocking gate is the one realistic way
+# this red-lines develop with no code change: cfn-lint ships new rules and
+# refreshed resource specs often, and any check promoted to ERROR class would
+# fail every build until someone triaged it. Everything comparable here is
+# pinned (ruff, node, npm, actions by SHA), so this is too. Bump deliberately.
+CFN_LINT_VERSION := 1.51.0
+#
+# E3043 (parent's Parameters vs the nested stack's) cannot work in CI: TemplateURL
+# points at .aws-sam/packaged.yaml, a BUILD artifact absent from a fresh checkout,
+# so cfn-lint logs "Template file not found" and skips the check. In a *built*
+# local tree it does run, and then reports false positives against a stale
+# packaged.yaml. So it is noise in both environments — off, with the parent/nested
+# parameter wiring asserted directly by
+# scripts/tests/test_nested_stack_parameters.py instead.
+CFN_LINT_IGNORE := E3043
 
 cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings advisory)
 	@echo "Validating CloudFormation templates with cfn-lint..."
 	@command -v cfn-lint >/dev/null 2>&1 || { \
-		echo -e "$(RED)ERROR: cfn-lint not installed. Run 'make setup' or 'pip install cfn-lint'.$(NC)"; \
+		echo -e "$(RED)ERROR: cfn-lint not installed. Run 'make setup' or$(NC)"; \
+		echo -e "$(RED)       pip install cfn-lint==$(CFN_LINT_VERSION)$(NC)"; \
 		exit 1; \
 	}
+	@HAVE=$$(cfn-lint --version 2>/dev/null | awk '{print $$NF}'); \
+	if [ "$$HAVE" != "$(CFN_LINT_VERSION)" ]; then \
+		echo -e "$(YELLOW)NOTE: cfn-lint $$HAVE installed, gate is pinned to $(CFN_LINT_VERSION).$(NC)"; \
+		echo -e "$(YELLOW)      A newer release may report findings CI does not, or miss ones it does.$(NC)"; \
+	fi
 	@# Templates are discovered by CONTENT, not by filename. A hardcoded glob list
 	@# is how check-arn-partitions came to miss nested/, samples/ and notebooks/;
 	@# anything declaring AWSTemplateFormatVersion is a CloudFormation template and
@@ -289,16 +317,6 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 	STATUS=$$?; \
 	if [ $$STATUS -ne 0 ]; then \
 		echo -e "$(RED)❌ cfn-lint found template ERRORS (warnings alone do not fail this gate)$(NC)"; \
-		STALE=$$(find . -name packaged.yaml -path '*/.aws-sam/*' 2>/dev/null | head -3); \
-		if [ -n "$$STALE" ]; then \
-			echo -e "$(YELLOW)  HINT: this tree has built artifacts, e.g.$(NC)"; \
-			echo "$$STALE" | sed 's|^|    |'; \
-			echo -e "$(YELLOW)  cfn-lint resolves each nested stack's TemplateURL against that$(NC)"; \
-			echo -e "$(YELLOW)  packaged.yaml, so if it predates a Parameters change you get FALSE$(NC)"; \
-			echo -e "$(YELLOW)  E3043 'parameter doesn't exist in nested stack' errors. CI checkouts$(NC)"; \
-			echo -e "$(YELLOW)  are clean, so E3043 there is real. To reproduce CI locally:$(NC)"; \
-			echo -e "$(YELLOW)    find . -name .aws-sam -type d -prune -exec rm -rf {} + && make cfn-lint$(NC)"; \
-		fi; \
 		exit 1; \
 	fi; \
 	echo -e "$(GREEN)✅ cfn-lint: no template errors$(NC)"

@@ -92,6 +92,11 @@ jobs:
       - name: Install Python dependencies
         run: |
           uv pip install 'ruff==0.15.13'
+          # Pinned: cfn-lint gates templates via `make lint-cicd`, and an
+          # unpinned linter can red-line develop with no code change when a
+          # new release promotes a check to ERROR class. Keep in step with
+          # CFN_LINT_VERSION in the Makefile.
+          uv pip install 'cfn-lint==1.51.0'
           uv pip install typer rich boto3
           # ALL first-party packages in a single pip pass. They depend on each
           # other by bare name and those names are squatted on public PyPI, so a
@@ -105,10 +110,17 @@ jobs:
       - name: Run linting checks
         run: make lint-cicd
 
-      # Parity with GitLab's code_checks. These three ran only on GitLab, so a
-      # change merged via a GitHub PR skipped them entirely — the same class of
-      # gap the SRT/dep-audit note in CLAUDE.md describes. All three are pure
-      # static checks: no AWS credentials, no network.
+      # Parity with GitLab's code_checks. `api-test-static` and
+      # `validate_service_role_permissions.py` ran only on GitLab, so a change
+      # merged via a GitHub PR skipped them entirely — the same class of gap the
+      # SRT/dep-audit note in CLAUDE.md describes. Both are pure static checks:
+      # no AWS credentials, no network.
+      #
+      # The first-party check below is NOT in that category: `make
+      # install-first-party` already runs it (Makefile:79). It is re-asserted here
+      # as its own named step so a dependency-confusion failure is attributable at
+      # a glance rather than buried in install output — it is the check that stops
+      # a squatted PyPI package being resolved in place of a sibling package.
       - name: Check first-party dependency resolution
         run: python scripts/check_first_party_deps.py
 
@@ -117,15 +129,6 @@ jobs:
 
       - name: Validate CloudFormation service-role permissions
         run: python scripts/sdlc/validate_service_role_permissions.py
-
-      # cfn-lint ran in NEITHER CI — it was only installed by `make setup` for
-      # local use. A template error therefore reached deploy time; a bogus
-      # `Fn::If` condition name slipped through review this way. Fails on errors
-      # only, so the ~100 pre-existing advisory warnings do not block.
-      - name: Validate CloudFormation templates
-        run: |
-          uv pip install cfn-lint
-          make cfn-lint
 
       - name: Run type checking
         env:

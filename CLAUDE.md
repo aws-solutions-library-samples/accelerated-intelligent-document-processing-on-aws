@@ -66,18 +66,28 @@ make cfn-lint
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered — `make check-arn-partitions` still uses hardcoded globs
-and misses `nested/`, `samples/` and `notebooks/`. It fails on errors only,
-because ~100 pre-existing warnings (empty-string parameter defaults, unreachable
-`Fn::If` branches) would otherwise have to be suppressed wholesale. The
-`<ARTIFACT_BUCKET_TOKEN>` placeholder errors are ignored — `publish.py`
-substitutes them.
+without being covered — `make check-arn-partitions` still uses hardcoded globs and
+misses `nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/`. It runs
+from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
 
-⚠️ **Locally this can fail with false `E3043 "parameter doesn't exist in nested
-stack"` errors** when the tree has build artifacts: cfn-lint resolves each nested
-stack's `TemplateURL` against a possibly stale `.aws-sam/packaged.yaml`. CI
-checkouts are clean, so E3043 there is real. The target prints the fix when it
-detects artifacts.
+It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
+defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
+wholesale. The six `<ARTIFACT_BUCKET_TOKEN>` findings are suppressed at
+**resource** scope via `Metadata: cfn-lint:` on the three layer resources in
+`template.yaml` — not by disabling E1161/E3031 repo-wide, which would have hidden
+a genuinely malformed name anywhere else. `publish.py` substitutes those tokens.
+
+The linter is **pinned** (`CFN_LINT_VERSION` in the Makefile, mirrored in both CI
+configs and asserted by `scripts/tests/test_ci_gate_parity.py`). An unpinned
+linter on a blocking gate red-lines the branch whenever a release promotes a check
+to ERROR class, with no code change.
+
+**E3043** (parent's `Parameters` vs the nested stack's) is disabled: `TemplateURL`
+points at `.aws-sam/packaged.yaml`, a build artifact, so the rule is skipped
+entirely in CI and reports false positives against a stale copy locally — noise in
+both. `scripts/tests/test_nested_stack_parameters.py` asserts that wiring directly
+against the **source** templates instead, and also covers the reverse direction
+(a required nested parameter the parent never passes) that E3043 ignores.
 
 ### CI parity between GitHub and GitLab
 
@@ -86,14 +96,30 @@ GitLab and GitHub now run the **same** non-integration gates. Integration tests
 
 Historically several gates ran on GitLab only, so a change merged via a GitHub PR
 skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
-`make lint-cicd`, `make typecheck-pr`, `make api-test-static`,
-`make cfn-lint`, `make test-cicd -C lib/idp_common_pkg`,
+`make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,
+`check-arn-partitions`, filtered-scan and data-plane-tag checks),
+`make typecheck-pr`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
 `make test-packages-cicd`, the UI vitest suite,
 `scripts/check_first_party_deps.py` and
 `scripts/sdlc/validate_service_role_permissions.py`.
 
-`make cfn-lint` was in **neither** CI before — it was only installed by
-`make setup` for local use, so a template error could reach deploy time.
+`make cfn-lint` and `make validate-buildspec` were in **neither** CI before — they
+sat in `lint`/`fastlint` but not `lint-cicd`, so a template or buildspec error
+could reach deploy time. (Narrow exception: one unit test,
+`test_govcloud_pattern_template.py`, already ran cfn-lint against a single
+template asserting only zero E3006.)
+
+**`scripts/tests/test_ci_gate_parity.py` enforces this.** It fails if a gate
+appears in one CI and not the other, if `lint-cicd` becomes weaker than local
+`make lint`, or if the cfn-lint pin drifts between the Makefile and either CI
+config. Every parity gap listed above was found by hand, months late, because
+nothing checked.
+
+⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
+push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
+to `develop` runs nothing on GitHub. And being visible is not being blocking —
+each check must also be a required status check on `develop` in branch-protection
+settings.
 
 ### Testing
 
