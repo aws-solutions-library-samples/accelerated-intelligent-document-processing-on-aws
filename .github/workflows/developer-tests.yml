@@ -75,7 +75,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
 
       # Node 22 is needed for the UI unit tests and for basedpyright. Use the
-      # first-party setup-node action (as deploy-docs.yml already does) rather
+      # first-party setup-node action (as build-docs.yml already does) rather
       # than piping NodeSource's installer into bash: that pipeline swallowed a
       # failed download (`curl ... | bash -` exits with bash's status, not
       # curl's), so a NodeSource 403 silently left the repo unregistered, the
