@@ -415,6 +415,12 @@ aws ec2 describe-route-tables \
 
 For testing scenarios where the browser runs **inside the VPC** (WorkSpaces, bastion EC2), provide internet egress via a NAT Gateway in a separate public subnet.
 
+### Monaco editor CDN egress (browser-only consideration)
+
+`cdn.jsdelivr.net` is the second host the **browser** — never a Lambda — must be able to reach. `@monaco-editor/react` does not bundle the editor: it fetches `https://cdn.jsdelivr.net/npm/monaco-editor@<version>/min/vs` on first use, and it is the one cross-origin script source the CSP allows (`script-src`). With no browser route to it, the six surfaces built on Monaco render **blank** while the rest of the UI works normally — Configuration, Pricing, Model limits, the JSON-schema preview, the page-text editor, and the document viewer's markdown/JSON pane. The browser console shows a failed request to `cdn.jsdelivr.net`, not a CSP violation.
+
+A genuinely air-gapped deployment therefore either allows that host through the corporate proxy or self-hosts Monaco out of the Web UI bucket (`loader.config({ paths: { vs: ... } })`), which would also let the CDN source be dropped from the CSP.
+
 ### WorkSpaces option (testing)
 
 WorkSpaces runs a Windows desktop inside the VPC. Setup notes:

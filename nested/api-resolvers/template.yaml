@@ -254,7 +254,7 @@ Parameters:
     Default: ""
     Description: >
       VPC-aware S3 endpoint URL injected by parent stack when private mode is
-      active (e.g. https://bucket.<vpce-id>.s3.<region>.vpce.amazonaws.com).
+      active (e.g. https://bucket.<vpce-id>.s3.<region>.vpce.<URLSuffix>).
       When set, presigner Lambdas use this endpoint with virtual-host
       addressing so browser uploads target the VPC interface endpoint.
       Empty in public mode.
@@ -349,6 +349,37 @@ Metadata:
       ignore_checks:
         - W1030  # ARN pattern matching when Ref resolves to empty string (UsersTableArn default)
         - W1031  # ARN pattern matching when Fn::Sub resolves to empty string (UsersTableArn default)
+
+Mappings:
+  # Content-Security-Policy for the SPA when THIS REST API serves it
+  # (ServeWebUI=true / WebUIHosting=APIGateway — GovCloud and private-network
+  # deployments, which have no CloudFront distribution and therefore never get
+  # the root template's SecurityHeadersPolicy). Before this existed those
+  # deployments ran with no CSP at all (threat UI.T07).
+  #
+  # KEEP IN SYNC with SecurityHeadersPolicy.ContentSecurityPolicy in the root
+  # template.yaml, which is the same policy for CloudFront hosting —
+  # scripts/tests/test_csp_policies_in_sync.py fails the build if they drift. Read the
+  # rationale for every directive there; the one intended difference is
+  # `frame-ancestors`, 'none' here to match the X-Frame-Options: DENY the Web UI
+  # methods below already send (CloudFront sends SAMEORIGIN, so it uses 'self').
+  # A CSP `frame-ancestors` OVERRIDES X-Frame-Options wherever both are
+  # understood, so 'self' here would have quietly relaxed this mode's framing
+  # rule from DENY to same-origin.
+  #
+  # Declared once as a mapping rather than inline because both Web UI methods
+  # (the root SPA document and the {proxy+} assets) need it, and two inline
+  # copies of a 400-character policy string would drift.
+  #
+  # QUOTING: the value INCLUDES the outer pair of single quotes, because an API
+  # Gateway response-parameter mapping treats a single-quoted string as a static
+  # value (anything else is read as an `integration.response.*` expression and
+  # rejected). CSP keywords carry their own single quotes inside it; API Gateway
+  # strips only the outer pair and passes the rest through verbatim, so the inner
+  # quotes are correct as written — do NOT "fix" or escape them.
+  WebUiSecurity:
+    ContentSecurityPolicy:
+      Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
 
 Conditions:
   HasS3EndpointUrl: !Not [!Equals [!Ref S3EndpointUrl, ""]]
@@ -3148,25 +3179,56 @@ Resources:
               method.response.header.Content-Type: "integration.response.header.Content-Type"
               # Security headers on the SPA document itself (ServeWebUI mode has
               # no CloudFront ResponseHeadersPolicy in front, so set them here —
-              # X-Frame-Options/nosniff matter MOST on the HTML document).
+              # CSP/X-Frame-Options/nosniff matter MOST on the HTML document).
+              method.response.header.Content-Security-Policy: !FindInMap [WebUiSecurity, ContentSecurityPolicy, Value]
               method.response.header.X-Content-Type-Options: "'nosniff'"
               method.response.header.Strict-Transport-Security: "'max-age=31536000; includeSubDomains'"
               method.response.header.X-Frame-Options: "'DENY'"
               method.response.header.Referrer-Policy: "'strict-origin-when-cross-origin'"
+          # The SPA's own origin also answers these, so they carry the same headers
+          # as the 200 — an S3 error body (AccessDenied/NoSuchKey XML) served
+          # from the UI origin with no `nosniff` is exactly the response a
+          # sniffing browser can be talked into treating as markup. The CSP is
+          # cheap here for the same reason it is on the assets.
           - StatusCode: "404"
             SelectionPattern: "4\\d{2}"
+            ResponseParameters:
+              method.response.header.Content-Security-Policy: !FindInMap [WebUiSecurity, ContentSecurityPolicy, Value]
+              method.response.header.X-Content-Type-Options: "'nosniff'"
+              method.response.header.Strict-Transport-Security: "'max-age=31536000; includeSubDomains'"
+              method.response.header.X-Frame-Options: "'DENY'"
+              method.response.header.Referrer-Policy: "'strict-origin-when-cross-origin'"
           - StatusCode: "500"
             SelectionPattern: "5\\d{2}"
+            ResponseParameters:
+              method.response.header.Content-Security-Policy: !FindInMap [WebUiSecurity, ContentSecurityPolicy, Value]
+              method.response.header.X-Content-Type-Options: "'nosniff'"
+              method.response.header.Strict-Transport-Security: "'max-age=31536000; includeSubDomains'"
+              method.response.header.X-Frame-Options: "'DENY'"
+              method.response.header.Referrer-Policy: "'strict-origin-when-cross-origin'"
       MethodResponses:
         - StatusCode: "200"
           ResponseParameters:
             method.response.header.Content-Type: true
+            method.response.header.Content-Security-Policy: true
             method.response.header.X-Content-Type-Options: true
             method.response.header.Strict-Transport-Security: true
             method.response.header.X-Frame-Options: true
             method.response.header.Referrer-Policy: true
         - StatusCode: "404"
+          ResponseParameters:
+            method.response.header.Content-Security-Policy: true
+            method.response.header.X-Content-Type-Options: true
+            method.response.header.Strict-Transport-Security: true
+            method.response.header.X-Frame-Options: true
+            method.response.header.Referrer-Policy: true
         - StatusCode: "500"
+          ResponseParameters:
+            method.response.header.Content-Security-Policy: true
+            method.response.header.X-Content-Type-Options: true
+            method.response.header.Strict-Transport-Security: true
+            method.response.header.X-Frame-Options: true
+            method.response.header.Referrer-Policy: true
 
   WebUIProxyResource:
     Type: AWS::ApiGateway::Resource
@@ -3203,7 +3265,10 @@ Resources:
             ResponseParameters:
               method.response.header.Content-Type: "integration.response.header.Content-Type"
               # Security headers on served SPA assets too (ServeWebUI mode, no
-              # CloudFront in front). Same static values as the root/OPTIONS methods.
+              # CloudFront in front). Same static values as WebUIRootMethod. The
+              # OPTIONS preflight and the gateway responses carry the other four
+              # but not the CSP — they answer with JSON/no body, never a document.
+              method.response.header.Content-Security-Policy: !FindInMap [WebUiSecurity, ContentSecurityPolicy, Value]
               method.response.header.X-Content-Type-Options: "'nosniff'"
               method.response.header.Strict-Transport-Security: "'max-age=31536000; includeSubDomains'"
               method.response.header.X-Frame-Options: "'DENY'"
@@ -3215,20 +3280,48 @@ Resources:
           # links never hit the server as a distinct path, so no rewrite-to-
           # index.html fallback is needed. Only genuinely nonexistent asset
           # paths return 404, which is the correct behavior.
+          # Same headers as the 200, for the reason given on WebUIRootMethod: an
+          # S3 error body served from the UI's own origin is still a response
+          # from that origin.
           - StatusCode: "404"
             SelectionPattern: "4\\d{2}"
+            ResponseParameters:
+              method.response.header.Content-Security-Policy: !FindInMap [WebUiSecurity, ContentSecurityPolicy, Value]
+              method.response.header.X-Content-Type-Options: "'nosniff'"
+              method.response.header.Strict-Transport-Security: "'max-age=31536000; includeSubDomains'"
+              method.response.header.X-Frame-Options: "'DENY'"
+              method.response.header.Referrer-Policy: "'strict-origin-when-cross-origin'"
           - StatusCode: "500"
             SelectionPattern: "5\\d{2}"
+            ResponseParameters:
+              method.response.header.Content-Security-Policy: !FindInMap [WebUiSecurity, ContentSecurityPolicy, Value]
+              method.response.header.X-Content-Type-Options: "'nosniff'"
+              method.response.header.Strict-Transport-Security: "'max-age=31536000; includeSubDomains'"
+              method.response.header.X-Frame-Options: "'DENY'"
+              method.response.header.Referrer-Policy: "'strict-origin-when-cross-origin'"
       MethodResponses:
         - StatusCode: "200"
           ResponseParameters:
             method.response.header.Content-Type: true
+            method.response.header.Content-Security-Policy: true
             method.response.header.X-Content-Type-Options: true
             method.response.header.Strict-Transport-Security: true
             method.response.header.X-Frame-Options: true
             method.response.header.Referrer-Policy: true
         - StatusCode: "404"
+          ResponseParameters:
+            method.response.header.Content-Security-Policy: true
+            method.response.header.X-Content-Type-Options: true
+            method.response.header.Strict-Transport-Security: true
+            method.response.header.X-Frame-Options: true
+            method.response.header.Referrer-Policy: true
         - StatusCode: "500"
+          ResponseParameters:
+            method.response.header.Content-Security-Policy: true
+            method.response.header.X-Content-Type-Options: true
+            method.response.header.Strict-Transport-Security: true
+            method.response.header.X-Frame-Options: true
+            method.response.header.Referrer-Policy: true
 
   # NB: an AWS::ApiGateway::Deployment only snapshots the API when the resource
   # itself is REPLACED (new logical id) — mutating a property like Description on
@@ -3260,7 +3353,11 @@ Resources:
   # S3-proxy methods. Those are method/gateway-response changes, so the snapshot
   # must be re-cut or upgraded stacks keep serving the pre-fix responses (the
   # authorizer 401/403 + preflight would lack the new headers).
-  HttpApiDeploymentWithWebUIV5:
+  # V5 -> V6: Content-Security-Policy was added to the Web UI S3-proxy methods
+  # (root document + {proxy+} assets). Same reason — a method/integration-response
+  # change needs a fresh snapshot, or an upgraded stack keeps serving the
+  # CSP-less responses this change exists to fix.
+  HttpApiDeploymentWithWebUIV6:
     Type: AWS::ApiGateway::Deployment
     Condition: ServeWebUICondition
     DependsOn:
@@ -3272,7 +3369,7 @@ Resources:
       RestApiId: !Ref HttpApi
       Description: !Sub "Dispatcher API deployment for ${StackName} (CORS + Web UI proxy)"
 
-  HttpApiDeploymentNoWebUIV5:
+  HttpApiDeploymentNoWebUIV6:
     Type: AWS::ApiGateway::Deployment
     Condition: DoNotServeWebUICondition
     DependsOn:
@@ -3353,8 +3450,8 @@ Resources:
       RestApiId: !Ref HttpApi
       DeploymentId: !If
         - ServeWebUICondition
-        - !Ref HttpApiDeploymentWithWebUIV5
-        - !Ref HttpApiDeploymentNoWebUIV5
+        - !Ref HttpApiDeploymentWithWebUIV6
+        - !Ref HttpApiDeploymentNoWebUIV6
       StageName: api
       # JSON access-log format: request metadata only, never bodies. The error
       # and authorizer fields are what diagnose requests that never reach the

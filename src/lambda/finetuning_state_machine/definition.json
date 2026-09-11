@@ -61,7 +61,7 @@
         }
       },
       "ResultWriter": {
-        "Resource": "arn:aws:states:::s3:putObject",
+        "Resource": "arn:${Partition}:states:::s3:putObject",
         "Parameters": {
           "Bucket": "${FinetuningDataBucket}",
           "Prefix.$": "States.Format('finetuning/{}/map-results/', $.listResult.jobId)"
@@ -135,7 +135,7 @@
     },
     "UpdateStatusToTraining": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Resource": "arn:${Partition}:states:::dynamodb:updateItem",
       "Parameters": {
         "TableName": "${TrackingTableName}",
         "Key": {
@@ -365,7 +365,7 @@
     },
     "MarkCompleted": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Resource": "arn:${Partition}:states:::dynamodb:updateItem",
       "Parameters": {
         "TableName": "${TrackingTableName}",
         "Key": {
@@ -393,7 +393,7 @@
     },
     "MarkFailed": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Resource": "arn:${Partition}:states:::dynamodb:updateItem",
       "Parameters": {
         "TableName": "${TrackingTableName}",
         "Key": {

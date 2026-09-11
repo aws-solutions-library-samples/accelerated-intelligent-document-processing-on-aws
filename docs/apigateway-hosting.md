@@ -71,13 +71,17 @@ The Web UI and the data API are served from **one origin and one stage**, so:
 - **No S3 VPC endpoint is required** — API Gateway reaches the Web UI bucket
   over AWS-internal networking via an IAM role, not through a customer VPCE.
 
-> **Security headers**: The CloudFront distribution attaches a response-headers
-> policy (HSTS, X-Content-Type-Options, a CSP, etc.). API Gateway hosting serves
-> the S3 objects directly and does **not** add those headers. For most
-> private/VPC-only deployments this is acceptable (access is already network- and
-> WAF-restricted); if you need strict response headers on a public API Gateway
-> deployment, front it with a custom domain + CloudFront, or add the headers via
-> a gateway response / edge layer.
+> **Security headers**: there is no CloudFront response-headers policy in this
+> mode, so the two S3-proxy methods set the headers themselves —
+> `Content-Security-Policy`, `Strict-Transport-Security`,
+> `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and
+> `Referrer-Policy` — on the SPA document, its assets, and their 404/500 responses. The CSP mirrors the
+> CloudFront one (`nested/api-resolvers/template.yaml`, `Mappings ->
+> WebUiSecurity`), differing only in `frame-ancestors 'none'` to match the
+> stricter `X-Frame-Options: DENY` used here. The Cognito authorizer's 401/403 and
+> the other gateway-level errors carry the same headers minus the CSP (they are
+> JSON error bodies, already `nosniff`). Keep the two policies in sync when
+> either changes.
 
 ### How the SPA is served
 

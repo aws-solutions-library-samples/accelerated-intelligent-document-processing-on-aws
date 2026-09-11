@@ -1068,11 +1068,23 @@ additions.
       exercises the additive `EnableJobsApi` CFN parameter, **not** the
       `idp-cli deploy --headless` template transform — a `--headless` *deploy*
       probe is a separate follow-up (see below).
-- [x] **APIGW hosting: GLOBAL variant + HTTP smoke.** The GLOBAL/no-VPC APIGW
-      hosting probe deploys `WebUIHosting=APIGateway` + `ApiGatewayVisibility=GLOBAL`
-      and does a real HTTP `GET` of the served UI (`validate_apigw_global_hosting`
-      asserts HTTP 200 from the execute-api `/api` URL, proving the S3-proxy path
-      returns bytes). Now the first row of the deployment-variant probe framework.
+- [x] **APIGW hosting: GLOBAL variant + HTTP smoke + the CSP on the wire.** The
+      GLOBAL/no-VPC APIGW hosting probe deploys `WebUIHosting=APIGateway` +
+      `ApiGatewayVisibility=GLOBAL` and does a real HTTP `GET` of the served UI
+      (`validate_apigw_global_hosting` asserts HTTP 200 from the execute-api
+      `/api` URL, proving the S3-proxy path returns bytes). It is also the **only
+      wire-level check of the Web UI's Content-Security-Policy in this hosting
+      mode**: that policy is a static API Gateway response-parameter value whose
+      interior contains single quotes, and no offline check can prove the service
+      strips only the outer pair. The probe therefore asserts the response carries
+      a CSP, that `'self'` survived quoted among the `script-src` sources, that
+      the header does not still begin with a leftover static-value quote (which
+      would make the first directive invalid and, with no `default-src`, void the
+      policy), and that `script-src` has not regained a blanket `https:`. Both
+      mis-parse shapes return HTTP 200 with a header present, so the earlier
+      status-code-only assertion could not see them. The template-side companion
+      is `scripts/tests/test_csp_policies_in_sync.py`, which keeps this mode's
+      policy equal to the CloudFront one.
 - [ ] **Upgrade-in-place test. (HIGH VALUE.)** Deploy the previous released
       version, then update the stack to the current build, then smoke. This is the
       gap that would have caught the pricing-units rollback deadlock and the
