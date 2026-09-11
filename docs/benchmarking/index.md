@@ -132,6 +132,8 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
 | `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
 | `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
+| `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 3 docs × **5 repeats** | **Does a ~4× more expensive frontier model earn its price for IDP?** See below |
+| `astracap` | The same pair on one 445-page / ~200K-token document, repeats=2 | The **capability** arm: a document too large for a 200K-context model in simple mode. Expensive — opt in deliberately |
 | `full` | core + all one-axis sweeps | The deep study for the paper (expensive) |
 
 **Feature A/B suites.** Each pairs two cells that differ on exactly **one** config knob,
@@ -152,6 +154,47 @@ more, because each is judged on a *rate* and a single sample cannot resolve one.
 `kv_form` belongs to a different document class, so suites naming it need a second
 invocation with `--class kv_form` (configs are per class; the harness prints which docs
 it skipped and why).
+
+### Is a premium model worth it? (`astravalue` / `astracap`)
+
+A model-price question is a **ratio**, so this pair is built to be able to answer
+"no". It compares Claude Sonnet 5 against OpenAI GPT-6 Astra (~4× the input price)
+with only `extraction.model` differing.
+
+The design constraint that shaped it: **nothing in the pre-existing corpus can see a
+large context window.** Measured input sizes — `small_narrow` 1,236 tokens,
+`scale_3200` (the previous largest, 66 pages) 39,992 — all fit inside a 200K model's
+usable ~140,000, so a premium-model suite run on `core_docs` would have measured price
+and nothing else. Three documents therefore separate the two things a frontier model
+can actually be paid for:
+
+| Doc | Size | What it isolates |
+|---|---|---|
+| `small_narrow` | 1,236 tok | **Control.** An ordinary document where the cheaper model is already at ceiling. Astra should *lose* here on cost-per-correct-field; if it doesn't, the suite is broken |
+| `dense_800` | 81 pages, 39,750 tok | **Difficulty with no capacity component** — 8 columns, 4 interleaved lists, long free text, 15% OCR noise, typed value truth. Fits every model, so an accuracy delta is attributable to reasoning alone |
+| `huge_8000` | 164 pages, 100,343 tok | **Size that still fits** a 200K model. Guards against crediting a capacity win that was never needed |
+| `densehuge_4000` (`astracap`) | 445 pages, 200,906 tok | **Exceeds** a 200K model's usable input. In simple mode Sonnet 5 is *expected to fail* with `ExtractionInputTooLarge`; that failure is the result, not a broken run |
+
+Two things to know before reading the output:
+
+- **Sharding is the alternative to buying a bigger window.** On the agentic path the
+  5-page-per-shard default is a *timeout* guard, not a context proxy — its field doc
+  says a roomy token budget "must NOT collapse a large doc back into one giant shard",
+  and `0` is documented as unsuitable for large docs. So the suite does **not** run an
+  unbounded arm (it would measure a Lambda timeout); `astra-adv-wide` /
+  `sonnet5-adv-wide` raise it to 25 pages instead, which is the tuning a user could
+  adopt. If sharded Sonnet 5 matches Astra's completeness for less, the honest
+  recommendation is "shard, don't buy".
+- **`repeats: 5` also measures Astra's implicit prompt caching**, the one mechanism
+  that can close a 4× gap: runs 2–5 re-send an identical prefix, so
+  `cacheReadInputTokens` should be non-zero from the second run and cost per document
+  should fall. Read the per-run series — a mean hides it. Astra needs no
+  `<<CACHEPOINT>>` marker (and rejects an explicit one).
+
+**The deciding metric is cost per correctly-extracted field**, not accuracy and not
+cost. A premium model earns its price only where the accuracy gap is large enough that
+the cheaper model would need human review to close it. If accuracy ties, the answer is
+the cheaper model.
 
 > **Picking the extraction model.** The committed `default_cell` holds `extraction_model` at
 > a **cross-version control** so the release A/B runs on a model every compared release can

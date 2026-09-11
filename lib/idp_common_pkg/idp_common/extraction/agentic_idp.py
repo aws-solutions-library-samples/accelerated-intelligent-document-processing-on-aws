@@ -1499,8 +1499,12 @@ def _prepare_prompt_content(
     elif model_id is None or supports_prompt_caching(model_id):
         prompt_content.append(ContentBlock(cachePoint=CachePoint(type="default")))
     else:
+        # Deliberately not phrased as "does not support prompt caching": the
+        # implicit-caching models (OpenAI GPT-6 Astra, GPT-5.x) land here and DO
+        # cache — Astra actively rejects an explicit cachePoint. See
+        # model_caches_implicitly() in idp_common/bedrock/prompt_cache.py.
         logger.info(
-            "Omitting prompt cachePoint (model does not support prompt caching)",
+            "Omitting prompt cachePoint (this model is not sent cachePoint blocks)",
             extra={"model_id": model_id},
         )
     return prompt_content

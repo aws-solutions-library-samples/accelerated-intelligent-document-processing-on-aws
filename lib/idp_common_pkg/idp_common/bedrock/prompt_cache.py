@@ -160,6 +160,52 @@ def model_supports_cache_point(model_id: Optional[str]) -> Optional[bool]:
     return False
 
 
+# Models that cache WITHOUT a Converse ``cachePoint`` block, so
+# ``model_supports_cache_point() is False`` says nothing about whether they cache.
+#
+# This distinction exists because "we do not send this model a cachePoint" and
+# "this model cannot cache" are different facts, and conflating them produced a
+# user-facing message that was wrong for every model below. Matched on the base
+# name (region prefix stripped) so the us./global./eu. profiles all hit.
+#
+#   * ``openai.gpt-6-astra`` — Converse, implicit. MEASURED: a repeated
+#     2,707-token prefix billed inputTokens=2 / cacheReadInputTokens=2707
+#     (us-west-2, 2026-09-10). An explicit cachePoint is REJECTED
+#     (AccessDeniedException), which is exactly why it is not in
+#     CACHEPOINT_SUPPORTED_MODELS.
+#   * ``openai.gpt-5.4`` / ``openai.gpt-5.5`` — bedrock-mantle Responses API,
+#     automatic: any prefix over ~1,024 tokens is reused with no request change.
+#   * ``openai.gpt-5.6`` (Sol/Terra/Luna) — bedrock-mantle, EXPLICIT breakpoints,
+#     but the client translates ``<<CACHEPOINT>>`` into the Responses API's
+#     ``prompt_cache_options`` / ``prompt_cache_breakpoint`` fields, so a cache
+#     point does reach the model — just not as a Converse block.
+#
+# xAI Grok is deliberately ABSENT: its model card advertises implicit caching, but
+# four back-to-back identical 20,033-token prompts all reported
+# cacheReadInputTokens=0, so no caching benefit is claimed for it.
+_IMPLICIT_CACHE_BASE_NAMES = (
+    "openai.gpt-6-astra",
+    "openai.gpt-5",
+)
+
+
+def model_caches_implicitly(model_id: Optional[str]) -> bool:
+    """True if the model caches without being sent a Converse ``cachePoint``.
+
+    Use this to word a ``no-cache-point`` report honestly: for these models the
+    absence of a cache point is expected and caching may still be happening (or
+    about to, once a prefix is seen twice), so it must NOT be reported as the model
+    being unable to cache.
+    """
+    if not model_id:
+        return False
+    base = model_id.split("/")[-1]
+    parts = base.split(".", 1)
+    if len(parts) == 2 and parts[0] in ("us", "eu", "global"):
+        base = parts[1]
+    return base.startswith(_IMPLICIT_CACHE_BASE_NAMES)
+
+
 def cache_state(
     cache_read: float,
     cache_write: float,
@@ -288,9 +334,20 @@ def describe_cache_state(summary: Mapping[str, Any]) -> str:
     if state == "disabled":
         return f"off by configuration (extraction.prompt_cache: off; {counts})"
     if state == "no-cache-point":
+        # "We sent no cachePoint" must not be reported as "this model cannot
+        # cache" — that is false for every model in _IMPLICIT_CACHE_BASE_NAMES.
+        models = summary.get("model_ids") or []
+        implicit = bool(models) and all(model_caches_implicitly(m) for m in models)
+        if implicit:
+            return (
+                f"no Converse cache point was sent ({counts}) — expected for this "
+                f"model, which caches implicitly; a prefix seen again within the "
+                f"cache TTL is reported as caching once reads land"
+            )
         return (
             f"no cache point reached the model ({counts}); the prompt has no "
-            f"<<CACHEPOINT>> marker or the model does not support prompt caching"
+            f"<<CACHEPOINT>> marker, or this model is not one the client sends "
+            f"cachePoint blocks to"
         )
     return f"no cache usage reported by this model or backend ({counts})"
 

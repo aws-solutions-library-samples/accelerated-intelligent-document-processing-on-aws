@@ -62,6 +62,39 @@ synthetic:
   # per-class `BOUNDARY:` description sentence, kept here so a candidate rule can
   # be checked against it (see docs/classification.md, "Known failure mode").
   - {id: repeathdr_3pg,   gen: bank_statement, rows: 100,  cols: 3, lists: 1, repeat_header: true, tag: shape=runninghdr}
+  # --- Large-context / high-difficulty docs (the OpenAI GPT-6 Astra value study) ---
+  #
+  # WHY THESE EXIST: nothing else in this corpus can see a large context window.
+  # Measured est_input_tokens (chars/4 over the rendered PDF text) for the biggest
+  # pre-existing fixtures: small_narrow 1,236 · med_narrow 4,938 · large_narrow
+  # 9,859 · scale_1600 19,868 · scale_3200 39,992. Every one of those fits inside
+  # a 200K-context model's USABLE input (~140,000 at the 0.30 context buffer), so a
+  # 1.05M-context model has strictly nothing to show on them — an Astra-vs-Sonnet-5
+  # suite run on `core_docs` would measure price and nothing else. These three add
+  # the two axes on which a frontier model can actually earn a premium: raw SIZE
+  # and per-row DIFFICULTY.
+  #
+  # `dense_800` — difficulty, not size (81 pages, ~39,750 tokens). Every hard knob
+  # at once: 8 columns, 4 interleaved lists, long free-text descriptions, 15% OCR
+  # noise, and value_noise so per-row truth is TYPED (currency symbols, accounting
+  # negatives, both thousands conventions, named months). This is the cell where a
+  # more capable model should win on cell_accuracy while the input still fits every
+  # model, so an accuracy delta here cannot be explained by context at all.
+  - {id: dense_800,       gen: bank_statement, rows: 800,  cols: 8, lists: 4, desc_len: long, ocr_noise: 0.15, value_noise: true, tag: shape=dense}
+  # `huge_8000` — big but STILL INSIDE a 200K model's window (164 pages, ~100,343
+  # tokens). The control that keeps the size story honest: if Astra wins here, the
+  # win is not about capacity, because Sonnet 5 could hold this document too.
+  - {id: huge_8000,       gen: bank_statement, rows: 8000, cols: 3, lists: 1, tag: size=huge}
+  # `densehuge_4000` — the capability cell (445 pages, ~200,906 tokens). This is
+  # the first fixture whose OCR text EXCEEDS a 200K-context model's usable input,
+  # so in SIMPLE mode (one request, no sharding) Sonnet 5 is expected to fail with
+  # ExtractionInputTooLarge (#843) while Astra completes. That is a capability
+  # difference rather than an accuracy one, and it is the strongest honest argument
+  # for the price.
+  #   ⚠️ EXPENSIVE: 445 pages of Textract per run, and ~$2.20 of Astra input tokens
+  #   per run at the us. short-band rate. Only in the `astracap` suite, never in a
+  #   broad grid.
+  - {id: densehuge_4000,  gen: bank_statement, rows: 4000, cols: 8, lists: 1, desc_len: long, tag: size=densehuge}
 
 # --- B. Reference, real labeled sets (already in the stack testset bucket) ------
 # Reference corpora are test SETS on the stack (no local PDF). run_matrix launches
@@ -94,6 +127,12 @@ groups:
   # exact-ground-truth synthetic list docs only, one run per (cell, doc).
   core_synth:     [tiny_form, small_narrow, med_narrow, large_narrow, wide_400, manylists_400, longdesc_100]
   scaling_series: [scale_25, scale_100, scale_400, scale_800, scale_1200, scale_1600, scale_3200]
+  # astra_docs: the model-premium study (see the `astravalue` suite). Ordered so the
+  # answer is legible: a control where a premium model should NOT pay for itself, a
+  # difficulty cell that fits every model, then a size cell that still fits every
+  # model. `densehuge_4000` is deliberately NOT here — it is the expensive
+  # capability arm, run on its own via `astracap`.
+  astra_docs:     [small_narrow, dense_800, huge_8000]
   all:            "*"
 
 # Notes:

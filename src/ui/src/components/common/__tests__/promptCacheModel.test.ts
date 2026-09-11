@@ -3,9 +3,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { cacheState, describePromptCache, minCacheablePrefixTokens, summarizeCacheUsage } from '../promptCacheModel';
+import { cacheState, describePromptCache, minCacheablePrefixTokens, modelCachesImplicitly, summarizeCacheUsage } from '../promptCacheModel';
 
 const SONNET = 'us.anthropic.claude-sonnet-4-6';
+const ASTRA = 'us.openai.gpt-6-astra';
 
 describe('summarizeCacheUsage (mirrors idp_common.bedrock.prompt_cache)', () => {
   it('classifies reads as caching with a read share and sums escalation contexts', () => {
@@ -112,6 +113,53 @@ describe('describePromptCache', () => {
     const noPoint = describePromptCache({ ...base, state: 'no-cache-point', cache_point_sent: false });
     expect(noPoint.indicator).toBe('info');
     expect(noPoint.headline).toContain('no cache point reached the model');
+    // Must not claim the model cannot cache — see the implicit-caching case below.
+    expect(noPoint.detail).not.toContain('does not support prompt caching');
+  });
+
+  it('recognizes the models that cache without a cachePoint', () => {
+    expect(modelCachesImplicitly(ASTRA)).toBe(true);
+    expect(modelCachesImplicitly('global.openai.gpt-6-astra')).toBe(true);
+    expect(modelCachesImplicitly('openai.gpt-5.4')).toBe(true);
+    expect(modelCachesImplicitly('openai.gpt-5.6-sol')).toBe(true);
+    expect(modelCachesImplicitly(SONNET)).toBe(false);
+    // Grok advertises implicit caching but it was never observed to engage.
+    expect(modelCachesImplicitly('us.xai.grok-4.6')).toBe(false);
+    expect(modelCachesImplicitly(null)).toBe(false);
+  });
+
+  it('does not tell an implicit-caching model it cannot cache', () => {
+    // The regression: the detail said "the model does not support prompt caching",
+    // false for Astra (it caches implicitly and REJECTS an explicit cache point).
+    const base = { input_tokens: 949, cache_read_input_tokens: 0, cache_write_input_tokens: 0, read_share: 0 };
+    const astra = describePromptCache({ ...base, state: 'no-cache-point', cache_point_sent: false, model_ids: [ASTRA] });
+    expect(astra.indicator).toBe('info');
+    expect(astra.headline).toContain('implicit caching');
+    expect(astra.detail).toContain('caches implicitly');
+    expect(astra.detail).not.toContain('does not support prompt caching');
+
+    // Mixed models in one phase fall back to the generic (still accurate) wording.
+    const mixed = describePromptCache({
+      ...base,
+      state: 'no-cache-point',
+      cache_point_sent: false,
+      model_ids: [ASTRA, SONNET],
+    });
+    expect(mixed.detail).not.toContain('caches implicitly');
+  });
+
+  it('reports measured reads on an implicit model as plain caching', () => {
+    // Verified live on Astra: a repeated prefix billed inputTokens=2 / read=2707.
+    const s = describePromptCache({
+      state: 'caching',
+      input_tokens: 2,
+      cache_read_input_tokens: 2707,
+      cache_write_input_tokens: 0,
+      read_share: 0.999,
+      model_ids: [ASTRA],
+    });
+    expect(s.indicator).toBe('success');
+    expect(s.headline).toContain('100%');
   });
 
   it('only names the extraction knob on Extraction rows', () => {
