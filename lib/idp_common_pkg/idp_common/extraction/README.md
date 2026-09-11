@@ -740,8 +740,9 @@ of the class the pages contain. `extraction/instance_probe.py` adds one auxiliar
 integer property (`IDPDocumentInstanceCount`) to a **copy** of the class schema —
 `self._wire_class_schema`, used for the prompt text and, when forced tool use is
 on, for the `toolSpec`. `self._class_schema` is untouched, so the off-schema
-filter, the JSON-Schema validator, the generated Pydantic model and every
-downstream stage still see exactly the declared fields.
+filter, the JSON-Schema validator and every downstream stage still see exactly
+the declared fields. (Advanced extraction carries the probe on the transport
+model of the unsharded call instead — see "Covered paths" below.)
 
 `_read_instance_probe` pops the value **before** the off-schema filter, and pops
 it unconditionally — even when detection was not requested for the section — so an

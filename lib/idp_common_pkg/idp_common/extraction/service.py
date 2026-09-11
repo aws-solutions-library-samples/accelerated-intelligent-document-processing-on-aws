@@ -1262,8 +1262,9 @@ class ExtractionService:
         # on, the toolSpec) can differ from the effective class schema by exactly
         # one auxiliary property: the multi-instance detection probe (#753). It
         # is added to a COPY, so the off-schema filter, the JSON-Schema
-        # validator, the generated Pydantic model and every downstream stage
-        # still see only the declared fields.
+        # validator and every downstream stage still see only the declared
+        # fields. (Agentic extraction carries the same probe on its transport
+        # model for the unsharded call instead — see _agentic_probe_model.)
         wire_schema, probe_added = self._build_wire_schema(class_schema, class_label)
         attribute_descriptions = self._format_schema_for_prompt(wire_schema)
 
@@ -2395,8 +2396,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         Only the single-agent path is probed (option 1 of #772). A sharded
         section would answer per shard, and neither sum (double-counts a document
         spanning a boundary) nor max (under-counts records spread across shards)
-        is right; that reconciliation is a separate decision. A resumed run keeps
-        its existing model, since ``existing_data`` was validated against it.
+        is right; that reconciliation is a separate decision. A run resumed from
+        a VALIDATED checkpoint (``existing_data`` present) keeps its existing
+        model, since that data was validated against it; a resume from a raw
+        buffer checkpoint has no existing model and is probed like a fresh run.
 
         Returns ``(model, probe_added)`` and records the request on
         ``_instance_probe_requested`` like the Simple path does.
@@ -3833,6 +3836,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             return None
 
         def _validate(data: dict[str, Any]) -> tuple[bool, str]:
+            # The agent's payload may carry the multi-instance detection probe
+            # (#772): on the unsharded agentic path it is a field of the transport
+            # model and is popped only AFTER the call returns. A class with
+            # additionalProperties: false would otherwise be told the probe is a
+            # violation, spend its self-correction turns on it and drop it —
+            # detection silently off on exactly the strict schemas. Validate a
+            # copy without it; the probe is never part of the declared fields.
+            from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+            if isinstance(data, dict) and INSTANCE_PROBE_FIELD in data:
+                data = {k: v for k, v in data.items() if k != INSTANCE_PROBE_FIELD}
             report = (
                 validate_extraction(data, class_schema, check_formats=check_formats)
                 if schema_checks
@@ -4592,8 +4606,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         instance_count = 0
         recovered_instances: list[dict[str, Any]] | None = None
         # The model's own answer to "how many documents of this class are in
-        # these pages" (#753). None on the agentic path, which does not carry the
-        # probe — see _build_wire_schema.
+        # these pages" (#753). Set by the shared pop below on the Simple path, and
+        # by the immediate pop after the unsharded agentic call (#772); None when
+        # detection is off, on sharded agentic sections, and on resumed runs.
         instance_probe: int | None = None
 
         # Initialize analysis tracking
