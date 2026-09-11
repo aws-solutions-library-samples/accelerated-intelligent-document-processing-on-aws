@@ -39,9 +39,6 @@ from .session import get_bedrock_session
 LAMBDA_HOOK_MODEL_ID = "LambdaHook"
 
 
-# Dummy exception classes for requests timeouts if requests is not available
-
-
 def numeric_usage(usage: Any) -> Dict[str, Any]:
     """The numeric members of a Converse ``usage`` block, for metering.
 
@@ -60,6 +57,9 @@ def numeric_usage(usage: Any) -> Dict[str, Any]:
         for k, v in usage.items()
         if isinstance(v, (int, float)) and not isinstance(v, bool)
     }
+
+
+# Dummy exception classes for requests timeouts if requests is not available
 
 
 class _RequestsReadTimeout(Exception):
