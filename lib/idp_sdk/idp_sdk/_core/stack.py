@@ -1455,6 +1455,84 @@ class StackDeployer:
                     else:
                         raise
 
+    def _excluding_other_live_stacks(
+        self, candidates: List[str], stack_name: str
+    ) -> List[str]:
+        """Remove log groups that belong to a different, still-live stack.
+
+        The teardown prefixes are intentionally broad, so a stack named ``IDP``
+        matches ``IDP-DEV``'s groups. This asks CloudFormation which other stacks
+        currently exist and drops any candidate whose name is claimed by one of
+        them, keyed on the longest matching stack name so the more specific owner
+        always wins.
+
+        Fails **safe**: if the stacks cannot be listed, every candidate is
+        dropped. Skipping cleanup leaves orphaned log groups, which costs money;
+        guessing wrong deletes another live deployment's history, which cannot be
+        undone.
+        """
+        if not candidates:
+            return candidates
+
+        try:
+            others = set()
+            paginator = self.cfn.get_paginator("list_stacks")
+            for page in paginator.paginate(
+                StackStatusFilter=[
+                    "CREATE_COMPLETE",
+                    "CREATE_IN_PROGRESS",
+                    "UPDATE_COMPLETE",
+                    "UPDATE_IN_PROGRESS",
+                    "UPDATE_ROLLBACK_COMPLETE",
+                    "ROLLBACK_COMPLETE",
+                    "IMPORT_COMPLETE",
+                ]
+            ):
+                for summary in page.get("StackSummaries", []):
+                    name = summary.get("StackName")
+                    # A nested stack's name begins "<parent>-", and its groups
+                    # are ours to clean, so only consider root stacks.
+                    if name and name != stack_name and not summary.get("ParentId"):
+                        others.add(name)
+        except Exception as e:
+            logger.warning(
+                f"Could not list stacks to check log-group ownership ({e}); "
+                f"skipping auto-created log-group cleanup rather than risk "
+                f"deleting another stack's logs"
+            )
+            return []
+
+        def owner_is_another_stack(log_group_name: str) -> bool:
+            # Longest match wins: for group "/aws/lambda/IDP-DEV-Fn-abc" with
+            # stacks {IDP, IDP-DEV}, "IDP-DEV" is the owner, not us.
+            best = ""
+            for candidate_owner in others | {stack_name}:
+                for prefix in (
+                    f"/aws/lambda/{candidate_owner}-",
+                    f"/{candidate_owner}-",
+                    f"/aws/codebuild/{candidate_owner}-",
+                    f"/aws-glue/crawlers-role/{candidate_owner}-",
+                    f"{candidate_owner}-",
+                ):
+                    if log_group_name.startswith(prefix) and len(candidate_owner) > len(
+                        best
+                    ):
+                        best = candidate_owner
+            return bool(best) and best != stack_name
+
+        kept, skipped = [], []
+        for log_group_name in candidates:
+            (skipped if owner_is_another_stack(log_group_name) else kept).append(
+                log_group_name
+            )
+
+        if skipped:
+            logger.info(
+                f"Skipping {len(skipped)} log group(s) owned by another live "
+                f"stack: {sorted(skipped)[:5]}"
+            )
+        return kept
+
     def _discover_auto_created_log_groups(self, stack_name: str) -> List[str]:
         """
         Discover auto-created log groups that match stack name patterns
@@ -1475,17 +1553,36 @@ class StackDeployer:
         # Use exact prefixes to avoid inadvertent matches to longer stack names
         # (e.g., "idp1" should not match "idp10")
         patterns_to_check = [
-            # Lambda functions - pattern requires hyphen after stack name
-            f"/aws/lambda/{stack_name}-DOCUMENTKB",
-            f"/aws/lambda/{stack_name}-BDASAMPLEPROJECT",  # BDA sample project
-            f"/aws/lambda/{stack_name}-DashboardMergerFunction",
-            f"/aws/lambda/{stack_name}-InitializeConcurrencyTableLambda",
-            # Nested stacks - pattern requires hyphen after stack name
-            f"/{stack_name}-PATTERN1STACK-",  # e.g., /IDPDocker-P1-PATTERN1STACK-ABC123/lambda/...
-            f"/{stack_name}-PATTERN2STACK-",
+            # ONE generic prefix covers every Lambda-auto-created group belonging
+            # to this stack or any of its nested stacks, because CloudFormation
+            # always generates a function name of the form
+            # `<stack-or-nested-stack-name>-<LogicalId>-<hash>` and every nested
+            # stack's own name begins `<parent>-`.
+            #
+            # This deliberately replaces the per-function and per-nested-stack
+            # prefixes that used to be listed here. They were fragile in a way
+            # that FAILED SILENTLY: CloudFormation truncates the name to Lambda's
+            # 64-char cap, and a zero-match prefix is indistinguishable from
+            # "no orphans to clean". Worked backwards from a real observed group,
+            # `/aws/lambda/IDP1-FeaturePlatformStack-CheckFeatureEntitlementF-32Q2qRNU35FU`:
+            # the logical id kept 24 chars and the hash 12, leaving ~26 for the
+            # stack-name segment — and `IDP1-FeaturePlatformStack-` is exactly 26.
+            # It matched only because that parent stack name is 4 characters. At
+            # `IDP-DEV` the same prefix matches nothing and all 9 groups leak.
+            #
+            # The `-` immediately after {stack_name} is what keeps `IDP1` from
+            # matching a sibling `IDP10-...` stack's groups.
+            f"/aws/lambda/{stack_name}-",
+            # Nested-stack log groups that use the `/<nested-stack-name>/lambda/...`
+            # convention rather than Lambda's default. PATTERN1STACK/PATTERN2STACK
+            # were removed: those logical ids no longer exist (the pattern stacks
+            # were unified into PATTERNSTACK), so they were dead prefixes of
+            # exactly the kind described above.
+            f"/{stack_name}-PATTERNSTACK-",
+            f"/{stack_name}-APIRESOLVERSTACK-",
+            f"/{stack_name}-FeaturePlatformStack-",
             # CodeBuild projects - pattern requires hyphen after stack name
-            f"/aws/codebuild/{stack_name}-PATTERN1STACK",  # Nested stack CodeBuild
-            f"/aws/codebuild/{stack_name}-PATTERN2STACK",
+            f"/aws/codebuild/{stack_name}-PATTERNSTACK",
             f"/aws/codebuild/{stack_name}-webui-build",  # Main stack webui build
             # Glue crawlers - pattern requires hyphen after stack name
             f"/aws-glue/crawlers-role/{stack_name}-DocumentSectionsCrawlerRole",
@@ -1559,6 +1656,21 @@ class StackDeployer:
                 except Exception as e:
                     logger.warning(f"Error checking explicit pattern {pattern}: {e}")
                     continue
+
+            # Drop anything that belongs to a DIFFERENT live stack.
+            #
+            # The prefixes above are deliberately broad — `/aws/lambda/{stack}-`
+            # has to be, because CloudFormation truncates generated names and a
+            # narrower prefix silently matches nothing. But broad means a stack
+            # named `IDP` matches `IDP-DEV`'s and `IDP-PROD`'s groups too: the
+            # trailing hyphen only protects against `IDP1` vs `IDP10`, not
+            # against a sibling whose name genuinely extends this one with a
+            # hyphen. Deleting another live deployment's log history is not
+            # recoverable, so exclude it explicitly rather than relying on
+            # prefix shape.
+            discovered_log_groups = self._excluding_other_live_stacks(
+                discovered_log_groups, stack_name
+            )
 
             # Log summary with pattern match counts
             if discovered_log_groups:

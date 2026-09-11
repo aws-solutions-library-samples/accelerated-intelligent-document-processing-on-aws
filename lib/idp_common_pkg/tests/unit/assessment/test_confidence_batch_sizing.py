@@ -37,7 +37,8 @@ from idp_common.bedrock.sizing import (
     confidence_rows_per_call,
 )
 
-NOVA_LITE = "us.amazon.nova-lite-v1:0"  # 10,000-token output cap
+NOVA_LITE = "us.amazon.nova-lite-v1:0"
+NOVA_PRO = "us.amazon.nova-pro-v1:0"  # 10,000-token output cap
 SONNET5_1M = "us.anthropic.claude-sonnet-5:1m"  # 128,000-token output cap
 CLAUDE3 = "us.anthropic.claude-3-haiku-20240307-v1:0"  # 8,192-token output cap
 
@@ -101,7 +102,9 @@ def test_column_count_uses_the_widest_row_not_the_first():
     truncates. A narrow first row must not shrink the measured width."""
     rows = [{"Date": "2024-01-05"}] + [_row(3) for _ in range(9)]
     assert count_row_columns(rows) == 3
-    assert compute_token_aware_batch_size(NOVA_LITE, rows, "llm_grounded", 25) == 13
+    # Nova PRO shares Nova Lite's 10,000 cap but has no measured loop ceiling, so
+    # the token math is visible: 3 bbox columns -> 13.
+    assert compute_token_aware_batch_size(NOVA_PRO, rows, "llm_grounded", 25) == 13
 
 
 @pytest.mark.unit
@@ -174,11 +177,53 @@ def test_configured_value_is_a_ceiling_never_a_target():
     """A ceiling BELOW the derived size wins; the derivation never grows past it."""
     rows = [_row(3) for _ in range(40)]
     # ocr_only 3-column derives 41, which is above the shipped ceiling of 25, so the
-    # ceiling binds and the batch stays at 25 rather than growing.
+    # ceiling binds and the batch stays at 25 rather than growing (Nova Pro: same
+    # 10,000 cap, no measured loop ceiling).
     assert confidence_rows_per_call(10_000, 3, "ocr_only") == 41
-    assert compute_token_aware_batch_size(NOVA_LITE, rows, "ocr_only", 25) == 25
+    assert compute_token_aware_batch_size(NOVA_PRO, rows, "ocr_only", 25) == 25
     # With bounding boxes the derivation (13) is below the ceiling and wins.
-    assert compute_token_aware_batch_size(NOVA_LITE, rows, "llm_grounded", 25) == 13
+    assert compute_token_aware_batch_size(NOVA_PRO, rows, "llm_grounded", 25) == 13
+
+
+@pytest.mark.unit
+def test_nova_lite_never_exceeds_its_measured_loop_ceiling():
+    """Nova Lite at temperature 0 looped the same row object to its 10,000-token cap
+    on every 25-row batch (4/4 offline replays, 4/4 live), while 13 rows looped 1/5
+    and 8 rows 0/8. The token math says 41 for this shape, so the family ceiling
+    (12) binds — under the derivation AND under the operator's ceiling."""
+    rows = [_row(3) for _ in range(40)]
+    assert compute_token_aware_batch_size(NOVA_LITE, rows, "ocr_only", 25) == 12
+    assert compute_token_aware_batch_size(NOVA_LITE, rows, "ocr_only", 50) == 12
+    assert compute_token_aware_batch_size(NOVA_LITE, rows, "ocr_only", 0) == 12
+    # a LOWER operator ceiling still wins
+    assert compute_token_aware_batch_size(NOVA_LITE, rows, "ocr_only", 8) == 8
+    # the token math still binds when it is smaller than the family ceiling
+    assert (
+        compute_token_aware_batch_size(
+            NOVA_LITE, [_row(8) for _ in range(40)], "llm_grounded", 25
+        )
+        == 5
+    )
+    # nova-micro shares the ceiling; the scalar-row fallback path applies it too
+    assert (
+        compute_token_aware_batch_size(
+            "us.amazon.nova-micro-v1:0", rows, "ocr_only", 25
+        )
+        == 12
+    )
+    assert compute_token_aware_batch_size(NOVA_LITE, ["x"] * 40, "ocr_only", 50) == 12
+
+
+@pytest.mark.unit
+def test_unmeasured_families_have_no_loop_ceiling():
+    from idp_common.bedrock.sizing import model_list_batch_ceiling
+
+    assert model_list_batch_ceiling(NOVA_LITE) == 12
+    assert model_list_batch_ceiling("us.amazon.nova-micro-v1:0") == 12
+    assert model_list_batch_ceiling(NOVA_PRO) is None
+    assert model_list_batch_ceiling("us.amazon.nova-2-lite-v1:0") is None
+    assert model_list_batch_ceiling(SONNET5_1M) is None
+    assert model_list_batch_ceiling(None) is None
 
 
 @pytest.mark.unit

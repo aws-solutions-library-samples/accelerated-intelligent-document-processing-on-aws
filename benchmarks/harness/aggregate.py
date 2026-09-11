@@ -47,6 +47,9 @@ def score_all(run_dir):
         if not r.get("run_id"):
             rows.append({**_key(r), "status": "NOT_LAUNCHED", "success": False})
             continue
+        if r.get("reference"):
+            rows.extend(score_reference_run(res, r))
+            continue
         truth = (
             json.load(open(r["truth"]))
             if r.get("truth") and os.path.exists(r["truth"])
@@ -62,14 +65,68 @@ def score_all(run_dir):
             )
         except Exception as e:
             sc = {"status": "SCORE_ERROR", "success": False, "error": str(e)}
+        # Synthetic rows let the scorer's "doc" (the PDF file name) win — the
+        # committed baselines are keyed that way, so changing it would break
+        # release pairing. Reference rows do the opposite; see score_reference_run.
         rows.append({**_key(r), **sc})
     return rm, rows
+
+
+def reference_doc_names(prefixes, run_id):
+    """``<run_id>/<doc>/`` S3 prefixes -> document names, in a stable order."""
+    names = []
+    for p in prefixes:
+        rest = p[len(run_id) + 1 :] if p.startswith(run_id + "/") else p
+        name = rest.strip("/")
+        if name:
+            names.append(name)
+    return sorted(names)
+
+
+def score_reference_run(res, r, list_prefixes=None, score=None):
+    """One reference-corpus run holds ``n_docs`` documents; score each (#766).
+
+    Every row keeps the corpus id as ``doc`` and carries the document under
+    ``sub_doc``, so cell_stats' per-cell roll-up averages over the corpus the
+    way it averages over repeats — a 20-document real corpus contributes a mean
+    weighted accuracy, not 20 phantom "documents" in the summary. No local truth
+    exists for these: ``analyze.score_doc`` with ``truth=None`` dispatches to
+    ``score_reference``, which reads the stack's own evaluation. A run whose S3
+    prefix holds no documents is reported as such rather than vanishing.
+    """
+    list_prefixes = list_prefixes or lib.list_doc_prefixes
+    score = score or analyze.score_doc
+    names = reference_doc_names(
+        list_prefixes(res["output_bucket"], r["run_id"]), r["run_id"]
+    )
+    if not names:
+        return [{**_key(r), "status": "NO_DOCS", "success": False}]
+    rows = []
+    for name in names:
+        try:
+            sc = score(
+                res["output_bucket"], res["tracking_table"], r["run_id"], name, None
+            )
+        except Exception as e:
+            sc = {"status": "SCORE_ERROR", "success": False, "error": str(e)}
+        # The scorer reports the document it scored under "doc" (its file name);
+        # the run key must win so the row stays keyed on the CORPUS id, with the
+        # file name under sub_doc. Caught live: the first cut let the scorer's
+        # "doc" overwrite the corpus id, and the roll-up saw 20 one-off documents.
+        rows.append({**sc, **_key(r), "sub_doc": name})
+    expected = int(r.get("n_docs") or 0)
+    if expected and len(names) != expected:
+        for row in rows:
+            row["coverage_note"] = f"{len(names)} of {expected} documents found"
+    return rows
 
 
 def _key(r):
     return {
         "cell": r["cell"],
         "doc": r["doc"],
+        # Set only on rows expanded from a reference-corpus run (#766).
+        "sub_doc": None,
         "repeat": r.get("repeat", 0),
         "resolved": r.get("resolved", {}),
         "run_id": r.get("run_id"),
@@ -79,6 +136,7 @@ def _key(r):
 CSV_COLS = [
     "cell",
     "doc",
+    "sub_doc",
     "repeat",
     "status",
     "success",
@@ -281,6 +339,7 @@ def _meta(rm):
         # complete.
         "docs_named": rm.get("docs_named"),
         "docs_run": rm.get("docs_run"),
+        "docs_reference": rm.get("docs_reference"),
         "docs_unlaunchable": rm.get("docs_unlaunchable"),
         "docs_other_class": rm.get("docs_other_class"),
         # NOTE: `commit` is the LOCAL repo HEAD at scoring time, which is not
@@ -339,7 +398,10 @@ def _paired_quality_deltas(cur_summary, base_summary):
     def index(summary):
         out = {}
         for r in summary.get("rows", []):
-            out[(r.get("cell"), r.get("doc"), r.get("repeat", 0))] = r
+            # sub_doc is the document inside a reference-corpus run (#766); without
+            # it a 20-document corpus collapsed onto one key and the paired delta
+            # compared one arbitrary document.
+            out[(r.get("cell"), r.get("doc"), r.get("sub_doc"), r.get("repeat", 0))] = r
         return out
 
     cur_rows, base_rows = index(cur_summary), index(base_summary)
@@ -489,7 +551,13 @@ def _by_cell_doc(rows):
     """
     out = {}
     for r in rows:
-        out.setdefault(f"{r['cell']}|{r['doc']}", []).append(r)
+        key = f"{r['cell']}|{r['doc']}"
+        # A reference-corpus run contributes one row per document; pooling them
+        # under the corpus would make "spread" the difference between two real
+        # documents, not run-to-run noise. Pair per document, pool repeats only.
+        if r.get("sub_doc"):
+            key += f"|{r['sub_doc']}"
+        out.setdefault(key, []).append(r)
     return out
 
 
@@ -731,8 +799,8 @@ def figures_compare(new_path, base_path, new_label="new", base_label="baseline")
 
     # Paired per-(cell,doc) accuracy + recall: a scatter on the identity line, so
     # any point off the diagonal is a real per-run change rather than an average.
-    rn = {(r["cell"], r["doc"]): r for r in new["rows"]}
-    rb = {(r["cell"], r["doc"]): r for r in base["rows"]}
+    rn = {(r["cell"], r["doc"], r.get("sub_doc")): r for r in new["rows"]}
+    rb = {(r["cell"], r["doc"], r.get("sub_doc")): r for r in base["rows"]}
     keys = [k for k in rb if k in rn]
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
     for ax, key, title in (

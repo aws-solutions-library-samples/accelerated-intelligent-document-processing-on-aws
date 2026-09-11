@@ -386,6 +386,7 @@ export type DiscoveryJob = {
   errorMessage?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
   statusMessage?: Maybe<Scalars['String']['output']>;
@@ -408,6 +409,7 @@ export type DiscoveryJobListItem = {
   groundTruthKey?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   pageRange?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
@@ -1290,6 +1292,7 @@ export type MutationUpdateDiscoveryJobStatusArgs = {
   errorMessage?: InputMaybe<Scalars['String']['input']>;
   jobId: Scalars['ID']['input'];
   jobType?: InputMaybe<Scalars['String']['input']>;
+  multiInstanceHint?: InputMaybe<Scalars['String']['input']>;
   reflectionReport?: InputMaybe<Scalars['String']['input']>;
   status: Scalars['String']['input'];
   statusMessage?: InputMaybe<Scalars['String']['input']>;
@@ -1861,6 +1864,8 @@ export type ReviewEffortEstimate = {
   baselineError: Scalars['Float']['output'];
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
+  confidenceFingerprint?: Maybe<Scalars['String']['output']>;
+  confidenceFingerprintSource?: Maybe<Scalars['String']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
   configVersionSource?: Maybe<Scalars['String']['output']>;
   curveSource?: Maybe<Scalars['String']['output']>;
@@ -2833,7 +2838,7 @@ export type EstimateReviewEffortQueryVariables = Exact<{
 }>;
 
 
-export type EstimateReviewEffortQuery = { estimateReviewEffort?: { testSetId: string, qualityTier?: string | null, qualityTierReason?: string | null, targetAccuracy: number, configVersion?: string | null, configVersionSource?: string | null, curveSource?: string | null, docsToReview: number, docsToReviewLow: number, docsToReviewHigh: number, totalDocs: number, sampledDocs?: number | null, impliedCutoff?: number | null, residualError: number, baselineError: number, effortMinutes: number, effortMinutesPerDoc?: number | null, estimateConfidence: string, auditSampleSize: number, recommendReviewAll: boolean, calibration: { ece?: number | null, auroc?: number | null, binCoverage: number, totalObservations: number, degenerate: boolean, overconfident: boolean, undiscriminating: boolean, reliable: boolean }, burndown: Array<{ docsReviewed: number, residualErrorPct: number, cutoff?: number | null }>, reliabilityTable: Array<{ binStart: number, binEnd: number, observations: number, observedAccuracy?: number | null, blendedAccuracy?: number | null }> } | null };
+export type EstimateReviewEffortQuery = { estimateReviewEffort?: { testSetId: string, qualityTier?: string | null, qualityTierReason?: string | null, targetAccuracy: number, configVersion?: string | null, configVersionSource?: string | null, confidenceFingerprint?: string | null, confidenceFingerprintSource?: string | null, curveSource?: string | null, docsToReview: number, docsToReviewLow: number, docsToReviewHigh: number, totalDocs: number, sampledDocs?: number | null, impliedCutoff?: number | null, residualError: number, baselineError: number, effortMinutes: number, effortMinutesPerDoc?: number | null, estimateConfidence: string, auditSampleSize: number, recommendReviewAll: boolean, calibration: { ece?: number | null, auroc?: number | null, binCoverage: number, totalObservations: number, degenerate: boolean, overconfident: boolean, undiscriminating: boolean, reliable: boolean }, burndown: Array<{ docsReviewed: number, residualErrorPct: number, cutoff?: number | null }>, reliabilityTable: Array<{ binStart: number, binEnd: number, observations: number, observedAccuracy?: number | null, blendedAccuracy?: number | null }> } | null };
 
 export type GetAgentJobStatusQueryVariables = Exact<{
   jobId: Scalars['ID']['input'];
@@ -3074,7 +3079,7 @@ export type ListConfigurationLibraryQuery = { listConfigurationLibrary?: { succe
 export type ListDiscoveryJobsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type ListDiscoveryJobsQuery = { listDiscoveryJobs?: { nextToken?: string | null, DiscoveryJobs?: Array<{ jobId: string, documentKey?: string | null, groundTruthKey?: string | null, status: string, createdAt?: string | null, updatedAt?: string | null, errorMessage?: string | null, version?: string | null, discoveredClassName?: string | null, statusMessage?: string | null, pageRange?: string | null, jobType?: string | null, currentStep?: string | null, totalDocuments?: number | null, clustersFound?: number | null, discoveredClasses?: string | null, reflectionReport?: string | null } | null> | null } | null };
+export type ListDiscoveryJobsQuery = { listDiscoveryJobs?: { nextToken?: string | null, DiscoveryJobs?: Array<{ jobId: string, documentKey?: string | null, groundTruthKey?: string | null, status: string, createdAt?: string | null, updatedAt?: string | null, errorMessage?: string | null, version?: string | null, discoveredClassName?: string | null, statusMessage?: string | null, pageRange?: string | null, multiInstanceHint?: string | null, jobType?: string | null, currentStep?: string | null, totalDocuments?: number | null, clustersFound?: number | null, discoveredClasses?: string | null, reflectionReport?: string | null } | null> | null } | null };
 
 export type ListDocumentVersionsQueryVariables = Exact<{
   objectKey: Scalars['ID']['input'];
@@ -3197,7 +3202,7 @@ export type OnDiscoveryJobStatusChangeSubscriptionVariables = Exact<{
 }>;
 
 
-export type OnDiscoveryJobStatusChangeSubscription = { onDiscoveryJobStatusChange?: { jobId: string, status: string, errorMessage?: string | null, discoveredClassName?: string | null, statusMessage?: string | null, jobType?: string | null, currentStep?: string | null, totalDocuments?: number | null, clustersFound?: number | null, discoveredClasses?: string | null, reflectionReport?: string | null } | null };
+export type OnDiscoveryJobStatusChangeSubscription = { onDiscoveryJobStatusChange?: { jobId: string, status: string, errorMessage?: string | null, discoveredClassName?: string | null, statusMessage?: string | null, multiInstanceHint?: string | null, jobType?: string | null, currentStep?: string | null, totalDocuments?: number | null, clustersFound?: number | null, discoveredClasses?: string | null, reflectionReport?: string | null } | null };
 
 export type OnUpdateDocumentSubscriptionVariables = Exact<{ [key: string]: never; }>;
 

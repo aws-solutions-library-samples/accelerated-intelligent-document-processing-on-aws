@@ -566,6 +566,50 @@ response cannot overwrite fields that already validated. A failed escalation
 returns the original extraction unchanged; a broken repair must never be worse
 than no repair.
 
+## Prompt caching knob and minimum-prefix warning (`extraction.prompt_cache`)
+
+`extraction.prompt_cache: auto | off` (default `auto`). `off` removes every
+`<<CACHEPOINT>>` marker before Simple-mode content is built
+(`_build_prompt_content`) and, on the Advanced path, skips the trailing
+`cachePoint` block and the Strands `cache_prompt` / `cache_tools` flags, so no cache
+point reaches Bedrock. A cache write is 1.25× input price and pays back only on a
+second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
+better off with `off`.
+
+Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Fable 5, 1,024
+on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
+`idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`). Below it a cache
+point silently does nothing. `merge_utils._validate_prompt_cache_prefix` estimates
+each class's Simple-mode prefix (`estimate_prefix_tokens`, chars/4, about ±10% against
+Bedrock's count; a class within that band of the minimum is reported as "may not
+cache") using the prompt the service would send (the 1S-TopK prompt under integrated
+confidence, a per-class override when present) and warns per class, naming both
+numbers. Extraction only — classification, assessment and rule-validation prompts are
+not checked and keep their cache points when the knob is `off`. YAML's bare `off`
+parses as `false`; the config model accepts both.
+
+**Reading it back (item 2 of #780).** `_save_results` calls
+`_record_prompt_cache_metadata`, which sums the section's `Extraction*/bedrock/<model>`
+metering (the escalation contexts included) with
+`idp_common.bedrock.prompt_cache.summarize_cache_usage` and stores
+`metadata["prompt_cache"]` — `state` (`caching` | `write-only` | `never-cached` |
+`disabled` | `no-cache-point` | `no-cache-data`), `cache_point_sent`, `input_tokens`, `cache_read_input_tokens`,
+`cache_write_input_tokens`, `requests`, `read_share`, `model_ids`,
+`min_cacheable_prefix_tokens`. It has to happen there because the metering key carries
+phase and model but not class, and the section's metering is merged into the document
+total right after the result is written. Measured reads/writes win over the `off` flag.
+Because Claude reports `cacheReadInputTokens: 0` even when no cache point was sent,
+zero/zero alone cannot prove a cache point was inert: `_build_prompt_content` sets
+`_pending_cache_marker_seen` when a Simple-mode prompt still carries a marker after the
+knob (Advanced mode always attempts one), and `model_supports_cache_point` mirrors the
+client's `CACHEPOINT_SUPPORTED_MODELS` (inference-profile ARNs are unknown, never
+"unsupported"); only a sent cache point with zero/zero is `never-cached`, otherwise
+`no-cache-point`.
+`describe_cache_state` renders the one-line verdict for the text report; the Web UI
+mirrors both in `src/ui/src/components/common/promptCacheModel.ts` (per-class in the
+section's Processing Report tab, per-phase on the document cost table's subtotal rows).
+See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/prompt-caching.md` for the measurements.
+
 ## Forced tool use (Simple mode, `extraction.forced_tool`)
 
 Coercion and validation act on a result that already exists. Forced tool use tries

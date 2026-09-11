@@ -934,8 +934,9 @@ The curve comes from three sources of increasing fidelity:
    *whole* confidence range, including the high-confidence documents review never
    opens. This is the only source that can fully validate the estimate.
 
-Curves are stored per **Configuration Profile**, because confidence means
-different things across models and prompts.
+Curves are stored per **Configuration Profile and revision family**, because
+confidence means different things across models, sampling parameters and
+assessment settings — but not across prompt tweaks.
 
 > **Which curve the estimate reads.** The estimate resolves the set's configuration
 > from, in order: the `configVersion` argument; the set's declared `configVersion`
@@ -944,26 +945,37 @@ different things across models and prompts.
 > configuration the set's **draft-labeling jobs** resolved (every labeling job's run
 > carries the `ConfigVersion` the runner resolved). If the jobs disagree — say one
 > document was re-extracted under another profile — no single curve applies and the
-> combined curve is used, labeled `mixed`. It then reads that configuration's own
-> curve. If that curve is empty it falls back to the set's combined curve across every
-> configuration it has ever been labeled or scored under, and **reports that it did**:
-> the modal shows a note under the confidence banner, and the API returns
-> `curveSource` (`config` | `aggregate` | `prior`) and `configVersionSource`
-> (`argument` | `test-set` | `bound` | `drafting-run` | `mixed`). Revisions of a profile still share one
-> curve, which is right for a prompt tweak and wrong after a model swap — after
-> changing a profile's extraction model or assessment configuration, treat its
-> estimate as unreliable until fresh observations accumulate (tracked in #698).
+> combined curve is used, labeled `mixed`. Within that profile it then resolves the
+> **revision family**: every run records a *confidence fingerprint* — a hash of the
+> confidence-relevant configuration (extraction model and sampling parameters,
+> assessment settings), so a prompt edit keeps the fingerprint and a model swap
+> changes it — and the harvest copies it onto each drafted label. Observations are
+> recorded on the curve for that fingerprint **and** on the profile's pooled curve,
+> and the estimate reads, most specific first: the revision family's curve; the
+> profile's curve pooled across its revisions (when the current family has no
+> observations yet, or the drafting runs used several revisions, labeled
+> `mixed-revisions`); the set's combined curve across every configuration; the
+> global prior. Whichever it used, it **reports it**: the modal shows a note under
+> the confidence banner, and the API returns `curveSource` (`revision` | `config` |
+> `aggregate` | `prior`), `configVersionSource` (`argument` | `test-set` | `bound` |
+> `drafting-run` | `mixed`) and `confidenceFingerprint` / `confidenceFingerprintSource`
+> (`drafting-run` | `mixed-revisions` | `partial` — some drafting runs predate the
+> fingerprint, so their labels' family is unknown | null). So after a model swap on a profile the
+> estimate does not silently inherit the old curve: it says it is using the pooled
+> curve until the new family has observations of its own. While that note shows,
+> treat the estimate as provisional — the pooled curve blends the earlier revisions'
+> observations with whatever the new one has so far.
 >
 > Upgrade note: sets whose estimate used to read the combined curve now read the
 > per-configuration one, so an estimate can change and a set can drop out of the
 > **gold** tier when its own curve is thinner than the blend was. That is the honest
 > reading, not a regression.
 >
-> Every revision already records a *confidence fingerprint* (a hash of the
-> confidence-relevant configuration — extraction model and sampling parameters,
-> assessment settings), which is what a future release will key curves on. There is
-> no supported way to reset a curve in the meantime; the most reliable reset is a
-> new test set.
+> Runs recorded before the fingerprint was stamped carry none, so their
+> observations live only on the profile's pooled curve; the first run and review
+> under a stamped revision start its own curve, and the pooled curve keeps
+> accumulating as the fallback. There is still no supported way to reset a curve;
+> the most reliable reset is a new test set.
 
 ### Every estimate states how much to trust it
 

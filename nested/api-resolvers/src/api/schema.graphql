@@ -452,6 +452,10 @@ type DiscoveryJobListItem @aws_cognito_user_pools @aws_iam {
   discoveredClassName: String
   statusMessage: String
   pageRange: String
+  # #765: JSON suggestion when the sample held several records of the discovered
+  # class ({instance_count, class_name, already_multi_instance, message}); the
+  # class setting itself is never changed by discovery.
+  multiInstanceHint: String
   # Multi-document discovery fields
   jobType: String
   currentStep: String
@@ -670,6 +674,7 @@ type DiscoveryJob @aws_cognito_user_pools @aws_iam {
   errorMessage: String
   discoveredClassName: String
   statusMessage: String
+  multiInstanceHint: String
   # Multi-document discovery fields
   jobType: String
   currentStep: String
@@ -1033,9 +1038,21 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   # labeling jobs disagree; configVersion is null) | null (none identifiable).
   configVersion: String
   configVersionSource: String
-  # Which stored curve the numbers rest on: "config" (this configuration's own
-  # curve), "aggregate" (the set-wide blend of every configuration — served when
-  # the per-configuration curve is empty), or "prior" (nothing stored for the set).
+  # The revision family within that profile whose confidence semantics produced
+  # the labels: a hash of the confidence-relevant configuration (extraction model
+  # and sampling, assessment settings), stamped on the drafting run by the test
+  # runner. Source: "drafting-run" | "mixed-revisions" (the drafting runs disagree)
+  # | "partial" (some drafting runs predate the stamp, so their labels' family is
+  # unknown) | null (no run carries one). In every case but the first the
+  # fingerprint is null and the profile's pooled curve is served. (#698)
+  confidenceFingerprint: String
+  confidenceFingerprintSource: String
+  # Which stored curve the numbers rest on: "revision" (this profile's curve for
+  # the current confidence-relevant settings), "config" (the profile pooled across
+  # its revisions — served when the revision family has no observations yet, or
+  # when no fingerprint is known), "aggregate" (the set-wide blend of every
+  # configuration — served when the per-configuration curve is empty), or "prior"
+  # (nothing stored for the set).
   curveSource: String
   docsToReview: Int!
   # Range, not a point: a prior-driven estimate should not imply precision.
@@ -1388,6 +1405,7 @@ type Mutation {
     errorMessage: String
     discoveredClassName: String
     statusMessage: String
+    multiInstanceHint: String
     jobType: String
     currentStep: String
     totalDocuments: Int

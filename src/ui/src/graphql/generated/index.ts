@@ -339,6 +339,8 @@ export const estimateReviewEffort = /* GraphQL */ `
       targetAccuracy
       configVersion
       configVersionSource
+      confidenceFingerprint
+      confidenceFingerprintSource
       curveSource
       docsToReview
       docsToReviewLow
@@ -1123,6 +1125,7 @@ export const listDiscoveryJobs = /* GraphQL */ `
         discoveredClassName
         statusMessage
         pageRange
+        multiInstanceHint
         jobType
         currentStep
         totalDocuments
@@ -1418,6 +1421,7 @@ export const onDiscoveryJobStatusChange = /* GraphQL */ `
       errorMessage
       discoveredClassName
       statusMessage
+      multiInstanceHint
       jobType
       currentStep
       totalDocuments

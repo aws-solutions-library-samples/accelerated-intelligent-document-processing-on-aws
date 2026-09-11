@@ -33,27 +33,43 @@ that would break reproducibility) so a regenerated corpus is byte-comparable.
 Existing stack test sets (`realkie-fcc-verified`, `ocr-benchmark`, `samples-tables`)
 with curated evaluation baselines. Real-world messiness the synthetic set can't emulate.
 
-> ⚠️ **`run_matrix.py` cannot launch reference corpora yet ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).**
-> It launches one local PDF per run, and a reference doc is a test *set* on the
-> stack with no PDF under `corpus/docs/`. So a suite naming `core_docs` measures
-> **7 of its 9 documents** — without the two corpora that have real documents and
-> human-verified labels. It used to drop them with no record at all; the launcher
-> now names them and records `docs_named` / `docs_run` / `docs_unlaunchable` /
-> `docs_other_class` in `runmap.json`, which `aggregate.py` copies into the
-> committed `meta.json`. **Check `docs_unlaunchable` before quoting a suite's
-> result as covering its whole document list.** Those fields are *absent* on a
-> runmap or `meta.json` produced before this existed (or by another launcher):
-> absent means **unknown**, not "nothing was skipped".
+> **Reference corpora are launched as test sets** ([#766](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/766)).
+> A reference doc is a test *set* on the stack, not a PDF under `corpus/docs/`, so
+> `run_matrix.py` submits it through the TestRunner with the cell's config version
+> and the corpus's `n` documents, polls until every document has finished, and
+> `aggregate.py` scores each document with `analyze.score_reference()` (the
+> stack's own evaluation; there is no local truth). Two prerequisites, or the
+> corpus is reported *unlaunchable* with the exact command to fix it and recorded
+> as `docs_unlaunchable`:
 >
-> `docs_other_class` is a different thing and not a shortfall: a suite may
-> legitimately name documents of several classes (`enforcement` and `forcing` name
-> `kv_form` beside bank-statement docs), and those are run under their own
-> `--class` in a separate invocation.
+> 1. The suite's cells must be built onto the corpus's **own** base config —
+>    `make_configs.py --suite <suite> --class realkie` and `--class ocr_bench`
+>    (same `--set` overrides as the synthetic class). `doc_matrix.yaml`'s
+>    `class` field names that class.
+> 2. The test set must exist on the stack; a runner rejection is printed and the
+>    run recorded as `NOT_LAUNCHED`.
 >
-> The scorer for reference corpora (`analyze.score_reference()`) is fully
-> implemented and reachable — only the launcher is missing. Until it exists, run
-> them through Test Studio (`harness/detection_ab_teststudio.py` invokes the same
-> TestRunner Lambda the Test Studio UI does) and report them as a separate arm.
+> Reference corpora ride along with the suite regardless of `--class`; on a
+> second per-class pass of the same suite (e.g. `--class kv_form` for `kv_form`)
+> pass `--no-reference` so 20-document corpora are not paid for twice.
+>
+> **What this does to a cell's headline number.** `cell_stats` averages over
+> rows, and a reference run contributes one row per document (`sub_doc`). In
+> `core` a cell therefore averages 7 synthetic rows and 40 real-document rows, so
+> most of the cell mean now comes from the two real corpora and `n_runs` counts
+> documents, not the 9 names in the plan. Release comparisons pair rows on
+> `(cell, doc, sub_doc)`, so a corpus is compared document by document. Compare
+> `core` results only with `core` results produced after this change; `coresynth`
+> is the synthetic-only view.
+>
+> `runmap.json` (and the committed `meta.json`) record `docs_named` / `docs_run`
+> / `docs_reference` / `docs_unlaunchable` / `docs_skipped_reference` /
+> `docs_other_class`. Those fields are *absent* on a runmap produced before they
+> existed (or by another launcher): absent means **unknown**, not "nothing was
+> skipped". `docs_other_class` is not a shortfall: a suite may legitimately name
+> documents of several classes (`enforcement` and `forcing` name `kv_form` beside
+> bank-statement docs), and those are run under their own `--class` in a
+> separate invocation.
 
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and

@@ -249,6 +249,9 @@ class ExtractionService:
         # is auditable. Set by _load_document_images, reset by _reset_context
         # (NOT by _invoke_extraction_model — images load before it runs).
         self._pending_image_fit_metadata: list[dict[str, Any]] | None = None
+        # Whether a Simple-mode prompt built for the current section still carried a
+        # <<CACHEPOINT>> marker after the prompt_cache knob was applied (#780).
+        self._pending_cache_marker_seen: bool = False
         # Model actually used for the most recent section's extraction (after
         # per-class override resolution), recorded in metadata for audit. Reset
         # per section.
@@ -458,6 +461,14 @@ class ExtractionService:
             List of content items with text and image content properly ordered
         """
         content: list[dict[str, Any]] = []
+
+        # extraction.prompt_cache: off — send no cache points. The marker is
+        # removed here, before any content is built, so every Simple-mode path
+        # (default prompt, per-class override, shards) honours it (#780).
+        if self.config.extraction.prompt_cache == "off":
+            prompt_template = prompt_template.replace("<<CACHEPOINT>>", "")
+        if "<<CACHEPOINT>>" in prompt_template:
+            self._pending_cache_marker_seen = True
 
         # Handle FEW_SHOT_EXAMPLES placeholder first
         if "{FEW_SHOT_EXAMPLES}" in prompt_template:
@@ -951,6 +962,7 @@ class ExtractionService:
         self._page_images = []
         self._image_uris = []
         self._pending_image_fit_metadata = None
+        self._pending_cache_marker_seen = False
         self._grounded_assessment = None
         # Top-level fields the simple-extraction schema-compliance filter dropped
         # because the class schema does not define them (off-schema/hallucinated).
@@ -3626,6 +3638,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 )
             report_lines.append("")
 
+        # Prompt cache: what the cache point actually did for this section (#780).
+        if metadata.get("prompt_cache"):
+            from idp_common.bedrock.prompt_cache import describe_cache_state
+
+            report_lines.append("Prompt cache (this section):")
+            report_lines.append(f"  - {describe_cache_state(metadata['prompt_cache'])}")
+            report_lines.append("")
+
         # Assessment batch-splitting (only present when the confidence model
         # truncated its output and batches had to shrink to recover coverage).
         if "assessment_batch_split_stats" in metadata:
@@ -5662,6 +5682,44 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         return merged_assessment, regenerated_alerts, split_stats
 
+    def _record_prompt_cache_metadata(
+        self, metadata: dict[str, Any], metering: dict[str, Any]
+    ) -> None:
+        """Add ``metadata["prompt_cache"]`` — the section's cache read / write /
+        uncached input tokens and one of the states caching, write-only,
+        never-cached, disabled, no-cache-data (#780). Reporting only: never fails
+        the section, and adds nothing when the section made no Bedrock call."""
+        try:
+            from idp_common.bedrock.prompt_cache import (
+                model_supports_cache_point,
+                summarize_cache_usage,
+            )
+
+            # Did a cache point reach the model at all? Claude reports
+            # cacheReadInputTokens: 0 even without one, so zero/zero cannot say.
+            # Advanced mode always attempts one; Simple mode only if a marker
+            # survived the knob. Either way the model must support cache points
+            # (an inference-profile ARN is unknown here, never "unsupported").
+            attempted = (
+                self.config.extraction.agentic.enabled
+                or self._pending_cache_marker_seen
+            )
+            cache_point_sent: bool | None = False
+            if attempted:
+                cache_point_sent = model_supports_cache_point(
+                    self._pending_extraction_model or self.config.extraction.model
+                )
+            summary = summarize_cache_usage(
+                metering,
+                context_prefix="Extraction",
+                disabled=self.config.extraction.prompt_cache == "off",
+                cache_point_sent=cache_point_sent,
+            )
+            if summary is not None:
+                metadata["prompt_cache"] = summary
+        except Exception as e:  # noqa: BLE001 - reporting only
+            logger.debug("Could not summarize prompt-cache usage: %s", e)
+
     def _save_results(
         self,
         document: Document,
@@ -6045,6 +6103,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
         except Exception as e:  # noqa: BLE001 - reporting only
             logger.debug("Could not build processing_flow: %s", e)
+
+        # Prompt-cache efficiency for THIS section (#780 item 2). Captured here,
+        # before result.metering is folded into the document total below, because
+        # the metering key carries phase and model but not class.
+        self._record_prompt_cache_metadata(metadata, result.metering or {})
 
         # Generate user-friendly processing report
         processing_report = self._generate_processing_report(metadata)

@@ -40,12 +40,17 @@ describe('renderQualityTier', () => {
     expect(screen.queryByText(/91\.7% est\./)).not.toBeInTheDocument();
   });
 
-  it('states the reason inline for unrated, not only on hover', () => {
-    // The reason IS the content of an unrated verdict, and the one case a user
-    // cannot infer for themselves.
+  it('keeps the reason one click away for unrated, not inline', async () => {
+    // The reason is the whole content of an unrated verdict, so it must be
+    // reachable — but printed inline beside a redundant "Unrated" badge it made a
+    // status cell four lines tall on every unrated row. The dotted text trigger
+    // carries the affordance; one click shows the reason.
     render(renderQualityTier('unrated', 'confidence does not rank correctness on this set', null));
 
-    expect(screen.getByText(/confidence does not rank correctness/)).toBeInTheDocument();
+    expect(screen.queryByText(/confidence does not rank correctness/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Unrated')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText('Not rated'));
+    expect(await screen.findByText(/confidence does not rank correctness/)).toBeInTheDocument();
   });
 
   it('still leads with the number for a rated tier', () => {

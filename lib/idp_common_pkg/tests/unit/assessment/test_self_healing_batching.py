@@ -25,7 +25,8 @@ from idp_common.assessment.batching import (
 )
 from idp_common.assessment.service import AssessmentCoreResult
 
-NOVA_LITE = "us.amazon.nova-lite-v1:0"  # 10K output cap
+NOVA_LITE = "us.amazon.nova-lite-v1:0"
+NOVA_PRO = "us.amazon.nova-pro-v1:0"  # 10K output cap
 CLAUDE_SONNET = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # 64K output cap
 
 
@@ -112,18 +113,18 @@ def test_token_aware_sizes_by_column_count_not_value_length():
         "a": "x" * 200,
         "b": "y" * 200,
     }
-    wide = compute_token_aware_batch_size(NOVA_LITE, wide_short, "ocr_only", 25)
-    narrow = compute_token_aware_batch_size(NOVA_LITE, narrow_long, "ocr_only", 25)
-    # Nova Lite 10K cap, 0.5 fraction, ~40 tok/cell: 6 cols → floor(5000/240)=20.
+    # Nova PRO: the same 10K cap as Nova Lite but no measured loop ceiling, so the
+    # token math is what is asserted here (Nova Lite would clamp both to 12).
+    wide = compute_token_aware_batch_size(NOVA_PRO, wide_short, "ocr_only", 25)
+    narrow = compute_token_aware_batch_size(NOVA_PRO, narrow_long, "ocr_only", 25)
+    # 10K cap, 0.5 fraction, ~40 tok/cell: 6 cols → floor(5000/240)=20.
     assert wide == 20
     # The 2-column row is NOT shrunk more than the 6-column row, even though its
     # values are far longer — value length no longer drives the estimate.
     assert narrow >= wide
     # Nested/list sub-fields are NOT counted as scalar confidence columns.
     with_nested = {**wide_short, "extra": {"nested": "obj"}, "items": [1, 2, 3]}
-    assert (
-        compute_token_aware_batch_size(NOVA_LITE, with_nested, "ocr_only", 25) == wide
-    )
+    assert compute_token_aware_batch_size(NOVA_PRO, with_nested, "ocr_only", 25) == wide
 
 
 # --------------------------------------------------------------------------- #

@@ -1013,8 +1013,10 @@ max_tokens: 4096
 ```
 
 Extraction and the confidence pass have no `max_tokens` knob at all — they
-always request the model's maximum output so long lists and large documents are
-never truncated.
+request the model's maximum output so long lists and large documents are never
+truncated (the one exception: a confidence call on Amazon Nova Lite/Micro requests
+a budget sized to its rows, because that model was measured looping to its cap —
+see the self-healing note in the extraction-and-confidence guide).
 
 ## Token Efficiency and Cost Optimization
 

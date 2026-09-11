@@ -182,3 +182,30 @@ def test_a_timed_out_bda_callback_is_not_retried(states):
         assert "States.ALL" not in errors, (
             "States.ALL in a Retry policy would retry a timeout as if transient"
         )
+
+
+# ---------------------------------------------------------------------------
+# #757: the execution-level bound. #755 bounded the one waitForTaskToken state;
+# everything else — a stalled Map branch, a retry policy whose cumulative backoff
+# runs for hours, a future state added without its own bound — was still capped
+# only by the Standard-workflow ceiling of one year, again emitting nothing any
+# alarm could see while holding a concurrency slot.
+
+
+@pytest.mark.unit
+def test_the_execution_has_a_top_level_timeout_sourced_from_the_parameter():
+    raw = ASL_PATH.read_text()
+    asl = load_asl()
+    assert "TimeoutSeconds" in asl, (
+        "workflow.asl.json needs a top-level TimeoutSeconds: without it an "
+        "execution that stops progressing runs for up to a year"
+    )
+    assert "${WorkflowExecutionTimeoutSeconds}" in raw, (
+        "the top-level TimeoutSeconds must come from the "
+        "WorkflowExecutionTimeoutSeconds substitution, not a hardcoded literal"
+    )
+    # The placeholder must be the TOP-LEVEL value, not one buried in a state.
+    top = re.search(
+        r'^  "TimeoutSeconds":\s*\$\{WorkflowExecutionTimeoutSeconds\},', raw, re.M
+    )
+    assert top, "TimeoutSeconds placeholder is not at the top level of the ASL"
