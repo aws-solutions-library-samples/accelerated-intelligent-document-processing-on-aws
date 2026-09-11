@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 CACHEPOINT_MARKER = "<<CACHEPOINT>>"
 
@@ -43,9 +43,7 @@ _MIN_PREFIX_TIERS = (
     (re.compile(r"claude-(opus-4-6|opus-4-5|haiku-4-5)"), 4096),
     # Sonnet 5, Sonnet 4.6, Opus 4.8, Sonnet 4.5, Sonnet 4, Opus 4.1, Opus 4, 3.7 Sonnet
     (
-        re.compile(
-            r"claude-(sonnet-5|sonnet-4|opus-4-8|opus-4-1|opus-4|3-7-sonnet)"
-        ),
+        re.compile(r"claude-(sonnet-5|sonnet-4|opus-4-8|opus-4-1|opus-4|3-7-sonnet)"),
         1024,
     ),
 )
@@ -111,3 +109,194 @@ def estimate_prefix_tokens(
         .replace("{FEW_SHOT_EXAMPLES}", few_shot_text or "")
     )
     return estimate_tokens((system_prompt or "") + head)
+
+
+# --------------------------------------------------------------------------- #
+# Reading cache efficiency back out of metering (#780 item 2)
+# --------------------------------------------------------------------------- #
+#
+# Bedrock's usage block (kept numeric by ``client.numeric_usage``) lands in the
+# metering map under ``"<Phase>/bedrock/<modelId>"``. Three states are worth
+# telling apart, none of which raises anything on its own:
+#
+#   caching       reads are landing; the ~0.1x read price applies to the prefix
+#   write-only    writes with no reads: paying 1.25x on the prefix, collecting nothing
+#   never-cached  reads AND writes are zero: the cache point is inert (prefix below
+#                 the model's minimum, or no cache point sent)
+#
+# Two further states keep the report honest: ``disabled`` (the configuration said
+# ``prompt_cache: off``, so zero/zero is the intended outcome) and ``no-cache-data``
+# (the backend reported no cache units at all, e.g. a LambdaHook or a model whose
+# usage block has none; nothing can be concluded).
+
+CACHE_UNIT_READ = "cacheReadInputTokens"
+CACHE_UNIT_WRITE = "cacheWriteInputTokens"
+CACHE_STATES = (
+    "caching",
+    "write-only",
+    "never-cached",
+    "disabled",
+    "no-cache-point",
+    "no-cache-data",
+)
+
+
+def model_supports_cache_point(model_id: Optional[str]) -> Optional[bool]:
+    """Whether the client would send a ``cachePoint`` for this model at all.
+
+    Mirrors ``BedrockClient._is_model_cachepoint_supported`` without a client: an
+    exact member of ``CACHEPOINT_SUPPORTED_MODELS`` is ``True``, an inference-profile
+    ARN is ``None`` (the client resolves it live; unknown here, so never reported as
+    unsupported), anything else is ``False`` — the client strips the markers for it.
+    """
+    if not model_id:
+        return None
+    from idp_common.bedrock.client import CACHEPOINT_SUPPORTED_MODELS
+
+    if model_id in CACHEPOINT_SUPPORTED_MODELS:
+        return True
+    if "inference-profile" in model_id:
+        return None
+    return False
+
+
+def cache_state(
+    cache_read: float,
+    cache_write: float,
+    *,
+    has_cache_units: bool,
+    disabled: bool = False,
+    cache_point_sent: Optional[bool] = None,
+) -> str:
+    """Classify one metering aggregate. Measured reads or writes win over the
+    configuration flag: if tokens were cached, caching happened.
+
+    ``cache_point_sent=False`` means the caller knows no cache point reached the
+    model (no ``<<CACHEPOINT>>`` marker in the prompt, or a model the client does
+    not send cache points to). That matters because Claude models report
+    ``cacheReadInputTokens: 0`` even when no cache point was sent, so zero/zero
+    alone cannot tell an inert cache point from an absent one.
+    """
+    if cache_read > 0:
+        return "caching"
+    if cache_write > 0:
+        return "write-only"
+    if disabled:
+        return "disabled"
+    if cache_point_sent is False:
+        return "no-cache-point"
+    if has_cache_units:
+        return "never-cached"
+    return "no-cache-data"
+
+
+def summarize_cache_usage(
+    metering: Mapping[str, Any],
+    *,
+    context_prefix: str = "Extraction",
+    disabled: bool = False,
+    cache_point_sent: Optional[bool] = None,
+) -> Optional[Dict[str, Any]]:
+    """Sum the Bedrock cache units of every metering key in one phase and classify.
+
+    ``context_prefix`` matches the first key segment by prefix, so ``"Extraction"``
+    also covers the escalation contexts (``ExtractionEscalation``,
+    ``Extraction-Escalation``). Returns ``None`` when the phase has no Bedrock
+    metering at all (nothing to report), otherwise a JSON-friendly dict that is
+    stable for the section result.json, the Processing Report and Athena.
+    """
+    input_tokens = read = write = 0.0
+    requests = 0.0
+    saw_requests = has_cache_units = False
+    model_ids: set[str] = set()
+    for key, units in metering.items():
+        parts = str(key).split("/")
+        if len(parts) < 3 or parts[1] != "bedrock":
+            continue
+        if not parts[0].startswith(context_prefix):
+            continue
+        if not isinstance(units, Mapping):
+            continue
+        model_ids.add("/".join(parts[2:]))
+        input_tokens += _num(units.get("inputTokens"))
+        if CACHE_UNIT_READ in units or CACHE_UNIT_WRITE in units:
+            has_cache_units = True
+        read += _num(units.get(CACHE_UNIT_READ))
+        write += _num(units.get(CACHE_UNIT_WRITE))
+        if "requests" in units:
+            saw_requests = True
+            requests += _num(units.get("requests"))
+    if not model_ids:
+        return None
+
+    denominator = input_tokens + read + write
+    minimum: Optional[int] = None
+    for model_id in sorted(model_ids):
+        minimum = min_cacheable_prefix_tokens(model_id)
+        if minimum is not None:
+            break
+    return {
+        "state": cache_state(
+            read,
+            write,
+            has_cache_units=has_cache_units,
+            disabled=disabled,
+            cache_point_sent=cache_point_sent,
+        ),
+        "cache_point_sent": cache_point_sent,
+        "input_tokens": int(input_tokens),
+        "cache_read_input_tokens": int(read),
+        "cache_write_input_tokens": int(write),
+        "requests": int(requests) if saw_requests else None,
+        "read_share": round(read / denominator, 4) if denominator else None,
+        "model_ids": sorted(model_ids),
+        "min_cacheable_prefix_tokens": minimum,
+    }
+
+
+def describe_cache_state(summary: Mapping[str, Any]) -> str:
+    """One plain-text line for the section's Processing Report."""
+    state = summary.get("state")
+    read = int(summary.get("cache_read_input_tokens") or 0)
+    write = int(summary.get("cache_write_input_tokens") or 0)
+    uncached = int(summary.get("input_tokens") or 0)
+    requests = summary.get("requests")
+    counts = f"{read:,} read / {write:,} written / {uncached:,} uncached input tokens"
+    if requests:
+        counts += f" over {int(requests)} request(s)"
+    if state == "caching":
+        share = summary.get("read_share") or 0.0
+        return f"caching — {share:.0%} of input read from cache ({counts})"
+    if state == "write-only":
+        return (
+            f"write-only — paid 1.25x to write {write:,} tokens and no read landed "
+            f"({counts}); expected when a class is processed once per 5-minute TTL"
+        )
+    if state == "never-cached":
+        minimum = summary.get("min_cacheable_prefix_tokens")
+        models = ", ".join(summary.get("model_ids") or []) or "the model"
+        floor = (
+            f"{models}'s minimum cacheable prefix of {int(minimum):,} tokens"
+            if minimum
+            else f"{models}'s minimum cacheable prefix"
+        )
+        return (
+            f"never cached — the cache point was inert ({counts}); the prompt "
+            f"prefix is probably below {floor}: run 'idp-cli config validate' for "
+            f"the per-class estimate"
+        )
+    if state == "disabled":
+        return f"off by configuration (extraction.prompt_cache: off; {counts})"
+    if state == "no-cache-point":
+        return (
+            f"no cache point reached the model ({counts}); the prompt has no "
+            f"<<CACHEPOINT>> marker or the model does not support prompt caching"
+        )
+    return f"no cache usage reported by this model or backend ({counts})"
+
+
+def _num(value: Any) -> float:
+    try:
+        return float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0

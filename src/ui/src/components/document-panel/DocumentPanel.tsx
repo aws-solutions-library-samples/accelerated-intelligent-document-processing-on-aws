@@ -31,6 +31,8 @@ import useUserRole from '../../hooks/use-user-role';
 import useAppContext from '../../contexts/app';
 import useSettingsContext from '../../contexts/settings';
 import { getDocumentConfidenceAlertCount } from '../common/confidence-alerts-utils';
+import { describePromptCache, summarizeCacheUsage } from '../common/promptCacheModel';
+import type { PromptCacheDescription } from '../common/promptCacheModel';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import StepFunctionFlowViewer from '../step-function-flow/StepFunctionFlowViewer';
 import TroubleshootModal from './TroubleshootModal';
@@ -84,6 +86,8 @@ interface MeteringRowItem {
   isTotal: boolean;
   isSubtotal: boolean;
   note?: string;
+  // Per-phase prompt-cache verdict, shown on the phase's subtotal row (#780).
+  cacheNote?: PromptCacheDescription;
 }
 
 interface PricingUnit {
@@ -349,8 +353,11 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
     // Add all items for this context
     tableItems.push(...contextGroups[context]);
 
-    // Add subtotal row for this context
+    // Add subtotal row for this context, carrying the phase's prompt-cache
+    // verdict: the cache units are priced above, but a row of numbers does not
+    // say whether the cache point did anything (#780).
     const contextTotal = contextTotals[context] || 0;
+    const cacheSummary = context ? summarizeCacheUsage(meteringData as Record<string, unknown>, context, { exact: true }) : null;
     tableItems.push({
       context: '',
       serviceApi: '',
@@ -362,6 +369,10 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
       isTotal: false,
       isSubtotal: true,
       note: `${context} Subtotal`,
+      cacheNote:
+        cacheSummary && cacheSummary.state !== 'no-cache-data'
+          ? describePromptCache(cacheSummary, { phaseOnly: true, context })
+          : undefined,
     });
   });
 
@@ -393,7 +404,17 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
         {
           id: 'serviceApi',
           header: 'Service/Api',
-          cell: (rowItem: MeteringRowItem) => rowItem.serviceApi,
+          cell: (rowItem: MeteringRowItem) =>
+            rowItem.cacheNote ? (
+              <Box fontSize="body-s">
+                <StatusIndicator type={rowItem.cacheNote.indicator}>{rowItem.cacheNote.headline}</StatusIndicator>
+                <Box fontSize="body-s" color="text-body-secondary">
+                  {rowItem.cacheNote.detail}
+                </Box>
+              </Box>
+            ) : (
+              rowItem.serviceApi
+            ),
         },
         {
           id: 'unit',

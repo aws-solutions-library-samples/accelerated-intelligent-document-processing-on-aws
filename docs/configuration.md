@@ -794,9 +794,48 @@ suppresses the validation warning above. The setting is also in the Web UI under
 **Configuration → Extraction → Prompt caching**. A bare `off` in YAML parses as the
 boolean `false`; both spellings (and `"off"` quoted) are accepted. It applies to
 **extraction only**: classification, assessment and rule-validation prompts keep
-their cache points. Per-class cache read/write token counts
-are already in the metering data and priced; a per-class cache-efficiency view in the
-Processing Report remains open in [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780).
+their cache points.
+
+#### Reading cache efficiency back (per phase and per class)
+
+Cache read and write tokens have always been metered and priced, but a row of numbers
+does not say whether the cache point did anything. The product now classifies them
+into one of six states wherever they are shown (the literal value, as stored in the
+section result and the Athena columns, in parentheses):
+
+| State | Meaning | What to do |
+|---|---|---|
+| **caching** (`caching`) | Reads are landing; the ~0.1× read price applies to the prefix (the read share is shown) | Nothing |
+| **write-only** (`write-only`) | Writes with no reads: paying 1.25× on the prefix and collecting nothing | Expected when a class is processed once per 5-minute TTL; a low-volume deployment can set `prompt_cache: off` |
+| **never cached** (`never-cached`) | Reads and writes are both zero although a cache point reached a model that supports it: the cache point is inert | The prefix is below the model's minimum (named); run `idp-cli config validate` for the per-class estimate, add real field descriptions, or pick a model with a lower minimum |
+| **off** (`disabled`) | `extraction.prompt_cache: off`, so zero/zero is the intended outcome | Nothing |
+| **no cache point** (`no-cache-point`) | No cache point reached the model: the prompt has no `<<CACHEPOINT>>` marker, or the model is not one the client sends cache points to (Claude still reports `cacheReadInputTokens: 0` in that case, so the counts alone cannot tell this from *never cached*) | Add a marker, or nothing if caching was not wanted |
+| **no cache data** (`no-cache-data`) | The backend reported no cache units at all (a LambdaHook, a model without them) | Nothing can be concluded |
+
+Measured reads or writes always win over the configuration flag: if tokens were cached,
+the state says so. The view is in three places:
+
+- **Per phase — Web UI document panel, cost table.** Each phase's subtotal row (OCR,
+  Classification, Extraction, Summarization…) carries the verdict for that phase; hover
+  for the token counts. Derived from the document's metering map, which is keyed by
+  phase and model, so this level cannot tell an inert cache point from one that was
+  never sent, and says so; each context is matched exactly, so escalation calls have
+  their own row. The `extraction.prompt_cache` knob is only mentioned on the
+  Extraction row, since it governs nothing else.
+- **Per class — Web UI section Processing Report tab, "Processing Path".** The section's
+  own cache read / written / uncached input tokens and request count, the state, and for
+  *never cached* the model's minimum cacheable prefix. The same line is in the text
+  report. The source is `metadata.prompt_cache` in the section's `result.json`,
+  recorded by the extraction service before the section's metering is folded into the
+  document total (extraction only, including escalation calls). Whether a cache point
+  reached the model is known here (marker present after the knob, and a supported
+  model; an inference-profile ARN counts as unknown), which is what separates *no
+  cache point* from *never cached*.
+- **Per class across documents — Athena.** Because the section result is flattened into
+  the `document_sections_<class>` tables, the same fields are queryable as
+  `"metadata.prompt_cache.state"`, `"metadata.prompt_cache.read_share"`,
+  `"metadata.prompt_cache.cache_read_input_tokens"` and so on; see the sample query in
+  [reporting-database.md](reporting-database.md#prompt-cache-efficiency-per-class).
 
 For pricing details on cached tokens, see [cost-calculator.md](cost-calculator.md).
 

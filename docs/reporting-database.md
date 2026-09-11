@@ -289,6 +289,33 @@ document_sections/
         └── doc-abc_section_1.parquet
 ```
 
+### Prompt-cache efficiency per class
+
+Every section that made a Bedrock extraction call carries `metadata.prompt_cache` (see
+[configuration.md](configuration.md#reading-cache-efficiency-back-per-phase-and-per-class)),
+so each `document_sections_<class>` table has the columns
+`"metadata.prompt_cache.state"` (`caching` | `write-only` | `never-cached` | `disabled`
+| `no-cache-point` | `no-cache-data`), `"metadata.prompt_cache.cache_point_sent"`, `"metadata.prompt_cache.read_share"`,
+`"metadata.prompt_cache.input_tokens"`, `"metadata.prompt_cache.cache_read_input_tokens"`,
+`"metadata.prompt_cache.cache_write_input_tokens"`, `"metadata.prompt_cache.requests"`
+and `"metadata.prompt_cache.min_cacheable_prefix_tokens"`. Column names contain dots,
+so quote them, and the flattener stores every leaf as a **string** (`model_ids` as a
+JSON list), so cast before aggregating. A class that is `never-cached` across most
+documents has a prompt prefix below its model's minimum; a class that is mostly
+`write-only` arrives less than once per 5-minute TTL.
+
+```sql
+SELECT "metadata.prompt_cache.state"                                            AS cache_state,
+       COUNT(*)                                                                  AS sections,
+       ROUND(AVG(CAST("metadata.prompt_cache.read_share" AS double)), 3)         AS avg_read_share,
+       SUM(CAST("metadata.prompt_cache.cache_write_input_tokens" AS bigint))     AS tokens_written,
+       SUM(CAST("metadata.prompt_cache.cache_read_input_tokens" AS bigint))      AS tokens_read
+FROM document_sections_invoice
+WHERE date >= '2026-09-01'
+GROUP BY 1
+ORDER BY sections DESC;
+```
+
 ### Crawler Configuration
 
 The AWS Glue Crawler automatically discovers new section types and creates corresponding tables. The crawler can be configured to run:
