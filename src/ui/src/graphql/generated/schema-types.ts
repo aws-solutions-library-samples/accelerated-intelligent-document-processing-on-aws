@@ -2017,6 +2017,7 @@ export type SyncBdaIdpResponse = {
 export type TestRun = {
   accuracyBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   averageConfidence?: Maybe<Scalars['Float']['output']>;
+  avgWeightedOverallScore?: Maybe<Scalars['Float']['output']>;
   classificationErrors?: Maybe<Scalars['AWSJSON']['output']>;
   completedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   completedFiles?: Maybe<Scalars['Int']['output']>;
