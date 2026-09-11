@@ -238,7 +238,9 @@ def test_shipped_lending_payslip_magnitudes_stay_in_range():
     base = compute_sizing_plan(model_id=MODEL).shard_token_budget
     assert base == 18_400
     overhead = svc._prompt_overhead_tokens()
-    assert 4_000 <= overhead <= 9_000, overhead
+    # Upper bound raised from 9,000 when #839 lengthened the Payslip
+    # EmployeeNumber/PayrollNumber descriptions (measured 9,432 after that change).
+    assert 4_000 <= overhead <= 10_000, overhead
     assert 9_000 <= svc._shard_token_budget() <= 14_500
 
 
