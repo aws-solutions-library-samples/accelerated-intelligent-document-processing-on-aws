@@ -1383,8 +1383,9 @@ class ExtractionService:
         # on, the toolSpec) can differ from the effective class schema by exactly
         # one auxiliary property: the multi-instance detection probe (#753). It
         # is added to a COPY, so the off-schema filter, the JSON-Schema
-        # validator, the generated Pydantic model and every downstream stage
-        # still see only the declared fields.
+        # validator and every downstream stage still see only the declared
+        # fields. (Agentic extraction carries the same probe on its transport
+        # model for the unsharded call instead — see _agentic_probe_model.)
         wire_schema, probe_added = self._build_wire_schema(class_schema, class_label)
         attribute_descriptions = self._format_schema_for_prompt(wire_schema)
 
@@ -2461,9 +2462,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         the off-schema filter, the validator and every downstream stage still see
         exactly the declared fields.
 
-        Skipped when detection is disabled, and when Advanced (agentic)
-        extraction is in use — a documented gap, not a design decision, tracked in
-        GitHub #772. Two things make agentic more than a one-line change:
+        Skipped when detection is disabled. Also skipped when Advanced (agentic)
+        extraction is in use — not because agentic is uncovered, but because it
+        does not read this schema: ``_agentic_probe_model`` puts the same probe
+        onto the generated transport model for the UNSHARDED agentic call
+        (GitHub #772, option 1). Two things made agentic more than a one-line
+        change, and the second is why the sharded path is still not probed:
 
         * The agentic path is driven by a generated **Pydantic model**
           (``create_pydantic_model_from_json_schema(self._class_schema, …)`` →
@@ -2495,6 +2499,45 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self.config.extraction.multi_instance_detection.question,
         )
         return (wire if isinstance(wire, dict) else class_schema), added
+
+    def _agentic_probe_model(
+        self, dynamic_model: Any, class_label: str, *, resuming: bool
+    ) -> tuple[Any, bool]:
+        """The transport model for the UNSHARDED agentic call, with the
+        multi-instance detection probe on it when detection is enabled (#772).
+
+        Agentic extraction is driven by a generated Pydantic model, not by the
+        JSON-Schema dict the Simple path puts on the wire, so the probe has to be
+        generated ONTO the model: the same ``augment_schema_with_probe`` copy the
+        Simple path uses, fed through ``_transport_model``. The answer is popped
+        from the dumped fields right after the call, so validation, escalation,
+        the integrated-assessment lift and every downstream stage see only the
+        declared fields.
+
+        Only the single-agent path is probed (option 1 of #772). A sharded
+        section would answer per shard, and neither sum (double-counts a document
+        spanning a boundary) nor max (under-counts records spread across shards)
+        is right; that reconciliation is a separate decision. A run resumed from
+        a VALIDATED checkpoint (``existing_data`` present) keeps its existing
+        model, since that data was validated against it; a resume from a raw
+        buffer checkpoint has no existing model and is probed like a fresh run.
+
+        Returns ``(model, probe_added)`` and records the request on
+        ``_instance_probe_requested`` like the Simple path does.
+        """
+        if resuming or not self.config.extraction.multi_instance_detection.enabled:
+            return dynamic_model, False
+        from idp_common.extraction.instance_probe import augment_schema_with_probe
+
+        wire, added = augment_schema_with_probe(
+            self._class_schema,
+            class_label,
+            self.config.extraction.multi_instance_detection.question,
+        )
+        if not added or not isinstance(wire, dict):
+            return dynamic_model, False
+        self._instance_probe_requested = True
+        return self._transport_model(wire, class_label), True
 
     def _read_instance_probe(self, extracted_fields: Any) -> int | None:
         """Pop the multi-instance probe from a parsed result and return its value.
@@ -3914,6 +3957,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             return None
 
         def _validate(data: dict[str, Any]) -> tuple[bool, str]:
+            # The agent's payload may carry the multi-instance detection probe
+            # (#772): on the unsharded agentic path it is a field of the transport
+            # model and is popped only AFTER the call returns. A class with
+            # additionalProperties: false would otherwise be told the probe is a
+            # violation, spend its self-correction turns on it and drop it —
+            # detection silently off on exactly the strict schemas. Validate a
+            # copy without it; the probe is never part of the declared fields.
+            from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+            if isinstance(data, dict) and INSTANCE_PROBE_FIELD in data:
+                data = {k: v for k, v in data.items() if k != INSTANCE_PROBE_FIELD}
             report = (
                 validate_extraction(data, class_schema, check_formats=check_formats)
                 if schema_checks
@@ -4673,8 +4727,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         instance_count = 0
         recovered_instances: list[dict[str, Any]] | None = None
         # The model's own answer to "how many documents of this class are in
-        # these pages" (#753). None on the agentic path, which does not carry the
-        # probe — see _build_wire_schema.
+        # these pages" (#753). Set by the shared pop below on the Simple path, and
+        # by the immediate pop after the unsharded agentic call (#772); None when
+        # detection is off, on sharded agentic sections, and on resumed runs.
         instance_probe: int | None = None
 
         # Initialize analysis tracking
@@ -4971,9 +5026,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     )
                 )
             else:
+                # Multi-instance detection probe on the single-agent path (#772).
+                probe_model, _probe_added = self._agentic_probe_model(
+                    dynamic_model,
+                    section_info.class_label,
+                    resuming=existing_data_model is not None,
+                )
                 structured_data, response_with_metering = structured_output(
                     model_id=model_id,
-                    data_format=dynamic_model,
+                    data_format=probe_model,
                     prompt=message_prompt,
                     existing_data=existing_data_model,
                     page_images=agentic_images,
@@ -4989,6 +5050,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             extracted_fields = structured_data.model_dump(mode="json")
             metering = response_with_metering["metering"]
             parsing_succeeded = True
+            # Multi-instance detection probe (#772): read and REMOVE it now, before
+            # validation/escalation rebuild the model and before the integrated
+            # assessment is lifted, so only declared fields flow on. Popped
+            # unconditionally, like the Simple path — an echoed field must never
+            # reach inference_result.
+            agentic_probe = self._read_instance_probe(extracted_fields)
+            if agentic_probe is not None:
+                instance_probe = agentic_probe
+            inline_assessment = metering.get("_integrated_field_assessment")
+            if isinstance(inline_assessment, dict):
+                from idp_common.extraction.instance_probe import INSTANCE_PROBE_FIELD
+
+                inline_assessment.pop(INSTANCE_PROBE_FIELD, None)
 
             # Capture the agent's optional self-reported table-tool rationale (a
             # "TABLE_TOOL_NOTE:" line it emits when it extracted a large table
