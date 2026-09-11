@@ -259,6 +259,50 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 	@# and broke every Bedrock Data Automation invoke in GovCloud (issue #527).
 	@$(PYTHON) scripts/check_python_arn_partitions.py
 
+# Placeholder tokens that publish.py substitutes at build time. cfn-lint sees the
+# literal token and rejects it as an invalid bucket name; there is nothing to fix.
+CFN_LINT_IGNORE := E1161 E3031
+
+cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings advisory)
+	@echo "Validating CloudFormation templates with cfn-lint..."
+	@command -v cfn-lint >/dev/null 2>&1 || { \
+		echo -e "$(RED)ERROR: cfn-lint not installed. Run 'make setup' or 'pip install cfn-lint'.$(NC)"; \
+		exit 1; \
+	}
+	@# Templates are discovered by CONTENT, not by filename. A hardcoded glob list
+	@# is how check-arn-partitions came to miss nested/, samples/ and notebooks/;
+	@# anything declaring AWSTemplateFormatVersion is a CloudFormation template and
+	@# gets linted, so a new one cannot be added without being covered.
+	@TEMPLATES=$$(find . \
+			\( -name node_modules -o -name .aws-sam -o -name .venv -o -name .git \
+			   -o -name build -o -name dist -o -name __pycache__ \) -prune -o \
+			\( -name '*.yaml' -o -name '*.yml' \) -print 2>/dev/null \
+		| xargs grep -l "^AWSTemplateFormatVersion" 2>/dev/null | sort); \
+	if [ -z "$$TEMPLATES" ]; then \
+		echo -e "$(RED)ERROR: no CloudFormation templates discovered — check the find filters.$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$$TEMPLATES" | sed 's|^\./||;s|^|  |'; \
+	echo "$$TEMPLATES" | xargs cfn-lint \
+		--ignore-checks $(CFN_LINT_IGNORE) \
+		--non-zero-exit-code error; \
+	STATUS=$$?; \
+	if [ $$STATUS -ne 0 ]; then \
+		echo -e "$(RED)❌ cfn-lint found template ERRORS (warnings alone do not fail this gate)$(NC)"; \
+		STALE=$$(find . -name packaged.yaml -path '*/.aws-sam/*' 2>/dev/null | head -3); \
+		if [ -n "$$STALE" ]; then \
+			echo -e "$(YELLOW)  HINT: this tree has built artifacts, e.g.$(NC)"; \
+			echo "$$STALE" | sed 's|^|    |'; \
+			echo -e "$(YELLOW)  cfn-lint resolves each nested stack's TemplateURL against that$(NC)"; \
+			echo -e "$(YELLOW)  packaged.yaml, so if it predates a Parameters change you get FALSE$(NC)"; \
+			echo -e "$(YELLOW)  E3043 'parameter doesn't exist in nested stack' errors. CI checkouts$(NC)"; \
+			echo -e "$(YELLOW)  are clean, so E3043 there is real. To reproduce CI locally:$(NC)"; \
+			echo -e "$(YELLOW)    find . -name .aws-sam -type d -prune -exec rm -rf {} + && make cfn-lint$(NC)"; \
+		fi; \
+		exit 1; \
+	fi; \
+	echo -e "$(GREEN)✅ cfn-lint: no template errors$(NC)"
+
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
 	@echo "Running type checks..."

@@ -105,6 +105,28 @@ jobs:
       - name: Run linting checks
         run: make lint-cicd
 
+      # Parity with GitLab's code_checks. These three ran only on GitLab, so a
+      # change merged via a GitHub PR skipped them entirely — the same class of
+      # gap the SRT/dep-audit note in CLAUDE.md describes. All three are pure
+      # static checks: no AWS credentials, no network.
+      - name: Check first-party dependency resolution
+        run: python scripts/check_first_party_deps.py
+
+      - name: Static API RBAC scan
+        run: make api-test-static
+
+      - name: Validate CloudFormation service-role permissions
+        run: python scripts/sdlc/validate_service_role_permissions.py
+
+      # cfn-lint ran in NEITHER CI — it was only installed by `make setup` for
+      # local use. A template error therefore reached deploy time; a bogus
+      # `Fn::If` condition name slipped through review this way. Fails on errors
+      # only, so the ~100 pre-existing advisory warnings do not block.
+      - name: Validate CloudFormation templates
+        run: |
+          uv pip install cfn-lint
+          make cfn-lint
+
       - name: Run type checking
         env:
           BASE_REF: ${{ github.base_ref }}

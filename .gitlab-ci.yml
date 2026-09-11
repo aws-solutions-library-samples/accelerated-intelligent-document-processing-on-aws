@@ -155,6 +155,11 @@ code_checks:
     # SKIP_NPM_CI=1: UI deps already installed once in before_script, so the UI
     # lint/build/codegen targets don't each re-run `npm ci`.
     - make lint-cicd SKIP_NPM_CI=1
+    # cfn-lint ran in NEITHER CI — it was only installed by `make setup` for
+    # local use, so a template error could reach deploy time. Fails on errors
+    # only; the ~100 pre-existing advisory warnings do not block.
+    - pip install cfn-lint
+    - make cfn-lint
     - echo "=== Type Checking Configuration ==="
     - echo "MR target branch:$TARGET_BRANCH"
     - echo "Comparing:$TARGET_BRANCH...HEAD"

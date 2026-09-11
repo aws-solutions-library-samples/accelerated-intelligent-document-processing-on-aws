@@ -59,7 +59,41 @@ make ui-build
 
 # CI/CD linting (check-only, no modifications)
 make lint-cicd
+
+# CloudFormation template validation (fails on ERRORS; warnings advisory)
+make cfn-lint
 ```
+
+**`make cfn-lint`** discovers templates by **content** (anything declaring
+`AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
+without being covered — `make check-arn-partitions` still uses hardcoded globs
+and misses `nested/`, `samples/` and `notebooks/`. It fails on errors only,
+because ~100 pre-existing warnings (empty-string parameter defaults, unreachable
+`Fn::If` branches) would otherwise have to be suppressed wholesale. The
+`<ARTIFACT_BUCKET_TOKEN>` placeholder errors are ignored — `publish.py`
+substitutes them.
+
+⚠️ **Locally this can fail with false `E3043 "parameter doesn't exist in nested
+stack"` errors** when the tree has build artifacts: cfn-lint resolves each nested
+stack's `TemplateURL` against a possibly stale `.aws-sam/packaged.yaml`. CI
+checkouts are clean, so E3043 there is real. The target prints the fix when it
+detects artifacts.
+
+### CI parity between GitHub and GitLab
+
+GitLab and GitHub now run the **same** non-integration gates. Integration tests
+(`integration_tests`) remain GitLab-only, as they need AWS credentials.
+
+Historically several gates ran on GitLab only, so a change merged via a GitHub PR
+skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
+`make lint-cicd`, `make typecheck-pr`, `make api-test-static`,
+`make cfn-lint`, `make test-cicd -C lib/idp_common_pkg`,
+`make test-packages-cicd`, the UI vitest suite,
+`scripts/check_first_party_deps.py` and
+`scripts/sdlc/validate_service_role_permissions.py`.
+
+`make cfn-lint` was in **neither** CI before — it was only installed by
+`make setup` for local use, so a template error could reach deploy time.
 
 ### Testing
 
