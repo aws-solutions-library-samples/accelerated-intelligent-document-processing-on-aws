@@ -15,6 +15,18 @@ title: "Feature Platform"
 > Marketplace/entitlement path (`FeaturePlatformSimulatorEndpoint`,
 > Subscribe → Active flow) is wired but unused until paid extensions ship. Set
 > `EnableFeaturePlatform=false` to remove the platform entirely.
+>
+> ⚠️ **Known limitation: decide at create time.** `EnableFeaturePlatform` can be
+> turned **off** on an existing stack, but it cannot be turned back **on** by a
+> stack update: the update fails with `Export with name <StackName>-TrackingTableName
+> is already exported by stack <StackName>` and rolls back cleanly. The main
+> template exports that name while the platform is off and the nested platform
+> stack exports it while the platform is on; CloudFormation creates the nested
+> stack (and its export) during the resource phase but only retires the parent's
+> export at the end of the update, so on the `false` → `true` transition both
+> exist at once. To adopt the platform on a stack created with it off, deploy a
+> new stack with the default `true`. Tracked in
+> [#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845).
 
 The Feature Platform turns the IDP Accelerator main stack into a **host** for
 *installable extensions* — add-ons that are discovered and installed at runtime
@@ -694,6 +706,9 @@ The default brings up:
 To turn the feature platform off entirely, set `EnableFeaturePlatform=false` —
 no platform resources are created, and the Extensions nav section is empty
 (apart from the Browse catalog link, whose page reports no extensions).
+Turning it off is a one-way change on a live stack: setting the parameter back
+to `true` later fails on the `TrackingTableName` export collision described at
+the top of this page ([#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845)).
 
 ### Tear-down
 
