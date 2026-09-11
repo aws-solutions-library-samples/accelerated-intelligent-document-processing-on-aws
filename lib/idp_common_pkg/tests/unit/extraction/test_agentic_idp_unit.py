@@ -602,6 +602,85 @@ class TestGrokAgenticPath:
         assert "reasoning" not in arf
 
 
+# ---------------------------------------------------------------------------
+# OpenAI GPT-6 Astra on the agentic path
+# ---------------------------------------------------------------------------
+# Astra is the first OpenAI model allowed here: it reaches Converse and emits
+# toolUse, unlike the GPT-5.x models on the bedrock-mantle Responses API. It
+# shares Grok's constraints (no sampling group, `reasoning.effort` carrier) but
+# accepts `max`, which Grok rejects — so it needs its own vocabulary check on
+# this path too.
+
+ASTRA_US = "us.openai.gpt-6-astra"
+ASTRA_GLOBAL = "global.openai.gpt-6-astra"
+
+
+class TestAstraAgenticPath:
+    @pytest.mark.parametrize("model_id", [ASTRA_US, ASTRA_GLOBAL])
+    def test_sampling_params_are_omitted_for_astra(self, model_id):
+        """The config default top_p=0.1 must not reach the Strands BedrockModel —
+        Astra 400s naming the topP field."""
+        assert _get_inference_params(model_id, 0.0, 0.1) == {}
+
+    def test_astra_gets_no_tool_caching(self):
+        assert supports_tool_caching(ASTRA_US) is False
+
+    @pytest.mark.parametrize(
+        "effort", ["none", "low", "medium", "high", "xhigh", "max"]
+    )
+    def test_effort_uses_the_reasoning_carrier(self, effort):
+        config = _build_model_config(
+            model_id=ASTRA_US,
+            max_tokens=None,
+            max_retries=3,
+            connect_timeout=10.0,
+            read_timeout=60.0,
+            reasoning_effort=effort,
+        )
+        arf = config.get("additional_request_fields") or {}
+        assert arf.get("reasoning") == {"effort": effort}
+        # Claude's carrier is REJECTED by Astra, not ignored.
+        assert "output_config" not in arf
+
+    def test_effort_minimal_is_dropped_for_astra(self):
+        """'minimal' is valid for GPT-5.x on the Responses API and rejected by
+        Astra, so it must be dropped rather than forwarded."""
+        config = _build_model_config(
+            model_id=ASTRA_US,
+            max_tokens=None,
+            max_retries=3,
+            connect_timeout=10.0,
+            read_timeout=60.0,
+            reasoning_effort="minimal",
+        )
+        arf = config.get("additional_request_fields") or {}
+        assert "reasoning" not in arf
+
+    def test_effort_max_is_kept_for_astra_but_dropped_for_grok(self):
+        """The concrete consequence of the two families sharing a carrier but not
+        a vocabulary."""
+        astra = _build_model_config(
+            model_id=ASTRA_US,
+            max_tokens=None,
+            max_retries=3,
+            connect_timeout=10.0,
+            read_timeout=60.0,
+            reasoning_effort="max",
+        )
+        grok = _build_model_config(
+            model_id=GROK_US,
+            max_tokens=None,
+            max_retries=3,
+            connect_timeout=10.0,
+            read_timeout=60.0,
+            reasoning_effort="max",
+        )
+        assert (astra.get("additional_request_fields") or {}).get("reasoning") == {
+            "effort": "max"
+        }
+        assert "reasoning" not in (grok.get("additional_request_fields") or {})
+
+
 class TestAgenticCachePointGating:
     """The agentic prompt builder appended a trailing cachePoint unconditionally.
 
@@ -629,6 +708,14 @@ class TestAgenticCachePointGating:
         blocks = _prepare_prompt_content(
             "Extract this", None, None, model_id=GROK_GLOBAL
         )
+        assert not self._has_cachepoint(blocks)
+
+    @pytest.mark.parametrize("model_id", [ASTRA_US, ASTRA_GLOBAL])
+    def test_no_cachepoint_for_astra(self, model_id):
+        """Astra also raises AccessDeniedException on an explicit cachePoint, so
+        the same unconditional-append bug would fail every agentic document. Its
+        implicit caching needs no block, so nothing is lost by omitting it."""
+        blocks = _prepare_prompt_content("Extract this", None, None, model_id=model_id)
         assert not self._has_cachepoint(blocks)
 
     @pytest.mark.parametrize(

@@ -34,6 +34,10 @@ python3 benchmarks/harness/gen_corpus.py --series scaling # just the scaling ser
 
 # 2. expand the config matrix into validated v0.6 config variants
 python3 benchmarks/harness/make_configs.py --suite <suite> --class bank_statement
+#    a suite that names the reference corpora (core_docs -> realkie, ocr_bench) needs
+#    their cells too, built onto each corpus's own base config (same --set overrides):
+python3 benchmarks/harness/make_configs.py --suite <suite> --class realkie
+python3 benchmarks/harness/make_configs.py --suite <suite> --class ocr_bench
 
 # 3. (ALWAYS estimate first — full is expensive) then run against a deployed stack
 AWS_PROFILE=default python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite <suite> --estimate

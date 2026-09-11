@@ -260,6 +260,8 @@ Not caused by this proposal, but this work touches the same lines:
   and assessment model IDs, assessment config, assessment prompts). Revisions that
   do not touch those keep accumulating observations; a model swap correctly branches
   the curve. Existing `curve#<profile>` items remain readable as the pre-fingerprint
+
+> *Implemented in PR #869 (#698) with one difference: the pooled `curve#<profile>` key is still written on every observation rather than frozen, so it stays a current fallback; the estimate reports when it is served (`curveSource`).*
   bucket.
 - Test runs that pin a revision mark it `Pinned=true` so retention never deletes a
   revision a retained comparison depends on (§7).

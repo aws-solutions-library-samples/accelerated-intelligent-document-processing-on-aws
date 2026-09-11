@@ -351,11 +351,11 @@ class DiscoveryOperation:
             # Caller override wins over system default
             model_id = model_id or auto_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
 
-            # Grok and GPT-5.x cannot accept the `document` content block built
-            # below (text + image input only), and would silently drop the PDF
-            # and hallucinate. The stack path is guarded by config validation and
-            # the discovery picklists; this local path takes a caller-supplied
-            # model_id, so guard it here too.
+            # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
+            # block built below (text + image input only), and would silently drop
+            # the PDF and hallucinate. The stack path is guarded by config
+            # validation and the discovery picklists; this local path takes a
+            # caller-supplied model_id, so guard it here too.
             from idp_common.bedrock.client import document_blocks_unsupported_reason
 
             reason = document_blocks_unsupported_reason(model_id)
@@ -564,11 +564,11 @@ class DiscoveryOperation:
             # Caller override wins over system default
             model_id = model_id or mode_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
 
-            # Grok and GPT-5.x cannot accept the `document` content block built
-            # below (text + image input only), and would silently drop the PDF
-            # and hallucinate. The stack path is guarded by config validation and
-            # the discovery picklists; this local path takes a caller-supplied
-            # model_id, so guard it here too.
+            # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
+            # block built below (text + image input only), and would silently drop
+            # the PDF and hallucinate. The stack path is guarded by config
+            # validation and the discovery picklists; this local path takes a
+            # caller-supplied model_id, so guard it here too.
             from idp_common.bedrock.client import document_blocks_unsupported_reason
 
             reason = document_blocks_unsupported_reason(model_id)

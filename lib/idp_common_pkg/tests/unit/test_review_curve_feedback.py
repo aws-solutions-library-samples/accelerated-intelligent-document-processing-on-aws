@@ -720,3 +720,47 @@ class TestAnnotatorReviewScope:
             module.handler(event, None)
         except Exception as e:
             assert "Unauthorized" not in str(e), e
+
+
+@pytest.mark.unit
+class TestRevisionFingerprint:
+    """#698: a label drafted under a known revision family records its review
+    observations on the revision curve as well as the profile's pooled one."""
+
+    def test_curve_is_keyed_by_the_labels_confidence_fingerprint(self, review_env):
+        module, table, s3 = review_env
+        label = json.loads(json.dumps(DRAFTED_LABEL))
+        label["metadata"]["confidence_fingerprint"] = "fpA"
+        _seed_review_doc(table, s3)
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps(label).encode(),
+        )
+        module.write_correction_to_test_set_baseline(
+            "run1/a.pdf",
+            "1",
+            json.dumps({"inference_result": {"vendor": "Acme", "total": "1"}}),
+        )
+        from idp_common.evaluation.curve_store import CurveStore
+
+        store = CurveStore(table)
+        assert store.get_curve("ts1", "v2", "fpA").served_from == "revision"
+        assert store.get_curve("ts1", "v2", "fpA").review_observations == 2
+        assert store.get_curve("ts1", "v2").review_observations == 2
+        # a later model swap on v2 has no observations of its own yet
+        assert store.get_curve("ts1", "v2", "fpB").served_from == "config"
+
+    def test_a_label_without_a_fingerprint_still_records_on_the_profile(
+        self, review_env
+    ):
+        module, table, s3 = review_env
+        _seed_review_doc(table, s3)
+        module.write_correction_to_test_set_baseline(
+            "run1/a.pdf",
+            "1",
+            json.dumps({"inference_result": {"vendor": "Acme", "total": "1"}}),
+        )
+        from idp_common.evaluation.curve_store import CurveStore
+
+        assert CurveStore(table).get_curve("ts1", "v2").served_from == "config"

@@ -886,6 +886,47 @@ class AssessmentService:
 
         return enhanced_assessment
 
+    def _confidence_output_budget(
+        self, model_id: str, extraction_results: Dict[str, Any]
+    ) -> Optional[int]:
+        """The maxTokens to request for one confidence call (see ``assess_results``).
+
+        Returns None — meaning "the model's full cap" — for every model WITHOUT a
+        measured loop ceiling (``bedrock.sizing.model_list_batch_ceiling``): the
+        budget exists to bound a degeneration that was measured on Nova Lite, and a
+        reasoning model's thinking tokens count inside ``max_tokens``, so budgeting
+        an escalation call to Sonnet 5 at ~3,000 tokens would cap the very rung that
+        exists for its bigger output. Also None when the cap cannot be resolved.
+        """
+        from idp_common.bedrock.model_utils import get_model_max_output_tokens
+        from idp_common.bedrock.sizing import (
+            confidence_output_budget,
+            model_list_batch_ceiling,
+        )
+
+        if model_list_batch_ceiling(model_id) is None:
+            return None
+        try:
+            cap = get_model_max_output_tokens(model_id)
+        except Exception as e:  # noqa: BLE001 - unknown model: no budget, full cap
+            logger.debug(
+                "Confidence output budget: no output cap known for %s (%s); "
+                "requesting the model default",
+                model_id,
+                e,
+            )
+            return None
+        budget = confidence_output_budget(
+            extraction_results, self.config.extraction.geometry.mode, cap
+        )
+        logger.debug(
+            "Confidence output budget: %d tokens for model %s (cap %d)",
+            budget,
+            model_id,
+            cap,
+        )
+        return budget
+
     def assess_results(
         self,
         *,
@@ -936,9 +977,17 @@ class AssessmentService:
         top_k = confidence_cfg.top_k
         top_p = confidence_cfg.top_p
         reasoning_effort = confidence_cfg.reasoning_effort
-        # max_tokens is no longer a config knob — None lets the Bedrock client
-        # resolve the confidence model's maximum output (model_config_limits.yaml).
-        max_tokens = None
+        # max_tokens is not a config knob. Models with a measured loop ceiling
+        # (Nova Lite/Micro) get a BUDGET for this call: what a correct answer over
+        # these fields needs (one leaf per scalar and per list cell, plus overhead),
+        # floored and capped at the model's maximum. Sending the full cap let a
+        # degenerate response — Nova Lite at temperature 0 looping the same row
+        # object 189 times on a 25-row batch — run for 10,000 tokens and ~60 s before
+        # the batcher's truncation path recovered it; the budget cuts that loop at
+        # ~2,000-4,600 tokens and the same recovery applies. Every other model keeps
+        # requesting its maximum output (None). See
+        # ``bedrock.sizing.confidence_output_budget``.
+        max_tokens = self._confidence_output_budget(model_id, extraction_results)
         system_prompt = confidence_cfg.system_prompt
 
         # Get schema for this document class

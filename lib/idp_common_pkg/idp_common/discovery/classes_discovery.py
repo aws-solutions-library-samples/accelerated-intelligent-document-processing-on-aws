@@ -17,6 +17,7 @@ from idp_common.config.class_names import is_valid_class_name, sanitize_class_na
 from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.config.schema_constants import X_AWS_IDP_MULTI_INSTANCE
 from idp_common.utils.s3util import S3Util
 
 logger = logging.getLogger(__name__)
@@ -25,12 +26,13 @@ logger = logging.getLogger(__name__)
 def _reject_model_without_document_blocks(model_id: Optional[str]) -> None:
     """Reject models that cannot accept Converse ``document`` content blocks.
 
-    Discovery ingests whole PDFs via ``document`` blocks. Two families can't take
-    them — OpenAI GPT-5.x (bedrock-mantle Responses API) and xAI Grok (rejects
-    them outright: "This model doesn't support documents") — and both accept only
-    text and image input. Routing either here would silently drop the document
-    and hallucinate, so fail loudly instead. (Neither is offered in the discovery
-    model picklists.)
+    Discovery ingests whole PDFs via ``document`` blocks. Three families can't
+    take them — OpenAI GPT-5.x (bedrock-mantle Responses API), xAI Grok ("This
+    model doesn't support documents") and OpenAI GPT-6 Astra ("This model doesn't
+    support the document field for user messages") — and all accept only text and
+    image input. Routing any of them here would silently drop the document and
+    hallucinate, so fail loudly instead. (None are offered in the discovery model
+    picklists.)
     """
     reason = document_blocks_unsupported_reason(model_id)
     if reason:
@@ -39,6 +41,82 @@ def _reject_model_without_document_blocks(model_id: Optional[str]) -> None:
             "Discovery sends whole-PDF document blocks. Choose an Anthropic or "
             "Nova model."
         )
+
+
+#: Top-level key the discovery model is asked to add to its reply with the number
+#: of separate documents of the discovered class in the sample (#765). Same name
+#: as the #753 extraction probe field (``idp_common.extraction.instance_probe``)
+#: and the same question, so the two signals agree. Popped before validation and
+#: never written to the class schema.
+DISCOVERY_INSTANCE_COUNT_KEY = "IDPDocumentInstanceCount"
+
+_INSTANCE_COUNT_INSTRUCTION = (
+    f'\nAlso include ONE extra top-level key "{DISCOVERY_INSTANCE_COUNT_KEY}" next '
+    'to "$id" (an integer; NOT inside "properties"). It is DIAGNOSTIC METADATA, not '
+    "part of the schema: how many separate, complete documents of this class are "
+    "present in the supplied pages? Answer 1 for the normal case of one document. "
+    "Answer more than 1 only when the pages clearly contain several distinct "
+    "documents of this same type - for example statements covering different "
+    "periods, or records for different people - including when a document starts "
+    "part-way down a page. Do not count pages, sections or repeated headers: count "
+    "complete documents.\n"
+)
+
+
+def pop_instance_count(schema: Dict[str, Any]) -> Optional[int]:
+    """Remove the diagnostic count from a model reply and return it (``None`` when
+    absent or unusable). Also removes it from ``properties`` if the model put it
+    where fields go, so it can never become a class field."""
+    raw = schema.pop(DISCOVERY_INSTANCE_COUNT_KEY, None)
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        props.pop(DISCOVERY_INSTANCE_COUNT_KEY, None)
+    required = schema.get("required")
+    if isinstance(required, list) and DISCOVERY_INSTANCE_COUNT_KEY in required:
+        schema["required"] = [r for r in required if r != DISCOVERY_INSTANCE_COUNT_KEY]
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if value < 1 or not value.is_integer():
+        return None
+    return int(value)
+
+
+def build_multi_instance_hint(
+    class_schema: Dict[str, Any], instance_count: Optional[int]
+) -> Optional[Dict[str, Any]]:
+    """The suggestion carried on the discovery result when the sample held two or
+    more records of the class. Discovery only suggests; it never sets
+    ``x-aws-idp-multi-instance`` itself (a wrong auto-set changes the shape of
+    every result for the class and invalidates committed baselines), and one
+    sample cannot tell "this class is multi-record" from "this packet should have
+    been split", so the alternative is named too."""
+    if not instance_count or instance_count < 2:
+        return None
+    class_name = (
+        class_schema.get("$id")
+        or class_schema.get("x-aws-idp-document-type")
+        or "this class"
+    )
+    already = bool(class_schema.get(X_AWS_IDP_MULTI_INSTANCE))
+    message = (
+        f"This sample appears to contain {instance_count} '{class_name}' records. "
+        "If sections of this class can hold several records, enable 'Documents per "
+        f"section: Several' on the class ({X_AWS_IDP_MULTI_INSTANCE}). If instead "
+        "each record should be its own section, configure section splitting in "
+        "classification. Discovery only suggests this; it did not change the class."
+    )
+    if already:
+        message += " Several documents per section is already enabled on this class."
+    return {
+        "instance_count": instance_count,
+        "class_name": class_name,
+        "already_multi_instance": already,
+        "message": message,
+    }
 
 
 class ClassesDiscovery:
@@ -51,6 +129,8 @@ class ClassesDiscovery:
     ):
         self.input_bucket = input_bucket
         self.input_prefix = input_prefix
+        # #765: diagnostic record count from the most recent model reply
+        self._last_instance_count: Optional[int] = None
         self.region = region or os.environ.get("AWS_REGION")
         self.version = version
         try:
@@ -369,7 +449,14 @@ class ClassesDiscovery:
                 # and save to Custom config
                 self._merge_and_save_class(current_class)
 
-            return {"status": "SUCCESS", "schema": current_class}
+            return {
+                "status": "SUCCESS",
+                "schema": current_class,
+                # #765: a suggestion, not a config write (None for one record)
+                "multi_instance_hint": build_multi_instance_hint(
+                    current_class, getattr(self, "_last_instance_count", None)
+                ),
+            }
 
         except Exception as e:
             logger.error(
@@ -459,7 +546,14 @@ class ClassesDiscovery:
                 # and save to Custom config
                 self._merge_and_save_class(current_class)
 
-            return {"status": "SUCCESS", "schema": current_class}
+            return {
+                "status": "SUCCESS",
+                "schema": current_class,
+                # #765: a suggestion, not a config write (None for one record)
+                "multi_instance_hint": build_multi_instance_hint(
+                    current_class, getattr(self, "_last_instance_count", None)
+                ),
+            }
 
         except Exception as e:
             logger.error(
@@ -725,6 +819,7 @@ class ClassesDiscovery:
         logger.info(f"sample format is : {sample_format}")
 
         validation_feedback = ""
+        self._last_instance_count = None
         for attempt in range(max_retries):
             try:
                 # Add validation feedback if this is a retry
@@ -744,7 +839,7 @@ class ClassesDiscovery:
                         f'Set "$id" and "x-aws-idp-document-type" to "{hint}".\n'
                     )
 
-                full_prompt = f"{retry_prompt}{user_prompt}{class_hint_instruction}\nFormat the extracted data using the below JSON format:\n{sample_format}"
+                full_prompt = f"{retry_prompt}{user_prompt}{class_hint_instruction}{_INSTANCE_COUNT_INSTRUCTION}\nFormat the extracted data using the below JSON format:\n{sample_format}"
                 # Create content for the user message
                 content = self._create_content_list(
                     prompt=full_prompt,
@@ -771,6 +866,8 @@ class ClassesDiscovery:
 
                 # Parse JSON response
                 schema = json.loads(self._extract_json(content_text))
+                # #765: diagnostic count, never part of the schema
+                self._last_instance_count = pop_instance_count(schema)
 
                 # Validate the schema
                 is_valid, error_msg = self._validate_json_schema(schema)
@@ -869,6 +966,7 @@ class ClassesDiscovery:
         sample_format = self._sample_output_format()
 
         validation_feedback = ""
+        self._last_instance_count = None
         for attempt in range(max_retries):
             try:
                 # Add validation feedback if this is a retry
@@ -876,7 +974,7 @@ class ClassesDiscovery:
                 if attempt > 0 and validation_feedback:
                     retry_prompt = f"\n\nPREVIOUS ATTEMPT FAILED: {validation_feedback}\nPlease fix the issue and generate a valid JSON Schema.\n\n"
 
-                full_prompt = f"{retry_prompt}{base_prompt}\nFormat the extracted data using the below JSON format:\n{sample_format}"
+                full_prompt = f"{retry_prompt}{base_prompt}{_INSTANCE_COUNT_INSTRUCTION}\nFormat the extracted data using the below JSON format:\n{sample_format}"
 
                 # Create content for the user message
                 content = self._create_content_list(
@@ -904,6 +1002,8 @@ class ClassesDiscovery:
 
                 # Parse JSON response
                 schema = json.loads(self._extract_json(content_text))
+                # #765: diagnostic count, never part of the schema
+                self._last_instance_count = pop_instance_count(schema)
 
                 # Validate the schema
                 is_valid, error_msg = self._validate_json_schema(schema)

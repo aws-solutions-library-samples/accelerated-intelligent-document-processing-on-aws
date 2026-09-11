@@ -17,6 +17,14 @@ Converse API**. That means it flows through `BedrockClient.invoke_model` and the
 Strands `BedrockModel` exactly like Claude and Nova, so **agentic extraction and
 tool use work**, with no per-service code changes.
 
+> **Closest sibling:** [OpenAI GPT-6 Astra](openai-models.md#gpt-6-astra-converse)
+> shares almost all of Grok's shape — Converse-only, CRIS-only `us.`/`global.` IDs,
+> sampling params rejected with a 400, effort carried in
+> `additionalModelRequestFields.reasoning.effort`, no `document` blocks, Standard
+> tier only. Two differences matter: Astra accepts `max` as an effort value (Grok
+> 400s on it), and Astra's implicit prompt caching **does** engage whereas Grok's
+> never did.
+
 > **TL;DR** — Grok 4.6 works for **OCR, classification, extraction (including
 > agentic), assessment/confidence, summarization, evaluation, Chat-with-Document,
 > and the rule-validation and agent paths**. It does **not** work for

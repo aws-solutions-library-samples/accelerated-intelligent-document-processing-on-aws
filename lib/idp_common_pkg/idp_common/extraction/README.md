@@ -587,6 +587,27 @@ confidence, a per-class override when present) and warns per class, naming both
 numbers. Extraction only — classification, assessment and rule-validation prompts are
 not checked and keep their cache points when the knob is `off`. YAML's bare `off`
 parses as `false`; the config model accepts both.
+
+**Reading it back (item 2 of #780).** `_save_results` calls
+`_record_prompt_cache_metadata`, which sums the section's `Extraction*/bedrock/<model>`
+metering (the escalation contexts included) with
+`idp_common.bedrock.prompt_cache.summarize_cache_usage` and stores
+`metadata["prompt_cache"]` — `state` (`caching` | `write-only` | `never-cached` |
+`disabled` | `no-cache-point` | `no-cache-data`), `cache_point_sent`, `input_tokens`, `cache_read_input_tokens`,
+`cache_write_input_tokens`, `requests`, `read_share`, `model_ids`,
+`min_cacheable_prefix_tokens`. It has to happen there because the metering key carries
+phase and model but not class, and the section's metering is merged into the document
+total right after the result is written. Measured reads/writes win over the `off` flag.
+Because Claude reports `cacheReadInputTokens: 0` even when no cache point was sent,
+zero/zero alone cannot prove a cache point was inert: `_build_prompt_content` sets
+`_pending_cache_marker_seen` when a Simple-mode prompt still carries a marker after the
+knob (Advanced mode always attempts one), and `model_supports_cache_point` mirrors the
+client's `CACHEPOINT_SUPPORTED_MODELS` (inference-profile ARNs are unknown, never
+"unsupported"); only a sent cache point with zero/zero is `never-cached`, otherwise
+`no-cache-point`.
+`describe_cache_state` renders the one-line verdict for the text report; the Web UI
+mirrors both in `src/ui/src/components/common/promptCacheModel.ts` (per-class in the
+section's Processing Report tab, per-phase on the document cost table's subtotal rows).
 See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/prompt-caching.md` for the measurements.
 
 ## Forced tool use (Simple mode, `extraction.forced_tool`)

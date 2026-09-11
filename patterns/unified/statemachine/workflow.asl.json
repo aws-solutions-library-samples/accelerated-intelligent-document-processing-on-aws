@@ -1,6 +1,7 @@
 {
-  "Comment": "Unified IDP Document Processing Workflow - routes between BDA and step-by-step pipeline based on use_bda config flag",
+  "Comment": "Unified IDP Document Processing Workflow - routes between BDA and step-by-step pipeline based on use_bda config flag. TimeoutSeconds (WorkflowExecutionTimeoutSeconds) bounds a stalled execution, which otherwise runs for up to one year while holding a concurrency slot (#757).",
   "StartAt": "PreprocessingHook",
+  "TimeoutSeconds": ${WorkflowExecutionTimeoutSeconds},
   "States": {
     "PreprocessingHook": {
       "Type": "Task",

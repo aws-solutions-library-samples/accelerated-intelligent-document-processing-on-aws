@@ -94,18 +94,23 @@ extraction:
   reasoning_effort: low       # reasoning-capable models only (see note below)
 ```
 
-> **Output tokens:** extraction and the confidence pass always request the
+> **Output tokens:** extraction and the confidence pass by default request the
 > selected model's **maximum** output — there is no `max_tokens` config knob for
 > them. Bedrock's default-when-omitted truncates, so the client sets it
 > explicitly from the per-model limits (seeded from
 > `config_library/model_config_limits.yaml` and editable in the web UI under
 > **View / Edit Model Limits**); completeness matters more than an output cap
-> here. (`classification` / `summarization` keep their `max_tokens` knob.)
+> here. The one exception is a confidence call on Amazon Nova Lite/Micro, which
+> requests an *output budget* sized to its rows (see the self-healing note under
+> [Large-list batching](#large-list-batching-list_batch_size)) because that model
+> was measured looping to its cap. (`classification` / `summarization` keep their
+> `max_tokens` knob.)
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
 > 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
-> GPT-5.x (`minimal`|`low`|`medium`|`high`), and xAI Grok
-> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`) — `reasoning_effort` controls how much
+> GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
+> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
+> (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
@@ -170,6 +175,19 @@ Agentic extraction requires models with tool-use support:
 > rejected by Grok and silently omitted; tune it with `reasoning_effort`
 > (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
 > [xAI Grok Models](grok-models.md).
+
+> **✅ OpenAI GPT-6 Astra CAN be used with agentic extraction.** Unlike the
+> GPT-5.x models above, Astra (`us.openai.gpt-6-astra`,
+> `global.openai.gpt-6-astra`) is served on the standard Converse API and emits a
+> `toolUse` block under a forced `toolChoice`, so the Strands agent loop works.
+> The agentic gate keys on the **route**, not the vendor prefix — which is why one
+> OpenAI model is allowed here and the others are not. Its 1.05M context yields
+> the largest shard budget of any model offered. `temperature` / `top_p` are
+> rejected and silently omitted; tune it with `reasoning_effort`
+> (`none`|`low`|`medium`|`high`|`xhigh`|`max`) instead. Watch cost: Astra is the
+> priciest model available, and input above 272K tokens bills at roughly double
+> the rate recorded in `pricing.yaml`. See
+> [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 
 #### Cost considerations
 
@@ -912,18 +930,20 @@ single-document section pay for an extra nesting level and would move the
 detection problem one stage later. Nothing changes for a class that does not set
 the flag.
 
-Two known gaps, both filed:
+Two things that used to be gaps are now closed:
 
-- **Discovery does not suggest it.** Discovery sees the pages and authors the
-  schema, so it is the best place to notice "this sample holds three
-  Pay-Statements" — but it does not, so today you have to already know the
-  feature exists. Tracked in GitHub #765 (suggest, with a one-click apply; never
-  set it silently, because the shape change invalidates baselines).
-- **Re-running Discovery on a class erases the flag** — along with every other
-  class-level `x-aws-idp-*` setting, because the merge replaces the class
-  wholesale. Tracked in GitHub #764. Until it is fixed, re-check the class's
-  settings after any Discovery run that targets a class you have configured by
-  hand.
+- **Discovery suggests it — and never sets it.** When the sample Discovery
+  analyzes appears to hold several records of the discovered class, the model is
+  asked for a diagnostic count (the same question as the #753 probe, "count
+  documents, not pages") and the job carries a suggestion: the job details page
+  shows *"This sample appears to contain N 'X' records"* with a one-click
+  **Enable several documents per section** action, the alternative (section
+  splitting) named alongside so the ambiguity is your call. The class setting is
+  never changed silently, because the shape change invalidates baselines
+  (GitHub #765). See [Discovery](discovery.md#samples-that-hold-several-records-of-one-class).
+- **Re-running Discovery on a class keeps the flag** — along with every other
+  class-level `x-aws-idp-*` setting; the merge carries authored settings forward
+  (GitHub #764), and the suggestion above says so when the flag is already on.
 
 #### Designate or Synthesize?
 
@@ -1214,11 +1234,22 @@ extraction:
 >
 > 1. **Token-aware first-pass sizing.** The first batch is sized from three inputs:
 >    the confidence model's output cap, the **column count** of the list's widest
->    row, and whether the geometry mode adds a bounding box per cell. On Nova Lite
->    (10,000-token cap) with `llm_grounded` that is 13 rows for a 3-column list and
->    5 for 8 columns; without bounding boxes three times as many fit. This only ever
+>    row, and whether the geometry mode adds a bounding box per cell. On a
+>    10,000-token-cap model (Nova Pro) with `llm_grounded` that is 13 rows for a
+>    3-column list and 5 for 8 columns; without bounding boxes three times as many
+>    fit. This only ever
 >    *shrinks* `list_batch_size` — it never grows past your configured ceiling, so
->    raising the ceiling above the derived size has no effect.
+>    raising the ceiling above the derived size has no effect. Where a model family
+>    has a **measured loop ceiling** it applies too: Amazon Nova Lite/Micro score at
+>    most **12 rows per call**, because at temperature 0 a 25-row batch made Nova Lite
+>    repeat the same row object until it hit its 10,000-token cap on every run (~60 s
+>    and 10,000 output tokens per document), while 13 rows looped occasionally and 8
+>    never. On those two models each call also requests only the **output budget**
+>    a correct answer needs (about 40 tokens per scalar or list cell, three times
+>    that with LLM bounding boxes, plus overhead; floor 2,000, cap the model's
+>    maximum) rather than the model's full cap, so a degenerate response is cut off
+>    early and recovered by the steps below instead of running to the cap. Every
+>    other confidence model keeps requesting its maximum output.
 > 2. **Recursive splitting.** Any batch that still truncates is halved and
 >    re-assessed until it fits.
 > 3. **Model escalation.** If rows are *still* unscored after shrinking + retries,
@@ -1309,7 +1340,8 @@ extraction:
 In `ocr_only` mode the model is **not** asked for boxes at all. Each field's
 geometry is derived by matching the extracted value text against real OCR lines
 in the consolidated `pageData.json` artifact (Amazon Textract, or the Mistral OCR
-LambdaHook). This is **cheaper** (no bbox tokens in the response) and **more
+LambdaHook; the Cohere Parse hook contributes boxes for tables and figures only).
+This is **cheaper** (no bbox tokens in the response) and **more
 accurate** (OCR boxes beat LLM-estimated boxes, which models frequently
 hallucinate). A field with no OCR match simply has no geometry (geometry is
 advisory).

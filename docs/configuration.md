@@ -20,6 +20,7 @@ The web interface allows real-time configuration updates without stack redeploym
 - **Few Shot Examples**: Upload and configure example documents to improve accuracy (supported in Pattern 2)
 - **Model Selection**: Choose between available Bedrock models for classification and extraction
   > **💡 Cost Attribution Tip:** You can replace standard model IDs with [Bedrock Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) ARNs to enable cost-allocation tagging (e.g., for MAP migration tracking). This is a configuration-only change — no code modifications required. See [Cost Attribution with Application Inference Profiles](./cost-calculator.md#cost-attribution-with-bedrock-application-inference-profiles) for step-by-step instructions.
+  > **🤖 OpenAI GPT-6 Astra:** `us.openai.gpt-6-astra` (US regions) and `global.openai.gpt-6-astra` (every region, and cheaper) are selectable for OCR, classification, extraction — **including agentic extraction** — assessment, summarization, evaluation, and chat. Astra runs on the standard Converse API (**not** the bedrock-mantle path the GPT-5.x models use), has a 1.05M context window with automatic prompt caching, and is tuned via `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) instead of temperature/top_p, which it rejects. It is **not** supported for Discovery or Policy Discovery. Note input above 272K tokens bills at roughly double the rate recorded in `pricing.yaml`. See [OpenAI Models](./openai-models.md#gpt-6-astra-converse) for the full support matrix and caveats.
   > **🤖 OpenAI GPT-5.x:** `openai.gpt-5.4`, `openai.gpt-5.5`, and the GPT-5.6 family (`openai.gpt-5.6-sol` / `-terra` / `-luna`) are selectable for OCR, classification, extraction, assessment, summarization, evaluation, and chat (US regions only), and are tuned via a `reasoning_effort` field instead of temperature/top_p. They are **not** supported for agentic extraction or Discovery. See [OpenAI GPT-5.x Models](./openai-models.md) for the full support matrix and caveats.
   > **🤖 xAI Grok:** `us.xai.grok-4.6` (US regions) and `global.xai.grok-4.6` (EU/APAC too, and cheaper) are selectable for OCR, classification, extraction — **including agentic extraction** — assessment, summarization, evaluation, chat, and the rule-validation/agent paths. Grok runs on the standard Converse API, is tuned via `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`) instead of temperature/top_p, and is **not** supported for Discovery or Policy Discovery. Flex/Priority tiers and prompt caching do **not** work despite being advertised. See [xAI Grok Models](./grok-models.md) for the full support matrix and caveats.
 - **Prompt Engineering**: Customize system and task prompts for optimal results
@@ -387,6 +388,8 @@ Key parameters that can be configured during CloudFormation deployment:
 - `DataRetentionInDays`: Set retention period for documents and tracking records (default: 365 days)
 - `ErrorThreshold`: Number of workflow errors that trigger alerts (default: 1)
 - `ExecutionTimeThresholdMs`: Maximum acceptable execution time before alerting (default: 300000 ms)
+- `WorkflowExecutionTimeoutSeconds`: Execution-level bound on one document's workflow; an execution still running after it ends `TIMED_OUT`, releases its concurrency slot, and fires `WorkflowTimeoutsAlarm` (default: 21600 s, i.e. 6 hours). See [Monitoring](./monitoring.md#workflowexecutiontimeoutseconds--the-execution-level-bound)
+- `BDACallbackTimeoutSeconds`: How long the BDA step waits for its asynchronous completion callback before failing (default: 7200 s); keep it below `WorkflowExecutionTimeoutSeconds`
 - `QueueStalledAgeThresholdSeconds`: How long the oldest queued document may wait *with no queue progress at all* before `DocumentQueueStalledAlarm` fires (default: 1800 s). Not a backlog limit — see [Monitoring](./monitoring.md#documentqueuestalledalarm--why-it-is-not-a-queue-depth-alarm)
 - `LogLevel`: Set logging level (DEBUG, INFO, WARN, ERROR). At `INFO` or `DEBUG`, access logging is also enabled on the web UI's REST API stage (request metadata only — no request/response bodies), capturing requests that fail before reaching a Lambda (e.g. authorizer 401/403s, WAF blocks)
 - `WAFAllowedIPv4Ranges`: IP restrictions for web UI access (default: allow all)
@@ -791,9 +794,48 @@ suppresses the validation warning above. The setting is also in the Web UI under
 **Configuration → Extraction → Prompt caching**. A bare `off` in YAML parses as the
 boolean `false`; both spellings (and `"off"` quoted) are accepted. It applies to
 **extraction only**: classification, assessment and rule-validation prompts keep
-their cache points. Per-class cache read/write token counts
-are already in the metering data and priced; a per-class cache-efficiency view in the
-Processing Report remains open in [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780).
+their cache points.
+
+#### Reading cache efficiency back (per phase and per class)
+
+Cache read and write tokens have always been metered and priced, but a row of numbers
+does not say whether the cache point did anything. The product now classifies them
+into one of six states wherever they are shown (the literal value, as stored in the
+section result and the Athena columns, in parentheses):
+
+| State | Meaning | What to do |
+|---|---|---|
+| **caching** (`caching`) | Reads are landing; the ~0.1× read price applies to the prefix (the read share is shown) | Nothing |
+| **write-only** (`write-only`) | Writes with no reads: paying 1.25× on the prefix and collecting nothing | Expected when a class is processed once per 5-minute TTL; a low-volume deployment can set `prompt_cache: off` |
+| **never cached** (`never-cached`) | Reads and writes are both zero although a cache point reached a model that supports it: the cache point is inert | The prefix is below the model's minimum (named); run `idp-cli config validate` for the per-class estimate, add real field descriptions, or pick a model with a lower minimum |
+| **off** (`disabled`) | `extraction.prompt_cache: off`, so zero/zero is the intended outcome | Nothing |
+| **no cache point** (`no-cache-point`) | No cache point reached the model: the prompt has no `<<CACHEPOINT>>` marker, or the model is not one the client sends cache points to (Claude still reports `cacheReadInputTokens: 0` in that case, so the counts alone cannot tell this from *never cached*) | Add a marker, or nothing if caching was not wanted |
+| **no cache data** (`no-cache-data`) | The backend reported no cache units at all (a LambdaHook, a model without them) | Nothing can be concluded |
+
+Measured reads or writes always win over the configuration flag: if tokens were cached,
+the state says so. The view is in three places:
+
+- **Per phase — Web UI document panel, cost table.** Each phase's subtotal row (OCR,
+  Classification, Extraction, Summarization…) carries the verdict for that phase; hover
+  for the token counts. Derived from the document's metering map, which is keyed by
+  phase and model, so this level cannot tell an inert cache point from one that was
+  never sent, and says so; each context is matched exactly, so escalation calls have
+  their own row. The `extraction.prompt_cache` knob is only mentioned on the
+  Extraction row, since it governs nothing else.
+- **Per class — Web UI section Processing Report tab, "Processing Path".** The section's
+  own cache read / written / uncached input tokens and request count, the state, and for
+  *never cached* the model's minimum cacheable prefix. The same line is in the text
+  report. The source is `metadata.prompt_cache` in the section's `result.json`,
+  recorded by the extraction service before the section's metering is folded into the
+  document total (extraction only, including escalation calls). Whether a cache point
+  reached the model is known here (marker present after the knob, and a supported
+  model; an inference-profile ARN counts as unknown), which is what separates *no
+  cache point* from *never cached*.
+- **Per class across documents — Athena.** Because the section result is flattened into
+  the `document_sections_<class>` tables, the same fields are queryable as
+  `"metadata.prompt_cache.state"`, `"metadata.prompt_cache.read_share"`,
+  `"metadata.prompt_cache.cache_read_input_tokens"` and so on; see the sample query in
+  [reporting-database.md](reporting-database.md#prompt-cache-efficiency-per-class).
 
 For pricing details on cached tokens, see [cost-calculator.md](cost-calculator.md).
 

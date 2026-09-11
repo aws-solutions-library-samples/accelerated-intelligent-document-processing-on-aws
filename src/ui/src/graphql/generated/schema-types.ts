@@ -386,6 +386,7 @@ export type DiscoveryJob = {
   errorMessage?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
   statusMessage?: Maybe<Scalars['String']['output']>;
@@ -408,6 +409,7 @@ export type DiscoveryJobListItem = {
   groundTruthKey?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   pageRange?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
@@ -1290,6 +1292,7 @@ export type MutationUpdateDiscoveryJobStatusArgs = {
   errorMessage?: InputMaybe<Scalars['String']['input']>;
   jobId: Scalars['ID']['input'];
   jobType?: InputMaybe<Scalars['String']['input']>;
+  multiInstanceHint?: InputMaybe<Scalars['String']['input']>;
   reflectionReport?: InputMaybe<Scalars['String']['input']>;
   status: Scalars['String']['input'];
   statusMessage?: InputMaybe<Scalars['String']['input']>;
@@ -1861,6 +1864,8 @@ export type ReviewEffortEstimate = {
   baselineError: Scalars['Float']['output'];
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
+  confidenceFingerprint?: Maybe<Scalars['String']['output']>;
+  confidenceFingerprintSource?: Maybe<Scalars['String']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
   configVersionSource?: Maybe<Scalars['String']['output']>;
   curveSource?: Maybe<Scalars['String']['output']>;

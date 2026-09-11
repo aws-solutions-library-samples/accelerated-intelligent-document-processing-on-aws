@@ -2230,6 +2230,10 @@ class TestConfidenceCurveRecording:
         every config that drafted labels rather than only the newest.
         """
         recorded = []
+        fingerprints = []
+        # Exposed for the #698 test: the run item's ConfidenceFingerprint must
+        # reach the store beside the config version.
+        self.last_fingerprints = fingerprints
 
         class FakeTable:
             def get_item(self, Key):  # noqa: N803 — boto3 kwarg name
@@ -2243,8 +2247,11 @@ class TestConfidenceCurveRecording:
             def __init__(self, _table):
                 pass
 
-            def add_ece_bins(self, test_set_id, bins, config_version=None):
+            def add_ece_bins(
+                self, test_set_id, bins, config_version=None, fingerprint=None
+            ):
                 recorded.append((test_set_id, bins, config_version))
+                fingerprints.append(fingerprint)
                 return len(bins)
 
         payload = (
@@ -2258,6 +2265,26 @@ class TestConfidenceCurveRecording:
         ):
             index._record_confidence_curve("run-2", "tracking", payload)
         return recorded
+
+    def test_passes_the_runs_confidence_fingerprint_to_the_store(self, mock_env):
+        """#698: the run item carries the revision fingerprint the test runner
+        stamped; the scoring observation must be keyed by it as well as the
+        configuration, or scoring and review observations land on different
+        curves."""
+        index = import_test_module()
+        recorded = self._run(
+            index,
+            {
+                ("testrun#run-2", "metadata"): {
+                    "TestSetId": "ts1",
+                    "ConfigVersion": "v2",
+                    "ConfidenceFingerprint": "abc123",
+                },
+                ("testset#ts1", "metadata"): {"labelState": "labeled"},
+            },
+        )
+        assert recorded == [("ts1", self.BINS, "v2")]
+        assert self.last_fingerprints == ["abc123"]
 
     def test_records_a_run_scored_against_reviewed_labels(self, mock_env):
         index = import_test_module()
@@ -2430,7 +2457,9 @@ class TestConfidenceCurveRecording:
             def __init__(self, _t):
                 pass
 
-            def add_ece_bins(self, test_set_id, bins, config_version=None):
+            def add_ece_bins(
+                self, test_set_id, bins, config_version=None, fingerprint=None
+            ):
                 recorded.append((test_set_id, config_version))
                 return len(bins)
 

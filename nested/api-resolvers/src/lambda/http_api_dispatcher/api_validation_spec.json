@@ -1977,6 +1977,13 @@
         {
           "elem_non_null": false,
           "is_list": false,
+          "name": "multiInstanceHint",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
           "name": "jobType",
           "non_null": false,
           "type": "String"

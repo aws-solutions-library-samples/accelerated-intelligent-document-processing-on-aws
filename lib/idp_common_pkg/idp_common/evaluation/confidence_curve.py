@@ -236,13 +236,19 @@ class ConfidenceCurve:
     # confidence means.
     test_set_id: Optional[str] = None
     config_version: Optional[str] = None
+    # The revision family the curve belongs to: a hash of the configuration's
+    # confidence-relevant subset (#698). None for the pooled / aggregate curves.
+    confidence_fingerprint: Optional[str] = None
     review_observations: int = 0
     scoring_observations: int = 0
-    # Which stored curve a CurveStore read actually returned: "config" (the
-    # per-configuration curve asked for), "aggregate" (the set-wide curve, either
+    # Which stored curve a CurveStore read actually returned: "revision" (the
+    # profile's curve for the requested revision fingerprint), "config" (the
+    # profile pooled across revisions — asked for, or the fallback for a revision
+    # family with no observations yet), "aggregate" (the set-wide curve, either
     # because none was asked for or as a fallback), or "none" (nothing stored; the
     # estimator will lean on the global prior). Not persisted. Lets a caller say
-    # when an estimate silently fell back to a blend of every configuration (#759).
+    # when an estimate silently fell back to a blend of every configuration (#759,
+    # #698).
     served_from: Optional[str] = None
 
     # -- construction ----------------------------------------------------
@@ -498,6 +504,7 @@ class ConfidenceCurve:
             "total": [float(t) for t in self.total],
             "testSetId": self.test_set_id,
             "configVersion": self.config_version,
+            "confidenceFingerprint": self.confidence_fingerprint,
             "reviewObservations": int(self.review_observations),
             "scoringObservations": int(self.scoring_observations),
         }
@@ -517,6 +524,7 @@ class ConfidenceCurve:
             total=total,
             test_set_id=data.get("testSetId"),
             config_version=data.get("configVersion"),
+            confidence_fingerprint=data.get("confidenceFingerprint"),
             review_observations=int(data.get("reviewObservations", 0) or 0),
             scoring_observations=int(data.get("scoringObservations", 0) or 0),
         )
