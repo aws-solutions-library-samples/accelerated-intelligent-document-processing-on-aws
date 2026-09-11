@@ -566,6 +566,24 @@ response cannot overwrite fields that already validated. A failed escalation
 returns the original extraction unchanged; a broken repair must never be worse
 than no repair.
 
+## Prompt caching knob and minimum-prefix warning (`extraction.prompt_cache`)
+
+`extraction.prompt_cache: auto | off` (default `auto`). `off` removes every
+`<<CACHEPOINT>>` marker before Simple-mode content is built
+(`_build_prompt_content`) and, on the Advanced path, skips the trailing
+`cachePoint` block and the Strands `cache_prompt` / `cache_tools` flags, so no cache
+point reaches Bedrock. A cache write is 1.25× input price and pays back only on a
+second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
+better off with `off`.
+
+Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Fable 5, 1,024
+on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
+`idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`). Below it a cache
+point silently does nothing. `merge_utils._validate_prompt_cache_prefix` estimates
+each class's Simple-mode prefix (`estimate_prefix_tokens`, chars/4, within ~10% of
+Bedrock's count on the shipped presets) and warns per class, naming both numbers.
+See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/prompt-caching.md` for the measurements.
+
 ## Forced tool use (Simple mode, `extraction.forced_tool`)
 
 Coercion and validation act on a result that already exists. Forced tool use tries

@@ -634,6 +634,7 @@ def validate_config(
     _validate_schema_fields(config.get("classes", []), result)
     _validate_agentic_openai(merged, result)
     _validate_simple_integrated_lists(merged, result)
+    _validate_prompt_cache_prefix(merged, result)
     _validate_discovery_openai(merged, result)
 
     return result
@@ -1373,4 +1374,68 @@ def _validate_simple_integrated_lists(
             "extraction to keep integrated confidence, or set "
             f"{X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on a class whose lists you "
             "have verified come back complete."
+        )
+
+
+def _validate_prompt_cache_prefix(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Warn (never error) when a class's Simple-mode prompt prefix is shorter than
+    the extraction model's minimum cacheable prefix (#780).
+
+    A ``<<CACHEPOINT>>`` below the minimum creates no cache entry: Bedrock reports
+    ``cacheWrite = 0`` and ``cacheRead = 0``, raises nothing, and bills the prefix
+    at full input price on every request. Measured across the shipped presets, 25%
+    of classes never cache on the Sonnet tier (1,024-token minimum) and none cache
+    on Haiku 4.5 (4,096). Nothing else in the product reports it, so say so here,
+    naming both numbers. The estimate is chars/4 (within ~2% on real prompt text);
+    a class within a few percent of the boundary is reported as close.
+    """
+    from idp_common.bedrock.prompt_cache import (
+        CACHEPOINT_MARKER,
+        estimate_prefix_tokens,
+        min_cacheable_prefix_tokens,
+    )
+
+    extraction = merged_config.get("extraction", {})
+    if not isinstance(extraction, dict) or not _extraction_is_simple(extraction):
+        return  # the Advanced path's prefix is the agentic system prompt, not this
+    if extraction.get("prompt_cache") == "off":
+        return
+    task_prompt = extraction.get("task_prompt") or ""
+    if CACHEPOINT_MARKER not in task_prompt:
+        return
+    minimum = min_cacheable_prefix_tokens(extraction.get("model"))
+    if minimum is None:
+        return  # unknown model or no published minimum (Nova): nothing to warn about
+    system_prompt = extraction.get("system_prompt") or ""
+    never: List[str] = []
+    close: List[str] = []
+    for cls in merged_config.get("classes") or []:
+        if not isinstance(cls, dict):
+            continue
+        cid = str(cls.get("$id") or cls.get("name") or "?")
+        est = estimate_prefix_tokens(system_prompt, task_prompt, cls, cid)
+        if est is None:
+            continue
+        if est < minimum:
+            never.append(f"{cid} (~{est} tokens)")
+        elif est < minimum * 1.05:
+            close.append(f"{cid} (~{est} tokens)")
+    model = extraction.get("model")
+    if never:
+        result["warnings"].append(
+            f"Prompt caching will never engage for {len(never)} class(es) on "
+            f"{model}, whose minimum cacheable prefix is {minimum} tokens: "
+            f"{', '.join(never)}. Every request pays full input price on the "
+            "prefix. Add real field descriptions to the class (which also helps "
+            "extraction), pick a model with a lower minimum (512 on Claude Opus 5 / "
+            "Fable 5), or set extraction.prompt_cache: off to stop paying the "
+            "1.25x cache-write premium for nothing."
+        )
+    if close:
+        result["warnings"].append(
+            f"{len(close)} class(es) sit within 5% of {model}'s {minimum}-token "
+            f"minimum cacheable prefix: {', '.join(close)}. Removing a field or "
+            "shortening a description can silently stop them caching."
         )

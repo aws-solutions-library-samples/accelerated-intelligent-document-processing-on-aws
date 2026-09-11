@@ -1034,6 +1034,21 @@ class ExtractionConfig(BaseModel):
         default="us.amazon.nova-pro-v1:0",
         description="Bedrock model ID for extraction. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
     )
+    prompt_cache: Literal["auto", "off"] = Field(
+        default="auto",
+        description=(
+            "Prompt caching for extraction requests. 'auto' (default) turns every "
+            "<<CACHEPOINT>> marker into a Bedrock cachePoint on models that support "
+            "it. 'off' sends no cache points at all. A cache WRITE is billed at "
+            "1.25x input price and only pays back when a second request with the "
+            "same prefix arrives inside the 5-minute TTL, so a low-volume or "
+            "interactive deployment that processes one document of a class per "
+            "TTL pays about +25% on the prefix for nothing; 'off' is the way to "
+            "decline that. Also note each model's MINIMUM cacheable prefix (512 to "
+            "4,096 tokens depending on the model): below it a cachePoint silently "
+            "does nothing, which config validation now warns about per class."
+        ),
+    )
     model_lambda_hook_arn: Optional[str] = Field(
         default=None,
         description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",

@@ -1126,6 +1126,7 @@ def _build_model_config(
     connect_timeout: float,
     read_timeout: float,
     reasoning_effort: str | None = None,
+    prompt_cache: str = "auto",
 ) -> dict[str, Any]:
     """
     Build model configuration with token limits and caching settings.
@@ -1273,8 +1274,14 @@ def _build_model_config(
         },
     )
 
-    # Auto-detect caching support based on model capabilities
-    if supports_prompt_caching(model_id):
+    # Auto-detect caching support based on model capabilities — unless the
+    # configuration declined caching outright (extraction.prompt_cache: off, #780).
+    if prompt_cache == "off":
+        logger.info(
+            "Prompt caching disabled by configuration (extraction.prompt_cache: off)",
+            extra={"model_id": model_id},
+        )
+    elif supports_prompt_caching(model_id):
         model_config["cache_prompt"] = "default"
         logger.info(
             "Prompt caching enabled for model",
@@ -1361,6 +1368,7 @@ def _prepare_prompt_content(
     page_images: list[bytes] | None,
     existing_data: BaseModel | None,
     model_id: str | None = None,
+    prompt_cache: str = "auto",
 ) -> list[ContentBlock]:
     """
     Prepare prompt content from various input types.
@@ -1465,7 +1473,9 @@ def _prepare_prompt_content(
     #
     # `model_id is None` keeps the historical behavior for callers that don't
     # pass it (only the tests, today).
-    if model_id is None or supports_prompt_caching(model_id):
+    if prompt_cache == "off":
+        pass  # extraction.prompt_cache: off — no cache points at all (#780)
+    elif model_id is None or supports_prompt_caching(model_id):
         prompt_content.append(ContentBlock(cachePoint=CachePoint(type="default")))
     else:
         logger.info(
@@ -2048,6 +2058,7 @@ async def structured_output_async(
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         reasoning_effort=config.extraction.reasoning_effort,
+        prompt_cache=getattr(config.extraction, "prompt_cache", "auto"),
     )
 
     # Prepare prompt content
@@ -2056,6 +2067,7 @@ async def structured_output_async(
         page_images=page_images,
         existing_data=existing_data,
         model_id=model_id,
+        prompt_cache=getattr(config.extraction, "prompt_cache", "auto"),
     )
 
     # Track token usage
