@@ -161,19 +161,31 @@ A model-price question is a **ratio**, so this pair is built to be able to answe
 "no". It compares Claude Sonnet 5 against OpenAI GPT-6 Astra (~4× the input price)
 with only `extraction.model` differing.
 
-The design constraint that shaped it: **nothing in the pre-existing corpus can see a
-large context window.** Measured input sizes — `small_narrow` 1,236 tokens,
-`scale_3200` (the previous largest, 66 pages) 39,992 — all fit inside a 200K model's
-usable ~140,000, so a premium-model suite run on `core_docs` would have measured price
-and nothing else. Three documents therefore separate the two things a frontier model
+**Size a fixture by page count, not by text.** This is the finding that shaped the
+suite, and it cost five wasted runs to learn. What Simple mode sends is dominated by
+**page images**, not OCR text:
+
+| | tokens |
+|---|---|
+| one 300-DPI Letter page image (2550 × 3300 ÷ 750, Bedrock's own formula) | **~11,220** |
+| the OCR text of that same page | ~600 |
+
+So the pipeline costs **~12,000 tokens per page** — about 19× the text — and the
+practical Simple-mode ceiling is a *page* count: **~11 pages for Sonnet 5** (200K
+window, 140,000 usable at the 0.30 buffer) and **~61 for Astra** (1.05M / 735,000
+usable). Measured live on IDP1: an 81-page fixture estimated 964,223 tokens and a
+164-page one 1,971,931 — both rejected by *Astra* as well as Sonnet 5. The
+discriminating band is therefore roughly **12–61 pages**, and most of it was already
+covered by existing fixtures. Four documents separate the two things a frontier model
 can actually be paid for:
 
 | Doc | Size | What it isolates |
 |---|---|---|
-| `small_narrow` | 1,236 tok | **Control.** An ordinary document where the cheaper model is already at ceiling. Astra should *lose* here on cost-per-correct-field; if it doesn't, the suite is broken |
-| `dense_800` | 81 pages, 39,750 tok | **Difficulty with no capacity component** — 8 columns, 4 interleaved lists, long free text, 15% OCR noise, typed value truth. Fits every model, so an accuracy delta is attributable to reasoning alone |
-| `huge_8000` | 164 pages, 100,343 tok | **Size that still fits** a 200K model. Guards against crediting a capacity win that was never needed |
-| `densehuge_4000` (`astracap`) | 445 pages, 200,906 tok | **Exceeds** a 200K model's usable input. In simple mode Sonnet 5 is *expected to fail* with `ExtractionInputTooLarge`; that failure is the result, not a broken run |
+| `small_narrow` | 3 pages, ~35K | **Control.** An ordinary document where the cheaper model is already at ceiling. Astra should *lose* here on cost-per-correct-field; if it doesn't, the suite is broken |
+| `med_narrow` | 9 pages, ~108K | **Size that still fits both.** Guards against crediting a capacity win that was never needed |
+| `large_narrow` | 17 pages, ~203K | The first cell Sonnet 5 **cannot do in one request** while Astra can — capability, not accuracy |
+| `dense_250` | 26 pages, ~304K | **Astra-only *and* maximally difficult** — 8 columns, 4 interleaved lists, long free text, 15% OCR noise, typed value truth |
+| `scale_3200` (`astracap`) | 66 pages, ~790K | **Exceeds Astra too.** Both models fail in simple mode; that ceiling is the finding |
 
 Two things to know before reading the output:
 

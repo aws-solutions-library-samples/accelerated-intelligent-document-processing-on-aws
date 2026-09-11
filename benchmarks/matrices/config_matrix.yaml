@@ -545,20 +545,28 @@ suites:
   # ---------------------------------------------------------------------------
   # astravalue — "does OpenAI GPT-6 Astra earn ~4x Sonnet 5 for IDP work?"
   # ---------------------------------------------------------------------------
-  # The question is a RATIO, so the suite is built to be able to answer "no". Three
-  # documents, chosen from measured token sizes rather than intuition:
+  # The question is a RATIO, so the suite is built to be able to answer "no". Four
+  # documents, sized by PAGE COUNT from live measurement — see the sizing note in
+  # doc_matrix.yaml above `dense_250`, which is the single most important thing to
+  # understand before editing this suite: Simple mode's input is dominated by page
+  # IMAGES at ~11,220 tokens each (300 DPI), ~19x the OCR text, so the Simple-mode
+  # ceiling is ~11 pages for Sonnet 5 and ~61 for Astra.
   #
-  #   small_narrow (1,236 tok)  the control. An ordinary document where Sonnet 5 is
-  #                             already at ceiling accuracy. If Astra does not lose
-  #                             on cost-per-correct-field here, the suite is broken.
-  #   dense_800   (39,750 tok)  DIFFICULTY with no capacity component: 8 columns, 4
-  #                             interleaved lists, long descriptions, 15% OCR noise,
-  #                             typed value truth. Fits every model, so an accuracy
-  #                             delta here is attributable to the model's reasoning
-  #                             and nothing else. This is where the premium has to
-  #                             show up if it shows up anywhere.
-  #   huge_8000  (100,343 tok)  SIZE that still fits a 200K model. Guards against
-  #                             crediting Astra with a capacity win it did not need.
+  #   small_narrow  3pp  the control. An ordinary document where Sonnet 5 is already
+  #                      at ceiling accuracy. If Astra does not LOSE on
+  #                      cost-per-correct-field here, the suite is broken.
+  #   med_narrow    9pp  still inside both windows, at 3x the size: guards against
+  #                      crediting Astra with a capacity win it did not need.
+  #   large_narrow 17pp  the first cell Sonnet 5 CANNOT do in one request while
+  #                      Astra can — capability, not accuracy.
+  #   dense_250    26pp  Astra-only AND maximally difficult (8 columns, 4 interleaved
+  #                      lists, long descriptions, 15% OCR noise, typed value truth).
+  #                      Where the premium has to show up if it shows up anywhere.
+  #
+  # An earlier version of this suite used an 81-page and a 164-page fixture, sized
+  # from PDF text at ~600 tokens/page. Live on IDP1 they estimated 964,223 and
+  # 1,971,931 tokens and were rejected by ASTRA as well as Sonnet 5 — five wasted
+  # runs that measured nothing. Do not size a fixture from its text.
   #
   # Both modes: simple (one request — the shape most deployments run) and advanced
   # (sharded agentic). repeats: 5 because the headline is a COST claim and this
@@ -584,29 +592,21 @@ suites:
     - astra-adv-sep
     docs: astra_docs
     repeats: 5
-  # ---------------------------------------------------------------------------
-  # astracap — the CAPABILITY arm, separated so it is never run by accident.
-  # ---------------------------------------------------------------------------
-  # `densehuge_4000` is 445 pages / ~200,906 OCR tokens, which EXCEEDS a
-  # 200K-context model's usable input (~140,000 at the 0.30 buffer). In SIMPLE mode
-  # that is one request, so the expected outcome is asymmetric by design:
-  #   sonnet5-simple-sep -> fails with ExtractionInputTooLarge (#843)
-  #   astra-simple-sep   -> completes
-  # A failure in the Sonnet 5 arm is the RESULT, not a broken run. That is the
-  # cleanest honest argument for the price: not "more accurate" but "can do a job
-  # the cheaper model cannot do at all in this mode".
+  # astracap — where a 1.05M window STOPS being enough, which is the finding.
   #
-  # The advanced pair is here because sharding is the ALTERNATIVE to buying a bigger
-  # window — Sonnet 5 shards this document and succeeds, so the real comparison is
-  # Astra-in-one-request against Sonnet-5-in-89-shards on cost, latency and
-  # completeness. If sharded Sonnet 5 matches Astra's completeness for less money,
-  # the honest recommendation is "shard, don't buy".
+  # `scale_3200` is 66 pages, which at ~12,000 tokens/page estimates ~790,000 —
+  # above Astra's 735,000 usable input. Measured live: an 81-page doc estimated
+  # 964,223 tokens and Astra rejected it with ExtractionInputTooLarge, exactly as
+  # Sonnet 5 did. So the honest headline is NOT "Astra removes the size limit"; it
+  # is "Astra moves the Simple-mode limit from ~11 pages to ~61, and page IMAGES
+  # are what set it".
   #
-  # ⚠️ COST/TIME, read before running: 445 pages of Textract per document per run,
-  # ~$2.20 of Astra input tokens per run at the us. short band, and every Astra
-  # request here is ~200K tokens — under the 272K band boundary, so cost reports are
-  # still accurate, but a slightly larger fixture would silently cross into the
-  # long band where pricing.yaml under-reports by ~2x. Keep repeats low.
+  # The simple pair here is expected to fail on BOTH models — that is the result.
+  # The advanced pair shows sharding rescuing the same document on both, which is
+  # what makes the recommendation "shard a long document" rather than "buy a bigger
+  # window". Pair with the `ocr_dpi` axis if you want the other lever: at 150 DPI a
+  # page image costs ~2,805 tokens instead of ~11,220, which quadruples the page
+  # ceiling for every model.
   astracap:
     cells:
     - sonnet5-simple-sep
@@ -615,7 +615,7 @@ suites:
     - astra-adv-sep
     - astra-adv-wide
     - sonnet5-adv-wide
-    docs: [densehuge_4000]
+    docs: [scale_3200]
     repeats: 2
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode
