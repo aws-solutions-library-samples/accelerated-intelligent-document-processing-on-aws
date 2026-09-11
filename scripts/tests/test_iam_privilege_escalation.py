@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -200,15 +201,21 @@ def _offending_actions(doc: Any) -> list[str]:
     return sorted(set(offending))
 
 
-def _template_paths(root: Path | None = None) -> list[Path]:
-    """Every CloudFormation-looking YAML file in the repo.
+@lru_cache(maxsize=None)
+def _templates(root: Path | None = None) -> tuple[tuple[Path, Any], ...]:
+    """``(path, parsed document)`` for every CloudFormation-looking YAML file.
 
     Discovered rather than listed, so a new template is covered the day it is
     added — the failure mode that let the log-group gate miss whole directories
     (see ``test_lambda_log_groups.py``).
+
+    Cached and parsed once: both rules walk the whole repo, and parsing
+    ``template.yaml`` alone (14k lines) twice per rule dominated the runtime.
+    Safe to cache because nothing here writes to a scanned tree — the meta-tests
+    each build a fresh ``tmp_path``, which is a distinct cache key.
     """
     root = root or REPO_ROOT
-    paths = []
+    found = []
     for current, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in PRUNED_DIRS]
         for name in files:
@@ -220,21 +227,22 @@ def _template_paths(root: Path | None = None) -> list[Path]:
             except (yaml.YAMLError, UnicodeDecodeError, OSError):
                 continue
             if isinstance(doc, dict) and doc.get("Resources"):
-                paths.append(path)
-    return sorted(paths)
+                found.append((path, doc))
+    return tuple(sorted(found, key=lambda pair: pair[0]))
+
+
+def _template_paths(root: Path | None = None) -> list[Path]:
+    """Just the paths, for the discovery meta-test."""
+    return [path for path, _ in _templates(root)]
 
 
 def _scan(root: Path | None = None) -> dict[str, list[str]]:
     """``{relative path: offending actions}`` for every non-exempt template."""
     root = root or REPO_ROOT
     problems: dict[str, list[str]] = {}
-    for path in _template_paths(root):
+    for path, doc in _templates(root):
         rel = str(path.relative_to(root))
         if rel in DEPLOYMENT_ROLE_TEMPLATES:
-            continue
-        try:
-            doc = _load_text(path.read_text())
-        except (yaml.YAMLError, UnicodeDecodeError, OSError):
             continue
         offending = _offending_actions(doc)
         if offending:
@@ -308,13 +316,9 @@ def _wildcard_pass_role(root: Path | None = None) -> dict[str, list[str]]:
     """``{relative path: statements}`` granting ``iam:PassRole`` on ``"*"``."""
     root = root or REPO_ROOT
     problems: dict[str, list[str]] = {}
-    for path in _template_paths(root):
+    for path, doc in _templates(root):
         rel = str(path.relative_to(root))
         if rel in DEPLOYMENT_ROLE_TEMPLATES or rel in PASS_ROLE_WILDCARD_ALLOWED:
-            continue
-        try:
-            doc = _load_text(path.read_text())
-        except (yaml.YAMLError, UnicodeDecodeError, OSError):
             continue
         for statement in _statements(doc):
             if str(statement.get("Effect", "Allow")).strip().lower() != "allow":
