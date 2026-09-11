@@ -142,7 +142,7 @@ Attach the Bedrock permissions to the hub-account role:
       ]
     },
     {
-      "Comment": "Required only if using OpenAI GPT-5.x (bedrock-mantle Responses API)",
+      "Comment": "Required only if using OpenAI GPT-5.x (bedrock-mantle Responses API). NOT needed for OpenAI GPT-6 Astra, which uses the bedrock-runtime Converse statement above",
       "Effect": "Allow",
       "Action": [
         "bedrock-mantle:CreateInference",

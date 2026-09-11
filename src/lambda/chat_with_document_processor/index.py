@@ -7,8 +7,9 @@ heavy lifting that cannot fit inside AppSync's 30-second synchronous resolver
 budget:
 
   1. Looks up the document in the TrackingTable (to get ``ConfigVersion``).
-  2. Enforces RBAC ``allowedConfigVersions`` scope for non-admin callers —
-     same pattern as ``reprocess_document_resolver`` in the AppSync stack.
+  2. Enforces RBAC ``allowedConfigVersions`` scope for non-admin callers,
+     failing CLOSED when the scope cannot be looked up (see
+     ``_get_user_allowed_config_versions``).
   3. Loads the ``chat`` section from the document's config version via
      ``idp_common.config.get_config``.
   4. Fetches the full document text from S3 (cached per-document under
@@ -36,8 +37,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 from idp_common.bedrock.client import (
+    ASTRA_EFFORT_LEVELS,
     CLAUDE_EFFORT_LEVELS,
     GROK_EFFORT_LEVELS,
+    is_astra_model,
     is_claude_effort_model,
     is_grok_model,
     strips_sampling_params,
@@ -229,16 +232,43 @@ def _get_document_record(object_key: str) -> dict:
     return resp.get("Item") or {}
 
 
+class ScopeLookupError(Exception):
+    """UsersTable scope lookup failed — callers must fail CLOSED (deny)."""
+
+
 def _get_user_allowed_config_versions(caller_sub: str) -> list[str] | None:
     """Fetch caller's ``allowedConfigVersions`` for scope enforcement.
 
     Returns:
-      - ``None`` when the user has no scope restriction (admin or unrestricted)
-      - A list of version names the user is allowed to read
+      - ``None`` when the user is genuinely unrestricted — no scope row in the
+        UsersTable, or a row whose ``allowedConfigVersions`` is empty. Scoping
+        is opt-in per user (see ``idp_common.config_scope``).
+      - A list of version names the user is allowed to read.
+
+    Raises:
+      ScopeLookupError: when the scope cannot be *evaluated* because a
+        precondition of the lookup is missing — no ``USERS_TABLE_NAME`` wired,
+        or no caller identity on the event. "Cannot evaluate" is NOT
+        "unrestricted": returning ``None`` there silently disables RBAC for
+        every caller whenever the stack wiring drifts (AUTH.T07, fail-open
+        scope lookup). Callers MUST deny the turn. Mirrors
+        ``_caller_allowed_versions`` in the pii-anonymizer feature API, which
+        is the reference implementation of this fail-closed contract.
+
+    KNOWN GAP (not closed here): the DynamoDB failure path below still returns
+    ``None`` (fail-open) rather than raising, because ``SubIndex`` does not
+    exist on the UsersTable — the table defines only ``EmailIndex``, and no
+    writer ever stores a ``sub`` attribute. Every query therefore raises
+    ValidationException today, so raising here would deny *every* chat turn.
+    Closing it requires first giving this processor a resolvable caller
+    identity; the streaming Function URL transport carries only Identity Pool
+    SigV4 credentials, so it has none. Tracked with AUTH.T07 / companion-chat.
     """
     users_table_name = os.environ.get("USERS_TABLE_NAME") or ""
-    if not users_table_name or not caller_sub:
-        return None
+    if not users_table_name:
+        raise ScopeLookupError("USERS_TABLE_NAME not configured")
+    if not caller_sub:
+        raise ScopeLookupError("no callerSub on the chat event")
     try:
         table = _dynamodb.Table(users_table_name)
         resp = table.query(
@@ -248,11 +278,16 @@ def _get_user_allowed_config_versions(caller_sub: str) -> list[str] | None:
         )
         items = resp.get("Items") or []
         if not items:
-            return None
+            return None  # no scope row for this user → unrestricted
         scope = items[0].get("allowedConfigVersions")
         return list(scope) if scope else None
     except Exception as e:  # noqa: BLE001
-        logger.warning("Could not fetch user scope (failing open): %s", e)
+        # See KNOWN GAP above: this is a fail-OPEN and is logged at ERROR so it
+        # is never silent. Do not "fix" it to raise without also fixing the
+        # index/identity defect, or all chat breaks.
+        logger.error(
+            "User scope lookup FAILED OPEN (unrestricted) for %s: %s", caller_sub, e
+        )
         return None
 
 
@@ -456,14 +491,15 @@ def _invoke_bedrock_stream_and_emit(
         those are separate: ``performanceConfig.latency`` only accepts
         ``optimized``/``standard``; ``serviceTier.type`` accepts
         ``priority``/``flex``/``default``.)
-      * Claude 4.7+ and xAI Grok → ``temperature`` / ``top_p`` are skipped
-        (Bedrock rejects them for these models — deprecated on Claude, a hard
-        400 naming the field on Grok).
+      * Claude 4.7+, xAI Grok and OpenAI GPT-6 Astra → ``temperature`` /
+        ``top_p`` are skipped (Bedrock rejects them for these models —
+        deprecated on Claude, a hard 400 naming the field on the other two).
       * Reasoning effort → routed to the carrier the model actually reads:
         ``output_config.effort`` for effort-capable Claude, ``reasoning.effort``
-        for Grok. Values outside a model's vocabulary are dropped rather than
-        forwarded, because Bedrock silently ignores unrecognized
-        ``additionalModelRequestFields`` keys.
+        for Grok and GPT-6 Astra. Values outside a model's vocabulary are
+        dropped rather than forwarded, because Bedrock silently ignores
+        unrecognized ``additionalModelRequestFields`` keys (and Astra rejects
+        an unknown effort value outright).
 
     When idp_common grows a streaming helper, this function should delegate
     to it.
@@ -472,10 +508,10 @@ def _invoke_bedrock_stream_and_emit(
     """
     client = _get_bedrock_runtime()
 
-    # Claude 4.7+ and Grok reject temperature/top_p; everything else gets
-    # temperature. Grok returns a 400 naming the field, so this is not optional:
-    # chat.temperature always resolves to a float (never None), which means
-    # every Grok chat turn would fail without this gate.
+    # Claude 4.7+, Grok and GPT-6 Astra reject temperature/top_p; everything else
+    # gets temperature. Grok and Astra return a 400 naming the field, so this is
+    # not optional: chat.temperature always resolves to a float (never None),
+    # which means every Grok/Astra chat turn would fail without this gate.
     inference_config: dict = {"maxTokens": max_tokens}
     if not strips_sampling_params(selected_model_id) and temperature is not None:
         inference_config["temperature"] = temperature
@@ -496,13 +532,17 @@ def _invoke_bedrock_stream_and_emit(
     # branch), so the documented knob did nothing for Converse models. The two
     # families use different carriers and different vocabularies, and Bedrock
     # ignores unknown additionalModelRequestFields keys silently — so an
-    # out-of-vocabulary value must be dropped, not passed through.
+    # out-of-vocabulary value must be dropped, not passed through. Astra shares
+    # Grok's carrier but a wider vocabulary (it accepts `max`), and it 400s on an
+    # unknown value instead of ignoring it, so the per-family check matters more.
     if reasoning_effort:
         effort = str(reasoning_effort).lower().strip()
         effort_field: tuple[str, dict] | None = None
         if is_claude_effort_model(use_model_id) and effort in CLAUDE_EFFORT_LEVELS:
             effort_field = ("output_config", {"effort": effort})
         elif is_grok_model(use_model_id) and effort in GROK_EFFORT_LEVELS:
+            effort_field = ("reasoning", {"effort": effort})
+        elif is_astra_model(use_model_id) and effort in ASTRA_EFFORT_LEVELS:
             effort_field = ("reasoning", {"effort": effort})
         if effort_field:
             if additional_model_fields is None:
@@ -691,10 +731,34 @@ def handler(event, _context):  # noqa: ANN001
         )
 
         # --- 2. RBAC scope enforcement --------------------------------------
-        # Fails CLOSED, matching the document-list resolvers: a scoped caller
-        # cannot chat with a document that carries no ConfigVersion, because an
-        # unstamped document cannot be proven to be in their scope.
-        allowed_versions = _get_user_allowed_config_versions(caller_sub)
+        # Fails CLOSED on both halves of the decision:
+        #   * the lookup — a missing precondition (no UsersTable wired, no
+        #     caller identity) denies rather than being read as "unrestricted"
+        #     (AUTH.T07). The DynamoDB-error path is the documented exception;
+        #     see the KNOWN GAP in _get_user_allowed_config_versions.
+        #   * the match — a scoped caller cannot chat with a document that
+        #     carries no ConfigVersion, because an unstamped document cannot be
+        #     proven to be in their scope.
+        try:
+            allowed_versions = _get_user_allowed_config_versions(caller_sub)
+        except ScopeLookupError as e:
+            logger.error(
+                "Scope lookup failed, denying chat turn: caller_sub=%s doc_version=%s: %s",
+                caller_sub,
+                config_version,
+                e,
+            )
+            _emit(
+                session_id=session_id,
+                method="assistant_error",
+                status="ERROR",
+                content=(
+                    "Could not verify your access to this document's "
+                    "configuration version. Please contact an administrator."
+                ),
+                is_processing=False,
+            )
+            return {"ok": False, "reason": "scope_unavailable"}
         if not scope_allows(allowed_versions, config_version):
             logger.warning(
                 "Scope denied: caller_sub=%s allowed=%s doc_version=%s",

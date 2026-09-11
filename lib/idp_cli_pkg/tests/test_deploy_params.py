@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import click
 import pytest
 
-from idp_cli.cli import _parse_tags
+from idp_cli.cli import _default_email_mutable_for_new_federated_stack, _parse_tags
 from idp_sdk._core.stack import StackDeployer, build_parameters
 
 
@@ -288,3 +288,80 @@ class TestStackTags:
 
         _, kwargs = cfn_mock.create_stack.call_args
         assert "Tags" not in kwargs
+
+
+class TestExternalIdPEmailMutableDefault:
+    """#835: a NEW federated stack gets ExternalIdPEmailMutable=true unless the
+    caller chose; updates, headless and non-federated deploys are untouched.
+
+    The template cannot default the flag to true (a Cognito schema flag is fixed
+    at pool creation, so that would wedge every existing stack's next update),
+    but the CLI knows create from update and can supply the safe value for a
+    new stack only.
+    """
+
+    def _run(self, params, **kw):
+        defaults = {"stack_exists": False, "headless": False}
+        defaults.update(kw)
+        return _default_email_mutable_for_new_federated_stack(params, **defaults)
+
+    def test_new_federated_stack_defaults_true(self):
+        params = {"ExternalIdPType": "OIDC", "ExternalIdPName": "Okta"}
+        assert self._run(params) == "true"
+        assert params["ExternalIdPEmailMutable"] == "true"
+
+    def test_explicit_value_is_respected(self):
+        params = {"ExternalIdPType": "SAML", "ExternalIdPEmailMutable": "false"}
+        assert self._run(params) is None
+        assert params["ExternalIdPEmailMutable"] == "false"
+
+    def test_update_never_injects_it(self):
+        # Flipping the flag on an existing pool fails the update; on an update
+        # the CLI must forward only what the caller asked for.
+        params = {"ExternalIdPType": "OIDC"}
+        assert self._run(params, stack_exists=True) is None
+        assert "ExternalIdPEmailMutable" not in params
+
+    def test_headless_never_injects_it(self):
+        # The headless template strips Cognito and this parameter; passing it
+        # would be a CFN ValidationError.
+        params = {"ExternalIdPType": "OIDC"}
+        assert self._run(params, headless=True) is None
+        assert "ExternalIdPEmailMutable" not in params
+
+    @pytest.mark.parametrize("params", [{}, {"ExternalIdPType": ""}])
+    def test_non_federated_stack_untouched(self, params):
+        assert self._run(dict(params)) is None
+        assert "ExternalIdPEmailMutable" not in params
+
+
+class TestLogLevelOption:
+    """`--log-level` must not treat any value as a stand-in for 'unset'.
+
+    The option used to default to `INFO` and the deploy command dropped the
+    parameter whenever it equalled `INFO` — harmless while the template default
+    was also `INFO`, but the template now defaults to `WARN`, so dropping an
+    explicit `--log-level INFO` would silently deploy `WARN` instead.
+    """
+
+    @staticmethod
+    def _option():
+        from idp_cli.cli import deploy
+
+        return next(p for p in deploy.params if p.name == "log_level")
+
+    def test_default_is_unset_so_cfn_preserves_or_uses_template_default(self):
+        assert self._option().default is None
+
+    def test_info_is_still_a_choice(self):
+        # Dropping INFO from the choices would be a breaking CLI change; the
+        # fix is to forward it, not to forbid it.
+        assert "INFO" in self._option().type.choices
+
+    def test_explicit_level_reaches_the_stack_parameters(self):
+        # build_parameters is what the deploy command forwards to; an explicit
+        # level must survive as a real CloudFormation parameter.
+        assert build_parameters(log_level="INFO")["LogLevel"] == "INFO"
+
+    def test_unset_level_is_omitted(self):
+        assert "LogLevel" not in build_parameters(log_level=None)

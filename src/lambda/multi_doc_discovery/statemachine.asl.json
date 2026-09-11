@@ -17,6 +17,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -50,6 +59,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -81,6 +99,15 @@
       "ResultPath": "$.clusterResult",
       "Next": "AnalyzeClusters",
       "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
         {
           "ErrorEquals": [
             "Lambda.ServiceException",
@@ -125,6 +152,15 @@
             "Retry": [
               {
                 "ErrorEquals": [
+                  "Lambda.CodeArtifactUserPendingException",
+                  "Lambda.CodeArtifactUserDeletedException"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 5,
+                "BackoffRate": 2
+              },
+              {
+                "ErrorEquals": [
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
@@ -165,6 +201,15 @@
       "Retry": [
         {
           "ErrorEquals": [
+            "Lambda.CodeArtifactUserPendingException",
+            "Lambda.CodeArtifactUserDeletedException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -185,7 +230,7 @@
     },
     "CompleteJob": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Resource": "arn:${Partition}:states:::dynamodb:updateItem",
       "Comment": "Persist terminal COMPLETED status to DynamoDB as safety net (AppSync update in save_handler provides real-time notification)",
       "Parameters": {
         "TableName": "${DiscoveryTrackingTable}",
@@ -220,7 +265,7 @@
     },
     "FailJob": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Resource": "arn:${Partition}:states:::dynamodb:updateItem",
       "Parameters": {
         "TableName": "${DiscoveryTrackingTable}",
         "Key": {

@@ -124,15 +124,6 @@ Parameters:
     AllowedValues: ["true", "false"]
     Description: Create the logs (CloudWatch Logs) Interface endpoint. Set to "false" if already exists.
 
-  CreateMonitoringEndpoint:
-    Type: String
-    Default: "true"
-    AllowedValues: ["true", "false"]
-    Description: >-
-      Create the monitoring (CloudWatch) Interface endpoint. Required for the
-      DashboardMerger custom-resource Lambda which calls cloudwatch:GetDashboard
-      / PutDashboard during stack create/update. Set to "false" if already exists.
-
   CreateBedrockRuntimeEndpoint:
     Type: String
     Default: "true"
@@ -218,7 +209,6 @@ Conditions:
   ShouldCreateStatesEndpoint: !Equals [ !Ref CreateStatesEndpoint, "true" ]
   ShouldCreateKmsEndpoint: !Equals [ !Ref CreateKmsEndpoint, "true" ]
   ShouldCreateLogsEndpoint: !Equals [ !Ref CreateLogsEndpoint, "true" ]
-  ShouldCreateMonitoringEndpoint: !Equals [ !Ref CreateMonitoringEndpoint, "true" ]
   ShouldCreateBedrockRuntimeEndpoint: !Equals [ !Ref CreateBedrockRuntimeEndpoint, "true" ]
   ShouldCreateSsmEndpoint: !Equals [ !Ref CreateSsmEndpoint, "true" ]
   ShouldCreateSsmMessagesEndpoint: !Equals [ !Ref CreateSsmMessagesEndpoint, "true" ]
@@ -433,25 +423,6 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${IDPStackName}-logs"
-        - Key: IDPStack
-          Value: !Ref IDPStackName
-        - Key: Environment
-          Value: !Ref EnvironmentTag
-
-  MonitoringVpcEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Condition: ShouldCreateMonitoringEndpoint
-    Properties:
-      VpcId: !Ref VpcId
-      ServiceName: !Sub "com.amazonaws.${AWS::Region}.monitoring"
-      VpcEndpointType: Interface
-      SubnetIds: !Ref SubnetIds
-      SecurityGroupIds:
-        - !Ref VpcEndpointSecurityGroup
-      PrivateDnsEnabled: true
-      Tags:
-        - Key: Name
-          Value: !Sub "${IDPStackName}-monitoring"
         - Key: IDPStack
           Value: !Ref IDPStackName
         - Key: Environment

@@ -65,18 +65,18 @@ The system includes a web UI, multi-agent AI assistant, SDK/CLI for automation, 
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| **Mitigated** | 56 | 67% |
+| **Mitigated** | 57 | 68% |
 | **Partially Mitigated** | 19 | 23% |
-| **Open** (real gap, needs work) | **5** | **6%** |
+| **Open** (real gap, needs work) | **4** | **5%** |
 | **Accepted** | 3 | 4% |
 
-The five **Open** items are CHAT.T03 and CHAT.T06 (chat streaming Function URL
+The four **Open** items are CHAT.T03 and CHAT.T06 (chat streaming Function URL
 enforces neither RBAC group nor session ownership, and the agent route trusts a
 client-supplied caller identity), UI.T06 (presigned object reads are
-bucket-scoped but not key-scoped, and callable by any authenticated user),
-UI.T07 (no CSP in API-Gateway/GovCloud hosting mode), and JOB.T02 (the Jobs API
-sits outside the automated authorization harness). All five are code/config
-changes; see [risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
+bucket-scoped but not key-scoped, and callable by any authenticated user), and
+JOB.T02 (the Jobs API sits outside the automated authorization harness). UI.T07
+(no CSP in API-Gateway/GovCloud hosting mode) was closed in v0.6.x. All four are
+code/config changes; see [risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
 
 ## 4. Key Risk Areas
 

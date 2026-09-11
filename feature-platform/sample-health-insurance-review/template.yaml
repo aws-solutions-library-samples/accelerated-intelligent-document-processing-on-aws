@@ -47,7 +47,7 @@ Parameters:
   LogLevel:
     Type: String
     Default: INFO
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
 
   PermissionsBoundaryArn:
     Type: String
@@ -155,6 +155,8 @@ Resources:
                 - kms:DescribeKey
               Resource:
                 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn'
+      LoggingConfig:
+        LogGroup: !Ref ClaimStatusHookFunctionLogGroup
 
   ###########################################################################
   # Feature API: HttpApi + Lambda, authorised by main stack's Cognito User Pool.
@@ -272,6 +274,8 @@ Resources:
             ApiId: !Ref FeatureApi
             Path: /{proxy+}
             Method: DELETE
+      LoggingConfig:
+        LogGroup: !Ref FeatureApiFunctionLogGroup
 
   ###########################################################################
   # CloudWatch Log Groups — explicit retention to avoid never-expire default
@@ -279,19 +283,19 @@ Resources:
   FeatureApiFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${FeatureApiFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/FeatureApiFunction'
       RetentionInDays: 30
 
   ClaimStatusHookFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${ClaimStatusHookFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/ClaimStatusHookFunction'
       RetentionInDays: 30
 
   UiDeployerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${UiDeployerFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/UiDeployerFunction'
       RetentionInDays: 30
 
   ###########################################################################
@@ -383,6 +387,8 @@ Resources:
           # must match feature.yaml -> configPreset.path.
           CONFIG_PRESET_RELATIVE_KEY: config-preset/claims-config.yaml
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref UiDeployerFunctionLogGroup
 
   RegisterFeatureResource:
     Type: AWS::CloudFormation::CustomResource

@@ -129,7 +129,7 @@
 | RPT.T04 | Evaluation Data Manipulation | **3** | Reporting/Analytics | Mitigated |
 | RPT.T08 | Extended Data Retention via Document Version History | **3** | Reporting/Analytics | Partially Mitigated |
 | SDK.T03 | SDK Supply Chain Attack | **3** | SDK/CLI | Mitigated |
-| UI.T07 | Security-Header and CSP Divergence Between Hosting Modes | **3** | Web UI | **Open** |
+| UI.T07 | Security-Header and CSP Divergence Between Hosting Modes | **3** | Web UI | Mitigated |
 
 ### Low Risk (Score 1–2)
 
@@ -195,9 +195,9 @@ pie title Risk Distribution (83 Threats)
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 56 | Controls implemented and verified |
+| **Mitigated** | 57 | Controls implemented and verified |
 | **Partially Mitigated** | 19 | Some controls in place, additional measures recommended |
-| **Open** | 5 | **Real gap with no effective control today — see the open-items list below** |
+| **Open** | 4 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 3 | Risk accepted with documented rationale |
 
 #### Open items (no effective control today)
@@ -208,7 +208,6 @@ pie title Risk Distribution (83 Threats)
 | CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | Companion Chat |
 | JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | Jobs API |
 | UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | Web UI |
-| UI.T07 | Security-Header and CSP Divergence Between Hosting Modes | Web UI |
 
 
 ## 4. Top Priority Threats
@@ -251,11 +250,7 @@ effort-to-value:
    and make the bucket allow-list fail **closed** when its env vars are unset.
    This is a prerequisite for `allowedConfigVersions` to be a real boundary, and
    it also bounds RPT.T08 and PII.T05.
-3. **CSP in APIGateway hosting mode (UI.T07)** — add a static
-   `Content-Security-Policy` header to `WebUIRootMethod`/`WebUIProxyMethod`,
-   matching the other four security headers already set there. Cheap; closes a
-   gap that lands specifically in GovCloud/private deployments.
-4. **Jobs API scope-negative test (JOB.T02)** — add a `jobs.read`-only-token
+3. **Jobs API scope-negative test (JOB.T02)** — add a `jobs.read`-only-token
    write attempt and an unauthenticated request to the Jobs API stack test, so
    the gate asymmetry with the UI API closes.
 
@@ -270,8 +265,10 @@ effort-to-value:
 4. **SDK Credential Management (SDK.T01, SDK.T02)**: Implement credential helper integration; provide secure automation pipeline templates
 5. **Hook IAM Scoping (HOOK.T05, MCP.T04)**: Publish IAM role templates for hook Lambdas with least-privilege configurations
 6. **XSS defense-in-depth (UI.T01)**: complete the Monaco editor compatibility
-   work so `'unsafe-inline'`/`'unsafe-eval'` can be dropped from `script-src`,
-   and narrow `script-src`'s `https:` to `'self'` (Talos #12 phase 2)
+   work so `'unsafe-inline'`/`'unsafe-eval'` can be dropped from `script-src`
+   (Talos #12 phase 2). The blanket `https:` source is already gone — self-host
+   Monaco out of the Web UI bucket to drop the remaining `cdn.jsdelivr.net`
+   source (and `style-src`'s `https:`) as well
 7. **Ground-truth change visibility (RPT.T07)**: surface/alert on baseline
    `_editHistory` mutations for high-value test sets
 

@@ -124,6 +124,7 @@ RUN_ROOTS = [
     "nested/api-resolvers/src/lambda/reprocess_document_resolver",
     "nested/api-resolvers/src/lambda/upload_resolver",
     "nested/bedrockkb/src/start_ingestion_job_custom_resource",
+    "samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook",
     "samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook",
     "src/lambda/api_handler",
     "src/lambda/batch_pre_processor",

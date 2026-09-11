@@ -10,7 +10,7 @@ Parameters:
 
   LogLevel:
     Type: String
-    Default: INFO
+    Default: WARN
     AllowedValues:
       - DEBUG
       - INFO
@@ -378,7 +378,17 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: Specified permissions do not appy to specific resources
+            reason: >-
+              The s3vectors statements are scoped to this account and Region, with
+              the bucket segment left as a wildcard (bucket/*) because the handler
+              lowercases and sanitizes the bucket name it derives from the stack
+              name, CloudFormation has no lowercase intrinsic to reproduce that,
+              and reading the real name back via GetAtt would be circular (this
+              role backs the Lambda that creates the bucket). The index name is
+              exact. What remains unscoped is the Bedrock knowledge base control
+              plane (Create/Delete/Get/Update/ListKnowledgeBases), whose knowledge
+              base id is service-generated and does not exist at create time, and
+              iam:PassRole, which is still broader than ideal.
     Condition: UseS3Vectors
     Properties:
       AssumeRolePolicyDocument:
@@ -396,21 +406,32 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              # Bucket-level control plane. The bucket segment is a wildcard on
+              # purpose: the handler runs the BucketName it receives (by default
+              # ${AWS::StackName}-s3-vectors) through sanitize_bucket_name(), which
+              # lowercases it and rewrites anything S3 rejects, and a nested stack
+              # name always carries uppercase (e.g. IDP1-DOCUMENTKB-1LSEGJJKD4T8Y),
+              # so the real bucket name never equals the template expression.
+              # CloudFormation has no lowercase intrinsic, and !GetAtt on
+              # S3VectorBucketAndIndex would be circular (this role backs the very
+              # Lambda that creates it), so account + Region is the tightest scope
+              # available. tests/test_iam_scope.py ties this pattern to the
+              # handler's sanitizer so the two cannot drift apart again.
+              - Sid: S3VectorsBucketManage
+                Effect: Allow
                 Action:
                   - s3vectors:CreateVectorBucket
-                  - s3vectors:DeleteVectorBucket
                   - s3vectors:GetVectorBucket
-                  - s3vectors:ListVectorBuckets
+                  - s3vectors:DeleteVectorBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/*"
+              # Index-level control plane. The index name is passed to the handler
+              # unsanitized, so it is exact; only the bucket segment is a wildcard.
+              - Sid: S3VectorsIndexManage
+                Effect: Allow
+                Action:
                   - s3vectors:CreateIndex
                   - s3vectors:DeleteIndex
-                  - s3vectors:GetIndex
-                  - s3vectors:ListIndexes
-                  - s3vectors:PutVectors
-                  - s3vectors:GetVectors
-                  - s3vectors:QueryVectors
-                  - s3vectors:DeleteVectors
-                Resource: "*"
+                Resource: !Sub "arn:${AWS::Partition}:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/*/index/${pS3VectorIndexName}"
         - PolicyName: BedrockAgentAccess
           PolicyDocument:
             Version: '2012-10-17'

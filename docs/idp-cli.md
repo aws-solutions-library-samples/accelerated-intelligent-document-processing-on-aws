@@ -230,7 +230,7 @@ idp-cli deploy [OPTIONS]
 - `--template-file`: Local path to a pre-built CloudFormation template (from a previous `publish`)
 - `--custom-config`: Path to local config file or S3 URI
 - `--max-concurrent`: Maximum concurrent workflows (default: 100)
-- `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`) (default: INFO)
+- `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
 - `--enable-hitl`: Enable Human-in-the-Loop (`true` or `false`)
 - `--parameters`: Additional parameters as `key=value,key2=value2`
 - `--tags`: Stack tags as `key=value,key2=value2`. CloudFormation applies these to the stack and propagates them to all taggable resources and nested stacks — useful for governance/ownership (e.g. `Owner`, `Team`, `Environment`). See [Resource tagging](#resource-tagging) below.
@@ -2201,6 +2201,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
 - **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
+- **OpenAI GPT-6 Astra compatibility** - Errors if `us.openai.gpt-6-astra` / `global.openai.gpt-6-astra` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Astra rejects whole-PDF `document` blocks. Like Grok — and unlike its GPT-5.x stablemates — Astra **is** valid for agentic extraction, since it reaches Converse and emits `toolUse`. The agentic check keys on the bedrock-mantle route rather than the `openai.` prefix, so one OpenAI model passes it and the others do not. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 
 **Usage:**
 ```bash

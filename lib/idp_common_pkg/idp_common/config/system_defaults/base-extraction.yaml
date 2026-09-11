@@ -9,6 +9,14 @@ extraction:
   # Extraction mode (user-facing): simple = single-pass; advanced = robust/sharded
   # engine. agentic.enabled is derived from this by the config model.
   mode: simple
+  # Prompt caching for extraction requests: auto (default) turns every
+  # <<CACHEPOINT>> marker into a Bedrock cachePoint on models that support it;
+  # off sends none. A cache write costs 1.25x and only pays back when a second
+  # request with the same prefix lands inside the 5-minute TTL, so a deployment
+  # that processes one document of a class per TTL is better off with 'off'.
+  # Below the model's minimum cacheable prefix (512-4,096 tokens, model-dependent)
+  # a cachePoint silently does nothing; `idp-cli config validate` warns per class.
+  prompt_cache: auto
   # Agentic extraction with table parsing (the "advanced" engine).
   agentic:
     enabled: false
@@ -95,7 +103,8 @@ extraction:
     #     sections, where you want a warning on every affected section.
     #
     # Detection NEVER changes the extracted data or a class's schema flags.
-    # Simple extraction only (prompt and forced-tool paths).
+    # Covers Simple extraction (prompt and forced-tool paths) and the unsharded
+    # Advanced (agentic) call; sharded agentic sections are not probed (#772).
     enabled: false
     # The question put to the model, as the description of the auxiliary count
     # property. {DOCUMENT_CLASS} is substituted with the section's class.

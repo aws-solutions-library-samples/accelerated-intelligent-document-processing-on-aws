@@ -1,3 +1,10 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+# Annotations are postponed so the type-stub-only imports below (guarded by
+# TYPE_CHECKING) are never evaluated at runtime.
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -6,19 +13,27 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from functools import wraps
-from typing import Unpack
+from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
-from mypy_boto3_bedrock_runtime import BedrockRuntimeClient
-from mypy_boto3_bedrock_runtime.type_defs import (
-    ConverseRequestTypeDef,
-    ConverseResponseTypeDef,
-    ConverseStreamRequestTypeDef,
-    ConverseStreamResponseTypeDef,
-    InvokeModelRequestTypeDef,
-    InvokeModelResponseTypeDef,
-)
+
+# Type stubs only. ``mypy-boto3-bedrock-runtime`` ships in the ``test`` and
+# ``agentic-extraction`` extras, NOT in lean Lambda extras like ``assessment`` —
+# so importing it at runtime makes this module unimportable from those functions
+# (Runtime.ImportModuleError at cold start, before the handler body runs). Guarded
+# per the project convention in .claude/skills/backend-lambda.md.
+if TYPE_CHECKING:
+    from mypy_boto3_bedrock_runtime import BedrockRuntimeClient
+    from mypy_boto3_bedrock_runtime.type_defs import (
+        ConverseRequestTypeDef,
+        ConverseResponseTypeDef,
+        ConverseStreamRequestTypeDef,
+        ConverseStreamResponseTypeDef,
+        InvokeModelRequestTypeDef,
+        InvokeModelResponseTypeDef,
+    )
 
 # Optional import for strands-agents (may not be installed in all environments)
 try:
@@ -33,6 +48,142 @@ except ImportError:
 # Configure logger
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+
+# --- Lambda wall-clock deadline -----------------------------------------------
+# Absolute epoch seconds by which the current Lambda invocation must finish, as a
+# ContextVar so the retry decorators can see it without every call site threading
+# it through. Set once per invocation from
+# ``context.get_remaining_time_in_millis()``; None outside Lambda (local, tests),
+# where every check below is a no-op and behaviour is unchanged.
+#
+# Why the decorators need it: a backoff ladder that does not know when its own
+# function will be killed can schedule a sleep longer than the whole invocation.
+# ``invoke_agent_with_retry`` was configured with ``max_delay=1800`` inside a
+# 900-second Lambda, so one transient ``Read timed out`` could spend the entire
+# invocation asleep and achieve nothing.
+#
+# The deadline CLAMPS a sleep; it never converts one into a failure. That is
+# deliberate. Being killed by the Lambda timeout surfaces to Step Functions as
+# ``Sandbox.Timedout``/``Lambda.Unknown``, which the Extraction and Assessment
+# states DO retry (8 attempts, and completed shards are skipped on resume).
+# Raising early instead would surface the underlying error name — ``ReadTimeoutError``,
+# ``EventLoopException``, ``ModelThrottledException`` — none of which appear in
+# ``ExtractionStep``'s or ``AssessmentStep``'s ``ErrorEquals`` in
+# ``patterns/unified/statemachine/workflow.asl.json``. So failing fast would turn a
+# recoverable timeout into an unrecoverable task failure. Clamping keeps the
+# retryable failure mode and spends the remaining time on another attempt rather
+# than asleep. (``ShardExtractionStep`` does list ``States.TaskFailed``; the
+# asymmetry between it and ``ExtractionStep`` is a separate issue.)
+_LAMBDA_DEADLINE_EPOCH: ContextVar[float | None] = ContextVar(
+    "idp_lambda_deadline_epoch", default=None
+)
+
+# Seconds of the remaining budget left unspent when clamping, so a sleep does not
+# end exactly at the wall with no room for the attempt that follows it. This is a
+# floor on usefulness, not a guarantee: an agent call can legitimately take minutes
+# (read_timeout is 600s), so no reserve can promise the next attempt completes.
+_DEADLINE_RESERVE_SECONDS = 30.0
+
+
+def set_lambda_deadline_epoch(deadline_epoch: float | None) -> None:
+    """Record when the current Lambda invocation must finish (epoch seconds).
+
+    Note for callers: a ContextVar does NOT propagate into threads
+    (``ThreadPoolExecutor``, ``loop.run_in_executor``). It DOES propagate through
+    ``asyncio.run``, ``create_task``/``gather`` and ``asyncio.to_thread``, which
+    covers the agentic fan-out. Publish it again inside any thread-pool worker that
+    needs it, or hand the worker ``contextvars.copy_context().run``.
+    """
+    _LAMBDA_DEADLINE_EPOCH.set(deadline_epoch)
+
+
+def get_lambda_deadline_epoch() -> float | None:
+    """The current invocation's deadline, or None when unknown."""
+    return _LAMBDA_DEADLINE_EPOCH.get()
+
+
+def clamp_sleep_to_budgets(
+    sleep_time: float,
+    total_slept: float = 0.0,
+    max_total_delay: float | None = None,
+    reserve: float | None = None,
+) -> float:
+    """Shorten ``sleep_time`` to fit the cumulative and wall-clock budgets.
+
+    Returns the seconds to actually sleep, never negative and never longer than
+    requested. Both bounds only ever SHORTEN a sleep:
+
+    - **cumulative** — ``max_total_delay`` caps total time spent asleep across all
+      attempts, because a per-sleep cap alone still permits 50 x 60s.
+    - **wall-clock** — what remains of this Lambda invocation, minus ``reserve``.
+
+    A return of 0.0 means "do not sleep, just try again": the caller keeps
+    retrying, and if time genuinely runs out the invocation is killed, which is the
+    failure mode Step Functions retries. Nothing here raises.
+    """
+    if reserve is None:
+        reserve = _DEADLINE_RESERVE_SECONDS
+    allowed = sleep_time
+    if max_total_delay is not None:
+        allowed = min(allowed, max_total_delay - total_slept)
+    deadline = get_lambda_deadline_epoch()
+    if deadline is not None:
+        allowed = min(allowed, deadline - time.time() - reserve)
+    return max(0.0, min(sleep_time, allowed))
+
+
+def _clamped_or_log(
+    sleep_time: float,
+    total_slept: float,
+    max_total_delay: float | None,
+    func_name: str,
+) -> float:
+    """:func:`clamp_sleep_to_budgets` plus a log line when it actually shortened."""
+    allowed = clamp_sleep_to_budgets(sleep_time, total_slept, max_total_delay)
+    if allowed < sleep_time:
+        deadline = get_lambda_deadline_epoch()
+        logger.warning(
+            "Shortening %s retry backoff from %.1fs to %.1fs to stay inside the "
+            "retry budget (slept %.1fs of %s) and this Lambda invocation (%s left). "
+            "The time goes to another attempt rather than to sleeping; if it runs "
+            "out the invocation times out, which the caller retries.",
+            func_name,
+            sleep_time,
+            allowed,
+            total_slept,
+            f"{max_total_delay:.0f}s" if max_total_delay is not None else "unbounded",
+            f"{deadline - time.time():.1f}s" if deadline is not None else "unknown",
+        )
+    return allowed
+
+
+def is_input_token_overflow(error: BaseException) -> bool:
+    """True if ``error`` is a Bedrock input/context overflow.
+
+    Bedrock phrases it several ways — "Input is too long for requested model",
+    "Input Tokens Exceeded", "input token count ... exceeds the maximum" — so the
+    match is loose. Shared by summarization (which degrades to a stub) and
+    extraction (which explains the failure); keep the one matcher.
+    """
+    code = ""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        code = str((response.get("Error") or {}).get("Code") or "")
+    if code and code != "ValidationException":
+        # A ClientError with a definite code is judged by the code: a throttle that
+        # mentions "input tokens per minute" is not an overflow.
+        return False
+    msg = str(error).lower()
+    if "too long" in msg and "input" in msg:
+        return True
+    if "input token" in msg or "input tokens" in msg:
+        return True
+    if "context" in msg and ("exceed" in msg or "too long" in msg):
+        return True
+    if "prompt is too long" in msg:  # Anthropic-native phrasing forwarded by Bedrock
+        return True
+    return False
+
 
 # Default retryable error codes (matched against ClientError codes and exception
 # messages).
@@ -88,7 +239,11 @@ def async_exponential_backoff_retry[T, **P](
     jitter: float = 0.1,
     retryable_errors: set[str] | None = None,
     retryable_exception_types: tuple[type[Exception], ...] | None = None,
+    max_total_delay: float | None = None,
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
+    """Retry with exponential backoff, bounded by cumulative delay AND by the
+    Lambda deadline (see :func:`set_lambda_deadline_epoch`). When either bound is
+    reached the last exception is re-raised instead of sleeping through it."""
     # Use defaults if not provided
     if retryable_errors is None:
         retryable_errors = DEFAULT_RETRYABLE_ERRORS
@@ -101,6 +256,7 @@ def async_exponential_backoff_retry[T, **P](
         @wraps(func)
         async def wrapper(*args, **kwargs) -> T:
             delay = initial_delay
+            total_slept = 0.0
 
             def log_bedrock_invocation_error(error: Exception, attempt_num: int):
                 """Log bedrock invocation details when an error occurs"""
@@ -148,11 +304,15 @@ def async_exponential_backoff_retry[T, **P](
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
                     sleep_time = max(0.1, delay * (1 + jitter_value))
+                    sleep_time = _clamped_or_log(
+                        sleep_time, total_slept, max_total_delay, func.__name__
+                    )
                     logger.warning(
                         f"{error_code}:{e.response.get('Error', {}).get('Message', '')} encountered in {func.__name__}. Retrying in {sleep_time:.2f} seconds. "
                         f"Attempt {attempt + 1}/{max_retries}"
                     )
                     await asyncio.sleep(sleep_time)
+                    total_slept += sleep_time
                     delay = min(delay * exponential_base, max_delay)
                 except Exception as e:
                     # Check if this is a retryable exception type (e.g., Strands ModelThrottledException)
@@ -176,11 +336,15 @@ def async_exponential_backoff_retry[T, **P](
                         log_bedrock_invocation_error(e, attempt + 1)
                         jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
                         sleep_time = max(0.1, delay * (1 + jitter_value))
+                        sleep_time = _clamped_or_log(
+                            sleep_time, total_slept, max_total_delay, func.__name__
+                        )
                         logger.warning(
                             f"{exception_name}: {exception_str} encountered in {func.__name__}. "
                             f"Retrying in {sleep_time:.2f} seconds. Attempt {attempt + 1}/{max_retries}"
                         )
                         await asyncio.sleep(sleep_time)
+                        total_slept += sleep_time
                         delay = min(delay * exponential_base, max_delay)
                         continue
 
@@ -201,11 +365,17 @@ def exponential_backoff_retry[T, **P](
     max_delay: float = 32.0,
     exponential_base: float = 2.0,
     jitter: float = 0.1,
+    max_total_delay: float | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
+    """Retry with exponential backoff, bounded by cumulative delay AND by the
+    Lambda deadline (see :func:`set_lambda_deadline_epoch`). When either bound is
+    reached the last exception is re-raised instead of sleeping through it."""
+
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @wraps(func)
         def wrapper(*args, **kwargs) -> T:
             delay = initial_delay
+            total_slept = 0.0
 
             def log_bedrock_invocation_error(error: Exception, attempt_num: int):
                 """Log bedrock invocation details when an error occurs"""
@@ -310,11 +480,15 @@ def exponential_backoff_retry[T, **P](
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
                     sleep_time = max(0.1, delay * (1 + jitter_value))
+                    sleep_time = _clamped_or_log(
+                        sleep_time, total_slept, max_total_delay, func.__name__
+                    )
                     logger.warning(
                         f"{error_code}:{e.response.get('Error', {}).get('Message', '')} encountered in {func.__name__}. Retrying in {sleep_time:.2f} seconds. "
                         f"Attempt {attempt + 1}/{max_retries}"
                     )
                     time.sleep(sleep_time)
+                    total_slept += sleep_time
                     delay = min(delay * exponential_base, max_delay)
                 except Exception as e:
                     # Log bedrock invocation details for non-ClientError exceptions too

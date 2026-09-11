@@ -24,6 +24,15 @@ from textwrap import dedent
 import boto3
 from botocore.config import Config as _BotoConfig
 
+# Sibling module — CodeBuild runs this as `python3 scripts/sdlc/...`, so the
+# script's own directory is not necessarily on sys.path for a plain import.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from failure_agent import (  # noqa: E402
+    build_evidence_brief,
+    fetch_full_build_log,
+    run_failure_agent,
+)
+
 # Cap test/monitor commands so a hung inference run cannot consume the
 # CodeBuild job timeout and prevent stack cleanup from running (leaks ~116
 # IAM roles). Known-slow commands (publish, deploy --wait, delete --wait)
@@ -1276,9 +1285,17 @@ def test_step11_test_compare(stack_name):
                 test_run_ids.append(test_run_id)
                 print(f"Test run {i + 1} ID: {test_run_id}")
 
-                # Wait for test run to complete before starting next one
+                # Wait for test run to complete before starting next one.
+                # 600s, matching Step 7's budget for the same fake-w2 test set:
+                # the wait spans queue -> OCR -> classify -> extract -> assess ->
+                # evaluate, and since eda68b256 moved this step into the parallel
+                # pool it competes with Steps 3-10/13-14 on the shared stack. The
+                # inherited 300s was tuned when it ran sequentially with the
+                # stack to itself and times out under that contention (a 2-doc
+                # run was still in flight at 303s while Step 7's 3-doc run on the
+                # same test set was likewise unfinished at 305s).
                 print(f"Waiting for test run {i + 1} to complete...")
-                cmd = f"idp-cli test-result --stack-name {stack_name} --test-run-id {test_run_id} --wait --timeout 300"
+                cmd = f"idp-cli test-result --stack-name {stack_name} --test-run-id {test_run_id} --wait --timeout 600"
                 result = run_command(cmd, check=False)
 
                 if result.returncode != 0:
@@ -3522,13 +3539,6 @@ def generate_deployment_summary(result, stack_name, template_url):
             return _invoke_bedrock(cf_prompt)
 
         # Case A: smoke test failure — deploy succeeded, a test step failed.
-        # Attach a bounded log tail: several tests report only a one-line
-        # error, and the actual mismatch (expected string, missing file,
-        # CLI stderr) is in the build log.
-        log_tail = "\n".join(get_codebuild_logs().split("\n")[-150:])
-        suite_reference = "\n".join(
-            f"• {step}: {desc}" for _, step, _, desc in ALL_TEST_STEPS
-        )
 
         # When a document failed to process, the test's own error is a generic
         # "Unknown error" (the tracking table flattens the real cause). Pull the
@@ -3541,6 +3551,30 @@ def generate_deployment_summary(result, stack_name, template_url):
             workflow_failures = get_workflow_failure_details(stack_name)
         if workflow_failures:
             print(f"✅ Captured {len(workflow_failures)} workflow failure(s)")
+
+        # Tier 1: agentic root-cause analysis. Gated on IDP_FAILURE_AGENT=1;
+        # returns None (never raises) when disabled or unable to finish, in which
+        # case we fall through to the single-shot summary below. The agent can
+        # follow evidence the single-shot path cannot reach — Lambda logs, Step
+        # Functions histories, git history — because it runs while the stack is
+        # still alive. It is strictly advisory: pass/fail was decided in Python.
+        agent_report = run_failure_agent(stack_name, error_text, workflow_failures)
+        if agent_report:
+            return agent_report
+
+        # Tier 2 (fallback): one Bedrock call over the deterministic evidence
+        # bundle. The bundle replaces what used to be a blind `[-150:]` log tail —
+        # in job 28666687 that tail held only the concurrent teardown's bucket
+        # inventory while the real traceback sat ~1,090 lines earlier, so the
+        # model correctly but uselessly reported "root cause not captured".
+        # build_evidence_brief greps the FULL (paginated) log for failure signals
+        # and filters the known noise classes instead.
+        log_tail = build_evidence_brief(
+            stack_name, error_text, workflow_failures, fetch_full_build_log()
+        )
+        suite_reference = "\n".join(
+            f"• {step}: {desc}" for _, step, _, desc in ALL_TEST_STEPS
+        )
 
         test_prompt = dedent(f"""
         An IDP deployment succeeded but a post-deployment smoke test failed.
@@ -3559,9 +3593,13 @@ def generate_deployment_summary(result, stack_name, template_url):
         exception behind a generic "Unknown error"):
         {json.dumps(workflow_failures, indent=2)}
 
-        Last build log lines (context only — note that "exit code -9" / SIGKILL
-        lines are fail-fast collateral from OTHER parallel tests being killed
-        after the first failure, NOT independent failures; do not report them):
+        Evidence brief — failure excerpts grepped from the FULL build log with
+        surrounding context, noise classes (pip output, teardown inventory, table
+        borders) removed. Note that "exit code -9" / SIGKILL lines are fail-fast
+        collateral from OTHER parallel tests being killed after the first
+        failure, NOT independent failures; do not report them. Steps 3-10/13-14
+        run concurrently against one shared stack and share one log stream, so
+        their output interleaves — correlate by timestamp, not adjacency:
         {log_tail}
 
         GROUNDING RULES — follow strictly:
@@ -4150,21 +4188,107 @@ def validate_apigw_global_hosting(stack_name):
             "error": f"ApplicationWebURL={web_url!r} is not an execute-api /api URL",
         }
 
-    # 3. The UI actually loads over HTTP (S3-proxy hosting served the app).
+    # 3. The UI actually loads over HTTP (S3-proxy hosting served the app), and
+    # its response headers are inspected from that SAME request — a second fetch
+    # could answer differently (a throttled 5xx comes from DEFAULT_5XX, which
+    # deliberately carries no CSP) and would blame the template for a transient.
     # Unlike the PRIVATE variant this endpoint is internet-reachable, so we can
     # do a real end-to-end fetch instead of only checking structure.
     fetch = run_command(
-        f"curl -s -o /dev/null -w '%{{http_code}}' -L {web_url}", check=False
+        f"curl -s -o /dev/null -D - -w '\\n%{{http_code}}' -L {web_url}", check=False
     )
-    http_code = fetch.stdout.strip()
+    lines = fetch.stdout.splitlines()
+    http_code = lines[-1].strip() if lines else ""
     if http_code != "200":
         return {
             "success": False,
             "error": f"GET {web_url} returned HTTP {http_code!r}, expected 200",
         }
 
+    # 4. The SPA document carries a Content-Security-Policy, and it survived API
+    # Gateway's static-value parsing intact.
+    #
+    # This mode has no CloudFront ResponseHeadersPolicy, so the CSP is a static
+    # response-parameter value on the S3-proxy method — a single-quoted string
+    # whose interior also contains single quotes (`'self'` and friends). Nothing
+    # offline can confirm the service strips only the outer pair: a mis-parse
+    # would leave `script-src self ...`, which every browser reads as a *host*
+    # named "self", blocking the app's own bundles. Requiring the quoted keyword
+    # in the response is what makes that failure loud here instead of being
+    # discovered as a blank page in a GovCloud deployment.
+    #
+    # `-L` means the dump can hold several header blocks; only the FINAL response
+    # is the document the browser renders, so parse back from the last status line.
+    header_lines = lines[:-1]
+    status_lines = [
+        i for i, line in enumerate(header_lines) if line.upper().startswith("HTTP/")
+    ]
+    final_block = header_lines[status_lines[-1] :] if status_lines else header_lines
+    csp = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in final_block
+            if line.lower().startswith("content-security-policy:")
+        ),
+        None,
+    )
+    if not csp:
+        return {
+            "success": False,
+            "error": (
+                f"GET {web_url} returned no Content-Security-Policy header; "
+                "the WebUIRootMethod integration response should set one"
+            ),
+        }
+    if csp.startswith("'"):
+        # The other half of the same mis-parse: API Gateway left the *outer*
+        # quotes on, so the first directive reads `'script-src` and browsers
+        # discard it. With no `default-src` in this policy, discarding the first
+        # directive voids the protection while the header still looks present.
+        # Only the LEADING quote is checked: a policy legitimately ends with one
+        # whenever its last source is a keyword (`frame-ancestors 'none'`).
+        return {
+            "success": False,
+            "error": (
+                "Content-Security-Policy still carries the API Gateway "
+                f"static-value quotes, so its first directive is invalid: {csp!r}"
+            ),
+        }
+    script_src = next(
+        (
+            chunk.strip().split()[1:]
+            for chunk in csp.split(";")
+            if chunk.strip().split()[:1] == ["script-src"]
+        ),
+        None,
+    )
+    if script_src is None:
+        return {
+            "success": False,
+            "error": f"Content-Security-Policy declares no script-src: {csp!r}",
+        }
+    # Source ORDER is not significant in CSP, so match on membership.
+    if "'self'" not in script_src:
+        return {
+            "success": False,
+            "error": (
+                "Content-Security-Policy lost its quoted keywords in transit "
+                f"(expected 'self' among the script-src sources): {csp!r}"
+            ),
+        }
+    blanket = [s for s in script_src if s in ("https:", "http:", "*")]
+    if blanket:
+        return {
+            "success": False,
+            "error": (
+                f"Content-Security-Policy script-src allows any origin via {blanket}: "
+                f"{csp!r}"
+            ),
+        }
+
     print(f"✅ GLOBAL REST API serving Web UI: {web_url} (types={types}, HTTP 200)")
-    return {"success": True, "web_url": web_url}
+    print(f"   CSP: {csp}")
+    return {"success": True, "web_url": web_url, "csp": csp}
 
 
 def _stack_outputs(stack_name):

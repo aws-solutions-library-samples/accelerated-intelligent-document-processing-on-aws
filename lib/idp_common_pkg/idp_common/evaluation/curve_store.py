@@ -8,7 +8,7 @@ artifacts — the test-set resolver (to serve an estimate), the review Lambda (t
 fold in a human's verdict), and the test-run aggregation Lambda (to fold in a
 scoring run) — so the storage layout and merge semantics are centralized here.
 
-Curves are keyed by (test set, config version), because confidence means
+Curves are keyed by (test set, config version, revision fingerprint), because confidence means
 different things across models and prompts and a curve measured under one
 configuration must not be reused after a config change shifts those semantics. An
 unknown config version falls back to the test set's aggregate curve, then to the
@@ -43,8 +43,43 @@ GLOBAL_PRIOR_PK = "confidencecurve#global"
 AGGREGATE_KEY = "_aggregate"
 
 
-def curve_sk(config_version: Optional[str]) -> str:
-    return f"{CURVE_SK_PREFIX}{config_version or AGGREGATE_KEY}"
+# Separates the profile from the confidence fingerprint of the revision that
+# produced the observations (#698): ``curve#<profile>@<fingerprint>``. A profile's
+# revisions share one curve only while the fingerprint — a hash of the
+# confidence-relevant subset of the configuration (extraction model and sampling,
+# assessment settings) — is unchanged; a model swap starts a new curve, a prompt
+# tweak does not. Profile names are restricted to ``[A-Za-z0-9._-]`` by the API
+# (``configuration_resolver.validate_version_name``) and by
+# ``config.revisions._SAFE_PROFILE_RE``, so ``@`` cannot occur in one; the parser
+# still splits from the right, since the fingerprint is 16 hex characters.
+FINGERPRINT_SEP = "@"
+
+
+def curve_sk(config_version: Optional[str], fingerprint: Optional[str] = None) -> str:
+    """Sort key of a stored curve.
+
+    ``curve#_aggregate`` for the set-wide blend, ``curve#<profile>`` for the
+    profile pooled across its revisions, ``curve#<profile>@<fingerprint>`` for one
+    revision family. The pooled key is still written on every observation so it
+    keeps serving as the read fallback for a revision family with no data yet.
+    """
+    if not config_version:
+        return f"{CURVE_SK_PREFIX}{AGGREGATE_KEY}"
+    if fingerprint:
+        return f"{CURVE_SK_PREFIX}{config_version}{FINGERPRINT_SEP}{fingerprint}"
+    return f"{CURVE_SK_PREFIX}{config_version}"
+
+
+def parse_curve_sk(sk: str) -> Tuple[Optional[str], Optional[str]]:
+    """``(config_version, fingerprint)`` of a curve sort key; both None for the
+    aggregate."""
+    rest = sk[len(CURVE_SK_PREFIX) :] if sk.startswith(CURVE_SK_PREFIX) else sk
+    if not rest or rest == AGGREGATE_KEY:
+        return None, None
+    if FINGERPRINT_SEP in rest:
+        version, fingerprint = rest.rsplit(FINGERPRINT_SEP, 1)
+        return version or None, fingerprint or None
+    return rest, None
 
 
 def test_set_pk(test_set_id: str) -> str:
@@ -64,22 +99,48 @@ class CurveStore:
     # -- reads -----------------------------------------------------------
 
     def get_curve(
-        self, test_set_id: str, config_version: Optional[str] = None
+        self,
+        test_set_id: str,
+        config_version: Optional[str] = None,
+        fingerprint: Optional[str] = None,
     ) -> ConfidenceCurve:
-        """Return the curve for a set+config, or an empty curve if none exists.
+        """Return the curve for a set + config (+ revision fingerprint), or an
+        empty curve if none exists.
 
-        Never raises for a missing curve: a set that has never been reviewed or
-        scored legitimately has no curve, and the estimator handles that by
-        reporting a prior-driven estimate.
+        Read chain, most specific first, each step reported in ``served_from``:
+        ``"revision"`` (``curve#<profile>@<fingerprint>``, asked for and found),
+        ``"config"`` (the profile pooled across revisions — the fallback when the
+        current revision family has no observations yet, or all that was asked
+        for), ``"aggregate"`` (the set-wide blend), ``"none"`` (nothing stored;
+        the estimator leans on the global prior). Never raises for a missing
+        curve.
         """
-        item = self._get_item(test_set_pk(test_set_id), curve_sk(config_version))
+        pk = test_set_pk(test_set_id)
+        item = None
+        served_from = None
+        if config_version and fingerprint:
+            item = self._get_item(pk, curve_sk(config_version, fingerprint))
+            if item:
+                served_from = "revision"
         if not item and config_version:
-            # The set's aggregate curve beats the global prior: it is at least
-            # measured on this set's documents.
-            item = self._get_item(test_set_pk(test_set_id), curve_sk(None))
+            item = self._get_item(pk, curve_sk(config_version))
+            if item:
+                served_from = "config"
+        if not item:
+            # Asked for outright (no configuration), or the fallback: the set's
+            # aggregate curve beats the global prior, being at least measured on
+            # this set's documents.
+            item = self._get_item(pk, curve_sk(None))
+        if item and served_from is None:
+            served_from = "aggregate"
         curve = ConfidenceCurve.from_dict(_item_to_curve_dict(item))
         curve.test_set_id = test_set_id
         curve.config_version = config_version
+        curve.confidence_fingerprint = fingerprint
+        # Reported, not just logged: a pooled or aggregate curve served in place of
+        # the requested one blends observations made under other confidence
+        # semantics, and the estimate must say so (#759, #698).
+        curve.served_from = served_from or "none"
         return curve
 
     def get_global_prior(self) -> ConfidenceCurve:
@@ -88,7 +149,8 @@ class CurveStore:
         return ConfidenceCurve.from_dict(_item_to_curve_dict(item))
 
     def list_curves(self, test_set_id: str) -> List[Dict[str, Any]]:
-        """All curves recorded for a test set, one per config version."""
+        """All curves recorded for a test set: the aggregate, one per config
+        version (pooled across revisions) and one per (version, fingerprint)."""
         from boto3.dynamodb.conditions import Key
 
         items: List[Dict[str, Any]] = []
@@ -105,11 +167,11 @@ class CurveStore:
 
         curves = []
         for item in items:
-            sk = item.get("SK", "")
-            version = sk[len(CURVE_SK_PREFIX) :] or AGGREGATE_KEY
+            version, fingerprint = parse_curve_sk(item.get("SK", ""))
             curves.append(
                 {
-                    "configVersion": None if version == AGGREGATE_KEY else version,
+                    "configVersion": version,
+                    "confidenceFingerprint": fingerprint,
                     "curve": ConfidenceCurve.from_dict(_item_to_curve_dict(item)),
                 }
             )
@@ -123,6 +185,7 @@ class CurveStore:
         observations: Sequence[Tuple[float, bool]],
         config_version: Optional[str] = None,
         source: str = "review",
+        fingerprint: Optional[str] = None,
     ) -> int:
         """Fold ``(confidence, correct)`` pairs into the stored curve(s).
 
@@ -138,19 +201,36 @@ class CurveStore:
         if not accepted:
             return 0
 
-        self._merge(test_set_pk(test_set_id), config_version, staged, source)
-        if config_version:
-            self._merge(test_set_pk(test_set_id), None, staged, source)
-        # Feed the global prior too, so a brand-new test set inherits what past
-        # sets measured instead of starting from nothing.
-        self._merge(GLOBAL_PRIOR_PK, None, staged, source)
+        self._merge_all(test_set_id, config_version, fingerprint, staged, source)
         return accepted
+
+    def _merge_all(
+        self,
+        test_set_id: str,
+        config_version: Optional[str],
+        fingerprint: Optional[str],
+        staged: ConfidenceCurve,
+        source: str,
+    ) -> None:
+        """One observation lands in every curve it belongs to: the revision
+        family (when known), the profile pooled across revisions, the set-wide
+        aggregate and the global prior (so a brand-new test set inherits what
+        past sets measured). The pooled and aggregate curves keep accumulating so
+        the read fallbacks stay current (#698)."""
+        pk = test_set_pk(test_set_id)
+        if config_version and fingerprint:
+            self._merge(pk, config_version, staged, source, fingerprint=fingerprint)
+        if config_version:
+            self._merge(pk, config_version, staged, source)
+        self._merge(pk, None, staged, source)
+        self._merge(GLOBAL_PRIOR_PK, None, staged, source)
 
     def add_ece_bins(
         self,
         test_set_id: str,
         bins: Sequence[Dict[str, Any]],
         config_version: Optional[str] = None,
+        fingerprint: Optional[str] = None,
     ) -> int:
         """Fold a scoring run's Stickler ECE bins into the stored curve(s).
 
@@ -163,13 +243,15 @@ class CurveStore:
         if not accepted:
             return 0
 
-        self._merge(test_set_pk(test_set_id), config_version, staged, "scoring")
-        if config_version:
-            self._merge(test_set_pk(test_set_id), None, staged, "scoring")
-        self._merge(GLOBAL_PRIOR_PK, None, staged, "scoring")
+        self._merge_all(test_set_id, config_version, fingerprint, staged, "scoring")
         return accepted
 
-    def reset(self, test_set_id: str, config_version: Optional[str] = None) -> None:
+    def reset(
+        self,
+        test_set_id: str,
+        config_version: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+    ) -> None:
         """Discard a stored curve.
 
         Observations are additive and cannot be individually un-folded, so
@@ -187,7 +269,7 @@ class CurveStore:
         self._table.delete_item(
             Key={
                 "PK": test_set_pk(test_set_id),
-                "SK": curve_sk(config_version),
+                "SK": curve_sk(config_version, fingerprint),
             }
         )
 
@@ -206,6 +288,7 @@ class CurveStore:
         config_version: Optional[str],
         staged: ConfidenceCurve,
         source: str,
+        fingerprint: Optional[str] = None,
     ) -> None:
         """Add a staged curve's counts into the stored item atomically.
 
@@ -245,7 +328,7 @@ class CurveStore:
 
         expression = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
         self._table.update_item(
-            Key={"PK": pk, "SK": curve_sk(config_version)},
+            Key={"PK": pk, "SK": curve_sk(config_version, fingerprint)},
             UpdateExpression=expression,
             ExpressionAttributeValues=values,
         )

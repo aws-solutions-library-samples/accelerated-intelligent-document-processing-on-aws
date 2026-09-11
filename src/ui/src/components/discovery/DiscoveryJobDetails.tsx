@@ -31,9 +31,11 @@ import remarkGfm from 'remark-gfm';
 import { useParams, useNavigate } from 'react-router-dom';
 import { generateClient } from '../../api/client-shim';
 
-import { listDiscoveryJobs, onDiscoveryJobStatusChange } from '../../graphql/generated';
+import { getConfigVersion, listDiscoveryJobs, onDiscoveryJobStatusChange, updateConfiguration } from '../../graphql/generated';
+import { applyMultiInstance, parseMultiInstanceHint } from './multiInstanceHint';
 import { DISCOVERY_PATH, CONFIGURATION_PATH } from '../../routes/constants';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import useUserRole from '../../hooks/use-user-role';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 
@@ -61,6 +63,8 @@ interface DiscoveryJob {
   discoveredClassName?: string;
   statusMessage?: string;
   pageRange?: string;
+  // #765: JSON suggestion when the sample held several records of the class
+  multiInstanceHint?: string;
   jobType?: string;
   currentStep?: string;
   totalDocuments?: number;
@@ -125,6 +129,11 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
   const { versions } = useConfigurationVersions();
+  // #765 apply-state hooks live here, above the early returns, so the hook
+  // order is identical on every render.
+  const [applyState, setApplyState] = useState<'idle' | 'applying' | 'applied' | 'unchanged' | 'error'>('idle');
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const { canWrite } = useUserRole();
   const [job, setJob] = useState<DiscoveryJob | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -235,6 +244,43 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
    * into `policy_classes`, which is rendered by the Policy Schema tab.
    * Regular discovery classes go to the Document Schema tab.
    */
+  // #765: one-click apply of the multi-instance suggestion. Reads the job's
+  // configuration version, flags the class, writes the full classes list back
+  // (updateConfiguration replaces lists wholesale), and reports what changed.
+  const multiInstanceHint = parseMultiInstanceHint(job.multiInstanceHint);
+  const applyMultiInstanceHint = async (): Promise<void> => {
+    if (!multiInstanceHint || !job.version) return;
+    setApplyState('applying');
+    setApplyError(null);
+    try {
+      const res = await client.graphql({ query: getConfigVersion, variables: { versionName: job.version } });
+      const cfg = (res as any)?.data?.getConfigVersion;
+      if (!cfg?.success) throw new Error(cfg?.error?.message || 'Could not load the configuration version');
+      const custom = typeof cfg.Custom === 'string' ? JSON.parse(cfg.Custom) : cfg.Custom || {};
+      const currentClasses = Array.isArray(custom.classes) ? custom.classes : [];
+      const { classes: next, found, changed } = applyMultiInstance(currentClasses, multiInstanceHint.class_name);
+      if (!found) throw new Error(`Class '${multiInstanceHint.class_name}' was not found in version '${job.version}'`);
+      if (!changed) {
+        setApplyState('unchanged');
+        return;
+      }
+      const upd = await client.graphql({
+        query: updateConfiguration,
+        variables: {
+          versionName: job.version,
+          customConfig: JSON.stringify({ classes: next }),
+          description: `Discovery suggestion: several documents per section on '${multiInstanceHint.class_name}'`,
+        },
+      });
+      const out = (upd as any)?.data?.updateConfiguration;
+      if (!out?.success) throw new Error(out?.error?.message || 'Update failed');
+      setApplyState('applied');
+    } catch (e) {
+      setApplyState('error');
+      setApplyError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const getConfigLink = (className: string): string => {
     const params = new URLSearchParams();
     if (job.version) params.set('version', job.version);
@@ -423,7 +469,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
       )}
 
       {/* Single-doc: Discovered Class */}
-      {!isMultiDoc && job.status === 'COMPLETED' && job.discoveredClassName && (
+      {!isMultiDoc && (job.status === 'COMPLETED' || job.status.startsWith('OPTIMIZATION_')) && job.discoveredClassName && (
         <Container
           header={
             <Header
@@ -446,6 +492,45 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
               <Box fontSize="body-s" color="text-body-secondary">
                 {job.statusMessage}
               </Box>
+            )}
+            {multiInstanceHint && (
+              <Alert
+                type="info"
+                header={`This sample appears to contain ${multiInstanceHint.instance_count} '${multiInstanceHint.class_name}' records`}
+                action={
+                  canWrite &&
+                  !multiInstanceHint.already_multi_instance &&
+                  applyState !== 'applied' &&
+                  applyState !== 'unchanged' &&
+                  job.version ? (
+                    <Button onClick={applyMultiInstanceHint} loading={applyState === 'applying'}>
+                      Enable several documents per section
+                    </Button>
+                  ) : undefined
+                }
+              >
+                <SpaceBetween size="xs">
+                  <Box>
+                    If sections of this class can hold several records, enable <strong>Documents per section → Several</strong> on the
+                    class. If instead each record should be its own section, configure section splitting in classification. Discovery only
+                    suggests this; it did not change the class.
+                  </Box>
+                  {(multiInstanceHint.already_multi_instance || applyState === 'unchanged') && (
+                    <StatusIndicator type="success">Several documents per section is already enabled on this class</StatusIndicator>
+                  )}
+                  {applyState === 'applied' && (
+                    <StatusIndicator type="success">
+                      {`Enabled on '${multiInstanceHint.class_name}' in version '${job.version}'. Existing evaluation baselines for this class need migrating (scripts/migrate_multi_instance_baselines.py).`}
+                    </StatusIndicator>
+                  )}
+                  {applyState === 'error' && <StatusIndicator type="error">{applyError}</StatusIndicator>}
+                  {!job.version && (
+                    <Box fontSize="body-s" color="text-body-secondary">
+                      Open the class in Configuration to change the setting.
+                    </Box>
+                  )}
+                </SpaceBetween>
+              </Alert>
             )}
           </SpaceBetween>
         </Container>

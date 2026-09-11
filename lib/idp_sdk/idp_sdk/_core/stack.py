@@ -23,6 +23,62 @@ from .s3_security import apply_enforce_ssl_only
 logger = logging.getLogger(__name__)
 
 
+# Parameters that are FIXED when the stack is created and can never be changed
+# on an existing stack, because they set a Cognito User Pool schema flag (#835).
+# Cognito rejects a schema-flag change on an existing pool; CloudFormation surfaces
+# it as a misleading "Required custom attributes are not supported" and the stack
+# lands in UPDATE_ROLLBACK_FAILED. Maps parameter name -> the template default,
+# which is the value a stack created before the parameter existed effectively has.
+CREATION_FIXED_PARAMETERS: Dict[str, str] = {"ExternalIdPEmailMutable": "false"}
+
+
+def guard_creation_fixed_parameters(
+    parameters: Optional[Dict[str, str]],
+    *,
+    stack_exists: bool,
+    current_params: Optional[Dict[str, str]] = None,
+    declared_params: Optional[set] = None,
+) -> Dict[str, str]:
+    """Stop a creation-fixed parameter from wedging a stack, on either path.
+
+    UPDATE: a value that differs from what the stack was created with (absent
+    from the stack means the template default) raises ``ValueError`` before any
+    CloudFormation call — the update would fail and could leave the stack in
+    UPDATE_ROLLBACK_FAILED. An identical value is harmless and passes through.
+
+    CREATE: the parameter is dropped, with a warning, when ``declared_params``
+    is known and does not contain it — e.g. a stack created from a template that
+    predates the parameter — so a caller that injects the safe default for new
+    stacks cannot fail a create against an older template with a CloudFormation
+    ValidationError for an unknown parameter.
+
+    Returns a new dict; never mutates ``parameters``.
+    """
+    params = dict(parameters or {})
+    for name, template_default in CREATION_FIXED_PARAMETERS.items():
+        if name not in params:
+            continue
+        if stack_exists:
+            current = (current_params or {}).get(name, template_default)
+            if params[name] != current:
+                raise ValueError(
+                    f"{name} is fixed when a stack is created (it sets a Cognito "
+                    f"User Pool schema flag) and cannot be changed on an existing "
+                    f"stack: the stack has '{current}', the update asked for "
+                    f"'{params[name]}'. Applying it would fail the update and can "
+                    f"leave the stack in UPDATE_ROLLBACK_FAILED. Remove the "
+                    f"parameter from this update; to change it, deploy a new stack."
+                )
+        elif declared_params and name not in declared_params:
+            logger.warning(
+                f"Dropping parameter {name}: the target template does not declare "
+                f"it (an older template?). The stack will use that template's "
+                f"behaviour for it."
+            )
+            params.pop(name)
+    return params
+
+
 class StackDeployer:
     """Manages CloudFormation stack deployment"""
 
@@ -110,6 +166,12 @@ class StackDeployer:
                 template_url=template_url_for_validation,
             )
 
+            # Refuse a creation-fixed parameter that differs from the stack's
+            # value (#835) before touching CloudFormation.
+            parameters = guard_creation_fixed_parameters(
+                parameters, stack_exists=True, current_params=current_params
+            )
+
             # Identify deprecated parameters (exist in stack but not in new template)
             deprecated_params = set()
             if (
@@ -149,7 +211,18 @@ class StackDeployer:
                         {"ParameterKey": param_key, "ParameterValue": param_value}
                     )
         else:
-            # For CREATE: Use only provided parameters
+            # For CREATE: Use only provided parameters. A creation-fixed parameter
+            # (#835) is dropped if this template does not declare it, so injecting
+            # the safe default for new stacks cannot fail a create against an
+            # older template. validate_template is only called when one is present.
+            if any(k in (parameters or {}) for k in CREATION_FIXED_PARAMETERS):
+                declared = self._get_template_parameters(
+                    template_body=template_param.get("TemplateBody"),
+                    template_url=template_param.get("TemplateURL"),
+                )
+                parameters = guard_creation_fixed_parameters(
+                    parameters, stack_exists=False, declared_params=declared
+                )
             cfn_parameters = [
                 {"ParameterKey": k, "ParameterValue": v}
                 for k, v in (parameters or {}).items()
@@ -1382,6 +1455,84 @@ class StackDeployer:
                     else:
                         raise
 
+    def _excluding_other_live_stacks(
+        self, candidates: List[str], stack_name: str
+    ) -> List[str]:
+        """Remove log groups that belong to a different, still-live stack.
+
+        The teardown prefixes are intentionally broad, so a stack named ``IDP``
+        matches ``IDP-DEV``'s groups. This asks CloudFormation which other stacks
+        currently exist and drops any candidate whose name is claimed by one of
+        them, keyed on the longest matching stack name so the more specific owner
+        always wins.
+
+        Fails **safe**: if the stacks cannot be listed, every candidate is
+        dropped. Skipping cleanup leaves orphaned log groups, which costs money;
+        guessing wrong deletes another live deployment's history, which cannot be
+        undone.
+        """
+        if not candidates:
+            return candidates
+
+        try:
+            others = set()
+            paginator = self.cfn.get_paginator("list_stacks")
+            for page in paginator.paginate(
+                StackStatusFilter=[
+                    "CREATE_COMPLETE",
+                    "CREATE_IN_PROGRESS",
+                    "UPDATE_COMPLETE",
+                    "UPDATE_IN_PROGRESS",
+                    "UPDATE_ROLLBACK_COMPLETE",
+                    "ROLLBACK_COMPLETE",
+                    "IMPORT_COMPLETE",
+                ]
+            ):
+                for summary in page.get("StackSummaries", []):
+                    name = summary.get("StackName")
+                    # A nested stack's name begins "<parent>-", and its groups
+                    # are ours to clean, so only consider root stacks.
+                    if name and name != stack_name and not summary.get("ParentId"):
+                        others.add(name)
+        except Exception as e:
+            logger.warning(
+                f"Could not list stacks to check log-group ownership ({e}); "
+                f"skipping auto-created log-group cleanup rather than risk "
+                f"deleting another stack's logs"
+            )
+            return []
+
+        def owner_is_another_stack(log_group_name: str) -> bool:
+            # Longest match wins: for group "/aws/lambda/IDP-DEV-Fn-abc" with
+            # stacks {IDP, IDP-DEV}, "IDP-DEV" is the owner, not us.
+            best = ""
+            for candidate_owner in others | {stack_name}:
+                for prefix in (
+                    f"/aws/lambda/{candidate_owner}-",
+                    f"/{candidate_owner}-",
+                    f"/aws/codebuild/{candidate_owner}-",
+                    f"/aws-glue/crawlers-role/{candidate_owner}-",
+                    f"{candidate_owner}-",
+                ):
+                    if log_group_name.startswith(prefix) and len(candidate_owner) > len(
+                        best
+                    ):
+                        best = candidate_owner
+            return bool(best) and best != stack_name
+
+        kept, skipped = [], []
+        for log_group_name in candidates:
+            (skipped if owner_is_another_stack(log_group_name) else kept).append(
+                log_group_name
+            )
+
+        if skipped:
+            logger.info(
+                f"Skipping {len(skipped)} log group(s) owned by another live "
+                f"stack: {sorted(skipped)[:5]}"
+            )
+        return kept
+
     def _discover_auto_created_log_groups(self, stack_name: str) -> List[str]:
         """
         Discover auto-created log groups that match stack name patterns
@@ -1402,17 +1553,36 @@ class StackDeployer:
         # Use exact prefixes to avoid inadvertent matches to longer stack names
         # (e.g., "idp1" should not match "idp10")
         patterns_to_check = [
-            # Lambda functions - pattern requires hyphen after stack name
-            f"/aws/lambda/{stack_name}-DOCUMENTKB",
-            f"/aws/lambda/{stack_name}-BDASAMPLEPROJECT",  # BDA sample project
-            f"/aws/lambda/{stack_name}-DashboardMergerFunction",
-            f"/aws/lambda/{stack_name}-InitializeConcurrencyTableLambda",
-            # Nested stacks - pattern requires hyphen after stack name
-            f"/{stack_name}-PATTERN1STACK-",  # e.g., /IDPDocker-P1-PATTERN1STACK-ABC123/lambda/...
-            f"/{stack_name}-PATTERN2STACK-",
+            # ONE generic prefix covers every Lambda-auto-created group belonging
+            # to this stack or any of its nested stacks, because CloudFormation
+            # always generates a function name of the form
+            # `<stack-or-nested-stack-name>-<LogicalId>-<hash>` and every nested
+            # stack's own name begins `<parent>-`.
+            #
+            # This deliberately replaces the per-function and per-nested-stack
+            # prefixes that used to be listed here. They were fragile in a way
+            # that FAILED SILENTLY: CloudFormation truncates the name to Lambda's
+            # 64-char cap, and a zero-match prefix is indistinguishable from
+            # "no orphans to clean". Worked backwards from a real observed group,
+            # `/aws/lambda/IDP1-FeaturePlatformStack-CheckFeatureEntitlementF-32Q2qRNU35FU`:
+            # the logical id kept 24 chars and the hash 12, leaving ~26 for the
+            # stack-name segment — and `IDP1-FeaturePlatformStack-` is exactly 26.
+            # It matched only because that parent stack name is 4 characters. At
+            # `IDP-DEV` the same prefix matches nothing and all 9 groups leak.
+            #
+            # The `-` immediately after {stack_name} is what keeps `IDP1` from
+            # matching a sibling `IDP10-...` stack's groups.
+            f"/aws/lambda/{stack_name}-",
+            # Nested-stack log groups that use the `/<nested-stack-name>/lambda/...`
+            # convention rather than Lambda's default. PATTERN1STACK/PATTERN2STACK
+            # were removed: those logical ids no longer exist (the pattern stacks
+            # were unified into PATTERNSTACK), so they were dead prefixes of
+            # exactly the kind described above.
+            f"/{stack_name}-PATTERNSTACK-",
+            f"/{stack_name}-APIRESOLVERSTACK-",
+            f"/{stack_name}-FeaturePlatformStack-",
             # CodeBuild projects - pattern requires hyphen after stack name
-            f"/aws/codebuild/{stack_name}-PATTERN1STACK",  # Nested stack CodeBuild
-            f"/aws/codebuild/{stack_name}-PATTERN2STACK",
+            f"/aws/codebuild/{stack_name}-PATTERNSTACK",
             f"/aws/codebuild/{stack_name}-webui-build",  # Main stack webui build
             # Glue crawlers - pattern requires hyphen after stack name
             f"/aws-glue/crawlers-role/{stack_name}-DocumentSectionsCrawlerRole",
@@ -1486,6 +1656,21 @@ class StackDeployer:
                 except Exception as e:
                     logger.warning(f"Error checking explicit pattern {pattern}: {e}")
                     continue
+
+            # Drop anything that belongs to a DIFFERENT live stack.
+            #
+            # The prefixes above are deliberately broad — `/aws/lambda/{stack}-`
+            # has to be, because CloudFormation truncates generated names and a
+            # narrower prefix silently matches nothing. But broad means a stack
+            # named `IDP` matches `IDP-DEV`'s and `IDP-PROD`'s groups too: the
+            # trailing hyphen only protects against `IDP1` vs `IDP10`, not
+            # against a sibling whose name genuinely extends this one with a
+            # hyphen. Deleting another live deployment's log history is not
+            # recoverable, so exclude it explicitly rather than relying on
+            # prefix shape.
+            discovered_log_groups = self._excluding_other_live_stacks(
+                discovered_log_groups, stack_name
+            )
 
             # Log summary with pattern match counts
             if discovered_log_groups:

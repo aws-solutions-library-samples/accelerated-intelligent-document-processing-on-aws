@@ -116,10 +116,23 @@ axes:
   # is unfalsifiable — pagination alone could explain it. `legacy` reproduces the
   # control instead of leaving it as prose in a FINDINGS file. Keep the frozen file
   # frozen: it is a historical baseline, not a config to maintain.
+  # Confidence (assessment) list batch size, PINNED. The 2026-09-09 live pass saw every
+  # 100-row simple-mode section issue 8 batches (token sizer ~13 rows) of which ONE was
+  # truncated and split-to-3 retried (~105-145 s, ~2x v0.6.7 assessment cost, 0 rows lost).
+  # `b8` asks whether a smaller pinned batch avoids the truncation-and-retry outright and
+  # what the extra calls cost. `default` = shipped 25 (the two-sizer behaviour).
+  conf_batch:
+    default: {}
+    b8:  {extraction.confidence.list_batch_size: 8}
+    b13: {extraction.confidence.list_batch_size: 13}
   boundary_prompt:
     current: {}          # whatever the shipped system default is (the fix)
     legacy:
       classification.task_prompt: "@file:classification_task_prompt_pre653.txt"
+    # The v0.6.7 shipped prompt (#653 rules, before the #726 TABLE CONTINUATION rule):
+    # the same-stack control for the #726 A/B.
+    v067:
+      classification.task_prompt: "@file:classification_task_prompt_v067.txt"
   ocr:                                     # OCR backend / features
     textract_layout:  {use_bda: false, ocr.backend: textract, ocr.features: [LAYOUT]}
     textract_tables:  {use_bda: false, ocr.backend: textract, ocr.features: [TABLES, LAYOUT]}
@@ -145,6 +158,40 @@ axes:
     sonnet5_1m:   {extraction.model: us.anthropic.claude-sonnet-5:1m}
     nova_pro:     {extraction.model: us.amazon.nova-pro-v1:0}
     nova_lite:    {extraction.model: us.amazon.nova-lite-v1:0}
+    # Claude Opus 5 — the most capable Claude, selectable in the product since it
+    # shipped, and until now absent from every model axis in this file, so no
+    # published guidance covered it. 200K context / 128K output ($5/$25 per 1M),
+    # which makes it the natural mid-point between Sonnet 5 and Astra: the "is a
+    # premium model worth it?" question has two candidate answers, not one, and a
+    # guide that omits this one cannot recommend Astra honestly.
+    opus5:        {extraction.model: us.anthropic.claude-opus-5}
+    # OpenAI GPT-6 Astra. Converse (NOT the bedrock-mantle path GPT-5.x uses), so
+    # it works in both simple and advanced mode. 1.05M context, 128K output.
+    # PRICE: $11/$55 per 1M in/out on `us.`, $10/$50 on `global.` — about 4x Sonnet
+    # 5 on input. Both prefixes are here because the ~10% `global.` discount is
+    # itself a decision the suite can settle, and because `global.` is the only one
+    # an EU deployment can use.
+    # NOTE input above 272K tokens moves the WHOLE request into Astra's long band
+    # (~2x input, 1.5x output) which pricing.yaml does not model, so cost for such a
+    # cell is UNDER-REPORTED — see the `astracap` suite comment.
+    astra:        {extraction.model: us.openai.gpt-6-astra}
+    astra_global: {extraction.model: global.openai.gpt-6-astra}
+  # extraction.agentic.max_pages_per_shard — the lever that decides whether a big
+  # context window is reachable at all on the AGENTIC path.
+  #
+  # Read this before adding an "unbounded" value: the 5-page default is
+  # TIMEOUT-critical by design, not a context-window proxy. Its field doc is
+  # explicit that a roomy token budget "must NOT collapse a large doc back into one
+  # giant shard", because each shard is one agent loop in one Lambda against a 900s
+  # ceiling, and `0` (disabled) is documented as "not recommended for large docs".
+  # So a 0 arm on a 445-page document would measure a Lambda timeout, not a model —
+  # the same trap the `enforcement` suite fell into. `wide25` is the honest middle:
+  # it cuts shard count ~5x (fewer prompt-prefix re-sends, which is where a
+  # per-shard fixed cost lives) while keeping each shard's turn count bounded, and
+  # it is a tuning change a user could actually adopt.
+  shard_pages:
+    default: {extraction.agentic.max_pages_per_shard: 5}
+    wide25:  {extraction.agentic.max_pages_per_shard: 25}
   # classification.model. Added for #653: that bug was reported on Sonnet 5 and
   # the workaround was pinning classification to Sonnet 4.5, so a boundary-detection
   # fix has to be verified on the model it was reported against, not only on the
@@ -156,11 +203,22 @@ axes:
     nova_lite:   {classification.model: us.amazon.nova-lite-v1:0}
     sonnet5:     {classification.model: us.anthropic.claude-sonnet-5}
     sonnet46:    {classification.model: us.anthropic.claude-sonnet-4-6}
+    # Haiku 4.5 is here because #726's over-split is classification-model-dependent and
+    # Sonnet 5 is an expensive way to fix it (classification is billed per PAGE, so it
+    # costs a simple-mode user +45%). A prompt-level probe on the shipped boundary prompt
+    # scored Haiku 9/9 on the boundary decision in 3 of 3 repeats — same as Sonnet 5 — at
+    # a fifth of the price. This axis is how that gets confirmed end to end.
+    haiku45:     {classification.model: us.anthropic.claude-haiku-4-5-20251001-v1:0}
   confidence_model:                        # extraction.confidence.model
     nova_lite:  {extraction.confidence.model: us.amazon.nova-lite-v1:0}
     nova_2_lite: {extraction.confidence.model: us.amazon.nova-2-lite-v1:0}
     sonnet5:    {extraction.confidence.model: us.anthropic.claude-sonnet-5}
-  reasoning_effort:                        # extraction.reasoning_effort (Claude effort models)
+  # extraction.reasoning_effort. Applies to the effort-capable Claude models AND to
+  # OpenAI GPT-6 Astra (which reads the same low/medium/high values through a
+  # different carrier, `reasoning.effort`; it also accepts none/xhigh/max, and
+  # rejects GPT-5.x's `minimal`). The three values here are the ones every effort
+  # model shares, which is what keeps a cross-model cell comparable.
+  reasoning_effort:
     low:    {extraction.reasoning_effort: low}
     medium: {extraction.reasoning_effort: medium}
     high:   {extraction.reasoning_effort: high}
@@ -187,10 +245,13 @@ default_cell:
   schema_restatement: 'on'   # current behaviour; the sweep varies it
   section_splitting: llm_determined   # the shipped default; the sweep varies it
   boundary_prompt: current            # the shipped prompt; boundaryctl uses `legacy`
+  conf_batch: default                 # shipped sizing; the sizerab suite varies it via --set
   class_confidence: topk              # the shipped default since #731
   ocr_dpi: '300'                      # the shipped default since #740
   multi_instance: 'off'               # shipped default (opt-in per class)
   multi_instance_detection: 'on'      # shipped default since #753
+  shard_pages: default                # shipped 5-page agentic shard; astracap's
+                                      # `wide25` cells vary it (see the axis note)
 
 # -----------------------------------------------------------------------------
 # CORE cells — the decision-relevant combinations every release should measure.
@@ -222,6 +283,49 @@ core_cells:
   - {id: core-bda-simple-sep,  ocr: bda,             extraction_mode: simple,   assessment: separate}
   - {id: core-bda-adv-sep,     ocr: bda,             extraction_mode: advanced, assessment: separate}
   - {id: core-llm-simple-sep,  ocr: bedrock_llm,     extraction_mode: simple,   assessment: separate}
+
+# -----------------------------------------------------------------------------
+# MODEL-PREMIUM cells (#850). Kept OUT of `core_cells` on purpose, for the same
+# reason multi_instance_cells is: `core_cells` is consumed by `core`, `coresynth`,
+# `corefast` and `full`, so anything added there multiplies the standard release
+# grid and the release-vs-release A/B gate. Adding these seven inline took
+# coresynth from 133 to 182 runs and corefast (the release gate) from 171 to 234 —
+# a 37% cost rise nobody asked for.
+#
+# They would also have injected GUARANTEED FAILURES: `coresynth` includes
+# large_narrow (17 pages, ~203K estimated input) and `sonnet5-simple-sep` cannot
+# take that in one request. A release grid whose baseline contains expected
+# failures cannot be read as a regression gate.
+#
+# The model question is answered two ways instead, both deliberate:
+#   * `astravalue` / `astracap` — the dedicated head-to-head, on documents chosen
+#     for it (see those suites).
+#   * the `extraction_model` SWEEP — one axis, everything else held at the core
+#     default, which is what feeds the model section of the Configuration Guidance
+#     paper. That is where `astra` and `opus5` belong for the published guide.
+# -----------------------------------------------------------------------------
+model_premium_cells:
+  # --- OpenAI GPT-6 Astra premium study (#850). Matched pairs: each Astra cell
+  # differs from its Sonnet 5 partner ONLY in extraction.model, so a delta is the
+  # model. Sonnet 5 is the comparator rather than the matrix default sonnet46
+  # because Sonnet 5 is what a user choosing "best Claude" would actually run, and
+  # the price question is stated against it (~4x on input).
+  - {id: astra-simple-sep,     ocr: textract_tables, extraction_mode: simple,   assessment: separate, extraction_model: astra}
+  - {id: sonnet5-simple-sep,   ocr: textract_tables, extraction_mode: simple,   assessment: separate, extraction_model: sonnet5}
+  - {id: astra-adv-sep,        ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: astra}
+  - {id: sonnet5-adv-sep,      ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: sonnet5}
+  # Global CRIS at ~10% less, otherwise identical to astra-simple-sep: is the
+  # cheaper prefix measurably different in QUALITY, or only in price? (It is the
+  # same weights routed differently, so the expected answer is "only price" — worth
+  # one cell to confirm, because it is the prefix an EU deployment must use.)
+  - {id: astraglobal-simple-sep, ocr: textract_tables, extraction_mode: simple, assessment: separate, extraction_model: astra_global}
+  # Astra with a 5x wider shard (25 pages) — the only cell where its context window
+  # is actually reachable on the agentic path. Its partner is astra-adv-sep, so the
+  # delta isolates the shard width, and sonnet5-adv-wide answers "is this a model
+  # advantage or just a better shard setting for everyone?" — which is the question
+  # that decides whether the recommendation is "buy Astra" or "raise your shard".
+  - {id: astra-adv-wide,       ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: astra,   shard_pages: wide25}
+  - {id: sonnet5-adv-wide,     ocr: textract_tables, extraction_mode: advanced, assessment: separate, extraction_model: sonnet5, shard_pages: wide25}
 
 # -----------------------------------------------------------------------------
 # MULTI-INSTANCE cells (#715 / #753). Kept out of `core_cells` on purpose: they
@@ -269,6 +373,7 @@ control_cells:
   # #653 CONTROL: identical to split-llm but carrying the PRE-FIX prompt, so the
   # boundary claim is a measured delta rather than a single post-fix number.
   - {id: split-llm-legacyprompt, ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: legacy}
+  - {id: split-llm-v067prompt,   ocr: textract_tables, extraction_mode: simple,  assessment: separate, section_splitting: llm_determined, boundary_prompt: v067}
 
 # -----------------------------------------------------------------------------
 # ONE-AXIS sweeps — vary a single knob, everything else = default_cell.
@@ -286,7 +391,14 @@ sweeps:
   assessment:       ["off", separate, integrated]
   geometry:         [ocr_only, llm, llm_grounded]
   escalation:       ["off", "on"]           # run on the low-confidence corpus to expose cost
-  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m]
+  # Adding a model here puts it in `full` AND in the Configuration Guidance paper's
+  # model section — that is the difference between "selectable" and "measured".
+  # opus5 and astra were both missing: opus5 had never been in any axis, astra was
+  # added for its own head-to-head suite but not to the sweep, so neither appeared
+  # in published guidance. astra_global is deliberately NOT swept: it is the same
+  # weights at ~10% less, a price/region choice the `astravalue` suite settles, not
+  # a quality axis worth a full grid.
+  extraction_model: [nova_lite, nova_pro, sonnet5, sonnet5_1m, opus5, astra]
   confidence_model: [nova_lite, nova_2_lite, sonnet5]
   classification_model: [nova_2_lite, sonnet5]
   reasoning_effort: [low, medium, high]
@@ -372,6 +484,11 @@ suites:
   # construction and WRONG on twodocs_2x20 by construction (one all-pages
   # section), which is exactly why `disabled` is not a workaround for packets.
   # Non-deterministic, so repeats: 5 — a single passing run does not clear it.
+  # #726 A/B on ONE stack: the shipped rules (with TABLE CONTINUATION) vs the v0.6.7
+  # prompt vs `disabled`, on the three boundary fixtures plus the #750 running-header
+  # shape (expected to stay wrong for BOTH prompts — it is here so a regression on it
+  # would be visible, not because it is a gate). repeats: 5, non-deterministic.
+  boundaryab: {cells: [split-llm, split-llm-v067prompt, split-disabled], docs: [small_narrow, twodocs_2x20, paginated_3pg, repeathdr_3pg], repeats: 5}
   boundary:
     cells:
     - split-llm
@@ -426,10 +543,13 @@ suites:
     repeats: 3
   # Regression gate for the #715/#753 branch: the cells whose behaviour the change
   # can reach at all. Simple-mode cells carry the detection probe in the prompt;
-  # `force-on` carries it in the toolSpec; the advanced cell is the CONTROL (the
-  # probe is deliberately not on the agentic path), so a delta there would mean
-  # something leaked. Run the same suite before and after the code change on ONE
-  # stack.
+  # `force-on` carries it in the toolSpec. The advanced cell WAS the control while
+  # the probe was not on the agentic path; since #772 the probe rides on the
+  # unsharded agentic call too, so `core-tt-adv-sep` is now an ARM (these docs are
+  # short enough not to shard) and its delta measures the agentic detection cost.
+  # Measured via Test Studio on 2026-09-11 (40 paired docs/corpus): -1.5 pts RealKIE
+  # (p=0.48), -0.9 OCR benchmark (p=0.15), extraction input +25% on the OCR
+  # benchmark. Run the same suite before and after the code change on ONE stack.
   migate:
     cells: [core-tt-simple-sep, core-tt-simple-int, core-tt-adv-sep, force-on, split-disabled]
     docs:  [tiny_form, small_narrow, longdesc_100]
@@ -463,6 +583,81 @@ suites:
     docs: corefast
     repeats: 3
   smoke:   {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [small_narrow, tiny_form], repeats: 1}
+  # ---------------------------------------------------------------------------
+  # astravalue — "does OpenAI GPT-6 Astra earn ~4x Sonnet 5 for IDP work?"
+  # ---------------------------------------------------------------------------
+  # The question is a RATIO, so the suite is built to be able to answer "no". Four
+  # documents, sized by PAGE COUNT from live measurement — see the sizing note in
+  # doc_matrix.yaml above `dense_250`, which is the single most important thing to
+  # understand before editing this suite: Simple mode's input is dominated by page
+  # IMAGES at ~11,220 tokens each (300 DPI), ~19x the OCR text, so the Simple-mode
+  # ceiling is ~11 pages for Sonnet 5 and ~61 for Astra.
+  #
+  #   small_narrow  3pp  the control. An ordinary document where Sonnet 5 is already
+  #                      at ceiling accuracy. If Astra does not LOSE on
+  #                      cost-per-correct-field here, the suite is broken.
+  #   med_narrow    9pp  still inside both windows, at 3x the size: guards against
+  #                      crediting Astra with a capacity win it did not need.
+  #   large_narrow 17pp  the first cell Sonnet 5 CANNOT do in one request while
+  #                      Astra can — capability, not accuracy.
+  #   dense_250    26pp  Astra-only AND maximally difficult (8 columns, 4 interleaved
+  #                      lists, long descriptions, 15% OCR noise, typed value truth).
+  #                      Where the premium has to show up if it shows up anywhere.
+  #
+  # An earlier version of this suite used an 81-page and a 164-page fixture, sized
+  # from PDF text at ~600 tokens/page. Live on IDP1 they estimated 964,223 and
+  # 1,971,931 tokens and were rejected by ASTRA as well as Sonnet 5 — five wasted
+  # runs that measured nothing. Do not size a fixture from its text.
+  #
+  # Both modes: simple (one request — the shape most deployments run) and advanced
+  # (sharded agentic). repeats: 5 because the headline is a COST claim and this
+  # file's own rule is that cost differences need >=5 samples; agentic turn counts
+  # vary ~4x run to run.
+  #
+  # Repeats also expose Astra's IMPLICIT prompt caching, which is the one mechanism
+  # that can close a 4x price gap: runs 2..5 re-send an identical prompt prefix, so
+  # cacheReadInputTokens should be non-zero from the second run and cost-per-document
+  # should FALL. Read the per-run series, not just the mean — a mean hides it. Astra
+  # needs no <<CACHEPOINT>> marker for this (and rejects an explicit one).
+  #
+  # HOW TO READ THE RESULT: the deciding metric is cost per correctly-extracted
+  # field, not accuracy and not cost. Astra earns its price only where
+  # (accuracy_astra - accuracy_sonnet5) is large enough that the cheaper model would
+  # need human review to close the gap. If accuracy ties, the answer is Sonnet 5.
+  astravalue:
+    cells:
+    - sonnet5-simple-sep
+    - astra-simple-sep
+    - astraglobal-simple-sep
+    - sonnet5-adv-sep
+    - astra-adv-sep
+    docs: astra_docs
+    repeats: 5
+  # astracap — where a 1.05M window STOPS being enough, which is the finding.
+  #
+  # `scale_3200` is 66 pages, which at ~12,000 tokens/page estimates ~790,000 —
+  # above Astra's 735,000 usable input. Measured live: an 81-page doc estimated
+  # 964,223 tokens and Astra rejected it with ExtractionInputTooLarge, exactly as
+  # Sonnet 5 did. So the honest headline is NOT "Astra removes the size limit"; it
+  # is "Astra moves the Simple-mode limit from ~11 pages to ~61, and page IMAGES
+  # are what set it".
+  #
+  # The simple pair here is expected to fail on BOTH models — that is the result.
+  # The advanced pair shows sharding rescuing the same document on both, which is
+  # what makes the recommendation "shard a long document" rather than "buy a bigger
+  # window". Pair with the `ocr_dpi` axis if you want the other lever: at 150 DPI a
+  # page image costs ~2,805 tokens instead of ~11,220, which quadruples the page
+  # ceiling for every model.
+  astracap:
+    cells:
+    - sonnet5-simple-sep
+    - astra-simple-sep
+    - sonnet5-adv-sep
+    - astra-adv-sep
+    - astra-adv-wide
+    - sonnet5-adv-wide
+    docs: [scale_3200]
+    repeats: 2
   core:    {cells: "core_cells", docs: "core_docs", repeats: 1}
   # corefast: full 10-cell grid on the <=100-row docs only, so advanced-mode
   # assessment completes on v0.5.16 (see corefast group note). This is the clean
@@ -503,9 +698,53 @@ suites:
   # `git checkout ec3eb05ae -- benchmarks/results/v0.6.5-advverify/` (and
   # `benchmarks/results/v0.6.6-advverify-post668/`).
   advverify: {cells: [core-tt-adv-int, core-tt-adv-sep], docs: [longdesc_100], repeats: 4}
+  # `all` includes the >11-page fixtures (scale_1200/1600/3200 and, since #850,
+  # dense_250 at 26 pages), which every SIMPLE-mode cell on a 200K-context model is
+  # EXPECTED to reject (ExtractionInputTooLarge) — page images cost ~12,000 tokens
+  # each (see doc_matrix.yaml above `dense_250`). Read those as the size ceiling,
+  # not as regressions.
   full:    {cells: "core_cells+sweeps", docs: "all", repeats: 1}
   scaling: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: "scaling_series", repeats: 1}
+  # Simple-mode arm of `scaling` alone: re-measures the single-response completeness cliff
+  # after #726 (over-splitting no longer shortens the extraction call). Advanced holds
+  # 1.000 through 3,200 rows and is not re-run here (it shards regardless).
+  scalingsimple: {cells: [core-tt-simple-sep], docs: "scaling_series", repeats: 1}
+  # Confidence batch-sizer A/B on the two UNCHANGED small docs; run once per
+  # `--set conf_batch=...` arm. repeats: 5 because the question is cost/latency.
+  sizerab: {cells: [core-tt-simple-sep], docs: [tiny_form, small_narrow], repeats: 5}
   # cost: purpose-built to DETECT COST DIFFERENCES between configs with confidence.
   # A representative mid-size list doc, the cost-decision-relevant cells, repeated
   # enough that per-cell cost mean±stdev separates real gaps from agentic noise.
   cost:    {cells: [core-tt-simple-sep, core-tt-adv-sep, core-tt-adv-int, core-tl-adv-sep, core-bda-adv-sep], docs: [med_narrow], repeats: 5}
+  # advsplitcost: is the advanced-mode cost rise CAUSED by over-splitting?
+  #
+  # The v0.6.6 -> v0.6.7 `cost` A/B measured +22..25% on every ADVANCED cell and
+  # -0.6% on the simple control, and the raw metering localized it: `sections` went
+  # 1 -> 2..4 on a one-statement document, and `Extraction/lambda/requests` went
+  # 1 -> 4. Each section is its own agentic loop (system prompt + schema + tool
+  # schemas + pre-flight table parse + multi-turn conversation), so the per-section
+  # fixed overhead is multiplied while the extracted rows — and therefore the
+  # OUTPUT tokens — stay the same. That is a mechanism, not yet a cause.
+  #
+  # This suite closes it WITHIN one release: same stack, same code, the only
+  # difference being `section_splitting`. Run the `disabled` arm with
+  # `--set section_splitting=disabled` and compare against the `cost` suite's
+  # `llm_determined` numbers for the same two cells. If the advanced cell falls
+  # back to its v0.6.6 level with splitting off, over-splitting is the cause.
+  # Both arms are needed because splitting also changes what the SIMPLE cell pays,
+  # which is the control that says "this is about the agentic path, not about
+  # section count in general".
+  advsplitcost: {cells: [core-tt-simple-sep, core-tt-adv-sep], docs: [med_narrow], repeats: 5}
+  # splitscale: does `sectionSplitting: disabled` cost COMPLETENESS on a large list?
+  #
+  # This is the question the §3 scaling result raised and could not answer. At v0.6.5 a
+  # 1,200+ row list arrived as ONE section and simple mode truncated it (recall 0.199);
+  # at v0.6.7 the same document is split into 6-18 sections and comes back complete. If
+  # the section count is what buys that, then `disabled` — recommended elsewhere as the
+  # fix for #726's agentic cost premium — reintroduces the truncation for large
+  # single-document lists, and the recommendation has to be size-conditional.
+  #
+  # SIMPLE only, on purpose: the concern is single-response truncation, which is a
+  # simple-mode failure. Run it twice, once with `--set section_splitting=disabled`, and
+  # compare against the `scaling` suite's default arm on the same documents.
+  splitscale: {cells: [core-tt-simple-sep], docs: [scale_1200, scale_1600, scale_3200], repeats: 1}

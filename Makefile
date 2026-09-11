@@ -95,7 +95,7 @@ setup: ## Install all packages into current Python environment (no venv)
 	echo "Installing capacity planning test dependencies..." && \
 	$$SETUP_PIP install -r src/lambda/calculate_capacity/requirements-test.txt && \
 	echo "Installing cfn-lint for CloudFormation template validation..." && \
-	$$SETUP_PIP install cfn-lint && \
+	$$SETUP_PIP install cfn-lint==$(CFN_LINT_VERSION) && \
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
@@ -120,7 +120,7 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo "Installing capacity planning test dependencies..."
 	$(VENV_DIR)/bin/pip install -r src/lambda/calculate_capacity/requirements-test.txt
 	@echo "Installing cfn-lint for CloudFormation template validation..."
-	$(VENV_DIR)/bin/pip install cfn-lint
+	$(VENV_DIR)/bin/pip install cfn-lint==$(CFN_LINT_VERSION)
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
@@ -128,7 +128,7 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
 fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
@@ -168,6 +168,16 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@# validate-buildspec and cfn-lint were in `lint`/`fastlint` but NOT here, so
+	@# neither CI ran them — the same gap this target exists to prevent.
+	@if ! make validate-buildspec; then \
+		echo -e "$(RED)ERROR: buildspec validation failed$(NC)"; \
+		exit 1; \
+	fi
+	@if ! make cfn-lint; then \
+		echo -e "$(RED)ERROR: CloudFormation template validation failed$(NC)"; \
+		exit 1; \
+	fi
 	@echo "GovCloud ARN partition check"
 	@if ! make check-arn-partitions; then \
 		echo -e "$(RED)ERROR: Hardcoded ARN partitions/service principals found (breaks GovCloud)$(NC)"; \
@@ -202,20 +212,47 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 
+# Templates the ARN-partition gate does NOT scan, each with its reason. This is
+# a per-PATH exemption, never a per-rule one: every rule still runs on everything
+# else. Keep it short, and justify each entry here.
+#
+#   scripts/sdlc/cfn/ — the SDLC pipeline's own infrastructure (CodePipeline,
+#     the GitLab-runner credential vendor, the builder IAM role). It deploys only
+#     in the commercial CI account by construction: it names a commercial
+#     cross-account principal (arn:aws:iam::<account>:role/gitlab-runners-prod)
+#     that has no counterpart in another partition. Mirrors the /scripts/sdlc/
+#     exclusion in scripts/check_python_arn_partitions.py. If the harness ever
+#     grows a GovCloud probe, drop this and fix the templates.
+ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/
+
 check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partitions
 	@echo "Checking CloudFormation templates for hardcoded ARN partitions and service principals..."
+	@# Templates are discovered by CONTENT (anything declaring AWSTemplateFormatVersion),
+	@# via the same script as `make cfn-lint`. The hardcoded glob list this replaced
+	@# never looked at nested/, samples/, notebooks/, scripts/ or iam-roles/.
 	@FOUND_ISSUES=0; \
-	for template in template.yaml patterns/*/template.yaml patterns/*/sagemaker_classifier_endpoint.yaml options/*/template.yaml feature-platform/*/template.yaml; do \
-		if [ -f "$$template" ]; then \
+	TEMPLATES=$$(scripts/discover_templates.sh cfn); \
+	if [ -z "$$TEMPLATES" ]; then \
+		echo -e "$(RED)ERROR: no CloudFormation templates discovered — check scripts/discover_templates.sh$(NC)"; \
+		exit 1; \
+	fi; \
+	for template in $$TEMPLATES; do \
+		SKIP=0; \
+		for exempt in $(ARN_PARTITION_EXEMPT); do \
+			case "$$template" in $$exempt*) SKIP=1;; esac; \
+		done; \
+		if [ $$SKIP -eq 1 ]; then \
+			echo "Skipping $$template (ARN_PARTITION_EXEMPT — see Makefile for the reason)"; \
+		elif [ -f "$$template" ]; then \
 			echo "Checking $$template..."; \
-			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" || true); \
+			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" || true); \
 			if [ -n "$$ARN_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded 'arn:aws:' references in $$template:$(NC)"; \
 				echo "$$ARN_MATCHES" | sed 's/^/  /'; \
 				echo -e "$(YELLOW)  These should use 'arn:\$${AWS::Partition}:' instead for GovCloud compatibility$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
+			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
 			if [ -n "$$SERVICE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded service principal references in $$template:$(NC)"; \
 				echo "$$SERVICE_MATCHES" | sed 's/^/  /'; \
@@ -234,7 +271,7 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 			fi; \
 		fi; \
 	done; \
-	for asl in patterns/*/statemachine/*.asl.json options/*/statemachine/*.asl.json feature-platform/*/statemachine/*.asl.json; do \
+	for asl in $$(scripts/discover_templates.sh asl); do \
 		if [ -f "$$asl" ]; then \
 			echo "Checking $$asl..."; \
 			ASL_MATCHES=$$(grep -n "arn:aws:" "$$asl" | grep -v "arn:\$${Partition}:" || true); \
@@ -258,6 +295,103 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 	@# Python was never scanned, which is how a hardcoded arn:aws: reached runtime
 	@# and broke every Bedrock Data Automation invoke in GovCloud (issue #527).
 	@$(PYTHON) scripts/check_python_arn_partitions.py
+
+# Pin the linter. An UNPINNED tool on a blocking gate is the one realistic way
+# this red-lines develop with no code change: cfn-lint ships new rules and
+# refreshed resource specs often, and any check promoted to ERROR class would
+# fail every build until someone triaged it. Everything comparable here is
+# pinned (ruff, node, npm, actions by SHA), so this is too. Bump deliberately.
+CFN_LINT_VERSION := 1.51.0
+#
+# E3043 (parent's Parameters vs the nested stack's) cannot work in CI: TemplateURL
+# points at .aws-sam/packaged.yaml, a BUILD artifact absent from a fresh checkout,
+# so cfn-lint logs "Template file not found" and skips the check. In a *built*
+# local tree it does run, and then reports false positives against a stale
+# packaged.yaml. So it is noise in both environments — off, with the parent/nested
+# parameter wiring asserted directly by
+# scripts/tests/test_nested_stack_parameters.py instead.
+CFN_LINT_IGNORE := E3043
+#
+# Warnings (W*/I*) never fail the gate, and by default they are not LISTED
+# either: ~112 of them are a single false-positive class (W1030/W1031 — an
+# optional `Default: ""` parameter such as LambdaSecurityGroupId "is not a valid
+# sg-... id", which cfn-lint reports without noticing the referencing resource is
+# behind a DeployInVPC condition) plus a handful of W1028/W1001 condition
+# inferences of the same shape. Printed in full they buried the one line that
+# matters. The rules stay ENABLED — a genuinely malformed hardcoded id or ARN is
+# still detected — but only a per-rule count is shown. Set
+# CFN_LINT_SHOW_WARNINGS=1 (or run `make cfn-lint-warnings`) to list them.
+CFN_LINT_SHOW_WARNINGS ?=
+
+cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings counted, listed by cfn-lint-warnings)
+	@echo "Validating CloudFormation templates with cfn-lint..."
+	@command -v cfn-lint >/dev/null 2>&1 || { \
+		echo -e "$(RED)ERROR: cfn-lint not installed. Run 'make setup' or$(NC)"; \
+		echo -e "$(RED)       pip install cfn-lint==$(CFN_LINT_VERSION)$(NC)"; \
+		exit 1; \
+	}
+	@HAVE=$$(cfn-lint --version 2>/dev/null | awk '{print $$NF}'); \
+	if [ "$$HAVE" != "$(CFN_LINT_VERSION)" ]; then \
+		echo -e "$(YELLOW)NOTE: cfn-lint $$HAVE installed, gate is pinned to $(CFN_LINT_VERSION).$(NC)"; \
+		echo -e "$(YELLOW)      A newer release may report findings CI does not, or miss ones it does.$(NC)"; \
+	fi
+	@# cfn-lint's DECODER logs one ERROR per nested TemplateURL it cannot read.
+	@# Those point at .aws-sam/packaged.yaml, a build artifact absent from any clean
+	@# checkout, so CI emitted 15 red ERROR lines every run for an expected,
+	@# already-handled condition (E3043 is off; the wiring is asserted by
+	@# scripts/tests/test_nested_stack_parameters.py). Only that exact message is
+	@# filtered, and the count is reported, so a genuine decode failure for a real
+	@# template still surfaces.
+	@#
+	@# Templates are discovered by CONTENT, not by filename. A hardcoded glob list
+	@# is how check-arn-partitions came to miss nested/, samples/ and notebooks/;
+	@# anything declaring AWSTemplateFormatVersion is a CloudFormation template and
+	@# gets linted, so a new one cannot be added without being covered. The
+	@# discovery lives in scripts/discover_templates.sh and is shared with
+	@# check-arn-partitions so the two gates see the same set.
+	@TEMPLATES=$$(scripts/discover_templates.sh cfn); \
+	if [ -z "$$TEMPLATES" ]; then \
+		echo -e "$(RED)ERROR: no CloudFormation templates discovered — check scripts/discover_templates.sh$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$$TEMPLATES" | sed 's|^\./||;s|^|  |'; \
+	OUT=$$(mktemp); \
+	echo "$$TEMPLATES" | xargs cfn-lint \
+		--ignore-checks $(CFN_LINT_IGNORE) \
+		--non-zero-exit-code error >"$$OUT" 2>&1; \
+	STATUS=$$?; \
+	NOISE="cfnlint\.decode\.decode - ERROR - Template file not found:.*\.aws-sam/packaged\.ya\?ml"; \
+	MISSING=$$(grep -c "$$NOISE" "$$OUT" || true); \
+	FILTERED=$$(mktemp); \
+	grep -v "$$NOISE" "$$OUT" >"$$FILTERED" || true; \
+	rm -f "$$OUT"; \
+	WARNINGS=$$(grep -cE '^[WI][0-9]{4} ' "$$FILTERED" || true); \
+	if [ -n "$(CFN_LINT_SHOW_WARNINGS)" ]; then \
+		cat "$$FILTERED"; \
+	else \
+		awk '/^[WI][0-9]{4} /{skip=2; next} skip>0{skip--; next} {print}' "$$FILTERED"; \
+	fi; \
+	if [ "$$WARNINGS" -gt 0 ]; then \
+		BYRULE=$$(grep -oE '^[WI][0-9]{4}' "$$FILTERED" | sort | uniq -c | sort -rn \
+			| awk '{printf "%s%s x%d", (NR>1 ? ", " : ""), $$2, $$1}'); \
+		if [ -n "$(CFN_LINT_SHOW_WARNINGS)" ]; then \
+			echo -e "$(YELLOW)  $$WARNINGS advisory warning(s) listed above ($$BYRULE); none fail this gate$(NC)"; \
+		else \
+			echo -e "$(YELLOW)  $$WARNINGS advisory warning(s) not listed ($$BYRULE) — run 'make cfn-lint-warnings' to see them$(NC)"; \
+		fi; \
+	fi; \
+	rm -f "$$FILTERED"; \
+	if [ "$$MISSING" -gt 0 ]; then \
+		echo "  ($$MISSING nested TemplateURL(s) unbuilt — expected on a clean checkout)"; \
+	fi; \
+	if [ $$STATUS -ne 0 ]; then \
+		echo -e "$(RED)❌ cfn-lint found template ERRORS (warnings alone do not fail this gate)$(NC)"; \
+		exit 1; \
+	fi; \
+	echo -e "$(GREEN)✅ cfn-lint: no template errors$(NC)"
+
+cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
+	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
@@ -325,6 +459,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# combined pytest invocation.
 	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
+	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
+	cd nested/api-resolvers/src/lambda/test_runner && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -333,6 +469,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/chat_stream_processor && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
 	cd src/lambda/bda_ocr_project && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
@@ -422,6 +560,33 @@ endif
 
 # Alias so the RBAC test shows up under the consistent stacktest-* name too.
 stacktest-rbac: api-test ## RBAC/API authorization test (alias: api-test) — needs STACK_NAME
+
+# Live authorization checks that need real AWS behaviour rather than mocks, but
+# NOT a deployed stack: each creates its own throwaway Cognito pool / state
+# machines / IAM roles and deletes them again. Not in CI (they create IAM roles).
+# See .claude/skills/live-auth-checks.md.
+live-auth-checks: ## Live authorization checks vs real AWS (throwaway resources, no stack needed)
+	@echo "Running live authorization checks (creates and deletes throwaway resources)..."
+	$(PYTHON) scripts/security/live_checks/verify_idp_group_mapping.py
+	$(PYTHON) scripts/security/live_checks/verify_execution_scope.py
+	@echo -e "$(GREEN)✅ Live authorization checks passed$(NC)"
+
+# Federated sign-in verification. Needs a stack deployed against the throwaway
+# OIDC provider — see .claude/skills/live-auth-checks.md for the sequence, since
+# the provider has to exist before the stack that federates to it.
+verify-idp-federation: ## Federated sign-in checks vs a deployed stack (STACK_NAME, IDP_FUNCTION, POOL_ID, CLIENT_ID, DOMAIN, TRIGGER_FUNCTION)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks.md)
+endif
+	$(PYTHON) scripts/security/live_checks/verify_federated_signin.py \
+	    --stack-name $(STACK_NAME) \
+	    --region $(if $(REGION),$(REGION),us-west-2) \
+	    --idp-function $(IDP_FUNCTION) \
+	    --idp-name $(if $(IDP_NAME),$(IDP_NAME),VerifyIdP) \
+	    --trigger-function $(TRIGGER_FUNCTION) \
+	    --pool-id $(POOL_ID) \
+	    --client-id $(CLIENT_ID) \
+	    --domain $(DOMAIN)
 
 # Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
 # Browser-driven UX test. Not a self-contained target on purpose: the browsing and
@@ -695,6 +860,11 @@ srt-clean: ## Remove gitignored build/temp dirs that pollute local SRT scans
 	find . -name node_modules -prune -o -name .venv -prune -o \
 		-type d \( -name .aws-sam -o -path '*/layer/python' \) -prune -print \
 		| xargs -r rm -rf
+# Also drop SRT scan dirs whose template no longer exists. They outlive the
+# template — `srt assess` never removes a scan dir — so scanner_health.py keeps
+# reporting them as "checkov did not complete" and prints "this scan cannot prove
+# the tree is clean" on a run that is clean. See the module docstring.
+	@$(PYTHON) scripts/srt/prune_stale_scans.py
 	@echo -e "$(GREEN)✅ Scan-polluting artifacts removed (CI checkouts are already clean)$(NC)"
 
 srt: ## Run full SRT workflow (clean → setup → scan → optional fix)

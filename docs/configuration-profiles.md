@@ -228,6 +228,13 @@ falling back to the profile's current configuration: substituting a different
 configuration under the name you asked for would look like a success, and its
 numbers would go into a comparison. Label or pin the revisions you need to keep.
 
+For a test run the check happens **when the run is submitted**: `startTestRun`
+(Test Studio, `idp-cli run-inference --test-set`, a direct invocation) rejects a
+profile that does not exist and a revision whose body cannot be read — `Revision
+r3 of configuration profile 'lending' is not available (deleted, pruned, or never
+existed)` — instead of queuing a run whose every document would fail in OCR
+minutes later.
+
 Naming a new profile per attempt also works and predates revisions, but every one
 of those profiles then appears in the profile pickers and `allowedConfigVersions`
 scope lists of the whole deployment.
@@ -263,17 +270,19 @@ The revision appears in the test-run list, the results view, the comparison view
 and CSV/JSON exports. Pinning a revision in a run also marks it exempt from
 retention pruning, so the comparison stays readable later.
 
-> **Confidence curves are not keyed per revision.** Test Studio's review-effort
+> **Confidence curves are keyed per revision family.** Test Studio's review-effort
 > estimate rests on a confidence→accuracy curve, because confidence means
-> different things across models and prompts. Revisions of one profile share a
-> curve — right for a prompt tweak, wrong after a model swap. So **after changing a
-> profile's extraction model or assessment configuration, treat the review-effort
-> estimate for test sets using that profile as unreliable until fresh observations
-> accumulate.** Each revision records a **confidence fingerprint** (a hash of the
-> confidence-relevant configuration) that a future release will key curves on. See
-> the fuller note in
-> [Test Studio](./test-studio.md#the-curve-is-measured-and-it-improves), which
-> also covers a separate limitation on the reading side.
+> different things across models and assessment settings but not across prompt
+> tweaks. Each run records the profile's **confidence fingerprint** (a hash of the
+> confidence-relevant configuration: extraction model and sampling, assessment)
+> and curves are keyed by profile *and* fingerprint, with the profile's pooled curve
+> as a reported fallback. So after changing a profile's extraction model or
+> assessment configuration, the estimate does not inherit the old curve silently:
+> it says it is using the pooled curve until the new revision family has
+> observations of its own — treat the estimate as provisional while that note is
+> showing. Revisions cut before this existed contribute only to the pooled curve.
+> See the fuller note in
+> [Test Studio](./test-studio.md#the-curve-is-measured-and-it-improves).
 
 ### Retention
 

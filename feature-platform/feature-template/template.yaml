@@ -57,8 +57,10 @@ Parameters:
 
   LogLevel:
     Type: String
-    Default: INFO
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    Default: WARN
+    # WARN is the host's spelling and is forwarded by the root stack; WARNING is
+    # kept so an already-deployed feature stack that chose it still updates.
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
 
   PermissionsBoundaryArn:
     Type: String
@@ -157,6 +159,8 @@ Resources:
             ApiId: !Ref FeatureApi
             Path: /{proxy+}
             Method: GET
+      LoggingConfig:
+        LogGroup: !Ref FeatureApiFunctionLogGroup
 
   ###########################################################################
   # CloudWatch Log Groups — explicit retention to avoid never-expire default
@@ -164,13 +168,13 @@ Resources:
   FeatureApiFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${FeatureApiFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/FeatureApiFunction'
       RetentionInDays: 30
 
   UiDeployerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${UiDeployerFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/UiDeployerFunction'
       RetentionInDays: 30
 
   ###########################################################################
@@ -264,6 +268,8 @@ Resources:
           # authority the extension honours, rather than whatever the stack is
           # pointed at — and can flag it when its own catalog disagrees.
           FEATURE_LICENSE_MODE: '<FEATURE_LICENSE_MODE_TOKEN>'
+      LoggingConfig:
+        LogGroup: !Ref UiDeployerFunctionLogGroup
 
   RegisterFeatureResource:
     Type: AWS::CloudFormation::CustomResource

@@ -206,6 +206,22 @@ Parameters:
       to the external IdP for authentication instead of seeing the Cognito login page first.
       Native Cognito username/password login is still available by navigating directly to the Cognito hosted UI.
 
+  ExternalIdPEmailMutable:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      Set to 'true' for ALL NEW deployments that use an external identity provider (ExternalIdPType=SAML or OIDC).
+      Cognito rewrites the IdP-mapped 'email' attribute on every federated sign-in, and with the default
+      'false' the pool's email attribute is immutable, so a federated user can sign in exactly ONCE
+      (the second sign-in fails with "user.email: Attribute cannot be updated").
+      IMPORTANT: this flag is fixed when the User Pool is created and CANNOT be changed afterwards -
+      changing it on an existing stack fails the update and can leave the stack in UPDATE_ROLLBACK_FAILED.
+      Keep the value the stack was created with. The default stays 'false' so updates of existing stacks are
+      unaffected; native (username/password) sign-in works either way.
+
   # Custom Configuration Path
 
   CustomConfigPath:
@@ -460,6 +476,25 @@ Parameters:
       produce alarms you consider normal.
     MinValue: 60
 
+  WorkflowExecutionTimeoutSeconds:
+    Type: Number
+    Default: 21600
+    Description: >-
+      Execution-level timeout of the document processing workflow, in seconds
+      (default 21600 = 6 hours). Any execution still running after this is ended
+      TIMED_OUT: its concurrency slot is released, the document is marked FAILED
+      with WorkflowStatus TIMED_OUT, and WorkflowTimeoutsAlarm fires. Without it
+      a stalled execution runs for up to one year while holding a slot. Measured
+      on a production stack over 30 days, the longest successful execution took
+      37 minutes (median under one minute), so 6 hours is roughly ten times
+      that. It does not shorten a single state's roughly five-hour Lambda retry
+      storm, which the per-state Retry policies end on their own; it does bound
+      a hang, a lost callback, or a storm that compounds across states. Raise it
+      if legitimate large-packet runs approach it: tripping it discards the
+      execution's completed work.
+    MinValue: 300
+    MaxValue: 31536000
+
   BDACallbackTimeoutSeconds:
     Type: Number
     Default: 7200
@@ -510,7 +545,7 @@ Parameters:
   # Logging configuration
   LogLevel:
     Type: String
-    Default: INFO
+    Default: WARN
     AllowedValues:
       - DEBUG
       - INFO
@@ -1244,6 +1279,9 @@ Conditions:
       - !Condition HasExternalIdP
       - !Equals [ !Ref ExternalIdPType, "OIDC" ]
   HasExternalIdPGroupMapping: !Not [ !Equals [ !Ref ExternalIdPGroupAttributeName, "" ] ]
+  # Schema flags are fixed at User Pool creation, so this condition MUST resolve to
+  # the value the pool was created with on every update (see ExternalIdPEmailMutable).
+  ExternalIdPEmailIsMutable: !Equals [ !Ref ExternalIdPEmailMutable, "true" ]
   ShouldMapExternalIdPGroups:
     !And
       - !Condition HasExternalIdP
@@ -1420,6 +1458,7 @@ Metadata:
           - ExternalIdPReviewerGroupName
           - ExternalIdPViewerGroupName
           - ExternalIdPAutoLogin
+          - ExternalIdPEmailMutable
       - Label:
           default: "Web UI Hosting"
         Parameters:
@@ -1484,6 +1523,7 @@ Metadata:
           - ErrorThreshold
           - ExecutionTimeThresholdMs
           - QueueStalledAgeThresholdSeconds
+          - WorkflowExecutionTimeoutSeconds
           - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
@@ -1536,6 +1576,8 @@ Metadata:
         default: "Bedrock Hub-Account Role Session Name"
       PermissionsBoundaryArn:
         default: "Permissions Boundary ARN"
+      WorkflowExecutionTimeoutSeconds:
+        default: "Workflow Execution Timeout (seconds; default 6 hours)"
       BDACallbackTimeoutSeconds:
         default: "BDA Callback Timeout (seconds)"
       MaxConcurrentWorkflows:
@@ -1618,6 +1660,8 @@ Metadata:
         default: "Bastion Host - Security Group ID (required when Bastion Host is enabled)"
       BastionHostAmiId:
         default: "Bastion Host - AMI ID (SSM parameter path, leave default for Amazon Linux 2)"
+      ExternalIdPEmailMutable:
+        default: "Federated sign-in: mutable email attribute (set 'true' for ALL new deployments using an external IdP; fixed at stack creation, do not change on an existing stack)"
 
 Resources:
   # Custom resource to enforce max length of StackName - prevent downstream failures
@@ -1932,6 +1976,20 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey*
               Resource: !GetAtt CustomerManagedEncryptionKey.Arn
+      LoggingConfig:
+        LogGroup: !Ref BatchPreProcessorFunctionLogGroup
+
+  # Data-plane Lambda (idp:plane=data, Jobs API batch ingest), so its log volume
+  # scales with document throughput. It had no log group of its own, which meant
+  # Lambda auto-created one with NO retention policy and those logs were billed
+  # indefinitely (issue #826).
+  BatchPreProcessorFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DeployApiGateway
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/BatchPreProcessorFunction"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
 
   ##########################################################################
   # Bastion Host (optional - for testing Private API Gateway)
@@ -2531,7 +2589,7 @@ Resources:
           - id: W92
             reason: "Function does not require reserved concurrency as it scales based on demand"
           - id: F38
-            reason: "PassRole permission is required to delegate the execution role to the Bedrock AgentCore Gateway service securely"
+            reason: "PassRole is required to delegate the execution role to the Bedrock AgentCore Gateway service, and is scoped to the single AgentCoreGatewayExecutionRole ARN"
           - id: F3
             reason: "Wildcard actions required for AgentCore Gateway lifecycle management (create, update, delete) and CloudWatch Logs delivery configuration"
           - id: W11
@@ -2573,12 +2631,22 @@ Resources:
                 - logs:DeleteDeliveryDestination
                 - logs:DescribeDeliveryDestinations
                 - logs:DescribeDeliverySources
-                - iam:PassRole
-                - iam:CreateRole
-                - iam:AttachRolePolicy
-                - iam:GetRole
                 - cognito-idp:DescribeUserPool
               Resource: "*"
+            # AppSec finding b2b397a9 (Security Invariant scenario 1.1,
+            # iam-role-without-privilege-escalation): this function is a
+            # configuration custom resource and must not be able to grant itself
+            # permissions. Its IAM access is limited to reading and passing the
+            # gateway execution role that CloudFormation creates for it — no
+            # iam:CreateRole, iam:AttachRolePolicy, iam:PutRolePolicy or
+            # iam:UpdateAssumeRolePolicy. The execution role's trust policy and
+            # inline policy are defined by AgentCoreGatewayExecutionRole below,
+            # so the function never needs to mutate any role.
+            - Effect: Allow
+              Action:
+                - iam:GetRole
+                - iam:PassRole
+              Resource: !GetAtt AgentCoreGatewayExecutionRole.Arn
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -2727,6 +2795,7 @@ Resources:
         LogLevel: !Ref LogLevel
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
         BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
+        WorkflowExecutionTimeoutSeconds: !Ref WorkflowExecutionTimeoutSeconds
         BedrockGuardrailId: !Ref BedrockGuardrailId
         BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
         BedrockHubRoleArn: !Ref BedrockHubRoleArn
@@ -2844,7 +2913,8 @@ Resources:
         WorkingBucketName: !Ref WorkingBucket
         DiscoveryBucketName: !Ref DiscoveryBucket
         MultiDocDiscoveryStateMachineArn: !Ref MultiDocDiscoveryStateMachine
-        
+        StateMachineArn: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+
         # SQS Queues
         DocumentQueueUrl: !Ref DocumentQueue
         DiscoveryQueueUrl: !Ref DiscoveryQueue
@@ -3091,6 +3161,11 @@ Resources:
         # feature release (issue #697).
         IDPCommonBaseLayerArn: !Ref IDPCommonBaseLayer
         LogLevel: !Ref LogLevel
+        # Retention for the six UI-facing resolver Lambdas' log groups. Without
+        # this the nested stack's resolvers logged to Lambda's auto-created
+        # groups, which carry NO retention policy, so their logs accumulated
+        # and were billed indefinitely (issue #826).
+        LogRetentionDays: !Ref LogRetentionDays
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,
         # accounts with an SCP that requires a boundary on every role fail
@@ -3204,6 +3279,16 @@ Resources:
 
   IDPCommonBaseLayer:
     Type: AWS::Lambda::LayerVersion
+    Metadata:
+      # publish.py substitutes this placeholder at build time. cfn-lint sees the
+      # literal token and rejects it as an invalid bucket name (E1161/E3031);
+      # there is nothing to fix, so suppress it HERE rather than disabling those
+      # rule classes across all 30 templates.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1161
+            - E3031
     Properties:
       LayerName: !Sub "${AWS::StackName}-idp-common-base"
       Description: "IDP Common base layer (core + docs_service + image)"
@@ -3216,6 +3301,16 @@ Resources:
 
   IDPCommonReportingLayer:
     Type: AWS::Lambda::LayerVersion
+    Metadata:
+      # publish.py substitutes this placeholder at build time. cfn-lint sees the
+      # literal token and rejects it as an invalid bucket name (E1161/E3031);
+      # there is nothing to fix, so suppress it HERE rather than disabling those
+      # rule classes across all 30 templates.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1161
+            - E3031
     Properties:
       LayerName: !Sub "${AWS::StackName}-idp-common-reporting"
       Description: "IDP Common reporting layer (core + docs_service + reporting)"
@@ -3228,6 +3323,16 @@ Resources:
 
   IDPCommonAgentsLayer:
     Type: AWS::Lambda::LayerVersion
+    Metadata:
+      # publish.py substitutes this placeholder at build time. cfn-lint sees the
+      # literal token and rejects it as an invalid bucket name (E1161/E3031);
+      # there is nothing to fix, so suppress it HERE rather than disabling those
+      # rule classes across all 30 templates.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1161
+            - E3031
     Properties:
       LayerName: !Sub "${AWS::StackName}-idp-common-agents"
       Description: "IDP Common agents layer (core + agents)"
@@ -7482,6 +7587,28 @@ Resources:
         - !Ref AlertsTopic
       TreatMissingData: notBreaching
 
+  # An execution that hits WorkflowExecutionTimeoutSeconds ends TIMED_OUT, which
+  # is a distinct metric from ExecutionsFailed, so WorkflowErrorsAlarm cannot see
+  # it. Any timed-out execution is worth a look: either work hung (the bound did
+  # its job) or a legitimately long packet needs a larger bound.
+  WorkflowTimeoutsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a workflow execution exceeds WorkflowExecutionTimeoutSeconds (${WorkflowExecutionTimeoutSeconds}s) and is ended TIMED_OUT"
+      MetricName: ExecutionsTimedOut
+      Namespace: AWS/States
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+      AlarmActions:
+        - !Ref AlertsTopic
+      TreatMissingData: notBreaching
+
   SlowExecutionsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -8157,6 +8284,13 @@ Resources:
                       }
                     ],
                     [
+                      {
+                        "expression": "m4/PERIOD(m4)*60",
+                        "label": "Timed out per Minute",
+                        "id": "e4"
+                      }
+                    ],
+                    [
                       "AWS/States",
                       "ExecutionsStarted",
                       "StateMachineArn",
@@ -8185,6 +8319,17 @@ Resources:
                       ".",
                       {
                         "id": "m3",
+                        "stat": "Sum",
+                        "visible": false
+                      }
+                    ],
+                    [
+                      ".",
+                      "ExecutionsTimedOut",
+                      ".",
+                      ".",
+                      {
+                        "id": "m4",
                         "stat": "Sum",
                         "visible": false
                       }
@@ -10120,10 +10265,29 @@ Resources:
           RequireNumbers: true
           RequireSymbols: true
           RequireUppercase: true
+      # Federated `email` mutability (#835). Cognito re-applies the identity
+      # provider's AttributeMapping on EVERY federated sign-in, and an immutable
+      # attribute cannot be rewritten even with an identical value, so with
+      # Mutable: false a federated user can sign in exactly once. Mutable: true
+      # is the fix — but a schema flag is fixed at pool creation: changing it on
+      # an existing pool fails the update with a misleading "Required custom
+      # attributes are not supported" and can leave the stack in
+      # UPDATE_ROLLBACK_FAILED (11fd05dbd flipped it, 3bed47097 reverted it).
+      # Hence the flag is parameter-gated, defaulting to the historical false so
+      # existing stacks resolve to the value their pool was created with.
+      #
+      # When the attribute IS mutable, a native user's own access token (SRP
+      # sign-in carries aws.cognito.signin.user.admin) can rewrite `email` via
+      # UpdateUserAttributes, and the API resolvers key config scope
+      # (allowedConfigVersions, UsersTable EmailIndex) on the token's email
+      # claim. UserAttributeUpdateSettings below therefore makes a self-service
+      # email change take effect only after the NEW address is verified, so a
+      # user cannot adopt an address they do not control. Gated on the same
+      # condition so an existing pool sees no property change at all.
       Schema:
         - Name: email
           AttributeDataType: String
-          Mutable: false
+          Mutable: !If [ ExternalIdPEmailIsMutable, true, false ]
           Required: true
         - Name: idp_groups
           AttributeDataType: String
@@ -10131,6 +10295,11 @@ Resources:
           Required: false
           StringAttributeConstraints:
             MaxLength: "2048"
+      UserAttributeUpdateSettings: !If
+        - ExternalIdPEmailIsMutable
+        - AttributesRequireVerificationBeforeUpdate:
+            - email
+        - !Ref AWS::NoValue
       UsernameConfiguration:
         CaseSensitive: false
 
@@ -10211,6 +10380,30 @@ Resources:
         - family_name
         - !If
           - HasExternalIdP
+          - custom:idp_groups
+          - !Ref AWS::NoValue
+      # Attribute WRITE permissions. Left unset, Cognito's default lets a user's
+      # own access token write every mutable attribute via UpdateUserAttributes —
+      # including custom:idp_groups, the attribute the pre-token trigger reads to
+      # assign Cognito groups. Naming the writable set explicitly removes that
+      # self-write path for every attribute the application does not need
+      # (attempting one then fails with NotAuthorizedException).
+      #
+      # Attributes mapped from an external IdP MUST be listed: Cognito applies the
+      # provider's AttributeMapping as this app client and fails the federated
+      # sign-in if the client cannot write a mapped attribute. That is why
+      # custom:idp_groups is listed when group mapping is configured; what stops a
+      # self-set value being trusted there is the trigger's provenance and
+      # freshness checks (see ExternalIdPGroupMappingFunction), not this list.
+      #
+      # The Web UI writes no user attributes, so only IdP-mapped attributes need
+      # write access. Add an entry here if that changes.
+      WriteAttributes:
+        - email
+        - given_name
+        - family_name
+        - !If
+          - ShouldMapExternalIdPGroups
           - custom:idp_groups
           - !Ref AWS::NoValue
       RefreshTokenValidity: 30
@@ -10525,11 +10718,43 @@ Resources:
           AUTHOR_GROUP_NAME: !Ref ExternalIdPAuthorGroupName
           REVIEWER_GROUP_NAME: !Ref ExternalIdPReviewerGroupName
           VIEWER_GROUP_NAME: !Ref ExternalIdPViewerGroupName
+          # The only provider whose assertions may grant groups. The trigger
+          # requires the signing-in user to be linked to it before it reads
+          # custom:idp_groups.
+          EXTERNAL_IDP_NAME: !Ref ExternalIdPName
       LoggingConfig:
         LogGroup: !Ref ExternalIdPGroupMappingFunctionLogGroup
       Policies: []
+      # MAINTENANCE NOTE: this inline handler is what deploys. A standalone copy
+      # with the same logic lives at src/lambda/external_idp_group_mapping/index.py
+      # and carries the unit tests (test_index.py). Change both together.
       InlineCode: |
-        """Post-authentication Lambda trigger to map external IdP groups to Cognito groups."""
+        """Pre-token-generation Lambda trigger to map external IdP groups to Cognito groups.
+
+        The group claim arrives as the `custom:idp_groups` user-pool attribute, written
+        by Cognito's identity-provider AttributeMapping at each federated sign-in. That
+        attribute is `Mutable: true` and — when it is IdP-mapped — must also be listed in
+        the app client's `WriteAttributes` (Cognito writes mapped attributes *as the app
+        client*, and fails the sign-in if it lacks write access). A user's own access
+        token can therefore write it via `UpdateUserAttributes`.
+
+        Two checks keep a self-set value from granting groups:
+
+        1. Provenance. The user must be federated through the configured provider
+           (`EXTERNAL_IDP_NAME`). Provenance comes from the Cognito-managed `identities`
+           attribute read back via `AdminGetUser`, which no client can write. A native
+           user who sets `custom:idp_groups` on themselves has no `identities` entry and
+           is ignored.
+        2. Freshness. Only a fresh sign-in is honoured, never a token refresh. At a fresh
+           federated sign-in Cognito has just rewritten the mapped attribute from the
+           assertion, so the value read here is the IdP's. On a refresh the stored
+           attribute may be whatever the user last wrote, so the mapping is skipped and
+           the token carries the group membership already synced to Cognito.
+
+        Both checks fail closed: anything unverified returns the event untouched, which
+        leaves existing group membership alone and adds no token override.
+        """
+        import json
         import os
         import logging
         import boto3
@@ -10553,10 +10778,74 @@ Resources:
 
         COGNITO_GROUPS = set(GROUP_MAPPING.values())
 
+        # Name of the Cognito identity provider whose assertions may grant groups.
+        # Empty means no provider is trusted, so no sign-in can be granted groups.
+        EXTERNAL_IDP_NAME = os.environ.get("EXTERNAL_IDP_NAME", "").strip()
+
+        # Trigger sources that represent a fresh sign-in, where Cognito has just
+        # applied the provider's AttributeMapping. TokenGeneration_RefreshTokens is
+        # deliberately absent: a refresh re-reads whatever is stored on the user,
+        # which the user may have written themselves. Anything not listed is
+        # treated as untrusted.
+        FRESH_SIGN_IN_TRIGGERS = frozenset({
+            "TokenGeneration_HostedAuth",
+            "TokenGeneration_Authentication",
+            "TokenGeneration_NewPasswordChallenge",
+            "TokenGeneration_AuthenticateDevice",
+        })
+
+
+        def is_federated_via_configured_idp(user_pool_id, username):
+            """Return True only if `username` is linked to the configured IdP.
+
+            Reads the Cognito-managed `identities` attribute through AdminGetUser
+            rather than trusting the trigger event, so the answer comes from a field
+            no client can write. Any failure returns False.
+            """
+            if not EXTERNAL_IDP_NAME:
+                logger.warning("EXTERNAL_IDP_NAME is not set; refusing to map groups for any sign-in")
+                return False
+
+            try:
+                response = cognito.admin_get_user(UserPoolId=user_pool_id, Username=username)
+            except Exception as e:
+                logger.error(f"Failed to read user {username} for provenance check: {e}")
+                return False
+
+            raw_identities = ""
+            for attr in response.get("UserAttributes", []):
+                if attr.get("Name") == "identities":
+                    raw_identities = attr.get("Value", "")
+                    break
+
+            if not raw_identities:
+                logger.warning(f"User {username} has no federated identities; ignoring custom:idp_groups")
+                return False
+
+            try:
+                identities = json.loads(raw_identities)
+            except Exception as e:
+                logger.error(f"Could not parse identities for user {username}: {e}")
+                return False
+
+            if not isinstance(identities, list):
+                logger.error(f"Unexpected identities shape for user {username}")
+                return False
+
+            for identity in identities:
+                if isinstance(identity, dict) and identity.get("providerName") == EXTERNAL_IDP_NAME:
+                    return True
+
+            logger.warning(
+                f"User {username} is not federated through '{EXTERNAL_IDP_NAME}'; ignoring custom:idp_groups"
+            )
+            return False
+
 
         def handler(event, context):
             """Handle pre-token-generation trigger from Cognito."""
-            logger.info(f"Pre-token trigger source: {event.get('triggerSource')}")
+            trigger_source = event.get("triggerSource")
+            logger.info(f"Pre-token trigger source: {trigger_source}")
 
             # Extract user pool ID from the event (avoids circular CloudFormation dependency)
             user_pool_id = event.get("userPoolId", "")
@@ -10568,6 +10857,19 @@ Resources:
                 logger.info(f"No IdP groups claim for user {username}")
                 return event
 
+            # A refresh re-reads the stored attribute, which the user's own access
+            # token may have written. Only a fresh sign-in has just had it rewritten
+            # from the provider's assertion.
+            if trigger_source not in FRESH_SIGN_IN_TRIGGERS:
+                logger.info(
+                    f"Trigger source {trigger_source} is not a fresh sign-in; "
+                    f"leaving groups for user {username} unchanged"
+                )
+                return event
+
+            if not is_federated_via_configured_idp(user_pool_id, username):
+                return event
+
             # Parse IdP groups - handle comma-separated, JSON array, or single value
             idp_groups = []
             idp_groups_raw = idp_groups_raw.strip()
@@ -10575,7 +10877,6 @@ Resources:
                 logger.info(f"No IdP groups claim for user {username}")
                 return event
             if idp_groups_raw.startswith("["):
-                import json
                 try:
                     idp_groups = json.loads(idp_groups_raw)
                 except Exception:
@@ -10627,13 +10928,25 @@ Resources:
 
             logger.info(f"User {username} group sync complete. Groups: {target_groups}")
 
-            # Inject groups into the token so they are available immediately on first sign-in
-            event.setdefault("response", {})
-            event["response"]["claimsAndScopeOverrideDetails"] = {
-                "groupOverrideDetails": {
-                    "groupsToOverride": list(target_groups)
-                }
+            # Inject groups into the token so they are available immediately on
+            # first sign-in, rather than only from the second token onwards.
+            #
+            # BOTH response keys are emitted because the key Cognito reads depends
+            # on the pool's PreTokenGenerationConfig.LambdaVersion, and the two
+            # names are not interchangeable:
+            #   V1_0      -> claimsOverrideDetails
+            #   V2_0/V3_0 -> claimsAndScopeOverrideDetails
+            # This template registers the trigger with `PreTokenGeneration:`,
+            # which is V1_0, so emitting only the V2 name meant the override was
+            # silently ignored and a first sign-in produced a token with no group
+            # claim. Cognito ignores an unrecognised key, so writing both is safe
+            # and survives a later move to V2_0/V3_0.
+            group_override = {
+                "groupOverrideDetails": {"groupsToOverride": list(target_groups)}
             }
+            event.setdefault("response", {})
+            event["response"]["claimsOverrideDetails"] = group_override
+            event["response"]["claimsAndScopeOverrideDetails"] = group_override
 
             return event
 
@@ -10659,6 +10972,11 @@ Resources:
         Statement:
           - Effect: Allow
             Action:
+              # AdminGetUser backs the trigger's provenance check: it reads the
+              # Cognito-managed `identities` attribute to confirm the signing-in
+              # user is federated through the configured provider before any
+              # group is granted from custom:idp_groups.
+              - cognito-idp:AdminGetUser
               - cognito-idp:AdminListGroupsForUser
               - cognito-idp:AdminAddUserToGroup
               - cognito-idp:AdminRemoveUserFromGroup
@@ -11018,6 +11336,11 @@ Resources:
 
   CognitoUserPoolEmailDomainVerifyFunctionLogGroup:
     Type: AWS::Logs::LogGroup
+    # Must carry the same Condition as the function it serves, or the group is
+    # created on stacks where the function does not exist and sits empty
+    # forever. Caught by the Condition-parity rule in
+    # scripts/tests/test_lambda_log_groups.py.
+    Condition: ShouldAllowSignUpEmailDomain
     Properties:
       KmsKeyId: !GetAtt CustomerManagedEncryptionKey.Arn
       RetentionInDays: !Ref LogRetentionDays
@@ -11864,6 +12187,10 @@ Resources:
       Name: !Sub "${AWS::StackName}-MultiDocDiscovery"
       DefinitionUri: src/lambda/multi_doc_discovery/statemachine.asl.json
       DefinitionSubstitutions:
+        # Partition for service-integration ARNs (arn:${Partition}:states:::...).
+        # A hardcoded 'aws' is rejected by Step Functions in GovCloud ("resource
+        # belongs to a different partition"); see patterns/unified/template.yaml.
+        Partition: !Ref AWS::Partition
         DiscoveryTrackingTable: !Ref DiscoveryTrackingTable
         PrepareFunction: !GetAtt MultiDocDiscoveryPrepareFunction.Arn
         EmbedFunction: !GetAtt MULTIDOCDISCOVERYSTACK.Outputs.EmbedFunctionArn
@@ -12016,9 +12343,44 @@ Resources:
             #     attacker-controlled https:// origin is blocked. Realtime
             #     subscriptions (wss) and localhost:* (dev) retained. The
             #     `amplify://` and `blob:` schemes are not used.
+            #   - script-src: the blanket `https:` source is GONE (AppSec review
+            #     of v0.6.x — UI.T01: it permitted script from ANY https origin,
+            #     which defeats the directive). The only cross-origin source left
+            #     is the one host the app actually loads script from:
+            #     cdn.jsdelivr.net. `@monaco-editor/react` does NOT bundle
+            #     Monaco — its loader fetches
+            #     https://cdn.jsdelivr.net/npm/monaco-editor@<version>/min/vs at
+            #     runtime and nothing in src/ui calls `loader.config()` to point
+            #     it at a self-hosted copy, so dropping `https:` outright blanks
+            #     every Monaco editor in the UI (Configuration, Pricing, Model
+            #     limits, schema preview, page-text editor, document viewer).
+            #     Self-hosting Monaco out of the Web UI bucket would let this
+            #     last source go too; until then it is pinned to ONE origin —
+            #     and to that origin's `/npm/` prefix, which excludes
+            #     jsDelivr's `/gh/` and `/wp/` proxies (arbitrary GitHub repos
+            #     and WordPress plugins). A CSP path only prefix-matches when it
+            #     ends in `/`, and the version is chosen by
+            #     @monaco-editor/loader rather than by us, so pinning the
+            #     version too would turn a dependency bump into a blank editor.
+            #   - style-src's `https:` is NOT narrowed here on purpose: this
+            #     change is scoped to the script-src finding, a stylesheet is a
+            #     materially weaker primitive than a script, and the narrowing
+            #     is only observable by loading the app. It rides with the
+            #     Monaco self-hosting follow-up.
             #   - script-src/style-src: 'unsafe-inline' and 'unsafe-eval'
             #     retained pending Monaco editor compatibility work
             #     (tracked as Talos finding #12 phase 2).
+            #   - KEEP IN SYNC with the APIGateway-hosting copy of this policy in
+            #     nested/api-resolvers/template.yaml (Mappings -> WebUiSecurity ->
+            #     ContentSecurityPolicy), which serves the SPA when there is no
+            #     CloudFront distribution (GovCloud / private-network). The only
+            #     intended difference is `frame-ancestors`: 'self' here (matching
+            #     FrameOptions SAMEORIGIN below) vs 'none' there (matching that
+            #     mode's X-Frame-Options: DENY).
+            #     scripts/tests/test_csp_policies_in_sync.py enforces this — it
+            #     compares the two policies directive-by-directive, so editing
+            #     one alone fails the build instead of quietly leaving GovCloud
+            #     deployments a directive short.
             #   - img-src: retains `https:` to allow user-supplied
             #     document thumbnails from any S3 / CloudFront origin.
             #   - connect-src: includes https://*.on.aws for the chat streaming
@@ -12040,7 +12402,7 @@ Resources:
             #     any subdomain depth, which is why the app worked throughout.
             #     Removed rather than corrected, so the policy says what it does.
             #     Do not re-add a host with a wildcard anywhere but the front.
-            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
+            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;"
 
           StrictTransportSecurity:
             Override: true
@@ -13320,6 +13682,10 @@ Resources:
       Name: !Sub "${AWS::StackName}-FinetuningStateMachine"
       DefinitionUri: src/lambda/finetuning_state_machine/definition.json
       DefinitionSubstitutions:
+        # Partition for service-integration ARNs (arn:${Partition}:states:::...).
+        # A hardcoded 'aws' is rejected by Step Functions in GovCloud ("resource
+        # belongs to a different partition"); see patterns/unified/template.yaml.
+        Partition: !Ref AWS::Partition
         FinetuningListDocumentsArn: !GetAtt FinetuningListDocumentsFunction.Arn
         FinetuningProcessDocumentArn: !GetAtt FinetuningProcessDocumentFunction.Arn
         FinetuningMergeDataArn: !GetAtt FinetuningMergeDataFunction.Arn

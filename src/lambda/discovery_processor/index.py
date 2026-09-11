@@ -236,11 +236,22 @@ def process_discovery_job(job_id, document_key, ground_truth_key, bucket, versio
                 or "Unknown"
             )
 
+        # #765: the sample appeared to hold several records of the class. Carried as a
+        # suggestion on the job (JSON string); discovery never sets the class flag.
+        multi_instance_hint = (result or {}).get("multi_instance_hint")
+        multi_instance_hint_json = json.dumps(multi_instance_hint) if multi_instance_hint else None
+
         # Progress: Saving to configuration (already done inside ClassesDiscovery)
         update_job_status(job_id, 'IN_PROGRESS', status_message=f"Discovered class '{discovered_class_name}' — saving to configuration...")
 
         # Update job status to COMPLETED with discovered class name
         success_message = f"Discovery complete. Added document class '{discovered_class_name}'"
+        if multi_instance_hint:
+            success_message += (
+                f". The sample appears to contain {multi_instance_hint.get('instance_count')} "
+                f"records of this class — open the job details to review the "
+                f"several-documents-per-section suggestion"
+            )
         optimization_triggered = False
 
         # Trigger async blueprint optimization if conditions are met:
@@ -300,14 +311,16 @@ def process_discovery_job(job_id, document_key, ground_truth_key, bucket, versio
                 job_id,
                 'OPTIMIZATION_IN_PROGRESS',
                 discovered_class_name=discovered_class_name,
-                status_message=success_message
+                status_message=success_message,
+                multi_instance_hint=multi_instance_hint_json,
             )
         else:
             update_job_status(
                 job_id,
                 'COMPLETED',
                 discovered_class_name=discovered_class_name,
-                status_message=success_message
+                status_message=success_message,
+                multi_instance_hint=multi_instance_hint_json,
             )
 
         logger.info(f"Successfully processed discovery job: {job_id}, discovered class: {discovered_class_name}")
@@ -439,7 +452,7 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None):
         raise
 
 
-def update_job_status_via_appsync(job_id, status, error_message=None, discovered_class_name=None, status_message=None):
+def update_job_status_via_appsync(job_id, status, error_message=None, discovered_class_name=None, status_message=None, multi_instance_hint=None):
     """
     Update discovery job status via AppSync GraphQL mutation to trigger subscriptions.
     
@@ -453,18 +466,19 @@ def update_job_status_via_appsync(job_id, status, error_message=None, discovered
     try:
         if not APPSYNC_API_URL:
             logger.warning("APPSYNC_API_URL not configured, falling back to direct DynamoDB update")
-            update_job_status_direct(job_id, status, error_message, discovered_class_name, status_message)
+            update_job_status_direct(job_id, status, error_message, discovered_class_name, status_message, multi_instance_hint)
             return
 
         # Prepare the GraphQL mutation with all optional fields
         mutation = """
-        mutation UpdateDiscoveryJobStatus($jobId: ID!, $status: String!, $errorMessage: String, $discoveredClassName: String, $statusMessage: String) {
-            updateDiscoveryJobStatus(jobId: $jobId, status: $status, errorMessage: $errorMessage, discoveredClassName: $discoveredClassName, statusMessage: $statusMessage) {
+        mutation UpdateDiscoveryJobStatus($jobId: ID!, $status: String!, $errorMessage: String, $discoveredClassName: String, $statusMessage: String, $multiInstanceHint: String) {
+            updateDiscoveryJobStatus(jobId: $jobId, status: $status, errorMessage: $errorMessage, discoveredClassName: $discoveredClassName, statusMessage: $statusMessage, multiInstanceHint: $multiInstanceHint) {
                 jobId
                 status
                 errorMessage
                 discoveredClassName
                 statusMessage
+                multiInstanceHint
             }
         }
         """
@@ -483,6 +497,8 @@ def update_job_status_via_appsync(job_id, status, error_message=None, discovered
             variables["discoveredClassName"] = discovered_class_name
         if status_message:
             variables["statusMessage"] = status_message
+        if multi_instance_hint:
+            variables["multiInstanceHint"] = multi_instance_hint
         
         # Set up AWS authentication
         region = session.region_name or os.environ.get('AWS_REGION', 'us-east-1')
@@ -538,11 +554,11 @@ def update_job_status_via_appsync(job_id, status, error_message=None, discovered
         import traceback
         logger.error(f"Error traceback: {traceback.format_exc()}")
         # Fall back to direct DynamoDB update
-        update_job_status_direct(job_id, status, error_message, discovered_class_name, status_message)
+        update_job_status_direct(job_id, status, error_message, discovered_class_name, status_message, multi_instance_hint)
         return False
 
 
-def update_job_status_direct(job_id, status, error_message=None, discovered_class_name=None, status_message=None):
+def update_job_status_direct(job_id, status, error_message=None, discovered_class_name=None, status_message=None, multi_instance_hint=None):
     """
     Fallback method to update discovery job status directly in DynamoDB.
     Used when AppSync is not available or fails.
@@ -581,6 +597,10 @@ def update_job_status_direct(job_id, status, error_message=None, discovered_clas
             update_expression += ", statusMessage = :status_message"
             expression_attribute_values[':status_message'] = status_message
 
+        if multi_instance_hint:
+            update_expression += ", multiInstanceHint = :multi_instance_hint"
+            expression_attribute_values[':multi_instance_hint'] = multi_instance_hint
+
         table.update_item(
             Key={'jobId': job_id},
             UpdateExpression=update_expression,
@@ -596,8 +616,8 @@ def update_job_status_direct(job_id, status, error_message=None, discovered_clas
 
 
 # Keep the old function name for backward compatibility
-def update_job_status(job_id, status, error_message=None, discovered_class_name=None, status_message=None):
+def update_job_status(job_id, status, error_message=None, discovered_class_name=None, status_message=None, multi_instance_hint=None):
     """
     Update discovery job status. This now uses AppSync by default.
     """
-    update_job_status_via_appsync(job_id, status, error_message, discovered_class_name, status_message)
+    update_job_status_via_appsync(job_id, status, error_message, discovered_class_name, status_message, multi_instance_hint)

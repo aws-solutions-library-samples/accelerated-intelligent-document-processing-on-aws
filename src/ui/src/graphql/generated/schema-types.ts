@@ -386,6 +386,7 @@ export type DiscoveryJob = {
   errorMessage?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
   statusMessage?: Maybe<Scalars['String']['output']>;
@@ -408,6 +409,7 @@ export type DiscoveryJobListItem = {
   groundTruthKey?: Maybe<Scalars['String']['output']>;
   jobId: Scalars['ID']['output'];
   jobType?: Maybe<Scalars['String']['output']>;
+  multiInstanceHint?: Maybe<Scalars['String']['output']>;
   pageRange?: Maybe<Scalars['String']['output']>;
   reflectionReport?: Maybe<Scalars['String']['output']>;
   status: Scalars['String']['output'];
@@ -791,6 +793,7 @@ export type Mutation = {
   completeSectionReview?: Maybe<Document>;
   copyToBaseline: CopyToBaselineResponse;
   createDocument?: Maybe<CreateDocumentOutput>;
+  createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
@@ -976,6 +979,13 @@ export type MutationCopyToBaselineArgs = {
 
 export type MutationCreateDocumentArgs = {
   input: CreateDocumentInput;
+};
+
+
+export type MutationCreateEmptyTestSetArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  documentClassType?: InputMaybe<DocumentClassType>;
+  name: Scalars['String']['input'];
 };
 
 
@@ -1282,6 +1292,7 @@ export type MutationUpdateDiscoveryJobStatusArgs = {
   errorMessage?: InputMaybe<Scalars['String']['input']>;
   jobId: Scalars['ID']['input'];
   jobType?: InputMaybe<Scalars['String']['input']>;
+  multiInstanceHint?: InputMaybe<Scalars['String']['input']>;
   reflectionReport?: InputMaybe<Scalars['String']['input']>;
   status: Scalars['String']['input'];
   statusMessage?: InputMaybe<Scalars['String']['input']>;
@@ -1853,7 +1864,11 @@ export type ReviewEffortEstimate = {
   baselineError: Scalars['Float']['output'];
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
+  confidenceFingerprint?: Maybe<Scalars['String']['output']>;
+  confidenceFingerprintSource?: Maybe<Scalars['String']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
+  configVersionSource?: Maybe<Scalars['String']['output']>;
+  curveSource?: Maybe<Scalars['String']['output']>;
   docsToReview: Scalars['Int']['output'];
   docsToReviewHigh: Scalars['Int']['output'];
   docsToReviewLow: Scalars['Int']['output'];
@@ -2002,6 +2017,7 @@ export type SyncBdaIdpResponse = {
 export type TestRun = {
   accuracyBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   averageConfidence?: Maybe<Scalars['Float']['output']>;
+  avgWeightedOverallScore?: Maybe<Scalars['Float']['output']>;
   classificationErrors?: Maybe<Scalars['AWSJSON']['output']>;
   completedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   completedFiles?: Maybe<Scalars['Int']['output']>;

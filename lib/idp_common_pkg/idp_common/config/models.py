@@ -336,13 +336,14 @@ class AgenticConfig(BaseModel):
             "A/B knob, not a recommendation. The agent can still fetch the schema "
             "on demand via get_extraction_schema_reminder, which is unaffected. "
             "Both copies sit inside the prompt-cache prefix, so the dollar saving "
-            "is roughly a tenth of the token count. It does NOT reduce shard "
-            "count: plan_shards budgets against OCR page text only, and "
-            "compute_sizing_plan never subtracts prompt overhead — it is absorbed "
-            "by the blanket context_buffer, so the reclaimed tokens come off a "
-            "reserve that was already unused (#775). Measured on the benchmark "
-            "suite: no completeness or accuracy cost, and no measurable benefit "
-            "either. Treat it as a neutral instrument, not an optimisation."
+            "is roughly a tenth of the token count. Since #775 the shard budget "
+            "subtracts the measured prompt overhead, so turning this OFF frees one "
+            "schema copy's worth of per-shard budget; whether that changes a "
+            "document's shard count depends on it sitting near a boundary, and the "
+            "page ceiling (max_pages_per_shard) usually binds first. Measured on "
+            "the benchmark suite before #775: no completeness or accuracy cost, "
+            "and no measurable benefit either. Treat it as an instrument for "
+            "measuring on your own documents, not a recommendation."
         ),
     )
     review_agent: bool = Field(default=False, description="Enable review agent")
@@ -776,7 +777,11 @@ class ConfidenceConfig(BaseModel):
             "inference: a per-shard second pass for advanced/agentic extraction, or "
             "the standalone Assessment step for simple extraction); 'integrated' "
             "(the extraction inference emits each value's confidence in one pass, "
-            "saving a model call — the standalone step is bypassed)."
+            "saving a model call — the standalone step is bypassed). In simple "
+            "extraction a class that declares list fields is automatically scored "
+            "in a separate pass even when 'integrated' is selected, because simple "
+            "+ integrated loses list rows silently; set "
+            "x-aws-idp-allow-integrated-lists: true on a class to opt it back in."
         ),
     )
     enabled: bool = Field(
@@ -819,7 +824,9 @@ class ConfidenceConfig(BaseModel):
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
             "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
+            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
+            "reasoning.effort, NOT minimal). "
             "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
@@ -833,15 +840,17 @@ class ConfidenceConfig(BaseModel):
         default=25,
         gt=0,
         description=(
-            "Max list rows assessed per inference in the in-shard assessment path "
-            "(agentic extraction). A single assessment call over a large list (e.g. "
-            "75 transaction rows) is unreliable — the model under-enumerates or omits "
-            "the list, leaving rows unassessed. When a shard's extracted list exceeds "
-            "this size, the assessment is run in batches of this many rows and "
-            "concatenated, so every row gets a confidence. Lower = more reliable "
-            "enumeration but more inferences; raise for capable models. NOTE: this is "
-            "an UPPER bound — the self-healing ladder derives a smaller token-aware "
-            "first-pass size when the confidence model's output cap would truncate it."
+            "UPPER BOUND on list rows assessed per inference. A single assessment call "
+            "over a large list (e.g. 75 transaction rows) is unreliable — the model "
+            "under-enumerates or omits the list, leaving rows unassessed — so the list "
+            "is scored in batches and the results concatenated, giving every row a "
+            "confidence. This is a CEILING, not a target: the batch actually used is "
+            "derived per list from the confidence model's output cap, the row's column "
+            "count and whether the geometry mode adds a bounding box per cell, and is "
+            "only ever smaller than this. On Nova Lite (10,000-token output cap) with "
+            "bounding boxes the derived size is 13 rows for a 3-column list and 5 for "
+            "8 columns. Lower this to force smaller batches than the derivation; "
+            "raising it above the derived size has no effect."
         ),
     )
     escalation_enabled: bool = Field(
@@ -1018,20 +1027,65 @@ class ExtractionConfig(BaseModel):
             "is the ONE knob for model-aware auto-sizing: shard token/page budgets "
             "and confidence list-batch sizes are derived from the model's input "
             "and output limits minus this buffer (see idp_common.bedrock.sizing), "
-            "so you don't hand-set per-model sizes. Raise it (e.g. 0.5) if you see "
+            "so you don't hand-set per-model sizes. The shard budget ALSO subtracts "
+            "the estimated per-request prompt overhead (system prompt, the task "
+            "prompt with the schema rendered in, few-shot text, the tool schema "
+            "and the Advanced-path restatement), so this buffer is a safety margin "
+            "on top of that rather than the thing that silently absorbs it; the "
+            "other agent tool specs are not counted and stay inside the buffer. "
+            "Raise it (e.g. 0.5) if you see "
             "context-overflow or truncation; lower it (e.g. 0.15) to pack more per "
-            "shard/batch on a roomy model. The derived sizes are logged and shown "
-            "in the processing report."
+            "shard/batch on a roomy model. The derived sizes, including the "
+            "prompt overhead, are logged and (for Advanced extraction) shown in "
+            "the processing report."
         ),
     )
     model: str = Field(
         default="us.amazon.nova-pro-v1:0",
         description="Bedrock model ID for extraction. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
     )
+    prompt_cache: Literal["auto", "off"] = Field(
+        default="auto",
+        description=(
+            "Prompt caching for extraction requests. 'auto' (default) turns every "
+            "<<CACHEPOINT>> marker into a Bedrock cachePoint on models that support "
+            "it. 'off' sends no cache points at all. A cache WRITE is billed at "
+            "1.25x input price and only pays back when a second request with the "
+            "same prefix arrives inside the 5-minute TTL, so a low-volume or "
+            "interactive deployment that processes one document of a class per "
+            "TTL pays about +25% on the prefix for nothing; 'off' is the way to "
+            "decline that. Also note each model's MINIMUM cacheable prefix (512 to "
+            "4,096 tokens depending on the model): below it a cachePoint silently "
+            "does nothing, which config validation now warns about per class."
+        ),
+    )
     model_lambda_hook_arn: Optional[str] = Field(
         default=None,
         description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",
     )
+
+    @field_validator("prompt_cache", mode="before")
+    @classmethod
+    def _coerce_prompt_cache(cls, v: Any) -> Any:
+        """Accept the YAML booleans that ``off``/``on`` parse to.
+
+        PyYAML (YAML 1.1) reads a bare ``prompt_cache: off`` as ``False`` and
+        ``on`` as ``True``; the DynamoDB layer keeps booleans as booleans. Without
+        this the documented value failed validation everywhere it is loaded —
+        ``idp-cli config validate``, the extraction Lambda and the deploy-time
+        UpdateDefaultConfig custom resource. Unknown strings still fail on the
+        Literal.
+        """
+        if isinstance(v, bool):
+            return "off" if v is False else "auto"
+        if isinstance(v, str):
+            lowered = v.strip().lower()
+            if lowered in ("off", "false", "no", "disabled", "0"):
+                return "off"
+            if lowered in ("auto", "on", "true", "yes", "enabled", "1"):
+                return "auto"
+        return v
+
     system_prompt: str = Field(
         default="",
         description="System prompt for extraction (populated from system defaults)",
@@ -1076,7 +1130,9 @@ class ExtractionConfig(BaseModel):
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
             "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
+            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
+            "reasoning.effort, NOT minimal). "
             "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
@@ -1350,7 +1406,9 @@ class ClassificationConfig(BaseModel):
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
             "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
+            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
+            "reasoning.effort, NOT minimal). "
             "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
@@ -1524,7 +1582,9 @@ class SummarizationConfig(BaseModel):
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
             "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
+            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
+            "reasoning.effort, NOT minimal). "
             "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
@@ -1623,7 +1683,9 @@ class ChatConfig(BaseModel):
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
             "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
+            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
+            "reasoning.effort, NOT minimal). "
             "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
@@ -1692,7 +1754,9 @@ class OCRConfig(BaseModel):
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
             "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
+            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
+            "reasoning.effort, NOT minimal). "
             "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),
@@ -2603,7 +2667,9 @@ class EvaluationLLMMethodConfig(BaseModel):
             "Sonnet 4.6 / Opus 4.5-4.8 / Fable 5 accept low, medium, high, xhigh, "
             "or max (via output_config.effort); OpenAI GPT-5.x accept minimal, "
             "low, medium, or high (via reasoning.effort); xAI Grok accepts none, "
-            "low, medium, high, or xhigh (via reasoning.effort, NOT max). "
+            "low, medium, high, or xhigh (via reasoning.effort, NOT max); OpenAI "
+            "GPT-6 Astra accepts none, low, medium, high, xhigh, or max (via "
+            "reasoning.effort, NOT minimal). "
             "Ignored by models "
             "without an effort control (Nova, Sonnet 4.5, Haiku 4.5)."
         ),

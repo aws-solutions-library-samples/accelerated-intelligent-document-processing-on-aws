@@ -86,21 +86,10 @@ def _elide_large_arrays(obj: Any, max_items: int) -> Any:
 
 
 def _is_input_token_overflow(error: Exception) -> bool:
-    """Return True if the exception looks like a Bedrock input/context overflow.
+    """Bedrock input/context overflow — the shared matcher in ``bedrock_utils``."""
+    from idp_common.utils.bedrock_utils import is_input_token_overflow
 
-    Bedrock raises ``ValidationException`` with messages such as
-    "Input is too long for requested model" or "Input Tokens Exceeded" /
-    "input token count ... exceeds the maximum". We match loosely so a
-    summarization overflow degrades gracefully instead of failing the document.
-    """
-    msg = str(error).lower()
-    if "too long" in msg and "input" in msg:
-        return True
-    if "input token" in msg or "input tokens" in msg:
-        return True
-    if "context" in msg and ("exceed" in msg or "too long" in msg):
-        return True
-    return False
+    return is_input_token_overflow(error)
 
 
 class SummarizationService:

@@ -538,7 +538,10 @@ some time; as of v0.7 the simple path gets the same guarantee, in two steps.
 **1. Deterministic coercion (always, free).** Before validating, obvious
 type/format mismatches are repaired without a model call: `"$1,234.00"` and
 `"1.234,00"` into a `number` field, named-month and unambiguous numeric dates
-into `format: date`, boolean-ish strings into `boolean`. Every change is recorded
+into `format: date`, boolean-ish strings into `boolean`, and a string that is the
+JSON of the object/array the field asks for is parsed (`json_parsed_from_string` —
+the one cross-family repair that is lossless; the field must not also allow a
+string, so a text field holding JSON is left alone). Every change is recorded
 under `metadata.coercion` and anything ambiguous (`01/02/2024`, a 2-digit year,
 fractional-to-integer) is **refused** rather than guessed. Nothing is ever
 rewritten without a record. See `idp_common.extraction.coercion`.
@@ -562,6 +565,50 @@ re-extracted, and only those fields are merged back — an over-eager escalation
 response cannot overwrite fields that already validated. A failed escalation
 returns the original extraction unchanged; a broken repair must never be worse
 than no repair.
+
+## Prompt caching knob and minimum-prefix warning (`extraction.prompt_cache`)
+
+`extraction.prompt_cache: auto | off` (default `auto`). `off` removes every
+`<<CACHEPOINT>>` marker before Simple-mode content is built
+(`_build_prompt_content`) and, on the Advanced path, skips the trailing
+`cachePoint` block and the Strands `cache_prompt` / `cache_tools` flags, so no cache
+point reaches Bedrock. A cache write is 1.25× input price and pays back only on a
+second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
+better off with `off`.
+
+Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Fable 5, 1,024
+on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
+`idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`). Below it a cache
+point silently does nothing. `merge_utils._validate_prompt_cache_prefix` estimates
+each class's Simple-mode prefix (`estimate_prefix_tokens`, chars/4, about ±10% against
+Bedrock's count; a class within that band of the minimum is reported as "may not
+cache") using the prompt the service would send (the 1S-TopK prompt under integrated
+confidence, a per-class override when present) and warns per class, naming both
+numbers. Extraction only — classification, assessment and rule-validation prompts are
+not checked and keep their cache points when the knob is `off`. YAML's bare `off`
+parses as `false`; the config model accepts both.
+
+**Reading it back (item 2 of #780).** `_save_results` calls
+`_record_prompt_cache_metadata`, which sums the section's `Extraction*/bedrock/<model>`
+metering (the escalation contexts included) with
+`idp_common.bedrock.prompt_cache.summarize_cache_usage` and stores
+`metadata["prompt_cache"]` — `state` (`caching` | `write-only` | `never-cached` |
+`disabled` | `no-cache-point` | `no-cache-data`), `cache_point_sent`, `input_tokens`, `cache_read_input_tokens`,
+`cache_write_input_tokens`, `requests`, `read_share`, `model_ids`,
+`min_cacheable_prefix_tokens`. It has to happen there because the metering key carries
+phase and model but not class, and the section's metering is merged into the document
+total right after the result is written. Measured reads/writes win over the `off` flag.
+Because Claude reports `cacheReadInputTokens: 0` even when no cache point was sent,
+zero/zero alone cannot prove a cache point was inert: `_build_prompt_content` sets
+`_pending_cache_marker_seen` when a Simple-mode prompt still carries a marker after the
+knob (Advanced mode always attempts one), and `model_supports_cache_point` mirrors the
+client's `CACHEPOINT_SUPPORTED_MODELS` (inference-profile ARNs are unknown, never
+"unsupported"); only a sent cache point with zero/zero is `never-cached`, otherwise
+`no-cache-point`.
+`describe_cache_state` renders the one-line verdict for the text report; the Web UI
+mirrors both in `src/ui/src/components/common/promptCacheModel.ts` (per-class in the
+section's Processing Report tab, per-phase on the document cost table's subtotal rows).
+See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/prompt-caching.md` for the measurements.
 
 ## Forced tool use (Simple mode, `extraction.forced_tool`)
 
@@ -594,7 +641,7 @@ unless `fallback_to_prompt` is off, in which case the section is a parse failure
 which exists only to measure the honored rate without fallback masking it.
 
 **`metadata.forced_tool`** records `requested`, `honored`, `renamed_properties`,
-and `skipped` (with a reason). This is load-bearing for measurement, not just
+`renamed_definitions`, and `skipped` (with a reason). This is load-bearing for measurement, not just
 audit: without it a before/after comparison cannot distinguish "forcing had no
 effect" from "forcing never ran", and both look identical in the output.
 
@@ -605,6 +652,20 @@ effect" from "forcing never ran", and both look identical in the output.
 > `tests/unit/bedrock/test_module_level_api.py` sweeps the package for
 > `bedrock.<name>(...)` calls and asserts each resolves; add the re-export line
 > whenever you call a new client method that way.
+
+## Page images over Bedrock's per-image limit (`metadata.image_downscale`)
+
+Bedrock enforces its 5 MiB per-image limit on the **base64-encoded** payload, so a
+stored page image over **3.75 MiB** used to fail the whole section with a hard
+`ValidationException` (#778). `_load_document_images` now runs each page through
+`idp_common.image.fit_image_to_bedrock_limit` after the configured
+`image.target_width/target_height` resize; a page that had to be shrunk is recorded
+in the section's `metadata.image_downscale` as a list of per-page entries
+(`page_id`, original/final bytes and encoded bytes, original/final size and format,
+`passes`, `reason`). Pages already within budget are passed through byte-identical and
+leave no entry. The attach-time choke point (`prepare_bedrock_image_attachment`)
+fits as well, so the shard runtime and every other caller are covered even when
+they bypass this loader; only the loader records metadata.
 
 ## Multi-document sections (`instance_count`)
 
@@ -679,8 +740,9 @@ of the class the pages contain. `extraction/instance_probe.py` adds one auxiliar
 integer property (`IDPDocumentInstanceCount`) to a **copy** of the class schema —
 `self._wire_class_schema`, used for the prompt text and, when forced tool use is
 on, for the `toolSpec`. `self._class_schema` is untouched, so the off-schema
-filter, the JSON-Schema validator, the generated Pydantic model and every
-downstream stage still see exactly the declared fields.
+filter, the JSON-Schema validator and every downstream stage still see exactly
+the declared fields. (Advanced extraction carries the probe on the transport
+model of the unsharded call instead — see "Covered paths" below.)
 
 `_read_instance_probe` pops the value **before** the off-schema filter, and pops
 it unconditionally — even when detection was not requested for the section — so an
@@ -743,9 +805,17 @@ has it). A test asserts the two are byte-identical, and another pins the two
 load-bearing clauses, because dropping either quietly degrades detection rather
 than failing.
 
-Simple extraction only (prompt and forced-tool paths) — Advanced (agentic)
-extraction validates through a generated Pydantic model and shards by field, so an
-auxiliary property would be dropped on some paths and duplicated on others.
+Covered paths: Simple extraction (prompt and forced-tool) and the **unsharded**
+Advanced (agentic) call. Agentic is driven by a generated Pydantic model rather than
+the wire schema dict, so `_agentic_probe_model` generates the probe onto the
+transport model (the same `augment_schema_with_probe` copy, through
+`_transport_model`) and the answer is popped from the dumped fields immediately
+after the call — before validation/escalation and before the integrated field
+assessment is lifted, from which the probe key is also removed. Sharded agentic
+sections are not probed: each shard would answer for its own pages, and neither
+sum (double-counts a document spanning a boundary) nor max (under-counts records
+spread across shards) is right (#772, options 2/3 remain open). A resumed run keeps
+its existing model.
 
 ## Synthesize mode (`x-aws-idp-multi-instance`, #715)
 
@@ -940,6 +1010,26 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 
 ## 1S-TopK: single-stage extraction + confidence (Simple mode)
 
+> **Not used on list-bearing classes unless the class opts in.** When the section's
+> class declares a top-level array property (a multi-instance `instances` wrapper
+> counts), `ExtractionService._simple_integrated_list_downgrade` switches the section
+> to the plain extraction prompt and emits no inline confidence, so the standalone
+> Assessment step (which skips only when `explainability_info` is already present)
+> scores it separately. Benchmarked reason: Simple + integrated returned 1–10 of 100
+> rows on 4/4 repeats and an 800-row list came back absent, all reporting COMPLETED
+> (config-guidance §2.1). The cost delta is model-dependent: ~2.5× per 100-row document
+> at Sonnet 5, cheaper than the integrated call at Sonnet 4.6 (live pass 2026-09-09). Recorded
+> in `metadata.confidence_mode_effective` / `confidence_mode_downgraded_reason` and the
+> Processing Flow (`status: info`) — deliberately NOT a ProcessingIssue, because
+> `HasProcessingIssues` is severity-blind and would badge every document. Two class-level
+> opt-outs keep 1S-TopK: `x-aws-idp-extraction-task-prompt` (a user-controlled prompt is
+> never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
+> verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
+> warns at `idp-cli config validate` / SDK validate time — the web UI does not validate
+> on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
+> not a config rejection: a stored config must keep loading, and the new key is a
+> free-form class key that older releases ignore.
+
 When `extraction.mode: simple` and `extraction.confidence.mode: integrated`, the
 service produces the extracted values **and** their per-field confidence in a
 **single LLM call** — there is no separate Assessment pass, halving the number of
@@ -1045,6 +1135,8 @@ on `config_library/unified/lending-package-sample` -> `Payslip` at ~4 chars/toke
 | 1 | prose `{ATTRIBUTE_NAMES_AND_DESCRIPTIONS}` substituted into the task prompt | ~1,485 |
 | 2 | `"Expected Schema: ..."` appended to the **system** prompt | ~2,600 |
 | 3 | the extraction tool's `inputSchema`, which Strands derives from the same model | ~2,595 |
+
+Figures measured before #836; the class and group descriptions that fix recovers add roughly 130 tokens to each of copies 2 and 3 on `Payslip`.
 | | **total ~6,680, of which copy 2 is 38%** | |
 
 Copies 2 and 3 are **the same JSON string** — not merely equivalent; a test asserts
@@ -1063,22 +1155,25 @@ token saving that loses list rows is a loss.
 
 - **Smaller in dollars.** All three copies sit inside the prompt-cache prefix, so on
   a repeated-class workload they are cache reads at roughly a tenth of input price.
-- **It does NOT reduce shard count.** An earlier version of this section claimed the
-  reclaimed tokens free "the same context budget that `context_buffer` /
-  `shard_token_budget` manage", so removing them could keep a document out of an
-  extra shard. **That is not how the code works.** `plan_shards` budgets against
-  **OCR page text only**, and `compute_sizing_plan` derives that budget as
-  `max_input × (1 - context_buffer)` minus an output reserve and an image reserve —
-  prompt overhead (this restatement, the prose schema, the toolSpec, few-shot
-  examples) is subtracted nowhere. It is absorbed by the blanket `context_buffer`
-  (default 0.30), so the reclaimed tokens come off a safety reserve that is already
-  ~60,000 tokens on a 200K-window model and were already unused. `max_pages_per_shard`
-  (default 5) closes shards on page count regardless.
-
-  So with the current design this is a per-request token reduction with **no**
-  shard-count, cost or latency mechanism behind it. Making the shard budget subtract
-  measured prompt overhead — which would make this knob pay for itself — is
-  [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775).
+- **Shard-count headroom, since #775.** `compute_sizing_plan` now subtracts the
+  MEASURED per-request prompt overhead — system prompt, the task prompt with the
+  class schema rendered in, few-shot text, the forced toolSpec, and on the Advanced
+  path the agent system prompt, the tool schema and this restatement — from the
+  shard budget (`ExtractionService._prompt_overhead_tokens`, chars/4 like the page
+  text), so `context_buffer` is a safety margin *on top of* the prompt text and
+  schema copies. The other agent tool specs (~3k tokens) and the table-guidance
+  instruction are not counted and stay inside the buffer, so the estimate runs low. Turning the restatement off therefore frees one schema copy's worth of
+  shard budget, which is the mechanism this knob was always assumed to have; before
+  #775 the overhead was subtracted nowhere and came off a blanket reserve that was
+  already unused, so no shard count could move. Magnitudes on the shipped default
+  model (Sonnet 5, 200K in / 128K out): the text-only budget is **18,400 tokens**
+  (140,000 usable minus an 89,600 output reserve and a 32,000 image reserve), and
+  the shipped presets' Advanced-mode overhead is roughly 4k–8k, so budgets land
+  near 10k–14k. Processed pages measure ~650–1,060 OCR tokens, so a five-page
+  shard is 3k–5k tokens and `max_pages_per_shard` (default 5) still closes shards
+  on page count by a wide margin; only unusually dense pages (>2k tokens each)
+  would now split a page-bound shard. The processing report shows
+  `prompt_overhead_tokens` beside the shard budget.
 
 A fourth copy is stored in agent state for the reminder tool, but it is only
 transmitted if that tool is invoked, so it is not a per-request cost.
@@ -1509,7 +1604,8 @@ How it works:
      into the result. Scoping to the failing fields keeps the schema, prompt and
      output small — far cheaper and faster than re-running the whole section —
      and the fields that already validated are preserved untouched. The merged
-     result is kept only if it is valid or has strictly fewer violations; then
+     result is merged field by field — an escalated field replaces the original only
+   if it lost no populated data and has fewer violations than before (#791); then
      warn if it still fails. (When the failures can't be expressed as a field
      subset — e.g. they're root-level only — it falls back to a whole-section
      re-extraction.)
@@ -1524,8 +1620,14 @@ How it works:
   (path + validator + message), `check_formats`, `fail_action`,
   `initial_error_count` / `initial_failed_fields` (before any escalation), and —
   when escalation ran — `escalated`, `escalation_model`, `escalation_scope`
-  (`field-subset` | `full-section`), `escalation_fields`, and
-  `resolved_by_escalation`.
+  (`field-subset` | `full-section`), `escalation_fields`,
+  `resolved_by_escalation`, and `escalation_kept` / `escalation_decision`:
+  whether the escalated result **replaced** the original, and why. An escalation
+  is kept only if it lost no populated data (a list that had rows must not come
+  back null, absent or shorter; a non-null value must not come back null) and
+  got better **per field** — never on total error count, because per-row errors
+  scale with row count while a whole-field error is always one, so totals favour
+  the result with less data (`validation.escalation_outcome`, #791).
 - `metadata.population_check` — completeness heuristic (advisory). Reports
   `fields_defined`, `fields_populated`, `population_ratio`, `below_threshold`,
   and `empty_fields` (dotted paths of unpopulated leaves). A warning is logged
@@ -1591,10 +1693,17 @@ state the rule outright — declining the tool obliges direct extraction, and on
 unreadable column means that *cell* is null, not the row and not the list.
 
 **Null = absent.** Extraction follows the convention "return `null` if a field is
-not found", and the generated Pydantic model makes every non-required property
-`Optional[...] = None`. Validation therefore treats a `null` property as
-**absent**: an optional field left null passes, while a *required* field left
-null surfaces as a `required` violation (not a confusing type error). Enum /
+not found". The generated Pydantic model makes every non-required property
+`Optional[...] = None`, and on the **agentic** path the transport model
+additionally makes every required *scalar* nullable (`X | None`, still required —
+`schema.nullable_leaves_for_transport`), so the agent can abstain on a cell it
+cannot read instead of inventing a value; arrays, groups and `required` itself are
+untouched, so an omitted key or a nulled list still fails the model (#782).
+Validation therefore treats a `null` property as **absent**: an optional field
+left null passes, while a *required* field left null surfaces as a `required`
+violation (not a confusing type error) — and is fed back to the agent with an
+explicit instruction to fill it only if readable. Abstentions are also counted,
+independently of `validation.enabled`, under `metadata.abstained_fields`. Enum /
 pattern / format / numeric / `minItems` checks on present values are unaffected.
 
 > **`format: date` caveat.** JSON-Schema `format: date` means ISO-8601
@@ -1735,3 +1844,48 @@ Use these metrics to:
 - 🔲 Support for additional extraction backends (custom models)
 - 🔲 Automatic example quality assessment and recommendations
 - 🔲 Table structure detection for complex layouts (merged cells, nested headers)
+
+
+### Simple-mode large-document warnings (2026-09-10)
+
+With over-splitting fixed (#726) a Simple-mode section is ONE request, and the measured
+consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED` and no
+processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
+make both loud without changing what is extracted:
+
+- `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for the lists of
+  objects of one shape vs the rows in the section's OCR tables **of that shape** (`_ocr_tables`
+  counts only Markdown tables: lines that START with a pipe, in a run that holds a `|---|`
+  separator row; a separator starts a new table, a non-empty line without a leading pipe
+  ends one, more than 5 intervening empty lines or a change in cell count splits one, trailing
+  empty cells are ignored, runs under 3 rows are dropped — so a footer block with pipes, a
+  key/value block rendered with pipes but no separator, or prose containing "|" is never
+  evidence; `_expected_rows_for_width` keeps the tables whose column count equals the list item's
+  property count; `_object_list_targets` resolves `items` through `$ref` with `deref_schema`,
+  descends one level into an array of instances, skips a bare multi-instance wrapper, and
+  ignores lists of scalars). Lists of the same width are judged as one group — total rows
+  extracted vs total matched OCR rows — so complete sibling tables (Deposits, Withdrawals)
+  never warn against their shared evidence. Fires when the matched tables hold at least 30
+  rows and the group extracted fewer than half of them (`_OCR_ROW_ESTIMATE_MIN`,
+  `_OCR_ROW_SHORTFALL_RATIO`). It needs OCR that emits Markdown tables — Textract with the
+  `TABLES` feature (textractor always writes the separator row) or BDA; with the default
+  `ocr.features: []` there are no pipe tables and the check is inert by construction, the
+  same precondition as the table-parsing tool. The exact-width rule is a trade: an item schema with a
+  derived property the table lacks is not compared at all, and a two-property list next to a
+  real two-column table (a form rendered as a Textract TABLE) is.
+- `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
+  `ValidationException` (in the shard path, `from` the agentic `ValueError` whose cause is
+  that `ValidationException`; the transient check follows the whole chain) with the section size (from the logged pre-flight estimate,
+  `_simple_mode_input_preflight`: text chars/4 + images at Bedrock's pixels/750) and the
+  remedy; the wording is mode-aware (`_explain_input_overflow`) and the matcher is the shared
+  `bedrock_utils.is_input_token_overflow` (also used by summarization). The class name is in
+  no retry list, so #787 keeps it hard. The matcher judges a `ClientError` by its code
+  first (only `ValidationException` can be an overflow; a throttle mentioning "input tokens
+  per minute" is not) and by text otherwise. The Step Functions shard runtime raises it too
+  (`_run_shard_or_explain_overflow` is `async` and wraps the **await** of
+  `extract_one_shard`), with the Advanced-mode wording; when the agentic path has already
+  translated the overflow (`agentic_idp._is_context_overflow_error`, which also recognises
+  Strands' `ContextWindowOverflowException` by type name and so stays separate), its
+  remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
+  issue: a
+  successful call proves the estimate wrong, and a failed section never reaches the record.

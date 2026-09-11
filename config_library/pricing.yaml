@@ -468,6 +468,66 @@ pricing:
         price: "1.38E-6"
 
   # ---------------------------------------------------------------------------
+  # Amazon Bedrock Models - OpenAI GPT-6 Astra (Converse, CRIS-only)
+  # ---------------------------------------------------------------------------
+  # Astra does NOT share the GPT-5.x rows above: those models are billed on the
+  # bedrock-mantle Responses API, Astra on bedrock-runtime Converse via the
+  # us./global. inference profiles. There is no in-region form, so there is no
+  # bare `bedrock/openai.gpt-6-astra` row.
+  #
+  # Per 1M tokens (Standard tier — the only tier this model supports), from the
+  # GPT-6 Astra model card, SHORT context band (input <= 272K):
+  #   Geo CRIS (us.):    $11.00 in / $55.00 out / $1.10 cache-read / $13.75 cache-write
+  #   Global CRIS:       $10.00 in / $50.00 out / $1.00 cache-read / $12.50 cache-write
+  # Global is cheaper, so the two prefixes need separate rows.
+  #
+  # LONG CONTEXT BAND NOT REPRESENTED — read before trusting a cost report.
+  # Any request whose input exceeds 272K tokens is billed entirely at the long
+  # band: $22.00/$82.50 (us.) or $20.00/$75.00 (global.) in/out, with cache-read
+  # $2.20/$2.00 and cache-write $27.50/$25.00. The metering schema carries one
+  # price per unit per model ID with no way to express a usage-dependent band, and
+  # model_config_limits.yaml intentionally allows the full 1.05M window, so costs
+  # for prompts above 272K are UNDER-REPORTED here — up to 2x on input and 1.5x on
+  # output. Note the auto-sizers cross that boundary by DEFAULT: the agentic shard
+  # budget is 613,400 tokens and the summarization budget 892,500 (both derived
+  # from the 1.05M window). Two ways to remove the discrepancy if it matters for
+  # your account: cap max_input_tokens at 272000 in model_config_limits.yaml
+  # (which shrinks both budgets with it), or edit these rows to the long-band
+  # rates (which then over-reports small requests instead).
+  #
+  # cacheWriteInputTokens is a REAL charge here, unlike the Grok rows below: the
+  # model card prices a 30-minute cache write, and implicit caching genuinely
+  # engages on this path — a repeated 2,707-token prefix billed inputTokens=2 with
+  # cacheReadInputTokens=2707 (us-west-2 Converse, 2026-09-10). No cachePoint
+  # block is needed (and an explicit one is rejected); the discount arrives on its
+  # own and the existing metering records it.
+  #
+  # No :flex / :priority rows: the model card lists Standard only, and Converse
+  # rejects both ("The provided service tier is not supported for this model"),
+  # verified 2026-09-10.
+  - name: bedrock/us.openai.gpt-6-astra
+    units:
+      - name: inputTokens
+        price: "1.1E-5"
+      - name: outputTokens
+        price: "5.5E-5"
+      - name: cacheReadInputTokens
+        price: "1.1E-6"
+      - name: cacheWriteInputTokens
+        price: "1.375E-5"
+
+  - name: bedrock/global.openai.gpt-6-astra
+    units:
+      - name: inputTokens
+        price: "1.0E-5"
+      - name: outputTokens
+        price: "5.0E-5"
+      - name: cacheReadInputTokens
+        price: "1.0E-6"
+      - name: cacheWriteInputTokens
+        price: "1.25E-5"
+
+  # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - xAI Grok (Converse, CRIS-only)
   # ---------------------------------------------------------------------------
   # Per 1M tokens (Standard tier), from the Grok 4.6 model card:
@@ -1002,6 +1062,20 @@ pricing:
     units:
       - name: pages
         price: "0.004"
+
+  # Cohere Parse hosted API list price: $1.50 / 1,000 pages.
+  #
+  # Source: the Parse announcement (https://cohere.com/blog/parse), verbatim —
+  # "access Parse through the Cohere API for just $1.50 per 1,000 pages".
+  # Note that https://cohere.com/pricing does NOT list a per-page rate for
+  # Parse; it prices Model Vault by dedicated instance instead ($4.00/hr Medium,
+  # $7.00/hr XL). So this default is right for the hosted-API hook, and anyone
+  # self-hosting Parse on Model Vault or SageMaker should override it — their
+  # cost is per instance-hour, not per page.
+  - name: GENAIIDP-cohere-parse-hook
+    units:
+      - name: pages
+        price: "0.0015"
 
   # ---------------------------------------------------------------------------
   # AWS Lambda Pricing (US East - N. Virginia)

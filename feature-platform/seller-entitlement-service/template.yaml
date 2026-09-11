@@ -46,7 +46,7 @@ Mappings:
   # would ever substitute it. Hence a literal.
   ServiceMeta:
     ServiceVersion:
-      Value: '0.6.7'
+      Value: '0.6.8'
 
 Parameters:
   ProductRegistryJson:
@@ -114,7 +114,7 @@ Parameters:
   LogLevel:
     Type: String
     Default: 'INFO'
-    AllowedValues: ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+    AllowedValues: ['DEBUG', 'INFO', 'WARN', 'WARNING', 'ERROR']
 
   LogRetentionInDays:
     Type: Number
@@ -360,11 +360,13 @@ Resources:
             RestApiId: !Ref ActivationApi
             Path: /activate
             Method: POST
+      LoggingConfig:
+        LogGroup: !Ref ActivateFunctionLogGroup
 
   ActivateFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${ActivateFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/ActivateFunction'
       RetentionInDays: !Ref LogRetentionInDays
       KmsKeyId: !GetAtt LogEncryptionKey.Arn
 

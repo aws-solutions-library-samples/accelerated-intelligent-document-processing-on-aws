@@ -75,15 +75,17 @@ The bundled sample documents and their config associations are published to the 
 ## Evaluation report
 
 On a document that was evaluated against a baseline, **View Evaluation Report**
-opens a summary that leads with the two figures the report exists to answer:
+opens a summary that leads with the figures the report exists to answer:
 
 - **Extraction accuracy** — weighted by field importance when the configuration
   assigns weights, otherwise the plain proportion of fields that matched (the
   label says which, because they are not the same number).
-- **Classification accuracy** — page level, shown separately because
-  classification and extraction fail independently. A document can be classified
-  perfectly and extracted badly, or the reverse, and one number cannot stand for
-  both.
+- **Classification accuracy** — page level, with the page count beneath it. Shown
+  separately because classification and extraction fail independently: a
+  document can be classified perfectly and extracted badly, or the reverse.
+- **Split accuracy** — for a packet evaluated against section-level ground truth:
+  how many expected sections were reproduced with the same pages and class, with
+  the stricter in-order figure beside it.
 - **F1 score**, with precision and recall beneath it.
 
 A figure with no value is **omitted rather than shown as 0%** — a zero would be
@@ -91,18 +93,40 @@ indistinguishable from "scored nothing correctly", which is the one actively
 wrong reading available. A document that could not be scored at all (no section
 had an extractable schema) says so instead of showing zeros.
 
-Below that, one expandable section per document section, each carrying the
-per-field table: expected value, extracted value, score, and the comparison
-method with the evaluator's own reason in a tooltip. Sections with mismatches are
-expanded by default. **Mismatches only** hides everything that matched, for
-working through problems on a wide document. A wrong class is called out at the
-top of its section, because it makes the field table below it meaningless rather
-than merely wrong.
+The report then follows the same order as the markdown it replaces, each part
+collapsed unless it has something to show:
 
-**Comparison methods used** lists the comparators this document's evaluation
-applied. Worth checking when a score is surprising: "Acme Inc" not matching
-"Acme, Inc." is usually a comparison-method question rather than an extraction
-one.
+- **Sections not evaluated** — each excluded section with its class, the reason
+  it was skipped, and its pages.
+- **Section split analysis** — for a packet: one row per expected section
+  (matched or not, page order kept or not, expected and predicted class and
+  pages, which predicted section it paired with), then every predicted section
+  that matched nothing, the graded packet score, and any split errors. Expanded
+  automatically when a section or its ordering was wrong.
+- **All metrics** — every figure the run recorded, split and extraction, with the
+  rating the report applies to it.
+- One expandable section per document section, its own score in the header so
+  the section that pulled the document down is visible without opening each one.
+  Inside: a **Section metrics** table; the per-field table with expected and
+  extracted values, confidence against its threshold, score, weight, and the
+  comparison method with the evaluator's reason in a tooltip; and for an
+  aggregate field (a nested object or a matched list) an expandable row that
+  opens into the field-by-field comparisons beneath it — which is where a
+  Hungarian-matched list shows which item was paired with which. A section that
+  could not be evaluated says why, with the same how-to-fix steps the markdown
+  gives for that failure type.
+- **Comparison methods used** — the comparators this document's evaluation
+  applied. Worth checking when a score is surprising: "Acme Inc" not matching
+  "Acme, Inc." is usually a comparison-method question rather than an extraction
+  one.
+- **How scores are computed** — the field-level methods, array matching, field
+  weighting and, for packets, the split metrics, condensed from the markdown.
+
+A list or object value is shown as what it is — "3 items", "5 fields" — and
+opens into its structure on demand, rather than being flattened into one
+truncated string. **Mismatches only** hides everything that matched, for working
+through problems on a wide document. A wrong class is called out at the top,
+because it makes the field tables below it meaningless rather than merely wrong.
 
 The markdown report is still generated and is one click away via **Markdown
 report**, which is also where **download** and **print** live. Documents
@@ -281,7 +305,7 @@ The Edit Pages feature provides an intelligent interface for modifying individua
 
 ##### View Mode (Default)
 - Click "View Page Text" button to view page content in read-only mode
-- The page image is shown on the left, with a right-pane toggle. **OCR Lines** (the default) lists the OCR text lines with per-line confidence; click a text line to draw its bounding box on the image; zoom with the mouse wheel, pan by dragging, and move between pages with the Next/Previous arrows. (Bounding boxes require an OCR backend that provides geometry, e.g. Textract or the Mistral hook; otherwise the lines are shown without overlays.)
+- The page image is shown on the left, with a right-pane toggle. **OCR Lines** (the default) lists the OCR text lines with per-line confidence; click a text line to draw its bounding box on the image; zoom with the mouse wheel, pan by dragging, and move between pages with the Next/Previous arrows. (Bounding boxes require an OCR backend that provides geometry, e.g. Textract or the Mistral hook — the Cohere Parse hook boxes tables and figures only; otherwise the lines are shown without overlays.)
 - Switch the right pane to **Markdown** to read the page's extracted markdown, with a Rendered ↔ Raw toggle
 
 ##### Edit Mode
@@ -537,7 +561,9 @@ The Chat panel includes a **Model** selector that defaults to the `chat.model` c
 
 > **OpenAI GPT-5.x in chat:** `openai.gpt-5.4`, `openai.gpt-5.5`, and GPT-5.6 (`openai.gpt-5.6-sol` / `-terra` / `-luna`) are supported for Chat-with-Document and **stream** token-by-token like other models. They run on the `bedrock-mantle` Responses API (US regions only) and are tuned via `chat.reasoning_effort` rather than temperature/top_p. They are hidden from the model selector in EU-region deployments. Note: chat sends the document as **text** (extracted full text), so the PDF-document-block limitation that excludes GPT-5.x from Discovery does not apply here. See [OpenAI GPT-5.x Models](./openai-models.md).
 
-> **xAI Grok in chat:** `us.xai.grok-4.6` and `global.xai.grok-4.6` are supported for Chat-with-Document. They run on the standard Converse API and are tuned via `chat.reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`) rather than temperature/top_p, which Grok rejects. In EU-region deployments only the `global.` ID appears in the selector — there is no `eu.` Grok profile. A large-context model is recommended for chat and Grok's 500K window is the largest available. See [xAI Grok Models](./grok-models.md).
+> **xAI Grok in chat:** `us.xai.grok-4.6` and `global.xai.grok-4.6` are supported for Chat-with-Document. They run on the standard Converse API and are tuned via `chat.reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`) rather than temperature/top_p, which Grok rejects. In EU-region deployments only the `global.` ID appears in the selector — there is no `eu.` Grok profile. A large-context model is recommended for chat; Grok's 500K window is ample, though not the largest offered (the `:1m` Claude variants and GPT-6 Astra's 1.05M window are bigger). See [xAI Grok Models](./grok-models.md).
+
+> **OpenAI GPT-6 Astra in chat:** `us.openai.gpt-6-astra` and `global.openai.gpt-6-astra` are supported for Chat-with-Document. Like Grok they run on the standard Converse API (**not** the bedrock-mantle path the GPT-5.x models use) and are tuned via `chat.reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) rather than temperature/top_p, which Astra rejects with a 400. In EU-region deployments only the `global.` ID appears in the selector — there is no `eu.` Astra profile. Astra's 1.05M context window is the largest offered, which suits long chat sessions over big documents, but it is also the most expensive model available — its automatic prompt caching offsets much of the repeated-history cost. Note a long chat history can push a turn past 272K input tokens, where Astra's rate roughly doubles. See [OpenAI Models](./openai-models.md#gpt-6-astra-converse).
 
 If a document is "too large for chat context window" — i.e. Bedrock returns an `Input Tokens Exceeded` error — pick a larger-context model in the Chat panel's Model selector and retry. For documents that are larger than any single-prompt model can fit, use the [Knowledge Base](./knowledge-base.md) feature instead.
 

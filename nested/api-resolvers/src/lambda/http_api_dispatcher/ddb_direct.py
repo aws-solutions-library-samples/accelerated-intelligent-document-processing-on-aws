@@ -61,6 +61,7 @@ _DISCOVERY_OPTIONAL_FIELDS = [
     "errorMessage",
     "discoveredClassName",
     "statusMessage",
+    "multiInstanceHint",
     "jobType",
     "currentStep",
     "totalDocuments",

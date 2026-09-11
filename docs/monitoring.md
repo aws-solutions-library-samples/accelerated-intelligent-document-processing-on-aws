@@ -174,6 +174,51 @@ The solution creates centralized logging across all components:
 
 All logs include correlation IDs for tracing individual document processing journeys.
 
+### `LogLevel` — what `WARN` turns off
+
+The `LogLevel` stack parameter defaults to `WARN`. At `INFO` or `DEBUG` the
+accelerator can write S3 presigned URLs, document contents and PII into
+CloudWatch Logs, which is why [well-architected](./well-architected.md) has
+recommended `WARN` or `ERROR` for production and why the default was changed from
+`INFO` (AppSec finding #9). An **existing** stack keeps whatever value it was
+deployed with — CloudFormation preserves the previous parameter value on update —
+so this only affects new stacks and updates that re-specify the parameter.
+
+Four things you may be used to seeing are absent at `WARN`, and each comes back
+only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
+
+- **Per-stage progress lines.** The `INFO` messages many operators use to follow
+  one document through OCR, classification, extraction and assessment. Errors and
+  warnings are still logged, and document status is still visible in the Web UI
+  and the tracking table.
+- **The Web UI REST API access log.** Access logging on the API Gateway stage is
+  only configured when `LogLevel` is `INFO` or `DEBUG` (finding API-GW-006). It
+  records request metadata only, never bodies, but it is the only trace of
+  requests that fail *before* the dispatcher Lambda — authorizer 401/403s, WAF
+  blocks, CORS and gateway responses. This is deliberately coupled to `LogLevel`
+  rather than given its own parameter, so emitting request metadata stays one
+  visible decision.
+- **The dashboard widget "Count of Workflow Executions over latency threshold".**
+  It is a Logs Insights query that parses the workflow tracker's `INFO` line
+  `Publishing latency metrics - ... total: <n>ms`, so at `WARN` the widget is
+  always empty. It is the only dashboard element with this dependency. The
+  underlying data is still published as custom metrics
+  (`QueueLatencyMilliseconds`, `WorkflowLatencyMilliseconds`,
+  `TotalLatencyMilliseconds` in the stack's metric namespace), which drive the
+  "Queue Latency" and "Workflow Latency" widgets next to it; `SlowExecutionsAlarm`
+  reads Step Functions' own `ExecutionTime` metric. Neither the metrics nor the
+  alarm depend on the log level, so nothing you would *alert* on is lost — only
+  that one per-minute count.
+- **Installed features are not affected — they still log at `INFO`.** Each
+  installable feature (for example `pii-anonymizer`) is its own stack, launched
+  with the `LogLevel` pinned in its `feature.yaml`, which is `INFO` for the six
+  shipped features. The host's value is not forwarded. Change the feature stack's
+  `LogLevel` parameter after install if you need it at `WARN`; newly scaffolded
+  features default to `WARN`.
+- **`idp-cli deploy --log-level` has no CLI default.** Omit it to get the template
+  default on a new stack or to preserve the current value on an update. Passing
+  `--log-level INFO` is honoured; it used to be silently treated as "unset".
+
 ## Pattern-Specific Monitoring
 
 Each pattern includes additional monitoring tailored to its specific workflow:
@@ -223,6 +268,7 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 |---|---|---|---|
 | `WorkflowErrorsAlarm` | Failed Step Functions executions ≥ threshold in 5 min | `AlertsTopic` | `ErrorThreshold` (default `1`) |
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
+| `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | Threshold is fixed (≥ 1); the bound itself is `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
@@ -249,8 +295,8 @@ uploads, for instance) and only want to hear about clusters.
 Note that this counts *failed executions*. A document that fails in a way the
 state machine catches and handles finishes as a **successful** execution, so it
 does not appear here — use the **Processing Issues** column in the Web UI and the
-Processing Report for those. `ExecutionsTimedOut` and `ExecutionsAborted` are
-also separate metrics and are not covered by this alarm.
+Processing Report for those. `ExecutionsTimedOut` is a separate metric, covered by
+`WorkflowTimeoutsAlarm` (below); `ExecutionsAborted` is not covered by any alarm.
 
 > ⚠️ **Before release 0.6.7 this alarm never fired.** It was defined against
 > `ExecutionsFailedCount`, which is not a metric Step Functions publishes, so it
@@ -365,10 +411,57 @@ enabled, then QueueProcessor invocations, errors, and throttles. If executions
 signal rather than a fault: raise `MaxConcurrentWorkflows`, or raise the
 threshold to accept it.
 
+### `WorkflowExecutionTimeoutSeconds` — the execution-level bound
+
+The state machine has a top-level `TimeoutSeconds`, sourced from the
+`WorkflowExecutionTimeoutSeconds` parameter (default **21600**, 6 hours). It is the
+backstop for anything the per-state guards do not cover — a `Map` branch that
+stalls rather than errors, a retry policy whose cumulative backoff runs for hours,
+a future state added without its own bound. Without it a Standard workflow's ceiling
+is **one year**, during which the execution emits neither `ExecutionsFailed` (so
+`WorkflowErrorsAlarm` cannot see it) nor `ExecutionTime` (so `SlowExecutionsAlarm`
+cannot either), while holding a workflow-concurrency slot: a stack can lose capacity
+with every alarm reading `OK`.
+
+Tripping the bound ends the execution **`TIMED_OUT`**. That is a distinct Step
+Functions metric, `ExecutionsTimedOut`, which `WorkflowTimeoutsAlarm` watches (any
+occurrence in 5 minutes); the execution-status EventBridge rule already routes
+`TIMED_OUT` to the workflow tracker, which releases the concurrency slot and marks the
+document `FAILED` with `WorkflowStatus` `TIMED_OUT` (visible in the tracking table and
+the Web UI), so a timeout is distinguishable from an ordinary failure. The dashboard's
+**Workflow Executions** widget plots timed-out executions alongside failed ones. A
+timed-out execution **discards its completed work** (OCR, extraction,
+assessment, summarization already done), so the default errs generous.
+
+**How the default was chosen** (measured 2026-09-11 on a production stack, 30 days,
+2,253 executions): median execution 0.7 minutes, p90 4.6 minutes, longest
+*successful* execution 37 minutes. Every execution longer than an hour — 117 of them —
+was a `FAILED` run of 306–308 minutes: a single state's Lambda `Sandbox.Timedout` at
+900 seconds retried eight times at 2.5× backoff. A benchmark stack's longest success
+was 2.6 minutes. Six hours is therefore about ten times the longest observed success.
+
+Be precise about what the default does and does not bound. It does **not** shorten
+that measured storm: one state exhausting its `Retry` policy takes about 5.1 hours and
+then fails on its own, inside the 6-hour bound, and shortening it would need a bound
+of 3 hours or less (`10800`), which is a defensible choice for a stack whose largest
+documents finish well under an hour. What the default does bound is everything the
+per-state guards cannot: a `.waitForTaskToken` callback that never arrives once the
+BDA bound is exceeded (see below), a state that hangs without erroring, and a storm
+that compounds across two or more states (two consecutive storms are about 10 hours).
+Not measured: multi-hundred-page packets under agentic table extraction, which are
+the case most likely to approach the bound — if your `ExecutionTime` p99 for
+*successful* runs is within a factor of two of the bound, raise it (up to one year,
+`31536000`, which effectively disables it).
+
 ### `BDACallbackTimeoutSeconds` — why a hung BDA job needs its own bound
 
 This one is a parameter rather than an alarm, but it belongs here because without
 it **neither alarm above can see the failure it prevents.**
+
+It must also stay **smaller than `WorkflowExecutionTimeoutSeconds`** (default 2 hours
+against 6) to have any effect: if the BDA bound is the larger of the two, the
+execution-level bound fires first and the document simply ends `TIMED_OUT`, instead of
+the BDA step failing with a catchable `States.Timeout` that the pipeline can record.
 
 In BDA mode (`use_bda: true`) the `BDA_InvokeDataAutomation` step uses the Step
 Functions `.waitForTaskToken` integration: it blocks until something outside the

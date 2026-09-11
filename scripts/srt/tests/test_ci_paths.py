@@ -156,3 +156,67 @@ class TestCommittedBaseline:
             "Every suppressed finding needs a suppressionReason so reviewers can "
             "audit the accepted risk:\n  " + "\n  ".join(offenders)
         )
+
+
+class TestAwsProfileBootstrap:
+    """`srt config` needs a profile to exist, so setup.py has to be able to make one.
+
+    The scan is static analysis and needs no credentials, but `srt config` — the
+    command that installs the five scanners — enumerates profiles and aborts with
+    "✗ No AWS profiles found!" when there are none. setup.py used to create one only
+    via `aws configure`, i.e. only when the image happened to ship awscli. It does on
+    the GitLab runner and does not in python:3.13-bookworm, so the GitHub job failed
+    at setup with every scanner missing. These tests pin the CLI-less path, and that
+    it can never clobber a developer's real config.
+    """
+
+    @staticmethod
+    def _setup_module():
+        import importlib.util
+
+        path = PROJECT_ROOT / "scripts" / "srt" / "setup.py"
+        spec = importlib.util.spec_from_file_location("srt_setup", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_writes_a_default_profile_when_none_exists(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._setup_module().write_aws_profile("default", "us-east-1")
+        config = tmp_path / ".aws" / "config"
+        assert config.exists()
+        # `default` is spelled [default]; anything else is [profile name].
+        assert "[default]" in config.read_text()
+        assert "region = us-east-1" in config.read_text()
+
+    def test_named_profile_uses_the_profile_prefix(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._setup_module().write_aws_profile("srtci", "eu-west-1")
+        assert "[profile srtci]" in (tmp_path / ".aws" / "config").read_text()
+
+    def test_is_idempotent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mod = self._setup_module()
+        mod.write_aws_profile("default", "us-east-1")
+        mod.write_aws_profile("default", "us-west-2")
+        text = (tmp_path / ".aws" / "config").read_text()
+        assert text.count("[default]") == 1
+        # The second call must not rewrite the region either.
+        assert "us-east-1" in text and "us-west-2" not in text
+
+    def test_never_clobbers_an_existing_config(self, tmp_path, monkeypatch):
+        """A developer's real credentials/settings must survive untouched."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        aws = tmp_path / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[profile mine]\nregion = ap-southeast-2\n")
+        self._setup_module().write_aws_profile("default", "us-east-1")
+        text = (aws / "config").read_text()
+        assert "[profile mine]" in text and "ap-southeast-2" in text
+        assert "[default]" in text
+
+    def test_file_is_not_world_readable(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self._setup_module().write_aws_profile("default", "us-east-1")
+        mode = (tmp_path / ".aws" / "config").stat().st_mode & 0o777
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"

@@ -10,7 +10,7 @@
  * corresponding view on that page.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert,
@@ -19,6 +19,7 @@ import {
   Box,
   BreadcrumbGroup,
   Button,
+  ButtonDropdown,
   ContentLayout,
   ExpandableSection,
   FormField,
@@ -36,22 +37,44 @@ import {
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
-import { getTestSetDocuments, generateDraftLabels, getDraftLabelJob, clearDraftLabels, resetTestSetLabels } from '../../graphql/generated';
+import {
+  getTestSetDocuments,
+  generateDraftLabels,
+  getDraftLabelJob,
+  clearDraftLabels,
+  resetTestSetLabels,
+  removeDocumentsFromTestSet,
+} from '../../graphql/generated';
 import useAppContext from '../../contexts/app';
+import { getErrorMessage } from '../../utils/errorUtils';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
+import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import Navigation from '../genaiidp-layout/navigation';
 import { appLayoutLabels } from '../common/labels';
 import { TEST_STUDIO_PATH, testSetDocumentHref, testSetAnnotateHref } from '../../routes/constants';
 import TestDocThumbnail from './TestDocThumbnail';
 import ReviewEffortModal from './ReviewEffortModal';
 import GenerateDraftLabelsModal from './GenerateDraftLabelsModal';
+import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
+import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
+import RemoveDocumentsModal from './RemoveDocumentsModal';
 import type { TestSetDocumentSectionRef } from './GroundTruthVisualEditor';
 
 const client = generateClient();
 const logger = new ConsoleLogger('TestSetDetail');
 
 const PAGE_SIZE = 50;
+
+/**
+ * After a bucket or zip add, how often the set's size is re-read and for how long.
+ * The copier and extractor report only through the set's status, which this page
+ * does not hold, so the size is the signal that documents have landed.
+ */
+const ARRIVAL_POLL_MS = 5000;
+const ARRIVAL_WATCH_MS = 2 * 60 * 1000;
+/** Generation runs for minutes and reports through its job, so that is polled instead. */
+const GENERATION_POLL_MS = 5000;
 
 export interface TestSetDocumentItem {
   objectKey: string;
@@ -258,11 +281,23 @@ export const renderQualityTier = (
       <Box variant="span">{reason || ''}</Box>
     </SpaceBetween>
   );
+  // Unrated: one compact, clickable verdict. The reason is the whole content of
+  // that verdict and used to be printed inline beside a redundant "Unrated" badge,
+  // which made a status cell four lines tall on every unrated row of the Test Sets
+  // table. The dotted text trigger says there is more; one click shows it.
+  if (tier === 'unrated') {
+    return (
+      <Popover dismissButton={false} position="top" size="medium" triggerType="text" content={detail}>
+        <Box variant="span" color="text-body-secondary">
+          Not rated
+        </Box>
+      </Popover>
+    );
+  }
   return (
     <Popover dismissButton={false} position="top" size="medium" triggerType="custom" content={detail}>
       <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
-        {/* Unrated means no accuracy claim is defensible, so don't print one. */}
-        {accuracy !== null && accuracy !== undefined && tier !== 'unrated' ? (
+        {accuracy !== null && accuracy !== undefined ? (
           <Box variant="span">{(accuracy * 100).toFixed(decimals)}% est.</Box>
         ) : (
           <Box variant="span" color="text-body-secondary">
@@ -270,13 +305,6 @@ export const renderQualityTier = (
           </Box>
         )}
         <Badge color={QUALITY_TIER_COLORS[tier] ?? 'severity-neutral'}>{label}</Badge>
-        {/* The reason is the whole content of an unrated verdict, and it is the one
-            case where the user cannot guess it — so it is not left to a hover. */}
-        {tier === 'unrated' && reason ? (
-          <Box variant="span" fontSize="body-s" color="text-body-secondary">
-            — {reason}
-          </Box>
-        ) : null}
       </SpaceBetween>
     </Popover>
   );
@@ -374,12 +402,25 @@ const TestSetDetail = (): React.JSX.Element => {
   const [isClearingDrafts, setIsClearingDrafts] = useState(false);
   const [clearedMessage, setClearedMessage] = useState<string | null>(null);
   const [worstFirst, setWorstFirst] = useState(true);
+  const [selectedItems, setSelectedItems] = useState<TestSetDocumentItem[]>([]);
+  const [showRemoveModal, setShowRemoveModal] = useState(false);
+  const [isRemoving, setIsRemoving] = useState(false);
+  const [removedMessage, setRemovedMessage] = useState<string | null>(null);
+  const [addDocsMode, setAddDocsMode] = useState<AddDocumentsMode | null>(null);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  /** Progress of an add in flight, from any of the three sources. */
+  const [arrivalNotice, setArrivalNotice] = useState<{ type: 'info' | 'success' | 'error'; text: string } | null>(null);
+  const arrivalTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { available: generatorAvailable, getJobStatus } = useSyntheticDataGenerator();
 
   const fetchPage = useCallback(
     async (pageIndex: number, tokens: (string | null)[]) => {
       if (!testSetId) return;
       setIsLoading(true);
       setError(null);
+      // Rows may be gone or renumbered after any refetch, so a selection made
+      // against the old page must not survive it.
+      setSelectedItems([]);
       try {
         const response = await client.graphql({
           query: getTestSetDocuments,
@@ -426,6 +467,95 @@ const TestSetDetail = (): React.JSX.Element => {
   const handlePageChange = (pageIndex: number) => {
     setCurrentPageIndex(pageIndex);
     fetchPage(pageIndex, pageTokens);
+  };
+
+  const stopArrivalWatch = () => {
+    if (arrivalTimer.current) {
+      clearInterval(arrivalTimer.current);
+      arrivalTimer.current = null;
+    }
+  };
+  useEffect(() => stopArrivalWatch, []);
+
+  /** After a bucket or zip add: re-read the set's size until it moves, then refetch. */
+  const watchForArrival = (message: string) => {
+    stopArrivalWatch();
+    setRemovedMessage(null);
+    const sizeBefore = totalCount;
+    const startedAt = Date.now();
+    setArrivalNotice({ type: 'info', text: message });
+    arrivalTimer.current = setInterval(async () => {
+      if (Date.now() - startedAt > ARRIVAL_WATCH_MS) {
+        stopArrivalWatch();
+        setArrivalNotice({ type: 'info', text: 'Still adding documents. Refresh in a moment to see them.' });
+        return;
+      }
+      try {
+        const response = await client.graphql({
+          query: getTestSetDocuments,
+          variables: { testSetId: testSetId ?? '', limit: 1 },
+        });
+        const size = response.data?.getTestSetDocuments?.totalCount ?? null;
+        if (size !== null && size !== sizeBefore) {
+          stopArrivalWatch();
+          setArrivalNotice({ type: 'success', text: `Documents are arriving — this set now has ${size} document(s).` });
+          setCurrentPageIndex(1);
+          fetchPage(1, [null]);
+        }
+      } catch (err) {
+        logger.debug('Arrival poll failed; will retry:', err);
+      }
+    }, ARRIVAL_POLL_MS);
+  };
+
+  /** After starting generation into this set: follow the job, then refetch. */
+  const watchGeneration = (jobId: string) => {
+    stopArrivalWatch();
+    setRemovedMessage(null);
+    setArrivalNotice({ type: 'info', text: 'Generating documents into this set. They appear here when the job completes.' });
+    arrivalTimer.current = setInterval(async () => {
+      const job = await getJobStatus(jobId);
+      if (!job) return;
+      if (job.status === 'COMPLETED') {
+        stopArrivalWatch();
+        setArrivalNotice({ type: 'success', text: 'Generation complete — the new documents are in this set.' });
+        setCurrentPageIndex(1);
+        fetchPage(1, [null]);
+      } else if (job.status === 'FAILED') {
+        stopArrivalWatch();
+        setArrivalNotice({ type: 'error', text: `Generation failed: ${job.errorMessage || 'unknown error'}` });
+      } else if (job.statusMessage) {
+        setArrivalNotice({ type: 'info', text: `Generating documents into this set: ${job.statusMessage}` });
+      }
+    }, GENERATION_POLL_MS);
+  };
+
+  const handleRemoveDocuments = async () => {
+    if (!testSetId || selectedItems.length === 0) return;
+    setIsRemoving(true);
+    setError(null);
+    // An arrival notice from an earlier add would otherwise sit beside the
+    // removal message, still announcing the documents that were just removed.
+    stopArrivalWatch();
+    setArrivalNotice(null);
+    try {
+      const response = await client.graphql({
+        query: removeDocumentsFromTestSet,
+        // objectKey is the name relative to input/, which is what the mutation
+        // deletes under; inputKey is the full object key.
+        variables: { testSetId, fileNames: selectedItems.map((d) => d.objectKey) },
+      });
+      setShowRemoveModal(false);
+      setRemovedMessage(response.data?.removeDocumentsFromTestSet?.lastAddResult ?? `Removed ${selectedItems.length} document(s).`);
+      setCurrentPageIndex(1);
+      fetchPage(1, [null]);
+    } catch (err) {
+      logger.error('Error removing documents:', err);
+      setShowRemoveModal(false);
+      setError(`Could not remove the documents: ${getErrorMessage(err)}`);
+    } finally {
+      setIsRemoving(false);
+    }
   };
 
   const handleResetLabels = async () => {
@@ -613,6 +743,25 @@ const TestSetDetail = (): React.JSX.Element => {
               </Alert>
             )}
 
+            {removedMessage && (
+              <Alert type="success" dismissible onDismiss={() => setRemovedMessage(null)}>
+                {removedMessage}
+              </Alert>
+            )}
+
+            {arrivalNotice && (
+              <Alert
+                type={arrivalNotice.type}
+                dismissible
+                onDismiss={() => {
+                  stopArrivalWatch();
+                  setArrivalNotice(null);
+                }}
+              >
+                {arrivalNotice.text}
+              </Alert>
+            )}
+
             {labelJob && labelJob.status === 'COMPLETED' && (
               <Alert type="success" dismissible onDismiss={() => setLabelJob(null)}>
                 Draft labeling complete — {labelJob.labeled} document(s) labeled
@@ -644,11 +793,32 @@ const TestSetDetail = (): React.JSX.Element => {
                       {hasConfidence && (
                         <Button onClick={() => setWorstFirst((prev) => !prev)}>{worstFirst ? 'Sort by name' : 'Sort worst-first'}</Button>
                       )}
+                      <ButtonDropdown
+                        items={[
+                          { id: 'add-pattern', text: 'From files in a bucket', disabled: !isAdmin, disabledReason: 'Administrators only' },
+                          { id: 'add-upload', text: 'From a zip upload' },
+                          {
+                            id: 'add-generate',
+                            text: 'Generate synthetic documents',
+                            disabled: !generatorAvailable,
+                            disabledReason: 'Install the Test Set Generator extension to generate documents.',
+                          },
+                        ]}
+                        onItemClick={({ detail }) => {
+                          if (detail.id === 'add-pattern') setAddDocsMode('pattern');
+                          else if (detail.id === 'add-upload') setAddDocsMode('upload');
+                          else if (detail.id === 'add-generate') setShowGenerateModal(true);
+                        }}
+                        disabled={isLoading}
+                        expandToViewport
+                      >
+                        Add documents
+                      </ButtonDropdown>
                       <Button
                         iconName="gen-ai"
                         onClick={() => setShowLabelModal(true)}
                         loading={isStartingLabels}
-                        disabled={isLoading || labelJob?.status === 'RUNNING'}
+                        disabled={isLoading || labelJob?.status === 'RUNNING' || totalCount === 0}
                       >
                         Generate draft labels
                       </Button>
@@ -671,6 +841,23 @@ const TestSetDetail = (): React.JSX.Element => {
                       >
                         Clear draft labels
                       </Button>
+                      <span
+                        title={
+                          selectedItems.length === 0
+                            ? 'Select documents to remove'
+                            : labelJob?.status === 'RUNNING'
+                              ? 'Wait for draft labeling to finish'
+                              : undefined
+                        }
+                      >
+                        <Button
+                          iconName="remove"
+                          onClick={() => setShowRemoveModal(true)}
+                          disabled={selectedItems.length === 0 || isLoading || labelJob?.status === 'RUNNING'}
+                        >
+                          Remove
+                        </Button>
+                      </span>
                       <Button iconName="refresh" onClick={() => fetchPage(currentPageIndex, pageTokens)} disabled={isLoading}>
                         Refresh
                       </Button>
@@ -749,6 +936,14 @@ const TestSetDetail = (): React.JSX.Element => {
                 },
               ]}
               items={visibleDocs}
+              selectionType="multi"
+              selectedItems={selectedItems}
+              onSelectionChange={({ detail }) => setSelectedItems(detail.selectedItems)}
+              ariaLabels={{
+                selectionGroupLabel: 'Document selection',
+                allItemsSelectionLabel: () => 'Select all documents on this page',
+                itemSelectionLabel: (_data, item) => `Select ${item.objectKey}`,
+              }}
               loading={isLoading}
               loadingText="Loading documents"
               trackBy="inputKey"
@@ -771,7 +966,9 @@ const TestSetDetail = (): React.JSX.Element => {
                 <Box textAlign="center" color="inherit">
                   <b>No documents</b>
                   <Box variant="p" color="inherit">
-                    This test set has no documents{filterText ? ' matching the filter' : ''}.
+                    {filterText
+                      ? 'This test set has no documents matching the filter.'
+                      : 'This test set has no documents. Use Add documents to bring some in: files in a bucket, a zip upload, or generated documents.'}
                   </Box>
                 </Box>
               }
@@ -785,6 +982,37 @@ const TestSetDetail = (): React.JSX.Element => {
               onDismiss={() => setShowLabelModal(false)}
               onSubmit={handleGenerateDraftLabels}
             />
+
+            <RemoveDocumentsModal
+              visible={showRemoveModal}
+              documents={selectedItems}
+              remaining={Math.max(0, (totalCount ?? filteredDocs.length) - selectedItems.length)}
+              submitting={isRemoving}
+              onDismiss={() => setShowRemoveModal(false)}
+              onConfirm={handleRemoveDocuments}
+            />
+
+            <AddDocumentsModals
+              testSet={testSetId ? { id: testSetId, name: testSetId } : null}
+              mode={addDocsMode}
+              onDismiss={() => setAddDocsMode(null)}
+              onSubmitted={({ message }) => {
+                setAddDocsMode(null);
+                watchForArrival(`${message} This list refreshes when they arrive.`);
+              }}
+            />
+
+            {generatorAvailable && testSetId && (
+              <GenerateSyntheticDataModal
+                visible={showGenerateModal}
+                initialDestination={{ testSetId, label: testSetId }}
+                onDismiss={() => setShowGenerateModal(false)}
+                onStarted={(startedJobId) => {
+                  setShowGenerateModal(false);
+                  watchGeneration(startedJobId);
+                }}
+              />
+            )}
 
             <ReviewEffortModal
               visible={showEffortModal}

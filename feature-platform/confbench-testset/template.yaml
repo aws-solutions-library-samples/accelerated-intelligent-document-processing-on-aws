@@ -45,7 +45,7 @@ Parameters:
   LogLevel:
     Type: String
     Default: INFO
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
 
   LogRetentionDays:
     Type: Number
@@ -281,6 +281,11 @@ Resources:
               jobId.$: $.jobId
               testSetId.$: $.testSetId
               error.$: $.error
+            Retry:
+              - ErrorEquals: [States.TaskFailed, Lambda.ServiceException, Lambda.TooManyRequestsException]
+                IntervalSeconds: 10
+                MaxAttempts: 3
+                BackoffRate: 2.0
             # A failure to record a failure must not mask the original one.
             Catch:
               - ErrorEquals: [States.ALL]
@@ -389,6 +394,8 @@ Resources:
                 'Fn::Sub':
                   - 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${T}'
                   - T: { 'Fn::ImportValue': !Sub '${MainStackName}-TrackingTableName' }
+      LoggingConfig:
+        LogGroup: !Ref PlannerFunctionLogGroup
 
   IngestWorkerFunction:
     Type: AWS::Serverless::Function
@@ -415,6 +422,8 @@ Resources:
             - !Ref 'AWS::NoValue'
       Policies:
         - !Ref IngestSharedPolicy
+      LoggingConfig:
+        LogGroup: !Ref IngestWorkerFunctionLogGroup
 
   FinalizeFunction:
     Type: AWS::Serverless::Function
@@ -451,6 +460,8 @@ Resources:
                 'Fn::Sub':
                   - 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${T}'
                   - T: { 'Fn::ImportValue': !Sub '${MainStackName}-TrackingTableName' }
+      LoggingConfig:
+        LogGroup: !Ref FinalizeFunctionLogGroup
 
   FailFunction:
     Type: AWS::Serverless::Function
@@ -485,6 +496,8 @@ Resources:
             - Effect: Allow
               Action: [kms:Decrypt, kms:DescribeKey, kms:GenerateDataKey]
               Resource: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+      LoggingConfig:
+        LogGroup: !Ref FailFunctionLogGroup
 
   ###########################################################################
   # Shared IAM policy for the ingest functions. Scoped to this extension's own
@@ -651,6 +664,8 @@ Resources:
             ApiId: !Ref FeatureApi
             Path: /{proxy+}
             Method: DELETE
+      LoggingConfig:
+        LogGroup: !Ref FeatureApiFunctionLogGroup
 
   ###########################################################################
   # CloudWatch Log Groups — explicit retention (the implicit default never
@@ -659,37 +674,37 @@ Resources:
   FeatureApiFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${FeatureApiFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/FeatureApiFunction'
       RetentionInDays: !Ref LogRetentionDays
 
   PlannerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${PlannerFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/PlannerFunction'
       RetentionInDays: !Ref LogRetentionDays
 
   IngestWorkerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${IngestWorkerFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/IngestWorkerFunction'
       RetentionInDays: !Ref LogRetentionDays
 
   FinalizeFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${FinalizeFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/FinalizeFunction'
       RetentionInDays: !Ref LogRetentionDays
 
   FailFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${FailFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/FailFunction'
       RetentionInDays: !Ref LogRetentionDays
 
   UiDeployerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${UiDeployerFunction}'
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/UiDeployerFunction'
       RetentionInDays: !Ref LogRetentionDays
 
   ###########################################################################
@@ -775,6 +790,8 @@ Resources:
           # must match feature.yaml -> configPreset.path.
           CONFIG_PRESET_RELATIVE_KEY: config-preset/confbench-config.yaml
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref UiDeployerFunctionLogGroup
 
   RegisterFeatureResource:
     Type: AWS::CloudFormation::CustomResource

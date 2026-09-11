@@ -870,6 +870,19 @@ class TestDiscoveryRejectsOpenAI:
             with pytest.raises(ValueError, match="not supported for discovery"):
                 _reject_model_without_document_blocks(model)
 
+    def test_reject_helper_raises_for_astra(self):
+        """GPT-6 Astra reaches Converse but rejects ``document`` blocks ("This
+        model doesn't support the document field for user messages"), so discovery
+        must refuse it. Note this is the one place Astra is treated like GPT-5.x —
+        for extraction it is allowed where GPT-5.x is not."""
+        from idp_common.discovery.classes_discovery import (
+            _reject_model_without_document_blocks,
+        )
+
+        for model in ("us.openai.gpt-6-astra", "global.openai.gpt-6-astra"):
+            with pytest.raises(ValueError, match="not supported for discovery"):
+                _reject_model_without_document_blocks(model)
+
     def test_reject_helper_allows_supported_models(self):
         from idp_common.discovery.classes_discovery import (
             _reject_model_without_document_blocks,

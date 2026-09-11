@@ -280,8 +280,22 @@ Parameters:
 
   LogLevel:
     Type: String
-    Default: 'INFO'
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    Default: 'WARN'
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: >-
+      Number of days to retain CloudWatch logs for the UI-facing resolver
+      Lambdas. Forwarded from the main stack's LogRetentionDays. Applies only
+      to the six request-serving resolvers: the install-hook Lambdas
+      (RegisterFeature, RegisterFeatureHooks, ApplyFeatureConfigPreset) run
+      only during a feature stack operation, so they keep Lambda's
+      auto-created log group and its indefinite retention deliberately —
+      see scripts/tests/test_lambda_log_groups.py.
+    AllowedValues:
+      [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
 
   PermissionsBoundaryArn:
     Type: String
@@ -517,6 +531,15 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           CATALOG_KEY: !Ref CatalogKey
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref ListInstalledFeaturesFunctionLogGroup
+
+  ListInstalledFeaturesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/ListInstalledFeaturesFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasCustomerManagedEncryptionKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
 
   # Lists the feature catalog from catalog.json (ConfigurationBucket) so the nav
   # can show entries for features that are installable/subscribe-able but not yet
@@ -533,6 +556,15 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           CATALOG_KEY: !Ref CatalogKey
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref ListCatalogFeaturesFunctionLogGroup
+
+  ListCatalogFeaturesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/ListCatalogFeaturesFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasCustomerManagedEncryptionKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
 
   RegisterFeatureFunction:
     Type: AWS::Serverless::Function
@@ -568,6 +600,15 @@ Resources:
           MAIN_STACK_NAME: !Ref MainStackName
           ADMIN_GROUP: !Ref AdminGroupName
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref GetFeatureLaunchUrlFunctionLogGroup
+
+  GetFeatureLaunchUrlFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/GetFeatureLaunchUrlFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasCustomerManagedEncryptionKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
 
   CheckFeatureEntitlementFunction:
     Type: AWS::Serverless::Function
@@ -614,6 +655,15 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           CATALOG_KEY: !Ref CatalogKey
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref CheckFeatureEntitlementFunctionLogGroup
+
+  CheckFeatureEntitlementFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/CheckFeatureEntitlementFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasCustomerManagedEncryptionKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
 
   # Admin-only Mutation resolvers that POST to the simulator's admin API to
   # flip an entitlement on/off. Real-Marketplace deployments (no simulator
@@ -644,6 +694,15 @@ Resources:
           ADMIN_GROUP: !Ref AdminGroupName
           SIMULATOR_SOURCE_TAG: !Ref SubscriptionMode
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref SubscribeFeatureFunctionLogGroup
+
+  SubscribeFeatureFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/SubscribeFeatureFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasCustomerManagedEncryptionKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
 
   UnsubscribeFeatureFunction:
     Type: AWS::Serverless::Function
@@ -669,6 +728,15 @@ Resources:
           ADMIN_GROUP: !Ref AdminGroupName
           SIMULATOR_SOURCE_TAG: !Ref SubscriptionMode
           LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref UnsubscribeFeatureFunctionLogGroup
+
+  UnsubscribeFeatureFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/lambda/UnsubscribeFeatureFunction'
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !If [HasCustomerManagedEncryptionKey, !Ref CustomerManagedEncryptionKeyArn, !Ref 'AWS::NoValue']
 
   RegisterFeatureHooksFunction:
     Type: AWS::Serverless::Function

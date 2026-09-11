@@ -41,7 +41,38 @@ EVERY template change MUST follow these rules:
 2. **Service endpoints**: Use `!Sub "service.${AWS::URLSuffix}"`
    - NEVER hardcode `amazonaws.com` — GovCloud uses `amazonaws.com` but China uses `amazonaws.com.cn`
 3. **Condition checks**: Use `!If [HasPermissionsBoundary, ...]` for permissions boundaries
-4. Run `make check-arn-partitions` before committing to verify compliance
+4. **Step Functions service integrations**: in an ASL file, write
+   `arn:${Partition}:states:::dynamodb:updateItem` and add
+   `Partition: !Ref AWS::Partition` to the state machine's `DefinitionSubstitutions`.
+   Step Functions rejects a hardcoded `aws` partition in GovCloud outright
+   ("resource belongs to a different partition").
+5. Run `make check-arn-partitions` before committing to verify compliance
+
+### How `make check-arn-partitions` finds what it scans
+
+Templates and state machines are discovered by **content**, not filename:
+`scripts/discover_templates.sh cfn` lists every `*.yaml`/`*.yml` that declares
+`AWSTemplateFormatVersion`; `scripts/discover_templates.sh asl` lists every
+`*.json` with a `"StartAt"` key. Both gates (`check-arn-partitions` and
+`cfn-lint`) call the same script, so a new template anywhere in the repo is
+covered the moment it exists — the old hardcoded glob list never looked at
+`nested/`, `samples/`, `notebooks/`, `scripts/`, `iam-roles/` or `src/lambda/`,
+which is how six hardcoded `arn:aws:states:::` integrations shipped.
+`.gitignore` is honoured (git ls-files), so build output and `scratch/`
+worktrees are not scanned.
+
+When the gate flags a line that is genuinely fine:
+
+- **Prose** (`Description:`, `Comment:`, cfn_nag/cdk_nag `reason:`, `#` comments)
+  is already filtered by key. A literal inside a *folded* multi-line
+  `Description: >` block is not, because only the key line carries the key —
+  reword the example (`vpce.<URLSuffix>`) rather than adding a filter.
+- **Infrastructure that can only exist in one partition** is exempted by
+  directory in `ARN_PARTITION_EXEMPT` in the Makefile, each entry with a
+  written justification. Today that is only `scripts/sdlc/cfn/` (the SDLC
+  pipeline's own commercial-account infrastructure, naming a commercial
+  cross-account principal). Exempt a path, never a rule — a rule switched off
+  for every template loses its future value.
 
 ## Lambda Resource Pattern
 ```yaml
@@ -80,15 +111,119 @@ MyFunction:
         - SecurityGroupIds: [!Ref LambdaSecurityGroup]
           SubnetIds: !Ref PrivateSubnetIds
         - !Ref "AWS::NoValue"
+    # Points the function at the log group below. This is what makes the
+    # LOG GROUP the dependency and the FUNCTION second — see the rule below.
+    LoggingConfig:
+      LogGroup: !Ref MyFunctionLogGroup
 
 MyFunctionLogGroup:
   Type: AWS::Logs::LogGroup
   DeletionPolicy: Delete
   Properties:
-    LogGroupName: !Sub "/aws/lambda/${MyFunction}"
+    LogGroupName: !Sub "/${AWS::StackName}/lambda/MyFunction"
     RetentionInDays: !Ref LogRetentionDays
     KmsKeyId: !If [HasKmsKey, !Ref KmsKeyArn, !Ref "AWS::NoValue"]
 ```
+
+### Log group naming — the invariant
+
+A log group name must satisfy all three of:
+
+1. **It must not reference the function resource.** No `${MyFunction}` in the
+   name — that is the defect below.
+2. **It must be stack-scoped and stable** across function replacement, so it
+   derives from `AWS::StackName` (or another parameter fixed for the stack's
+   lifetime), not from anything CloudFormation regenerates.
+3. **If you name it explicitly at all, the function needs a matching
+   `LoggingConfig`** pointing at it — otherwise Lambda writes to its own default
+   group and the one you declared sits empty.
+
+Or simply omit `LogGroupName` and let CloudFormation generate it
+(`<stack>-<LogicalId>-<random>`), which satisfies all three for free.
+
+Three shapes in this repo comply, and you will see all of them. Prefer the first
+for new code; **do not "fix" the second or third** — they are correct:
+
+| Shape | Where |
+|---|---|
+| `/${AWS::StackName}/lambda/<FunctionLogicalId>` | `patterns/unified` (18), every feature-platform extension |
+| `/aws/lambda/${AWS::StackName}-<Name>` | 5 in the parent `template.yaml`, 2 in `nested/api-resolvers/` |
+| `/aws/lambda/${SomeParameter}-<Name>` | `idp-data-generator`, keyed on `MainStackName`/`FeatureId` |
+| *(generated — no `LogGroupName`)* | most of the parent `template.yaml` (49 groups) |
+
+**One exemption, and only one:** a Lambda that runs *only* during a
+CloudFormation stack operation — a `ServiceToken` custom-resource handler, or an
+install hook invoked by another stack's custom resource — may omit its log group
+entirely and keep Lambda's auto-created one. Those are very low volume and log
+nothing but stack operations, so indefinite retention is an accepted cost rather
+than an oversight. Every other Lambda needs a log group with `RetentionInDays`.
+
+All of this is enforced by `scripts/tests/test_lambda_log_groups.py`, which
+gates **every** template in the repo that declares a Lambda (21 of them, and a
+meta-test fails if a new one is added and not listed) on four rules:
+
+1. Every Lambda has a `LoggingConfig` that resolves to a real
+   `AWS::Logs::LogGroup` **in the same template** — a typo'd or bare-string
+   `LogGroup` fails.
+2. Every log group sets a non-null `RetentionInDays`.
+3. No `LogGroupName` references a function resource, in **any** intrinsic form —
+   `Fn::Sub` scalar and list form, `Fn::Join`, `Ref`, `GetAtt`, nested.
+4. A log group's `Condition` matches its function's, so a group is never created
+   where its function is absent, nor missing where it is present.
+
+The exemption list is *verified*, not trusted: an exempt function must be a
+`ServiceToken` target or have its ARN exported via a direct `GetAtt`, and must
+have no event source (SAM `Events`, `EventSourceMapping`, `Lambda::Permission`,
+`Events::Rule`, or an API Gateway method/integration).
+
+The gate has its own meta-tests, pinning 16 cases that earlier revisions accepted
+— `Fn::Join` and `Fn::Sub`'s list form slipped rule 3, a `LoggingConfig` naming a
+non-existent group satisfied rule 1, `RetentionInDays: ~` satisfied rule 2, and
+the exemption check accepted any export merely *mentioning* the function.
+`test_gate_catches_known_bypasses` pins each closed, so the rules cannot silently
+weaken. Be aware the check is still structural: it reasons about the template, not
+about what actually invokes a function at runtime.
+
+**Never name a log group after the function resource:**
+
+```yaml
+# WRONG — do not do this
+MyFunctionLogGroup:
+  Properties:
+    LogGroupName: !Sub "/aws/lambda/${MyFunction}"   # resolves the function's generated name
+```
+
+Two defects, both observed in production (issue #818 — 79 never-expiring
+orphan log groups holding 14.8 MiB on one stack):
+
+1. **It inverts the create order.** `!Sub "/aws/lambda/${MyFunction}"` makes the
+   *log group* depend on the *function*, so CloudFormation builds the function
+   first. Anything that invokes it in that window makes Lambda auto-create
+   `/aws/lambda/<fn>` itself, and CloudFormation's `CREATE` then fails
+   `ResourceAlreadyExists`. This bites custom-resource Lambdas hardest, since
+   CloudFormation invokes those during the same stack operation.
+2. **It orphans never-expiring groups on function replacement.** `${MyFunction}`
+   embeds Lambda's random suffix, so replacing the function renames the group.
+   CloudFormation creates the new one and deletes the old; if the outgoing
+   function logs once more, Lambda recreates the old name and CloudFormation no
+   longer owns it. It then lives forever with **no retention policy**, because
+   Lambda's auto-create sets none. A group with `retentionInDays: null` is the
+   fingerprint of one of these.
+
+The `/${AWS::StackName}/lambda/<Fn>` form avoids both: the group is created
+first, and the name is stable across function replacement. Log-group names
+permit `/`, `.`, `-`, `_`, `#` and alphanumerics, up to 512 characters.
+
+Note that a *stable* explicit name still carries one residual risk that a
+CloudFormation-generated name does not: if a log group is newly added to an
+already-existing stack and that update rolls back, a straggler invocation can
+resurrect the group, and the retry's `CREATE` then collides under the same name.
+Because the name is stable, **a plain retry collides identically every time**
+until someone deletes the resurrected group by hand — unlike a generated name,
+where the retry simply picks a new one. So prefer generated names for one-shot
+custom-resource Lambdas introduced by an upgrade, where that is exactly the
+scenario (this is why `MeteringHourMigrationFunctionLogGroup` in the parent
+template is deliberately unnamed).
 
 ## Build & Deploy
 ```bash

@@ -55,12 +55,58 @@ synthetic:
   # a residual over-split is "the rules do not work" or "this document withholds
   # their primary evidence".
   - {id: paginated_3pg,   gen: bank_statement, rows: 100,  cols: 3, lists: 1, paginate: true, tag: shape=paginated}
+  # Running identity header (title + account number + period) reprinted on every
+  # page, NO pagination — the #750 shape, which DOES reproduce with this knob
+  # (0/5 correct on Nova 2 Lite and Haiku 4.5, before and after #726). Not in any
+  # release-gate suite: it is a documented hard case whose supported fix is the
+  # per-class `BOUNDARY:` description sentence, kept here so a candidate rule can
+  # be checked against it (see docs/classification.md, "Known failure mode").
+  - {id: repeathdr_3pg,   gen: bank_statement, rows: 100,  cols: 3, lists: 1, repeat_header: true, tag: shape=runninghdr}
+  # --- High-difficulty doc for the OpenAI GPT-6 Astra value study -----------------
+  #
+  # SIZE A FIXTURE BY PAGE COUNT, NOT BY TEXT. This is the lesson of the first
+  # attempt at this study, which shipped a 164-page fixture believing it was
+  # ~100,000 tokens and watched every model reject it. What Simple mode actually
+  # sends is dominated by PAGE IMAGES, not OCR text:
+  #
+  #   a 300-DPI Letter page image = 2550 x 3300 / 750 = ~11,220 tokens
+  #   the OCR text of that same page                  =     ~600 tokens
+  #
+  # (750 px/token is Bedrock's own image formula, which
+  # ExtractionService._estimate_simple_input applies.) So the pipeline costs
+  # ~12,000 tokens PER PAGE, ~19x the text, and the practical Simple-mode ceiling
+  # is a PAGE count:
+  #
+  #   Sonnet 5   (200K window, 140,000 usable at the 0.30 buffer) -> ~11 pages
+  #   Astra      (1.05M window, 735,000 usable)                   -> ~61 pages
+  #
+  # Measured live on IDP1 (2026-09-11), which is where those numbers come from:
+  # an 81-page doc estimated 964,223 tokens and a 164-page doc 1,971,931 — both
+  # rejected by Astra as well as Sonnet 5. The discriminating band for a
+  # "big window earns its price" cell is therefore roughly 12-61 PAGES, and three
+  # pre-existing fixtures already sit in it: large_narrow (17pp, ~203K),
+  # scale_1200 (25pp, ~299K) and scale_1600 (33pp, ~395K). Only a DIFFICULTY
+  # fixture had to be added.
+  #
+  # `dense_250` — every hard knob at once at a size Astra can actually hold
+  # (26 pages, ~304,000 est. tokens): 8 columns, 4 interleaved lists, long
+  # free-text descriptions, 15% OCR noise, and value_noise so per-row truth is
+  # TYPED (currency symbols, accounting negatives, both thousands conventions,
+  # named months). Sonnet 5 cannot take it in one request, so pair it with
+  # advanced mode (which shards) to separate "more capable" from "bigger window".
+  - {id: dense_250,       gen: bank_statement, rows: 250,  cols: 8, lists: 4, desc_len: long, ocr_noise: 0.15, value_noise: true, tag: shape=dense}
 
 # --- B. Reference, real labeled sets (already in the stack testset bucket) ------
+# Reference corpora are test SETS on the stack (no local PDF). run_matrix launches
+# each through the TestRunner with the cell's config version and `n` documents,
+# and scores every document with analyze.score_reference (#766). `class` names the
+# make_configs.py --class whose base config the cell axes are merged onto — build
+# it before running a suite that names the corpus:
+#   make_configs.py --suite <suite> --class realkie [--set ...]
 reference:
-  - {id: realkie,   testset: realkie-fcc-verified, config: realkie-fcc-verified, n: 20, tag: real=forms}
-  - {id: ocr_bench, testset: ocr-benchmark,        config: ocr-benchmark,        n: 20, tag: real=mixed}
-  - {id: bank_real, testset: samples-tables,       config: bank-statement-sample, n: 1, tag: real=bankstmt}
+  - {id: realkie,   class: realkie,        testset: realkie-fcc-verified, config: realkie-fcc-verified, n: 20, tag: real=forms}
+  - {id: ocr_bench, class: ocr_bench,      testset: ocr-benchmark,        config: ocr-benchmark,        n: 20, tag: real=mixed}
+  - {id: bank_real, class: bank_statement, testset: samples-tables,       config: bank-statement-sample, n: 1, tag: real=bankstmt}
 
 # --- Doc groupings referenced by suites in config_matrix.yaml ------------------
 # NOTE: core_docs are all bank_statement-class (transaction-list) documents, scored
@@ -81,6 +127,18 @@ groups:
   # exact-ground-truth synthetic list docs only, one run per (cell, doc).
   core_synth:     [tiny_form, small_narrow, med_narrow, large_narrow, wide_400, manylists_400, longdesc_100]
   scaling_series: [scale_25, scale_100, scale_400, scale_800, scale_1200, scale_1600, scale_3200]
+  # astra_docs: the model-premium study (see the `astravalue` suite). Ordered by
+  # PAGE COUNT, because pages — not rows and not text — are what decides whether a
+  # document fits (see the sizing note above the `dense_250` entry):
+  #   small_narrow  3pp  ~35K   both models fit: the control where a premium model
+  #                             should NOT pay for itself
+  #   med_narrow    9pp  ~108K  both still fit, at 3x the size: still a control
+  #   large_narrow 17pp  ~203K  Sonnet 5 CANNOT take this in one request; Astra can
+  #   dense_250    26pp  ~304K  Astra-only AND maximally difficult (8 cols, 4 lists,
+  #                             long text, OCR noise, typed value truth)
+  # `scale_3200` (66pp, ~790K) is deliberately excluded — it exceeds ASTRA too, so
+  # it belongs to `astracap`, where that ceiling is the finding.
+  astra_docs:     [small_narrow, med_narrow, large_narrow, dense_250]
   all:            "*"
 
 # Notes:

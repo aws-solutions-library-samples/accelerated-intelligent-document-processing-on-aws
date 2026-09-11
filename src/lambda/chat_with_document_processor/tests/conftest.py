@@ -26,7 +26,10 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("TRACKING_TABLE_NAME", "tracking-table")
 os.environ.setdefault("CONFIGURATION_TABLE_NAME", "config-table")
 os.environ.setdefault("OUTPUT_BUCKET", "output-bucket")
-os.environ.setdefault("USERS_TABLE_NAME", "")  # RBAC defaults to unrestricted
+# Must be non-empty: an unset UsersTable now DENIES the turn (fail-closed scope
+# lookup), so leaving it blank would make every test a scope denial. Tests that
+# exercise the unset case override it explicitly.
+os.environ.setdefault("USERS_TABLE_NAME", "users-table")
 
 # Stub `idp_common.*` symbols that the processor imports. The real package is
 # delivered via a Lambda layer at deploy time; for unit tests we only need to
@@ -66,8 +69,11 @@ _is_claude_4_7 = lambda model_id: (  # noqa: E731
 )
 _bedrock_mod.is_claude_4_7_model = _is_claude_4_7
 _bedrock_mod.is_grok_model = lambda model_id: "xai.grok" in (model_id or "")
+_bedrock_mod.is_astra_model = lambda model_id: "openai.gpt-6-astra" in (model_id or "")
 _bedrock_mod.strips_sampling_params = lambda model_id: (
-    _is_claude_4_7(model_id) or "xai.grok" in (model_id or "")
+    _is_claude_4_7(model_id)
+    or "xai.grok" in (model_id or "")
+    or "openai.gpt-6-astra" in (model_id or "")
 )
 _bedrock_mod.is_claude_effort_model = lambda model_id: any(
     t in (model_id or "")
@@ -84,6 +90,9 @@ _bedrock_mod.is_claude_effort_model = lambda model_id: any(
 )
 _bedrock_mod.CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _bedrock_mod.GROK_EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh")
+# Astra is a THIRD vocabulary: Claude's values plus "none". It accepts "max"
+# (which Grok rejects) and rejects "minimal" (which GPT-5.x accepts).
+_bedrock_mod.ASTRA_EFFORT_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
 _bedrock_mod.default_client = MagicMock()
 # The idp_common.bedrock facade exposes stream_responses_api (OpenAI GPT-5.x
 # streaming chat path). Tests patch this generator.

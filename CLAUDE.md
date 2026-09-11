@@ -59,7 +59,75 @@ make ui-build
 
 # CI/CD linting (check-only, no modifications)
 make lint-cicd
+
+# CloudFormation template validation (fails on ERRORS; warnings counted, not listed)
+make cfn-lint
+
+# Same, but list every advisory warning in full
+make cfn-lint-warnings
 ```
+
+**`make cfn-lint`** discovers templates by **content** (anything declaring
+`AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
+without being covered — `make check-arn-partitions` still uses hardcoded globs and
+misses `nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/`. It runs
+from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
+
+It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
+defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
+wholesale. Those warnings are **counted but not listed** by default — printing
+them buried the one line that matters — so `make lint` shows a single per-rule
+tally (`W1030 x88, ...`) and `make cfn-lint-warnings` (or
+`CFN_LINT_SHOW_WARNINGS=1`) prints them in full. The rules stay enabled: a
+genuinely malformed hardcoded id or ARN is still detected, and every `E*` line is
+always printed. The six `<ARTIFACT_BUCKET_TOKEN>` findings are suppressed at
+**resource** scope via `Metadata: cfn-lint:` on the three layer resources in
+`template.yaml` — not by disabling E1161/E3031 repo-wide, which would have hidden
+a genuinely malformed name anywhere else. `publish.py` substitutes those tokens.
+
+The linter is **pinned** (`CFN_LINT_VERSION` in the Makefile, mirrored in both CI
+configs and asserted by `scripts/tests/test_ci_gate_parity.py`). An unpinned
+linter on a blocking gate red-lines the branch whenever a release promotes a check
+to ERROR class, with no code change.
+
+**E3043** (parent's `Parameters` vs the nested stack's) is disabled: `TemplateURL`
+points at `.aws-sam/packaged.yaml`, a build artifact, so the rule is skipped
+entirely in CI and reports false positives against a stale copy locally — noise in
+both. `scripts/tests/test_nested_stack_parameters.py` asserts that wiring directly
+against the **source** templates instead, and also covers the reverse direction
+(a required nested parameter the parent never passes) that E3043 ignores.
+
+### CI parity between GitHub and GitLab
+
+GitLab and GitHub now run the **same** non-integration gates. Integration tests
+(`integration_tests`) remain GitLab-only, as they need AWS credentials.
+
+Historically several gates ran on GitLab only, so a change merged via a GitHub PR
+skipped them — the same class of gap as the SRT/dep-audit note below. Now on both:
+`make lint-cicd` (which itself covers `cfn-lint`, `validate-buildspec`,
+`check-arn-partitions`, filtered-scan and data-plane-tag checks),
+`make typecheck-pr`, `make api-test-static`, `make test-cicd -C lib/idp_common_pkg`,
+`make test-packages-cicd`, the UI vitest suite,
+`scripts/check_first_party_deps.py` and
+`scripts/sdlc/validate_service_role_permissions.py`.
+
+`make cfn-lint` and `make validate-buildspec` were in **neither** CI before — they
+sat in `lint`/`fastlint` but not `lint-cicd`, so a template or buildspec error
+could reach deploy time. (Narrow exception: one unit test,
+`test_govcloud_pattern_template.py`, already ran cfn-lint against a single
+template asserting only zero E3006.)
+
+**`scripts/tests/test_ci_gate_parity.py` enforces this.** It fails if a gate
+appears in one CI and not the other, if `lint-cicd` becomes weaker than local
+`make lint`, or if the cfn-lint pin drifts between the Makefile and either CI
+config. Every parity gap listed above was found by hand, months late, because
+nothing checked.
+
+⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
+push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
+to `develop` runs nothing on GitHub. And being visible is not being blocking —
+each check must also be a required status check on `develop` in branch-protection
+settings.
 
 ### Testing
 
@@ -99,7 +167,11 @@ make srt-fix       # Interactive fix mode
 ```
 
 **CI/CD Integration:**
-- SRT automatically runs on merge requests targeting `develop` branch (GitLab CI `security_review` stage)
+- SRT runs on every push and MR in GitLab CI (`srt_security_review`, `fast_checks`)
+  **and** on every GitHub pull request (`.github/workflows/security-checks.yml`).
+  A change merged on GitHub used to skip it entirely — see the note in that
+  workflow. ⚠️ Being visible is not being blocking: the check must also be a
+  required status check on `develop` in branch-protection settings.
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -112,8 +184,9 @@ make dep-audit        # audit every pinned Python + Node dep against OSV (fails 
 make dep-audit-fast   # reuse existing dist/manifests instead of regenerating
 ```
 
-Gated in CI by the `dep_audit` job (`fast_checks`, every push and MR, no AWS
-needed). Triage unreachable advisories in
+Gated in CI by the `dep_audit` job — GitLab (`fast_checks`, every push and MR)
+and GitHub (`.github/workflows/security-checks.yml`, every pull request). No AWS
+needed either side. Triage unreachable advisories in
 `scripts/security/dep_audit_allowlist.json` with a justification — the same
 pattern `scripts/srt/issues.json` uses for SRT. See
 `.claude/skills/srt-security-scan.md`.
@@ -406,11 +479,22 @@ AWS_PROFILE=default aws logs tail /aws/lambda/<fn> --since 1h
 ```
 
 For the CloudWatch MCP tools, pass `profile_name: "default"` (and the stack's
-region). Find Lambda log groups by listing with the deployment stack-name
-prefix, e.g. `/aws/lambda/<StackName>-...`. Hook-related functions to look for:
-the pipeline-hooks dispatcher (`...-PipelineHooksDispatcher...`), a feature's
-hook Lambda, a feature's `...-FeatureApiFunction-...`, and the config-preset
-resolver (`...-ApplyFeatureConfigPreset...`).
+region). Lambda log groups take one of **three** shapes, so list on both
+prefixes before concluding a function has no logs:
+
+| Shape | Used by |
+|---|---|
+| `/<StackName>/lambda/<FunctionLogicalId>` | `patterns/unified` and every feature-platform extension — the pipeline-hooks dispatcher, feature hook Lambdas, `FeatureApiFunction`, `UiDeployerFunction` |
+| `/aws/lambda/<StackName>-<Name>` | 5 groups in the parent `template.yaml` (`CircuitBreakerManager`, `CalculateCapacity`, `CalculateCapacityResolver`, `VersionCheckResolver`, `AgentProcessor`) and 2 in `nested/api-resolvers/` |
+| `/aws/lambda/<fn>` (Lambda's default) | **custom-resource-only Lambdas**, which deliberately keep the auto-created group — they run only during a stack operation, so indefinite retention is an accepted cost. Includes `nested/bedrockkb/` (all 5), the `Custom::` handlers in `template.yaml`, and the feature-platform install hooks (`...-RegisterFeature...`, `...-RegisterFeatureHooks...`, `...-ApplyFeatureConfigPreset...`). Enforced by `scripts/tests/test_lambda_log_groups.py` |
+| `<StackName>-<LogicalId>-<hash>` — **no prefix at all** | the ~84 groups that declare no `LogGroupName` and so take CloudFormation's generated name. This is the single most common shape in the repo and it does **not** start with `/`, so neither a `/aws/lambda/` nor a `/<StackName>/` prefix listing finds it. `aws logs describe-log-groups --log-group-name-prefix '<StackName>-'` is the third listing you need |
+
+Note the first shape is `/<StackName>/`, **not** `/aws/lambda/<StackName>-`, and
+the fourth has no leading `/` at all — so a single `/aws/lambda/` prefix listing
+misses the dispatcher, every feature Lambda, *and* the ~84 generated-name groups.
+Listing on all three prefixes (`/aws/lambda/`, `/<StackName>/`, `<StackName>-`)
+is the only way to be sure a function has no logs. See the log-group naming rules
+in `.claude/skills/infrastructure.md`.
 
 ## AWS Service Requirements
 
@@ -478,6 +562,7 @@ that domain:
 | `.claude/skills/srt-security-scan.md` | Running the SRT security scan (`make srt-scan`), triaging HIGH findings, and mitigating (`# nosec`/code fix) or suppressing (`scripts/srt/issues.json`) them |
 | `.claude/skills/curate-security-results.md` | Publishing a public-safe, auditable snapshot of the four security tests (SRT, ZAP DAST, RBAC static/dynamic) into `security/test-results/<version>/` via `scripts/security/curate_results.py` |
 | `.claude/skills/api-rbac-test.md` | Verifying API authorization (Cognito groups + config-version scope) via `make api-test` / `make api-test-static`; adding a new API operation |
+| `.claude/skills/live-auth-checks.md` | Changing the Cognito pre-token IdP group-mapping trigger, `getStepFunctionExecution`, or `UserPoolClient` attribute permissions — `make live-auth-checks` (throwaway resources, no stack) and `make verify-idp-federation` (a real federated sign-in via a throwaway OIDC provider). Includes the Cognito behaviours the docs get wrong |
 | `.claude/skills/ux-test.md` | Browser-driven UX testing of the web UI against a live stack (`make ux-test`) — functional pass/fail per flow **plus** usability findings. The only test layer here that opens a browser; flows live in `scripts/ux_flows.yaml` |
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |

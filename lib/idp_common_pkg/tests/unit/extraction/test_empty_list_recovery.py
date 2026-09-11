@@ -340,6 +340,58 @@ class TestCompletenessReportStopsContradictingItself:
         assert len(check["violations"]) == 1
         assert "constraint violation" in check["summary"]
 
+    def test_minitems_as_a_string_is_still_enforced(self):
+        """A class authored through the Web UI comes back with `minItems` stringified.
+
+        `ConfigurationRecord._stringify_values` converts every numeric scalar to a
+        string before writing to the Configuration table, and nothing coerces schema
+        properties back on read — so `minItems` arrives here as `"100"` and the
+        `min_items > 0` comparison raised `TypeError`, losing the whole check.
+        """
+        schema = {
+            "type": "object",
+            "$id": "WithStringMin",
+            "properties": {
+                "Transactions": {
+                    "type": "array",
+                    "minItems": "100",
+                    "items": {"type": "object"},
+                }
+            },
+        }
+        check = self._service()._check_completeness_detailed(
+            extracted_fields={"Transactions": [{"a": 1}, {"a": 2}]},
+            schema=schema,
+            tool_used=False,
+            ocr_analysis=OCR_WITH_TABLE,
+        )
+        assert check["schema_constraints_met"] is False
+        assert check["violations"][0]["shortfall"] == 98
+        assert check["violations"][0]["completeness_pct"] == 2.0
+
+    def test_minitems_that_is_not_a_number_is_treated_as_absent(self):
+        """Matches the two already-guarded sites: an uncoercible value disables the
+        constraint rather than failing the whole completeness check."""
+        schema = {
+            "type": "object",
+            "$id": "WithJunkMin",
+            "properties": {
+                "Transactions": {
+                    "type": "array",
+                    "minItems": "many",
+                    "items": {"type": "object"},
+                }
+            },
+        }
+        check = self._service()._check_completeness_detailed(
+            extracted_fields={"Transactions": [{"a": 1}]},
+            schema=schema,
+            tool_used=False,
+            ocr_analysis=OCR_WITH_TABLE,
+        )
+        assert check["schema_constraints_met"] is True
+        assert check["violations"] == []
+
 
 class TestPromptForbidsDroppingTheList:
     """The instruction gap is the root cause: the prompt told the agent to fall
