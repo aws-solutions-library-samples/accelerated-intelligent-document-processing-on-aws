@@ -455,9 +455,10 @@ suites:
   # `force-on` carries it in the toolSpec. The advanced cell WAS the control while
   # the probe was not on the agentic path; since #772 the probe rides on the
   # unsharded agentic call too, so `core-tt-adv-sep` is now an ARM (these docs are
-  # short enough not to shard) and its delta measures the agentic detection cost —
-  # unmeasured so far. Run the same suite before and after the code change on ONE
-  # stack.
+  # short enough not to shard) and its delta measures the agentic detection cost.
+  # Measured via Test Studio on 2026-09-11 (40 paired docs/corpus): -1.5 pts RealKIE
+  # (p=0.48), -0.9 OCR benchmark (p=0.15), extraction input +25% on the OCR
+  # benchmark. Run the same suite before and after the code change on ONE stack.
   migate:
     cells: [core-tt-simple-sep, core-tt-simple-int, core-tt-adv-sep, force-on, split-disabled]
     docs:  [tiny_form, small_narrow, longdesc_100]
