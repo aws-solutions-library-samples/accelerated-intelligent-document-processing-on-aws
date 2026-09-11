@@ -116,7 +116,14 @@ def test_reference_run_expands_to_one_scored_row_per_document():
 
     def score(bucket, tracking, run_id, name, truth):
         seen.append((run_id, name, truth))
-        return {"status": "COMPLETED", "success": True, "weighted_accuracy": 0.5}
+        # analyze.score_doc reports the scored file under "doc" — it must not
+        # displace the corpus id the row is keyed on.
+        return {
+            "doc": name,
+            "status": "COMPLETED",
+            "success": True,
+            "weighted_accuracy": 0.5,
+        }
 
     rows = aggregate.score_reference_run(
         res, r, list_prefixes=lambda b, rid: prefixes, score=score

@@ -106,7 +106,11 @@ def score_reference_run(res, r, list_prefixes=None, score=None):
             )
         except Exception as e:
             sc = {"status": "SCORE_ERROR", "success": False, "error": str(e)}
-        rows.append({**_key(r), "sub_doc": name, **sc})
+        # The scorer reports the document it scored under "doc" (its file name);
+        # the run key must win so the row stays keyed on the CORPUS id, with the
+        # file name under sub_doc. Caught live: the first cut let the scorer's
+        # "doc" overwrite the corpus id, and the roll-up saw 20 one-off documents.
+        rows.append({**sc, **_key(r), "sub_doc": name})
     expected = int(r.get("n_docs") or 0)
     if expected and len(names) != expected:
         for row in rows:
