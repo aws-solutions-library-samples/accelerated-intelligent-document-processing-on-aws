@@ -57,8 +57,10 @@ Parameters:
 
   LogLevel:
     Type: String
-    Default: INFO
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    Default: WARN
+    # WARN is the host's spelling and is forwarded by the root stack; WARNING is
+    # kept so an already-deployed feature stack that chose it still updates.
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
 
   PermissionsBoundaryArn:
     Type: String

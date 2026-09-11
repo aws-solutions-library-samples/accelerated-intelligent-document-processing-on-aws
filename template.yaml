@@ -545,7 +545,7 @@ Parameters:
   # Logging configuration
   LogLevel:
     Type: String
-    Default: INFO
+    Default: WARN
     AllowedValues:
       - DEBUG
       - INFO

@@ -174,6 +174,51 @@ The solution creates centralized logging across all components:
 
 All logs include correlation IDs for tracing individual document processing journeys.
 
+### `LogLevel` — what `WARN` turns off
+
+The `LogLevel` stack parameter defaults to `WARN`. At `INFO` or `DEBUG` the
+accelerator can write S3 presigned URLs, document contents and PII into
+CloudWatch Logs, which is why [well-architected](./well-architected.md) has
+recommended `WARN` or `ERROR` for production and why the default was changed from
+`INFO` (AppSec finding #9). An **existing** stack keeps whatever value it was
+deployed with — CloudFormation preserves the previous parameter value on update —
+so this only affects new stacks and updates that re-specify the parameter.
+
+Four things you may be used to seeing are absent at `WARN`, and each comes back
+only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
+
+- **Per-stage progress lines.** The `INFO` messages many operators use to follow
+  one document through OCR, classification, extraction and assessment. Errors and
+  warnings are still logged, and document status is still visible in the Web UI
+  and the tracking table.
+- **The Web UI REST API access log.** Access logging on the API Gateway stage is
+  only configured when `LogLevel` is `INFO` or `DEBUG` (finding API-GW-006). It
+  records request metadata only, never bodies, but it is the only trace of
+  requests that fail *before* the dispatcher Lambda — authorizer 401/403s, WAF
+  blocks, CORS and gateway responses. This is deliberately coupled to `LogLevel`
+  rather than given its own parameter, so emitting request metadata stays one
+  visible decision.
+- **The dashboard widget "Count of Workflow Executions over latency threshold".**
+  It is a Logs Insights query that parses the workflow tracker's `INFO` line
+  `Publishing latency metrics - ... total: <n>ms`, so at `WARN` the widget is
+  always empty. It is the only dashboard element with this dependency. The
+  underlying data is still published as custom metrics
+  (`QueueLatencyMilliseconds`, `WorkflowLatencyMilliseconds`,
+  `TotalLatencyMilliseconds` in the stack's metric namespace), which drive the
+  "Queue Latency" and "Workflow Latency" widgets next to it; `SlowExecutionsAlarm`
+  reads Step Functions' own `ExecutionTime` metric. Neither the metrics nor the
+  alarm depend on the log level, so nothing you would *alert* on is lost — only
+  that one per-minute count.
+- **Installed features are not affected — they still log at `INFO`.** Each
+  installable feature (for example `pii-anonymizer`) is its own stack, launched
+  with the `LogLevel` pinned in its `feature.yaml`, which is `INFO` for the six
+  shipped features. The host's value is not forwarded. Change the feature stack's
+  `LogLevel` parameter after install if you need it at `WARN`; newly scaffolded
+  features default to `WARN`.
+- **`idp-cli deploy --log-level` has no CLI default.** Omit it to get the template
+  default on a new stack or to preserve the current value on an update. Passing
+  `--log-level INFO` is honoured; it used to be silently treated as "unset".
+
 ## Pattern-Specific Monitoring
 
 Each pattern includes additional monitoring tailored to its specific workflow:
