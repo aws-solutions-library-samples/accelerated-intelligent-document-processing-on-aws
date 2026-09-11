@@ -175,3 +175,18 @@ def test_hint_reflects_a_flag_the_merge_carried_forward(service):
             "b", "doc.pdf", save_to_config=True
         )
     assert result["multi_instance_hint"]["already_multi_instance"] is True
+
+
+def test_pop_scrubs_a_required_entry_too():
+    s = _schema(**{DISCOVERY_INSTANCE_COUNT_KEY: 2})
+    s["required"] = ["employee", DISCOVERY_INSTANCE_COUNT_KEY]
+    assert pop_instance_count(s) == 2
+    assert s["required"] == ["employee"]
+
+
+def test_count_is_reset_per_extraction_so_a_previous_reply_cannot_leak(service):
+    _run(service, _schema(**{DISCOVERY_INSTANCE_COUNT_KEY: 3}))
+    assert service._last_instance_count == 3
+    result, _ = _run(service, _schema())  # next reply has no count
+    assert service._last_instance_count is None
+    assert result["multi_instance_hint"] is None

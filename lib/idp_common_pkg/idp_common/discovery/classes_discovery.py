@@ -71,6 +71,9 @@ def pop_instance_count(schema: Dict[str, Any]) -> Optional[int]:
     props = schema.get("properties")
     if isinstance(props, dict):
         props.pop(DISCOVERY_INSTANCE_COUNT_KEY, None)
+    required = schema.get("required")
+    if isinstance(required, list) and DISCOVERY_INSTANCE_COUNT_KEY in required:
+        schema["required"] = [r for r in required if r != DISCOVERY_INSTANCE_COUNT_KEY]
     if isinstance(raw, bool):
         return None
     try:
@@ -126,6 +129,8 @@ class ClassesDiscovery:
     ):
         self.input_bucket = input_bucket
         self.input_prefix = input_prefix
+        # #765: diagnostic record count from the most recent model reply
+        self._last_instance_count: Optional[int] = None
         self.region = region or os.environ.get("AWS_REGION")
         self.version = version
         try:
@@ -814,6 +819,7 @@ class ClassesDiscovery:
         logger.info(f"sample format is : {sample_format}")
 
         validation_feedback = ""
+        self._last_instance_count = None
         for attempt in range(max_retries):
             try:
                 # Add validation feedback if this is a retry
@@ -960,6 +966,7 @@ class ClassesDiscovery:
         sample_format = self._sample_output_format()
 
         validation_feedback = ""
+        self._last_instance_count = None
         for attempt in range(max_retries):
             try:
                 # Add validation feedback if this is a retry

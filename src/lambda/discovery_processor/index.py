@@ -554,7 +554,7 @@ def update_job_status_via_appsync(job_id, status, error_message=None, discovered
         import traceback
         logger.error(f"Error traceback: {traceback.format_exc()}")
         # Fall back to direct DynamoDB update
-        update_job_status_direct(job_id, status, error_message, discovered_class_name, status_message)
+        update_job_status_direct(job_id, status, error_message, discovered_class_name, status_message, multi_instance_hint)
         return False
 
 

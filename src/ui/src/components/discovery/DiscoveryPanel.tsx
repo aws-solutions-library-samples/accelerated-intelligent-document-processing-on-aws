@@ -536,9 +536,13 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
 
     // Optimization completed: show class name + optimization result
     if (item.status === 'OPTIMIZATION_COMPLETED' && item.discoveredClassName) {
+      const optHint = parseMultiInstanceHint(item.multiInstanceHint);
       return (
         <Box>
-          <Badge color="green">{item.discoveredClassName}</Badge>
+          <SpaceBetween direction="horizontal" size="xs">
+            <Badge color="green">{item.discoveredClassName}</Badge>
+            {optHint && <Badge color="blue">{`${optHint.instance_count} records in sample`}</Badge>}
+          </SpaceBetween>
           <Box fontSize="body-s" color="text-body-secondary" margin={{ top: 'xxs' }}>
             {item.statusMessage || 'Blueprint optimization completed'}
           </Box>

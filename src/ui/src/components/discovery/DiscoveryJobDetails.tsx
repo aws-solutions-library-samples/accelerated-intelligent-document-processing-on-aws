@@ -35,6 +35,7 @@ import { getConfigVersion, listDiscoveryJobs, onDiscoveryJobStatusChange, update
 import { applyMultiInstance, parseMultiInstanceHint } from './multiInstanceHint';
 import { DISCOVERY_PATH, CONFIGURATION_PATH } from '../../routes/constants';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
+import useUserRole from '../../hooks/use-user-role';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 
@@ -128,6 +129,11 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
   const { versions } = useConfigurationVersions();
+  // #765 apply-state hooks live here, above the early returns, so the hook
+  // order is identical on every render.
+  const [applyState, setApplyState] = useState<'idle' | 'applying' | 'applied' | 'unchanged' | 'error'>('idle');
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const { canWrite } = useUserRole();
   const [job, setJob] = useState<DiscoveryJob | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -242,8 +248,6 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
   // configuration version, flags the class, writes the full classes list back
   // (updateConfiguration replaces lists wholesale), and reports what changed.
   const multiInstanceHint = parseMultiInstanceHint(job.multiInstanceHint);
-  const [applyState, setApplyState] = useState<'idle' | 'applying' | 'applied' | 'unchanged' | 'error'>('idle');
-  const [applyError, setApplyError] = useState<string | null>(null);
   const applyMultiInstanceHint = async (): Promise<void> => {
     if (!multiInstanceHint || !job.version) return;
     setApplyState('applying');
@@ -465,7 +469,7 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
       )}
 
       {/* Single-doc: Discovered Class */}
-      {!isMultiDoc && job.status === 'COMPLETED' && job.discoveredClassName && (
+      {!isMultiDoc && (job.status === 'COMPLETED' || job.status.startsWith('OPTIMIZATION_')) && job.discoveredClassName && (
         <Container
           header={
             <Header
@@ -494,7 +498,11 @@ const DiscoveryJobDetails = (): React.JSX.Element => {
                 type="info"
                 header={`This sample appears to contain ${multiInstanceHint.instance_count} '${multiInstanceHint.class_name}' records`}
                 action={
-                  !multiInstanceHint.already_multi_instance && applyState !== 'applied' && applyState !== 'unchanged' && job.version ? (
+                  canWrite &&
+                  !multiInstanceHint.already_multi_instance &&
+                  applyState !== 'applied' &&
+                  applyState !== 'unchanged' &&
+                  job.version ? (
                     <Button onClick={applyMultiInstanceHint} loading={applyState === 'applying'}>
                       Enable several documents per section
                     </Button>

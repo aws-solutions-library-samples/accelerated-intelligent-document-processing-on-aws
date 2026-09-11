@@ -903,7 +903,7 @@ Discovery is the one stage that sees the pages while authoring the schema, so it
 is also asked — in the same model call, as diagnostic metadata that is stripped
 before the schema is validated — how many separate, complete documents of the
 discovered class the sample contains. The question is the one the extraction
-[multi-instance detection probe](extraction-and-confidence.md#multi-instance-sections)
+[multi-instance detection probe](extraction-and-confidence.md#multi-instance-sections-x-aws-idp-multi-instance)
 uses ("count complete documents, not pages, sections or repeated headers"), so the
 two signals agree.
 
