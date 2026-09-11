@@ -147,12 +147,17 @@ class DynamoDBClient:
             logger.error(f"BotoCore error during update_item: {str(e)}")
             raise DynamoDBError(f"BotoCore error: {str(e)}")
 
-    def delete_item(self, key: Dict[str, Any]) -> Dict[str, Any]:
+    def delete_item(
+        self, key: Dict[str, Any], return_values: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Delete an item from the DynamoDB table.
 
         Args:
             key: The primary key of the item to delete
+            return_values: Optional DynamoDB ReturnValues (e.g. "ALL_OLD" to get the
+                deleted item back, which is how a caller learns whether anything
+                was actually deleted — DeleteItem on a missing key succeeds silently)
 
         Returns:
             Dict containing the delete response
@@ -161,7 +166,10 @@ class DynamoDBClient:
             DynamoDBError: If the DynamoDB operation fails
         """
         try:
-            response = self.table.delete_item(Key=key)
+            delete_params: Dict[str, Any] = {"Key": key}
+            if return_values:
+                delete_params["ReturnValues"] = return_values
+            response = self.table.delete_item(**delete_params)
             logger.debug(f"Successfully deleted item with key: {key}")
             return response
         except ClientError as e:

@@ -1624,11 +1624,27 @@ class DocumentDynamoDBService:
         """
         Delete a run (version) item and decrement the doc's VersionCount.
 
+        Returns True if a run item was deleted, False if there was none to
+        delete — in which case VersionCount is left unchanged.
+
         S3 artifact cleanup (the pinned object versions and the manifest) is
         the caller's responsibility — see
         idp_common.document_versions.delete_run_artifacts.
         """
-        self.client.delete_item({"PK": f"doc#{object_key}", "SK": f"run#{run_id}"})
+        # ALL_OLD, so the response says whether an item was actually there. DeleteItem
+        # on a missing key succeeds silently, and decrementing VersionCount on that
+        # path (a retried mutation, a double click, an unknown run_id via the API)
+        # drifts the counter below the number of runs recorded — nothing recomputes
+        # it. Same at-least-once discipline create_document_run applies on the way in.
+        response = self.client.delete_item(
+            {"PK": f"doc#{object_key}", "SK": f"run#{run_id}"}, return_values="ALL_OLD"
+        )
+        if not response.get("Attributes"):
+            logger.info(
+                f"No run record to delete for {object_key}: run_id={run_id}; "
+                "VersionCount left unchanged"
+            )
+            return False
         try:
             self.client.update_item(
                 key={"PK": f"doc#{object_key}", "SK": "none"},

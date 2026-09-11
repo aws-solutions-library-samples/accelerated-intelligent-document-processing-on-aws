@@ -289,9 +289,22 @@ class TestDocumentRuns:
         assert self.service.get_document_run("k", "nope") is None
 
     def test_delete_document_run(self):
+        # The delete asks for the old item back; a returned item is the proof something was
+        # deleted, and only then is VersionCount decremented.
+        self.mock_client.delete_item.return_value = {
+            "Attributes": {"PK": "doc#k", "SK": "run#r1"}
+        }
         assert self.service.delete_document_run("k", "r1") is True
         self.mock_client.delete_item.assert_called_once_with(
-            {"PK": "doc#k", "SK": "run#r1"}
+            {"PK": "doc#k", "SK": "run#r1"}, return_values="ALL_OLD"
         )
         update_call = self.mock_client.update_item.call_args
         assert update_call.kwargs["expression_attribute_values"][":neg"] == -1
+
+    def test_delete_document_run_missing_does_not_decrement(self):
+        """Deleting a run that is not there (a retried mutation, a double click, an unknown
+        run_id through the API) must not move VersionCount: the counter would drift below the
+        number of runs actually recorded, and nothing recomputes it."""
+        self.mock_client.delete_item.return_value = {}
+        assert self.service.delete_document_run("k", "nope") is False
+        self.mock_client.update_item.assert_not_called()
