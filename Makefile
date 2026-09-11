@@ -129,7 +129,7 @@ setup-venv: ## Create .venv and install all packages into it
 
 ##@ Code Quality
 lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ## Quick lint without UI checks
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
