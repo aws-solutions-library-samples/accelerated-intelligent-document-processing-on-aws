@@ -147,6 +147,23 @@ def test_safe_default_is_an_allowed_value(rel_path: str) -> None:
     assert SAFE_DEFAULT in allowed, f"{rel_path}: {SAFE_DEFAULT} not in {allowed}"
 
 
+def test_scaffold_manifest_pins_safe_default() -> None:
+    """The installer passes ``feature.yaml`` ``defaultParameters``, not the template Default.
+
+    So for a feature stack the manifest pin is the value that actually reaches
+    CloudFormation; guarding only the scaffold template's ``Default`` would let a
+    revert of the pin ship every newly scaffolded feature at ``INFO``.
+    """
+    manifest = yaml.safe_load(
+        (REPO_ROOT / "feature-platform/feature-template/feature.yaml").read_text()
+    )
+    pinned = (manifest.get("defaultParameters") or {}).get(LOG_LEVEL)
+    assert pinned == SAFE_DEFAULT, (
+        f"feature-template/feature.yaml pins defaultParameters.LogLevel={pinned!r}; "
+        f"expected {SAFE_DEFAULT!r} so newly scaffolded features start safe."
+    )
+
+
 def test_root_passes_log_level_to_nested_stacks() -> None:
     """Guard the discovery — a silent zero would make the superset test vacuous."""
     stacks = _nested_stacks_receiving_log_level()
@@ -176,7 +193,6 @@ def test_nested_enum_accepts_every_root_value(logical_id: str, source: str) -> N
     """
     root_param = _parameters(ROOT_TEMPLATE)[LOG_LEVEL]
     root_allowed = set(root_param["AllowedValues"])
-    assert root_param["Default"] in root_allowed
 
     nested_param = _parameters(source).get(LOG_LEVEL)
     assert nested_param is not None, (

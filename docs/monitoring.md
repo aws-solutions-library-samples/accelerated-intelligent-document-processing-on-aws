@@ -209,6 +209,12 @@ only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
   reads Step Functions' own `ExecutionTime` metric. Neither the metrics nor the
   alarm depend on the log level, so nothing you would *alert* on is lost — only
   that one per-minute count.
+- **Installed features are not affected — they still log at `INFO`.** Each
+  installable feature (for example `pii-anonymizer`) is its own stack, launched
+  with the `LogLevel` pinned in its `feature.yaml`, which is `INFO` for the six
+  shipped features. The host's value is not forwarded. Change the feature stack's
+  `LogLevel` parameter after install if you need it at `WARN`; newly scaffolded
+  features default to `WARN`.
 - **`idp-cli deploy --log-level` has no CLI default.** Omit it to get the template
   default on a new stack or to preserve the current value on an update. Passing
   `--log-level INFO` is honoured; it used to be silently treated as "unset".
