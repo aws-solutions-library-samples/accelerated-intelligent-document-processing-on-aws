@@ -791,6 +791,7 @@ export type Mutation = {
   completeSectionReview?: Maybe<Document>;
   copyToBaseline: CopyToBaselineResponse;
   createDocument?: Maybe<CreateDocumentOutput>;
+  createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
@@ -976,6 +977,13 @@ export type MutationCopyToBaselineArgs = {
 
 export type MutationCreateDocumentArgs = {
   input: CreateDocumentInput;
+};
+
+
+export type MutationCreateEmptyTestSetArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  documentClassType?: InputMaybe<DocumentClassType>;
+  name: Scalars['String']['input'];
 };
 
 
@@ -1854,6 +1862,8 @@ export type ReviewEffortEstimate = {
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
   configVersion?: Maybe<Scalars['String']['output']>;
+  configVersionSource?: Maybe<Scalars['String']['output']>;
+  curveSource?: Maybe<Scalars['String']['output']>;
   docsToReview: Scalars['Int']['output'];
   docsToReviewHigh: Scalars['Int']['output'];
   docsToReviewLow: Scalars['Int']['output'];
@@ -2391,6 +2401,15 @@ export type CopyToBaselineMutationVariables = Exact<{
 
 export type CopyToBaselineMutation = { copyToBaseline: { success: boolean, message?: string | null } };
 
+export type CreateEmptyTestSetMutationVariables = Exact<{
+  name: Scalars['String']['input'];
+  description?: InputMaybe<Scalars['String']['input']>;
+  documentClassType?: InputMaybe<DocumentClassType>;
+}>;
+
+
+export type CreateEmptyTestSetMutation = { createEmptyTestSet?: { id: string, name: string, description?: string | null, filePattern?: string | null, fileCount?: number | null, status?: string | null, labelState?: string | null, createdAt: string, documentClassType?: DocumentClassType | null } | null };
+
 export type CreateFinetuningJobMutationVariables = Exact<{
   input: CreateFinetuningJobInput;
 }>;
@@ -2814,7 +2833,7 @@ export type EstimateReviewEffortQueryVariables = Exact<{
 }>;
 
 
-export type EstimateReviewEffortQuery = { estimateReviewEffort?: { testSetId: string, qualityTier?: string | null, qualityTierReason?: string | null, targetAccuracy: number, configVersion?: string | null, docsToReview: number, docsToReviewLow: number, docsToReviewHigh: number, totalDocs: number, sampledDocs?: number | null, impliedCutoff?: number | null, residualError: number, baselineError: number, effortMinutes: number, effortMinutesPerDoc?: number | null, estimateConfidence: string, auditSampleSize: number, recommendReviewAll: boolean, calibration: { ece?: number | null, auroc?: number | null, binCoverage: number, totalObservations: number, degenerate: boolean, overconfident: boolean, undiscriminating: boolean, reliable: boolean }, burndown: Array<{ docsReviewed: number, residualErrorPct: number, cutoff?: number | null }>, reliabilityTable: Array<{ binStart: number, binEnd: number, observations: number, observedAccuracy?: number | null, blendedAccuracy?: number | null }> } | null };
+export type EstimateReviewEffortQuery = { estimateReviewEffort?: { testSetId: string, qualityTier?: string | null, qualityTierReason?: string | null, targetAccuracy: number, configVersion?: string | null, configVersionSource?: string | null, curveSource?: string | null, docsToReview: number, docsToReviewLow: number, docsToReviewHigh: number, totalDocs: number, sampledDocs?: number | null, impliedCutoff?: number | null, residualError: number, baselineError: number, effortMinutes: number, effortMinutesPerDoc?: number | null, estimateConfidence: string, auditSampleSize: number, recommendReviewAll: boolean, calibration: { ece?: number | null, auroc?: number | null, binCoverage: number, totalObservations: number, degenerate: boolean, overconfident: boolean, undiscriminating: boolean, reliable: boolean }, burndown: Array<{ docsReviewed: number, residualErrorPct: number, cutoff?: number | null }>, reliabilityTable: Array<{ binStart: number, binEnd: number, observations: number, observedAccuracy?: number | null, blendedAccuracy?: number | null }> } | null };
 
 export type GetAgentJobStatusQueryVariables = Exact<{
   jobId: Scalars['ID']['input'];

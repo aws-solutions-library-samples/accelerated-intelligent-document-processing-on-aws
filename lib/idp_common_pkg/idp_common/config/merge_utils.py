@@ -634,6 +634,7 @@ def validate_config(
     _validate_schema_fields(config.get("classes", []), result)
     _validate_agentic_openai(merged, result)
     _validate_simple_integrated_lists(merged, result)
+    _validate_prompt_cache_prefix(merged, result)
     _validate_discovery_openai(merged, result)
 
     return result
@@ -833,6 +834,11 @@ def _validate_agentic_openai(
     extraction path. This is a hard validation error (rather than a silent
     runtime fallback) so the misconfiguration surfaces at config time instead
     of failing obscurely mid-processing.
+
+    NOTE this gate is about the ROUTE, not the vendor: ``openai.gpt-6-astra``
+    reaches Converse and emits ``toolUse``, so it is allowed for agentic
+    extraction. The predicate is ``is_openai_responses_model`` precisely so it
+    tracks the mantle route rather than the "openai." prefix.
     """
     from idp_common.bedrock.openai_responses import is_openai_responses_model
     from idp_common.config.schema_constants import X_AWS_IDP_EXTRACTION_MODEL
@@ -856,7 +862,8 @@ def _validate_agentic_openai(
         result["errors"].append(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
             "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
-            "Set agentic.enabled=false or choose a non-OpenAI model."
+            "Set agentic.enabled=false or choose a Converse model — Claude, Nova, "
+            "xAI Grok, or OpenAI GPT-6 Astra all support agentic extraction."
         )
 
     # Per-class extraction model overrides
@@ -871,7 +878,8 @@ def _validate_agentic_openai(
                 f"Class '{class_name}' overrides extraction with OpenAI Responses "
                 f"model '{override}', which is NOT compatible with agentic extraction "
                 "(extraction.agentic.enabled=true). Set agentic.enabled=false or "
-                "choose a non-OpenAI model for this class."
+                "choose a Converse model for this class — Claude, Nova, xAI Grok, or "
+                "OpenAI GPT-6 Astra all support agentic extraction."
             )
 
 
@@ -880,11 +888,11 @@ def _validate_discovery_openai(
 ) -> None:
     """Error when a model that can't take ``document`` blocks is set for discovery.
 
-    Discovery ingests whole PDFs via Converse ``document`` content blocks. OpenAI
-    GPT-5.x (bedrock-mantle Responses API) and xAI Grok (rejects them outright)
-    both accept text + image only, so routing either here would silently drop the
-    document. Reject at config time. (Neither is offered in the discovery
-    picklists.)
+    Discovery ingests whole PDFs via Converse ``document`` content blocks. Three
+    families accept text + image only — OpenAI GPT-5.x (bedrock-mantle Responses
+    API), xAI Grok and OpenAI GPT-6 Astra (both reject the block outright on
+    Converse) — so routing any of them here would silently drop the document.
+    Reject at config time. (None are offered in the discovery picklists.)
     """
     from idp_common.bedrock.client import document_blocks_unsupported_reason
 
@@ -1373,4 +1381,116 @@ def _validate_simple_integrated_lists(
             "extraction to keep integrated confidence, or set "
             f"{X_AWS_IDP_ALLOW_INTEGRATED_LISTS}: true on a class whose lists you "
             "have verified come back complete."
+        )
+
+
+def _prompt_cache_is_off(value: Any) -> bool:
+    """``extraction.prompt_cache`` as stored: the string, or the YAML/DynamoDB boolean."""
+    if value is False:
+        return True
+    return isinstance(value, str) and value.strip().lower() in (
+        "off",
+        "false",
+        "no",
+        "disabled",
+        "0",
+    )
+
+
+def _validate_prompt_cache_prefix(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Warn (never error) when a class's Simple-mode prompt prefix is shorter than
+    the extraction model's minimum cacheable prefix (#780).
+
+    A ``<<CACHEPOINT>>`` below the minimum creates no cache entry: Bedrock reports
+    ``cacheWrite = 0`` and ``cacheRead = 0``, raises nothing, and bills the prefix
+    at full input price on every request. Measured across the shipped presets, 25%
+    of classes never cache on the Sonnet tier (1,024-token minimum) and none cache
+    on Haiku 4.5 (4,096). Nothing else in the product reports it, so say so here,
+    naming both numbers.
+
+    The estimate is chars/4 with a measured error of about +-10%, so a class whose
+    estimate lands inside that band of the minimum is reported as "may not cache"
+    rather than declared safe. The prompt estimated is the one the service would
+    send: the 1S-TopK confidence prompt under Simple + integrated confidence, else
+    ``task_prompt``; a class with its own ``x-aws-idp-extraction-task-prompt`` is
+    estimated with that. Not counted (both default off, both push the real prefix
+    UP): the forced-tool toolSpec and the multi-instance probe. Classification,
+    assessment and rule-validation prompts are out of scope.
+    """
+    from idp_common.bedrock.prompt_cache import (
+        CACHEPOINT_MARKER,
+        ESTIMATE_TOLERANCE,
+        estimate_prefix_tokens,
+        min_cacheable_prefix_tokens,
+    )
+    from idp_common.config.flags import flag_is_true
+    from idp_common.config.schema_constants import (
+        ID_FIELD,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+
+    extraction = merged_config.get("extraction", {})
+    if not isinstance(extraction, dict) or not _extraction_is_simple(extraction):
+        return  # the Advanced path's prefix is the agentic system prompt, not this
+    if _prompt_cache_is_off(extraction.get("prompt_cache")):
+        return
+    minimum = min_cacheable_prefix_tokens(extraction.get("model"))
+    if minimum is None:
+        return  # unknown model or no published minimum (Nova): nothing to warn about
+
+    # The template the service actually sends (prompt_assembly.select_extraction_task_prompt).
+    confidence = extraction.get("confidence") or {}
+    integrated = (
+        isinstance(confidence, dict)
+        and confidence.get("mode") == "integrated"
+        and flag_is_true(confidence.get("enabled"), default=True)
+    )
+    default_prompt = (
+        (
+            extraction.get("task_prompt_extraction_with_confidence_topk")
+            or extraction.get("task_prompt")
+        )
+        if integrated
+        else extraction.get("task_prompt")
+    ) or ""
+
+    system_prompt = extraction.get("system_prompt") or ""
+    never: List[str] = []
+    near: List[str] = []
+    for cls in merged_config.get("classes") or []:
+        if not isinstance(cls, dict):
+            continue
+        cid = str(cls.get(ID_FIELD) or cls.get(X_AWS_IDP_DOCUMENT_TYPE) or "?")
+        task_prompt = cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT) or default_prompt
+        if CACHEPOINT_MARKER not in task_prompt:
+            continue  # nothing would cache for this class either way
+        est = estimate_prefix_tokens(system_prompt, task_prompt, cls, cid)
+        if est is None:
+            continue
+        if est < minimum:
+            never.append(f"{cid} (~{est} tokens)")
+        elif est < minimum * (1 + ESTIMATE_TOLERANCE):
+            near.append(f"{cid} (~{est} tokens)")
+    model = extraction.get("model")
+    if never:
+        result["warnings"].append(
+            f"Prompt caching will never engage for {len(never)} class(es) on "
+            f"{model}, whose minimum cacheable prefix is {minimum} tokens: "
+            f"{', '.join(never)}. Every request pays full input price on the "
+            "prefix. Add real field descriptions to the class (which also helps "
+            "extraction), pick a model with a lower minimum (512 on Claude Opus 5 / "
+            "Fable 5), or set extraction.prompt_cache: off to stop paying the "
+            "1.25x cache-write premium for nothing."
+        )
+    if near:
+        pct = int(ESTIMATE_TOLERANCE * 100)
+        result["warnings"].append(
+            f"{len(near)} class(es) MAY not cache on {model}: their estimated prompt "
+            f"prefix is within {pct}% of the {minimum}-token minimum, and the estimate "
+            f"itself is only accurate to about {pct}%: {', '.join(near)}. Check "
+            "cacheReadInputTokens on a processed document, or add field descriptions "
+            "to move them clear of the boundary."
         )

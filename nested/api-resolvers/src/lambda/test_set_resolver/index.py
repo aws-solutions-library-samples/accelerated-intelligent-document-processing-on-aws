@@ -219,8 +219,18 @@ ANNOTATOR_ALLOWED_FIELDS = (
 
 # Fields narrower than the Admin/Author default. Resetting discards every label in
 # a set including human-reviewed ones, so an Author who can otherwise manage test
-# sets cannot destroy the team's annotation work.
-ADMIN_ONLY_FIELDS = ("resetTestSetLabels",)
+# sets cannot destroy the team's annotation work. Importing by file pattern is
+# Admin-only because matching keys is a search over the whole bucket: an Author
+# probing patterns would learn which documents exist, including ones the
+# document list hides from a profile-scoped account, and an import copies them
+# with their baselines. Authors still create sets from a zip, by generation, or
+# empty.
+ADMIN_ONLY_FIELDS = (
+    "resetTestSetLabels",
+    "listBucketFiles",
+    "addTestSet",
+    "addDocumentsToTestSet",
+)
 
 
 def handler(event, context):
@@ -253,6 +263,8 @@ def handler(event, context):
 
     if field_name == "addTestSet":
         return add_test_set(event["arguments"])
+    elif field_name == "createEmptyTestSet":
+        return create_empty_test_set(event["arguments"])
     elif field_name == "addTestSetFromUpload":
         return add_test_set_from_upload(event["arguments"])
     elif field_name == "addDocumentsToTestSet":
@@ -497,6 +509,93 @@ def add_test_set(args):
     return result
 
 
+KEEP_MARKER = ".keep"
+
+
+def _write_keep_marker(test_set_id):
+    """Keep ``<id>/`` listable while the set has no documents.
+
+    getTestSets deletes the row of any COMPLETED set whose S3 prefix has vanished,
+    so a set whose last document was removed would vanish with it. The marker
+    carries no meaning of its own; ``.source`` cannot double as it because that
+    marker's presence means "synthetic".
+    """
+    s3_client.put_object(
+        Bucket=os.environ["TEST_SET_BUCKET"],
+        Key=f"{test_set_id}/{KEEP_MARKER}",
+        Body=b"",
+    )
+
+
+def create_empty_test_set(args):
+    """Create a COMPLETED test set with no documents, to be grown from its page.
+
+    Unlike ``add_test_set`` nothing is queued: there is no copy to wait for, so the
+    row is COMPLETED at once and the set is immediately usable as a destination for
+    a bucket pattern, a zip upload or generated documents.
+    """
+    test_set_name = args["name"]
+    description = args.get("description") or ""
+    document_class_type = args.get("documentClassType")
+
+    if not validate_test_set_name(test_set_name):
+        raise Exception(
+            "Test set name can only contain letters, numbers, spaces, hyphens, and underscores (max 50 characters)"
+        )
+    if description and not validate_description(description):
+        raise Exception("Description cannot exceed 500 characters")
+
+    test_set_id = test_set_name.replace(" ", "-").lower()
+    now = datetime.utcnow().isoformat() + "Z"
+    item = {
+        "PK": f"testset#{test_set_id}",
+        "SK": "metadata",
+        "ItemType": "testset",
+        "InitialEventTime": now,
+        "id": test_set_id,
+        "name": test_set_name,
+        "description": description,
+        "filePattern": "",
+        "fileCount": 0,
+        "source": "uploaded",
+        "status": "COMPLETED",
+        "labelState": "unlabeled",
+        "createdAt": now,
+    }
+    if document_class_type:
+        item["documentClassType"] = document_class_type
+
+    # Conditional so a name that derives to an existing id is refused rather than
+    # silently replacing that set's record.
+    try:
+        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
+    except Exception as e:
+        if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
+            "ConditionalCheckFailed" in str(e)
+        ):
+            raise Exception(f"A test set with id '{test_set_id}' already exists")
+        raise
+    # After the row: a marker without a row is a stray folder discovery ignores,
+    # while a row without a marker is reaped on the next getTestSets.
+    _write_keep_marker(test_set_id)
+    logger.info(f"Created empty test set {test_set_id}")
+
+    result = {
+        "id": test_set_id,
+        "name": test_set_name,
+        "description": description,
+        "filePattern": "",
+        "fileCount": 0,
+        "source": "uploaded",
+        "status": "COMPLETED",
+        "labelState": "unlabeled",
+        "createdAt": now,
+    }
+    if document_class_type:
+        result["documentClassType"] = document_class_type
+    return result
+
+
 def add_documents_to_test_set(args):
     logger.info(f"Adding documents to existing test set: {args}")
 
@@ -701,6 +800,12 @@ def publish_test_set_version(args, event=None):
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
 
+    if (_as_int(meta.get("fileCount")) or 0) <= 0:
+        raise Exception(
+            f"Test set '{test_set_id}' has no documents; add documents before "
+            "publishing a version"
+        )
+
     # Reserve the version number with an atomic ADD before writing the version
     # item. Deriving it from the read above would be a read-modify-write race in
     # which two concurrent publishes both write version N+1, the second
@@ -739,7 +844,9 @@ def publish_test_set_version(args, event=None):
         "notes": notes or "",
         "source": meta.get("source"),
         "fileCount": meta.get("fileCount"),
-        "configVersion": meta.get("boundConfigVersion"),
+        # The configuration the set's labels were produced under (#759): the
+        # bound field was never written, so this used to be always null.
+        "configVersion": _resolve_set_config_version(test_set_id, meta)[0],
         "createdAt": now,
         "createdBy": created_by,
     }
@@ -1315,16 +1422,9 @@ def reextract_test_set_document(args, event=None):
     # resolved the version there even when the original call passed none. (This
     # previously read a labelJobConfigVersion attribute that was never written, so
     # the fallback silently did nothing.)
-    config_version = input_data.get("configVersion")
-    if not config_version and meta.get("labelJobId"):
-        tracking = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
-        drafting_run = (
-            tracking.get_item(
-                Key={"PK": f"testrun#{meta['labelJobId']}", "SK": "metadata"}
-            ).get("Item")
-            or {}
-        )
-        config_version = drafting_run.get("ConfigVersion")
+    config_version, _ = _resolve_set_config_version(
+        test_set_id, meta, input_data.get("configVersion")
+    )
     result = generate_draft_labels(
         {
             "input": {
@@ -2105,6 +2205,78 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     return state
 
 
+def _resolve_set_config_version(test_set_id, meta, explicit=None):
+    """The Configuration Profile a test set's labels were produced under.
+
+    Returns ``(config_version, source)``. Tiers, in order:
+
+    - ``"argument"`` — the caller passed one.
+    - ``"test-set"`` — ``meta["configVersion"]``, the set's declared configuration.
+      Written by the feature-platform set creators (confbench planner, synthetic
+      data bootstrap) and already what the UI's class picker and test runner treat
+      as the set's configuration; these sets have no labeling job.
+    - ``"bound"`` — ``meta["boundConfigVersion"]``, designed for a binding flow
+      that was never built (never written in the repo); kept for a stack that has
+      it, harmless otherwise.
+    - ``"drafting-run"`` — the configuration the set's draft-labeling job(s)
+      resolved. Read from EVERY ``labeljob#`` item under the set (each names a
+      test run whose record carries ``ConfigVersion``), not from the mutable
+      ``labelJobId`` pointer alone: a one-document re-extract under another
+      profile repoints that pointer, and the estimate would otherwise read a curve
+      holding none of the set's review observations and call it the set's own.
+    - ``"mixed"`` with ``None`` — the labeling jobs disagree. The caller falls back
+      to the set's aggregate curve and can say why.
+    - ``None, None`` — nothing identifies a configuration (uploaded labels with no
+      declared configuration, or a drafting run whose record is gone).
+
+    One home for this so the review-effort estimate, re-extraction and version
+    snapshots agree (#759). Before this the estimate read only
+    ``boundConfigVersion``, so it always fell back to the set's aggregate curve.
+    """
+    if explicit:
+        return explicit, "argument"
+    if meta.get("configVersion"):
+        return meta["configVersion"], "test-set"
+    if meta.get("boundConfigVersion"):
+        return meta["boundConfigVersion"], "bound"
+
+    tracking = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+
+    def _run_version(run_id):
+        if not run_id:
+            return None
+        run = (
+            tracking.get_item(Key={"PK": f"testrun#{run_id}", "SK": "metadata"}).get(
+                "Item"
+            )
+            or {}
+        )
+        return run.get("ConfigVersion") or None
+
+    versions = set()
+    try:
+        for job in _label_jobs(test_set_id):
+            run_id = job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
+            version = _run_version(run_id)
+            if version:
+                versions.add(version)
+    except Exception as e:  # noqa: BLE001 — fall back to the pointer below
+        logger.warning(f"Could not read labeling jobs for {test_set_id}: {e}")
+    if len(versions) == 1:
+        return versions.pop(), "drafting-run"
+    if len(versions) > 1:
+        logger.info(
+            f"Test set {test_set_id} was drafted under several configurations "
+            f"({sorted(versions)}); no single curve applies"
+        )
+        return None, "mixed"
+    # Legacy sets recorded only the pointer, not per-run job items.
+    version = _run_version(meta.get("labelJobId"))
+    if version:
+        return version, "drafting-run"
+    return None, None
+
+
 def estimate_review_effort(args):
     """Server-side estimate for the "set up team annotation" flow.
 
@@ -2126,15 +2298,27 @@ def estimate_review_effort(args):
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
 
-    # Default to the config the set is bound to, so the curve matches the confidence
-    # semantics that produced these labels.
-    if not config_version:
-        config_version = meta.get("boundConfigVersion")
+    # Resolve the configuration whose confidence semantics produced these labels
+    # (argument > bound field > the drafting run's resolved version), so the
+    # per-configuration curve is read rather than the set-wide blend (#759).
+    config_version, config_version_source = _resolve_set_config_version(
+        test_set_id, meta, config_version
+    )
 
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
     store = CurveStore(tracking_table)
     curve = store.get_curve(test_set_id, config_version)
     prior = store.get_global_prior()
+    if config_version and curve.served_from != "config":
+        fallback = (
+            "the set's aggregate curve"
+            if curve.served_from == "aggregate"
+            else "no stored curve at all (the estimate leans on the global prior)"
+        )
+        logger.warning(
+            f"estimateReviewEffort({test_set_id}): no curve stored for configuration "
+            f"'{config_version}' ({config_version_source}); serving {fallback}"
+        )
 
     (
         doc_confidences,
@@ -2178,6 +2362,13 @@ def estimate_review_effort(args):
     result["testSetId"] = test_set_id
     result["targetAccuracy"] = target_accuracy
     result["configVersion"] = config_version
+    result["configVersionSource"] = config_version_source
+    # Which curve the numbers rest on. "aggregate" with a configVersion present
+    # means the per-configuration curve is empty and the estimate is blending
+    # every configuration this set was ever scored or reviewed under.
+    result["curveSource"] = (
+        "prior" if curve.served_from in (None, "none") else curve.served_from
+    )
     result["reliabilityTable"] = curve.reliability_table(prior)
     # Surfaced so a caller can say how much of the set was actually inspected.
     result["sampledDocs"] = sampled_docs
@@ -2722,6 +2913,23 @@ def remove_documents_from_test_set(args):
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
+    # A harvest in progress writes a baseline for each document as its run
+    # finishes; deleting a document under it leaves that baseline orphaned as
+    # "Extra baseline files". A copier or extractor in flight recounts on
+    # completion and would overwrite the count computed here.
+    if meta.get("labelJobStatus") == "RUNNING":
+        raise Exception(
+            f"Test set '{test_set_id}' is being draft-labeled; wait for the job "
+            "to finish before removing documents"
+        )
+    if meta.get("status") in IN_FLUX_TEST_SET_STATUSES:
+        raise Exception(
+            f"Test set '{test_set_id}' is busy ({meta.get('status')}); try again "
+            "when it is COMPLETED"
+        )
+    for file_name in file_names:
+        if not file_name or file_name.startswith("/") or "//" in file_name:
+            raise Exception(f"Invalid document name: {file_name!r}")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
 
@@ -2765,6 +2973,9 @@ def remove_documents_from_test_set(args):
             f"transiently ({validation.get('error')}). Reconcile will pick "
             "up the correct count on the next getTestSets."
         )
+        # The count is unknown here, so the marker is written regardless: it is
+        # harmless on a set that still has documents and vital on one that does not.
+        _write_keep_marker(test_set_id)
         return {
             "id": test_set_id,
             "name": meta.get("name"),
@@ -2774,6 +2985,8 @@ def remove_documents_from_test_set(args):
             "lastAddResult": f"Removed {removed} document(s)",
         }
     new_count = validation.get("input_count", 0)
+    if new_count == 0:
+        _write_keep_marker(test_set_id)
     # Two REMOVEs in one UpdateItem:
     #  - lastAddResult is the ASYNCHRONOUS add flow's completion notice; this
     #    mutation is synchronous, so the caller sees the count in the response
@@ -4200,6 +4413,9 @@ def _validate_test_set_files(s3_client, bucket, prefix, allow_unlabeled=False):
                 "valid": False,
                 "error": "No input files found",
                 "input_count": 0,
+                # Lets reconcile tell an emptied set (no labels left either) from
+                # a set whose inputs vanished while its baselines survived.
+                "baseline_count": len(baseline_files),
                 "signature": signature,
             }
 
@@ -4622,17 +4838,23 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
             else:
                 new_error = existing_row.get("error")
         elif no_inputs:
-            new_status = "FAILED"
-            new_error = error_message
-            # Preserve the current labelState. Overwriting to 'unlabeled' would
-            # silently destroy a 'draft' signal: a user who accidentally deletes
-            # inputs and then restores them would see the recovery valid-branch
-            # promote 'unlabeled' → 'labeled' on the next reconcile, blessing
-            # unreviewed machine drafts as ground truth. The draft-preservation
-            # guard in the valid-branch keys on existing_label_state — if that
-            # was 'draft' before the input deletion, it must stay 'draft'
-            # through the transient FAILED state so recovery preserves it.
-            new_label_state = existing_label_state
+            # A set with no documents is a legitimate state, not a broken one: a
+            # set can be created empty, and removing its last document leaves it
+            # empty. Any earlier error is cleared. labelState is 'unlabeled' when
+            # no baselines remain either (the Remove path deletes both). When the
+            # inputs vanished but draft baselines survived — a hand edit in S3 —
+            # 'draft' is preserved: writing 'unlabeled' here would let a later
+            # restore promote unreviewed machine drafts to 'labeled', and
+            # _reconcile_label_state cannot undo that on a row that carries a
+            # labelJobId.
+            new_status = "COMPLETED"
+            new_error = None
+            baselines_remain = int(validation.get("baseline_count") or 0) > 0
+            new_label_state = (
+                "draft"
+                if existing_label_state == "draft" and baselines_remain
+                else "unlabeled"
+            )
         elif validation["valid"]:
             # Fully paired OR unlabeled-with-no-baselines (allow_unlabeled=True
             # path). Both are healthy states.

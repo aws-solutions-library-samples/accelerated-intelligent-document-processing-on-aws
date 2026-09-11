@@ -11,7 +11,8 @@
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
+import type { ComponentProps } from 'react';
 import SchemaInspector from '../SchemaInspector';
 import {
   X_AWS_IDP_VALIDATION_ENGINE,
@@ -20,6 +21,8 @@ import {
   X_AWS_IDP_INSTANCE_ARRAY,
   X_AWS_IDP_MULTI_INSTANCE,
 } from '../../../constants/schemaConstants';
+
+type OnUpdate = ComponentProps<typeof SchemaInspector>['onUpdate'];
 
 // Helper to create a minimal selected attribute
 function makeAttribute(overrides: Record<string, unknown> = {}) {
@@ -42,7 +45,7 @@ function makeClass(overrides: Record<string, unknown> = {}) {
 }
 
 describe('SchemaInspector Validation Engine Dropdown', () => {
-  let onUpdate: ReturnType<typeof vi.fn>;
+  let onUpdate: Mock<OnUpdate>;
 
   beforeEach(() => {
     onUpdate = vi.fn();
@@ -268,7 +271,7 @@ describe('SchemaInspector Validation Engine Dropdown', () => {
 });
 
 describe('SchemaInspector RuleJSON Section', () => {
-  let onUpdate: ReturnType<typeof vi.fn>;
+  let onUpdate: Mock<OnUpdate>;
 
   beforeEach(() => {
     onUpdate = vi.fn();

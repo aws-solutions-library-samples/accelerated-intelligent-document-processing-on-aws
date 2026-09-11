@@ -101,6 +101,49 @@ Parameters:
       - page
     Description: Confidence score granularity for Mistral OCR.
 
+  CohereApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >
+      Cohere API key (Bearer token) for the Cohere Parse hook sample function.
+      Get your key from https://dashboard.cohere.com/api-keys
+      Leave empty if not using the Cohere sample.
+
+  CohereApiUrl:
+    Type: String
+    Default: "https://api.cohere.com/v2/parse"
+    AllowedPattern: "^https://.+"
+    ConstraintDescription: Must be an https:// URL.
+    Description: >
+      Cohere Parse endpoint URL. Must be HTTPS — the API key is sent to
+      whatever this names.
+
+  CohereParseModel:
+    Type: String
+    Default: "parse-v5.0"
+    Description: Cohere Parse model id (e.g. parse-v5.0).
+
+  CohereOutputFormat:
+    Type: String
+    Default: "blocks"
+    AllowedValues:
+      - blocks
+      - markdown
+    Description: >
+      Parse output format. 'blocks' returns bounding boxes for tables and
+      figures; 'markdown' returns a single content string with no usable geometry.
+
+  CohereConvertHtmlTables:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Convert Cohere's HTML tables into Markdown pipe tables so the
+      deterministic table parser (agentic extraction) can read them.
+
 Resources:
   # =========================================================================
   # GENAIIDP-bedrock-proxy
@@ -292,6 +335,47 @@ Resources:
       LogGroupName: !Sub "/${AWS::StackName}/lambda/MistralOcrHookFunction"
       RetentionInDays: !Ref LogRetentionDays
 
+  # =========================================================================
+  # GENAIIDP-cohere-parse-hook
+  # Calls the hosted Cohere Parse API for low-cost OCR with table/figure geometry
+  # (no confidence scores — Cohere Parse does not provide them)
+  # =========================================================================
+  CohereParseHookFunction:
+    Type: AWS::Serverless::Function
+    # checkov:skip=CKV_AWS_173: "API key is passed via NoEcho parameter, encrypted at rest by Lambda service"
+    # checkov:skip=CKV_AWS_116: "DLQ not required for sample Lambda hook function - errors handled by IDP pipeline"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it calls an external HTTPS API"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency - sample function for demonstration purposes"
+    Properties:
+      FunctionName: GENAIIDP-cohere-parse-hook
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: GENAIIDP-cohere-parse-hook/
+      # Exceeds the hook's worst-case retry budget (3 x REQUEST_TIMEOUT +
+      # backoff ~= 363s) so the ladder can actually be spent, and stays under
+      # the 840s the caller waits. See the standalone template for the full note.
+      Timeout: 600
+      MemorySize: 512
+      Environment:
+        Variables:
+          COHERE_API_KEY: !Ref CohereApiKey
+          COHERE_API_URL: !Ref CohereApiUrl
+          COHERE_PARSE_MODEL: !Ref CohereParseModel
+          OUTPUT_FORMAT: !Ref CohereOutputFormat
+          CONVERT_HTML_TABLES: !Ref CohereConvertHtmlTables
+          MAX_RETRIES: "2"
+          RETRY_BASE_DELAY: "1"
+          REQUEST_TIMEOUT: "120"
+          LOG_LEVEL: INFO
+      Policies:
+        - Statement:
+            # Read images from IDP working bucket
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${IDPWorkingBucket}/temp/lambdahook/*"
+
 Outputs:
   BedrockProxyFunctionArn:
     Description: ARN of the Bedrock proxy Lambda hook function
@@ -308,6 +392,10 @@ Outputs:
   MistralOcrHookFunctionArn:
     Description: ARN of the Mistral OCR Lambda hook function
     Value: !GetAtt MistralOcrHookFunction.Arn
+
+  CohereParseHookFunctionArn:
+    Description: ARN of the Cohere Parse Lambda hook function
+    Value: !GetAtt CohereParseHookFunction.Arn
 
   BedrockProxyUsage:
     Description: How to use the Bedrock proxy in IDP configuration
@@ -328,3 +416,8 @@ Outputs:
     Description: How to use the Mistral OCR hook in IDP configuration
     Value: !Sub |
       Set OCR backend to "bedrock", model_id to "LambdaHook", and model_lambda_hook_arn to "${MistralOcrHookFunction.Arn}"
+
+  CohereParseHookUsage:
+    Description: How to use the Cohere Parse hook in IDP configuration
+    Value: !Sub |
+      Set OCR backend to "bedrock", model_id to "LambdaHook", and model_lambda_hook_arn to "${CohereParseHookFunction.Arn}"

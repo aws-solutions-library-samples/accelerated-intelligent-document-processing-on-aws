@@ -85,6 +85,11 @@ export interface GenerateFormOptions {
   initialMode?: 'prompt' | 'config';
   initialVersion?: string;
   initialClassName?: string;
+  /**
+   * Open on "Add to existing test set" with this set chosen, for callers that
+   * already stand on a set (its detail page). Reset returns here too.
+   */
+  initialDestination?: { testSetId: string; label: string };
 }
 
 export interface GenerateFormApi {
@@ -114,7 +119,11 @@ export const useGenerateSyntheticForm = ({
   initialMode,
   initialVersion,
   initialClassName,
+  initialDestination,
 }: GenerateFormOptions): GenerateFormApi => {
+  const initialDestinationOption: SelectProps.Option | null = initialDestination
+    ? { value: initialDestination.testSetId, label: initialDestination.label }
+    : null;
   const { submitting, generateFromPrompt, generateFromConfig, suggestScenario, getEstimate } = useSyntheticDataGenerator();
   const { versions, fetchVersion } = useConfigurationVersions();
 
@@ -137,9 +146,9 @@ export const useGenerateSyntheticForm = ({
   const [error, setError] = useState('');
 
   // Destination: create a new test set (by name) or append to an existing one.
-  const [destMode, setDestMode] = useState<'new' | 'existing'>('new');
+  const [destMode, setDestMode] = useState<'new' | 'existing'>(initialDestinationOption ? 'existing' : 'new');
   const [newTestSetName, setNewTestSetName] = useState('');
-  const [existingTestSet, setExistingTestSet] = useState<SelectProps.Option | null>(null);
+  const [existingTestSet, setExistingTestSet] = useState<SelectProps.Option | null>(initialDestinationOption);
   const [testSetOptions, setTestSetOptions] = useState<SelectProps.Option[]>([]);
   const [allTestSetIds, setAllTestSetIds] = useState<Set<string>>(new Set());
   const [testSetsLoading, setTestSetsLoading] = useState(false);
@@ -261,9 +270,9 @@ export const useGenerateSyntheticForm = ({
     setSelectedVersion(null);
     setSelectedClass(null);
     setClassOptions([]);
-    setDestMode('new');
+    setDestMode(initialDestinationOption ? 'existing' : 'new');
     setNewTestSetName('');
-    setExistingTestSet(null);
+    setExistingTestSet(initialDestinationOption);
     setError('');
   };
 

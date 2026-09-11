@@ -20,6 +20,7 @@ The web interface allows real-time configuration updates without stack redeploym
 - **Few Shot Examples**: Upload and configure example documents to improve accuracy (supported in Pattern 2)
 - **Model Selection**: Choose between available Bedrock models for classification and extraction
   > **💡 Cost Attribution Tip:** You can replace standard model IDs with [Bedrock Application Inference Profile](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) ARNs to enable cost-allocation tagging (e.g., for MAP migration tracking). This is a configuration-only change — no code modifications required. See [Cost Attribution with Application Inference Profiles](./cost-calculator.md#cost-attribution-with-bedrock-application-inference-profiles) for step-by-step instructions.
+  > **🤖 OpenAI GPT-6 Astra:** `us.openai.gpt-6-astra` (US regions) and `global.openai.gpt-6-astra` (every region, and cheaper) are selectable for OCR, classification, extraction — **including agentic extraction** — assessment, summarization, evaluation, and chat. Astra runs on the standard Converse API (**not** the bedrock-mantle path the GPT-5.x models use), has a 1.05M context window with automatic prompt caching, and is tuned via `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) instead of temperature/top_p, which it rejects. It is **not** supported for Discovery or Policy Discovery. Note input above 272K tokens bills at roughly double the rate recorded in `pricing.yaml`. See [OpenAI Models](./openai-models.md#gpt-6-astra-converse) for the full support matrix and caveats.
   > **🤖 OpenAI GPT-5.x:** `openai.gpt-5.4`, `openai.gpt-5.5`, and the GPT-5.6 family (`openai.gpt-5.6-sol` / `-terra` / `-luna`) are selectable for OCR, classification, extraction, assessment, summarization, evaluation, and chat (US regions only), and are tuned via a `reasoning_effort` field instead of temperature/top_p. They are **not** supported for agentic extraction or Discovery. See [OpenAI GPT-5.x Models](./openai-models.md) for the full support matrix and caveats.
   > **🤖 xAI Grok:** `us.xai.grok-4.6` (US regions) and `global.xai.grok-4.6` (EU/APAC too, and cheaper) are selectable for OCR, classification, extraction — **including agentic extraction** — assessment, summarization, evaluation, chat, and the rule-validation/agent paths. Grok runs on the standard Converse API, is tuned via `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`) instead of temperature/top_p, and is **not** supported for Discovery or Policy Discovery. Flex/Priority tiers and prompt caching do **not** work despite being advertised. See [xAI Grok Models](./grok-models.md) for the full support matrix and caveats.
 - **Prompt Engineering**: Customize system and task prompts for optimal results
@@ -735,6 +736,66 @@ Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across
 - **Performance**: Reduced processing time for cached content
 - **Token Efficiency**: Particularly beneficial for long system prompts or few-shot examples
 
+#### Minimum cacheable prefix — per model, and not monotonic
+
+A `<<CACHEPOINT>>` only creates a cache entry if the prefix before it clears the
+model's **minimum cacheable prefix**. Below it Bedrock reports `cacheWrite = 0` and
+`cacheRead = 0`, raises nothing, and bills the prefix at full input price on every
+request. The minimum is model-dependent and **newer is not safer**:
+
+| Model | Minimum cacheable prefix |
+|---|---:|
+| Claude Opus 5, Fable 5 | 512 tokens |
+| Claude Sonnet 5, Sonnet 4.6, Sonnet 4.5, Sonnet 4, Opus 4.8, Opus 4.1, Opus 4, 3.7 Sonnet | 1,024 tokens |
+| Claude Opus 4.7 | 2,048 tokens |
+| Claude Opus 4.6, Opus 4.5, **Haiku 4.5** | **4,096 tokens** |
+| Amazon Nova | ≤ 355 tokens (below any shipped class) |
+
+Measured across the shipped presets, 25% of classes never cache on the 1,024-token
+tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on extraction
+gets no caching at all and, until now, no indication of it.
+
+`idp-cli config validate` (and the SDK validate operation) now **warns per class**
+when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up
+to the marker, with the class schema substituted — is under the configured extraction
+model's minimum, naming both numbers. The estimate is chars/4, accurate to about
+±10% against Bedrock's own count on the surveyed classes, so a class whose estimate
+lands within 10% of the minimum is reported as "may not cache" rather than declared
+safe. Remedies: add real field descriptions to the class (which also helps
+extraction), pick a model with a lower minimum, or turn caching off (below).
+
+What the warning does **not** cover, deliberately: the classification, assessment
+(confidence) and rule-validation prompts, which also carry `<<CACHEPOINT>>` markers
+and keep them regardless of the setting below; the Advanced (agentic) extraction
+path, whose prefix is the agent's own system prompt; the forced-tool `toolSpec` and
+the multi-instance detection probe (both off by default, both make the real prefix
+*longer*, so the estimate errs toward warning); application inference-profile ARNs
+(not resolved to a base model, so no warning); and the newer tokenizer introduced
+with Claude Opus 4.7 and shared by Opus 4.8, Opus 5 and Fable 5, which produces up to
+about 1.35× the tokens the estimate assumes — again in the direction of a spurious
+warning, never a missed one.
+
+#### Turning caching off (`extraction.prompt_cache: off`)
+
+A cache **write** is billed at 1.25× input price and only pays back when a second
+request with the same prefix arrives inside the 5-minute TTL — break-even is exactly
+the second request. A deployment that processes one document of a class per TTL
+pays about **+25% on the prefix for nothing**. Decline it with:
+
+```yaml
+extraction:
+  prompt_cache: off     # auto (default) | off
+```
+
+`off` sends no cache points on either extraction path (Simple and Advanced) and
+suppresses the validation warning above. The setting is also in the Web UI under
+**Configuration → Extraction → Prompt caching**. A bare `off` in YAML parses as the
+boolean `false`; both spellings (and `"off"` quoted) are accepted. It applies to
+**extraction only**: classification, assessment and rule-validation prompts keep
+their cache points. Per-class cache read/write token counts
+are already in the metering data and priced; a per-class cache-efficiency view in the
+Processing Report remains open in [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780).
+
 For pricing details on cached tokens, see [cost-calculator.md](cost-calculator.md).
 
 ## Regex-Based Classification (Pattern-2)
@@ -1077,6 +1138,30 @@ extraction:
 - **Smart Scaling**: Only downsizes images when necessary (scale factor < 1.0)
 - **High-Quality Resampling**: Better visual quality after resizing
 - **Original Format Preservation**: Maintains PNG, JPEG, and other formats when possible
+
+### Effective per-image budget: 3.75 MiB, enforced post-base64
+
+Amazon Bedrock rejects any single image over **5 MiB** — and it measures the
+**base64-encoded** payload, not the stored bytes. The effective budget for a stored
+page image is therefore **3.75 MiB (3,932,160 bytes)**, and any image over it fails
+the whole request with `ValidationException: image exceeds 5 MB maximum`, which on a
+document means a hard `FAILED` status at the extraction (or classification) step.
+The Converse API also rejects any image over **8,000 px** on a side regardless of size
+(this applies to every model routed through Converse, not only Claude).
+
+Because the defaults above preserve original resolution, a high-resolution page image
+**uploaded as PNG or JPEG** is stored as-is and can cross that budget — that is the case
+measured in #778 (source PNGs of 3.8–5.4 MB). PDF pages are rendered by the OCR step and
+stored as JPEG, which rarely approaches the limit even at `ocr.image.dpi: 300`. The
+pipeline now
+**downscales such an image to fit, proportionally, in as few passes as possible**
+(same format first; lossless formats fall back to JPEG only if they still do not
+fit) instead of failing the document, logs a `WARNING` naming the sizes, and — for
+extraction — records the reduction per page under the section's
+`metadata.image_downscale` so a page the model saw at lower resolution than stored
+is auditable. To avoid the downscale (and the warning) on every request, set
+`target_width` / `target_height` so pages render inside the budget. See
+[#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778).
 
 ### Configuration Benefits
 

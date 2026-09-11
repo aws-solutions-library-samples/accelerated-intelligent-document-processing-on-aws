@@ -546,6 +546,14 @@ def create_pydantic_model_from_json_schema(
                 field_constraints=True,
                 snake_case_field=False,
                 use_title_as_name=True,
+                # Emit each object's JSON-Schema `description` as the generated
+                # class's docstring. Pydantic puts a class docstring into
+                # model_json_schema() as the object's `description`, so the class
+                # description and every $defs group description reach the wire
+                # tool schema the agent sees (#836). Without this, only property
+                # descriptions survive and a class whose guidance is all in its
+                # root description sends the model no natural language at all.
+                use_schema_description=True,
             )
 
             # Import the generated module
@@ -604,9 +612,12 @@ def create_pydantic_model_from_json_schema(
                     def validate_json_schema(self):  # type: ignore
                         return validator_func(self)
 
-                # Set the correct name
+                # Set the correct name, and keep the schema description: a
+                # subclass does not inherit __doc__, and Pydantic reads the
+                # description for model_json_schema() from it (#836).
                 ModelWithValidation.__name__ = selected_model.__name__
                 ModelWithValidation.__qualname__ = selected_model.__name__
+                ModelWithValidation.__doc__ = selected_model.__doc__
 
                 final_model = ModelWithValidation
 
@@ -624,6 +635,9 @@ def create_pydantic_model_from_json_schema(
                     __config__=ConfigDict(
                         populate_by_name=True, serialize_by_alias=True
                     ),
+                    # A created subclass has no __doc__; carry the schema
+                    # description so it reaches model_json_schema() (#836).
+                    __doc__=selected_model.__doc__,
                 )
 
             # Propagate the alias config to ALL nested models. The caller above

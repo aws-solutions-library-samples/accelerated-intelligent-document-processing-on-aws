@@ -38,9 +38,11 @@ from strands.types.media import (
 )
 
 from idp_common.bedrock.client import (
+    ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
     CLAUDE_EFFORT_LEVELS,
     GROK_EFFORT_LEVELS,
+    is_astra_model,
     is_claude_effort_model,
     is_grok_model,
     strips_sampling_params,
@@ -265,6 +267,9 @@ def apply_patches_to_data(
     return patched_dict
 
 
+# NOTE: page_images here (and in the prompt builder below) come from
+# ExtractionService._page_images, which _load_document_images has already
+# fitted to Bedrock's per-image limit (#778). Do not pass raw page bytes in.
 def create_view_image_tool(page_images: list[bytes]) -> Any:
     """
     Create a view_image tool that has access to page images.
@@ -1123,6 +1128,7 @@ def _build_model_config(
     connect_timeout: float,
     read_timeout: float,
     reasoning_effort: str | None = None,
+    prompt_cache: str = "auto",
 ) -> dict[str, Any]:
     """
     Build model configuration with token limits and caching settings.
@@ -1205,6 +1211,25 @@ def _build_model_config(
                 ", ".join(GROK_EFFORT_LEVELS),
             )
 
+    # OpenAI GPT-6 Astra shares Grok's `reasoning.effort` carrier but a THIRD
+    # vocabulary: none/low/medium/high/xhigh/max (Claude's set plus `none`;
+    # `minimal` from the GPT-5.x Responses API is rejected). Astra 400s on an
+    # unknown value rather than ignoring it, so dropping out-of-vocabulary values
+    # here is what keeps a stale config from failing every agentic call.
+    elif reasoning_effort and is_astra_model(model_id):
+        effort = str(reasoning_effort).lower().strip()
+        if effort in ASTRA_EFFORT_LEVELS:
+            if additional_request_fields is None:
+                additional_request_fields = {}
+            additional_request_fields["reasoning"] = {"effort": effort}
+            logger.info("Agentic extraction using reasoning effort '%s'", effort)
+        else:
+            logger.warning(
+                "Ignoring unsupported Astra reasoning effort '%s' (valid: %s)",
+                reasoning_effort,
+                ", ".join(ASTRA_EFFORT_LEVELS),
+            )
+
     # Resolve the model's true max output tokens from the single source of truth
     # (config_library/model_config_limits.yaml via get_model_max_output_tokens).
     # Agentic extraction always requests the model maximum — its multi-step tool
@@ -1270,8 +1295,14 @@ def _build_model_config(
         },
     )
 
-    # Auto-detect caching support based on model capabilities
-    if supports_prompt_caching(model_id):
+    # Auto-detect caching support based on model capabilities — unless the
+    # configuration declined caching outright (extraction.prompt_cache: off, #780).
+    if prompt_cache == "off":
+        logger.info(
+            "Prompt caching disabled by configuration (extraction.prompt_cache: off)",
+            extra={"model_id": model_id},
+        )
+    elif supports_prompt_caching(model_id):
         model_config["cache_prompt"] = "default"
         logger.info(
             "Prompt caching enabled for model",
@@ -1358,6 +1389,7 @@ def _prepare_prompt_content(
     page_images: list[bytes] | None,
     existing_data: BaseModel | None,
     model_id: str | None = None,
+    prompt_cache: str = "auto",
 ) -> list[ContentBlock]:
     """
     Prepare prompt content from various input types.
@@ -1462,7 +1494,9 @@ def _prepare_prompt_content(
     #
     # `model_id is None` keeps the historical behavior for callers that don't
     # pass it (only the tests, today).
-    if model_id is None or supports_prompt_caching(model_id):
+    if prompt_cache == "off":
+        pass  # extraction.prompt_cache: off — no cache points at all (#780)
+    elif model_id is None or supports_prompt_caching(model_id):
         prompt_content.append(ContentBlock(cachePoint=CachePoint(type="default")))
     else:
         logger.info(
@@ -2045,6 +2079,7 @@ async def structured_output_async(
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         reasoning_effort=config.extraction.reasoning_effort,
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Prepare prompt content
@@ -2053,6 +2088,7 @@ async def structured_output_async(
         page_images=page_images,
         existing_data=existing_data,
         model_id=model_id,
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Track token usage

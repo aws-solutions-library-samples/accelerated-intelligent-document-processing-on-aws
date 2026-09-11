@@ -83,8 +83,8 @@ format (PAGE/LINE/WORD blocks), so it flows through the same
 - **Technology**: Amazon Bedrock LLMs (Claude, Nova) for text extraction, or a custom `LambdaHook` (`model_id: "LambdaHook"`) that proxies to any inference provider.
 - **Confidence Data**:
   - Plain Bedrock LLM OCR: ❌ No confidence data (displays "No confidence data available from LLM OCR").
-  - LambdaHook returning **structured OCR**: ✅ Real confidence + geometry — if the hook returns a top-level `textractBlocks` object (Amazon Textract response format with a `Blocks` list), the service persists it as `rawText.json` and generates a real `textConfidence.json` from it.
-- **Features**: Advanced text understanding, better handling of challenging/degraded documents; with a LambdaHook, any third-party OCR (e.g. Mistral OCR, Chandra OCR).
+  - LambdaHook returning **structured OCR**: ✅ Real confidence + geometry — if the hook returns a top-level `textractBlocks` object (Amazon Textract response format with a `Blocks` list), the service persists it as `rawText.json` and generates a real `textConfidence.json` from it. Confidence and geometry are independently optional, so a hook may supply geometry alone (confidence then reads `N/A`).
+- **Features**: Advanced text understanding, better handling of challenging/degraded documents; with a LambdaHook, any third-party OCR (e.g. Mistral OCR, Cohere Parse, Chandra OCR).
 - **Assessment Quality**: ❌ for plain LLM OCR; ⭐⭐⭐ when a LambdaHook supplies `textractBlocks` confidence.
 - **Use Cases**: Challenging documents where traditional OCR fails; integrating external OCR providers via the LambdaHook feature.
 
@@ -118,6 +118,8 @@ When `backend="bedrock"` and `model_id="LambdaHook"`, the hook receives a Conver
 ```
 
 `OcrService._extract_bedrock_ocr_artifacts()` detects a non-empty `textractBlocks` and persists it as the page's `rawText.json`, then builds a real `textConfidence.json` from its LINE blocks (same path as the Textract backend). Geometry uses Textract's normalized 0–1 `BoundingBox`. Hooks returning only text keep the previous placeholder behavior. See `samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook/` for a reference implementation (Mistral OCR) and [docs/lambda-hook-inference.md](../../../../docs/lambda-hook-inference.md).
+
+`Confidence` and `Geometry` are independently optional per block. A LINE with no `Confidence` is rendered as `N/A` in the confidence table rather than `0.0`, so a backend that has geometry but no confidence scores (e.g. `GENAIIDP-cohere-parse-hook`, since Cohere Parse returns none) does not tell the assessment model that every line was maximally unreliable.
 
 ## Features
 
@@ -445,6 +447,7 @@ convention), matching what the UI bounding-box renderer consumes.
 |---|---|---|---|---|
 | **Textract** | LINE + WORD | per-LINE & per-WORD | per-LINE & per-WORD (box + polygon) | `line` |
 | **Mistral LambdaHook** | LINE + WORD | per-LINE & per-WORD | paragraph-level box shared by sibling lines; WORDs none | `paragraph` |
+| **Cohere Parse LambdaHook** | LINE | none (Parse returns no scores) | tables & figures only — box shared by the lines derived from each element; body text none | `paragraph` (elements) / `none` (text) |
 | **Chandra / plain Bedrock LLM** | lines synthesized from markdown | none | none | `none` |
 | **`none`** | none | none | none | — |
 | **Converted (non-PDF)** | per-line | per-line `99.0` placeholder | none | `none` |

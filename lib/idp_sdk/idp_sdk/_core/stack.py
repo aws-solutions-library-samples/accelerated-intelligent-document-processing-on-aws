@@ -23,6 +23,62 @@ from .s3_security import apply_enforce_ssl_only
 logger = logging.getLogger(__name__)
 
 
+# Parameters that are FIXED when the stack is created and can never be changed
+# on an existing stack, because they set a Cognito User Pool schema flag (#835).
+# Cognito rejects a schema-flag change on an existing pool; CloudFormation surfaces
+# it as a misleading "Required custom attributes are not supported" and the stack
+# lands in UPDATE_ROLLBACK_FAILED. Maps parameter name -> the template default,
+# which is the value a stack created before the parameter existed effectively has.
+CREATION_FIXED_PARAMETERS: Dict[str, str] = {"ExternalIdPEmailMutable": "false"}
+
+
+def guard_creation_fixed_parameters(
+    parameters: Optional[Dict[str, str]],
+    *,
+    stack_exists: bool,
+    current_params: Optional[Dict[str, str]] = None,
+    declared_params: Optional[set] = None,
+) -> Dict[str, str]:
+    """Stop a creation-fixed parameter from wedging a stack, on either path.
+
+    UPDATE: a value that differs from what the stack was created with (absent
+    from the stack means the template default) raises ``ValueError`` before any
+    CloudFormation call — the update would fail and could leave the stack in
+    UPDATE_ROLLBACK_FAILED. An identical value is harmless and passes through.
+
+    CREATE: the parameter is dropped, with a warning, when ``declared_params``
+    is known and does not contain it — e.g. a stack created from a template that
+    predates the parameter — so a caller that injects the safe default for new
+    stacks cannot fail a create against an older template with a CloudFormation
+    ValidationError for an unknown parameter.
+
+    Returns a new dict; never mutates ``parameters``.
+    """
+    params = dict(parameters or {})
+    for name, template_default in CREATION_FIXED_PARAMETERS.items():
+        if name not in params:
+            continue
+        if stack_exists:
+            current = (current_params or {}).get(name, template_default)
+            if params[name] != current:
+                raise ValueError(
+                    f"{name} is fixed when a stack is created (it sets a Cognito "
+                    f"User Pool schema flag) and cannot be changed on an existing "
+                    f"stack: the stack has '{current}', the update asked for "
+                    f"'{params[name]}'. Applying it would fail the update and can "
+                    f"leave the stack in UPDATE_ROLLBACK_FAILED. Remove the "
+                    f"parameter from this update; to change it, deploy a new stack."
+                )
+        elif declared_params and name not in declared_params:
+            logger.warning(
+                f"Dropping parameter {name}: the target template does not declare "
+                f"it (an older template?). The stack will use that template's "
+                f"behaviour for it."
+            )
+            params.pop(name)
+    return params
+
+
 class StackDeployer:
     """Manages CloudFormation stack deployment"""
 
@@ -110,6 +166,12 @@ class StackDeployer:
                 template_url=template_url_for_validation,
             )
 
+            # Refuse a creation-fixed parameter that differs from the stack's
+            # value (#835) before touching CloudFormation.
+            parameters = guard_creation_fixed_parameters(
+                parameters, stack_exists=True, current_params=current_params
+            )
+
             # Identify deprecated parameters (exist in stack but not in new template)
             deprecated_params = set()
             if (
@@ -149,7 +211,18 @@ class StackDeployer:
                         {"ParameterKey": param_key, "ParameterValue": param_value}
                     )
         else:
-            # For CREATE: Use only provided parameters
+            # For CREATE: Use only provided parameters. A creation-fixed parameter
+            # (#835) is dropped if this template does not declare it, so injecting
+            # the safe default for new stacks cannot fail a create against an
+            # older template. validate_template is only called when one is present.
+            if any(k in (parameters or {}) for k in CREATION_FIXED_PARAMETERS):
+                declared = self._get_template_parameters(
+                    template_body=template_param.get("TemplateBody"),
+                    template_url=template_param.get("TemplateURL"),
+                )
+                parameters = guard_creation_fixed_parameters(
+                    parameters, stack_exists=False, declared_params=declared
+                )
             cfn_parameters = [
                 {"ParameterKey": k, "ParameterValue": v}
                 for k, v in (parameters or {}).items()

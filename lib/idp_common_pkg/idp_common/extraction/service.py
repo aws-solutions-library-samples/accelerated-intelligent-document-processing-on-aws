@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Callable
 
@@ -85,6 +86,17 @@ from pydantic import BaseModel
 from idp_common.utils import extract_json_from_text, repair_truncated_json
 
 logger = logging.getLogger(__name__)
+
+
+class ExtractionInputTooLarge(Exception):
+    """A section's single extraction request exceeded the model's input window.
+
+    Raised ``from`` Bedrock's ``ValidationException`` so the Step Functions cause
+    and the document's errors carry an explanation and a remedy instead of the
+    bare "Input is too long for requested model". Deterministic — the class name
+    is deliberately NOT in any retry list (#787).
+    """
+
 
 # The shipped default of ``extraction.confidence.list_batch_size``. The field is
 # ``gt=0`` so it cannot express "unset", and its default is persisted into
@@ -232,6 +244,11 @@ class ExtractionService:
         # Deterministic type/format repairs applied to the most recent section's
         # simple-mode result, so nothing is silently rewritten. Reset per section.
         self._pending_coercion_metadata: dict[str, Any] | None = None
+        # Page images downscaled to fit Bedrock's per-image limit (#778), one
+        # entry per affected page, so a page sent at lower resolution than stored
+        # is auditable. Set by _load_document_images, reset by _reset_context
+        # (NOT by _invoke_extraction_model — images load before it runs).
+        self._pending_image_fit_metadata: list[dict[str, Any]] | None = None
         # Model actually used for the most recent section's extraction (after
         # per-class override resolution), recorded in metadata for audit. Reset
         # per section.
@@ -441,6 +458,12 @@ class ExtractionService:
             List of content items with text and image content properly ordered
         """
         content: list[dict[str, Any]] = []
+
+        # extraction.prompt_cache: off — send no cache points. The marker is
+        # removed here, before any content is built, so every Simple-mode path
+        # (default prompt, per-class override, shards) honours it (#780).
+        if self.config.extraction.prompt_cache == "off":
+            prompt_template = prompt_template.replace("<<CACHEPOINT>>", "")
 
         # Handle FEW_SHOT_EXAMPLES placeholder first
         if "{FEW_SHOT_EXAMPLES}" in prompt_template:
@@ -933,6 +956,7 @@ class ExtractionService:
         self._instance_probe_requested = False
         self._page_images = []
         self._image_uris = []
+        self._pending_image_fit_metadata = None
         self._grounded_assessment = None
         # Top-level fields the simple-extraction schema-compliance filter dropped
         # because the class schema does not define them (off-schema/hallucinated).
@@ -950,6 +974,7 @@ class ExtractionService:
         # _simple_integrated_list_downgrade; surfaced in metadata and the flow.
         self._integrated_downgrade_reason = None
         self._integrated_downgrade_checked = False
+        self._last_simple_input_estimate: dict[str, Any] | None = None
 
     def _validate_and_find_section(
         self, document: Document, section_id: str
@@ -1185,6 +1210,17 @@ class ExtractionService:
             page = document.pages[page_id]
             image_uri = page.image_uri
             image_content = image.prepare_image(image_uri, target_width, target_height)
+            # Bedrock's 5 MiB per-image limit is enforced on the BASE64 payload, so
+            # a stored page image over 3.75 MiB fails the whole request (#778).
+            # Fit it here — where the reduction can be recorded per page — rather
+            # than at the attach choke point, whose fit is then a pass-through.
+            image_content, fit = image.fit_image_to_bedrock_limit(image_content)
+            if fit is not None:
+                if self._pending_image_fit_metadata is None:
+                    self._pending_image_fit_metadata = []
+                self._pending_image_fit_metadata.append(
+                    {"page_id": page_id, **fit.to_dict()}
+                )
             page_images.append(image_content)
 
         t1 = time.time()
@@ -1492,6 +1528,301 @@ class ExtractionService:
             ),
         }
 
+    #: Below this many matching OCR table rows the row-shortfall check stays quiet.
+    _OCR_ROW_ESTIMATE_MIN = 30
+    #: Extracted rows below this fraction of the matched OCR rows are a shortfall.
+    #: Column-heading rows repeated per page inflate the estimate a little, so the
+    #: bar is "less than half", not "fewer".
+    _OCR_ROW_SHORTFALL_RATIO = 0.5
+    #: A pipe-delimited run shorter than this is not a table (a prose line with a
+    #: "|", a two-line caption).
+    _OCR_TABLE_MIN_ROWS = 3
+    #: Lines between two table rows beyond which they belong to different tables.
+    _OCR_TABLE_GAP_LINES = 5
+
+    @classmethod
+    def _ocr_tables(cls, text: str) -> list[dict[str, int]]:
+        """The Markdown tables in ``text`` as ``[{"rows": n, "cols": c}, ...]``.
+
+        A table row is a line that STARTS with a pipe (textractor renders Textract
+        TABLE blocks in GitHub table form; a prose line that merely contains "|",
+        such as a footer, does not start with one). A run counts only if it holds
+        a separator row (``|---|``): pipe-bearing lines with no separator are not
+        a table. A separator starts a NEW table whose heading is the row before
+        it, so a table reprinted per page is one table per page (same width, so
+        the rows are summed by the caller). A run also ends when more than
+        ``_OCR_TABLE_GAP_LINES`` lines intervene, or when the cell count changes —
+        textractor separates two adjacent tables by a blank line and a heading,
+        which is under the gap, so the width change is what tells a 2-column
+        Daily Balances table from the 3-column Transactions table above it.
+        A non-empty line without a leading pipe ends the table (rows are emitted
+        contiguously; only EMPTY lines, up to the gap, are tolerated inside one).
+        Trailing empty cells (Textract's spare column) are not counted. Runs
+        shorter than ``_OCR_TABLE_MIN_ROWS`` are dropped. Heading rows count as
+        rows (the half ratio absorbs them).
+        """
+        tables: list[dict[str, int]] = []
+        cur_rows = 0
+        cur_cols = 0
+        has_sep = False
+        last_idx: int | None = None
+
+        def _flush(rows: int, cols: int) -> None:
+            if has_sep and rows >= cls._OCR_TABLE_MIN_ROWS:
+                tables.append({"rows": rows, "cols": cols})
+
+        for idx, line in enumerate(text.split("\n")):
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                if stripped and cur_rows:
+                    # prose ends the table: textractor emits a table's rows
+                    # contiguously, so pipe lines after a text line (a footer
+                    # block) are a new run, which needs its own separator to count
+                    _flush(cur_rows, cur_cols)
+                    cur_rows, has_sep = 0, False
+                continue
+            if re.match(r"^[\s|:-]+$", stripped):
+                if cur_rows > 1:
+                    # the row just read is the heading of the NEXT table; what came
+                    # before is the previous table (or, with no separator, not one)
+                    _flush(cur_rows - 1, cur_cols)
+                    cur_rows = 1
+                has_sep = True
+                last_idx = idx
+                continue
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            while len(cells) > 1 and cells[-1] == "":
+                cells.pop()
+            ncols = len(cells)
+            if cur_rows and (
+                (
+                    last_idx is not None
+                    and idx - last_idx - 1
+                    > cls._OCR_TABLE_GAP_LINES  # intervening lines
+                )
+                or ncols != cur_cols
+            ):
+                heading_only = cur_rows == 1 and has_sep and ncols != cur_cols
+                _flush(cur_rows, cur_cols)
+                cur_rows = 0
+                # a heading wider/narrower than its body keeps the separator it saw
+                has_sep = heading_only
+            cur_cols = ncols
+            cur_rows += 1
+            last_idx = idx
+        _flush(cur_rows, cur_cols)
+        return tables
+
+    @classmethod
+    def _expected_rows_for_width(
+        cls, n_props: int, tables: list[dict[str, int]]
+    ) -> int:
+        """OCR table rows in tables whose column count EQUALS ``n_props``.
+
+        A section can hold several tables — Transactions next to a two-column
+        Daily Balances table, a form's key/value blocks — and only the ones shaped
+        like the list are evidence about it. Exact width is the trade the check
+        makes: a one-column tolerance let every key/value block count against a
+        three-column list, at the price that an item schema with a property the
+        table lacks (a derived Balance) is not compared at all.
+        """
+        return sum(tb["rows"] for tb in tables if tb["cols"] == n_props)
+
+    @staticmethod
+    def _object_list_targets(
+        schema: dict[str, Any], values: Any
+    ) -> list[tuple[str, int, list[Any]]]:
+        """``(label, item_property_count, rows)`` for every list of OBJECTS the
+        schema declares at the top level — ``items`` resolved through ``$ref``
+        (every shipped preset defines its rows in ``$defs``), descending one level
+        into an array of instances (the multi-instance wrapper, or any list whose
+        items carry their own lists) so the inner lists are compared as rows
+        across all instances. A wrapper whose instances carry no lists is skipped
+        — instances are documents, not table rows. Lists of scalars are not
+        targets: their items are not table rows.
+        """
+        from idp_common.config.schema_utils import deref_schema
+
+        root = schema or {}
+        out: list[tuple[str, int, list[Any]]] = []
+        props = root.get("properties") or {}
+
+        def _items_props(spec: dict[str, Any]) -> dict[str, Any] | None:
+            items = spec.get("items")
+            if not isinstance(items, dict):
+                return None
+            items = deref_schema(items, root)
+            iprops = items.get("properties") if isinstance(items, dict) else None
+            return iprops if isinstance(iprops, dict) and iprops else None
+
+        for name, spec in props.items():
+            if not isinstance(spec, dict) or spec.get("type") != "array":
+                continue
+            iprops = _items_props(spec)
+            if not iprops:
+                continue  # scalars, or an untyped list
+            rows = values.get(name) if isinstance(values, dict) else None
+            rows = rows if isinstance(rows, list) else []
+            inner: dict[str, dict[str, Any]] = {}
+            for k, v in iprops.items():
+                v = deref_schema(v, root) if isinstance(v, dict) else v
+                if isinstance(v, dict) and v.get("type") == "array":
+                    ip = _items_props(v)
+                    if ip:
+                        inner[k] = ip
+            if inner:
+                for iname, ip in inner.items():
+                    concat = [
+                        r
+                        for inst in rows
+                        if isinstance(inst, dict) and isinstance(inst.get(iname), list)
+                        for r in inst[iname]
+                    ]
+                    out.append((f"{name}[].{iname}", len(ip), concat))
+            elif root.get(X_AWS_IDP_INSTANCE_ARRAY) == name:
+                continue  # bare multi-instance wrapper: instances are documents
+            else:
+                out.append((name, len(iprops), rows))
+        return out
+
+    def _simple_mode_input_preflight(
+        self,
+        *,
+        content: list[dict[str, Any]],
+        system_prompt: str | None,
+        model_id: str,
+        section_id: str | None,
+    ) -> int:
+        """Estimate the single request Simple mode is about to send; log when it
+        exceeds the model's input window and remember the figures for the
+        failure message.
+
+        Simple mode sends ONE request per section — that is the difference from
+        Advanced mode, which shards. Text is chars/4; an image is priced from its
+        pixels the way Bedrock does (width x height / 750), falling back to the
+        sizing module's reserve figure when the bytes cannot be read. The
+        estimate is not recorded as a processing issue: if the call then
+        succeeds the estimate was wrong, and if it fails the section never
+        reaches the record — the failure itself carries the explanation (see
+        ``_explain_input_overflow``). Returns the estimate.
+        """
+        from idp_common.bedrock.sizing import _TOKENS_PER_IMAGE
+
+        text_tokens = estimate_tokens(system_prompt or "")
+        images = 0
+        image_tokens = 0
+        for block in content or []:
+            if not isinstance(block, dict):
+                continue
+            if "text" in block:
+                text_tokens += estimate_tokens(str(block.get("text") or ""))
+            if "image" in block:
+                images += 1
+                image_tokens += self._image_token_estimate(
+                    block["image"], _TOKENS_PER_IMAGE
+                )
+        estimate = text_tokens + image_tokens
+        max_input = 0
+        try:
+            max_input = int(self._get_sizing_plan().max_input_tokens)
+        except Exception:  # noqa: BLE001 - never block extraction on sizing
+            pass
+        pages = len(self._page_images or []) or images
+        self._last_simple_input_estimate = {
+            "estimated_input_tokens": estimate,
+            "max_input_tokens": max_input,
+            "pages": pages,
+            "images": images,
+        }
+        if max_input and estimate > max_input:
+            logger.warning(
+                "Section %s: Simple extraction is about to send ONE request of ~%s "
+                "input tokens (%s page(s), %s image(s)) against a %s-token window "
+                "for %s; expect 'Input is too long for requested model'. Advanced "
+                "(agentic) extraction shards a section across requests.",
+                section_id,
+                f"{estimate:,}",
+                pages,
+                images,
+                f"{max_input:,}",
+                model_id,
+            )
+        return estimate
+
+    @staticmethod
+    def _image_token_estimate(image_block: Any, fallback: int) -> int:
+        """Bedrock's image pricing is ~(width x height) / 750 tokens; read the
+        dimensions from the bytes when possible, else use ``fallback``."""
+        try:
+            import io
+
+            from PIL import Image
+
+            data = None
+            if isinstance(image_block, dict):
+                src = image_block.get("source") or {}
+                data = src.get("bytes") if isinstance(src, dict) else None
+            if isinstance(data, (bytes, bytearray)) and data:
+                with Image.open(io.BytesIO(bytes(data))) as im:
+                    w, h = im.size
+                return max(1, int(w * h / 750))
+        except Exception:  # noqa: BLE001 - estimate only
+            pass
+        return int(fallback)
+
+    async def _run_shard_or_explain_overflow(self, fn: Any, **kwargs: Any) -> Any:
+        """Await one shard coroutine; re-raise a Bedrock input overflow as
+        ``ExtractionInputTooLarge`` with the Advanced-mode explanation, so the Step
+        Functions shard path fails with the same actionable cause as the in-process
+        path. ``fn`` is ``async`` (``extract_one_shard``): the try must wrap the
+        await, not the call that merely creates the coroutine."""
+        from idp_common.utils.bedrock_utils import is_input_token_overflow
+
+        try:
+            return await fn(**kwargs)
+        except Exception as e:
+            if is_input_token_overflow(e):
+                msg = self._explain_input_overflow(
+                    e, str(kwargs.get("section_id") or "?"), is_agentic=True
+                )
+                logger.error(msg)
+                raise ExtractionInputTooLarge(msg) from e
+            raise
+
+    def _explain_input_overflow(
+        self, exc: BaseException, section_id: str, *, is_agentic: bool
+    ) -> str:
+        """The message for a Bedrock input-overflow failure on a section.
+
+        The Simple-mode wording says the whole section went out as one request
+        and what to change; the Advanced wording does not tell an agentic user
+        to switch to agentic. The pre-flight figures, when they exist, are
+        included so the reader sees the size that failed.
+        """
+        est = getattr(self, "_last_simple_input_estimate", None) or {}
+        pages = est.get("pages") or len(self._page_images or [])
+        size = (
+            f" (~{est['estimated_input_tokens']:,} estimated input tokens, "
+            f"{pages} page(s), window {est['max_input_tokens']:,})"
+            if est.get("estimated_input_tokens") and est.get("max_input_tokens")
+            else (f" ({pages} page(s))" if pages else "")
+        )
+        if is_agentic and "remedies:" in str(exc).lower():
+            advice = ""  # agentic_idp already translated it with its own remedies
+        elif is_agentic:
+            advice = (
+                " The request exceeded the model's input window even in Advanced "
+                "mode: lower extraction.agentic.max_pages_per_shard or the number "
+                "of page images per request, or split the document."
+            )
+        else:
+            advice = (
+                " Simple extraction sends the whole section as ONE request and it "
+                "exceeds the model's input window. Use Advanced (agentic) extraction, "
+                "which shards a section across requests, or split the document."
+            )
+        return f"Error processing section {section_id}: {exc}{size}{advice}"
+
     def _analyze_ocr_for_tables(self, ocr_text: str) -> dict[str, Any]:
         """
         Analyze OCR text to detect large Markdown tables.
@@ -1502,7 +1833,6 @@ class ExtractionService:
         Returns:
             Dict with table detection results
         """
-        import re
 
         # Detect Markdown table rows (lines with | delimiters)
         table_rows = []
@@ -2508,6 +2838,87 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # dropped (mirroring agentic Pydantic validation) so they can't corrupt
         # downstream assessment. Info severity — the data was never valid for this
         # class — but surfaced so a systematic prompt/schema mismatch is visible.
+        # Row shortfall against the OCR's own evidence (BOTH modes). A list that
+        # came back with SOME rows passes every check above — population is fine,
+        # the empty-list check does not fire, and without `minItems` there is no
+        # schema signal — yet a Simple-mode section of 800 rows returned 43 with
+        # COMPLETED and nothing said so (measured 2026-09-10). The OCR text says
+        # how many table rows the section holds; the tables SHAPED LIKE the list
+        # (column count equal to the item's property count) are its
+        # evidence, so a Daily Balances table next to Transactions, a form's
+        # key/value blocks, or a prose line with a "|" do not count against it.
+        # Lists of scalars are not compared (their items are not table rows);
+        # an array of instances is compared through its inner lists. Advisory:
+        # the floor and the half ratio absorb reprinted heading rows.
+        if array_fields:
+            tables = self._ocr_tables(self._document_text or "")
+            # Lists of the same width share the OCR evidence — Deposits and
+            # Withdrawals are both (Date, Description, Amount) tables — so they are
+            # judged as a GROUP: total rows extracted across the width vs total
+            # matched OCR rows. Judging each against the shared sum warned on
+            # every complete statement with sibling tables.
+            groups: dict[int, list[tuple[str, list[Any]]]] = {}
+            for label, n_props, rows in self._object_list_targets(
+                self._class_schema or {}, extracted_fields
+            ):
+                groups.setdefault(n_props, []).append((label, rows))
+            for n_props, members in sorted(groups.items()):
+                labels = [
+                    lb for lb, rows in members if any(isinstance(r, dict) for r in rows)
+                ]
+                if not labels:
+                    continue  # every list of this width is empty: extraction_incomplete
+                expected = self._expected_rows_for_width(n_props, tables)
+                extracted = sum(
+                    1 for _lb, rows in members for r in rows if isinstance(r, dict)
+                )
+                if (
+                    expected < self._OCR_ROW_ESTIMATE_MIN
+                    or extracted >= expected * self._OCR_ROW_SHORTFALL_RATIO
+                ):
+                    continue
+                fields_str = ", ".join(labels)
+                rec = (
+                    " Simple extraction returns one response per section and "
+                    "stops early on long lists; for documents this size use "
+                    "Advanced (agentic) extraction, which shards, or set minItems "
+                    "on the list field to make the shortfall a hard constraint."
+                    if not is_agentic
+                    else " Set minItems on the list field to make this a hard "
+                    "constraint, and check the table-parsing tool was used."
+                )
+                issues.append(
+                    ProcessingIssue(
+                        stage="extraction",
+                        severity="warning",
+                        code="extraction_rows_below_ocr_estimate",
+                        message=(
+                            f"Extracted {extracted} row(s) for list field(s) "
+                            f"{fields_str}, but the section's OCR text contains about "
+                            f"{expected} rows in {n_props}-column table(s) of that "
+                            f"shape — the list is likely truncated. The run still "
+                            f"reports success and scalar fields are unaffected, so no "
+                            f"other signal flags this.{rec}"
+                        ),
+                        root_cause=(
+                            f"{'agentic' if is_agentic else 'traditional'} extraction "
+                            f"with model "
+                            f"{self._pending_extraction_model or self.config.extraction.model}; "
+                            f"{extracted} extracted rows vs ~{expected} matching OCR "
+                            f"table rows for {fields_str}"
+                        ),
+                        section_id=section_id,
+                        details={
+                            "list_fields": labels,
+                            "item_property_count": n_props,
+                            "extracted_rows": extracted,
+                            "ocr_estimated_rows": expected,
+                            "ratio": round(extracted / expected, 3),
+                            "ocr_tables": tables,
+                            "agentic": is_agentic,
+                        },
+                    )
+                )
         off_schema = list(getattr(self, "_off_schema_fields", []) or [])
         if off_schema:
             fields_str = ", ".join(off_schema)
@@ -4555,6 +4966,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 # "never ran" look identical is unreadable.
                 logger.info("Forced tool use skipped — %s", skip_reason)
 
+            self._simple_mode_input_preflight(
+                content=content,
+                system_prompt=system_prompt,
+                model_id=model_id,
+                section_id=getattr(section_info, "section_id", None),
+            )
             response_with_metering = bedrock.invoke_model(
                 model_id=model_id,
                 system_prompt=system_prompt,
@@ -5017,17 +5434,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # missing. Best-effort: never fails extraction.
         if self._integrated_assessment_enabled():
             try:
-                merged_assessment, extra_alerts, split_stats = (
+                merged_assessment, regenerated_alerts, split_stats = (
                     self._retry_missing_integrated_rows(
                         merged_assessment=merged_assessment,
                         extracted_fields=extracted_fields,
                         section_info=section_info,
                     )
                 )
-                if extra_alerts:
-                    merged_assessment_alerts = list(merged_assessment_alerts) + (
-                        extra_alerts
-                    )
+                # The retry re-enriches the FINAL spliced assessment and returns
+                # the alerts that enrichment built — a projection of the merged
+                # list with globally-indexed row paths. It replaces (never
+                # extends) the incoming surface: extending would re-introduce
+                # the slice-local duplicates this exists to fix (upstream #813).
+                merged_assessment_alerts = regenerated_alerts
                 # Surface adaptive batch-splitting activity (only when the
                 # confidence model truncated and batches had to shrink).
                 from idp_common.assessment.batching import split_stats_are_notable
@@ -5120,9 +5539,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         a stronger confidence model (bigger output cap) — the same ladder the
         ``separate`` path uses — so integrated mode is equally robust.
 
-        Returns ``(merged_assessment, new_alerts, split_stats)`` where
-        ``split_stats`` records any adaptive-splitting/escalation activity (None
-        when nothing was retried). Best-effort — a failed retry keeps placeholders.
+        Returns ``(merged_assessment, regenerated_alerts, split_stats)`` where
+        ``regenerated_alerts`` is the alert surface rebuilt from the final
+        spliced assessment (globally-indexed row paths — it replaces the
+        caller's surface, see upstream #813) and ``split_stats`` records any
+        adaptive-splitting/escalation activity (None when nothing was retried).
+        Best-effort — a failed retry keeps placeholders.
         """
         from idp_common.assessment.batching import (
             _missing_row_indices,
@@ -5140,7 +5562,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if isinstance(v, list) and _missing_row_indices(merged_assessment.get(f), v)
         }
         if not targets:
-            return merged_assessment, [], None
+            # Nothing to retry — but the caller REPLACES its alert surface with
+            # what this returns (#813), so an empty list here would leave every
+            # fully-scored integrated section with no confidence alerts at all
+            # (the common case; scalar-only classes always land here). Rebuild
+            # the surface from the merged assessment exactly as the retry path
+            # does below, so the replace is always a globally-indexed surface.
+            merged_assessment, regenerated_alerts = enrich_assessment_with_thresholds(
+                merged_assessment,
+                self._class_schema,
+                self.config.hitl.confidence_threshold,
+            )
+            return merged_assessment, regenerated_alerts, None
 
         assessment_service = AssessmentService(region=self.region, config=self.config)
         confidence_cfg = self.config.extraction.confidence
@@ -5225,11 +5658,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 _missing_row_indices(merged_assessment.get(field), rows)
             )
 
-        # Re-enrich so any spliced-in rows carry confidence_threshold like the rest.
-        merged_assessment, _ = enrich_assessment_with_thresholds(
+        # Re-enrich so any spliced-in rows carry confidence_threshold like the
+        # rest — and keep the alerts it builds: enumerating the full merged list
+        # makes their row indexes global, so they REPLACE the surface (upstream
+        # #813). The alerts accumulated during the retry itself carry indexes
+        # relative to the missing-row subset and are deliberately not returned.
+        merged_assessment, regenerated_alerts = enrich_assessment_with_thresholds(
             merged_assessment, self._class_schema, default_threshold
         )
-        return merged_assessment, new_alerts, split_stats
+        return merged_assessment, regenerated_alerts, split_stats
 
     def _save_results(
         self,
@@ -5502,6 +5939,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         if self._pending_coercion_metadata is not None:
             metadata["coercion"] = self._pending_coercion_metadata
 
+        # Page images that had to be downscaled to fit Bedrock's per-image limit
+        # (#778). Without this the model silently saw a lower resolution than the
+        # stored page and nothing in the output said so.
+        if self._pending_image_fit_metadata:
+            metadata["image_downscale"] = self._pending_image_fit_metadata
+
         # Record scalar-field conflicts detected when merging sharded concurrent
         # extraction (two shards disagreed on a scalar; first value kept).
         if shard_conflicts:
@@ -5746,6 +6189,21 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._save_results(document, section, result, section_info, section_id, t0)
 
         except Exception as e:
+            from idp_common.utils.bedrock_utils import is_input_token_overflow
+
+            if is_input_token_overflow(e):
+                # The failure itself is the signal: the section never reaches the
+                # record, so the explanation travels in the exception (Step
+                # Functions cause, CloudWatch) and in document.errors. A new
+                # class name keeps #787's classification hard (not retried).
+                error_msg = self._explain_input_overflow(
+                    e,
+                    section_id,
+                    is_agentic=bool(self.config.extraction.agentic.enabled),
+                )
+                logger.error(error_msg)
+                document.errors.append(error_msg)
+                raise ExtractionInputTooLarge(error_msg) from e
             error_msg = f"Error processing section {section_id}: {str(e)}"
             logger.error(error_msg)
             document.errors.append(error_msg)
@@ -6034,6 +6492,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             deadline_epoch=self._assessment_deadline_epoch,
             max_concurrent_batches=self.config.extraction.agentic.max_concurrent_batches,
             class_schema=assessment_service._get_class_schema(class_label),
+            default_confidence_threshold=self.config.hitl.confidence_threshold,
         )
 
     def _build_assess_runner(
@@ -6335,7 +6794,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         payload = shard_payloads[shard_index]
 
         fields, response = _asyncio.run(
-            extract_one_shard(
+            self._run_shard_or_explain_overflow(
+                extract_one_shard,
                 shard_index=shard_index,
                 total_shards=len(shard_payloads),
                 payload=payload,

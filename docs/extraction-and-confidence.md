@@ -104,8 +104,9 @@ extraction:
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
 > 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
-> GPT-5.x (`minimal`|`low`|`medium`|`high`), and xAI Grok
-> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`) — `reasoning_effort` controls how much
+> GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
+> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
+> (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
@@ -170,6 +171,19 @@ Agentic extraction requires models with tool-use support:
 > rejected by Grok and silently omitted; tune it with `reasoning_effort`
 > (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
 > [xAI Grok Models](grok-models.md).
+
+> **✅ OpenAI GPT-6 Astra CAN be used with agentic extraction.** Unlike the
+> GPT-5.x models above, Astra (`us.openai.gpt-6-astra`,
+> `global.openai.gpt-6-astra`) is served on the standard Converse API and emits a
+> `toolUse` block under a forced `toolChoice`, so the Strands agent loop works.
+> The agentic gate keys on the **route**, not the vendor prefix — which is why one
+> OpenAI model is allowed here and the others are not. Its 1.05M context yields
+> the largest shard budget of any model offered. `temperature` / `top_p` are
+> rejected and silently omitted; tune it with `reasoning_effort`
+> (`none`|`low`|`medium`|`high`|`xhigh`|`max`) instead. Watch cost: Astra is the
+> priciest model available, and input above 272K tokens bills at roughly double
+> the rate recorded in `pricing.yaml`. See
+> [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 
 #### Cost considerations
 
@@ -634,6 +648,20 @@ already unambiguous (a `15` cannot be a month whatever you set).
 > as a **safety net for messy output and non-format-tolerant consumers** — Athena
 > column typing, rule validation, API clients — rather than as an accuracy
 > improver. It did not move evaluation accuracy in either A/B we ran.
+
+### Oversize page images (`metadata.image_downscale`)
+
+Bedrock rejects a single image over 5 MiB and measures the **base64-encoded**
+payload, so a stored page image over **3.75 MiB** — reachable from the shipped
+defaults, which preserve original resolution — used to fail the whole document with
+`ValidationException: image exceeds 5 MB maximum` at the extraction step
+([#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778)). Such a page is now downscaled proportionally to fit (same format
+first, JPEG only as a fallback), the reduction is logged, and the section records it
+per page under `metadata.image_downscale` (original and final bytes, size and format,
+passes, reason). A page that already fits leaves no entry. Set the service's
+`image.target_width` / `image.target_height` to keep pages inside the budget if you
+would rather control the resolution than have it reduced per request; see
+[Image Processing Configuration](./configuration.md#effective-per-image-budget-375-mib-enforced-post-base64).
 
 ### Schema validation (`extraction.validation`)
 
@@ -1295,7 +1323,8 @@ extraction:
 In `ocr_only` mode the model is **not** asked for boxes at all. Each field's
 geometry is derived by matching the extracted value text against real OCR lines
 in the consolidated `pageData.json` artifact (Amazon Textract, or the Mistral OCR
-LambdaHook). This is **cheaper** (no bbox tokens in the response) and **more
+LambdaHook; the Cohere Parse hook contributes boxes for tables and figures only).
+This is **cheaper** (no bbox tokens in the response) and **more
 accurate** (OCR boxes beat LLM-estimated boxes, which models frequently
 hallucinate). A field with no OCR match simply has no geometry (geometry is
 advisory).
@@ -1811,9 +1840,14 @@ For large documents and big tables:
 
 ### Detecting a truncated list
 
-Extraction can lose rows **silently**: a benchmarked simple-mode run returns
-complete lists (recall 1.000) up to ~800 rows, then **0.199 at 1,200 rows and
-0.009 at 3,200** — and reports success every time. Two things make this
+Extraction can lose rows **silently**: measured on synthetic bank statements with
+exact ground truth (Sonnet 5, one run per size, after the #726 over-splitting fix so
+each statement is one section), simple mode returns complete lists (recall 1.000)
+through **400 rows / 9 pages**, then **43 of 800 rows at 17 pages while reporting
+`COMPLETED` with no processing issue**, and fails outright with *Input is too long
+for requested model* from about 25 pages. (Earlier figures of "complete through
+~1,600 rows" were an artefact of over-splitting, which cut large statements into 6–18
+sections; see `docs/benchmarking/config-guidance.md` §3.) Two things make this
 particularly easy to miss:
 
 - **Scalar accuracy is unaffected.** The document's non-list fields extract
@@ -1822,7 +1856,7 @@ particularly easy to miss:
 - **A truncated run is *cheaper*.** Cost fell from $1.78 to $1.04 when a run
   truncated, so cost monitoring will not flag it either.
 
-So it must be detected structurally. Three signals are now raised as
+So it must be detected structurally. Four signals are raised as
 [processing issues](#surfaced-in-the-ui), on **both** Simple and Advanced modes:
 
 | Code | Severity | Fires when |
@@ -1830,8 +1864,9 @@ So it must be detected structurally. Three signals are now raised as
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
+| `extraction_rows_below_ocr_estimate` | warning | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a second table of another shape (a two-column Daily Balances table printed directly under Transactions), a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. The check needs OCR that emits Markdown tables (Textract with the `TABLES` feature, or BDA); with the default `ocr.features: []` there are none and it never fires. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
 
-A fourth issue is raised by [schema validation](#schema-validation-extractionvalidation)
+A fifth issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
 
 | Code | Severity | Fires when |
@@ -1850,8 +1885,20 @@ Transactions:
 
 Without it, only the empty/absent and sparse signals apply — a list that returns
 10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
-For corpora where large tables are expected, also prefer **Advanced** mode, which
-holds recall 1.000 through 3,200 rows by sharding.
+For corpora where large tables are expected — in practice anything beyond ~400 rows
+or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
+3,200 rows by sharding. Simple mode deliberately does not shard: that is the capability
+that distinguishes the two modes. Without `minItems`, the OCR-row estimate
+(`extraction_rows_below_ocr_estimate`) is what catches a partial Simple-mode list — it
+compares the rows extracted with the rows in the section's OCR tables of the same shape,
+so 43 of 800 is reported even with no `minItems`; a list that returns 10 of 1,200 rows
+from a document whose OCR shows only 10 table rows cannot be distinguished from a document
+that genuinely has 10. When a Simple-mode section is too large to fit the model's input
+window at all, the run **fails** (Bedrock's *Input is too long for requested model*); the
+failure is raised as `ExtractionInputTooLarge` with an explanation and the remedy (the
+estimated request size, the window, and "use Advanced extraction or split the document")
+in the Step Functions cause and the extraction log, and it is deliberately not retried.
+The pre-flight estimate is logged before the call.
 
 #### Advanced mode: an empty list is retried when the OCR proves there were rows
 

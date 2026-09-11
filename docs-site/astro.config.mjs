@@ -144,6 +144,8 @@ export default defineConfig({
           items: [
             { label: "Benchmarking Guide", slug: "benchmarking" },
             { label: "Configuration Guidance", slug: "benchmarking/config-guidance" },
+            { label: "Prompt Caching (measured)", slug: "benchmarking/prompt-caching" },
+            { label: "Cache Padding Proposal", slug: "benchmarking/prompt-cache-padding-proposal" },
             {
               label: "Classification Confidence",
               slug: "benchmarking/classification-confidence",
@@ -194,6 +196,10 @@ export default defineConfig({
                 {
                   label: "Auto Optimizer (Beta)",
                   slug: "extensions/auto-optimizer",
+                },
+                {
+                  label: "IDP Monitor",
+                  slug: "extensions/idp-monitor",
                 },
                 {
                   label: "PII Anonymization",
@@ -277,7 +283,8 @@ export default defineConfig({
               label: "EU Region Model Support",
               slug: "eu-region-model-support",
             },
-            { label: "OpenAI GPT-5.x Models", slug: "openai-models" },
+            { label: "OpenAI Models", slug: "openai-models" },
+            { label: "xAI Grok Models", slug: "grok-models" },
           ],
         },
         {

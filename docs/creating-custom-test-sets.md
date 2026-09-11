@@ -287,13 +287,15 @@ You don't have to create your entire test set in one go. As you process and revi
 
 1. Process new documents and save their evaluation baselines (Steps 3-4 above)
 2. Go to **Test Studio** → **Test Sets** tab
-3. Select your existing test set and click **Add Documents** → **From Existing Files**
-4. Select the **Input Bucket** and enter a file pattern matching your new documents
-5. The file pattern is pre-filled from the original test set — adjust if needed
+3. Either select your existing test set and choose **Actions** → **Add documents** → **From files in a bucket**, or open the set and use its own **Add documents** menu
+4. Select the **Input Bucket** and enter a file pattern matching your new documents (`*` within a folder, `**` across folders, e.g. `invoices/**/*.pdf`)
+5. From the table, the file pattern is pre-filled from the original test set — adjust if needed
 6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date/time) to easily find recently reviewed documents
 7. Click **Check Files** to preview matches, then **Add Documents**
 
 Files without matching baseline data are automatically excluded, so you can use a broad pattern — only documents you've reviewed and saved as evaluation baselines will be added. The test set's file count is updated automatically.
+
+You do not have to start with documents at all: **Create test set** → **Start empty** creates a set with nothing in it, ready to be grown this way. To prune a set, open it, tick the documents and choose **Remove**.
 
 https://github.com/user-attachments/assets/bcd18e62-4795-44ea-9554-637062fd21d7
 
