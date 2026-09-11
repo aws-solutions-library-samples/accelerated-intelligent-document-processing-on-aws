@@ -203,6 +203,9 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
     if (estimate.curveSource === 'aggregate' && estimate.configVersion) {
       return `No curve measured yet for configuration "${estimate.configVersion}" — using this set's combined curve across every configuration it has been labeled or scored under.`;
     }
+    if (estimate.curveSource === 'aggregate' && estimate.configVersionSource === 'mixed') {
+      return "This set's labels were drafted under several configurations, so no single configuration curve applies — using its combined curve.";
+    }
     if (estimate.curveSource === 'aggregate') {
       return "Using this set's combined curve; no configuration is associated with its labels.";
     }

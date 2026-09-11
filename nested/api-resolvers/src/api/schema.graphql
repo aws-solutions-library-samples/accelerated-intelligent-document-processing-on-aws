@@ -1029,7 +1029,8 @@ type ReviewEffortEstimate @aws_cognito_user_pools @aws_iam {
   qualityTierReason: String
   targetAccuracy: Float!
   # The Configuration Profile the estimate's curve is keyed by, and where it came
-  # from: "argument" | "bound" | "drafting-run" | null (none identifiable).
+  # from: "argument" | "test-set" | "bound" | "drafting-run" | "mixed" (the set's
+  # labeling jobs disagree; configVersion is null) | null (none identifiable).
   configVersion: String
   configVersionSource: String
   # Which stored curve the numbers rest on: "config" (this configuration's own

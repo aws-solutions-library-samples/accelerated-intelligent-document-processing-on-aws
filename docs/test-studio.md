@@ -938,14 +938,18 @@ Curves are stored per **Configuration Profile**, because confidence means
 different things across models and prompts.
 
 > **Which curve the estimate reads.** The estimate resolves the set's configuration
-> from, in order: the `configVersion` argument, the set's bound configuration, and
-> the configuration the set's **draft-labeling run** resolved (`labelJobId` →
-> that run's `ConfigVersion`). It then reads that configuration's own curve. If that
-> curve is empty it falls back to the set's combined curve across every
+> from, in order: the `configVersion` argument; the set's declared `configVersion`
+> (written when a set is created by the confbench planner or the synthetic-data
+> generator, and what the class picker and test runner already use); and the
+> configuration the set's **draft-labeling jobs** resolved (every labeling job's run
+> carries the `ConfigVersion` the runner resolved). If the jobs disagree — say one
+> document was re-extracted under another profile — no single curve applies and the
+> combined curve is used, labeled `mixed`. It then reads that configuration's own
+> curve. If that curve is empty it falls back to the set's combined curve across every
 > configuration it has ever been labeled or scored under, and **reports that it did**:
 > the modal shows a note under the confidence banner, and the API returns
 > `curveSource` (`config` | `aggregate` | `prior`) and `configVersionSource`
-> (`argument` | `bound` | `drafting-run`). Revisions of a profile still share one
+> (`argument` | `test-set` | `bound` | `drafting-run` | `mixed`). Revisions of a profile still share one
 > curve, which is right for a prompt tweak and wrong after a model swap — after
 > changing a profile's extraction model or assessment configuration, treat its
 > estimate as unreliable until fresh observations accumulate (tracked in #698).
@@ -954,6 +958,7 @@ different things across models and prompts.
 > per-configuration one, so an estimate can change and a set can drop out of the
 > **gold** tier when its own curve is thinner than the blend was. That is the honest
 > reading, not a regression.
+>
 > Every revision already records a *confidence fingerprint* (a hash of the
 > confidence-relevant configuration — extraction model and sampling parameters,
 > assessment settings), which is what a future release will key curves on. There is

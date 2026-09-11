@@ -846,7 +846,7 @@ def publish_test_set_version(args, event=None):
         "fileCount": meta.get("fileCount"),
         # The configuration the set's labels were produced under (#759): the
         # bound field was never written, so this used to be always null.
-        "configVersion": _resolve_set_config_version(meta)[0],
+        "configVersion": _resolve_set_config_version(test_set_id, meta)[0],
         "createdAt": now,
         "createdBy": created_by,
     }
@@ -1423,7 +1423,7 @@ def reextract_test_set_document(args, event=None):
     # previously read a labelJobConfigVersion attribute that was never written, so
     # the fallback silently did nothing.)
     config_version, _ = _resolve_set_config_version(
-        meta, input_data.get("configVersion")
+        test_set_id, meta, input_data.get("configVersion")
     )
     result = generate_draft_labels(
         {
@@ -2205,35 +2205,75 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     return state
 
 
-def _resolve_set_config_version(meta, explicit=None):
+def _resolve_set_config_version(test_set_id, meta, explicit=None):
     """The Configuration Profile a test set's labels were produced under.
 
-    Returns ``(config_version, source)`` where source is ``"argument"`` (caller
-    passed one), ``"bound"`` (the set's ``boundConfigVersion`` — designed for a
-    binding flow that was never built, so in practice absent), ``"drafting-run"``
-    (the ``ConfigVersion`` the test runner resolved for the set's draft-labeling
-    run, ``testrun#{labelJobId}``), or ``None`` when nothing identifies one.
+    Returns ``(config_version, source)``. Tiers, in order:
+
+    - ``"argument"`` — the caller passed one.
+    - ``"test-set"`` — ``meta["configVersion"]``, the set's declared configuration.
+      Written by the feature-platform set creators (confbench planner, synthetic
+      data bootstrap) and already what the UI's class picker and test runner treat
+      as the set's configuration; these sets have no labeling job.
+    - ``"bound"`` — ``meta["boundConfigVersion"]``, designed for a binding flow
+      that was never built (never written in the repo); kept for a stack that has
+      it, harmless otherwise.
+    - ``"drafting-run"`` — the configuration the set's draft-labeling job(s)
+      resolved. Read from EVERY ``labeljob#`` item under the set (each names a
+      test run whose record carries ``ConfigVersion``), not from the mutable
+      ``labelJobId`` pointer alone: a one-document re-extract under another
+      profile repoints that pointer, and the estimate would otherwise read a curve
+      holding none of the set's review observations and call it the set's own.
+    - ``"mixed"`` with ``None`` — the labeling jobs disagree. The caller falls back
+      to the set's aggregate curve and can say why.
+    - ``None, None`` — nothing identifies a configuration (uploaded labels with no
+      declared configuration, or a drafting run whose record is gone).
 
     One home for this so the review-effort estimate, re-extraction and version
-    snapshots agree on which configuration a set belongs to (#759). Before this,
-    the estimate read only ``boundConfigVersion`` — never written anywhere — so it
-    always fell back to the set's aggregate curve, a blend of every configuration
-    the set had ever been labeled or scored under.
+    snapshots agree (#759). Before this the estimate read only
+    ``boundConfigVersion``, so it always fell back to the set's aggregate curve.
     """
     if explicit:
         return explicit, "argument"
+    if meta.get("configVersion"):
+        return meta["configVersion"], "test-set"
     if meta.get("boundConfigVersion"):
         return meta["boundConfigVersion"], "bound"
-    if meta.get("labelJobId"):
-        tracking = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
-        drafting_run = (
-            tracking.get_item(
-                Key={"PK": f"testrun#{meta['labelJobId']}", "SK": "metadata"}
-            ).get("Item")
+
+    tracking = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+
+    def _run_version(run_id):
+        if not run_id:
+            return None
+        run = (
+            tracking.get_item(Key={"PK": f"testrun#{run_id}", "SK": "metadata"}).get(
+                "Item"
+            )
             or {}
         )
-        if drafting_run.get("ConfigVersion"):
-            return drafting_run["ConfigVersion"], "drafting-run"
+        return run.get("ConfigVersion") or None
+
+    versions = set()
+    try:
+        for job in _label_jobs(test_set_id):
+            run_id = job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
+            version = _run_version(run_id)
+            if version:
+                versions.add(version)
+    except Exception as e:  # noqa: BLE001 — fall back to the pointer below
+        logger.warning(f"Could not read labeling jobs for {test_set_id}: {e}")
+    if len(versions) == 1:
+        return versions.pop(), "drafting-run"
+    if len(versions) > 1:
+        logger.info(
+            f"Test set {test_set_id} was drafted under several configurations "
+            f"({sorted(versions)}); no single curve applies"
+        )
+        return None, "mixed"
+    # Legacy sets recorded only the pointer, not per-run job items.
+    version = _run_version(meta.get("labelJobId"))
+    if version:
+        return version, "drafting-run"
     return None, None
 
 
@@ -2262,7 +2302,7 @@ def estimate_review_effort(args):
     # (argument > bound field > the drafting run's resolved version), so the
     # per-configuration curve is read rather than the set-wide blend (#759).
     config_version, config_version_source = _resolve_set_config_version(
-        meta, config_version
+        test_set_id, meta, config_version
     )
 
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
@@ -2270,10 +2310,14 @@ def estimate_review_effort(args):
     curve = store.get_curve(test_set_id, config_version)
     prior = store.get_global_prior()
     if config_version and curve.served_from != "config":
+        fallback = (
+            "the set's aggregate curve"
+            if curve.served_from == "aggregate"
+            else "no stored curve at all (the estimate leans on the global prior)"
+        )
         logger.warning(
             f"estimateReviewEffort({test_set_id}): no curve stored for configuration "
-            f"'{config_version}' ({config_version_source}); serving the set's "
-            f"{curve.served_from} curve instead"
+            f"'{config_version}' ({config_version_source}); serving {fallback}"
         )
 
     (
