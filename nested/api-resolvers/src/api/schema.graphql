@@ -452,6 +452,10 @@ type DiscoveryJobListItem @aws_cognito_user_pools @aws_iam {
   discoveredClassName: String
   statusMessage: String
   pageRange: String
+  # #765: JSON suggestion when the sample held several records of the discovered
+  # class ({instance_count, class_name, already_multi_instance, message}); the
+  # class setting itself is never changed by discovery.
+  multiInstanceHint: String
   # Multi-document discovery fields
   jobType: String
   currentStep: String
@@ -670,6 +674,7 @@ type DiscoveryJob @aws_cognito_user_pools @aws_iam {
   errorMessage: String
   discoveredClassName: String
   statusMessage: String
+  multiInstanceHint: String
   # Multi-document discovery fields
   jobType: String
   currentStep: String
@@ -1388,6 +1393,7 @@ type Mutation {
     errorMessage: String
     discoveredClassName: String
     statusMessage: String
+    multiInstanceHint: String
     jobType: String
     currentStep: String
     totalDocuments: Int

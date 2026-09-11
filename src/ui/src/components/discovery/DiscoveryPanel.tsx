@@ -34,6 +34,7 @@ import type { SelectProps } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 
 import { uploadDiscoveryDocument, listDiscoveryJobs, deleteDiscoveryJob, autoDetectSections } from '../../graphql/generated';
+import { parseMultiInstanceHint } from './multiInstanceHint';
 import useSettingsContext from '../../contexts/settings';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { getJsonValidationError } from '../common/utilities';
@@ -68,6 +69,7 @@ interface DiscoveryJob {
   discoveredClassName?: string;
   statusMessage?: string;
   pageRange?: string;
+  multiInstanceHint?: string;
 }
 
 /**
@@ -523,10 +525,12 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   const renderResultCell = (item: DiscoveryJob): React.JSX.Element => {
     // SUCCESS: show discovered class name prominently
     if (item.status === 'COMPLETED' && item.discoveredClassName) {
+      const hint = parseMultiInstanceHint(item.multiInstanceHint);
       return (
-        <Box>
+        <SpaceBetween direction="horizontal" size="xs">
           <Badge color="green">{item.discoveredClassName}</Badge>
-        </Box>
+          {hint && <Badge color="blue">{`${hint.instance_count} records in sample`}</Badge>}
+        </SpaceBetween>
       );
     }
 

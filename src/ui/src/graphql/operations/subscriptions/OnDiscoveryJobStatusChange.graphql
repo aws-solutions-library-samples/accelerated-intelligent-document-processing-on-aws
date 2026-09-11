@@ -5,6 +5,7 @@ subscription OnDiscoveryJobStatusChange($jobId: ID!) {
     errorMessage
     discoveredClassName
     statusMessage
+    multiInstanceHint
     jobType
     currentStep
     totalDocuments
