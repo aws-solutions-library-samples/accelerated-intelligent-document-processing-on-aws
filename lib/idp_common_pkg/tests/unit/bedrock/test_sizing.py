@@ -45,7 +45,9 @@ def test_bbox_geometry_shrinks_list_batch():
     flat per-ROW token figure, Nova Lite derived 58 rows under bbox and 175
     without, and BOTH clamped to the reliability cap of 50 — so the geometry
     effect was invisible at any realistic buffer and the test passed vacuously.
-    Sizing per CELL puts both values below the cap, so the effect is real."""
+    Sizing per CELL puts both values below the cap, so the effect is real (for
+    Nova Lite the ocr_only value is now its 12-row loop ceiling and the bbox value
+    the per-cell math, 6 — still ordered, still both under 50)."""
     ocr = compute_sizing_plan(model_id=NOVA_LITE, geometry_mode="ocr_only")
     bbox = compute_sizing_plan(model_id=NOVA_LITE, geometry_mode="llm_grounded")
     assert bbox.list_batch_size < ocr.list_batch_size

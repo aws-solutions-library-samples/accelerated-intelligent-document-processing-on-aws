@@ -86,8 +86,10 @@ def test_nested_rows_and_scalar_lists_are_counted():
 @pytest.mark.unit
 def test_assess_results_requests_the_budget_not_the_full_cap():
     """The wiring: ``bedrock.invoke_model`` receives ``max_tokens`` = the budget for
-    THIS call's rows, and an unknown model falls back to None (the client then asks
-    for the model default)."""
+    THIS call's rows on a model with a measured loop ceiling (Nova Lite), and None
+    (the model's full cap) for every other model — the escalation rung to Sonnet 5
+    exists for its bigger output and a reasoning model thinks inside max_tokens, so
+    neither is budgeted — and for an unknown model."""
     from idp_common.assessment.service import AssessmentService
     from idp_common.config.merge_utils import merge_config_with_defaults
     from idp_common.config.models import IDPConfig
@@ -161,3 +163,22 @@ def test_assess_results_requests_the_budget_not_the_full_cap():
             model_id_override="vendor.unknown-model-v9",
         )
     assert inv.call_args.kwargs["max_tokens"] is None
+
+    for big in ("us.anthropic.claude-sonnet-5", "us.amazon.nova-pro-v1:0"):
+        with (
+            patch(
+                "idp_common.assessment.service.bedrock.invoke_model", return_value=fake
+            ) as inv,
+            patch(
+                "idp_common.assessment.service.bedrock.extract_text_from_response",
+                return_value="{}",
+            ),
+        ):
+            svc.assess_results(
+                class_label="Stmt",
+                extraction_results=er,
+                document_text="t",
+                page_images=[],
+                model_id_override=big,
+            )
+        assert inv.call_args.kwargs["max_tokens"] is None, big

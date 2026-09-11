@@ -30,9 +30,8 @@ Pure/importable (no boto3/PIL); safe to call from any path.
 
 from __future__ import annotations
 
-import re
-
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -297,11 +296,12 @@ def confidence_rows_per_call(
     """Rows one confidence call can score without truncating.
 
     There is no single correct constant here — the answer is a function of the
-    model's output cap, the geometry mode and the column count. On Nova Lite
-    (10,000 cap) with bounding boxes it is 41 rows for a 1-column list, 13 for 3
-    columns and 5 for 8; on Sonnet 5 (128,000) the reliability ceiling binds first.
-    When ``model_id`` names a family with a measured degeneration ceiling
-    (:func:`model_list_batch_ceiling`), the result never exceeds it.
+    model's output cap, the geometry mode and the column count. On a 10,000-cap
+    model with bounding boxes it is 41 rows for a 1-column list, 13 for 3 columns
+    and 5 for 8; on Sonnet 5 (128,000) the reliability ceiling binds first. When
+    ``model_id`` names a family with a measured degeneration ceiling
+    (:func:`model_list_batch_ceiling`) the result never exceeds it — so Nova Lite
+    itself gives 12, 12 and 5 for those three shapes.
     """
     rows = confidence_rows_for_per_row_tokens(
         output_cap, confidence_per_row_tokens(num_columns, geometry_mode), ceiling

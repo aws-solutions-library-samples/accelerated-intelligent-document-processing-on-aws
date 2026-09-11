@@ -236,10 +236,11 @@ helper makes a single (still reconciled) call — identical to the previous beha
 > times until it hit its 10,000-token cap — ~60 s and 10,000 output tokens per
 > document before the splitter recovered the rows at 12. The token math allows 41
 > rows for that shape; 13 rows looped 1/5, 8 rows 0/8. Greedy decoding on a long
-> run of near-identical objects is the trigger, not input size (no images, no OCR
-> text and no text-confidence block made no difference). Two guards now apply: the
-> family ceiling above, and the per-call output budget (a loop is now cut off at the
-> budget — ~2,000–4,600 tokens — instead of the cap, and recovered the same way).
+> run of near-identical objects is the trigger, not input size (it still looped with
+> no images, with no OCR text, and 2/3 with no text-confidence block). Two guards now apply: the
+> family ceiling above, and — on those two models only — a per-call output budget
+> (a loop is now cut off at the budget, ~2,000–4,600 tokens, instead of the cap, and
+> recovered the same way). Other confidence models keep requesting their maximum.
 
 A configured `list_batch_size` is a *row* count, but the model's real limit is
 its **max output tokens**. When per-row output is large — most notably with
