@@ -476,6 +476,23 @@ Parameters:
       produce alarms you consider normal.
     MinValue: 60
 
+  WorkflowExecutionTimeoutSeconds:
+    Type: Number
+    Default: 21600
+    Description: >-
+      Execution-level timeout of the document processing workflow, in seconds
+      (default 21600 = 6 hours). Any execution still running after this is ended
+      TIMED_OUT: its concurrency slot is released, the document is marked, and
+      WorkflowTimeoutsAlarm fires. Measured on a production stack over 30 days the
+      median execution took under a minute, p90 under five, and the longest
+      successful one 37 minutes; the only executions over an hour were failed
+      retry storms of about five hours, so the default is roughly ten times the
+      longest observed success. Raise it for very large packets (hundreds of
+      pages, long agentic table extraction) if legitimate runs approach it;
+      tripping it discards the execution's completed work, so err generous.
+    MinValue: 300
+    MaxValue: 31536000
+
   BDACallbackTimeoutSeconds:
     Type: Number
     Default: 7200
@@ -1504,6 +1521,7 @@ Metadata:
           - ErrorThreshold
           - ExecutionTimeThresholdMs
           - QueueStalledAgeThresholdSeconds
+          - WorkflowExecutionTimeoutSeconds
           - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
@@ -1556,6 +1574,8 @@ Metadata:
         default: "Bedrock Hub-Account Role Session Name"
       PermissionsBoundaryArn:
         default: "Permissions Boundary ARN"
+      WorkflowExecutionTimeoutSeconds:
+        default: "Workflow Execution Timeout (seconds; default 6 hours)"
       BDACallbackTimeoutSeconds:
         default: "BDA Callback Timeout (seconds)"
       MaxConcurrentWorkflows:
@@ -2749,6 +2769,7 @@ Resources:
         LogLevel: !Ref LogLevel
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
         BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
+        WorkflowExecutionTimeoutSeconds: !Ref WorkflowExecutionTimeoutSeconds
         BedrockGuardrailId: !Ref BedrockGuardrailId
         BedrockGuardrailVersion: !Ref BedrockGuardrailVersion
         BedrockHubRoleArn: !Ref BedrockHubRoleArn
@@ -7497,6 +7518,28 @@ Resources:
       Period: 300
       EvaluationPeriods: 1
       Threshold: !Ref ErrorThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !GetAtt PATTERNSTACK.Outputs.StateMachineArn
+      AlarmActions:
+        - !Ref AlertsTopic
+      TreatMissingData: notBreaching
+
+  # An execution that hits WorkflowExecutionTimeoutSeconds ends TIMED_OUT, which
+  # is a distinct metric from ExecutionsFailed, so WorkflowErrorsAlarm cannot see
+  # it. Any timed-out execution is worth a look: either work hung (the bound did
+  # its job) or a legitimately long packet needs a larger bound.
+  WorkflowTimeoutsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a workflow execution exceeds WorkflowExecutionTimeoutSeconds (${WorkflowExecutionTimeoutSeconds}s) and is ended TIMED_OUT"
+      MetricName: ExecutionsTimedOut
+      Namespace: AWS/States
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       Dimensions:
         - Name: StateMachineArn

@@ -223,6 +223,7 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 |---|---|---|---|
 | `WorkflowErrorsAlarm` | Failed Step Functions executions ≥ threshold in 5 min | `AlertsTopic` | `ErrorThreshold` (default `1`) |
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
+| `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
@@ -364,6 +365,38 @@ enabled, then QueueProcessor invocations, errors, and throttles. If executions
 **are** running and each simply takes longer than 30 minutes, this is a capacity
 signal rather than a fault: raise `MaxConcurrentWorkflows`, or raise the
 threshold to accept it.
+
+### `WorkflowExecutionTimeoutSeconds` — the execution-level bound
+
+The state machine has a top-level `TimeoutSeconds`, sourced from the
+`WorkflowExecutionTimeoutSeconds` parameter (default **21600**, 6 hours). It is the
+backstop for anything the per-state guards do not cover — a `Map` branch that
+stalls rather than errors, a retry policy whose cumulative backoff runs for hours,
+a future state added without its own bound. Without it a Standard workflow's ceiling
+is **one year**, during which the execution emits neither `ExecutionsFailed` (so
+`WorkflowErrorsAlarm` cannot see it) nor `ExecutionTime` (so `SlowExecutionsAlarm`
+cannot either), while holding a workflow-concurrency slot: a stack can lose capacity
+with every alarm reading `OK`.
+
+Tripping the bound ends the execution **`TIMED_OUT`**. That is a distinct Step
+Functions metric, `ExecutionsTimedOut`, which `WorkflowTimeoutsAlarm` watches (any
+occurrence in 5 minutes); the execution-status EventBridge rule already routes
+`TIMED_OUT` to the workflow tracker, which releases the concurrency slot and marks the
+document. A timed-out execution **discards its completed work** (OCR, extraction,
+assessment, summarization already done), so the default errs generous.
+
+**How the default was chosen** (measured 2026-09-11 on a production stack, 30 days,
+2,253 executions): median execution 0.7 minutes, p90 4.6 minutes, longest
+*successful* execution 37 minutes. Every execution longer than an hour — 117 of them —
+was a `FAILED` run of 306–308 minutes: a Lambda `Sandbox.Timedout` at 900 seconds
+retried eight times at 2.5× backoff, the retry-storm incident described under
+`BDACallbackTimeoutSeconds` below. A benchmark stack's longest success was 2.6
+minutes. Six hours is therefore about ten times the longest observed success and
+still short enough to end a hopeless multi-hour retry storm. Not measured:
+multi-hundred-page packets under agentic table extraction, which are the case most
+likely to approach the bound — if your `ExecutionTime` p99 for *successful* runs is
+within a factor of two of the bound, raise it (up to one year, `31536000`, which
+effectively disables it).
 
 ### `BDACallbackTimeoutSeconds` — why a hung BDA job needs its own bound
 
