@@ -1864,6 +1864,8 @@ export type ReviewEffortEstimate = {
   baselineError: Scalars['Float']['output'];
   burndown: Array<ReviewBurndownPoint>;
   calibration: CalibrationHealth;
+  confidenceFingerprint?: Maybe<Scalars['String']['output']>;
+  confidenceFingerprintSource?: Maybe<Scalars['String']['output']>;
   configVersion?: Maybe<Scalars['String']['output']>;
   configVersionSource?: Maybe<Scalars['String']['output']>;
   curveSource?: Maybe<Scalars['String']['output']>;
@@ -2015,6 +2017,7 @@ export type SyncBdaIdpResponse = {
 export type TestRun = {
   accuracyBreakdown?: Maybe<Scalars['AWSJSON']['output']>;
   averageConfidence?: Maybe<Scalars['Float']['output']>;
+  avgWeightedOverallScore?: Maybe<Scalars['Float']['output']>;
   classificationErrors?: Maybe<Scalars['AWSJSON']['output']>;
   completedAt?: Maybe<Scalars['AWSDateTime']['output']>;
   completedFiles?: Maybe<Scalars['Int']['output']>;

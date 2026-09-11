@@ -70,9 +70,11 @@ Two seams remain, both known and both currently harmless:
 * **Rule 2 fails open on shapes it does not recognise**, where rule 1 fails
   closed. ``RetentionInDays: !Ref SomeUndeclaredParam``, ``''``, ``7777`` (not a
   valid CloudWatch value) and a malformed 2-arity ``Fn::If`` all pass here.
-  CloudFormation or cfn-lint rejects each at deploy, so nothing ships — but
-  cfn-lint is not run in CI, and "nothing checked it" is the premise of both
-  #818 and #826. Note also that five templates declare ``LogRetentionDays`` with
+  CloudFormation or cfn-lint rejects each at deploy, so nothing ships. Since
+  ``make cfn-lint`` joined ``lint-cicd`` these are also caught in CI, which
+  weakens but does not remove the concern: cfn-lint validates a *value*, this gate
+  validates the *shape*, and only the latter sees an intrinsic that resolves
+  differently per branch. Note also that five templates declare ``LogRetentionDays`` with
   no ``AllowedValues`` (two of them defaulting to 365), so the ``!Ref`` leg is
   not as constrained as it looks.
 * **``Fn::ForEach`` / ``Transform: AWS::LanguageExtensions`` is invisible.** A
@@ -761,7 +763,17 @@ def _discover_unlisted_templates(root: Path | None = None) -> list[str]:
     """
     root = root or REPO_ROOT
     listed = {root / rel for rel in TEMPLATES}
-    skip_dirs = {".aws-sam", "node_modules", ".venv", "build", "dist", ".git"}
+    # `scratch/` is the repo's gitignored local-work directory; it can hold whole
+    # git worktrees (scratch/wt-*/), which are full copies of every template.
+    skip_dirs = {
+        ".aws-sam",
+        "node_modules",
+        ".venv",
+        "build",
+        "dist",
+        ".git",
+        "scratch",
+    }
     unlisted = []
     for pattern in ("*.yaml", "*.yml"):
         for path in _walk_yaml(pattern, root):

@@ -108,12 +108,13 @@ This guide details the security controls implemented in the GenAI IDP Accelerato
 | **S3 bucket policy** | Only CloudFront OAC can read UI bucket |
 
 > **CSP caveat (UI.T01/UI.T07).** The shipped CSP retains `'unsafe-inline'` and
-> `'unsafe-eval'` in `script-src` (pending Monaco editor work) and allows any
-> `https:` script origin, so it does **not** block injected inline script — treat
-> React escaping as the control of record for XSS. The policy is also gated on
-> `UseCloudFrontHosting`: in `WebUIHosting=APIGateway` mode (required for
-> `--govcloud`) **no CSP is emitted at all**, though the header trio is set
-> per-method on the SPA routes.
+> `'unsafe-eval'` in `script-src` (pending Monaco editor work), so it does **not**
+> block injected inline script — treat React escaping as the control of record for
+> XSS. The blanket `https:` script source is gone as of v0.6.x; `script-src` is now
+> `'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/`, the last entry
+> being the CDN `@monaco-editor/react` loads Monaco from at runtime. The same
+> policy is emitted in `WebUIHosting=APIGateway` mode (§3.2a), where it is a static
+> header on the two SPA methods rather than a CloudFront policy.
 
 ### 3.2a API Gateway Web UI Hosting (`WebUIHosting=APIGateway`)
 
@@ -124,7 +125,7 @@ This guide details the security controls implemented in the GenAI IDP Accelerato
 | **Origin access** | S3-proxy integration assumes a dedicated `WebUIProxyRole` scoped to the Web UI bucket |
 | **Routes** | `GET /` → `index.html`, `GET /{proxy+}` → asset key; both `AuthorizationType: NONE` (SPA shell/assets are not secrets) |
 | **Network posture** | PRIVATE endpoint policy and WAF WebACL still apply to these routes |
-| **Security headers** | `nosniff`, HSTS, `X-Frame-Options: DENY`, `Referrer-Policy` set per-method (**no CSP** — see caveat) |
+| **Security headers** | `Content-Security-Policy`, `nosniff`, HSTS, `X-Frame-Options: DENY`, `Referrer-Policy` set per-method. The CSP mirrors the CloudFront policy from a single `WebUiSecurity` mapping, with `frame-ancestors 'none'` to match the `DENY` above (see caveat in §3.2) |
 | **Missing keys** | S3 4xx mapped to 404; HashRouter means deep links need no server-side rewrite |
 
 ### 3.3 Presigned URLs

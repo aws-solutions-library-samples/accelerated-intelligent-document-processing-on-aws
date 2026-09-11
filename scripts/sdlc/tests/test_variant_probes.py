@@ -1166,3 +1166,137 @@ def test_create_iam_resources_uses_adaptive_retry_clients(cbd, monkeypatch):
         assert cfg is not None, f"{svc} client built without a Config"
         assert cfg.retries["mode"] == "adaptive"
         assert cfg.retries["max_attempts"] >= 5
+
+
+# --------------------------------------------------------------------------- #
+# GLOBAL APIGateway hosting: the CSP the SPA document must actually carry
+#
+# The policy is a static API Gateway response-parameter value whose interior
+# contains single quotes, and no offline check can prove the service emits it
+# intact. This probe is the only place that observes the real header, so its
+# assertions are what stand between a mis-parse and a blank SPA in a
+# GovCloud/private deployment (threat UI.T07).
+# --------------------------------------------------------------------------- #
+
+_APIGW_APIS = [{"name": "idp-s-api", "endpointConfiguration": {"types": ["REGIONAL"]}}]
+_APIGW_OUTPUTS = {
+    "ApplicationWebURL": "https://abc123.execute-api.us-east-1.amazonaws.com/api"
+}
+_GOOD_CSP = (
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; "
+    "object-src 'none'; frame-ancestors 'none';"
+)
+
+
+def _apigw_probe(cbd, monkeypatch, csp_header, http_code="200"):
+    """Run validate_apigw_global_hosting with a canned response-header block."""
+    _fake_boto3(
+        cbd,
+        monkeypatch,
+        {
+            "apigateway": _FakeApiGw(apis=_APIGW_APIS),
+            "cloudformation": _FakeCfn(_APIGW_OUTPUTS),
+        },
+    )
+
+    def fake_run_command(cmd, check=True, timeout=None):
+        # One request carries both the header dump and the status code, so the
+        # probe cannot judge the headers of a response it never status-checked.
+        assert "-D -" in cmd and "http_code" in cmd, cmd
+        # A redirect hop first: only the FINAL block is the rendered document.
+        body = "HTTP/2 301\r\nlocation: /api/\r\ncontent-security-policy: bogus\r\n\r\n"
+        body += "HTTP/2 200\r\ncontent-type: text/html\r\n"
+        if csp_header is not None:
+            body += f"content-security-policy: {csp_header}\r\n"
+        return _Completed(stdout=body + f"\n{http_code}")
+
+    monkeypatch.setattr(cbd, "run_command", fake_run_command)
+    return cbd.validate_apigw_global_hosting("idp-s")
+
+
+def test_apigw_global_hosting_pass_includes_the_csp(cbd, monkeypatch):
+    res = _apigw_probe(cbd, monkeypatch, _GOOD_CSP)
+    assert res["success"] is True
+    assert res["csp"] == _GOOD_CSP
+
+
+def test_apigw_global_hosting_fails_without_a_csp(cbd, monkeypatch):
+    """APIGateway mode shipped with no CSP at all for several releases."""
+    res = _apigw_probe(cbd, monkeypatch, None)
+    assert res["success"] is False
+    assert "no Content-Security-Policy" in res["error"]
+
+
+def test_apigw_global_hosting_fails_when_the_quoted_keywords_are_lost(cbd, monkeypatch):
+    """`script-src self` (unquoted) reads as a HOST named "self" — SPA blanks.
+
+    This is the failure mode of API Gateway mis-parsing the single-quoted static
+    value, and it returns HTTP 200 with a header present, so nothing but this
+    assertion would catch it.
+    """
+    res = _apigw_probe(cbd, monkeypatch, "script-src self unsafe-inline;")
+    assert res["success"] is False
+    assert "lost its quoted keywords" in res["error"]
+
+
+def test_apigw_global_hosting_fails_on_a_blanket_https_script_src(cbd, monkeypatch):
+    """The v0.6.x AppSec finding, asserted against the deployed header."""
+    res = _apigw_probe(
+        cbd, monkeypatch, "script-src 'self' 'unsafe-inline' https:; object-src 'none';"
+    )
+    assert res["success"] is False
+    assert "allows any origin via ['https:']" in res["error"]
+
+
+def test_apigw_global_hosting_accepts_an_https_host_source(cbd, monkeypatch):
+    """A `https://host` source must not trip the blanket-`https:` check."""
+    res = _apigw_probe(
+        cbd, monkeypatch, "script-src 'self' https://cdn.jsdelivr.net/npm/;"
+    )
+    assert res["success"] is True
+
+
+def test_apigw_global_hosting_fails_when_the_outer_quotes_survive(cbd, monkeypatch):
+    """The other half of the mis-parse: `'script-src ...'` with quotes intact.
+
+    Browsers discard an invalid first directive, and this policy has no
+    `default-src` to fall back on, so the header is present and enforces nothing.
+    """
+    res = _apigw_probe(cbd, monkeypatch, f"'{_GOOD_CSP}'")
+    assert res["success"] is False
+    assert "static-value quotes" in res["error"]
+
+
+def test_apigw_global_hosting_accepts_reordered_script_src_sources(cbd, monkeypatch):
+    """CSP source order is not significant, so the probe must not depend on it."""
+    res = _apigw_probe(
+        cbd,
+        monkeypatch,
+        "script-src 'unsafe-inline' https://cdn.jsdelivr.net/npm/ 'self'; "
+        "frame-ancestors 'none'",
+    )
+    assert res["success"] is True
+
+
+def test_apigw_global_hosting_accepts_a_policy_ending_in_a_keyword(cbd, monkeypatch):
+    """A trailing `'none'` is not a leftover static-value quote."""
+    res = _apigw_probe(cbd, monkeypatch, "script-src 'self'; frame-ancestors 'none'")
+    assert res["success"] is True
+
+
+def test_apigw_global_hosting_fails_without_a_script_src(cbd, monkeypatch):
+    res = _apigw_probe(cbd, monkeypatch, "object-src 'none'; base-uri 'none';")
+    assert res["success"] is False
+    assert "no script-src" in res["error"]
+
+
+def test_apigw_global_hosting_reports_a_bad_status_not_a_missing_csp(cbd, monkeypatch):
+    """A throttled/5xx response must be blamed on the status, not the template.
+
+    `DEFAULT_5XX` gateway responses deliberately carry no CSP, so judging headers
+    from a response that was never status-checked would report "no
+    Content-Security-Policy header" for a transient.
+    """
+    res = _apigw_probe(cbd, monkeypatch, None, http_code="503")
+    assert res["success"] is False
+    assert "expected 200" in res["error"]

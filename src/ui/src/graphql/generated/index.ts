@@ -339,6 +339,8 @@ export const estimateReviewEffort = /* GraphQL */ `
       targetAccuracy
       configVersion
       configVersionSource
+      confidenceFingerprint
+      confidenceFingerprintSource
       curveSource
       docsToReview
       docsToReviewLow

@@ -9,6 +9,7 @@ import pytest
 from idp_common.bedrock.prompt_cache import (
     cache_state,
     describe_cache_state,
+    model_caches_implicitly,
     model_supports_cache_point,
     summarize_cache_usage,
 )
@@ -161,6 +162,99 @@ def test_zero_zero_with_no_cache_point_sent_is_not_called_inert():
         summarize_cache_usage({_key(): units}, cache_point_sent=False)["state"]
         == "write-only"
     )
+
+
+ASTRA = "us.openai.gpt-6-astra"
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        ASTRA,
+        "global.openai.gpt-6-astra",
+        "openai.gpt-6-astra",
+        "openai.gpt-5.4",
+        "openai.gpt-5.5",
+        "arn:aws:bedrock:us-west-2:1:inference-profile/us.openai.gpt-6-astra",
+    ],
+)
+def test_implicit_cache_models_are_recognized(model_id):
+    """These cache WITHOUT a Converse cachePoint, so `no cache point sent` must not
+    be reported as `this model cannot cache`."""
+    assert model_caches_implicitly(model_id) is True
+    # ...and none of them is sent a cachePoint block.
+    if "inference-profile" not in model_id:
+        assert model_supports_cache_point(model_id) is False
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        SONNET,
+        "us.amazon.nova-lite-v1:0",
+        # Grok's model card advertises implicit caching but it was never observed
+        # to engage, so no caching benefit is claimed for it.
+        "us.xai.grok-4.6",
+        # GPT-5.6 caches only through an EXPLICIT breakpoint, which the client
+        # derives from a <<CACHEPOINT>> marker — so "no marker" really is "no
+        # caching" and the remedy is to add one. Calling it implicit would give
+        # the user the wrong advice.
+        "openai.gpt-5.6-sol",
+        "us.openai.gpt-5.6-terra",
+        None,
+        "",
+    ],
+)
+def test_other_models_do_not_claim_implicit_caching(model_id):
+    assert model_caches_implicitly(model_id) is False
+
+
+def test_no_cache_point_on_an_implicit_model_does_not_claim_it_cannot_cache():
+    """The regression this guards: the message said "the model does not support
+    prompt caching", which is FALSE for Astra (it caches implicitly and rejects an
+    explicit cache point) and for every GPT-5.x model."""
+    units = {"inputTokens": 949, "cacheReadInputTokens": 0, "cacheWriteInputTokens": 0}
+    s = summarize_cache_usage({_key(model=ASTRA): units}, cache_point_sent=False)
+    assert s["state"] == "no-cache-point"
+    text = describe_cache_state(s)
+    assert "does not support prompt caching" not in text
+    assert "caches implicitly" in text
+
+    # A Claude model with no marker keeps the original meaning.
+    claude = summarize_cache_usage({_key(): units}, cache_point_sent=False)
+    claude_text = describe_cache_state(claude)
+    assert "no cache point reached the model" in claude_text
+    assert "caches implicitly" not in claude_text
+    assert "does not support prompt caching" not in claude_text
+
+
+def test_measured_reads_still_win_for_an_implicit_model():
+    """Astra's whole point: once a prefix repeats, reads land and the state must be
+    plain `caching` — verified live at inputTokens=2 / cacheRead=2707."""
+    s = summarize_cache_usage(
+        {
+            _key(model=ASTRA): {
+                "inputTokens": 2,
+                "cacheReadInputTokens": 2707,
+                "cacheWriteInputTokens": 0,
+            }
+        },
+        cache_point_sent=False,
+    )
+    assert s["state"] == "caching"
+    assert "caching" in describe_cache_state(s)
+
+
+def test_mixed_models_fall_back_to_the_generic_wording():
+    """One implicit + one cachePoint model in the same phase: the implicit-only
+    sentence would be wrong, so the generic (still accurate) wording is used."""
+    units = {"inputTokens": 100, "cacheReadInputTokens": 0, "cacheWriteInputTokens": 0}
+    s = summarize_cache_usage(
+        {_key(model=ASTRA): units, _key(model=SONNET): dict(units)},
+        cache_point_sent=False,
+    )
+    assert s["state"] == "no-cache-point"
+    assert "caches implicitly" not in describe_cache_state(s)
 
 
 def test_model_support_mirrors_the_client_list_and_leaves_profiles_unknown():

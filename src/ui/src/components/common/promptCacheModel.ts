@@ -45,6 +45,22 @@ export function minCacheablePrefixTokens(modelId?: string | null): number | null
   return hit ? hit[1] : null;
 }
 
+// Models that cache WITHOUT a Converse cachePoint block, so "no cache point was
+// sent" says nothing about whether they cache. Mirrors
+// _IMPLICIT_CACHE_BASE_NAMES in idp_common/bedrock/prompt_cache.py:
+//   - openai.gpt-6-astra: Converse, implicit (an explicit cachePoint is rejected)
+//   - openai.gpt-5.4/5.5: bedrock-mantle, automatic over ~1,024 tokens
+// Deliberately absent: openai.gpt-5.6 (Sol/Terra/Luna), whose caching is EXPLICIT —
+// the client only sends a breakpoint when a <<CACHEPOINT>> marker is present, so
+// for it "no marker" really is "no caching" and the remedy is to add one; and
+// xAI Grok, whose advertised implicit caching was never observed to engage.
+const IMPLICIT_CACHE_PATTERNS: RegExp[] = [/openai\.gpt-6-astra/, /openai\.gpt-5\.4/, /openai\.gpt-5\.5/];
+
+export function modelCachesImplicitly(modelId?: string | null): boolean {
+  if (!modelId) return false;
+  return IMPLICIT_CACHE_PATTERNS.some((re) => re.test(modelId));
+}
+
 export function cacheState(read: number, write: number, hasCacheUnits: boolean, disabled = false): PromptCacheState {
   if (read > 0) return 'caching';
   if (write > 0) return 'write-only';
@@ -150,12 +166,23 @@ export function describePromptCache(
     }
     case 'disabled':
       return { indicator: 'stopped', headline: 'Prompt cache: off by configuration (extraction.prompt_cache: off)', detail: counts };
-    case 'no-cache-point':
+    case 'no-cache-point': {
+      // "We sent no cachePoint" is NOT "this model cannot cache" — that is false
+      // for the implicit-caching models (see modelCachesImplicitly).
+      const ids = summary.model_ids ?? [];
+      if (ids.length > 0 && ids.every((m) => modelCachesImplicitly(m))) {
+        return {
+          indicator: 'info',
+          headline: 'Prompt cache: implicit caching — no cache point needed',
+          detail: `${counts}. This model caches implicitly, so no <<CACHEPOINT>> marker is required; a prefix seen again within the cache TTL is reported as caching once reads land.`,
+        };
+      }
       return {
         indicator: 'info',
         headline: 'Prompt cache: no cache point reached the model',
-        detail: `${counts}. The prompt has no <<CACHEPOINT>> marker or the model does not support prompt caching.`,
+        detail: `${counts}. The prompt has no <<CACHEPOINT>> marker, or this model is not one the client sends cachePoint blocks to.`,
       };
+    }
     default:
       return { indicator: 'info', headline: 'Prompt cache: no cache usage reported by this model or backend', detail: counts };
   }

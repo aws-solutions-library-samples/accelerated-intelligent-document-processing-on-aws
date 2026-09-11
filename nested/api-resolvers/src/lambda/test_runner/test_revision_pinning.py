@@ -14,7 +14,9 @@ The properties under test:
 - an explicitly requested revision wins;
 - the revision is pinned against retention, because a comparison is only
   interpretable while both runs' configurations still exist;
-- a profile with no history still runs, recording no revision.
+- a profile with no history still runs, recording no revision;
+- a run naming a profile that does not exist, or a revision whose body cannot
+  be read, is refused at submit time rather than queued to fail per document.
 """
 
 import importlib.util
@@ -50,6 +52,7 @@ def index():
     module._active_config_version = MagicMock(return_value="lending")
     module._capture_config = MagicMock(return_value={"Config": {"notes": "x"}})
     module._published_revision = MagicMock(return_value=7)
+    module._require_profile = MagicMock()
     module._store_test_run_metadata = MagicMock()
     return module
 
@@ -178,11 +181,12 @@ class TestRetentionPin:
         # And the values survive, as Decimal.
         assert str(captured["Config"]["extraction"]["temperature"]) == "0.0"
 
-    def test_an_unavailable_revision_falls_back_to_the_profile(self, monkeypatch):
+    def test_an_unavailable_revision_fails_the_run_at_submit(self, monkeypatch):
         """
-        Capture is for the run RECORD, not for processing: a pruned revision
-        should still leave a usable record rather than failing the run. (The
-        pipeline itself refuses to process a pinned revision it cannot read.)
+        A revision that cannot be read used to be a warning plus a fallback to
+        the profile head for the RECORD — while the revision was still stamped
+        onto every document, which the pipeline then refused to process. One
+        error at submit beats N failed documents minutes later (#878).
         """
         spec = importlib.util.spec_from_file_location(
             "test_runner_index_fallback", Path(__file__).with_name("index.py")
@@ -202,9 +206,73 @@ class TestRetentionPin:
         table.get_item.return_value = {"Item": {"Configuration": "Config#lending"}}
         module.dynamodb = MagicMock()
         module.dynamodb.Table.return_value = table
-        module._decompress_config_item = MagicMock(return_value={"notes": "head"})
 
-        captured = module._capture_config("config-table", "lending", 99)
+        with pytest.raises(ValueError, match="r99 .* not available"):
+            module._capture_config("config-table", "lending", 99)
 
-        assert captured["Config"] == {"notes": "head"}
         manager.mark_revision_pinned.assert_not_called()
+
+    def test_a_revision_that_cannot_be_read_fails_with_the_cause(self, monkeypatch):
+        """
+        The store raises when S3 answers 403 for a missing body (no ListBucket on
+        the bucket). That must surface as the run's error, not as a warning.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "test_runner_index_unreadable", Path(__file__).with_name("index.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["test_runner_index_unreadable"] = module
+        spec.loader.exec_module(module)
+
+        manager = MagicMock()
+        manager.get_revision.side_effect = PermissionError("AccessDenied on GetObject")
+        monkeypatch.setitem(
+            sys.modules,
+            "idp_common.config.configuration_manager",
+            MagicMock(ConfigurationManager=MagicMock(return_value=manager)),
+        )
+        module.dynamodb = MagicMock()
+
+        with pytest.raises(ValueError, match="Could not read revision r5 .*AccessDenied"):
+            module._capture_config("config-table", "lending", 5)
+
+
+@pytest.mark.unit
+class TestMissingProfile:
+    def test_a_missing_profile_is_refused_before_anything_is_written(self, index):
+        index._require_profile.side_effect = ValueError(
+            "Configuration profile 'rk-adv-off' not found"
+        )
+
+        with pytest.raises(ValueError, match="rk-adv-off"):
+            index.handler(
+                _event({"testSetId": "w2-set", "configVersion": "rk-adv-off"}), None
+            )
+
+        index._store_test_run_metadata.assert_not_called()
+        index.sqs.send_message.assert_not_called()
+
+    def test_the_active_profile_is_not_re_checked(self, index):
+        """Only a profile the caller NAMED is checked; the active one was just
+        resolved from the table and exists by construction."""
+        index.handler(_event({"testSetId": "w2-set"}), None)
+        index._require_profile.assert_not_called()
+
+    def test_require_profile_reads_the_head_item(self):
+        spec = importlib.util.spec_from_file_location(
+            "test_runner_index_head", Path(__file__).with_name("index.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["test_runner_index_head"] = module
+        spec.loader.exec_module(module)
+        table = MagicMock()
+        module.dynamodb = MagicMock()
+        module.dynamodb.Table.return_value = table
+
+        table.get_item.return_value = {}
+        with pytest.raises(ValueError, match="'ghost' not found"):
+            module._require_profile("config", "ghost")
+        assert table.get_item.call_args.kwargs["Key"] == {"Configuration": "Config#ghost"}
+
+        table.get_item.return_value = {"Item": {"Configuration": "Config#lending"}}
+        module._require_profile("config", "lending")  # does not raise

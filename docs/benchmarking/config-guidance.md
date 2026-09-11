@@ -736,19 +736,17 @@ at n=6**. Per-document token counts cannot measure it either (83k/54k/115k *with
 arm), because agentic turn count is non-deterministic; the per-*request* saving from static
 analysis is the only defensible figure.
 
-⚠️ **Correction.** This entry previously told you to "treat the benefit as context-window
-headroom, not dollars". That was wrong, and it is worth stating plainly because #710 and the
-knob's own documentation made the same claim. Shard planning budgets against **OCR page text
-only** (`sharding.plan_shards`), and the budget is `max_input × (1 - context_buffer)` minus
-an output reserve and an image reserve (`sizing.compute_sizing_plan`) — **prompt overhead is
-never subtracted**. It is absorbed by the blanket `context_buffer` (default 0.30), so the
-reclaimed tokens come off a reserve that is already ~60,000 tokens wide on a 200K-window
-model and were already unused; `max_pages_per_shard` (default 5) closes shards on page count
-regardless. There is therefore **no shard-count mechanism** behind this knob today, which
-explains why no arm of any measurement here found a benefit. Making the budget subtract
-measured prompt overhead is
-[#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775);
-until that lands, treat both #710 knobs as neutral instruments rather than optimisations.
+⚠️ **Correction, then a change.** This entry previously told you to "treat the benefit as
+context-window headroom, not dollars". At the time that was wrong: shard planning budgeted
+against **OCR page text only** and prompt overhead was never subtracted, so the reclaimed
+tokens came off a blanket `context_buffer` reserve that was already unused — which is why no
+arm of any measurement here found a benefit. #775 has since made the budget subtract the
+**measured** prompt overhead (system prompt, rendered schema, few-shot text, tool schema,
+restatement), so both #710 knobs now genuinely free shard budget. Whether that moves a
+document's shard count still depends on it sitting near a boundary, and `max_pages_per_shard`
+(default 5) closes shards on page count regardless; the shard-boundary benchmark the issue
+asks for has not been re-run since. Until it is, treat the knobs as real headroom with an
+unmeasured shard-count effect, not as a cost optimisation.
 
 ### `extraction.forced_tool.enabled` (#744) — re-measured on real corpora; the earlier "buys nothing" verdict does not hold
 

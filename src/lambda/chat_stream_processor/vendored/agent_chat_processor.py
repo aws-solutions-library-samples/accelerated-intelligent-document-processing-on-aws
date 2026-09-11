@@ -890,7 +890,10 @@ def handler(event, context):
         # Extract parameters from event
         prompt = event.get("prompt", "")
         session_id = event.get("sessionId")
-        enable_code_intelligence = event.get("enableCodeIntelligence", True)
+        # Default off: the Code Intelligence Agent sends repository context
+        # to a third-party MCP service, so callers must opt in explicitly.
+        # `is True` so a non-boolean in the invoke payload cannot opt in.
+        enable_code_intelligence = event.get("enableCodeIntelligence") is True
         method = event.get("method", "chat")
         caller_sub = event.get("callerSub", "")
         # False when invoked by the agent_chat resolver (non-streaming path),
