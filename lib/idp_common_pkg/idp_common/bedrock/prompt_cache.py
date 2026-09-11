@@ -8,6 +8,20 @@ model's **minimum cacheable prefix**. Below it Bedrock returns ``cacheWrite = 0`
 ``cacheRead = 0``, raises nothing, and bills the prefix at full input price on every
 request. The minimum is model-dependent and NOT monotonic across generations, so
 "newer is safer" is false; measured in ``docs/benchmarking/prompt-caching.md``.
+
+Scope and known limits of the estimate here:
+
+- It models the **Simple-mode extraction** prefix only. Classification, assessment
+  (confidence) and rule-validation prompts also carry markers and are not checked.
+- ``chars/4`` was calibrated against Claude Sonnet 4.6's tokenizer (within ~10% on
+  the 32 surveyed classes). Opus 4.7 introduced a new tokenizer, shared by Opus 4.8,
+  Opus 5 and Fable 5, that yields roughly 1.0-1.35x as many tokens; there the estimate
+  runs LOW, which errs toward warning (the conservative direction).
+- Two prefix contributors are not counted, both defaulting off and both pushing the
+  real prefix UP (again conservative): the forced-tool ``toolSpec`` and the
+  multi-instance detection probe property.
+- An application inference profile ARN is not resolved to its base model here, so it
+  yields ``None`` and no warning, although the client does cache for it.
 """
 
 from __future__ import annotations
@@ -30,16 +44,18 @@ _MIN_PREFIX_TIERS = (
     # Sonnet 5, Sonnet 4.6, Opus 4.8, Sonnet 4.5, Sonnet 4, Opus 4.1, Opus 4, 3.7 Sonnet
     (
         re.compile(
-            r"claude-(sonnet-5|sonnet-4|opus-4-8|opus-4-1|opus-4-2|opus-4|3-7-sonnet)"
+            r"claude-(sonnet-5|sonnet-4|opus-4-8|opus-4-1|opus-4|3-7-sonnet)"
         ),
         1024,
     ),
 )
 
-# chars/4 was within ~2% of Bedrock's own count on real prompt text
-# (benchmarks/harness/cache_prefix_survey.py); rounded up so a borderline class is
-# reported as close rather than as safe.
+# chars/4 against Bedrock's own count (Sonnet 4.6 tokenizer) on the 32 surveyed
+# classes: -8.8% to +5.0% (benchmarks/results/v0.6.7/prompt-cache/). Callers treat
+# the estimate as +-10% when deciding whether a class is at the boundary.
 _CHARS_PER_TOKEN = 4.0
+# Relative error band of the estimate; a class inside it is "may not cache".
+ESTIMATE_TOLERANCE = 0.10
 
 
 def min_cacheable_prefix_tokens(model_id: Optional[str]) -> Optional[int]:

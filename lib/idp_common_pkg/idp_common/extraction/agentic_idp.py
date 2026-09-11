@@ -2058,7 +2058,7 @@ async def structured_output_async(
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
         reasoning_effort=config.extraction.reasoning_effort,
-        prompt_cache=getattr(config.extraction, "prompt_cache", "auto"),
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Prepare prompt content
@@ -2067,7 +2067,7 @@ async def structured_output_async(
         page_images=page_images,
         existing_data=existing_data,
         model_id=model_id,
-        prompt_cache=getattr(config.extraction, "prompt_cache", "auto"),
+        prompt_cache=config.extraction.prompt_cache,
     )
 
     # Track token usage

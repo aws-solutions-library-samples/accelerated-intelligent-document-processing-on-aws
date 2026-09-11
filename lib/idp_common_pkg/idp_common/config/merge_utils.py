@@ -1377,6 +1377,19 @@ def _validate_simple_integrated_lists(
         )
 
 
+def _prompt_cache_is_off(value: Any) -> bool:
+    """``extraction.prompt_cache`` as stored: the string, or the YAML/DynamoDB boolean."""
+    if value is False:
+        return True
+    return isinstance(value, str) and value.strip().lower() in (
+        "off",
+        "false",
+        "no",
+        "disabled",
+        "0",
+    )
+
+
 def _validate_prompt_cache_prefix(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -1388,40 +1401,72 @@ def _validate_prompt_cache_prefix(
     at full input price on every request. Measured across the shipped presets, 25%
     of classes never cache on the Sonnet tier (1,024-token minimum) and none cache
     on Haiku 4.5 (4,096). Nothing else in the product reports it, so say so here,
-    naming both numbers. The estimate is chars/4 (within ~2% on real prompt text);
-    a class within a few percent of the boundary is reported as close.
+    naming both numbers.
+
+    The estimate is chars/4 with a measured error of about +-10%, so a class whose
+    estimate lands inside that band of the minimum is reported as "may not cache"
+    rather than declared safe. The prompt estimated is the one the service would
+    send: the 1S-TopK confidence prompt under Simple + integrated confidence, else
+    ``task_prompt``; a class with its own ``x-aws-idp-extraction-task-prompt`` is
+    estimated with that. Not counted (both default off, both push the real prefix
+    UP): the forced-tool toolSpec and the multi-instance probe. Classification,
+    assessment and rule-validation prompts are out of scope.
     """
     from idp_common.bedrock.prompt_cache import (
         CACHEPOINT_MARKER,
+        ESTIMATE_TOLERANCE,
         estimate_prefix_tokens,
         min_cacheable_prefix_tokens,
+    )
+    from idp_common.config.flags import flag_is_true
+    from idp_common.config.schema_constants import (
+        ID_FIELD,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
     )
 
     extraction = merged_config.get("extraction", {})
     if not isinstance(extraction, dict) or not _extraction_is_simple(extraction):
         return  # the Advanced path's prefix is the agentic system prompt, not this
-    if extraction.get("prompt_cache") == "off":
-        return
-    task_prompt = extraction.get("task_prompt") or ""
-    if CACHEPOINT_MARKER not in task_prompt:
+    if _prompt_cache_is_off(extraction.get("prompt_cache")):
         return
     minimum = min_cacheable_prefix_tokens(extraction.get("model"))
     if minimum is None:
         return  # unknown model or no published minimum (Nova): nothing to warn about
+
+    # The template the service actually sends (prompt_assembly.select_extraction_task_prompt).
+    confidence = extraction.get("confidence") or {}
+    integrated = (
+        isinstance(confidence, dict)
+        and confidence.get("mode") == "integrated"
+        and flag_is_true(confidence.get("enabled"), default=True)
+    )
+    default_prompt = (
+        (
+            extraction.get("task_prompt_extraction_with_confidence_topk")
+            or extraction.get("task_prompt")
+        )
+        if integrated
+        else extraction.get("task_prompt")
+    ) or ""
+
     system_prompt = extraction.get("system_prompt") or ""
     never: List[str] = []
-    close: List[str] = []
+    near: List[str] = []
     for cls in merged_config.get("classes") or []:
         if not isinstance(cls, dict):
             continue
-        cid = str(cls.get("$id") or cls.get("name") or "?")
+        cid = str(cls.get(ID_FIELD) or cls.get(X_AWS_IDP_DOCUMENT_TYPE) or "?")
+        task_prompt = cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT) or default_prompt
+        if CACHEPOINT_MARKER not in task_prompt:
+            continue  # nothing would cache for this class either way
         est = estimate_prefix_tokens(system_prompt, task_prompt, cls, cid)
         if est is None:
             continue
         if est < minimum:
             never.append(f"{cid} (~{est} tokens)")
-        elif est < minimum * 1.05:
-            close.append(f"{cid} (~{est} tokens)")
+        elif est < minimum * (1 + ESTIMATE_TOLERANCE):
+            near.append(f"{cid} (~{est} tokens)")
     model = extraction.get("model")
     if never:
         result["warnings"].append(
@@ -1433,9 +1478,12 @@ def _validate_prompt_cache_prefix(
             "Fable 5), or set extraction.prompt_cache: off to stop paying the "
             "1.25x cache-write premium for nothing."
         )
-    if close:
+    if near:
+        pct = int(ESTIMATE_TOLERANCE * 100)
         result["warnings"].append(
-            f"{len(close)} class(es) sit within 5% of {model}'s {minimum}-token "
-            f"minimum cacheable prefix: {', '.join(close)}. Removing a field or "
-            "shortening a description can silently stop them caching."
+            f"{len(near)} class(es) MAY not cache on {model}: their estimated prompt "
+            f"prefix is within {pct}% of the {minimum}-token minimum, and the estimate "
+            f"itself is only accurate to about {pct}%: {', '.join(near)}. Check "
+            "cacheReadInputTokens on a processed document, or add field descriptions "
+            "to move them clear of the boundary."
         )

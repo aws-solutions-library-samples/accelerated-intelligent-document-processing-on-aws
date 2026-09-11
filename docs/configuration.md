@@ -755,12 +755,24 @@ tier and **none** do on Haiku 4.5 — someone choosing Haiku to save money on ex
 gets no caching at all and, until now, no indication of it.
 
 `idp-cli config validate` (and the SDK validate operation) now **warns per class**
-when a Simple-mode prompt prefix — system prompt plus the task prompt up to the
-marker, with the class schema substituted — is under the configured extraction
-model's minimum, naming both numbers (estimate is chars/4, within ~10% of Bedrock's
-own count on the shipped presets; a class within 5% of the boundary is reported as
-close). Remedies: add real field descriptions to the class (which also helps
+when a Simple-mode extraction prompt prefix — system prompt plus the task prompt up
+to the marker, with the class schema substituted — is under the configured extraction
+model's minimum, naming both numbers. The estimate is chars/4, accurate to about
+±10% against Bedrock's own count on the surveyed classes, so a class whose estimate
+lands within 10% of the minimum is reported as "may not cache" rather than declared
+safe. Remedies: add real field descriptions to the class (which also helps
 extraction), pick a model with a lower minimum, or turn caching off (below).
+
+What the warning does **not** cover, deliberately: the classification, assessment
+(confidence) and rule-validation prompts, which also carry `<<CACHEPOINT>>` markers
+and keep them regardless of the setting below; the Advanced (agentic) extraction
+path, whose prefix is the agent's own system prompt; the forced-tool `toolSpec` and
+the multi-instance detection probe (both off by default, both make the real prefix
+*longer*, so the estimate errs toward warning); application inference-profile ARNs
+(not resolved to a base model, so no warning); and the newer tokenizer introduced
+with Claude Opus 4.7 and shared by Opus 4.8, Opus 5 and Fable 5, which produces up to
+about 1.35× the tokens the estimate assumes — again in the direction of a spurious
+warning, never a missed one.
 
 #### Turning caching off (`extraction.prompt_cache: off`)
 
@@ -775,7 +787,11 @@ extraction:
 ```
 
 `off` sends no cache points on either extraction path (Simple and Advanced) and
-suppresses the validation warning above. Per-class cache read/write token counts
+suppresses the validation warning above. The setting is also in the Web UI under
+**Configuration → Extraction → Prompt caching**. A bare `off` in YAML parses as the
+boolean `false`; both spellings (and `"off"` quoted) are accepted. It applies to
+**extraction only**: classification, assessment and rule-validation prompts keep
+their cache points. Per-class cache read/write token counts
 are already in the metering data and priced; a per-class cache-efficiency view in the
 Processing Report remains open in [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780).
 

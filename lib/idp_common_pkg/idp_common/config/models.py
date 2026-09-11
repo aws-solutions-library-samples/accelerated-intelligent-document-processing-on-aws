@@ -1053,6 +1053,28 @@ class ExtractionConfig(BaseModel):
         default=None,
         description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",
     )
+
+    @field_validator("prompt_cache", mode="before")
+    @classmethod
+    def _coerce_prompt_cache(cls, v: Any) -> Any:
+        """Accept the YAML booleans that ``off``/``on`` parse to.
+
+        PyYAML (YAML 1.1) reads a bare ``prompt_cache: off`` as ``False`` and
+        ``on`` as ``True``; the DynamoDB layer keeps booleans as booleans. Without
+        this the documented value failed validation everywhere it is loaded —
+        ``idp-cli config validate``, the extraction Lambda and the deploy-time
+        UpdateDefaultConfig custom resource. Unknown strings still fail on the
+        Literal.
+        """
+        if isinstance(v, bool):
+            return "off" if v is False else "auto"
+        if isinstance(v, str):
+            lowered = v.strip().lower()
+            if lowered in ("off", "false", "no", "disabled", "0"):
+                return "off"
+            if lowered in ("auto", "on", "true", "yes", "enabled", "1"):
+                return "auto"
+        return v
     system_prompt: str = Field(
         default="",
         description="System prompt for extraction (populated from system defaults)",

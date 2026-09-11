@@ -94,12 +94,46 @@ def test_no_warning_for_models_without_a_published_minimum():
     assert _warnings(_merged("LambdaHook", [THIN])) == []
 
 
-def test_borderline_class_is_reported_as_close_not_never():
-    # ~1,040 tokens of prompt: over 1,024 but inside the 5% band.
+def test_borderline_class_is_reported_as_may_not_cache_not_never():
+    # ~1,040 tokens of prompt: over 1,024 but inside the estimate's 10% band.
     near = {
         "$id": "Near",
         "type": "object",
         "properties": {"F": {"type": "string", "description": "x" * 4000}},
     }
     w = _warnings(_merged("us.anthropic.claude-sonnet-5", [near]))
-    assert len(w) == 1 and "within 5%" in w[0] and "Near (~" in w[0]
+    assert len(w) == 1 and "MAY not cache" in w[0] and "within 10%" in w[0]
+    assert "Near (~" in w[0]
+
+
+def test_yaml_boolean_false_means_off():
+    cfg = _merged("us.anthropic.claude-sonnet-5", [THIN])
+    cfg["extraction"]["prompt_cache"] = False  # what `prompt_cache: off` parses to
+    assert _warnings(cfg) == []
+
+
+def test_integrated_confidence_estimates_the_topk_prompt_that_is_actually_sent():
+    """Under Simple + integrated confidence the service sends the 1S-TopK prompt,
+    not task_prompt. A long TopK prompt lifts the thin class over the minimum."""
+    cfg = _merged("us.anthropic.claude-sonnet-5", [THIN])
+    cfg["extraction"]["confidence"] = {"mode": "integrated", "enabled": True}
+    cfg["extraction"]["task_prompt_extraction_with_confidence_topk"] = (
+        "Rank guesses. " * 400
+        + "{ATTRIBUTE_NAMES_AND_DESCRIPTIONS} <<CACHEPOINT>> {DOCUMENT_TEXT}"
+    )
+    assert _warnings(cfg) == []
+    cfg["extraction"]["confidence"] = {"mode": "separate", "enabled": True}
+    assert len(_warnings(cfg)) == 1  # back on the short task_prompt
+
+
+def test_a_per_class_prompt_override_is_what_gets_estimated():
+    long_override = (
+        "Own prompt. " * 500
+        + "{ATTRIBUTE_NAMES_AND_DESCRIPTIONS} <<CACHEPOINT>> {DOCUMENT_TEXT}"
+    )
+    cls = dict(THIN, **{"x-aws-idp-extraction-task-prompt": long_override})
+    assert _warnings(_merged("us.anthropic.claude-sonnet-5", [cls])) == []
+    no_marker = dict(
+        THIN, **{"x-aws-idp-extraction-task-prompt": "plain {DOCUMENT_TEXT}"}
+    )
+    assert _warnings(_merged("us.anthropic.claude-sonnet-5", [no_marker])) == []

@@ -129,13 +129,26 @@ def _preset_estimates(preset: str):
     return out
 
 
-@pytest.mark.parametrize(
-    "preset", ["lending-package-sample", "ocr-benchmark", "bank-statement-sample"]
-)
+SURVEYED_PRESETS = [
+    "lending-package-sample",
+    "ocr-benchmark",
+    "bank-statement-sample",
+    "realkie-fcc-verified",
+    "rvl-cdip",
+]
+
+# MAINTENANCE NOTE: these tests compare a LIVE estimate from the current
+# config_library presets and the current base-extraction.yaml prompts against a
+# survey frozen at v0.6.7. A failure here after editing a preset's descriptions or
+# the shared extraction prompt means "re-run benchmarks/harness/cache_prefix_survey.py
+# and refresh prefix_survey_32_classes.json", not that the estimator broke.
+
+
+@pytest.mark.parametrize("preset", SURVEYED_PRESETS)
 def test_estimate_is_within_ten_percent_of_bedrocks_count(preset):
-    """chars/4 against Bedrock's own token count for every surveyed class. The
-    survey measured 16 classes across these presets; the estimate must land within
-    10% on all of them, or the warning would name the wrong classes."""
+    """chars/4 against Bedrock's own token count for every surveyed class (32 across
+    five presets); the estimate must land within 10% on all of them, or the warning
+    would name the wrong classes."""
     measured = _survey_rows()
     estimates = _preset_estimates(preset)
     checked = 0
@@ -151,18 +164,33 @@ def test_estimate_is_within_ten_percent_of_bedrocks_count(preset):
     assert checked >= 1, f"no surveyed classes matched preset {preset}"
 
 
-def test_estimate_agrees_with_the_survey_on_which_classes_never_cache_at_the_sonnet_tier():
-    """The three classes the survey found under the 1,024-token Sonnet minimum
-    (GLOSSARY 949, SHIFT_SCHEDULE 1000, Bank-checks 941) must be the ones the
-    estimate flags; nothing above the minimum may be flagged."""
+def test_every_class_the_survey_found_under_the_sonnet_minimum_gets_flagged():
+    """The validator flags a class as "never" below the minimum and as "may not
+    cache" within the estimate's 10% band above it. Every surveyed class that is
+    really under the 1,024 minimum (GLOSSARY 949, SHIFT_SCHEDULE 1000, Bank-checks
+    941, rvl-cdip specification 1021, news_article 967) must land in one of those
+    two buckets, and every class measured clear of the band must be flagged by
+    neither — across all five surveyed presets, not a convenient subset."""
+    from idp_common.bedrock.prompt_cache import ESTIMATE_TOLERANCE
+
     measured = _survey_rows()
     minimum = min_cacheable_prefix_tokens("us.anthropic.claude-sonnet-4-6")
     assert minimum == 1024
-    for preset in ("lending-package-sample", "ocr-benchmark", "bank-statement-sample"):
+    band = minimum * (1 + ESTIMATE_TOLERANCE)
+    flagged_under = 0
+    for preset in SURVEYED_PRESETS:
         estimates = _preset_estimates(preset)
         for (p, cid), tokens in measured.items():
             if p != preset or cid not in estimates:
                 continue
-            assert (estimates[cid] < minimum) == (tokens < minimum), (
-                f"{preset}:{cid} est={estimates[cid]} measured={tokens} minimum={minimum}"
-            )
+            est = estimates[cid]
+            if tokens < minimum:
+                assert est < band, (
+                    f"{preset}:{cid} under the minimum ({tokens}) but estimated {est}"
+                )
+                flagged_under += 1
+            elif tokens >= band:
+                assert est >= minimum, (
+                    f"{preset}:{cid} clear of the band ({tokens}) but estimated {est}"
+                )
+    assert flagged_under >= 5

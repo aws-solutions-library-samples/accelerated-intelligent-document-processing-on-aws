@@ -580,8 +580,13 @@ Each model has a **minimum cacheable prefix** (512 tokens on Opus 5 / Fable 5, 1
 on Sonnet 5 / 4.6 / Opus 4.8, 2,048 on Opus 4.7, 4,096 on Opus 4.6 / 4.5 / Haiku 4.5;
 `idp_common.bedrock.prompt_cache.min_cacheable_prefix_tokens`). Below it a cache
 point silently does nothing. `merge_utils._validate_prompt_cache_prefix` estimates
-each class's Simple-mode prefix (`estimate_prefix_tokens`, chars/4, within ~10% of
-Bedrock's count on the shipped presets) and warns per class, naming both numbers.
+each class's Simple-mode prefix (`estimate_prefix_tokens`, chars/4, about ±10% against
+Bedrock's count; a class within that band of the minimum is reported as "may not
+cache") using the prompt the service would send (the 1S-TopK prompt under integrated
+confidence, a per-class override when present) and warns per class, naming both
+numbers. Extraction only — classification, assessment and rule-validation prompts are
+not checked and keep their cache points when the knob is `off`. YAML's bare `off`
+parses as `false`; the config model accepts both.
 See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/prompt-caching.md` for the measurements.
 
 ## Forced tool use (Simple mode, `extraction.forced_tool`)
