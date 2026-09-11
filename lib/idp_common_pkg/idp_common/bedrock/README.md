@@ -92,6 +92,13 @@ currently covers the Claude Haiku 4.5 / Sonnet 4.x-5 / Opus 4.x-5 families
 OpenAI GPT-5.x models are deliberately absent: they are served via the
 bedrock-mantle Responses API and handle caching in `openai_responses.py`.
 
+OpenAI GPT-6 Astra is absent for a third reason: it reaches Converse, but an
+explicit `cachePoint` block raises `AccessDeniedException` while its **implicit**
+caching works with no request change at all (a repeated 2,707-token prefix billed
+`inputTokens=2` / `cacheReadInputTokens=2707`, us-west-2, 2026-09-10). Adding it
+to the list would break requests without unlocking a discount that is already
+being applied.
+
 xAI Grok models are also deliberately absent, for a different reason: explicit
 `cachePoint` blocks raise `AccessDeniedException`. Grok's model card advertises
 *implicit* caching (no request change needed), but that was not observed to
@@ -491,18 +498,22 @@ per-family allow-list (unlike `CACHEPOINT_SUPPORTED_MODELS`). Two routes in
 | `model_id="LambdaHook"` | posts a Converse-shaped payload to a customer-owned Lambda, which need not implement tool use |
 | OpenAI GPT-5.x (`openai.gpt-5.*`) | served by the bedrock-mantle Responses API, which has its own tools schema |
 
-xAI Grok reaches Converse, so it **does** support `toolConfig` — verified live
-with all three `toolChoice` modes (`auto`/`any`/`tool`), each emitting a
-`toolUse` block. This is the reason Grok is allowed for agentic extraction while
-GPT-5.x is not.
+xAI Grok and OpenAI GPT-6 Astra reach Converse, so they **do** support
+`toolConfig` — verified live with all three `toolChoice` modes
+(`auto`/`any`/`tool`) for Grok and with a forced `toolChoice` for Astra, each
+emitting a `toolUse` block. This is the reason both are allowed for agentic
+extraction while GPT-5.x is not. Note the gate is about the ROUTE, not the vendor:
+`openai.gpt-6-astra` passes it, `openai.gpt-5.6-sol` does not.
 
 A separate gate, `supports_document_blocks()` /
 `document_blocks_unsupported_reason()`, covers whole-PDF `document` content
-blocks. Both GPT-5.x (text + image only on the Responses API) and xAI Grok
-(*"This model doesn't support documents"*) fail it, which is what excludes them
-from Discovery. Use it the same way as the tool-config gate.
+blocks. Three families fail it — GPT-5.x (text + image only on the Responses
+API), xAI Grok (*"This model doesn't support documents"*) and GPT-6 Astra
+(*"This model doesn't support the document field for user messages"*) — which is
+what excludes them from Discovery. Use it the same way as the tool-config gate.
 
-**Inference-profile ARNs.** `is_grok_model()`, `strips_sampling_params()`,
+**Inference-profile ARNs.** `is_grok_model()`, `is_astra_model()`,
+`strips_sampling_params()`,
 `is_claude_4_7_model()` and `document_blocks_unsupported_reason()` resolve
 inference-profile ARNs (via `resolve_model_id_from_arn`) before matching, so a
 config that names
@@ -683,9 +694,55 @@ Different Bedrock models implement these parameters with varying defaults, namin
     `AccessDeniedException`, and the advertised implicit caching was not
     observed to engage. `<<CACHEPOINT>>` markers are stripped from the text.
 
+- **OpenAI GPT-6 Astra** (`us.openai.gpt-6-astra`, `global.openai.gpt-6-astra`):
+  - **Converse, not the Responses API.** This is the one thing to internalize:
+    despite the `openai.` prefix, Astra is NOT on the `bedrock-mantle` path its
+    GPT-5.x stablemates use. `is_openai_responses_model()` matches `openai.gpt-5`
+    and therefore returns False for Astra, which is what routes it to Converse.
+    `tests/unit/test_bedrock_astra.py` pins that so widening the GPT-5.x prefix
+    cannot silently steal this model.
+  - CRIS-only: there is no in-region form on `bedrock-runtime` (the bare
+    `openai.gpt-6-astra` is rejected — "Invocation of model ID ... with on-demand
+    throughput isn't supported"). `us.` covers the US geo, `global.` covers every
+    Region including the EU and APAC ones, which is why EU deployments can use it
+    (see `filter_models_by_region` in `update_configuration`).
+  - Reasoning model — `temperature` and `topP` are **hard-rejected** with a 400
+    naming the field, same contract as Grok, so `strips_sampling_params()` omits
+    the whole sampling group.
+  - **Reasoning effort**: always on. `reasoning_effort` maps to
+    `additionalModelRequestFields.reasoning.effort` — Grok's carrier — but a
+    **third vocabulary**: `none`/`low`/`medium`/`high`/`xhigh`/`max`. That is
+    `CLAUDE_EFFORT_LEVELS` plus `none`. It accepts `max` (Grok 400s on it) and
+    rejects `minimal` (GPT-5.x accepts it). Claude's `output_config.effort` is
+    **rejected** here ("Unknown parameter: 'output_config'"), not merely ignored,
+    so the carrier must be exactly right. See `ASTRA_EFFORT_LEVELS`.
+  - **max_tokens** rides in `inferenceConfig.maxTokens` (the Converse-standard
+    field). Cap is 128,000 against a 1,050,000-token context window.
+  - Served on Converse, so `toolConfig` works and `toolUse` is emitted under a
+    forced `toolChoice` — Astra supports **agentic and forced-tool extraction**,
+    unlike GPT-5.x. `_validate_agentic_openai` gates on the mantle route, not the
+    vendor, so it allows Astra by construction.
+  - Cannot accept `document` content blocks ("This model doesn't support the
+    document field for user messages"), which excludes it from Discovery — the
+    one gate where it IS treated like GPT-5.x.
+  - Not in `CACHEPOINT_SUPPORTED_MODELS`: explicit `cachePoint` blocks raise
+    `AccessDeniedException`. Unlike Grok, though, its **implicit caching
+    demonstrably works** on this path — a repeated 2,707-token prefix billed
+    `inputTokens=2` with `cacheReadInputTokens=2707`. No request change is needed,
+    and the existing metering already records `cacheReadInputTokens`, so the
+    discount reaches cost reports without any code here.
+  - Service tiers: **Standard only**. `flex` and `priority` are rejected, so no
+    tier-suffixed IDs are offered.
+  - `bedrock-mantle` does serve Astra, but only in `us-west-2` and without CRIS or
+    application inference profiles. The accelerator deliberately does not use that
+    route: Converse gives worldwide Regions, tool use, guardrails, cost-allocation
+    profiles and caching, while mantle would add only server-side tools and
+    explicit cache breakpoints. See
+    [OpenAI Models](../../../../docs/openai-models.md).
+
 **Common implementation details**:
 - Temperature is always included in the main `inferenceConfig`, except for the
-  sampling-param-stripped models (Claude 4.7+, xAI Grok)
+  sampling-param-stripped models (Claude 4.7+, xAI Grok, OpenAI GPT-6 Astra)
 - top_p is added to `inferenceConfig` as "topP"
 - `maxTokens` goes in `inferenceConfig` for every family EXCEPT Claude, which
   uses `additionalModelRequestFields.max_tokens`

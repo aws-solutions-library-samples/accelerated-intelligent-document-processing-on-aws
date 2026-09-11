@@ -25,12 +25,13 @@ logger = logging.getLogger(__name__)
 def _reject_model_without_document_blocks(model_id: Optional[str]) -> None:
     """Reject models that cannot accept Converse ``document`` content blocks.
 
-    Discovery ingests whole PDFs via ``document`` blocks. Two families can't take
-    them — OpenAI GPT-5.x (bedrock-mantle Responses API) and xAI Grok (rejects
-    them outright: "This model doesn't support documents") — and both accept only
-    text and image input. Routing either here would silently drop the document
-    and hallucinate, so fail loudly instead. (Neither is offered in the discovery
-    model picklists.)
+    Discovery ingests whole PDFs via ``document`` blocks. Three families can't
+    take them — OpenAI GPT-5.x (bedrock-mantle Responses API), xAI Grok ("This
+    model doesn't support documents") and OpenAI GPT-6 Astra ("This model doesn't
+    support the document field for user messages") — and all accept only text and
+    image input. Routing any of them here would silently drop the document and
+    hallucinate, so fail loudly instead. (None are offered in the discovery model
+    picklists.)
     """
     reason = document_blocks_unsupported_reason(model_id)
     if reason:

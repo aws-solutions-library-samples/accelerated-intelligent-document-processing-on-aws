@@ -13,6 +13,9 @@ import {
   ExpandableSection,
 } from '@cloudscape-design/components';
 
+import { describePromptCache } from '../common/promptCacheModel';
+import type { PromptCacheSummary } from '../common/promptCacheModel';
+
 interface Violation {
   field: string;
   message: string;
@@ -162,6 +165,9 @@ interface ProcessingMetadata {
   sizing_plan?: SizingPlan;
   assessment_batch_split_stats?: AssessmentBatchSplitStats;
   processing_flow?: ProcessingFlow;
+  // Per-section prompt-cache efficiency (#780): caching / write-only /
+  // never-cached / disabled / no-cache-data, with the token counts behind it.
+  prompt_cache?: PromptCacheSummary;
 }
 
 interface ProcessingIssue {
@@ -339,6 +345,8 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
   // Item 3: how the document was sized/split/batched (model-aware auto-sizing).
   const sizing = metadata.sizing_plan;
   const batchStats = metadata.assessment_batch_split_stats;
+  const promptCache = metadata.prompt_cache;
+  const promptCacheText = promptCache ? describePromptCache(promptCache) : null;
   // Systematic flow (both simple and advanced) + explicit auto-recovery detail.
   const flow = metadata.processing_flow;
   const flowStages = flow?.stages || [];
@@ -466,7 +474,7 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
       </Container>
 
       {/* ---- Processing path: how the doc was sized / split / batched ---- */}
-      {(sizing || batchStats || flowStages.length > 0) && (
+      {(sizing || batchStats || promptCache || flowStages.length > 0) && (
         <Container header={<Header variant="h2">Processing Path</Header>}>
           <SpaceBetween size="m">
             {/* Systematic flow graph (rendered for BOTH simple and advanced):
@@ -531,6 +539,14 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                 {batchStats.escalation_model ? `; escalated to ${batchStats.escalation_model}` : ''}.
               </Box>
             ) : null}
+            {promptCacheText && (
+              <Box fontSize="body-s">
+                <StatusIndicator type={promptCacheText.indicator}>{promptCacheText.headline}</StatusIndicator>
+                <Box fontSize="body-s" color="text-body-secondary">
+                  {promptCacheText.detail}
+                </Box>
+              </Box>
+            )}
             {sizing?.overrides && Object.keys(sizing.overrides).length > 0 && (
               <Box fontSize="body-s" color="text-status-inactive">
                 Manual size overrides in effect: {JSON.stringify(sizing.overrides)}

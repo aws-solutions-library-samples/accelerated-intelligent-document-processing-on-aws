@@ -586,6 +586,15 @@ The Discovery module supports comprehensive configuration through the deployment
 > time. Note this does **not** limit Grok for agentic extraction, which it fully
 > supports. See [xAI Grok Models](grok-models.md).
 
+> **⚠️ OpenAI GPT-6 Astra is NOT supported for Discovery either.** Astra
+> (`us.openai.gpt-6-astra`, `global.openai.gpt-6-astra`) reaches the Converse API
+> and is fully supported for extraction — including agentic extraction — but it
+> rejects `document` content blocks: *"This model doesn't support the document
+> field for user messages"*. Its input modalities are text and image only. Both
+> Astra IDs are absent from the discovery model picklists, and selecting one via a
+> hand-edited config is rejected by config validation at save time. See
+> [OpenAI Models](openai-models.md#gpt-6-astra-converse).
+
 **Model Parameters:**
 ```yaml
 discovery:

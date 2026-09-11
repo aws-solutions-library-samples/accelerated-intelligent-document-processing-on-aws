@@ -73,13 +73,20 @@ class CurveStore:
         reporting a prior-driven estimate.
         """
         item = self._get_item(test_set_pk(test_set_id), curve_sk(config_version))
+        served_from = "config" if (item and config_version) else None
         if not item and config_version:
             # The set's aggregate curve beats the global prior: it is at least
             # measured on this set's documents.
             item = self._get_item(test_set_pk(test_set_id), curve_sk(None))
+        if item and served_from is None:
+            served_from = "aggregate"
         curve = ConfidenceCurve.from_dict(_item_to_curve_dict(item))
         curve.test_set_id = test_set_id
         curve.config_version = config_version
+        # Reported, not just logged: an aggregate served in place of a requested
+        # per-configuration curve is a blend of every configuration the set was
+        # ever scored or reviewed under, and the estimate must say so (#759).
+        curve.served_from = served_from or "none"
         return curve
 
     def get_global_prior(self) -> ConfidenceCurve:

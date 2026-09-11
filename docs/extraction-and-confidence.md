@@ -104,8 +104,9 @@ extraction:
 >
 > **Reasoning effort:** for reasoning-capable models — Claude Sonnet 5 / Sonnet
 > 4.6 / Opus 4.5–4.8 / Fable 5 (`low`|`medium`|`high`|`xhigh`|`max`), OpenAI
-> GPT-5.x (`minimal`|`low`|`medium`|`high`), and xAI Grok
-> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`) — `reasoning_effort` controls how much
+> GPT-5.x (`minimal`|`low`|`medium`|`high`), xAI Grok
+> (`none`|`low`|`medium`|`high`|`xhigh`, **not** `max`), and OpenAI GPT-6 Astra
+> (`none`|`low`|`medium`|`high`|`xhigh`|`max`, **not** `minimal`) — `reasoning_effort` controls how much
 > the model reasons before answering. Extraction **defaults to `low`**: a full
 > effort sweep found higher effort adds output-token cost with negligible
 > extraction-accuracy gain. Raise it per-config for reasoning-heavy documents.
@@ -170,6 +171,19 @@ Agentic extraction requires models with tool-use support:
 > rejected by Grok and silently omitted; tune it with `reasoning_effort`
 > (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
 > [xAI Grok Models](grok-models.md).
+
+> **✅ OpenAI GPT-6 Astra CAN be used with agentic extraction.** Unlike the
+> GPT-5.x models above, Astra (`us.openai.gpt-6-astra`,
+> `global.openai.gpt-6-astra`) is served on the standard Converse API and emits a
+> `toolUse` block under a forced `toolChoice`, so the Strands agent loop works.
+> The agentic gate keys on the **route**, not the vendor prefix — which is why one
+> OpenAI model is allowed here and the others are not. Its 1.05M context yields
+> the largest shard budget of any model offered. `temperature` / `top_p` are
+> rejected and silently omitted; tune it with `reasoning_effort`
+> (`none`|`low`|`medium`|`high`|`xhigh`|`max`) instead. Watch cost: Astra is the
+> priciest model available, and input above 272K tokens bills at roughly double
+> the rate recorded in `pricing.yaml`. See
+> [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 
 #### Cost considerations
 
@@ -1318,7 +1332,8 @@ extraction:
 In `ocr_only` mode the model is **not** asked for boxes at all. Each field's
 geometry is derived by matching the extracted value text against real OCR lines
 in the consolidated `pageData.json` artifact (Amazon Textract, or the Mistral OCR
-LambdaHook). This is **cheaper** (no bbox tokens in the response) and **more
+LambdaHook; the Cohere Parse hook contributes boxes for tables and figures only).
+This is **cheaper** (no bbox tokens in the response) and **more
 accurate** (OCR boxes beat LLM-estimated boxes, which models frequently
 hallucinate). A field with no OCR match simply has no geometry (geometry is
 advisory).
