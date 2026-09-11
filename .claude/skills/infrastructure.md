@@ -120,6 +120,39 @@ for new code; **do not "fix" the second or third** — they are correct:
 | `/aws/lambda/${SomeParameter}-<Name>` | `idp-data-generator`, keyed on `MainStackName`/`FeatureId` |
 | *(generated — no `LogGroupName`)* | most of the parent `template.yaml` (49 groups) |
 
+**One exemption, and only one:** a Lambda that runs *only* during a
+CloudFormation stack operation — a `ServiceToken` custom-resource handler, or an
+install hook invoked by another stack's custom resource — may omit its log group
+entirely and keep Lambda's auto-created one. Those are very low volume and log
+nothing but stack operations, so indefinite retention is an accepted cost rather
+than an oversight. Every other Lambda needs a log group with `RetentionInDays`.
+
+All of this is enforced by `scripts/tests/test_lambda_log_groups.py`, which
+gates **every** template in the repo that declares a Lambda (21 of them, and a
+meta-test fails if a new one is added and not listed) on four rules:
+
+1. Every Lambda has a `LoggingConfig` that resolves to a real
+   `AWS::Logs::LogGroup` **in the same template** — a typo'd or bare-string
+   `LogGroup` fails.
+2. Every log group sets a non-null `RetentionInDays`.
+3. No `LogGroupName` references a function resource, in **any** intrinsic form —
+   `Fn::Sub` scalar and list form, `Fn::Join`, `Ref`, `GetAtt`, nested.
+4. A log group's `Condition` matches its function's, so a group is never created
+   where its function is absent, nor missing where it is present.
+
+The exemption list is *verified*, not trusted: an exempt function must be a
+`ServiceToken` target or have its ARN exported via a direct `GetAtt`, and must
+have no event source (SAM `Events`, `EventSourceMapping`, `Lambda::Permission`,
+`Events::Rule`, or an API Gateway method/integration).
+
+The gate has its own meta-tests, pinning 16 cases that earlier revisions accepted
+— `Fn::Join` and `Fn::Sub`'s list form slipped rule 3, a `LoggingConfig` naming a
+non-existent group satisfied rule 1, `RetentionInDays: ~` satisfied rule 2, and
+the exemption check accepted any export merely *mentioning* the function.
+`test_gate_catches_known_bypasses` pins each closed, so the rules cannot silently
+weaken. Be aware the check is still structural: it reasons about the template, not
+about what actually invokes a function at runtime.
+
 **Never name a log group after the function resource:**
 
 ```yaml
