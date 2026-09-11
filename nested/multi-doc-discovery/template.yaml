@@ -280,6 +280,10 @@ Resources:
             Value: !Ref AWS::AccountId
           - Name: AWS_DEFAULT_REGION
             Value: !Ref AWS::Region
+          # The ECR registry host is <account>.dkr.ecr.<region>.<URLSuffix>; the
+          # suffix is amazonaws.com.cn in aws-cn, so it must come from the template.
+          - Name: AWS_URL_SUFFIX
+            Value: !Ref AWS::URLSuffix
           - Name: ECR_REPO_URI
             Value: !GetAtt ECRRepository.RepositoryUri
           - Name: IMAGE_TAG
@@ -300,7 +304,7 @@ Resources:
             pre_build:
               commands:
                 - echo Logging in to Amazon ECR...
-                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.$AWS_URL_SUFFIX
             build:
               commands:
                 - echo "Source directory contents:"
