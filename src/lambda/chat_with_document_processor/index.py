@@ -732,9 +732,10 @@ def handler(event, _context):  # noqa: ANN001
 
         # --- 2. RBAC scope enforcement --------------------------------------
         # Fails CLOSED on both halves of the decision:
-        #   * the lookup itself — an unevaluatable scope (no UsersTable wired,
-        #     no caller identity, DynamoDB error) denies rather than being read
-        #     as "unrestricted" (AUTH.T07);
+        #   * the lookup — a missing precondition (no UsersTable wired, no
+        #     caller identity) denies rather than being read as "unrestricted"
+        #     (AUTH.T07). The DynamoDB-error path is the documented exception;
+        #     see the KNOWN GAP in _get_user_allowed_config_versions.
         #   * the match — a scoped caller cannot chat with a document that
         #     carries no ConfigVersion, because an unstamped document cannot be
         #     proven to be in their scope.
