@@ -4,7 +4,7 @@
 """Unit tests for ``StackDeployer._discover_auto_created_log_groups``.
 
 This function had **no test coverage at all**, which is how it came to carry
-prefixes that matched nothing. Two rounds of review on #826 found ten dead
+prefixes that matched nothing. Two rounds of review on #826 found eleven dead
 entries between them:
 
 * six per-function prefixes like ``/aws/lambda/<stack>-ListInstalledFeaturesFunction``
@@ -31,8 +31,14 @@ import pytest
 from idp_sdk._core.stack import StackDeployer
 
 
-def _deployer_with_log_groups(names: list[str]) -> tuple[StackDeployer, MagicMock]:
-    """A StackDeployer whose Logs paginator returns ``names`` filtered by prefix."""
+def _deployer_with_log_groups(
+    names: list[str], other_stacks: list[str] | None = None
+) -> tuple[StackDeployer, MagicMock]:
+    """A StackDeployer whose Logs paginator returns ``names`` filtered by prefix.
+
+    ``other_stacks`` are additional *live root* stacks CloudFormation reports, used
+    to exercise the sibling-ownership guard.
+    """
     logs = MagicMock()
     paginator = MagicMock()
 
@@ -55,11 +61,21 @@ def _deployer_with_log_groups(names: list[str]) -> tuple[StackDeployer, MagicMoc
 
     deployer = StackDeployer.__new__(StackDeployer)
     deployer.region = "us-west-2"
+
+    cfn = MagicMock()
+    cfn_paginator = MagicMock()
+    cfn_paginator.paginate.return_value = [
+        {"StackSummaries": [{"StackName": s} for s in (other_stacks or [])]}
+    ]
+    cfn.get_paginator.return_value = cfn_paginator
+    deployer.cfn = cfn
     return deployer, logs
 
 
-def _discover(stack_name: str, names: list[str]) -> list[str]:
-    deployer, logs = _deployer_with_log_groups(names)
+def _discover(
+    stack_name: str, names: list[str], other_stacks: list[str] | None = None
+) -> list[str]:
+    deployer, logs = _deployer_with_log_groups(names, other_stacks)
     with patch("boto3.client", return_value=logs):
         return deployer._discover_auto_created_log_groups(stack_name)
 
@@ -149,3 +165,95 @@ def test_a_logs_api_error_does_not_abort_discovery() -> None:
         discovered = deployer._discover_auto_created_log_groups("IDP1")
 
     assert wanted in discovered
+
+
+# ---------------------------------------------------------------------------
+# Sibling-stack ownership guard. The teardown prefixes must be broad (a narrow
+# one silently matches nothing once CloudFormation truncates a generated name),
+# and broad means `IDP` matches `IDP-DEV`. Deleting another live deployment's log
+# history cannot be undone, so these are the most important tests in this file.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_does_not_delete_a_hyphenated_sibling_stacks_log_groups() -> None:
+    """`IDP` teardown must not sweep `IDP-DEV` or `IDP-PROD`.
+
+    The trailing hyphen in the prefix stops `IDP1` matching `IDP10`, but does
+    nothing here — `/aws/lambda/IDP-DEV-Fn-abc` genuinely starts with
+    `/aws/lambda/IDP-`. Only asking CloudFormation who owns what fixes it.
+    """
+    mine = "/aws/lambda/IDP-BatchPreProcessorFunction-abc123456789"
+    dev = "/aws/lambda/IDP-DEV-BatchPreProcessorFunction-def456789012"
+    prod = "/aws/lambda/IDP-PROD-SomeFunction-ghi789012345"
+
+    discovered = _discover(
+        "IDP", [mine, dev, prod], other_stacks=["IDP-DEV", "IDP-PROD"]
+    )
+
+    assert mine in discovered
+    assert dev not in discovered
+    assert prod not in discovered
+
+
+@pytest.mark.unit
+def test_longest_matching_stack_name_wins_for_a_nested_looking_sibling_group() -> None:
+    """A sibling's NESTED-stack group must be attributed to the sibling.
+
+    `/aws/lambda/IDP-DEV-FeaturePlatformStack-Fn-hash` starts with both
+    `/aws/lambda/IDP-` (us) and `/aws/lambda/IDP-DEV-` (the sibling). The longer
+    stack name is the real owner, so this must be skipped.
+
+    Only the generic `/aws/lambda/{stack}-` prefix can over-match this way — the
+    stack-scoped prefixes like `/{stack}-PATTERNSTACK-` are specific enough that a
+    sibling's equivalent (`/IDP-DEV-PATTERNSTACK-...`) never matches them. An
+    earlier version of this test asserted on those shapes and was therefore
+    vacuous: it passed with the guard removed.
+    """
+    sibling_nested = "/aws/lambda/IDP-DEV-FeaturePlatformStack-ListCatalog-abc123456789"
+    mine_nested = "/aws/lambda/IDP-FeaturePlatformStack-ListCatalog-def456789012"
+
+    discovered = _discover(
+        "IDP", [mine_nested, sibling_nested], other_stacks=["IDP-DEV"]
+    )
+
+    assert mine_nested in discovered
+    assert sibling_nested not in discovered
+
+
+@pytest.mark.unit
+def test_a_sibling_that_no_longer_exists_is_still_cleaned_up() -> None:
+    """Only *live* stacks are protected — a deleted sibling's orphans are ours."""
+    orphan = "/aws/lambda/IDP-DEV-BatchPreProcessorFunction-def456789012"
+    assert orphan in _discover("IDP", [orphan], other_stacks=[])
+
+
+@pytest.mark.unit
+def test_nested_stacks_are_not_treated_as_other_owners() -> None:
+    """A nested stack's name starts `<parent>-`; its groups are ours to clean."""
+    nested_group = "/aws/lambda/IDP-FeaturePlatformStack-ListCatalog-abc123456789"
+    deployer, logs = _deployer_with_log_groups([nested_group])
+    deployer.cfn.get_paginator.return_value.paginate.return_value = [
+        {
+            "StackSummaries": [
+                # ParentId set => nested, must NOT be treated as another owner.
+                {"StackName": "IDP-FeaturePlatformStack-XYZ", "ParentId": "arn:...:IDP"}
+            ]
+        }
+    ]
+    with patch("boto3.client", return_value=logs):
+        discovered = deployer._discover_auto_created_log_groups("IDP")
+    assert nested_group in discovered
+
+
+@pytest.mark.unit
+def test_guard_fails_safe_when_stacks_cannot_be_listed() -> None:
+    """If ownership is unknowable, clean nothing.
+
+    Leaving orphans costs money; deleting someone else's logs is irreversible.
+    """
+    mine = "/aws/lambda/IDP-BatchPreProcessorFunction-abc123456789"
+    deployer, logs = _deployer_with_log_groups([mine])
+    deployer.cfn.get_paginator.side_effect = RuntimeError("AccessDenied")
+    with patch("boto3.client", return_value=logs):
+        assert deployer._discover_auto_created_log_groups("IDP") == []

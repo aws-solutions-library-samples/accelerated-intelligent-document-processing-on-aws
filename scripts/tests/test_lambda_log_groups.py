@@ -54,7 +54,8 @@ treat the list as a reviewed decision rather than a proof: **when you add an
 entry, confirm by hand that nothing invokes the function outside a stack
 operation.**
 
-Earlier revisions of this gate could be defeated in several ways — ``Fn::Join``
+Earlier revisions of this gate could be defeated in several ways (the
+parametrized cases below pin 14, plus 2 standalone bypass tests) — ``Fn::Join``
 and the list form of ``Fn::Sub`` slipped rule 3; a ``LoggingConfig`` naming a
 non-existent log group, or one merely *mentioning* a real one
 (``!Sub '${G}-suffix'``), satisfied rule 1; ``RetentionInDays: ~`` and
@@ -71,8 +72,9 @@ Two seams remain, both known and both currently harmless:
   valid CloudWatch value) and a malformed 2-arity ``Fn::If`` all pass here.
   CloudFormation or cfn-lint rejects each at deploy, so nothing ships — but
   cfn-lint is not run in CI, and "nothing checked it" is the premise of both
-  #818 and #826. Note also that four templates declare ``LogRetentionDays`` with
-  no ``AllowedValues``, so the ``!Ref`` leg is not as constrained as it looks.
+  #818 and #826. Note also that five templates declare ``LogRetentionDays`` with
+  no ``AllowedValues`` (two of them defaulting to 365), so the ``!Ref`` leg is
+  not as constrained as it looks.
 * **``Fn::ForEach`` / ``Transform: AWS::LanguageExtensions`` is invisible.** A
   ``Fn::ForEach::X`` key under ``Resources`` maps to a list, so ``_functions``
   and ``_log_groups`` skip it and every rule silently passes. The repo does not

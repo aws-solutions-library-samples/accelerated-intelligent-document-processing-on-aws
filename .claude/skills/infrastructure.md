@@ -145,7 +145,7 @@ The exemption list is *verified*, not trusted: an exempt function must be a
 have no event source (SAM `Events`, `EventSourceMapping`, `Lambda::Permission`,
 `Events::Rule`, or an API Gateway method/integration).
 
-The gate has its own meta-tests. Earlier revisions could be defeated 13 ways
+The gate has its own meta-tests, pinning 16 cases that earlier revisions accepted
 — `Fn::Join` and `Fn::Sub`'s list form slipped rule 3, a `LoggingConfig` naming a
 non-existent group satisfied rule 1, `RetentionInDays: ~` satisfied rule 2, and
 the exemption check accepted any export merely *mentioning* the function.
