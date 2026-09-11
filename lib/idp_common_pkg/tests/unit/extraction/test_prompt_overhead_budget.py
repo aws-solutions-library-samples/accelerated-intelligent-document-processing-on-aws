@@ -241,7 +241,8 @@ def test_shipped_lending_payslip_magnitudes_stay_in_range():
     # Upper bound raised from 9,000 when #839 lengthened the Payslip
     # EmployeeNumber/PayrollNumber descriptions (measured 9,432 after that change).
     assert 4_000 <= overhead <= 10_000, overhead
-    assert 9_000 <= svc._shard_token_budget() <= 14_500
+    # 18,400 - 9,432 = 8,968 after the #839 descriptions; floor lowered to match.
+    assert 8_500 <= svc._shard_token_budget() <= 14_500
 
 
 def test_a_class_prompt_override_is_what_gets_measured():
