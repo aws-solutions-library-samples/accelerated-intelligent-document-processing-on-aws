@@ -135,6 +135,10 @@ def cmd_launch(a):
             raise SystemExit(f"--pair wants testset:offProfile:onProfile, got {spec!r}")
     _require_profiles(a.stack, [p for _, off, on in pairs for p in (off, on)])
     out = []
+    # Ids are <set>-<timestamp to the second>; a stack whose runner predates the
+    # #879 fix hands two arms launched within a second the SAME id, and the
+    # second silently replaces the first. Refuse to record such a launch.
+    seen_ids = set()
     for testset, off_prof, on_prof in pairs:
         for prof in (off_prof, on_prof):
             payload = {
@@ -152,6 +156,15 @@ def cmd_launch(a):
             res = json.loads(r["Payload"].read())
             rid = res.get("testRunId")
             print(f"  {testset:26s} {prof:14s} -> {rid or res}")
+            # A failed invoke has no id (rid is None); only a real id can collide.
+            if rid and rid in seen_ids:
+                raise SystemExit(
+                    f"run id {rid} was issued twice: the stack's TestRunner collapses "
+                    f"runs started within one second (#879). Abort the other arms in "
+                    f"Test Studio and relaunch with a gap, or deploy the fix."
+                )
+            if rid:
+                seen_ids.add(rid)
             out.append(
                 {
                     "corpus": testset,
