@@ -378,9 +378,12 @@ def cli():
 )
 @click.option(
     "--log-level",
-    default="INFO",
+    default=None,
     type=click.Choice(["DEBUG", "INFO", "WARN", "ERROR"]),
-    help="Logging level (default: INFO)",
+    help=(
+        "Logging level. Omit to use the template default (WARN) on a new stack, "
+        "or to preserve the existing value on an update."
+    ),
 )
 @click.option(
     "--enable-hitl",
@@ -459,7 +462,7 @@ def deploy(
     template_url: str,
     template_file: Optional[str],
     max_concurrent: int,
-    log_level: str,
+    log_level: Optional[str],
     enable_hitl: str,
     custom_config: Optional[str],
     parameters: Optional[str],
@@ -851,7 +854,7 @@ def deploy(
                 template_path=template_path,
                 admin_email=admin_email,
                 max_concurrent=max_concurrent if max_concurrent != 100 else None,
-                log_level=log_level if log_level != "INFO" else None,
+                log_level=log_level,
                 enable_hitl=enable_hitl == "true" if enable_hitl != "false" else None,
                 custom_config=custom_config,
                 parameters=additional_params,

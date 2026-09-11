@@ -119,6 +119,20 @@ No hardcoded `DEBUG` or `TRACE` found in any production code path.
 
 **Customer action required:** Keep `LogLevel=INFO` (default) for production deployments.
 
+**Update 2026-09-11 — default changed to `WARN`.** The acceptance above rested
+on `INFO` being a safe default, which the residual-risk review revised: at
+`INFO` the accelerator can emit S3 **presigned URLs** (and document/PII values)
+into CloudWatch, so `INFO` is not a safe production default even though nothing
+in the code hard-codes `DEBUG`. The `LogLevel` default is now `WARN` in
+`template.yaml` and `nested/bedrockkb/template.yaml`; `patterns/unified/template.yaml`
+already defaulted to `WARN`, which is the evidence that the safer default is
+operationally acceptable. Everything else in this finding stands — the parameter
+remains customer-configurable and every handler still respects `LOG_LEVEL`.
+**Consequence to note:** API Gateway access logging on the Web UI REST stage is
+gated on `LogLevel` being `INFO`/`DEBUG` (finding API-GW-006), so it is now off
+by default; deployments that want that audit trail must set `LogLevel=INFO`
+explicitly and accept the logging exposure above.
+
 ---
 
 ## Finding #15 — Unsafe YAML Load (ACAT)
@@ -1082,7 +1096,9 @@ documented residual risk (Partially Fixed). The 5 Risk-Accepted and
   deployments that intentionally allow Authors to delete each other's
   test runs; hardening hook documented for customers who need it.
 - **#9 (`LogLevel` default)** — customer-configurable with a safe
-  default (`INFO`); not a true positive for the product defaults.
+  default. **Updated 2026-09-11:** the default is now `WARN`, not `INFO`,
+  because `INFO` can emit presigned URLs and document/PII values to
+  CloudWatch; see the note under Finding #9.
 - **#14 (ALB clickjacking headers)** — **superseded 2026-07-28: resolved by
   removal.** The opt-in ALB hosting mode was deleted in v0.6.0 and replaced by
   API Gateway S3-proxy hosting, which sets the header trio per-method in both
