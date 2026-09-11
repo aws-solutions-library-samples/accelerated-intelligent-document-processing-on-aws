@@ -4188,21 +4188,107 @@ def validate_apigw_global_hosting(stack_name):
             "error": f"ApplicationWebURL={web_url!r} is not an execute-api /api URL",
         }
 
-    # 3. The UI actually loads over HTTP (S3-proxy hosting served the app).
+    # 3. The UI actually loads over HTTP (S3-proxy hosting served the app), and
+    # its response headers are inspected from that SAME request — a second fetch
+    # could answer differently (a throttled 5xx comes from DEFAULT_5XX, which
+    # deliberately carries no CSP) and would blame the template for a transient.
     # Unlike the PRIVATE variant this endpoint is internet-reachable, so we can
     # do a real end-to-end fetch instead of only checking structure.
     fetch = run_command(
-        f"curl -s -o /dev/null -w '%{{http_code}}' -L {web_url}", check=False
+        f"curl -s -o /dev/null -D - -w '\\n%{{http_code}}' -L {web_url}", check=False
     )
-    http_code = fetch.stdout.strip()
+    lines = fetch.stdout.splitlines()
+    http_code = lines[-1].strip() if lines else ""
     if http_code != "200":
         return {
             "success": False,
             "error": f"GET {web_url} returned HTTP {http_code!r}, expected 200",
         }
 
+    # 4. The SPA document carries a Content-Security-Policy, and it survived API
+    # Gateway's static-value parsing intact.
+    #
+    # This mode has no CloudFront ResponseHeadersPolicy, so the CSP is a static
+    # response-parameter value on the S3-proxy method — a single-quoted string
+    # whose interior also contains single quotes (`'self'` and friends). Nothing
+    # offline can confirm the service strips only the outer pair: a mis-parse
+    # would leave `script-src self ...`, which every browser reads as a *host*
+    # named "self", blocking the app's own bundles. Requiring the quoted keyword
+    # in the response is what makes that failure loud here instead of being
+    # discovered as a blank page in a GovCloud deployment.
+    #
+    # `-L` means the dump can hold several header blocks; only the FINAL response
+    # is the document the browser renders, so parse back from the last status line.
+    header_lines = lines[:-1]
+    status_lines = [
+        i for i, line in enumerate(header_lines) if line.upper().startswith("HTTP/")
+    ]
+    final_block = header_lines[status_lines[-1] :] if status_lines else header_lines
+    csp = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in final_block
+            if line.lower().startswith("content-security-policy:")
+        ),
+        None,
+    )
+    if not csp:
+        return {
+            "success": False,
+            "error": (
+                f"GET {web_url} returned no Content-Security-Policy header; "
+                "the WebUIRootMethod integration response should set one"
+            ),
+        }
+    if csp.startswith("'"):
+        # The other half of the same mis-parse: API Gateway left the *outer*
+        # quotes on, so the first directive reads `'script-src` and browsers
+        # discard it. With no `default-src` in this policy, discarding the first
+        # directive voids the protection while the header still looks present.
+        # Only the LEADING quote is checked: a policy legitimately ends with one
+        # whenever its last source is a keyword (`frame-ancestors 'none'`).
+        return {
+            "success": False,
+            "error": (
+                "Content-Security-Policy still carries the API Gateway "
+                f"static-value quotes, so its first directive is invalid: {csp!r}"
+            ),
+        }
+    script_src = next(
+        (
+            chunk.strip().split()[1:]
+            for chunk in csp.split(";")
+            if chunk.strip().split()[:1] == ["script-src"]
+        ),
+        None,
+    )
+    if script_src is None:
+        return {
+            "success": False,
+            "error": f"Content-Security-Policy declares no script-src: {csp!r}",
+        }
+    # Source ORDER is not significant in CSP, so match on membership.
+    if "'self'" not in script_src:
+        return {
+            "success": False,
+            "error": (
+                "Content-Security-Policy lost its quoted keywords in transit "
+                f"(expected 'self' among the script-src sources): {csp!r}"
+            ),
+        }
+    blanket = [s for s in script_src if s in ("https:", "http:", "*")]
+    if blanket:
+        return {
+            "success": False,
+            "error": (
+                f"Content-Security-Policy script-src allows any origin via {blanket}: "
+                f"{csp!r}"
+            ),
+        }
+
     print(f"✅ GLOBAL REST API serving Web UI: {web_url} (types={types}, HTTP 200)")
-    return {"success": True, "web_url": web_url}
+    print(f"   CSP: {csp}")
+    return {"success": True, "web_url": web_url, "csp": csp}
 
 
 def _stack_outputs(stack_name):

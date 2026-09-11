@@ -406,9 +406,18 @@ def create_gateway(props, gateway_name, client: GatewayClient):
 
     logger.info(f"Gateway created: {gateway.get('gatewayUrl')}")
 
-    # Fix IAM permissions and wait for propagation
-    logger.info("Fixing IAM permissions...")
-    client.fix_iam_permissions(gateway)
+    # Wait for the execution role to propagate before attaching the target.
+    #
+    # We deliberately do NOT call client.fix_iam_permissions(gateway) here. That
+    # helper rewrites the execution role's trust policy and puts an inline
+    # LambdaInvokePolicy for the toolkit's own sample function
+    # (AgentCoreLambdaTestFunction), neither of which this stack needs:
+    # AgentCoreGatewayExecutionRole already declares the identical trust policy
+    # and an InvokeLambdaPolicy for AgentCoreMCPHandlerFunction. Calling it would
+    # require iam:UpdateAssumeRolePolicy / iam:PutRolePolicy on this function's
+    # own role, which is the privilege-escalation path flagged by AppSec finding
+    # b2b397a9, so those permissions are intentionally absent from the policy in
+    # template.yaml.
     logger.info("Waiting for IAM propagation...")
     time.sleep(30)
 

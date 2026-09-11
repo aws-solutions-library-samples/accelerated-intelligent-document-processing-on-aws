@@ -4,10 +4,11 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -15,6 +16,20 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 sqs = boto3.client("sqs")
+
+# A run id is ``<test set name>-<UTC timestamp to the second>``. Two runs of the
+# same set submitted within one second therefore want the same id; the metadata
+# write is conditional so the second one notices, and it retries with the next
+# second's id rather than overwriting the first run (and sharing its input
+# prefix, which is what merged two A/B arms into one run — #879). The shape is
+# kept because the UI and the GSI backfill parse ``-\d{8}-\d{6}`` out of object
+# keys; a millisecond or random suffix would change every consumer of the id.
+_MAX_TEST_RUN_ID_ATTEMPTS = 10
+
+
+class TestRunIdTaken(Exception):
+    """A run with this id already exists; the caller should pick another."""
+
 
 # --- inline log sanitizer ---------------------------------------------------
 # Minimal inline redactor. Kept here rather than importing from idp_common to
@@ -143,9 +158,9 @@ def handler(event, context):
                 )
             files_to_process = min(number_of_files, files_to_process)
 
-        # Create test run identifier using test set name
-        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        test_run_id = f"{test_set['name']}-{timestamp}"
+        # The run id is reserved when its metadata is written (below), so a
+        # collision with a run submitted in the same second is caught there.
+        submitted_at = datetime.now(timezone.utc)
 
         # Resolve first, then capture, so the version is recorded on the run whether
         # or not the caller named one. Passing the resolved name through also keeps
@@ -153,6 +168,12 @@ def handler(event, context):
         effective_config_version = config_version or _active_config_version(
             config_table
         )
+        # A profile the caller named must exist. Without this the run was created
+        # anyway — an empty captured config, the profile stamped onto every
+        # document — and each document then failed in OCR, minutes later, with
+        # an error that pointed at IAM rather than at the missing profile (#878).
+        if config_version:
+            _require_profile(config_table, config_version)
         # Resolve the profile's current revision when the caller did not name one,
         # for the same reason the version is resolved here: the run must record
         # which configuration it actually ran, not "whatever was current".
@@ -186,21 +207,27 @@ def handler(event, context):
         elif test_set.get("draftVersion") is not None:
             test_set_draft_version = int(test_set["draftVersion"])
 
-        # Store initial test run metadata
-        _store_test_run_metadata(
-            tracking_table,
-            test_run_id,
-            test_set_id,
+        # Store initial test run metadata. This is also where the id is
+        # reserved: the write refuses to overwrite an existing run, and a
+        # collision moves the id to the next second and tries again.
+        test_run_id = _reserve_test_run_id(
             test_set["name"],
-            config,
-            [],
-            test_context,
-            files_to_process,
-            effective_config_version,
-            test_set_version,
-            purpose=purpose,
-            config_revision=effective_config_revision,
-            test_set_draft_version=test_set_draft_version,
+            submitted_at,
+            lambda run_id: _store_test_run_metadata(
+                tracking_table,
+                run_id,
+                test_set_id,
+                test_set["name"],
+                config,
+                [],
+                test_context,
+                files_to_process,
+                effective_config_version,
+                test_set_version,
+                purpose=purpose,
+                config_revision=effective_config_revision,
+                test_set_draft_version=test_set_draft_version,
+            ),
         )
 
         # Send file copying job to SQS queue
@@ -280,7 +307,7 @@ def handler(event, context):
             "status": "QUEUED",
             "filesCount": files_to_process,
             "completedFiles": 0,
-            "createdAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
 
     except Exception as e:
@@ -492,6 +519,17 @@ def _published_revision(config_table, config_version):
         return None
 
 
+def _require_profile(config_table, config_version):
+    """Raise ``ValueError`` unless the configuration profile head exists."""
+    table = dynamodb.Table(config_table)  # type: ignore[attr-defined]
+    item = table.get_item(
+        Key={"Configuration": f"Config#{config_version}"},
+        ProjectionExpression="Configuration",
+    ).get("Item")
+    if not item:
+        raise ValueError(f"Configuration profile '{config_version}' not found")
+
+
 def _pin_revision(config_table, config_version, revision):
     """Mark a revision as pinned so retention cannot prune it.
 
@@ -519,30 +557,41 @@ def _capture_config(config_table, config_version=None, config_revision=None):
 
     # A pinned revision is captured from its stored body, so the run records the
     # configuration it actually scored rather than the profile's current state.
+    #
+    # A revision that cannot be read fails the run HERE, at submit time. It used
+    # to be a warning with a fallback to the profile head — "capture is for the
+    # record, not for processing" — but the revision was still stamped onto every
+    # document, and the pipeline (rightly) refuses to process a pinned revision
+    # it cannot read, so the run was doomed: N failed documents instead of one
+    # error at submit (#878).
     if config_version and config_revision is not None:
-        try:
-            from idp_common.config.configuration_manager import ConfigurationManager
+        from idp_common.config.configuration_manager import ConfigurationManager
 
+        try:
             body = ConfigurationManager(table_name=config_table).get_revision(
                 config_version, config_revision
             )
-            if body is not None:
-                # A revision body is JSON, so it carries Python floats (e.g.
-                # temperature: 0.0). The captured config is written straight into
-                # the run's DynamoDB item, and the DynamoDB resource client
-                # rejects floats outright — "Float types are not supported. Use
-                # Decimal types instead." — which failed every startTestRun that
-                # pinned a revision. The config read from DynamoDB never hit this
-                # because it comes back as Decimal already.
-                config["Config"] = json.loads(json.dumps(body), parse_float=Decimal)
-                _pin_revision(config_table, config_version, config_revision)
-                return config
-            logger.warning(
-                f"Revision r{config_revision} of '{config_version}' is not retained; "
-                f"capturing the profile's current configuration instead"
-            )
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"Could not capture revision r{config_revision}: {e}")
+            raise ValueError(
+                f"Could not read revision r{config_revision} of configuration "
+                f"profile '{config_version}': {e}"
+            ) from e
+        if body is None:
+            raise ValueError(
+                f"Revision r{config_revision} of configuration profile "
+                f"'{config_version}' is not available (deleted, pruned, or never "
+                f"existed)"
+            )
+        # A revision body is JSON, so it carries Python floats (e.g.
+        # temperature: 0.0). The captured config is written straight into the
+        # run's DynamoDB item, and the DynamoDB resource client rejects floats
+        # outright — "Float types are not supported. Use Decimal types
+        # instead." — which failed every startTestRun that pinned a revision.
+        # The config read from DynamoDB never hit this because it comes back as
+        # Decimal already.
+        config["Config"] = json.loads(json.dumps(body), parse_float=Decimal)
+        _pin_revision(config_table, config_version, config_revision)
+        return config
 
     # Get Config (versioned) - this is what's used for comparisons
     try:
@@ -566,6 +615,36 @@ def _capture_config(config_table, config_version=None, config_revision=None):
         logger.warning(f"Could not retrieve Config: {e}")
 
     return config
+
+
+def _test_run_id(test_set_name, at):
+    """``<test set name>-YYYYMMDD-HHMMSS`` for the moment ``at`` (UTC)."""
+    return f"{test_set_name}-{at.strftime('%Y%m%d-%H%M%S')}"
+
+
+def _reserve_test_run_id(test_set_name, submitted_at, store):
+    """Pick a run id no existing run holds, by writing the run's metadata.
+
+    ``store(run_id)`` must write the run item conditionally and raise
+    ``TestRunIdTaken`` when a run with that id already exists. On a collision
+    the id's timestamp component is advanced by one second and the write is
+    retried — the id then names a moment up to a few seconds after
+    ``CreatedAt``, which is recorded separately and stays exact.
+    """
+    for attempt in range(_MAX_TEST_RUN_ID_ATTEMPTS):
+        run_id = _test_run_id(test_set_name, submitted_at + timedelta(seconds=attempt))
+        try:
+            store(run_id)
+        except TestRunIdTaken:
+            logger.info(
+                f"Test run id {run_id} is already in use; trying the next second"
+            )
+            continue
+        return run_id
+    raise RuntimeError(
+        f"Could not allocate a unique test run id for test set "
+        f"'{test_set_name}' after {_MAX_TEST_RUN_ID_ATTEMPTS} attempts"
+    )
 
 
 def _confidence_fingerprint_of(config):
@@ -602,7 +681,7 @@ def _store_test_run_metadata(
     table = dynamodb.Table(tracking_table)  # type: ignore[attr-defined]
 
     try:
-        created_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         item = {
             "PK": f"testrun#{test_run_id}",
             "SK": "metadata",
@@ -658,8 +737,19 @@ def _store_test_run_metadata(
         if fingerprint:
             item["ConfidenceFingerprint"] = fingerprint
 
-        table.put_item(Item=item)
+        try:
+            # Never overwrite an existing run: two submissions in the same
+            # second produce the same id, and the loser used to silently
+            # replace the winner's metadata (#879).
+            table.put_item(Item=item, ConditionExpression="attribute_not_exists(PK)")
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code == "ConditionalCheckFailedException":
+                raise TestRunIdTaken(test_run_id) from e
+            raise
         logger.info(f"Stored test run metadata for {test_run_id}")
+    except TestRunIdTaken:
+        raise
     except Exception as e:
         logger.error(f"Failed to store test run metadata: {e}")
         raise

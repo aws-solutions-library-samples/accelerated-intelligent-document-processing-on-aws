@@ -428,6 +428,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# combined pytest invocation.
 	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
+	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
+	cd nested/api-resolvers/src/lambda/test_runner && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \

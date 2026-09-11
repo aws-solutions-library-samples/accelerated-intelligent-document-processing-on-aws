@@ -566,6 +566,49 @@ class TestStoreInternals:
         with pytest.raises(ValueError, match="Invalid configuration profile name"):
             manager.revisions.index_key("has space")
 
+    def test_a_403_on_a_body_read_names_both_possible_causes(self, monkeypatch):
+        """
+        Without s3:ListBucket on the bucket, S3 answers a GetObject for a MISSING
+        key with 403 AccessDenied rather than 404. A pruned or never-cut pinned
+        revision then read as an IAM failure in OCR, and the clear "not
+        available" path never fired (#878). The store must not map 403 to None
+        either — a real permission defect must not pass as "revision missing".
+        """
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        store = manager.revisions
+        store._s3 = MagicMock()
+        store._s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "no ListBucket"}},
+            "GetObject",
+        )
+
+        with pytest.raises(PermissionError, match="s3:ListBucket") as info:
+            store.get_body("p", 1)
+        assert "config_revisions/p/000001.json.gz" in str(info.value)
+        assert isinstance(info.value.__cause__, ClientError)
+
+    def test_a_404_on_a_body_read_is_simply_missing(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from botocore.exceptions import ClientError
+
+        _make_table()
+        manager = _manager(monkeypatch)
+        manager.save_configuration(CONFIG_TYPE_CONFIG, _config("a"), version="p")
+        store = manager.revisions
+        store._s3 = MagicMock()
+        store._s3.get_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "gone"}}, "GetObject"
+        )
+
+        assert store.get_body("p", 1) is None
+
     def test_body_key_is_zero_padded_for_stable_ordering(self):
         assert (
             ConfigRevisionStore.body_key("p", 7) == "config_revisions/p/000007.json.gz"
