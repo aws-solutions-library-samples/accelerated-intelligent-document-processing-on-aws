@@ -1323,7 +1323,8 @@ extraction:
 In `ocr_only` mode the model is **not** asked for boxes at all. Each field's
 geometry is derived by matching the extracted value text against real OCR lines
 in the consolidated `pageData.json` artifact (Amazon Textract, or the Mistral OCR
-LambdaHook). This is **cheaper** (no bbox tokens in the response) and **more
+LambdaHook; the Cohere Parse hook contributes boxes for tables and figures only).
+This is **cheaper** (no bbox tokens in the response) and **more
 accurate** (OCR boxes beat LLM-estimated boxes, which models frequently
 hallucinate). A field with no OCR match simply has no geometry (geometry is
 advisory).

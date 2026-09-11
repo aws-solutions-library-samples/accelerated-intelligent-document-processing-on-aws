@@ -620,7 +620,40 @@ class BedrockClient:
         # Lambda invocations stay in the calling account, so this client
         # uses default credentials regardless of BEDROCK_ASSUME_ROLE_ARN.
         if self._lambda_client is None:
-            self._lambda_client = boto3.client("lambda", region_name=self.region)
+            # A hook may legitimately run for its whole Lambda timeout — up to
+            # the 900s maximum — because it is free to call a slow third-party
+            # service (an OCR hook wrapping a hosted VLM API takes tens of
+            # seconds per page). boto3 defaults to a 60s read timeout, which
+            # abandoned the in-flight invocation and retried it: the hook kept
+            # running, a *second* invocation started the same paid work, and the
+            # step made no progress. Measured on the Cohere Parse hook, whose
+            # pages take 75s at the median, one 5-page document produced 44
+            # invocations and zero completed pages.
+            #
+            # So: wait as long as a hook can possibly run, and turn botocore's
+            # own retries off. Retrying an invocation is not free — every
+            # attempt re-runs whatever the hook charges for — so it belongs to
+            # `_invoke_lambda_hook_with_retry`, which backs off, logs, and knows
+            # which errors are worth another attempt.
+            # 840s, not the full 900s Lambda maximum: the *calling* function is
+            # itself capped at 900s (OCRFunction is), so waiting the same 900
+            # would let the caller be killed before botocore ever raises — and
+            # Step Functions then retries the whole OCR task, re-running every
+            # page's paid call. Leaving 60s of headroom means the timeout
+            # surfaces as an error inside the caller, which can log it and fail
+            # the page cleanly. A hook is expected to keep its own timeout (and
+            # therefore its internal retry budget) below this.
+            config = Config(
+                connect_timeout=10,
+                read_timeout=840,
+                retries={"max_attempts": 1, "mode": "standard"},
+                # OCR fans pages out across worker threads that share this
+                # client; the default pool of 10 would serialize them.
+                max_pool_connections=50,
+            )
+            self._lambda_client = boto3.client(
+                "lambda", region_name=self.region, config=config
+            )
         return self._lambda_client
 
     @property
