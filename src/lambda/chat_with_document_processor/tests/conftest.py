@@ -26,7 +26,10 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("TRACKING_TABLE_NAME", "tracking-table")
 os.environ.setdefault("CONFIGURATION_TABLE_NAME", "config-table")
 os.environ.setdefault("OUTPUT_BUCKET", "output-bucket")
-os.environ.setdefault("USERS_TABLE_NAME", "")  # RBAC defaults to unrestricted
+# Must be non-empty: an unset UsersTable now DENIES the turn (fail-closed scope
+# lookup), so leaving it blank would make every test a scope denial. Tests that
+# exercise the unset case override it explicitly.
+os.environ.setdefault("USERS_TABLE_NAME", "users-table")
 
 # Stub `idp_common.*` symbols that the processor imports. The real package is
 # delivered via a Lambda layer at deploy time; for unit tests we only need to
