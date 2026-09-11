@@ -897,6 +897,49 @@ result = discovery.discovery_classes_with_document_and_ground_truth(
 - **Merge with Existing**: Combine with current document class definitions
 - **Create New Class**: Add as new document type to existing configuration
 
+### Samples that hold several records of one class
+
+Discovery is the one stage that sees the pages while authoring the schema, so it
+is also asked — in the same model call, as diagnostic metadata that is stripped
+before the schema is validated — how many separate, complete documents of the
+discovered class the sample contains. The question is the one the extraction
+[multi-instance detection probe](extraction-and-confidence.md#multi-instance-sections-x-aws-idp-multi-instance)
+uses ("count complete documents, not pages, sections or repeated headers"), so the
+two signals agree.
+
+When the answer is two or more, the job carries a **suggestion**, never a config
+write:
+
+- **Job details page** (single-document discovery): *"This sample appears to
+  contain N 'X' records"* with an **Enable several documents per section** action.
+  Clicking it sets `x-aws-idp-multi-instance: true` on that class in the job's
+  configuration version (clearing any `x-aws-idp-instance-array` designation) and
+  reminds you that committed evaluation baselines for the class then need
+  `scripts/migrate_multi_instance_baselines.py`. If the class already has the flag
+  (a re-run keeps it), the panel says so instead.
+- **Jobs table**: a blue *"N records in sample"* badge next to the class name.
+- **API / SDK**: the job's `multiInstanceHint` field, a JSON string
+  `{"instance_count", "class_name", "already_multi_instance", "message"}`; the
+  `ClassesDiscovery` result dict carries the same object as `multi_instance_hint`
+  (`None` for one record).
+
+Why suggest rather than set: enabling the flag changes the shape of every result
+for the class (`{"instances": [...]}`), which invalidates baselines and downstream
+consumers, and one sample cannot tell "this class is multi-record" from "this
+packet should have been split into several sections" — those want different fixes
+(`x-aws-idp-multi-instance` versus classification section splitting), and only
+you know which. Not setting it costs nothing until a multi-record document
+arrives, and the extraction-time detection probe is there to catch that.
+
+Measured once, on the shipped `samples/paystub_multi_instance.pdf` (three
+records) and `samples/bank-statement-multipage.pdf` (one document, several pages)
+with the default discovery model at its default temperature of 1.0: the count was
+right in every run (3 in four of four runs, 1 in one of one), and the key never
+reached the saved schema. Three control runs without the question produced the
+same 12 properties each time, while three runs with it produced 12, 11 and 12
+with some property-name variance — too few runs to call an effect, but if you see
+schema drift on a re-run, that is the first thing to suspect.
+
 ### Class name normalization
 
 A document class id (`$id` / `x-aws-idp-document-type`) is not only a label: it

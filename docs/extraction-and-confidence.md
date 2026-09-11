@@ -930,18 +930,20 @@ single-document section pay for an extra nesting level and would move the
 detection problem one stage later. Nothing changes for a class that does not set
 the flag.
 
-Two known gaps, both filed:
+Two things that used to be gaps are now closed:
 
-- **Discovery does not suggest it.** Discovery sees the pages and authors the
-  schema, so it is the best place to notice "this sample holds three
-  Pay-Statements" — but it does not, so today you have to already know the
-  feature exists. Tracked in GitHub #765 (suggest, with a one-click apply; never
-  set it silently, because the shape change invalidates baselines).
-- **Re-running Discovery on a class erases the flag** — along with every other
-  class-level `x-aws-idp-*` setting, because the merge replaces the class
-  wholesale. Tracked in GitHub #764. Until it is fixed, re-check the class's
-  settings after any Discovery run that targets a class you have configured by
-  hand.
+- **Discovery suggests it — and never sets it.** When the sample Discovery
+  analyzes appears to hold several records of the discovered class, the model is
+  asked for a diagnostic count (the same question as the #753 probe, "count
+  documents, not pages") and the job carries a suggestion: the job details page
+  shows *"This sample appears to contain N 'X' records"* with a one-click
+  **Enable several documents per section** action, the alternative (section
+  splitting) named alongside so the ambiguity is your call. The class setting is
+  never changed silently, because the shape change invalidates baselines
+  (GitHub #765). See [Discovery](discovery.md#samples-that-hold-several-records-of-one-class).
+- **Re-running Discovery on a class keeps the flag** — along with every other
+  class-level `x-aws-idp-*` setting; the merge carries authored settings forward
+  (GitHub #764), and the suggestion above says so when the flag is already on.
 
 #### Designate or Synthesize?
 

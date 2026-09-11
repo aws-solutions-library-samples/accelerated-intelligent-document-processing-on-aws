@@ -1123,6 +1123,7 @@ export const listDiscoveryJobs = /* GraphQL */ `
         discoveredClassName
         statusMessage
         pageRange
+        multiInstanceHint
         jobType
         currentStep
         totalDocuments
@@ -1418,6 +1419,7 @@ export const onDiscoveryJobStatusChange = /* GraphQL */ `
       errorMessage
       discoveredClassName
       statusMessage
+      multiInstanceHint
       jobType
       currentStep
       totalDocuments
