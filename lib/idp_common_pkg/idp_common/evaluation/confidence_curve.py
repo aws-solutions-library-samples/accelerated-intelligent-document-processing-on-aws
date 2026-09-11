@@ -238,6 +238,12 @@ class ConfidenceCurve:
     config_version: Optional[str] = None
     review_observations: int = 0
     scoring_observations: int = 0
+    # Which stored curve a CurveStore read actually returned: "config" (the
+    # per-configuration curve asked for), "aggregate" (the set-wide curve, either
+    # because none was asked for or as a fallback), or "none" (nothing stored; the
+    # estimator will lean on the global prior). Not persisted. Lets a caller say
+    # when an estimate silently fell back to a blend of every configuration (#759).
+    served_from: Optional[str] = None
 
     # -- construction ----------------------------------------------------
 

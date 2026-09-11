@@ -5,6 +5,8 @@ query EstimateReviewEffort($testSetId: String!, $targetAccuracy: Float, $configV
     qualityTierReason
     targetAccuracy
     configVersion
+    configVersionSource
+    curveSource
     docsToReview
     docsToReviewLow
     docsToReviewHigh
