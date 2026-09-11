@@ -129,6 +129,7 @@ TEMPLATES = [
     "samples/lambda-hook-inference/GENAIIDP-sagemaker-hook/template.yaml",
     "samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook/template.yaml",
     "samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook/template.yaml",
+    "samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook/template.yaml",
     "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency/template.yaml",
     # Throwaway verification fixture (make verify-idp-federation). Included so
     # an interrupted run cannot leave a never-expiring log group behind.

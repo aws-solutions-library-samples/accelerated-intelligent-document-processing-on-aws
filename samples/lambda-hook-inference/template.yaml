@@ -375,6 +375,17 @@ Resources:
                 - s3:GetObject
               Resource:
                 - !Sub "arn:${AWS::Partition}:s3:::${IDPWorkingBucket}/temp/lambdahook/*"
+      LoggingConfig:
+        LogGroup: !Ref CohereParseHookFunctionLogGroup
+
+  CohereParseHookFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    # Not CMK-encrypted: this template takes no CustomerManagedEncryptionKeyArn
+    # parameter, so it has no key to use and stays deployable standalone. Add the
+    # parameter and a KmsKeyId here if your account requires CMK-encrypted logs.
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/CohereParseHookFunction"
+      RetentionInDays: !Ref LogRetentionDays
 
 Outputs:
   BedrockProxyFunctionArn:
