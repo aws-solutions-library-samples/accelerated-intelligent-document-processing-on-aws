@@ -2386,6 +2386,15 @@ Resources:
             - Effect: Allow
               Action: s3:GetObject
               Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # ListBucket scoped to the revisions prefix. Without it S3 answers a
+            # missing body with 403 AccessDenied instead of 404, so a pruned or
+            # never-cut pinned revision surfaced as an IAM failure (#878).
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3CrudPolicy:
             BucketName: !Ref InputBucketName
         - S3CrudPolicy:
