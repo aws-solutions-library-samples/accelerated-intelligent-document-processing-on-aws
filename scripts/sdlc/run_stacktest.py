@@ -83,6 +83,13 @@ def _resolve_vpc_params(args):
 
 
 def main():
+    # Line-buffer stdout so a detached run (`setsid nohup … > log &`) shows
+    # progress and the verdict as they happen, not only at exit. Release
+    # validation polled CloudFormation instead of these logs for a night
+    # because of this.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("suffix", nargs="?", help="stack-test name (see --list)")
     ap.add_argument("--list", action="store_true", help="list available stack-tests")

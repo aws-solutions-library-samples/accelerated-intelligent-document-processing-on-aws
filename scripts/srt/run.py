@@ -14,6 +14,10 @@ from ci_paths import (  # noqa: E402
     partition_by_ci_visibility,
     tracked_files,
 )
+from register import (  # noqa: E402
+    describe_unsynced,
+    restore_committed_register,
+)
 from scanner_health import (  # noqa: E402
     failed_checkov_scans,
     missing_whole_repo_scanners,
@@ -146,6 +150,41 @@ def run_command(cmd: str, cwd=None, capture_output=False):
         return None if capture_output else False
 
 
+def restore_register(project_root, srt_dir):
+    """Copy scripts/srt/issues.json over .srt/issues.json; False if that would lose work.
+
+    A HIGH disposition present locally but never saved to the committed register
+    (a hand edit, or a raw `./srt fix` without fix.py's copy-back) is reported
+    and blocks the scan, unless SRT_DISCARD_LOCAL=1 says to drop it.
+    """
+    import os
+
+    tracked = tracked_files(project_root)
+    result = restore_committed_register(
+        project_root / "scripts" / "srt" / "issues.json",
+        srt_dir / "issues.json",
+        is_ci_visible=lambda i: is_in_ci_checkout(i.get("path"), tracked),
+        discard_local=os.getenv("SRT_DISCARD_LOCAL") == "1",
+    )
+    if result.action == "restored":
+        print(
+            f"✓ Restored the committed disposition register "
+            f"({result.committed_count} entries) into .srt/issues.json"
+        )
+        return True
+    if result.action == "no-committed-register":
+        print("ℹ️  No committed scripts/srt/issues.json — scanning with no baseline")
+        return True
+    print(
+        "❌ .srt/issues.json holds HIGH dispositions that are NOT in the committed\n"
+        "   register scripts/srt/issues.json. Restoring the register would discard\n"
+        "   them, so the scan is refused. Either save them (`make srt-fix` copies\n"
+        "   dispositions back), or drop them with SRT_DISCARD_LOCAL=1:\n"
+        + describe_unsynced(result.unsynced)
+    )
+    return False
+
+
 def main():
     """Run SRT security assessment."""
     import os
@@ -177,6 +216,14 @@ def main():
     print(f"Scanning project: {project_path}")
 
     warn_about_build_artifacts(project_root)
+
+    # Start every scan from the COMMITTED disposition register. `srt assess`
+    # merges into whatever .srt/issues.json already holds; a stale live file
+    # predating a committed suppression makes the scanner "discover" that
+    # finding and open it (v0.6.8: 10 false open HIGH). CI has always done this
+    # copy via `make srt-setup`; a local `make srt-scan` did not. See register.py.
+    if not restore_register(project_root, srt_dir):
+        sys.exit(1)
 
     # Recorded before the scan so a previous run's scanner summaries can't be
     # mistaken for this run's output when checking which scanners completed.

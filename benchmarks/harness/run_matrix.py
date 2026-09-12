@@ -528,6 +528,13 @@ def verify_config_axes(cells):
 
 
 def main():
+    # Line-buffer stdout so a detached run (`setsid nohup … > log &`) shows
+    # progress and the verdict as they happen, not only at exit. Release
+    # validation polled CloudFormation instead of these logs for a night
+    # because of this.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--stack", required=True)
     ap.add_argument("--suite", default="core")

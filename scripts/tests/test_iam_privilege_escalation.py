@@ -109,8 +109,21 @@ DEPLOYMENT_ROLE_TEMPLATES: dict[str, str] = {
     ),
 }
 
+# `scratch/` is the repo's gitignored local-work directory; it can hold whole git
+# worktrees (scratch/wt-*/), i.e. full copies of every template under a path the
+# exemption list does not know. The v0.6.8 release validation failed both rules
+# on two such worktrees. Same set as the sibling gate in test_lambda_log_groups.py.
 PRUNED_DIRS = frozenset(
-    {".aws-sam", "node_modules", ".venv", "build", "dist", ".git", "__pycache__"}
+    {
+        ".aws-sam",
+        "node_modules",
+        ".venv",
+        "build",
+        "dist",
+        ".git",
+        "__pycache__",
+        "scratch",
+    }
 )
 
 
@@ -530,6 +543,39 @@ def test_discovery_finds_a_new_template(tmp_path: Path) -> None:
     assert [p.relative_to(tmp_path) for p in _template_paths(root=tmp_path)] == [
         Path("some-service/template.yml")
     ]
+
+
+@pytest.mark.unit
+def test_discovery_prunes_scratch(tmp_path: Path) -> None:
+    """A template under ``scratch/`` (e.g. a stale git worktree) is not scanned.
+
+    ``scratch/`` is gitignored local work. A worktree left there is a complete
+    copy of the repo, so every exempt deployment-role template reappears under
+    a path the exemption list does not name — and both rules fail on files that
+    are not part of the tree under review.
+    """
+    stray = tmp_path / "scratch" / "wt-old" / "iam-roles" / "role.yaml"
+    stray.parent.mkdir(parents=True)
+    stray.write_text(
+        "Resources:\n"
+        "  R:\n"
+        "    Type: AWS::IAM::Role\n"
+        "    Properties:\n"
+        "      Policies:\n"
+        "        - PolicyName: p\n"
+        "          PolicyDocument:\n"
+        "            Statement:\n"
+        "              - Effect: Allow\n"
+        "                Action: iam:AttachRolePolicy\n"
+        "                Resource: '*'\n"
+    )
+    real = tmp_path / "svc" / "template.yaml"
+    real.parent.mkdir(parents=True)
+    real.write_text("Resources:\n  B:\n    Type: AWS::S3::Bucket\n")
+    assert [p.relative_to(tmp_path) for p in _template_paths(root=tmp_path)] == [
+        Path("svc/template.yaml")
+    ]
+    assert not _scan(root=tmp_path), "the gate scanned a template under scratch/"
 
 
 @pytest.mark.unit
