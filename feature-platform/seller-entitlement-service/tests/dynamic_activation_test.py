@@ -119,6 +119,41 @@ def _post(url: str, body: str, session: Optional[object], region: str):
         return 0, f"connection error: {exc}"
 
 
+# API Gateway's own 403s. A request the edge refuses — wrong SigV4 region, no
+# signature, a stage that does not exist — never reaches the Lambda, so a 403 with
+# one of these bodies proves nothing about the service's refusal logic. Every
+# signed-request assertion below must see the SERVICE's body instead (issue #889).
+_EDGE_403_MARKERS = (
+    "Credential should be scoped",
+    "Missing Authentication Token",
+    "The security token included in the request is invalid",
+    "Signature expired",
+    '"message"',  # API Gateway's envelope; the service never uses this key
+)
+
+
+def is_service_refusal(text: str) -> bool:
+    """True only for the service's own not-entitled body (``{"error": "not_entitled", …}``)."""
+    try:
+        body = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(body, dict) and body.get("error") == "not_entitled"
+
+
+def is_edge_refusal(text: str) -> bool:
+    """True for a 403 API Gateway produced itself, before the Lambda ran."""
+    return any(marker in (text or "") for marker in _EDGE_403_MARKERS)
+
+
+def _reject_edge_403(where: str, text: str) -> None:
+    bad(
+        f"{where}: the 403 came from API Gateway, not the service — the request "
+        f"never reached the Lambda, so this proves nothing about entitlement "
+        f"refusal. Usually a SigV4 region mismatch (pass --region). Body: {text[:160]}"
+    )
+
+
 def check_unsigned_is_refused(url: str, product_id: str, region: str) -> None:
     status, text = _post(url, json.dumps({"productId": product_id}), None, region)
     if status == 403:
@@ -139,6 +174,9 @@ def check_not_entitled(url: str, product_id: str, session, region: str) -> str:
     if status != 403:
         bad(f"unentitled account got {status}, expected 403: {text[:200]}")
         return text
+    if not is_service_refusal(text):
+        _reject_edge_403("unentitled account", text)
+        return text
     for leak in ("AccessDenied", "ValidationException", "arn:aws", "Traceback"):
         if leak in text:
             bad(f"403 body leaks internal detail ({leak!r}) to an arbitrary caller")
@@ -151,8 +189,10 @@ def check_no_product_oracle(url: str, refused_body: str, session, region: str) -
     status, text = _post(
         url, json.dumps({"productId": "prod-definitely-not-real"}), session, region
     )
-    if status == 403 and text == refused_body:
+    if status == 403 and text == refused_body and is_service_refusal(text):
         ok("unknown product is byte-identical to not-entitled — no existence oracle")
+    elif status == 403 and not is_service_refusal(text):
+        _reject_edge_403("unknown product", text)
     else:
         bad(
             f"unknown product is distinguishable (status={status}). A caller can "
@@ -217,6 +257,12 @@ def check_hostile_payloads(url: str, session, region: str) -> None:
             problems.append(f"{label}: connection failed ({text[:60]})")
         elif status >= 500:
             problems.append(f"{label}: {status}")
+        elif status == 403 and not is_service_refusal(text):
+            # An edge 403 means the payload never reached the handler, so
+            # "refused cleanly" would be claiming robustness that was not tested.
+            problems.append(
+                f"{label}: 403 from API Gateway, not the service ({text[:60]})"
+            )
         elif status not in (400, 403, 413):
             problems.append(f"{label}: unexpected {status}")
     if problems:
