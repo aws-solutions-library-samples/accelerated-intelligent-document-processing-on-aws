@@ -47,16 +47,27 @@ are all decided below.
    checkout is commonly installed editable — a bare `python` tests the WRONG tree.
    Install the test extras before believing any failure (`full-test-battery.md`
    gotcha 1).
-3. **Run SRT before you build.** `make srt-scan` on a tree with `.aws-sam/` output
-   reports every finding twice (source + packaged artifact). The gate now labels
-   gitignored hits "LOCAL-ONLY, non-blocking", but the clean way is still: scan
-   first, `publish.py` second.
+3. **Run SRT before you build — and run setup first.** `CI=1 python scripts/srt/setup.py
+   && make srt-scan`. `make srt-scan` alone merges into whatever gitignored
+   `.srt/issues.json` is already there; if that state predates suppressions committed
+   to `scripts/srt/issues.json`, the scan **re-opens them** and the gate reads red
+   (v0.6.8: 10 false open HIGH). `make srt-setup` copies the committed register in —
+   but without `CI=1` it prompts for an AWS profile, and interrupting that prompt
+   deletes SRT's config and scanner venv. Scanning a tree with `.aws-sam/` output is
+   fine (those hits are labelled LOCAL-ONLY), but scan first, `publish.py` second.
 4. **Confirm the published artifact.** `curl -sI <TO_URL>` returns 200, and its
    `Description` line contains `(v<VERSION>)`.
-5. **Tell the user the budget** before the first deploy: the full battery stands up
+5. **Check IAM role headroom — it is the binding constraint on parallelism.**
+   `aws iam get-account-summary --query 'SummaryMap.[Roles,RolesQuota]'`. Each IDP
+   stack creates **~121 roles** (158 with every feature on); budget ~160 per in-flight
+   stack. At v0.6.8 the account sat at 1,740/2,000 and five concurrent deploys failed
+   two tiers on `RolesPerAccount`. The quota (`L-FE177D64`) is adjustable and a request
+   to 3,000 was auto-approved in minutes — request it up front if headroom is under
+   two stacks' worth. Note the standing stacks in *other regions* too: roles are global.
+6. **Tell the user the budget** before the first deploy: the full battery stands up
    and tears down roughly eight stacks and took **most of a working day** for
-   v0.6.6, with real Bedrock/Textract spend on the benchmark side (corefast is
-   19 cells × 3 repeats × 3 docs per side).
+   v0.6.6 and about seven hours for v0.6.8, with real Bedrock/Textract spend on the
+   benchmark side (corefast is 19 cells × 3 repeats × 3 docs per side, ~$32 a side).
 
 ## The tiers
 
@@ -86,8 +97,10 @@ make security-results STACK_NAME=<stack> REGION=<region>     # SRT + RBAC static
 ```
 
 Writes `security/test-results/<VERSION>/` (MANIFEST + four reports). Pass `SKIP_SRT=1`
-if the SRT scan from tier A is already in `.srt/issues.json`. Review the redactions
-before committing. Gate values to compare against `security/test-results/<PREV>/`:
+and let it curate the tier-A scan already in `.srt/issues.json` — the wrapper calls
+`make srt-scan` without `make srt-setup`, so run on a stale `.srt/` it would stamp
+the false-red from preflight step 3 into the snapshot. Review the redactions before
+committing. Gate values to compare against `security/test-results/<PREV>/`:
 SRT open/reopened HIGH, RBAC static fail/warn, RBAC dynamic check count and hard
 fails, ZAP High/Medium. **Any movement from PREV is a finding**, up or down.
 Skill: `curate-security-results.md`; per-test triage in `api-rbac-test.md` and
@@ -114,10 +127,19 @@ make stacktest-seller                                    # REGION deliberately U
   other region three refusal assertions pass **vacuously** on API Gateway's SigV4
   403. A us-east-1 run is a real pass. If it has been fixed when you read this,
   say so in the record and delete this bullet.
-- **Concurrency.** At most **two** stack deploys in flight at once. Six at once is
-  what burst the account's control planes (Logs create-consistency, CodeBuild
-  role-trust propagation, IAM CreatePolicy rate) and produced failures unrelated to
-  the code — the reason these left CI.
+- **Seller: delete the leftover log group first, and again after.** Every run leaves
+  `/aws/apigateway/idp-seller-entitlement-citest-activation` behind (named + `Retain`,
+  and the teardown script does not remove it), and CloudFormation's
+  `AWS::EarlyValidation::ResourceExistenceCheck` then fails the *next* run at
+  changeset creation. `aws logs delete-log-group --region us-east-1 --log-group-name
+  /aws/apigateway/idp-seller-entitlement-citest-activation` before you run, and in
+  cleanup. Open since v0.6.8.
+- **Concurrency.** At most **two** stack deploys in flight at once, and never more
+  than the IAM role headroom allows (preflight step 5). Six at once is what burst
+  the account's control planes (Logs create-consistency, CodeBuild role-trust
+  propagation, IAM CreatePolicy rate) and produced failures unrelated to the code —
+  the reason these left CI. With the quota raised, v0.6.8 ran three at once without
+  incident; the role count, not the rate limits, was what actually bit.
 - **After the VPC tiers, sweep orphaned ENIs** (`describe-network-interfaces
   --filters Name=status,Values=available` in that VPC; delete the ones whose
   description names a deleted `idp-*` stack). They accumulate silently and will
@@ -254,8 +276,19 @@ with the test extras, and never write "GovCloud works" from a commercial run.
 
 ## Standing issues to recognise, not rediscover (delete when fixed)
 
-- **Seller stack-test region** (2026-08-28, still open 2026-09-11): run with
+- **Seller stack-test region** (2026-08-28, still open 2026-09-12): run with
   `REGION` unset; see tier C.
+- **Seller stack-test leftover log group** (2026-09-12): delete
+  `/aws/apigateway/idp-seller-entitlement-citest-activation` before and after; see tier C.
+- **`make srt-scan` without setup re-opens suppressed findings** (2026-09-12): always
+  `CI=1 python scripts/srt/setup.py` first; see preflight step 3. Same gap inside
+  `scripts/security/run_security_tests.sh`.
+- **`scripts/tests/test_iam_privilege_escalation.py` scans `scratch/`** (2026-09-12):
+  a stale `git worktree` under `scratch/` fails `make test` on templates already exempt
+  under their real paths. `git worktree list` and remove them before believing it.
+- **Detached processes print late.** `run_stacktest.py` and `run_matrix.py` buffer
+  stdout when redirected to a file — the verdict appears only at exit. Track progress
+  from CloudFormation (`list-stacks`) and `results/run-*/runmap.json`, not the log.
 - **`make typecheck` whole-repo baseline** is non-zero by design (CI checks changed
   files only): compare totals to develop, do not report the raw number as a failure.
 - **`make security-results` first-run Cognito race** (`UserNotFoundException`): the
