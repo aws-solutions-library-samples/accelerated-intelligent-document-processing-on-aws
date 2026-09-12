@@ -76,6 +76,12 @@ TABLE_NAME="$(aws cloudformation describe-stack-resource \
   --stack-name "$STACK_NAME" --logical-resource-id ActivationsTable \
   --region "$REGION" --query 'StackResourceDetail.PhysicalResourceId' \
   --output text 2>/dev/null)" || TABLE_NAME=""
+# The REST API id names the execution-log group; capture it while the stack
+# still knows it.
+API_ID="$(aws cloudformation describe-stack-resource \
+  --stack-name "$STACK_NAME" --logical-resource-id ActivationApi \
+  --region "$REGION" --query 'StackResourceDetail.PhysicalResourceId' \
+  --output text 2>/dev/null)" || API_ID=""
 
 echo "Retained resources to clean up after stack deletion:"
 echo "  KMS key:  ${KEY_ID:-<not found>}"
@@ -115,5 +121,28 @@ if [[ -n "$KEY_ID" && "$KEY_ID" != "None" ]]; then
     warn "could not schedule deletion of key $KEY_ID (already pending?)"
   fi
 fi
+
+# Named log groups. The template gives the access-log and execution-log groups
+# fixed names and does NOT retain them, yet the access-log group is present again
+# after delete-stack returns — API Gateway re-creates it while flushing buffered
+# access logs for the stage that has just gone. Left in place, CloudFormation's
+# AWS::EarlyValidation::ResourceExistenceCheck fails the NEXT deploy of this
+# stack name at changeset creation (issue #889). Sweep them, idempotently.
+sleep 20   # let the post-delete log flush land before we look
+for LG in "/aws/apigateway/${STACK_NAME}-activation" \
+          "/${STACK_NAME}/lambda/ActivateFunction" \
+          ${API_ID:+"API-Gateway-Execution-Logs_${API_ID}/prod"}; do
+  CREATED="$(aws logs describe-log-groups --log-group-name-prefix "$LG" \
+    --region "$REGION" --query "logGroups[?logGroupName=='$LG'].creationTime" \
+    --output text 2>/dev/null)"
+  if [[ -n "$CREATED" && "$CREATED" != "None" ]]; then
+    if aws logs delete-log-group --log-group-name "$LG" --region "$REGION" \
+        >/dev/null 2>&1; then
+      ok "deleted leftover log group $LG (created $(date -u -d @$((CREATED/1000)) +%FT%TZ 2>/dev/null || echo "$CREATED"))"
+    else
+      warn "could not delete log group $LG"
+    fi
+  fi
+done
 
 ok "teardown complete"

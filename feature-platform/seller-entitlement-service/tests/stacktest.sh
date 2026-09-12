@@ -137,8 +137,12 @@ info "endpoint: $ENDPOINT"
 # Assertion #3: the live stage really enforces SigV4, refuses cleanly, and never
 # 5xxes on hostile input.
 info "running the live security probe"
+# --region MUST be forwarded: the probe SigV4-signs for the region it is told,
+# and API Gateway rejects a request signed for the wrong one with a 403 of its
+# own ("Credential should be scoped to a valid region") — which the refusal
+# assertions below used to accept as a pass (issue #889).
 "$PYTHON" "$HERE/dynamic_activation_test.py" \
-  --endpoint "$ENDPOINT" --product-id "$SYNTHETIC_PRODUCT" \
+  --endpoint "$ENDPOINT" --product-id "$SYNTHETIC_PRODUCT" --region "$REGION" \
   || die "live security probe failed"
 
 echo
