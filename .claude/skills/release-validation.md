@@ -238,7 +238,7 @@ premium end earns its price. Three pieces:
 
 | Piece | Runs | Output in the guide |
 |---|---|---|
-| **extraction-model sweep** — `coresynth --set extraction_model=<m>` for every value in the matrix's `sweeps.extraction_model` axis (today `nova_lite`, `nova_pro`, `sonnet5`, `sonnet5_1m`, `opus5`, `astra`; Sonnet 4.6 is the control) | 6 × 133 | a model table: recall, cell accuracy, typed accuracy, cost/doc, wall, mean confidence and % below 0.9 — same grid, same docs, so rows are comparable |
+| **extraction-model sweep** — `coresynth --set extraction_model=<m>` for every value in the matrix's `sweeps.extraction_model` axis (today `nova_lite`, `nova_pro`, `sonnet5`, `sonnet5_1m`, `opus5`, `astra`; Sonnet 4.6 is the control). A model that cannot run the agentic path (the Nova models — #895) never finishes `coresynth`; run `simplegrid --set extraction_model=<m>` for it instead and say so in the table | 6 × 133 (or 63) | a model table: recall, cell accuracy, typed accuracy, cost/doc, wall, mean confidence and % below 0.9 — same grid, same docs, so rows are comparable |
 | **premium head-to-head** — `astravalue` (Sonnet 5 vs GPT-6 Astra vs `global.` Astra, simple + advanced, 4 docs 3–26 pages, 5 repeats) and `astracap` (the 66-page ceiling, 25-page-shard arms) | 100 + 12 | "Is a ~4× model worth it?" — answered as a ratio (accuracy gained per dollar) per document size, including the capacity band where only the 1M-context model completes in one request |
 | **classification / confidence model sweeps** — `coresynth --set classification_model=<m>` and `--set confidence_model=<m>` over their axes (`nova_2_lite`, `sonnet5`, `haiku45`; `nova_lite`, `nova_2_lite`, `sonnet5`) | 3–4 × 133 each | which lightweight model is enough for classification and the confidence pass, and what upgrading it buys |
 
@@ -281,9 +281,13 @@ honesty rules). Read `benchmarks/matrices/METHODOLOGY.md` before writing a numbe
 6. Upgrade stack: baseline doc → update-stack → post doc → keep it as the benchmark stack.
 7. Benchmark F1 both sides (the PREV side must run **before** the upgrade — schedule
    it between the baseline document and `update-stack`, or use a second stack).
-8. Benchmark F2 + F3 on the `v<VERSION>` reference stack, suites back to back
-   (`--max-inflight 6`; the harness serialises within a suite, so run two suites at
-   once at most — Bedrock quotas are shared with every other stack in the account).
+8. Benchmark F2 + F3 on the `v<VERSION>` reference stack. At v0.6.8 this was 3,455 runs
+   and $2,114 over 13.6 hours with up to nine suites in flight at `--max-inflight 4`
+   each (a lane script per queue; 0 Bedrock throttling failures). Run the two `core`
+   suites and the premium grids first — they are the long poles — and expect the Nova
+   grids to stall on agentic cells (#895): stop them and use `simplegrid`. Score with
+   `aggregate.py` as each run ends (a run dir that already exists from a prerelease
+   must be re-scored, not skipped), and pull the S3 outputs you cite before teardown.
    This is the long pole: budget **a second day** for it and say so up front.
 9. Aggregate, compare, figures; regenerate every `docs/benchmarking/` file (F4);
    write the three records; sweep ENIs; tear down all but one reference stack at
