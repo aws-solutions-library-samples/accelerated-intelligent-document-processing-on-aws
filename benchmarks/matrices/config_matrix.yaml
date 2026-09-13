@@ -675,6 +675,12 @@ suites:
   # 90 runs per side. Do not raise the broad grids (core/coresynth/full) to match —
   # those include the 400/800-row docs and the spend is not comparable.
   corefast: {cells: "core_cells", docs: "corefast", repeats: 3}
+  # simplegrid: the simple-mode decision cells of the core grid, over the synthetic docs.
+  # For a model that cannot run the agentic path (Nova Lite/Pro: hundreds of
+  # "invalid sequence as part of ToolUse" stream errors, each retried — #895) the full
+  # coresynth grid never finishes; this is the grid the guidance paper's lightweight-model
+  # rows are computed on. Same cells as coresynth minus the advanced ones.
+  simplegrid: {cells: [core-tt-simple-sep, core-tt-simple-int, core-tt-simple-off, core-tl-simple-sep, core-bda-simple-sep, core-llm-simple-sep, enforce-warn, force-off, split-llm], docs: "core_synth", repeats: 1}
   # coresynth: the cross-config grid the config-guidance paper reports — the full
   # 10-cell core grid over the exact-ground-truth SYNTHETIC list docs only. Same
   # cells as `core` but without the two reference corpora (realkie, ocr_bench),

@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Changed
+
+- **The GitHub docs workflow is now build-only (`build-docs.yml`); it no longer tries to publish to GitHub Pages.** Its `deploy` job called `actions/deploy-pages` from `main`, but the `github-pages` environment only allows the `gh-pages` branch and the Pages source is "Deploy from a branch", so the job failed on every push to `main` since July 2026 and marked the repo's Pages deployment red. The site is published with `make docs-deploy`, which pushes the local build to `gh-pages`; the workflow keeps the build job as a docs-site build check on `main`, `develop` and pull requests that touch `docs/`, `docs-site/` or `images/`, with `pages: write` and `id-token: write` permissions dropped.
+
 ## [0.6.8]
 
 ### Added
