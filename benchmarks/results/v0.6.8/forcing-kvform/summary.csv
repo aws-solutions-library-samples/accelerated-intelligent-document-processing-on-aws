@@ -1,0 +1,7 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+force-off,kv_form.pdf,,0,COMPLETED,True,1.0,,,0.68,1.0,,,,,,,,1.0,0,,,0.998,0.0,,,,,15.355735,0.0348
+force-off,kv_form.pdf,,1,COMPLETED,True,1.0,,,0.68,1.0,,,,,,,,1.0,0,,,0.998,0.0,,,,,14.338737,0.0279
+force-off,kv_form.pdf,,2,COMPLETED,True,1.0,,,0.68,1.0,,,,,,,,1.0,0,,,0.998,0.0,,,,,14.746439,0.0279
+force-on,kv_form.pdf,,0,COMPLETED,True,1.0,,,0.68,1.0,,,,,1,1,1.0,1.0,0,,,0.998,0.0,,,,,16.629198,0.0454
+force-on,kv_form.pdf,,1,COMPLETED,True,1.0,,,0.68,1.0,,,,,1,1,1.0,1.0,0,,,0.998,0.0,,,,,15.530871,0.0328
+force-on,kv_form.pdf,,2,COMPLETED,True,1.0,,,0.68,1.0,,,,,1,1,1.0,1.0,0,,,0.998,0.0,,,,,17.133677,0.0329
