@@ -608,7 +608,7 @@ client's `CACHEPOINT_SUPPORTED_MODELS` (inference-profile ARNs are unknown, neve
 `describe_cache_state` renders the one-line verdict for the text report; the Web UI
 mirrors both in `src/ui/src/components/common/promptCacheModel.ts` (per-class in the
 section's Processing Report tab, per-phase on the document cost table's subtotal rows).
-See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/prompt-caching.md` for the measurements.
+See [#780](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/780) and `docs/benchmarking/studies/prompt-caching.md` for the measurements.
 
 ## Forced tool use (Simple mode, `extraction.forced_tool`)
 
@@ -767,7 +767,7 @@ Config: `extraction.multi_instance_detection.enabled`, default **false**.
 
 Measured on two real labeled corpora via Test Studio, 80 paired runs (identical
 documents per pair, only the toggle differing) — see
-`docs/benchmarking/feature-multi-instance.md`:
+`docs/benchmarking/studies/feature-multi-instance.md`:
 
 * **The counting works.** On 40 bank-check images from the OmniAI OCR benchmark,
   scored against their committed baselines: 18 true positives, **0 false

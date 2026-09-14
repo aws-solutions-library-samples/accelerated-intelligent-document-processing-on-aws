@@ -144,20 +144,15 @@ export default defineConfig({
           items: [
             { label: "Benchmarking Guide", slug: "benchmarking" },
             { label: "Configuration Guidance", slug: "benchmarking/config-guidance" },
-            { label: "Prompt Caching (measured)", slug: "benchmarking/prompt-caching" },
-            { label: "Cache Padding Proposal", slug: "benchmarking/prompt-cache-padding-proposal" },
-            {
-              label: "Classification Confidence",
-              slug: "benchmarking/classification-confidence",
-            },
-            {
-              label: "Multi-instance Sections",
-              slug: "benchmarking/feature-multi-instance",
-            },
             {
               label: "Release Audit Trail",
               // README.md is the index; per-release vX.Y.Z.md entries auto-list.
               items: [{ autogenerate: { directory: "benchmarking/releases" } }],
+            },
+            {
+              label: "Studies",
+              // One-off, harness-measured investigations; README.md is the index.
+              items: [{ autogenerate: { directory: "benchmarking/studies" } }],
             },
             { label: "Extraction Scaling Guide", slug: "extraction-scaling-guide" },
           ],
