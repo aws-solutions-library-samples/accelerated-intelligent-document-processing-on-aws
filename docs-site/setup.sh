@@ -56,8 +56,9 @@ if [ -d "$PROJECT_ROOT/docs/extensions" ]; then
     echo "   ✅ Linked $ext_count extension docs"
 fi
 
-# Step 1c: Symlink the docs/benchmarking/ folder (guide + config-guidance + the
-# per-release audit trail under releases/) into src/content/docs/benchmarking/.
+# Step 1c: Symlink the docs/benchmarking/ folder (guide + config-guidance, the
+# per-release audit trail under releases/, and the one-off studies under studies/)
+# into src/content/docs/benchmarking/.
 if [ -d "$PROJECT_ROOT/docs/benchmarking" ]; then
     echo ""
     echo "🔗 Creating symlinks for benchmarking docs..."
@@ -72,14 +73,17 @@ if [ -d "$PROJECT_ROOT/docs/benchmarking" ]; then
         ln -s "../../../../../docs/benchmarking/$filename" "$target"
         bench_count=$((bench_count + 1))
     done
-    for md_file in "$PROJECT_ROOT"/docs/benchmarking/releases/*.md; do
-        [ -e "$md_file" ] || continue
-        filename=$(basename "$md_file")
-        target="$CONTENT_DOCS/benchmarking/releases/$filename"
-        # Path: docs-site/src/content/docs/benchmarking/releases/ → 6 levels up
-        [ -L "$target" ] && rm "$target"
-        ln -s "../../../../../../docs/benchmarking/releases/$filename" "$target"
-        bench_count=$((bench_count + 1))
+    for sub in releases studies; do
+        mkdir -p "$CONTENT_DOCS/benchmarking/$sub"
+        for md_file in "$PROJECT_ROOT"/docs/benchmarking/$sub/*.md; do
+            [ -e "$md_file" ] || continue
+            filename=$(basename "$md_file")
+            target="$CONTENT_DOCS/benchmarking/$sub/$filename"
+            # Path: docs-site/src/content/docs/benchmarking/<sub>/ → 6 levels up
+            [ -L "$target" ] && rm "$target"
+            ln -s "../../../../../../docs/benchmarking/$sub/$filename" "$target"
+            bench_count=$((bench_count + 1))
+        done
     done
     echo "   ✅ Linked $bench_count benchmarking docs"
 fi

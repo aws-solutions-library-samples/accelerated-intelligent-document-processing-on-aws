@@ -768,7 +768,7 @@ confidence model does see them** — it marks 2.0% of leaves on that cell below 
 assessment cost** ($1.12 vs $0.10 per document; it more than doubles the total bill). And
 because per-row accuracy is ≈1.000 everywhere else, **calibration separation is
 unmeasurable on this corpus** for any model: there is nothing wrong for a score to be lower
-on. The v0.6.7 edition's `classification-confidence.md` study on DocSplit-Poly-Seq remains
+on. The v0.6.7 edition's [classification-confidence study](studies/classification-confidence.md) on DocSplit-Poly-Seq remains
 the reference for how these models separate right from wrong when there is something to
 separate.
 
