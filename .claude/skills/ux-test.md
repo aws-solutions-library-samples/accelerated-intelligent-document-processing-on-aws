@@ -168,6 +168,105 @@ not passed and not failed.
 is only on an unmerged branch, the stack will not have it and the flow is
 **blocked**, not broken. Say which, so nobody chases a phantom bug.
 
+## Recording a review (optional)
+
+Use this when the user wants a video — "record the walkthrough", "make something
+the team can watch", "demo the annotation flow". The review is the same review;
+the recorder is a sidecar that captures the tab you are driving and turns your
+narration into speech afterwards. Nothing about how you drive the browser changes.
+
+### Before you start
+
+- `make ux-record-deps` — ffmpeg, ffprobe, boto3 and Pillow must all be present.
+- The Chrome window must be **visible, unminimized and not covered**, with the
+  reviewed tab in front. macOS stops compositing an occluded window and the
+  screencast stops with it; `./scripts/ux_recorder.py status` says
+  `tab visible False` when that happens. Do not resize the window mid-review, and
+  keep DevTools closed in that tab.
+- `./scripts/ux_recorder.py targets` lists the debuggable tabs. The MCP's
+  `list_pages` ids are **not** these ids; pick the tab by a URL fragment
+  (`--url-contains cloudfront`) or by the id this prints (`--target`).
+
+### The cadence
+
+```bash
+./scripts/ux_recorder.py start --stack <STACK> --persona Admin --flow 5.1 \
+    --url-contains cloudfront \
+    --say "We are looking at the annotation queue for a lending test set."
+
+# before EACH group of browser actions:
+./scripts/ux_recorder.py mark "Open the annotation queue" \
+    --say "We open the annotation queue from the test set's page."
+#   ... then do the MCP clicks / fills / snapshots for that step
+
+./scripts/ux_recorder.py note "Spinner has no label"   # something you noticed
+./scripts/ux_recorder.py pause                          # before a long wait (re-extraction, sign-in)
+./scripts/ux_recorder.py resume
+
+./scripts/ux_recorder.py stop --say "That is the annotation flow as an admin sees it today."
+```
+
+`mark` goes **before** the action, not after: the narration describes what is
+about to happen, and the renderer holds the screen until the narrator has started
+before the click lands. A mark without `--say` still starts a chapter.
+
+The screenshots you take for your own judgement are not the video; the recorder
+captures what the tab shows, continuously, and every mark also takes a frame.
+
+**Every click is logged and drawn where it happened.** The cursor overlay
+reports each mousedown to the recorder with its coordinates, the element under
+the pointer and whether that element was interactive; `render` prints a click
+table and warns about any click that hit nothing interactive. In the video each
+click is shown as a ring and pointer composited onto the **last frame before the
+click**, held for `--click-hold` seconds (0.7) before the page changes — a
+single-page app reacts within tens of milliseconds, so a marker drawn live would
+land on the destination page instead. A marker away from the element you meant is
+therefore not a drawing error — it is the automation missing, and the timeline
+names what it hit. Seen
+once so far: a wrapped table link whose centre was computed before two flash
+messages shifted the table, so the click landed on the page header. If a click
+does not do what you expected, check `status` (it counts clicks on nothing
+interactive) before blaming the UI, and re-snapshot before clicking again.
+
+### After stop
+
+1. Write the report into `<session>/review.md` — the skeleton is there, in the
+   format under Reporting — the same text you put in the transcript. Its
+   **Findings** entries become the end card.
+2. Optionally edit `<session>/narration.md`; only changed lines are re-synthesised.
+3. `AWS_PROFILE=default ./scripts/ux_recorder.py render --voice Ruth`. Run it with
+   `--dry-run` first: it prints the pacing table, and a segment that is silent for
+   more than a few seconds, or sits at the 3× speed ceiling, wants a better
+   narration line or a `pause` next time.
+4. Report the path of `review.mp4`. Beside it: `review.srt`, `segments.json` (the
+   chapter table, also written into `review.md`) and `timeline.json`.
+
+### Narration style
+
+First person plural, present tense, one or two sentences per mark. Say what the
+person is trying to do and what they see, not which element you clicked: "We
+correct the loan amount and save" rather than "click uid 14". No stack names, ids
+or selectors. Findings belong on the end card, not in the narration — the video
+shows the flow; the report judges it.
+
+### How the video is paced
+
+The recorder receives a frame only when the screen changes, so your thinking time
+between steps costs nothing. `render` clamps idle gaps, drops paused stretches,
+holds each mark's frame while the voice starts, never fast-forwards past 3×, and
+settles on the final state before the next chapter. Narration is Amazon Polly's
+generative engine (Ruth by default; Matthew, Stephen, Danielle, Joanna, Salli,
+Tiffany also work). Captions are embedded as an English subtitle track — toggled
+in the player (QuickTime: View → Subtitles; VLC: Subtitle menu) — and written to
+`review.srt`; `--no-captions` leaves the track out.
+
+### Privacy
+
+A recording of a live stack shows real documents. Everything lands under
+`scratch/ux-recordings/` (gitignored); never commit it or attach it to a PR, and
+say so when you hand over the path. Nothing is redacted. Polly receives only the
+narration text you wrote; frames never leave the machine.
+
 ## What to look for
 
 Beyond each flow's `ux_watch` notes. Each of these has already bitten this
@@ -218,7 +317,8 @@ Not covered
 ```
 
 State stack, persona and date: a UX review is a snapshot, and a stale one read as
-current is worse than none.
+current is worse than none. For a recorded review the same report also goes into
+`<session>/review.md`, where `render` reads the Findings for the end card.
 
 ## Don't
 
@@ -229,3 +329,5 @@ current is worse than none.
 - **Don't restyle on a hunch.** Cloudscape conventions and
   `.claude/skills/frontend-ui.md` govern; a suggestion that fights the design
   system is not an improvement.
+- **Don't hide, minimize or resize the recorded tab** while a recording is running,
+  and don't record with DevTools or anything showing a bearer token in the frame.

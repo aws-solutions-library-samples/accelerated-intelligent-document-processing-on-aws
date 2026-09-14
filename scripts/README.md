@@ -41,7 +41,45 @@ See [sdlc/cfn/README.md](sdlc/cfn/README.md) for CloudFormation templates.
 |--------|---------|-------|
 | `discover_model_limits.py` | Empirically test Bedrock model max_tokens limits | `python scripts/discover_model_limits.py` |
 | `test_api_rbac.py` | Live RBAC/auth/arg-mapping test of the REST API across all Cognito roles | `python scripts/test_api_rbac.py --stack-name <stack> --region <region>` |
+| `ux_test_session.py` | Web URL and throwaway Cognito user for a browser UX review (see `.claude/skills/ux-test.md`) | `python scripts/ux_test_session.py url <stack> --region <region>` |
+| `ux_recorder.py` | Record a UX review as a narrated, captioned mp4 (sidecar to the ux-test skill; see below) | `python scripts/ux_recorder.py start --stack <stack> --persona Admin --url-contains cloudfront` |
 | `generate_govcloud_template.py` | Generate GovCloud-compatible template (**deprecated** — use `idp-cli publish --headless`) | `idp-cli publish --source-dir . --region <region> --headless` |
+
+### UX review recorder (`ux_recorder.py`)
+
+Turns a browser UX review (the agent driving the debug Chrome per
+`.claude/skills/ux-test.md`) into `review.mp4` with spoken narration and an
+embedded subtitle track, so a review can be shown to the team instead of re-run.
+
+**How it works:** `start` attaches a second DevTools session to the tab being
+reviewed (same Chrome on `:9222` the MCP server uses) and captures screencast
+frames, which Chrome emits only when the screen changes. The agent calls `mark`
+with a narration line before each step, `note` for observations, `pause`/`resume`
+around long waits, then `stop`. `render` synthesizes the narration with Amazon
+Polly's generative engine, lays the recording out for a human viewer (idle gaps
+clamped, paused stretches dropped, each mark's frame held while the voice starts,
+speed-ups capped at 3×, a settle before the next chapter), adds title and end
+cards, and encodes one mp4 plus `review.srt`, `segments.json` and a chapter table
+in `review.md`. Every click is logged with its coordinates and the element under
+the pointer; `render` draws each click as a ring on the last frame before it and
+holds that frame briefly (the page changes too fast for a live marker to be seen
+on the right screen), prints the click table, and flags clicks that hit nothing
+interactive, which is how a mis-aimed automation click is told apart from a UI bug.
+
+```bash
+make ux-record-deps                                   # ffmpeg, ffprobe, boto3, Pillow
+./scripts/ux_recorder.py targets
+./scripts/ux_recorder.py start --stack <STACK> --persona Admin --flow 5.1 --url-contains cloudfront --say "..."
+./scripts/ux_recorder.py mark "Open the annotation queue" --say "We open the queue from the set's page."
+./scripts/ux_recorder.py stop --say "That ends the review."
+AWS_PROFILE=default ./scripts/ux_recorder.py render --voice Ruth        # --dry-run prints the pacing table
+```
+
+Output lives under `scratch/ux-recordings/<stack>-<timestamp>/` (gitignored):
+recordings of a live stack show real documents and are never committed. Polly
+receives only the narration text. Stdlib plus boto3/Pillow at render time; the
+WebSocket client is vendored in `ux_recorder_cdp.py` rather than adding a
+dependency. Unit tests: `scripts/tests/test_ux_recorder.py`.
 
 ### Model Limit Discovery (`discover_model_limits.py`)
 

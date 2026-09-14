@@ -560,7 +560,7 @@ endif
 # the usability judgement are done by the agent following
 # .claude/skills/ux-test.md, so this prepares a throwaway session and prints what
 # to do next rather than pretending a shell script can assess a user experience.
-ux-test: ## Set up a browser UX-test session (requires STACK_NAME; see .claude/skills/ux-test.md)
+ux-test: ## Set up a browser UX-test session (requires STACK_NAME; see .claude/skills/ux-test.md; ux-record-deps for recording)
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
 endif
@@ -570,6 +570,12 @@ endif
 	    $(if $(REGION),--region $(REGION),)
 	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"
 	@echo -e "$(YELLOW)Remember to run the teardown command printed above.$(NC)"
+
+# The UX review recorder (scripts/ux_recorder.py) needs ffmpeg/ffprobe for the
+# video, boto3 for Polly narration and Pillow for the title/end cards. This only
+# checks; the recording itself is driven by the agent between browser steps.
+ux-record-deps: ## Check the tools the UX review recorder needs (ffmpeg, ffprobe, boto3, Pillow)
+	@$(PYTHON) scripts/ux_recorder.py deps
 
 # Reports default under ./scratch (gitignored) so a manual run never litters the
 # working tree; override the location with REPORT_DIR=.
