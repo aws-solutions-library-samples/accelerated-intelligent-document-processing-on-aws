@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Added
 
-- **Monitor (Beta) is listed in the extensions catalog, alongside Auto Optimizer (Beta).** The paid IDP Monitor extension — a real-time operations dashboard for document volume, latency, cost breakdown and trends, failures, throttles, AI insights and versioned dashboard configuration — now has a `config_library/extensions-marketplace.yaml` entry, so it appears in the **Extensions** nav and the **Browse catalog** page with a link to its [AWS Marketplace listing](https://aws.amazon.com/marketplace/pp/prodview-guhlipxo6hpl2). Verified against real AWS Marketplace (`licenseMode: marketplace-live`), published for **us-east-1**, **us-west-2** and **eu-central-1**. Subscribing accepts the beta licence terms shown on the listing, which is why the UI label carries "(Beta)". See [IDP Monitor](docs/extensions/idp-monitor.md).
+- **Monitor (Beta) is listed in the extensions catalog, alongside Auto Optimizer (Beta).** The IDP Monitor extension — free of charge during its beta — a real-time operations dashboard for document volume, latency, cost breakdown and trends, failures, throttles, AI insights and versioned dashboard configuration — now has a `config_library/extensions-marketplace.yaml` entry, so it appears in the **Extensions** nav and the **Browse catalog** page with a link to its [AWS Marketplace listing](https://aws.amazon.com/marketplace/pp/prodview-guhlipxo6hpl2). Verified against real AWS Marketplace (`licenseMode: marketplace-live`), published for **us-east-1**, **us-west-2** and **eu-central-1**. Subscribing accepts the beta licence terms shown on the listing, which is why the UI label carries "(Beta)". See [IDP Monitor](docs/extensions/idp-monitor.md).
 
 ### Changed
 
