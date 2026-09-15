@@ -636,9 +636,11 @@ const TestSets = (): React.JSX.Element => {
           // The whole message, one click away. It used to be cut to 15 characters with
           // the rest in a native tooltip, which turned "No files found in baseline/
           // folder within zip file" into "No files found..." — the one part that did
-          // not say what was wrong.
+          // not say what was wrong. A text trigger, not a custom one: the custom
+          // trigger leaves the indicator a plain span, so nothing is focusable and a
+          // keyboard user can never reach the reason.
           return (
-            <Popover dismissButton={false} position="top" size="large" triggerType="custom" content={item.error}>
+            <Popover dismissButton={false} position="top" size="large" triggerType="text" content={item.error}>
               <StatusIndicator type="error">FAILED — why?</StatusIndicator>
             </Popover>
           );

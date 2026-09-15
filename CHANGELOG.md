@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
-- **A test-set zip with only an `input/` folder is accepted again as an unlabeled set** ([#897](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/897)). The wizard's "Upload documents only" source, the docs and the resolver's validator all treated a missing `baseline/` folder as "valid but unlabeled", but the zip extractor kept an unconditional check and failed every such upload with zero documents registered. The extractor now applies the validator's rule: no baselines at all means an unlabeled set awaiting draft labels; baselines that are present but do not line up with the inputs still fail. The Test Sets table also shows a FAILED set's full error in a popover instead of its first 15 characters.
+- **A test-set zip with only an `input/` folder is accepted again as an unlabeled set** ([#897](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/897)). The wizard's "Upload documents only" source, the docs and the resolver's validator all treated a missing `baseline/` folder as "valid but unlabeled", but the zip extractor kept an unconditional check and failed every such upload with zero documents registered. The extractor now applies the validator's rule: no baselines at all means an unlabeled set awaiting draft labels; baselines that are present but do not line up with the inputs still fail. The Test Sets table also shows a FAILED set's full error in a keyboard-reachable popover instead of its first 15 characters, and a refused upload now stays FAILED with that reason: the empty-set reconcile rule no longer rewrites it to a COMPLETED set with zero documents on the next refresh.
 
 ## [0.6.8]
 
