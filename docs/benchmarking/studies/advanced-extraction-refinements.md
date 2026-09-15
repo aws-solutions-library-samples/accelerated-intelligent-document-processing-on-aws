@@ -138,7 +138,8 @@ one of two things: make the pricing entry threshold-aware, or stop carrying the
 `:1m` suffix into the metering key when the suffix is stripped before invocation. The
 second is much simpler and matches what is actually invoked; it would also mean the
 long-context premium is never charged, which is correct only as long as requests stay
-under 200K.
+under 200K. Filed as
+[issue #899](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/899).
 
 **Verdict on the refinement itself: still not a default,** for the completeness
 reason rather than the price. The `:1m` arm returned every row in 12 of 12 runs — but
@@ -150,12 +151,12 @@ is §2.
 
 ---
 
-## 2. Wider shards on the 1M tier: every document above 800 rows failed outright
+## 2. Wider shards on the 1M tier: they failed outright, and once fixed they cost 5×
 
 The point of a 1M-token context is to stop cutting documents into shards. The arm
 that tests that is `sonnet5_1m` combined with `shard_pages=wide25`, which sets
-`extraction.agentic.max_pages_per_shard` to 25 instead of the shipped 5. It is the
-worst result in this study:
+`extraction.agentic.max_pages_per_shard` to 25 instead of the shipped 5. Measured
+first on pre-fix code, it was the worst result in this study:
 
 | document (rows, pages) | status | recall | wall | $/run | baseline $/run |
 |---|---|---:|---:|---:|---:|
@@ -183,11 +184,65 @@ too long for requested model.` The configuration that exists to prevent exactly 
 on that path it was being applied to the wrong copy of the images. That is the third
 defect in §4, and it is the reason a wide-shard setting fails instead of degrading.
 
+### The re-run with the fix in place: the failures move, and the cost gets worse
+
+The arm above was re-run on the same stack with the §4 and §5 fixes deployed
+(`advfix2__sonnet5-1m-wide25`, 2026-09-15). Comparing it against the post-fix default
+5-page arm rather than the pre-fix baseline, since both sides now run the same code:
+
+| document (rows, pages) | wide25 status | wide25 recall | wide25 wall | wide25 $/run | 5-page $/run |
+|---|---|---:|---:|---:|---:|
+| med_narrow (400, 9) | COMPLETED ×2 | 1.000 | 259 s | 1.19 | 0.80 |
+| large_narrow (800, 17) | COMPLETED ×2 | 1.000 | 500 s | 2.29 | 1.38 |
+| dense_250 (250, 26) | COMPLETED ×2 | 1.000 | 455 s | 3.69 | 2.08 |
+| scale_1200 (1,200, 25) | **FAILED ×2** (assessment) | 1.000 extraction | 625 s | 12.59 | 2.02 |
+| scale_1600 (1,600, 33) | COMPLETED ×2 | 0.9997 | 1,199 s | 23.99 | 2.71 |
+| scale_3200 (3,200, 66) | COMPLETED ×2 | 0.807 | 2,263 s | 35.24 | 6.81 |
+
+The `ExtractionInputTooLarge` failures are gone: the image cap now trims the first turn
+and all six of the previously dead runs get through extraction, three of them with recall
+1.000. So the diagnosis in §4 was right about the cause. It was wrong about the
+consequence — the arm's total went from $34.25 (half of it documents that produced
+nothing) to **$158.00 against the 5-page default's $31.60 for the same twelve runs**, and
+recall on the largest document fell to 0.807. Widening shards is worse with the fix than
+the fix's absence made it look.
+
+The mechanism is prompt caching, and it is the mirror image of §3. A 25-page shard is one
+agent conversation covering ~1,200 rows instead of ~240, so the history grows past the
+cached prefix and each tool turn re-reads a longer uncached tail. Per run, extraction
+tokens (means over the two repeats):
+
+| document | fresh input, 5-page | fresh input, wide25 | cache reads, 5-page | cache reads, wide25 |
+|---|---:|---:|---:|---:|
+| scale_1200 | 151,887 | 1,351,398 | 402,848 | 1,586,871 |
+| scale_1600 | 204,954 | 2,933,867 | 556,854 | 1,827,560 |
+| scale_3200 | 708,944 | 4,030,287 | 1,167,778 | 3,394,190 |
+| dense_250 | 198,594 | 266,248 | 500,488 | 452,472 |
+
+Fresh (uncached) input rises 8.9× on scale_1200 and 14.3× on scale_1600, while the
+cache-read share falls from 0.73 to 0.38 — that is where the money goes. `dense_250`,
+which fits a single shard either way, barely moves, which is the control.
+
+The two remaining `scale_1200` failures are a **different** defect and worth naming
+separately. Extraction succeeded completely on both runs — 1,200 of 1,200 rows, cell
+accuracy 1.000, $17.34 and $7.05 spent — and then the document failed as a whole with
+`ValidationException: Input is too long for requested model.` from the *assessment* step.
+Assessment runs in-shard on the agentic path, so a 25-page shard hands one Nova Lite
+confidence call five times as many rows as a 5-page shard does, and nothing catches that
+`ValidationException`: a perfectly extracted, already-paid-for document is discarded. The
+two documents that did complete show the quieter form of the same problem — `scale_1600`
+scored 1,146 confidence leaves against 4,807 at the default shard width, `scale_3200`
+2,275 against 9,605 — a ~76% drop in confidence coverage with recall unchanged. Why
+coverage drops rather than fails is not established; the deadline-bounded self-healing
+ladder keeping partial results is the obvious candidate but was not confirmed. Filed as
+[issue #901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901).
+
 **Verdict: do not widen shards, and the per-document sizing is not the knob it looks
-like.** With the §4 fix in place the cap should trim the first turn to 20 images and
-these six runs should complete; that re-run has **not** been done yet, so treat "the
-fix makes wide25 viable" as untested. Even if it does, §1 shows there is nothing to
-gain: the auto-sized default already returns every row.
+like.** The fix turns a hard failure into an expensive success, which is the right
+direction for robustness and the wrong one for anybody hoping wide shards would save
+money. §1 already showed there was nothing to gain — the auto-sized default returns every
+row — and this re-run puts a number on the loss: 5× the cost and 0.807 recall at 3,200
+rows.
 
 ---
 
@@ -374,7 +429,8 @@ count, the column list, and a four-step workflow ending in
 — but `_build_agentic_shard_plan` never adds it, so the agents that need it are the
 ones that do not receive it. Adding it is a prompt change whose cost and accuracy
 effect would have to be measured on a fresh arm, and doing that mid-study would break
-comparability with every number on this page, so it is recorded here as a follow-up
+comparability with every number on this page, so it is filed as
+[issue #900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)
 rather than folded in. The pre-flight logging *was* moved into the shared
 `_preflight_table_parse` helper, so both paths now leave evidence that they ran; that
 is observability only, with no effect on what the model sees.
@@ -587,7 +643,8 @@ python3 benchmarks/harness/aggregate.py --run <runId> \
 python3 scratch/adv-refine/tokens.py base=benchmarks/results/<run-dir> \
     1m=benchmarks/results/<run-dir>
 
-# §2 — the wide-shard arm (6 of 12 runs fail with ExtractionInputTooLarge)
+# §2 — the wide-shard arm. Pre-fix, 6 of 12 runs fail with ExtractionInputTooLarge;
+# post-fix, the same command produces the $158.00 arm (2 assessment failures).
 python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite advscale \
     --set extraction_model=sonnet5_1m --set shard_pages=wide25 \
     --native-upload --max-inflight 4
@@ -624,7 +681,8 @@ Result sets, all under `benchmarks/results/v0.6.8/`:
 `advscale__extraction-model-sonnet5` (pre-fix baseline),
 `advscale__lazy-images-off` (the accidental replicate, §0),
 `advscale__extraction-model-sonnet5-1m` (§1),
-`advscale__sonnet5-1m-wide25` (§2),
+`advscale__sonnet5-1m-wide25` (§2, pre-fix),
+`advfix2__sonnet5-1m-wide25` (§2, the post-fix re-run),
 `advscalelayout__extraction-model-sonnet5` (§6), and the two post-fix arms
 `advfix__lazy-images-off` and `advfix__lazy-images-on` (§5).
 
