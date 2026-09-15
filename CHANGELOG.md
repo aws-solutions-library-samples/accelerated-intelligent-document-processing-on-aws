@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Added
+
+- **Monitor (Beta) is listed in the extensions catalog, alongside Auto Optimizer (Beta).** The IDP Monitor extension — free of charge during its beta — a real-time operations dashboard for document volume, latency, cost breakdown and trends, failures, throttles, AI insights and versioned dashboard configuration — now has a `config_library/extensions-marketplace.yaml` entry, so it appears in the **Extensions** nav and the **Browse catalog** page with a link to its [AWS Marketplace listing](https://aws.amazon.com/marketplace/pp/prodview-guhlipxo6hpl2). Verified against real AWS Marketplace (`licenseMode: marketplace-live`), published for **us-east-1**, **us-west-2** and **eu-central-1**. Subscribing accepts the beta licence terms shown on the listing, which is why the UI label carries "(Beta)". See [IDP Monitor](docs/extensions/idp-monitor.md).
+
 ### Changed
 
 - **The GitHub docs workflow is now build-only (`build-docs.yml`); it no longer tries to publish to GitHub Pages.** Its `deploy` job called `actions/deploy-pages` from `main`, but the `github-pages` environment only allows the `gh-pages` branch and the Pages source is "Deploy from a branch", so the job failed on every push to `main` since July 2026 and marked the repo's Pages deployment red. The site is published with `make docs-deploy`, which pushes the local build to `gh-pages`; the workflow keeps the build job as a docs-site build check on `main`, `develop` and pull requests that touch `docs/`, `docs-site/` or `images/`, with `pages: write` and `id-token: write` permissions dropped.
