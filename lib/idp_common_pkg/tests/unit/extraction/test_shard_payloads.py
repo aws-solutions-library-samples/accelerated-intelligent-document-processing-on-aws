@@ -169,7 +169,9 @@ class TestShardPlanLazyImages:
                 "agentic": {
                     "enabled": True,
                     "max_concurrent_batches": 4,
-                    "shard_token_budget": 5000,
+                    # A per-shard token budget, not a credential — Bandit's B105
+                    # matches on the "token" in the key name.
+                    "shard_token_budget": 5000,  # nosec B105
                     "table_parsing": {
                         "enabled": True,
                         "lazy_images": lazy_images,
