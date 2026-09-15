@@ -188,21 +188,31 @@ def _extract_uploaded_zip(bucket, test_set_id, zip_key):
 
             if not input_files:
                 raise ValueError(f"No files found in input/ folder within zip file")
-            
-            if not baseline_files:
-                raise ValueError(f"No files found in baseline/ folder within zip file")
-            
-            # Validate file count and names match
-            # Check that each input file has a corresponding baseline file
-            missing_baselines = input_names - baseline_names
-            if missing_baselines:
-                raise ValueError(f"Missing baseline files for: {', '.join(missing_baselines)}")
-            
-            extra_baselines = baseline_names - input_names
-            if extra_baselines:
-                raise ValueError(f"Extra baseline files without corresponding input: {', '.join(extra_baselines)}")
-            
-            logger.info(f"Validation passed: {len(input_names)} input documents match {len(baseline_names)} baseline documents")
+
+            # The same rule as the resolver's _validate_test_set_files(allow_unlabeled=True):
+            # a zip with no baseline/ entries at all is the deliberate "documents only"
+            # flow the wizard offers — the set registers unlabeled and awaits draft labels
+            # (reconcile derives labelState from the bucket once we mark it COMPLETED).
+            # Baselines that are present but do not line up with the inputs are still a
+            # botched upload and still fail. An empty baseline/ directory entry never
+            # reaches baseline_files (directories are skipped above), so it counts as
+            # "no baselines" too.
+            if baseline_files:
+                # Check that each input file has a corresponding baseline file
+                missing_baselines = input_names - baseline_names
+                if missing_baselines:
+                    raise ValueError(f"Missing baseline files for: {', '.join(missing_baselines)}")
+
+                extra_baselines = baseline_names - input_names
+                if extra_baselines:
+                    raise ValueError(f"Extra baseline files without corresponding input: {', '.join(extra_baselines)}")
+
+                logger.info(f"Validation passed: {len(input_names)} input documents match {len(baseline_names)} baseline documents")
+            else:
+                logger.info(
+                    f"No baseline/ entries in zip: {len(input_names)} document(s) register as an "
+                    "unlabeled test set awaiting draft labels"
+                )
             
             # Both roles, through classify_zip_entry for the relative path. These two
             # loops carried the same leading-slash split as the partition above, so
