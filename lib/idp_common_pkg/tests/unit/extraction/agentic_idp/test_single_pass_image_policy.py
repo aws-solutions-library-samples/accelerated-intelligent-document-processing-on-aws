@@ -96,7 +96,9 @@ def _invoke(svc: ExtractionService, n_pages: int) -> dict[str, Any]:
     """Run the agentic branch with Bedrock stubbed; return the captured kwargs."""
     pages = [_table_page(p) for p in range(n_pages)]
     svc._page_texts = pages
-    svc._document_text = "\n".join(f"--- PAGE {i + 1} ---\n{t}" for i, t in enumerate(pages))
+    svc._document_text = "\n".join(
+        f"--- PAGE {i + 1} ---\n{t}" for i, t in enumerate(pages)
+    )
     images = [_png() for _ in range(n_pages)]
     svc._page_images = images
     content = svc._build_prompt_content(TASK_PROMPT, images)
