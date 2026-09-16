@@ -107,6 +107,12 @@ Once installed, it appears under **Extensions** in the IDP web UI navigation and
 2. **Subscribe on [AWS Marketplace](https://aws.amazon.com/marketplace/pp/prodview-guhlipxo6hpl2)**, where you accept the beta licence terms and the AWS Customer Agreement. There is no charge for the extension during the beta. Subscribe with the same AWS account your IDP Accelerator stack runs in. A subscription held by another account in your organization isn't visible to a member account's stack.
 3. **Install it from the IDP web UI.** Sign in as an `Admin`, open **Monitor (Beta)** under **Extensions**, and choose **Launch Stack**. Full walkthrough: [After Subscribing on AWS Marketplace](../marketplace-subscription-next-steps.md).
 
+
+
+https://github.com/user-attachments/assets/da06a1b9-9eb5-4661-909b-0c774d9b2994
+
+
+
 Manage or cancel the subscription any time from the [AWS Marketplace subscriptions console](https://console.aws.amazon.com/marketplace/home#/subscriptions). Cancelling does not delete the extension's CloudFormation stack. Delete that separately if you want its resources removed; the dashboard configuration and schedule tables are removed with the stack.
 
 For questions about IDP Monitor, reach out to your AWS account team.
