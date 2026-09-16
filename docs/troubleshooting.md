@@ -175,6 +175,39 @@ If too many workflows are running and need to be stopped:
    - Select the queue
    - Choose "Purge" from the Actions menu
 
+### Documents Processed More Than Once
+
+**Symptom:** a document uploaded once shows several entries in the Web UI's
+**Version History** that differ only in the execution that produced them, all
+with the same queued time, and `AWS/States ExecutionsStarted` for the workflow is
+higher than the number of documents you uploaded. Every extra execution was
+billed for Bedrock, Textract and Lambda.
+
+**Cause (fixed in 0.6.9,
+[#904](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/904)):**
+under a saturated queue the `QueueProcessor` Lambda timed out mid-batch. Lambda
+then reported nothing to SQS, so the whole batch was redelivered — including
+messages whose workflow had already started — and each redelivery started a new,
+randomly named execution. Since 0.6.9 the execution is named after the SQS
+message (`<basename>-<message-id>`), so a redelivered message is refused by Step
+Functions and acked without a second execution, and each message is deleted as
+soon as its execution exists. `QueueProcessorErrorsAlarm` now reports the
+timeouts themselves; see [Monitoring](monitoring.md#queueprocessorerrorsalarm--a-processor-that-cannot-finish-its-batches).
+
+**To confirm it on a stack you have not yet upgraded**, pick one affected
+document and count how often its SQS message was received:
+
+```
+fields @timestamp, @requestId, @message
+| filter @message like /Processing message/ and @message like /<object-key>/
+| sort @timestamp asc
+```
+
+One `messageId` appearing many times is redelivery, not duplicate ingest. Check
+the same log group for invocations ending in `Status: timeout`. Upgrading is the
+fix; if you cannot yet, raising the function's `MemorySize` and lowering the
+event source mapping's `BatchSize` reduce how often a batch fails to finish.
+
 ## Security Issues
 
 ### WAF Blocking Access
