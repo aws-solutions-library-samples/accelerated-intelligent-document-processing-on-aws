@@ -27,7 +27,7 @@
       "confidence": null,
       "confidence_threshold": null,
       "error_details": null,
-      "evaluation_method": "Hungarian (threshold: 0.50)",
+      "evaluation_method": "Hungarian (threshold: 0.80)",
       "evaluation_threshold": null,
       "expected": [
         {
@@ -168,7 +168,6 @@
   },
   "section_id": "hallucinate-1",
   "stickler_comparison_result": {
-    "all_fields_matched": false,
     "auroc_confidence_metric": 0.5,
     "confidence_metrics": {
       "coverage": {
@@ -193,15 +192,15 @@
     "confusion_matrix": {
       "aggregate": {
         "derived": {
-          "cm_accuracy": 0.4,
-          "cm_f1": 0.5714285714285715,
-          "cm_precision": 0.4,
+          "cm_accuracy": 1.0,
+          "cm_f1": 1.0,
+          "cm_precision": 1.0,
           "cm_recall": 1.0
         },
-        "fa": 6,
+        "fa": 0,
         "fd": 0,
         "fn": 0,
-        "fp": 6,
+        "fp": 0,
         "tn": 0,
         "tp": 4
       },
@@ -209,15 +208,15 @@
         "Transactions": {
           "aggregate": {
             "derived": {
-              "cm_accuracy": 0.4,
-              "cm_f1": 0.5714285714285715,
-              "cm_precision": 0.4,
+              "cm_accuracy": 1.0,
+              "cm_f1": 1.0,
+              "cm_precision": 1.0,
               "cm_recall": 1.0
             },
-            "fa": 6,
+            "fa": 0,
             "fd": 0,
             "fn": 0,
-            "fp": 6,
+            "fp": 0,
             "tn": 0,
             "tp": 4
           },
@@ -225,29 +224,29 @@
             "amount": {
               "aggregate": {
                 "derived": {
-                  "cm_accuracy": 0.4,
-                  "cm_f1": 0.5714285714285715,
-                  "cm_precision": 0.4,
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
                   "cm_recall": 1.0
                 },
-                "fa": 3,
+                "fa": 0,
                 "fd": 0,
                 "fn": 0,
-                "fp": 3,
+                "fp": 0,
                 "tn": 0,
                 "tp": 2
               },
               "overall": {
                 "derived": {
-                  "cm_accuracy": 0.4,
-                  "cm_f1": 0.5714285714285715,
-                  "cm_precision": 0.4,
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
                   "cm_recall": 1.0
                 },
-                "fa": 3,
+                "fa": 0,
                 "fd": 0,
                 "fn": 0,
-                "fp": 3,
+                "fp": 0,
                 "tn": 0,
                 "tp": 2
               }
@@ -255,29 +254,29 @@
             "date": {
               "aggregate": {
                 "derived": {
-                  "cm_accuracy": 0.4,
-                  "cm_f1": 0.5714285714285715,
-                  "cm_precision": 0.4,
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
                   "cm_recall": 1.0
                 },
-                "fa": 3,
+                "fa": 0,
                 "fd": 0,
                 "fn": 0,
-                "fp": 3,
+                "fp": 0,
                 "tn": 0,
                 "tp": 2
               },
               "overall": {
                 "derived": {
-                  "cm_accuracy": 0.4,
-                  "cm_f1": 0.5714285714285715,
-                  "cm_precision": 0.4,
+                  "cm_accuracy": 1.0,
+                  "cm_f1": 1.0,
+                  "cm_precision": 1.0,
                   "cm_recall": 1.0
                 },
-                "fa": 3,
+                "fa": 0,
                 "fd": 0,
                 "fn": 0,
-                "fp": 3,
+                "fp": 0,
                 "tn": 0,
                 "tp": 2
               }
@@ -305,7 +304,6 @@
       },
       "non_matches": [],
       "overall": {
-        "all_fields_matched": false,
         "derived": {
           "cm_accuracy": 0.4,
           "cm_f1": 0.5714285714285715,

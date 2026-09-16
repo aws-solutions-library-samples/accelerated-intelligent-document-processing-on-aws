@@ -94,7 +94,7 @@ evaluation = [
   # ``idp_common.bedrock`` (retry/throttling, cost metering, GovCloud endpoints,
   # robust JSON response parsing) that upstream's strands-based comparator does
   # not replicate.
-  "stickler-eval==0.5.0",
+  "stickler-eval==1.0.0",
   "genson==1.3.0",  # For automatic JSON Schema generation from data
   # Numpy pin relaxed: stickler-eval declares ``numpy>=1.26,<3``; an exact 1.26.4
   # pin invited resolver conflicts on upgrade. Kept above 1.26 so the eval
@@ -212,7 +212,7 @@ test = [
   "datamodel-code-generator>=0.64.0",   # Required for schema/pydantic generator tests
   "mypy-boto3-bedrock-runtime>=1.39.0", # Required for bedrock_utils tests
   # Evaluation module dependencies (from evaluation group)
-  "stickler-eval==0.5.0",
+  "stickler-eval==1.0.0",
   "genson==1.3.0",
   "numpy>=1.26,<3",
   "build==1.3.0",
@@ -221,7 +221,7 @@ test = [
 
 # Full package with all dependencies
 all = [
-  "stickler-eval==0.5.0",
+  "stickler-eval==1.0.0",
   "genson==1.3.0",
   "Pillow==12.3.0",
   "pypdfium2>=5.5.0",

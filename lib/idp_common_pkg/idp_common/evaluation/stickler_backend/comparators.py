@@ -209,11 +209,15 @@ class LLMComparator(BaseComparator):
             f"Initialized LLMComparator with model={self.llm_config['model']}, threshold={self.threshold}"
         )
 
-    def compare(self, value1: Any, value2: Any) -> float:
+    def _compare(self, value1: Any, value2: Any) -> float:
         """
         Compare two values using LLM-based semantic evaluation.
 
-        This method delegates to the module-level compare_llm function.
+        Named ``_compare`` because Stickler 1.0's ``BaseComparator`` made
+        that the abstract template-method hook (v1.0 breaking change
+        #305 removed the pre-1.0 ``compare()`` -> ``_compare()``
+        deprecation shim). Stickler's own ``compare()`` still owns the
+        None policy and calls into this method for non-None pairs.
 
         Args:
             value1: First value to compare (expected)

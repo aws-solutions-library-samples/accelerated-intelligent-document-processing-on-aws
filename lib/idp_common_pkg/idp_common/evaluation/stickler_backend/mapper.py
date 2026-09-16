@@ -835,27 +835,27 @@ class SticklerConfigMapper:
                     f"Use 'evaluation-match-threshold' for HUNGARIAN matching instead."
                 )
 
-            # Set match_threshold at field level (array itself)
+            # Set match_threshold on the ITEMS schema only. Stickler 1.0's
+            # importer reads ``x-aws-stickler-match-threshold`` off the
+            # OBJECT (the array's item class) and now rejects the same key
+            # on the array field itself with an "unread extension" error
+            # (breaking change #312: unrecognized ``x-aws-stickler-*`` keys
+            # raise instead of being silently dropped). Setting it only on
+            # the items schema keeps the semantic — the item class picks up
+            # the configured threshold — without the outer-level placement
+            # that v1.0 rejects.
             if X_AWS_IDP_EVALUATION_MATCH_THRESHOLD in schema:
                 match_threshold = cls._coerce_to_float(
                     schema[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD],
                     f"{field_path}.match_threshold",
                 )
-                # Set on the field itself (used by IDP's display + re-derived
-                # match logic and Stickler >0.5.0 will honor this position).
-                schema["x-aws-stickler-match-threshold"] = match_threshold
-                # ALSO set on the items schema — this is where Stickler's
-                # `from_json_schema` reads x-aws-stickler-match-threshold when
-                # building the list-element class (structured_model.py:594 in
-                # 0.5.0). Without this, the element class silently keeps the
-                # ClassVar default (0.7) regardless of config.
                 items_schema = schema.get(SCHEMA_ITEMS)
                 if isinstance(items_schema, dict):
                     items_schema.setdefault(
                         "x-aws-stickler-match-threshold", match_threshold
                     )
                 logger.debug(
-                    f"Field '{field_path}': Set match_threshold={match_threshold} at field level and on items schema for Hungarian matching"
+                    f"Field '{field_path}': Set match_threshold={match_threshold} on items schema for Hungarian matching"
                 )
 
         # For non-array fields: use threshold — unless NUMERIC_EXACT already
@@ -985,6 +985,17 @@ class SticklerConfigMapper:
 
         # Make a deep copy to avoid modifying the original
         schema = copy.deepcopy(document_class_schema)
+
+        # Turn on Stickler 1.0's native comparator inference for any leaf that
+        # carries no explicit x-aws-idp-evaluation-method. Stickler picks by
+        # Python type AND field-name token (``*_id`` → Exact, ``amount`` →
+        # Numeric, ``notes`` → Fuzzy, date-typed strings → Date), so
+        # un-annotated fields end up with a better default than a type-only
+        # fallback could produce. Operator annotations still win — the mapper's
+        # translation pass emits ``x-aws-stickler-comparator`` for every
+        # annotated field before Stickler's inference sees the schema, and
+        # Stickler leaves annotated fields alone.
+        schema["x-aws-stickler-infer-unspecified"] = True
 
         # Extract model name
         model_name = (
