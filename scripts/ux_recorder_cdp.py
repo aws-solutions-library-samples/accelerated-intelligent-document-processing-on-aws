@@ -70,8 +70,17 @@ class CdpError(Exception):
 
 
 def accept_key(nonce: str) -> str:
-    """The Sec-WebSocket-Accept value a server must return for ``nonce``."""
-    digest = hashlib.sha1((nonce + WS_GUID).encode("ascii")).digest()
+    """The Sec-WebSocket-Accept value a server must return for ``nonce``.
+
+    SHA-1 is not a choice here: RFC 6455 section 4.2.2 defines the handshake
+    token as SHA-1 over the client nonce concatenated with a fixed GUID, and
+    Chrome answers nothing else. It protects nothing — the digest is echoed back
+    over a loopback connection to prove the peer speaks WebSocket rather than
+    HTTP — so ``usedforsecurity=False`` states what the call is actually for.
+    """
+    digest = hashlib.sha1(  # nosec B324 - RFC 6455 handshake token, not security
+        (nonce + WS_GUID).encode("ascii"), usedforsecurity=False
+    ).digest()
     return base64.b64encode(digest).decode("ascii")
 
 
