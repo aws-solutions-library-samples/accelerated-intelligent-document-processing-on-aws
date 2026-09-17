@@ -131,6 +131,13 @@ settings.
 
 ### Testing
 
+**Every test method in this repo — what it proves, its `make` target, whether either
+CI runs it, and where its results are recorded — is mapped in
+[docs/testing.md](docs/testing.md)** (published; `scripts/tests/test_testing_doc.py`
+keeps it from drifting). The per-method procedures stay in `.claude/skills/`, listed
+in the skill table below; pipeline-internal detail stays in
+`scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
+
 ```bash
 # Run all tests (idp_common_pkg + idp_cli + srt security scan)
 make test

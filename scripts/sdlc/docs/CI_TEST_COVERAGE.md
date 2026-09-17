@@ -17,6 +17,7 @@ its `make` target and the skill that documents how to run it.
 | Primary functional suite (Steps 3–14) | *(runs in CI; deploy a stack then use the individual targets below)* | — |
 | API RBAC / authorization (Step 12) | `make api-test STACK_NAME=…` (alias `make stacktest-rbac`) · static-only: `make api-test-static` | `.claude/skills/api-rbac-test.md` |
 | ZAP DAST scan | `make stacktest-zap STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
+| UX review in a real browser (functional pass/fail per flow **plus** usability findings; optionally recorded as a narrated mp4 via `scripts/ux_recorder.py`) | `make ux-test STACK_NAME=…` | `.claude/skills/ux-test.md` |
 | APIGateway GLOBAL hosting | `make stacktest-hosting-global` | `.claude/skills/run-stack-tests.md` |
 | WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests.md` |
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
@@ -31,6 +32,10 @@ its `make` target and the skill that documents how to run it.
 | Seller-service live activation + payload probe | `python feature-platform/seller-entitlement-service/tests/dynamic_activation_test.py --endpoint … --product-id …` | `feature-platform/seller-entitlement-service/README.md` |
 | Seller-service test-stack teardown (incl. retained KMS key + table) | `feature-platform/seller-entitlement-service/tests/teardown_test_stack.sh --stack-name …-citest` | `feature-platform/seller-entitlement-service/README.md` |
 | Run security tests + curate a public-safe snapshot | `make security-results [STACK_NAME=… REGION=…]` (offline-only if no stack) | `.claude/skills/curate-security-results.md` |
+
+The user-facing version of this map — every layer, including the ones that *do* run
+in CI — is [`docs/testing.md`](../../../docs/testing.md). This file stays the
+pipeline-internal reference: per-step detail, probe framework, cleanup.
 
 Once a release has been validated with these tiers, the outcome is recorded — one
 file per release, never overwritten — in
