@@ -1019,7 +1019,7 @@ lists every document it touched so that work is visible.
 | Z3 rules | address a record explicitly: `…inference_result.instances[0].NetPay`. A rule whose path no longer resolves logs what to write instead — a miss otherwise reads as "optional parameter absent" and the rule quietly stops firing |
 | Public SDK | `fields` is unchanged (the raw shape), plus a new `instances` list; `confidence` now walks lists and groups |
 | BDA mode | not applicable — this is a pipeline-mode (`use_bda: false`) feature |
-| Advanced (agentic) extraction | the wrapper applies, but the #753 detection probe does not |
+| Advanced (agentic) extraction | the wrapper applies; the #753 detection probe runs on the **single-agent** path (a section short enough not to be sharded) and not yet on sharded sections, where per-shard counts have no sound reconciliation (#772) |
 
 #### What DEGRADES with the flag on — read this before turning it on
 

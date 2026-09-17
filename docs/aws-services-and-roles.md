@@ -202,13 +202,19 @@ The solution creates various IAM roles to run different components of the system
   * `bedrock:Retrieve`
   * `bedrock:RetrieveAndGenerate`
   * `bedrock:ApplyGuardrail` (when Guardrails configured)
-  * `aoss:APIAccessAll` (when using the OpenSearch Serverless vector store) **or** `s3vectors:*` (when using the default S3 Vectors store)
+  * No direct vector-store permissions: `bedrock:Retrieve` reaches the vector store through the Knowledge Base Service Role below
   * `logs:*`
 
 * **Knowledge Base Service Role**:
   * `bedrock:InvokeModel`
-  * `aoss:APIAccessAll` (OpenSearch Serverless) **or** S3 Vectors access (default)
+  * `aoss:APIAccessAll` (OpenSearch Serverless) **or** `s3vectors:GetIndex`, `s3vectors:QueryVectors`, `s3vectors:PutVectors`, `s3vectors:GetVectors`, `s3vectors:DeleteVectors` on the stack's single vector index (default S3 Vectors store)
   * `s3:ListBucket`, `s3:GetObject` (when using S3 data source)
+
+* **S3 Vectors Manager Role** (custom-resource Lambda, default S3 Vectors store only):
+  * `s3vectors:CreateVectorBucket`, `s3vectors:GetVectorBucket`, `s3vectors:DeleteVectorBucket` on `bucket/*` in the deploying account and Region — the bucket segment is a wildcard because the Lambda lowercases and sanitizes the stack-derived bucket name, which CloudFormation cannot reproduce
+  * `s3vectors:CreateIndex`, `s3vectors:DeleteIndex` on `bucket/*/index/<index name>` (the index name is exact)
+  * `bedrock:CreateKnowledgeBase`, `bedrock:DeleteKnowledgeBase`, `bedrock:GetKnowledgeBase`, `bedrock:UpdateKnowledgeBase`, `bedrock:ListKnowledgeBases`
+  * `iam:PassRole` (to hand the Knowledge Base Service Role to Bedrock)
 
 #### Monitoring & Evaluation Roles
 * **CloudWatch Dashboard Role**:

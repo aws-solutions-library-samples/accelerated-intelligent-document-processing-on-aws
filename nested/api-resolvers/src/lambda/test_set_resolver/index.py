@@ -527,6 +527,21 @@ def _write_keep_marker(test_set_id):
     )
 
 
+def _has_keep_marker(client, bucket, test_set_id):
+    """True when ``<id>/.keep`` exists: the set was created empty or emptied on purpose."""
+    try:
+        client.head_object(Bucket=bucket, Key=f"{test_set_id}/{KEEP_MARKER}")
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in (
+            "404",
+            "NoSuchKey",
+            "NotFound",
+        ):
+            return False
+        raise
+
+
 def create_empty_test_set(args):
     """Create a COMPLETED test set with no documents, to be grown from its page.
 
@@ -4941,6 +4956,20 @@ def _reconcile_test_set_tracking_entry(s3_client, bucket, prefix, existing_row):
                 new_error = validation.get("error")
             else:
                 new_error = existing_row.get("error")
+        elif (
+            no_inputs
+            and existing_row.get("status") == "FAILED"
+            and not _has_keep_marker(s3_client, bucket, prefix)
+        ):
+            # A FAILED row whose prefix never received documents is a refused
+            # upload (the extractor rejected the zip; only the archive remains),
+            # not an emptied set: create-empty and Remove both write the .keep
+            # marker and COMPLETED themselves. Keep the status and the recorded
+            # reason so the table's "FAILED — why?" stays true past the first
+            # refresh.
+            new_status = "FAILED"
+            new_error = existing_row.get("error") or error_message
+            new_label_state = existing_label_state
         elif no_inputs:
             # A set with no documents is a legitimate state, not a broken one: a
             # set can be created empty, and removing its last document leaves it

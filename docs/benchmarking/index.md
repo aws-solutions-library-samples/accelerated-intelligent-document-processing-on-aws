@@ -26,7 +26,7 @@ separate — they answer different questions and are regenerated on different ca
 |----------|--------------------|---------|
 | **This guide** (`index.md`) | *How does the suite work and what do the numbers mean?* | Evergreen; edit when the harness changes. |
 | [Configuration Guidance](./config-guidance.md) | *Which config (OCR / mode / assessment / model) should I pick?* — cross-config at one release | Refreshed per release. |
-| [Classification Confidence](./classification-confidence.md) | *When classification reports a confidence, is it worth acting on — and does that depend on the classifier?* | Re-run when the classifier default or the confidence mode changes. |
+| [Classification Confidence](./studies/classification-confidence.md) | *When classification reports a confidence, is it worth acting on — and does that depend on the classifier?* | Re-run when the classifier default or the confidence mode changes. |
 | [Release Audit Trail](./releases/) | *Is upgrading from the last published release safe / cheaper / faster?* — release-vs-release | **One new entry per release** (never overwritten). |
 
 The release audit trail is the durable history: `docs/benchmarking/releases/vX.Y.Z.md`
@@ -127,6 +127,7 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `smoke` | 2 cells × 2 tiny docs | Per-PR gate (minutes) |
 | `corefast` | 19 decision cells × 3 docs (≤100 rows) × **3 repeats** (171 runs/side) | **Release-vs-release A/B** — the grid that completes on *both* the previous published release and the new one (see notes) |
 | `coresynth` | 19 decision cells × 7 synthetic docs (**133 runs**) | **Standard single-release run** — the cross-config grid the Configuration Guidance paper reports |
+| `simplegrid` | the 9 simple-mode cells of `coresynth` × 7 synthetic docs (**63 runs**) | **Lightweight-model grid** — for a model that cannot run the agentic path (Nova Lite/Pro, [#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) the full `coresynth` never finishes; this is what the guide's Nova rows are computed on |
 | `core` | `coresynth` + the two 20-document reference corpora | Adds real-world labeled accuracy; several times the cost of `coresynth`, so opt in deliberately |
 | `scaling` | simple vs advanced across the size series | The completeness-cliff study |
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
@@ -159,18 +160,25 @@ it skipped and why).
 
 "Selectable in the product" and "covered by the published guidance" are different
 things, and the difference is the **`extraction_model` sweep** — the one-axis sweep
-`full` runs, which is what the [Configuration Guidance](./config-guidance.md) model
-section is computed from. A model only appears there if it is in that sweep:
+`full` runs (or, as for v0.6.8, `coresynth --set extraction_model=<m>` once per model),
+which is what the [Configuration Guidance](./config-guidance.md) §5 is computed from. A
+model only appears there if it has been swept, and the table records when:
 
-| Model | In the sweep | Note |
-|---|---|---|
-| Nova Lite, Nova Pro | ✅ | the cheap end |
-| Claude Sonnet 5, Sonnet 5 `:1m` | ✅ | the shipped default |
-| **Claude Opus 5** | ✅ | **added 2026-09-11** — the most capable Claude had never been in *any* model axis, so no published guidance covered it |
-| **OpenAI GPT-6 Astra** | ✅ | **added 2026-09-11** — also has its own head-to-head suite below |
-| `global.openai.gpt-6-astra` | ❌ deliberately | same weights ~10% cheaper; a price/region choice `astravalue` settles, not a quality axis worth a full grid |
-| Claude Sonnet 4.6 | held as the sweep's control | the fixed baseline every sweep varies against |
-| xAI Grok 4.6 | ❌ | not yet measured — see `docs/grok-models.md` for its documented capabilities |
+| Model | In the sweep | Measured | Note |
+|---|---|---|---|
+| Nova Lite | ✅ | **2026-09-12, v0.6.8** (full `coresynth`, 133 runs, 32 failed) | simple mode ≤100 rows only; cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) — [guide §5](./config-guidance.md#5-which-model-for-which-documents--the-model-axis-measured) |
+| Nova Pro | ✅ | **2026-09-12, v0.6.8** (`simplegrid`, 63 runs; full grid abandoned after 36 launches — advanced cells stuck in stream-error retries) | simple mode ≤100 rows only |
+| Claude Sonnet 4.6 | held as the sweep's control | 2026-09-12, v0.6.8 (`core`, 893 runs incl. both reference corpora) | the fixed baseline every sweep varies against; **best value in the v0.6.8 grid** |
+| **Claude Sonnet 5** (default), Sonnet 5 `:1m` | ✅ | **2026-09-12, v0.6.8** (133 runs each; Sonnet 5 also `core` with both corpora, `scaling`, `cost`, `intconf`, `advverify`, `astravalue`, `astracap`) | the shipped default; `:1m` is +10% / +51% for identical accuracy at every size that fits |
+| **Claude Opus 5** | ✅ | **2026-09-12, v0.6.8** (133 runs) | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
+| **OpenAI GPT-6 Astra** | ✅ | **2026-09-12, v0.6.8** (133 runs + `astravalue` 100 + `astracap` 12) | at ceiling on the agentic path at 1.6× Sonnet 5; in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap) |
+| `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | 2026-09-12 (20 runs) | same weights ~10% cheaper (measured $0.94 vs $1.10 on the 9-page document); same simple-mode failure shape |
+| Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | **2026-09-12, v0.6.8** (133 runs) | see the guide §5.3 |
+| xAI Grok 4.6 | ❌ | — | not yet measured — see `docs/grok-models.md` for its documented capabilities |
+
+The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 4.5) and the
+confidence-model axis (Nova Lite default · Nova 2 Lite · Sonnet 5) were each swept on the
+full grid for v0.6.8; the guide's §5.3 and §5.4 report them.
 
 The premium cells below live in their own `model_premium_cells` registry, **not** in
 `core_cells`, because `core_cells` feeds `core` / `coresynth` / `corefast` / `full`:

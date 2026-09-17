@@ -39,7 +39,7 @@ Parameters:
     Description: Optional IAM permissions boundary ARN
   LogLevel:
     Type: String
-    Default: "INFO"
+    Default: "WARN"
   LogRetentionDays:
     Type: Number
     Default: 365

@@ -240,7 +240,7 @@ nothing)* / *never cached*.
 The product now applies the same classification itself: per phase on the document cost
 table and per class in the section's Processing Report tab and result.json
 (`metadata.prompt_cache`), queryable in Athena through the `document_sections_*` tables
-— see [configuration.md](../configuration.md#reading-cache-efficiency-back-per-phase-and-per-class).
+— see [configuration.md](../../configuration.md#reading-cache-efficiency-back-per-phase-and-per-class).
 
 ## Reproduce
 

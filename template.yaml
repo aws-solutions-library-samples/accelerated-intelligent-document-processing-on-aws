@@ -545,7 +545,7 @@ Parameters:
   # Logging configuration
   LogLevel:
     Type: String
-    Default: INFO
+    Default: WARN
     AllowedValues:
       - DEBUG
       - INFO
@@ -6701,10 +6701,16 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
-      VisibilityTimeout: 30
+      # Must be at least the QueueProcessor Timeout (Lambda rejects the event
+      # source mapping otherwise). It is also how long a message refused at the
+      # concurrency gate waits before its next attempt, so it stays close to the
+      # function timeout rather than the 6x AWS suggests for generic consumers:
+      # the processor deletes each message itself the moment its execution
+      # exists, so a batch that dies late no longer redelivers started work (#904).
+      VisibilityTimeout: 60
       MessageRetentionPeriod: 86400 # 1 day
       RedrivePolicy:
-        maxReceiveCount: 1000 # should retry up to 8hrs (1000 * 30 sec visibility) before moving to DLQ
+        maxReceiveCount: 500 # should retry up to ~8hrs (500 * 60 sec visibility) before moving to DLQ
         deadLetterTargetArn: !GetAtt DocumentQueueDLQ.Arn
 
   DocumentQueuePolicy:
@@ -6906,7 +6912,17 @@ Resources:
       CodeUri: src/lambda/queue_processor/
       Handler: index.handler
       Runtime: python3.12
-      Timeout: 30
+      # Each message costs an S3 read, several DynamoDB and configuration reads
+      # (the merged configuration is gzip-decompressed per message), an S3 write
+      # and StartExecution; a refused message adds a paginated ListExecutions.
+      # At the 128 MB default that ran 0.5-3 s per message and peaked at 125 MB,
+      # so a 50-message batch could not finish in 30 s: 66% of invocations timed
+      # out under load and every started message in a dead batch was redelivered
+      # and started again (#904). Lambda CPU scales with memory, so 1024 MB is the
+      # main lever; the batch is also 10 messages and the timeout 60 s, which
+      # DocumentQueue.VisibilityTimeout must stay at or above.
+      MemorySize: 1024
+      Timeout: 60
       Tags:
         # Data plane — SQS batch trigger from the doc queue.
         idp:plane: data
@@ -6993,7 +7009,7 @@ Resources:
           Type: SQS
           Properties:
             Queue: !GetAtt DocumentQueue.Arn
-            BatchSize: 50 # Process up to 50 messages at once
+            BatchSize: 10 # Sized so a batch always finishes inside Timeout (see MemorySize note)
             # Per https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html
             # If you're using a batch window and your SQS queue contains very low traffic,
             # Lambda might wait for up to 20 seconds before invoking your function.
@@ -7691,6 +7707,33 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
       OKActions:
+        - !Ref AlertsTopic
+
+  # A QueueProcessor invocation that times out or runs out of memory is counted
+  # in Lambda's Errors metric, and it is the one failure of this function that
+  # no other alarm can see: the messages it held are redelivered and eventually
+  # processed, every execution succeeds, and the DLQ stays empty. Before #904 was
+  # fixed, 5,433 such timeouts in 105 minutes started 10,300 duplicate executions
+  # with every alarm reading OK. Started messages are now acked individually and
+  # execution names are idempotent, so a timeout no longer duplicates work, but
+  # a function that cannot finish its batches is still undersized or throttled
+  # and worth a look on the first occurrence.
+  QueueProcessorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} QueueProcessor invocation fails, which for this function almost always means it timed out or ran out of memory before finishing its SQS batch. The messages are redelivered and processed, so no document is lost, but check the function's Duration and Max Memory Used against its Timeout and MemorySize, and its Throttles: a processor that cannot finish a 10-message batch in its timeout is undersized for the deployment's configuration or being throttled."
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref QueueProcessor
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
         - !Ref AlertsTopic
 
   # QueueSenderDLQ holds S3 upload events the QueueSender could not process at

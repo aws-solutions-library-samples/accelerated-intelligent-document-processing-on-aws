@@ -682,7 +682,7 @@ You can incrementally add documents to a COMPLETED test set — useful for build
 The same **Add documents** menu is available in two places: on the Test Sets table (select one COMPLETED set, then **Actions → Add documents**) and on the set's own page (open the set, then **Add documents** above its document list). It offers three sources:
 
 - **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
-- **From a zip upload**: Upload a zip file containing new documents and their baselines
+- **From a zip upload**: Upload a zip file containing new documents and, optionally, their baselines. A zip with only `input/` adds unlabeled documents; a set that was fully labeled then shows as unlabeled until those documents are draft-labeled or reviewed
 - **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
 
 On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
@@ -717,6 +717,9 @@ my-test-set/
   than a deliberate label-later workflow.
 - When using Input Bucket as source, files without baselines are automatically excluded (not treated as an error)
 - Status: COMPLETED (valid), FAILED (validation errors), QUEUED/COPYING (creating), UPDATING (adding documents)
+- These rules apply to a zip upload exactly as they do to folders found in the bucket: the
+  zip extractor accepts an archive with no `baseline/` folder as an unlabeled set and still
+  rejects one whose baselines do not line up with its inputs.
 
 ### Label state
 

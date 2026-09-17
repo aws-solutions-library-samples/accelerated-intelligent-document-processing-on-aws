@@ -174,6 +174,51 @@ The solution creates centralized logging across all components:
 
 All logs include correlation IDs for tracing individual document processing journeys.
 
+### `LogLevel` — what `WARN` turns off
+
+The `LogLevel` stack parameter defaults to `WARN`. At `INFO` or `DEBUG` the
+accelerator can write S3 presigned URLs, document contents and PII into
+CloudWatch Logs, which is why [well-architected](./well-architected.md) has
+recommended `WARN` or `ERROR` for production and why the default was changed from
+`INFO` (AppSec finding #9). An **existing** stack keeps whatever value it was
+deployed with — CloudFormation preserves the previous parameter value on update —
+so this only affects new stacks and updates that re-specify the parameter.
+
+Four things you may be used to seeing are absent at `WARN`, and each comes back
+only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
+
+- **Per-stage progress lines.** The `INFO` messages many operators use to follow
+  one document through OCR, classification, extraction and assessment. Errors and
+  warnings are still logged, and document status is still visible in the Web UI
+  and the tracking table.
+- **The Web UI REST API access log.** Access logging on the API Gateway stage is
+  only configured when `LogLevel` is `INFO` or `DEBUG` (finding API-GW-006). It
+  records request metadata only, never bodies, but it is the only trace of
+  requests that fail *before* the dispatcher Lambda — authorizer 401/403s, WAF
+  blocks, CORS and gateway responses. This is deliberately coupled to `LogLevel`
+  rather than given its own parameter, so emitting request metadata stays one
+  visible decision.
+- **The dashboard widget "Count of Workflow Executions over latency threshold".**
+  It is a Logs Insights query that parses the workflow tracker's `INFO` line
+  `Publishing latency metrics - ... total: <n>ms`, so at `WARN` the widget is
+  always empty. It is the only dashboard element with this dependency. The
+  underlying data is still published as custom metrics
+  (`QueueLatencyMilliseconds`, `WorkflowLatencyMilliseconds`,
+  `TotalLatencyMilliseconds` in the stack's metric namespace), which drive the
+  "Queue Latency" and "Workflow Latency" widgets next to it; `SlowExecutionsAlarm`
+  reads Step Functions' own `ExecutionTime` metric. Neither the metrics nor the
+  alarm depend on the log level, so nothing you would *alert* on is lost — only
+  that one per-minute count.
+- **Installed features are not affected — they still log at `INFO`.** Each
+  installable feature (for example `pii-anonymizer`) is its own stack, launched
+  with the `LogLevel` pinned in its `feature.yaml`, which is `INFO` for the six
+  shipped features. The host's value is not forwarded. Change the feature stack's
+  `LogLevel` parameter after install if you need it at `WARN`; newly scaffolded
+  features default to `WARN`.
+- **`idp-cli deploy --log-level` has no CLI default.** Omit it to get the template
+  default on a new stack or to preserve the current value on an update. Passing
+  `--log-level INFO` is honoured; it used to be silently treated as "unset".
+
 ## Pattern-Specific Monitoring
 
 Each pattern includes additional monitoring tailored to its specific workflow:
@@ -228,6 +273,7 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
 | `DocumentQueueStalledAlarm` | Oldest queued document older than the threshold **and** nothing left the queue, for 30 min | `AlertsTopic` | `QueueStalledAgeThresholdSeconds` (default `1800`, i.e. 30 min) |
+| `QueueProcessorErrorsAlarm` | Any `QueueProcessor` invocation error in 5 min — for this function, a timeout or out-of-memory before its SQS batch finished | `AlertsTopic` | — |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
@@ -275,7 +321,7 @@ slow" signal, not a per-document one.
 Both alarms above read the **state machine**, so neither can see a document that
 never got an execution ([#761](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/761)):
 a dead-lettered document emits no `ExecutionsFailed`, and a document still sitting
-in the queue emits no `ExecutionTime`. Three alarms cover the queue layer.
+in the queue emits no `ExecutionTime`. Four alarms cover the queue layer.
 
 #### `DocumentQueueDLQAlarm` and `QueueSenderDLQAlarm`
 
@@ -287,7 +333,7 @@ notify on recovery (`OKActions`) — DLQ depth does not decay on its own, so the
 
 | Alarm | What a message means | Recovery |
 |---|---|---|
-| `DocumentQueueDLQAlarm` | The document exhausted `DocumentQueue`'s redrive policy — `maxReceiveCount` 1000 against a 30 s visibility timeout, roughly **8 hours** of retries — and never processed. | Read the messages for the object keys, find the cause in the QueueProcessor and state-machine logs, then redrive or re-upload. Redrive needs `kms:Decrypt` on the stack's CMK. |
+| `DocumentQueueDLQAlarm` | The document exhausted `DocumentQueue`'s redrive policy — `maxReceiveCount` 500 against a 60 s visibility timeout, roughly **8 hours** of retries — and never processed. | Read the messages for the object keys, find the cause in the QueueProcessor and state-machine logs, then redrive or re-upload. Redrive needs `kms:Decrypt` on the stack's CMK. |
 | `QueueSenderDLQAlarm` | The upload event never reached the queue, so the document never entered the pipeline. | Read the messages for the S3 keys, check the QueueSender logs, then **re-upload**. See the note below on which state the document is left in — and note that SQS redrive does **not** apply to this queue. |
 
 > **What a `QueueSenderDLQ` message means for the document, precisely.** The
@@ -301,6 +347,45 @@ notify on recovery (`OKActions`) — DLQ depth does not decay on its own, so the
 > `StartMessageMoveTask` (the console's *Redrive* button) does not apply to it and
 > is not offered. `DocumentQueueDLQ` *is* a true SQS DLQ, so redrive does work
 > there.
+
+#### `QueueProcessorErrorsAlarm` — a processor that cannot finish its batches
+
+`QueueProcessor` catches every per-message error itself, so an invocation that
+ends in a Lambda **error** is one that was killed from outside: it hit its
+`Timeout` or ran out of memory before finishing its SQS batch. Nothing else
+reports that. The messages it held are redelivered and eventually processed, so
+every execution still succeeds, the DLQ stays empty and `DocumentQueueStalledAlarm`
+sees a queue that is draining. Before release 0.6.9 this was how a saturated
+queue silently multiplied its own work
+([#904](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/904)):
+the processor ran at the 128 MB default with 50-message batches and a 30 s
+timeout, two thirds of its invocations under load timed out, and because Lambda
+reports a batch outcome only when the function returns, each timeout handed the
+whole batch back to SQS — including messages whose `StartExecution` had already
+succeeded. Each redelivery then started another execution, because executions had
+no name. One upload was started six times; 4,384 uploads produced 14,727
+executions, all billed, with every alarm reading `OK`.
+
+Two changes make a redelivery harmless now, whatever Lambda or SQS do: the
+execution name is derived from the SQS message id (`<basename>-<message-id>`),
+so a second start of the same message is refused by Step Functions and acked as a
+no-op, and each message is deleted the moment its execution exists rather than at
+the end of the batch. The processor also runs at 1024 MB with 10-message batches
+and a 60 s timeout, so the timeouts themselves should be rare. When this alarm
+does fire, compare the function's **Duration** and **Max Memory Used** against
+its `Timeout` and `MemorySize`, and check **Throttles**: a processor that cannot
+finish 10 messages in 60 s is undersized for the deployment's configuration (a
+very large merged configuration is decompressed per message) or is being
+throttled. To confirm redelivery rather than duplicate ingest for one document,
+count receives of its message in the `QueueProcessor` log group — a single
+`messageId` appearing more than once is a redelivery, and since 0.6.9 the same id
+is the suffix of the execution name:
+
+```
+fields @timestamp, @requestId, @message
+| filter @message like /Processing message/ and @message like /<object-key>/
+| sort @timestamp asc
+```
 
 #### `DocumentQueueStalledAlarm` — why it is not a queue-depth alarm
 

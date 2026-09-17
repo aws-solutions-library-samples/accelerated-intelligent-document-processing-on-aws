@@ -1,7 +1,7 @@
 {
   "meta": {
-    "stack": "IDPRel068",
-    "stack_version": "0.6.8.dev2",
+    "stack": "IDPUpg067to068",
+    "stack_version": "0.6.8",
     "suite": "sizerab",
     "class": "bank_statement",
     "overrides": [
@@ -15,17 +15,19 @@
       "tiny_form",
       "small_narrow"
     ],
+    "docs_reference": [],
     "docs_unlaunchable": [],
     "docs_other_class": [],
-    "commit": "580bfb5d1",
-    "pricing_sha256": "aa52446ac3eed120ffb91faf57667785c0f1fe66c5378ebf69796f0c6a41fde5",
-    "scored_at": "2026-09-10T19:05:08.121323Z",
+    "commit": "d584958e0",
+    "pricing_sha256": "4884220eae2aab0bc52945120a0ae8b6ee9c46c0517baddddb717e659624efbc",
+    "scored_at": "2026-09-12T20:56:50.555025Z",
     "region": "us-west-2"
   },
   "rows": [
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
+      "sub_doc": null,
       "repeat": 0,
       "resolved": {
         "ocr": "textract_tables",
@@ -46,37 +48,38 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185500",
+      "run_id": "bench-tiny_form-20260912-203833",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 20.201938,
-      "cost": 0.0282,
+      "wall_s": 16.858077,
+      "cost": 0.0288,
       "cost_by_phase": {
-        "OCR": 0.01538,
+        "OCR": 0.01523,
         "Classification": 1e-05,
-        "Extraction": 0.01225,
+        "Extraction": 0.01301,
         "Assessment": 0.0005,
         "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00093,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01199,
+        "lambda/duration": 0.00079,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
         "bedrock/us.amazon.nova-lite-v1:0": 0.00024
       },
       "tokens": {
         "inputTokens": 3121,
-        "outputTokens": 725,
+        "outputTokens": 770,
         "cacheReadInputTokens": 2751,
         "cacheWriteInputTokens": 765
       },
       "tokens_by_phase": {
         "Extraction": {
           "inputTokens": 1950,
-          "outputTokens": 308,
+          "outputTokens": 353,
           "cacheReadInputTokens": 1440,
           "cacheWriteInputTokens": 0
         },
@@ -117,6 +120,7 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
+      "sub_doc": null,
       "repeat": 1,
       "resolved": {
         "ocr": "textract_tables",
@@ -137,24 +141,25 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185503",
+      "run_id": "bench-tiny_form-20260912-203908",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 18.095923,
-      "cost": 0.0288,
+      "wall_s": 15.524588,
+      "cost": 0.0286,
       "cost_by_phase": {
-        "OCR": 0.01525,
+        "OCR": 0.01517,
         "Classification": 2e-05,
-        "Extraction": 0.01304,
+        "Extraction": 0.013,
         "Assessment": 0.00044,
-        "Summarization": 2e-05
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00082,
+        "lambda/duration": 0.0007,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
         "bedrock/us.amazon.nova-lite-v1:0": 0.0002
       },
@@ -208,6 +213,7 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
+      "sub_doc": null,
       "repeat": 2,
       "resolved": {
         "ocr": "textract_tables",
@@ -228,24 +234,25 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185506",
+      "run_id": "bench-tiny_form-20260912-204008",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 21.659776,
-      "cost": 0.029,
+      "wall_s": 17.134045,
+      "cost": 0.0287,
       "cost_by_phase": {
-        "OCR": 0.01548,
-        "Classification": 2e-05,
-        "Extraction": 0.01302,
-        "Assessment": 0.00043,
+        "OCR": 0.01525,
+        "Classification": 1e-05,
+        "Extraction": 0.013,
+        "Assessment": 0.00045,
         "Summarization": 2e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00103,
+        "lambda/duration": 0.0008,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
         "bedrock/us.amazon.nova-lite-v1:0": 0.0002
       },
@@ -299,6 +306,7 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
+      "sub_doc": null,
       "repeat": 3,
       "resolved": {
         "ocr": "textract_tables",
@@ -319,24 +327,25 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185509",
+      "run_id": "bench-tiny_form-20260912-204038",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 21.222032,
-      "cost": 0.029,
+      "wall_s": 15.305384,
+      "cost": 0.0286,
       "cost_by_phase": {
-        "OCR": 0.01535,
+        "OCR": 0.01517,
         "Classification": 2e-05,
-        "Extraction": 0.01319,
+        "Extraction": 0.013,
         "Assessment": 0.00044,
-        "Summarization": 2e-05
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00108,
+        "lambda/duration": 0.0007,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
         "bedrock/us.amazon.nova-lite-v1:0": 0.0002
       },
@@ -390,6 +399,7 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
+      "sub_doc": null,
       "repeat": 4,
       "resolved": {
         "ocr": "textract_tables",
@@ -410,44 +420,45 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185513",
+      "run_id": "bench-tiny_form-20260912-204133",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 20.074631,
-      "cost": 0.0289,
+      "wall_s": 15.965509,
+      "cost": 0.028,
       "cost_by_phase": {
-        "OCR": 0.01541,
+        "OCR": 0.01522,
         "Classification": 1e-05,
-        "Extraction": 0.01301,
-        "Assessment": 0.00044,
+        "Extraction": 0.01229,
+        "Assessment": 0.00043,
         "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00096,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
+        "lambda/duration": 0.00073,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01203,
         "bedrock/us.amazon.nova-lite-v1:0": 0.0002
       },
       "tokens": {
-        "inputTokens": 3121,
-        "outputTokens": 770,
-        "cacheReadInputTokens": 3516,
+        "inputTokens": 3124,
+        "outputTokens": 727,
+        "cacheReadInputTokens": 3515,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Extraction": {
           "inputTokens": 1950,
-          "outputTokens": 353,
+          "outputTokens": 310,
           "cacheReadInputTokens": 1440,
           "cacheWriteInputTokens": 0
         },
         "Assessment": {
-          "inputTokens": 1171,
+          "inputTokens": 1174,
           "outputTokens": 417,
-          "cacheReadInputTokens": 2076,
+          "cacheReadInputTokens": 2075,
           "cacheWriteInputTokens": 0
         }
       },
@@ -481,6 +492,7 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "small_narrow.pdf",
+      "sub_doc": null,
       "repeat": 0,
       "resolved": {
         "ocr": "textract_tables",
@@ -501,38 +513,39 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-small_narrow-20260910-185555",
+      "run_id": "bench-small_narrow-20260912-204201",
       "status": "COMPLETED",
       "success": true,
       "page_count": 3.0,
-      "wall_s": 62.401821,
-      "cost": 0.1446,
+      "wall_s": 60.105975,
+      "cost": 0.1447,
       "cost_by_phase": {
-        "OCR": 0.04536,
-        "Classification": 0.0027,
-        "Extraction": 0.09129,
-        "Assessment": 0.00522,
-        "Summarization": 2e-05
+        "OCR": 0.04528,
+        "Classification": 0.00261,
+        "Extraction": 0.09122,
+        "Assessment": 0.00562,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00379,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00245,
+        "lambda/duration": 0.00366,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00243,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.00394
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00425
       },
       "tokens": {
-        "inputTokens": 28143,
-        "outputTokens": 10468,
-        "cacheReadInputTokens": 101709,
+        "inputTokens": 28852,
+        "outputTokens": 10866,
+        "cacheReadInputTokens": 112946,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Classification": {
           "inputTokens": 3497,
-          "outputTokens": 445,
+          "outputTokens": 436,
           "cacheReadInputTokens": 3912,
           "cacheWriteInputTokens": 0
         },
@@ -543,9 +556,9 @@
           "cacheWriteInputTokens": 0
         },
         "Assessment": {
-          "inputTokens": 16688,
-          "outputTokens": 6225,
-          "cacheReadInputTokens": 96357,
+          "inputTokens": 17397,
+          "outputTokens": 6632,
+          "cacheReadInputTokens": 107594,
           "cacheWriteInputTokens": 0
         }
       },
@@ -572,13 +585,14 @@
       "typed_fields": null,
       "cell_accuracy": 1.0,
       "cells_compared": 200,
-      "mean_confidence": 0.9997,
+      "mean_confidence": 0.9995,
       "pct_conf_below_0.9": 0.0,
       "n_conf_leaves": 307
     },
     {
       "cell": "core-tt-simple-sep",
       "doc": "small_narrow.pdf",
+      "sub_doc": null,
       "repeat": 1,
       "resolved": {
         "ocr": "textract_tables",
@@ -599,38 +613,39 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-small_narrow-20260910-185559",
+      "run_id": "bench-small_narrow-20260912-204257",
       "status": "COMPLETED",
       "success": true,
       "page_count": 3.0,
-      "wall_s": 64.391401,
-      "cost": 0.1449,
+      "wall_s": 59.565936,
+      "cost": 0.1447,
       "cost_by_phase": {
-        "OCR": 0.04539,
-        "Classification": 0.00282,
-        "Extraction": 0.09128,
-        "Assessment": 0.00536,
-        "Summarization": 2e-05
+        "OCR": 0.04523,
+        "Classification": 0.00262,
+        "Extraction": 0.09127,
+        "Assessment": 0.00555,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00391,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00258,
+        "lambda/duration": 0.00358,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00246,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.00397
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00425
       },
       "tokens": {
-        "inputTokens": 28051,
-        "outputTokens": 10639,
-        "cacheReadInputTokens": 101753,
+        "inputTokens": 28757,
+        "outputTokens": 10901,
+        "cacheReadInputTokens": 112993,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Classification": {
           "inputTokens": 3497,
-          "outputTokens": 493,
+          "outputTokens": 447,
           "cacheReadInputTokens": 3912,
           "cacheWriteInputTokens": 0
         },
@@ -641,9 +656,109 @@
           "cacheWriteInputTokens": 0
         },
         "Assessment": {
-          "inputTokens": 16596,
-          "outputTokens": 6348,
-          "cacheReadInputTokens": 96401,
+          "inputTokens": 17302,
+          "outputTokens": 6656,
+          "cacheReadInputTokens": 107641,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "mean_confidence": 0.9988,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "small_narrow.pdf",
+      "sub_doc": null,
+      "repeat": 2,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "b13",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
+      },
+      "run_id": "bench-small_narrow-20260912-204352",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 58.71679,
+      "cost": 0.1448,
+      "cost_by_phase": {
+        "OCR": 0.04535,
+        "Classification": 0.00281,
+        "Extraction": 0.09121,
+        "Assessment": 0.00544,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/duration": 0.00353,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00264,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00425
+      },
+      "tokens": {
+        "inputTokens": 28946,
+        "outputTokens": 10938,
+        "cacheReadInputTokens": 112900,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3497,
+          "outputTokens": 520,
+          "cacheReadInputTokens": 3912,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 7958,
+          "outputTokens": 3798,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 17491,
+          "outputTokens": 6620,
+          "cacheReadInputTokens": 107548,
           "cacheWriteInputTokens": 0
         }
       },
@@ -677,104 +792,7 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "small_narrow.pdf",
-      "repeat": 2,
-      "resolved": {
-        "ocr": "textract_tables",
-        "extraction_mode": "simple",
-        "assessment": "separate",
-        "geometry": "ocr_only",
-        "escalation": "off",
-        "extraction_model": "sonnet46",
-        "confidence_model": "nova_lite",
-        "classification_model": "nova_2_lite",
-        "reasoning_effort": "low",
-        "enforcement": "warn",
-        "forcing": "off",
-        "schema_restatement": "on",
-        "section_splitting": "llm_determined",
-        "boundary_prompt": "current",
-        "conf_batch": "b13",
-        "class_confidence": "topk",
-        "ocr_dpi": "300",
-        "multi_instance": "off",
-        "multi_instance_detection": "on"
-      },
-      "run_id": "bench-small_narrow-20260910-185603",
-      "status": "COMPLETED",
-      "success": true,
-      "page_count": 3.0,
-      "wall_s": 61.719171,
-      "cost": 0.1447,
-      "cost_by_phase": {
-        "OCR": 0.04531,
-        "Classification": 0.00279,
-        "Extraction": 0.09129,
-        "Assessment": 0.0053,
-        "Summarization": 1e-05
-      },
-      "cost_by_key": {
-        "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00375,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00259,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.00397
-      },
-      "tokens": {
-        "inputTokens": 28143,
-        "outputTokens": 10652,
-        "cacheReadInputTokens": 101709,
-        "cacheWriteInputTokens": 0
-      },
-      "tokens_by_phase": {
-        "Classification": {
-          "inputTokens": 3497,
-          "outputTokens": 500,
-          "cacheReadInputTokens": 3912,
-          "cacheWriteInputTokens": 0
-        },
-        "Extraction": {
-          "inputTokens": 7958,
-          "outputTokens": 3798,
-          "cacheReadInputTokens": 1440,
-          "cacheWriteInputTokens": 0
-        },
-        "Assessment": {
-          "inputTokens": 16688,
-          "outputTokens": 6354,
-          "cacheReadInputTokens": 96357,
-          "cacheWriteInputTokens": 0
-        }
-      },
-      "forced_tool_attempted": null,
-      "forced_tool_honored": null,
-      "forced_tool_honored_rate": null,
-      "forced_tool_skips": null,
-      "validation_sections": 1,
-      "validation_valid_rate": 1.0,
-      "validation_errors": 0,
-      "coercions": null,
-      "coercion_refusals": null,
-      "sections": 1,
-      "sections_expected": 1,
-      "sections_correct": 1.0,
-      "rows_truth": 100,
-      "rows_extracted": 100,
-      "completeness_recall": 1.0,
-      "truncation_prefix": 100,
-      "dups": 0,
-      "n_gaps": 0,
-      "scalar_accuracy": 1.0,
-      "typed_accuracy": null,
-      "typed_fields": null,
-      "cell_accuracy": 1.0,
-      "cells_compared": 200,
-      "mean_confidence": 0.9997,
-      "pct_conf_below_0.9": 0.0,
-      "n_conf_leaves": 307
-    },
-    {
-      "cell": "core-tt-simple-sep",
-      "doc": "small_narrow.pdf",
+      "sub_doc": null,
       "repeat": 3,
       "resolved": {
         "ocr": "textract_tables",
@@ -795,38 +813,39 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-small_narrow-20260910-185607",
+      "run_id": "bench-small_narrow-20260912-204501",
       "status": "COMPLETED",
       "success": true,
       "page_count": 3.0,
-      "wall_s": 126.722415,
-      "cost": 0.1537,
+      "wall_s": 59.205232,
+      "cost": 0.1448,
       "cost_by_phase": {
-        "OCR": 0.04542,
+        "OCR": 0.04525,
         "Classification": 0.00273,
-        "Extraction": 0.09129,
-        "Assessment": 0.01419,
-        "Summarization": 2e-05
+        "Extraction": 0.0912,
+        "Assessment": 0.00561,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00808,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00253,
+        "lambda/duration": 0.00361,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00254,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.00864
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00426
       },
       "tokens": {
-        "inputTokens": 35786,
-        "outputTokens": 21892,
-        "cacheReadInputTokens": 202309,
+        "inputTokens": 29040,
+        "outputTokens": 10898,
+        "cacheReadInputTokens": 112854,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Classification": {
           "inputTokens": 3497,
-          "outputTokens": 474,
+          "outputTokens": 480,
           "cacheReadInputTokens": 3912,
           "cacheWriteInputTokens": 0
         },
@@ -837,9 +856,9 @@
           "cacheWriteInputTokens": 0
         },
         "Assessment": {
-          "inputTokens": 24331,
-          "outputTokens": 17620,
-          "cacheReadInputTokens": 196957,
+          "inputTokens": 17585,
+          "outputTokens": 6620,
+          "cacheReadInputTokens": 107502,
           "cacheWriteInputTokens": 0
         }
       },
@@ -866,13 +885,14 @@
       "typed_fields": null,
       "cell_accuracy": 1.0,
       "cells_compared": 200,
-      "mean_confidence": 0.9997,
+      "mean_confidence": 0.9999,
       "pct_conf_below_0.9": 0.0,
       "n_conf_leaves": 307
     },
     {
       "cell": "core-tt-simple-sep",
       "doc": "small_narrow.pdf",
+      "sub_doc": null,
       "repeat": 4,
       "resolved": {
         "ocr": "textract_tables",
@@ -893,38 +913,39 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-small_narrow-20260910-185612",
+      "run_id": "bench-small_narrow-20260912-204601",
       "status": "COMPLETED",
       "success": true,
       "page_count": 3.0,
-      "wall_s": 67.147246,
-      "cost": 0.145,
+      "wall_s": 59.116849,
+      "cost": 0.1448,
       "cost_by_phase": {
-        "OCR": 0.04545,
-        "Classification": 0.0028,
-        "Extraction": 0.09138,
-        "Assessment": 0.00541,
-        "Summarization": 2e-05
+        "OCR": 0.04531,
+        "Classification": 0.00273,
+        "Extraction": 0.0912,
+        "Assessment": 0.00556,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00408,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00259,
+        "lambda/duration": 0.00359,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00256,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.00398
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00425
       },
       "tokens": {
-        "inputTokens": 28237,
-        "outputTokens": 10652,
-        "cacheReadInputTokens": 101663,
+        "inputTokens": 28946,
+        "outputTokens": 10905,
+        "cacheReadInputTokens": 112900,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Classification": {
           "inputTokens": 3497,
-          "outputTokens": 499,
+          "outputTokens": 487,
           "cacheReadInputTokens": 3912,
           "cacheWriteInputTokens": 0
         },
@@ -935,9 +956,9 @@
           "cacheWriteInputTokens": 0
         },
         "Assessment": {
-          "inputTokens": 16782,
-          "outputTokens": 6355,
-          "cacheReadInputTokens": 96311,
+          "inputTokens": 17491,
+          "outputTokens": 6620,
+          "cacheReadInputTokens": 107548,
           "cacheWriteInputTokens": 0
         }
       },
@@ -964,7 +985,7 @@
       "typed_fields": null,
       "cell_accuracy": 1.0,
       "cells_compared": 200,
-      "mean_confidence": 0.9997,
+      "mean_confidence": 0.9999,
       "pct_conf_below_0.9": 0.0,
       "n_conf_leaves": 307
     }
@@ -990,7 +1011,8 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
       "n_runs": 10,
       "n_success": 10,
@@ -998,11 +1020,11 @@
       "max_repeat": 5,
       "cost": {
         "n": 10,
-        "mean": 0.08768,
-        "stdev": 0.06214,
-        "cv": 0.7088,
-        "min": 0.0282,
-        "max": 0.1537
+        "mean": 0.08665,
+        "stdev": 0.06125,
+        "cv": 0.7069,
+        "min": 0.028,
+        "max": 0.1448
       },
       "completeness_recall": {
         "n": 10,
@@ -1078,11 +1100,11 @@
       },
       "wall_s": {
         "n": 10,
-        "mean": 48.36364,
-        "stdev": 35.09432,
-        "cv": 0.7256,
-        "min": 18.09592,
-        "max": 126.72241
+        "mean": 37.74984,
+        "stdev": 22.76934,
+        "cv": 0.6032,
+        "min": 15.30538,
+        "max": 60.10598
       }
     }
   }

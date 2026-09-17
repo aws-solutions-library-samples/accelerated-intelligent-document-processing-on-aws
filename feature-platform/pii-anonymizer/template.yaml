@@ -34,7 +34,7 @@ Parameters:
   LogLevel:
     Type: String
     Default: INFO
-    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    AllowedValues: [DEBUG, INFO, WARN, WARNING, ERROR]
 
   RedactedSuffix:
     Type: String

@@ -38,7 +38,7 @@ const REQUIRED_STRUCTURE = `documents.zip
     ├── input/
     │   ├── document1.pdf
     │   └── document2.pdf
-    └── baseline/
+    └── baseline/                 (optional — omit to add unlabeled documents)
         ├── document1.pdf/
         │   └── sections/
         │       └── 1/
@@ -376,7 +376,11 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
                   {REQUIRED_STRUCTURE}
                 </pre>
               </Box>
-              <Alert type="info">Each input file must have a corresponding baseline folder with the same name.</Alert>
+              <Alert type="info">
+                Include a <b>baseline/</b> folder to bring labels with the documents; a zip with only <b>input/</b> adds unlabeled
+                documents, which you can draft-label afterwards. When <b>baseline/</b> is present, every document must have a folder of the
+                same name.
+              </Alert>
             </ExpandableSection>
             <input
               ref={fileInputRef}

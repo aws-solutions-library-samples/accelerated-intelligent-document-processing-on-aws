@@ -75,6 +75,7 @@ For issues not covered by the Error Analyzer, use the manual troubleshooting ste
 | **Lambda function timeouts**   | Increase function timeout or memory allocation. Consider breaking processing into smaller chunks.                     |
 | **DynamoDB capacity exceeded** | Check CloudWatch metrics for throttling. Consider increasing provisioned capacity or switching to on-demand capacity. |
 | **DynamoDB config upload fails: "Item size has exceeded the maximum allowed size"** | This error occurred in versions prior to the compression fix when configurations had ~45+ document classes, exceeding DynamoDB's 400KB item limit. **Solution**: Upgrade to the latest version, which gzip-compresses configuration data (supporting 3,000+ classes). Existing configs auto-migrate on next write. See [GitHub Issue #200](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/200). |
+| **Test Studio "Run Test" fails: "An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size"** | In versions before the fix, the test runner copied the selected configuration profile inline onto the run's DynamoDB record, uncompressed. The Configuration page accepted profiles past ~390KB of JSON (it compresses them), so a large profile saved fine and then failed every test run at submit. **Solution**: Upgrade to a version where runs store the captured configuration compressed. On an affected version, reduce the profile below ~390KB of JSON (fewer classes, shorter prompts or attribute descriptions, or split classes across profiles); export the profile from the Configuration page to check its size. |
 | **S3 permission errors**       | Verify bucket policies and IAM role permissions. Check for cross-account access issues.                               |
 | **Stack update fails with `iam:UpdateAssumeRolePolicy` AccessDenied on `CognitoAuthorizedRole`, then wedges in `UPDATE_ROLLBACK_FAILED`** | Affects upgrades from before v0.6.2 to v0.6.2–v0.6.4 when deploying with a CloudFormation service role (or permissions boundary) that lacks `iam:UpdateAssumeRolePolicy`. The rollback needs the same permission, so the stack cannot self-recover. **Recover:** `aws cloudformation continue-update-rollback --stack-name <StackName> --resources-to-skip <StackName>-CognitoAuthorizedRole`, then upgrade to a release that includes the fix (the GovCloud principals are now gated on the partition, so commercial deployments no longer change this trust policy). If you use your own service role, also grant `iam:UpdateAssumeRolePolicy` — see [iam-roles/cloudformation-management/README.md](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/iam-roles/cloudformation-management/README.md) and [GitHub Issue #632](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/632). |
 
@@ -173,6 +174,39 @@ If too many workflows are running and need to be stopped:
    - Navigate to SQS in the AWS Console
    - Select the queue
    - Choose "Purge" from the Actions menu
+
+### Documents Processed More Than Once
+
+**Symptom:** a document uploaded once shows several entries in the Web UI's
+**Version History** that differ only in the execution that produced them, all
+with the same queued time, and `AWS/States ExecutionsStarted` for the workflow is
+higher than the number of documents you uploaded. Every extra execution was
+billed for Bedrock, Textract and Lambda.
+
+**Cause (fixed in 0.6.9,
+[#904](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/904)):**
+under a saturated queue the `QueueProcessor` Lambda timed out mid-batch. Lambda
+then reported nothing to SQS, so the whole batch was redelivered — including
+messages whose workflow had already started — and each redelivery started a new,
+randomly named execution. Since 0.6.9 the execution is named after the SQS
+message (`<basename>-<message-id>`), so a redelivered message is refused by Step
+Functions and acked without a second execution, and each message is deleted as
+soon as its execution exists. `QueueProcessorErrorsAlarm` now reports the
+timeouts themselves; see [Monitoring](monitoring.md#queueprocessorerrorsalarm--a-processor-that-cannot-finish-its-batches).
+
+**To confirm it on a stack you have not yet upgraded**, pick one affected
+document and count how often its SQS message was received:
+
+```
+fields @timestamp, @requestId, @message
+| filter @message like /Processing message/ and @message like /<object-key>/
+| sort @timestamp asc
+```
+
+One `messageId` appearing many times is redelivery, not duplicate ingest. Check
+the same log group for invocations ending in `Status: timeout`. Upgrading is the
+fix; if you cannot yet, raising the function's `MemorySize` and lowering the
+event source mapping's `BatchSize` reduce how often a batch fails to finish.
 
 ## Security Issues
 

@@ -60,8 +60,11 @@ make ui-build
 # CI/CD linting (check-only, no modifications)
 make lint-cicd
 
-# CloudFormation template validation (fails on ERRORS; warnings advisory)
+# CloudFormation template validation (fails on ERRORS; warnings counted, not listed)
 make cfn-lint
+
+# Same, but list every advisory warning in full
+make cfn-lint-warnings
 ```
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
@@ -72,7 +75,12 @@ from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
 
 It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
 defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
-wholesale. The six `<ARTIFACT_BUCKET_TOKEN>` findings are suppressed at
+wholesale. Those warnings are **counted but not listed** by default — printing
+them buried the one line that matters — so `make lint` shows a single per-rule
+tally (`W1030 x88, ...`) and `make cfn-lint-warnings` (or
+`CFN_LINT_SHOW_WARNINGS=1`) prints them in full. The rules stay enabled: a
+genuinely malformed hardcoded id or ARN is still detected, and every `E*` line is
+always printed. The six `<ARTIFACT_BUCKET_TOKEN>` findings are suppressed at
 **resource** scope via `Metadata: cfn-lint:` on the three layer resources in
 `template.yaml` — not by disabling E1161/E3031 repo-wide, which would have hidden
 a genuinely malformed name anywhere else. `publish.py` substitutes those tokens.
@@ -562,6 +570,7 @@ that domain:
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |
 | `.claude/skills/create-hf-dataset-pr.md` | Contributing a data/label correction to an external HuggingFace dataset via a community PR (parquet key-order gotcha, verification, review artifacts) |
 | `.claude/skills/testing-qa.md` | Writing tests, pytest patterns, moto, conftest setup |
+| `.claude/skills/release-validation.md` | **Validating a published release end to end in one request** ("validate the 0.6.8 release") — every live tier (security snapshot, deploy variants, `--headless`/`--govcloud` transforms, in-place upgrade, release benchmark A/B) plus the offline battery; writes `docs/release-validation/v<X>.md`, `security/test-results/<X>/` and the benchmark audit, and opens the two PRs. The umbrella over the per-tier skills below |
 | `.claude/skills/full-test-battery.md` | Running the FULL test battery (all suites + lint/typecheck) to validate a branch/merge; includes the known pre-existing-failure baseline so real regressions stand out |
 | `.claude/skills/test-upgrade.md` | Validating an in-place CloudFormation stack upgrade between two published releases (X→Y) — deploy the FROM template, `update-stack` to the TO template, watch the `UpdateDefaultConfig` custom resource, diagnose/recover a rollback deadlock, tear down |
 | `.claude/skills/live-eval-and-cost.md` | Live benchmark A/B, upgrade testing, reading accuracy/cost/confidence + prompt-cache/model cost facts |

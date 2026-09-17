@@ -13,9 +13,18 @@ what was actually exercised against live AWS infrastructure, and what was found.
 
 | Release | Verdict | Record |
 |---------|---------|--------|
+| **v0.6.8** | ✅ Ship — 18 of 18 tiers pass (typecheck baseline unchanged); 4 findings, none in shipped product code — one account quota, three test-tooling (two false-red gates, one unrepeatable test) | [v0.6.8.md](./v0.6.8.md) |
 | **v0.6.6** | ✅ Ship — 14 of 14 tiers pass; 3 findings, none in shipped product code | [v0.6.6.md](./v0.6.6.md) |
 
 <!-- APPEND NEW ROWS ABOVE THIS LINE (newest first). -->
+
+## Producing a record
+
+The whole battery is driven by one request to the assistant — e.g. *"validate the 0.6.8
+release"* — via the
+[`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md)
+skill, which fixes the tier list below, the order, the stacks, the redaction rules, and the
+two PRs that carry the results. The per-tier make targets remain runnable on their own.
 
 ## What is covered
 

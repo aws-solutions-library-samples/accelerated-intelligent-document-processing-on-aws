@@ -212,8 +212,15 @@ def main():
     srt_dir = project_root / ".srt"
 
     # Check if running in CI/CD environment
+    # "CI" here really means "non-interactive". A detached or scripted run with
+    # no terminal must take the programmatic path too: `srt config` otherwise
+    # blocks on an AWS-profile prompt nobody can answer, and interrupting that
+    # prompt leaves SRT with no config and no scanner venv (seen at v0.6.8).
     is_ci = bool(
-        os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS")
+        os.getenv("CI")
+        or os.getenv("GITLAB_CI")
+        or os.getenv("GITHUB_ACTIONS")
+        or not sys.stdin.isatty()
     )
 
     print("Setting up SRT (Sample Security Review Tool)...")

@@ -23,10 +23,11 @@ is cheap to unit-test and cheap to import in every Lambda — same discipline as
 Design notes:
 
 * The property is injected into a **copy** of the class schema used for the
-  prompt / tool wire format only. The real class schema is untouched, so
-  ``_filter_extracted_to_schema``, the JSON-Schema validator, the generated
-  Pydantic model and every downstream consumer keep seeing exactly the declared
-  fields.
+  prompt / tool wire format only (Simple extraction), or onto the generated
+  transport model for the unsharded agentic call (#772). The real class schema
+  is untouched, so ``_filter_extracted_to_schema``, the JSON-Schema validator
+  and every downstream consumer keep seeing exactly the declared fields; the
+  in-loop agentic validator drops the probe from a copy before validating.
 * The name is a valid Converse top-level property (``^[a-zA-Z0-9_.-]{1,64}$``),
   so the forced-tool path can carry it without the name sanitizer renaming it.
 * If a class genuinely declares a property of the same name, the probe is

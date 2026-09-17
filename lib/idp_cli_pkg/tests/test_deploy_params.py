@@ -333,3 +333,35 @@ class TestExternalIdPEmailMutableDefault:
     def test_non_federated_stack_untouched(self, params):
         assert self._run(dict(params)) is None
         assert "ExternalIdPEmailMutable" not in params
+
+
+class TestLogLevelOption:
+    """`--log-level` must not treat any value as a stand-in for 'unset'.
+
+    The option used to default to `INFO` and the deploy command dropped the
+    parameter whenever it equalled `INFO` — harmless while the template default
+    was also `INFO`, but the template now defaults to `WARN`, so dropping an
+    explicit `--log-level INFO` would silently deploy `WARN` instead.
+    """
+
+    @staticmethod
+    def _option():
+        from idp_cli.cli import deploy
+
+        return next(p for p in deploy.params if p.name == "log_level")
+
+    def test_default_is_unset_so_cfn_preserves_or_uses_template_default(self):
+        assert self._option().default is None
+
+    def test_info_is_still_a_choice(self):
+        # Dropping INFO from the choices would be a breaking CLI change; the
+        # fix is to forward it, not to forbid it.
+        assert "INFO" in self._option().type.choices
+
+    def test_explicit_level_reaches_the_stack_parameters(self):
+        # build_parameters is what the deploy command forwards to; an explicit
+        # level must survive as a real CloudFormation parameter.
+        assert build_parameters(log_level="INFO")["LogLevel"] == "INFO"
+
+    def test_unset_level_is_omitted(self):
+        assert "LogLevel" not in build_parameters(log_level=None)

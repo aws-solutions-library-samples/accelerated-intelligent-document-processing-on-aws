@@ -103,7 +103,8 @@ extraction:
     #     sections, where you want a warning on every affected section.
     #
     # Detection NEVER changes the extracted data or a class's schema flags.
-    # Simple extraction only (prompt and forced-tool paths).
+    # Covers Simple extraction (prompt and forced-tool paths) and the unsharded
+    # Advanced (agentic) call; sharded agentic sections are not probed (#772).
     enabled: false
     # The question put to the model, as the description of the auxiliary count
     # property. {DOCUMENT_CLASS} is substituted with the section's class.

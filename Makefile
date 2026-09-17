@@ -129,7 +129,7 @@ setup-venv: ## Create .venv and install all packages into it
 
 ##@ Code Quality
 lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ## Quick lint without UI checks
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -311,8 +311,19 @@ CFN_LINT_VERSION := 1.51.0
 # parameter wiring asserted directly by
 # scripts/tests/test_nested_stack_parameters.py instead.
 CFN_LINT_IGNORE := E3043
+#
+# Warnings (W*/I*) never fail the gate, and by default they are not LISTED
+# either: ~112 of them are a single false-positive class (W1030/W1031 — an
+# optional `Default: ""` parameter such as LambdaSecurityGroupId "is not a valid
+# sg-... id", which cfn-lint reports without noticing the referencing resource is
+# behind a DeployInVPC condition) plus a handful of W1028/W1001 condition
+# inferences of the same shape. Printed in full they buried the one line that
+# matters. The rules stay ENABLED — a genuinely malformed hardcoded id or ARN is
+# still detected — but only a per-rule count is shown. Set
+# CFN_LINT_SHOW_WARNINGS=1 (or run `make cfn-lint-warnings`) to list them.
+CFN_LINT_SHOW_WARNINGS ?=
 
-cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings advisory)
+cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings counted, listed by cfn-lint-warnings)
 	@echo "Validating CloudFormation templates with cfn-lint..."
 	@command -v cfn-lint >/dev/null 2>&1 || { \
 		echo -e "$(RED)ERROR: cfn-lint not installed. Run 'make setup' or$(NC)"; \
@@ -351,8 +362,25 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 	STATUS=$$?; \
 	NOISE="cfnlint\.decode\.decode - ERROR - Template file not found:.*\.aws-sam/packaged\.ya\?ml"; \
 	MISSING=$$(grep -c "$$NOISE" "$$OUT" || true); \
-	grep -v "$$NOISE" "$$OUT" || true; \
+	FILTERED=$$(mktemp); \
+	grep -v "$$NOISE" "$$OUT" >"$$FILTERED" || true; \
 	rm -f "$$OUT"; \
+	WARNINGS=$$(grep -cE '^[WI][0-9]{4} ' "$$FILTERED" || true); \
+	if [ -n "$(CFN_LINT_SHOW_WARNINGS)" ]; then \
+		cat "$$FILTERED"; \
+	else \
+		awk '/^[WI][0-9]{4} /{skip=2; next} skip>0{skip--; next} {print}' "$$FILTERED"; \
+	fi; \
+	if [ "$$WARNINGS" -gt 0 ]; then \
+		BYRULE=$$(grep -oE '^[WI][0-9]{4}' "$$FILTERED" | sort | uniq -c | sort -rn \
+			| awk '{printf "%s%s x%d", (NR>1 ? ", " : ""), $$2, $$1}'); \
+		if [ -n "$(CFN_LINT_SHOW_WARNINGS)" ]; then \
+			echo -e "$(YELLOW)  $$WARNINGS advisory warning(s) listed above ($$BYRULE); none fail this gate$(NC)"; \
+		else \
+			echo -e "$(YELLOW)  $$WARNINGS advisory warning(s) not listed ($$BYRULE) — run 'make cfn-lint-warnings' to see them$(NC)"; \
+		fi; \
+	fi; \
+	rm -f "$$FILTERED"; \
 	if [ "$$MISSING" -gt 0 ]; then \
 		echo "  ($$MISSING nested TemplateURL(s) unbuilt — expected on a clean checkout)"; \
 	fi; \
@@ -361,6 +389,9 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings a
 		exit 1; \
 	fi; \
 	echo -e "$(GREEN)✅ cfn-lint: no template errors$(NC)"
+
+cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
+	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
@@ -417,10 +448,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd feature-platform/seller-entitlement-service && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -q -p no:cacheprovider
-	@echo "Running circuit breaker Lambda tests..."
+	@echo "Running circuit breaker + queue processor Lambda tests (slot ownership, counter reconcile, config pin, idempotent start #904)..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/circuit_breaker_manager \
-	    src/lambda/queue_processor/test_check_circuit_breaker.py \
+	    src/lambda/queue_processor \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
 	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
 	@# Both suites import their own ``index`` module; run each in its
@@ -438,6 +469,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/chat_stream_processor && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
 	cd src/lambda/bda_ocr_project && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Validating config library files..."

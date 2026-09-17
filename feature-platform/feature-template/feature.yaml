@@ -59,7 +59,7 @@ ui:
                                       # registerFeatureHooks at install — see the Developer Guide.
 
 defaultParameters:
-  LogLevel: INFO
+  LogLevel: WARN
 
 capabilities:
   - custom-api       # remove if this is a client-only feature
