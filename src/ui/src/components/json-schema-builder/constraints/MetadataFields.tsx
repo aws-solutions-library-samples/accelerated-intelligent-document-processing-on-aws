@@ -63,7 +63,7 @@ const MetadataFields = ({ attribute, onUpdate, availableClasses }: MetadataField
       onUpdate(updates);
       return;
     }
-    // Resolve a bare `$ref` to its target type first: read straight off the node
+    // Resolve a bare `$ref` to its target type first: read straight off the node,
     // it is `undefined`, so a JSON default typed into an object field was stored
     // as the raw string rather than parsed (GitHub #906).
     const parsed = parseInputValue(defaultValueInput, resolveAttributeType(attribute, availableClasses));

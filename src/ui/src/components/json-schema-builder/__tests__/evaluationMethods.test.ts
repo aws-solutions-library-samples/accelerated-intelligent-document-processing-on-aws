@@ -1,5 +1,5 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT-0
 
 /**
  * The Evaluation Method list offered by the attribute inspector, and the `$ref`
@@ -42,6 +42,15 @@ const methodsFor = (attribute: Record<string, unknown> | null, classes?: Record<
   availableEvaluationMethods(attribute, classes as never).map((opt) => opt.value);
 
 const ALL_METHODS = EVALUATION_METHOD_OPTIONS.map((opt) => opt.value);
+/**
+ * What the never-empty fallback hands back: every method EXCEPT the one that
+ * requires structured items. HUNGARIAN passes the filter whenever the field is a
+ * structured array, so the fallback is only ever reached when it is not — and
+ * offering it there is a silent no-op (`mapper.py` logs its own `ValueError` and
+ * drops the method) and contradicts the documented guarantee in
+ * `docs/evaluation.md` that HUNGARIAN cannot be chosen for a non-array field.
+ */
+const FALLBACK_METHODS = EVALUATION_METHOD_OPTIONS.filter((opt) => !opt.requiresStructuredItems).map((opt) => opt.value);
 const STRING_METHODS = [
   EVALUATION_METHOD_EXACT,
   EVALUATION_METHOD_NUMERIC_EXACT,
@@ -119,14 +128,24 @@ describe('availableEvaluationMethods', () => {
     expect(methods).not.toContain(EVALUATION_METHOD_HUNGARIAN);
   });
 
-  it('falls back to the unfiltered list — never empty — when the ref is unresolvable', () => {
+  it('falls back to every non-structured-array method — never empty — when the type is unresolvable', () => {
     // Better an over-broad list than a dropdown with nothing in it and no
     // explanation: an empty one removes the only way to configure the field.
-    expect(methodsFor({ $ref: '#/$defs/Missing' }, [designerClass('Address')])).toEqual(ALL_METHODS);
-    expect(methodsFor({ $ref: '#/$defs/Address' })).toEqual(ALL_METHODS);
-    expect(methodsFor({ description: 'no type at all' })).toEqual(ALL_METHODS);
-    expect(methodsFor({ type: 'null' })).toEqual(ALL_METHODS);
-    expect(methodsFor(null)).toEqual(ALL_METHODS);
+    expect(methodsFor({ $ref: '#/$defs/Missing' }, [designerClass('Address')])).toEqual(FALLBACK_METHODS);
+    expect(methodsFor({ $ref: '#/$defs/Address' })).toEqual(FALLBACK_METHODS);
+    expect(methodsFor({ description: 'no type at all' })).toEqual(FALLBACK_METHODS);
+    expect(methodsFor({ type: 'null' })).toEqual(FALLBACK_METHODS);
+    expect(methodsFor({ anyOf: [{ type: 'string' }, { type: 'number' }] })).toEqual(FALLBACK_METHODS);
+    expect(methodsFor(null)).toEqual(FALLBACK_METHODS);
+  });
+
+  it('never offers Hungarian to a field that is not a structured array, fallback included', () => {
+    // The fallback must not hand back the ONE method that is structurally invalid
+    // for every field that can reach it: mapper.py would discard it silently.
+    expect(FALLBACK_METHODS).toHaveLength(ALL_METHODS.length - 1);
+    expect(FALLBACK_METHODS).not.toContain(EVALUATION_METHOD_HUNGARIAN);
+    expect(methodsFor({ type: 'null' })).not.toContain(EVALUATION_METHOD_HUNGARIAN);
+    expect(methodsFor({ $ref: '#/$defs/Missing' }, [designerClass('Address')])).not.toContain(EVALUATION_METHOD_HUNGARIAN);
   });
 
   it('is unchanged for a property with an inline type', () => {

@@ -1,5 +1,5 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT-0
 
 import { EVALUATION_METHOD_OPTIONS, TYPE_ARRAY, TYPE_OBJECT, TYPE_STRING } from '../../../constants/schemaConstants';
 import { AttributeLike, ClassLike, resolveAttributeType } from './schemaHelpers';
@@ -42,11 +42,20 @@ export const isStructuredArrayAttribute = (attribute: AttributeLike | null | und
  * its target type first.
  *
  * Never empty. If the filter eliminates everything — because the type could not
- * be resolved at all, or is one no method declares support for — the unfiltered
- * list is returned instead. An unexplained empty dropdown is the worst outcome
- * available: it removes the only way to configure the field, whereas an
- * over-broad list still lets the user choose, and the choice is checked at
- * evaluation time.
+ * be resolved at all, or is one no method declares support for — every method
+ * that does NOT require structured items is returned instead. An unexplained
+ * empty dropdown is the worst outcome available: it removes the only way to
+ * configure the field, whereas an over-broad list still lets the user choose,
+ * and the choice is checked at evaluation time.
+ *
+ * The fallback deliberately withholds HUNGARIAN rather than returning the whole
+ * list. HUNGARIAN survives the filter whenever the field IS a structured array,
+ * so the fallback can only be reached when it is not — and picking it there is
+ * silently discarded: `mapper.py` raises, catches its own `ValueError`, logs it
+ * and deletes the method at evaluation time, with nothing shown in the UI. It
+ * would also break the guarantee `docs/evaluation.md` documents, that HUNGARIAN
+ * cannot be selected for a non-array field. Seven options still satisfy
+ * never-empty.
  */
 export const availableEvaluationMethods = (
   attribute: AttributeLike | null | undefined,
@@ -78,5 +87,6 @@ export const availableEvaluationMethods = (
     return !isStructuredArray;
   });
 
-  return filtered.length > 0 ? filtered : EVALUATION_METHOD_OPTIONS;
+  if (filtered.length > 0) return filtered;
+  return EVALUATION_METHOD_OPTIONS.filter((opt) => !opt.requiresStructuredItems);
 };

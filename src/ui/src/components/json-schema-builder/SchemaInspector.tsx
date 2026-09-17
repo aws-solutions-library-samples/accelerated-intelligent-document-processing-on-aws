@@ -1033,7 +1033,7 @@ const SchemaInspector = ({
 
         {!isRuleSchema && <NumberConstraints attribute={selectedAttribute} onUpdate={onUpdate} />}
 
-        {!isRuleSchema && <ValueConstraints attribute={selectedAttribute} onUpdate={onUpdate} />}
+        {!isRuleSchema && <ValueConstraints attribute={selectedAttribute} onUpdate={onUpdate} availableClasses={availableClasses} />}
 
         {!isRuleSchema &&
           (() => {
