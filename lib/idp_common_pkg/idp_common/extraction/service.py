@@ -732,10 +732,45 @@ class ExtractionService:
         )
         return result
 
+    # Scope note for SHARDED agents ONLY (passed via `scope_note=` below). The
+    # block itself is written for an agent holding the whole section, and two of
+    # its sentences read wrong from inside a shard:
+    #
+    #  * "extract ONLY text between markers for your pages" — a shard's text is
+    #    ALREADY only its pages, and every shard after the first is prefixed with
+    #    a `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
+    #    OUTSIDE the `--- PAGE N ---` markers on purpose (`_build_shard_payloads`)
+    #    because it carries the table's column-header row. An agent obeying that
+    #    sentence literally drops the header, the deterministic parse then fails
+    #    on text that starts mid-table, and the agent falls back to emitting rows
+    #    itself — a COMPLETENESS risk, not only a cost one.
+    #  * the table/row totals are section-wide (`_preflight_table_parse` parses
+    #    the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system
+    #    prompt tells the agent to verify row_count against the document and
+    #    never stop until all rows are captured. A shard covering 2 of 6 pages
+    #    that reads those totals as its own target can over-extract or fail to
+    #    terminate. `_run_shard_agent`'s per-shard "covering pages A-B of T"
+    #    sentence does establish the subset, but only a strong model reconciles
+    #    it with the totals unaided.
+    _SHARD_SCOPE_NOTE = (
+        "YOUR SCOPE (sharded run — this overrides the marker rule above): the "
+        "text you were given ALREADY contains only your assigned pages, so pass "
+        "ALL of it to parse_table, including any leading "
+        "'--- DOCUMENT HEADER (page 1, for context only) ---' block. That header "
+        "carries the table's column headers and deliberately sits outside the "
+        "'--- PAGE N ---' markers; dropping it makes parse_table fail on text "
+        "that starts mid-table.\n"
+        "The table and row totals above are for the WHOLE section, not for your "
+        "pages: parse_table on your pages will legitimately return fewer rows, "
+        "and that is complete for your scope."
+    )
+
     @staticmethod
     def _append_preflight_table_guidance(
         custom_instruction: str | None,
         preflight_parse_result: dict | None,
+        *,
+        scope_note: str | None = None,
     ) -> str | None:
         """Append the PRE-PARSED TABLE DATA block to an agent instruction.
 
@@ -765,6 +800,13 @@ class ExtractionService:
         instruction for all of a section's shards and
         ``agentic_idp._run_shard_agent`` already appends each shard's own
         ``pages N-M of T`` sentence immediately after this block.
+
+        ``scope_note`` is an optional paragraph inserted directly after the
+        page-marker rule, so it can qualify it. The sharded call sites pass
+        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for what the block gets
+        wrong when read from inside a shard); the single-agent path passes
+        nothing, which keeps its instruction byte-identical to the text the
+        advanced-extraction study measured.
         """
         if (preflight_parse_result or {}).get("status") != "success":
             return custom_instruction
@@ -774,6 +816,7 @@ class ExtractionService:
         )
         columns = preflight_parse_result.get("columns", [])
         table_count = preflight_parse_result.get("table_count", 0)
+        scope_paragraph = f"{scope_note}\n\n" if scope_note else ""
 
         guidance = (
             f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
@@ -783,6 +826,9 @@ class ExtractionService:
             f"markers between pages. When you are assigned a page range, "
             f"extract ONLY text between markers for your pages before "
             f"calling parse_table.\n\n"
+            # Empty unless a caller passes scope_note, so the single-agent
+            # path's text is unchanged (pinned byte-for-byte by a unit test).
+            f"{scope_paragraph}"
             f"EFFICIENT EXTRACTION WORKFLOW:\n"
             f"1. Extract scalar fields from your pages' text\n"
             f"2. Call parse_table with your pages' text\n"
@@ -5046,6 +5092,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # paths; `_append_preflight_table_guidance` builds the instruction
             # block, likewise for both paths.)
             preflight_parse_result = self._preflight_table_parse(ocr_analysis)
+            # Kept as-is: the sharded branch below rebuilds the block with the
+            # shard scope note, which is inserted INSIDE the block (after the
+            # page-marker rule it qualifies) and so cannot be appended later.
+            pre_block_instruction = custom_instruction
             custom_instruction = self._append_preflight_table_guidance(
                 custom_instruction, preflight_parse_result
             )
@@ -5154,6 +5204,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 from idp_common.extraction.runtime import select_runtime
 
                 runtime = select_runtime(self.config, num_batches)
+                # These agents are shard agents too (in-process sharding), so
+                # they need the same scope note `_build_agentic_shard_plan`
+                # passes on the Step Functions route. Held in its own local:
+                # `custom_instruction` is reused after this branch by
+                # `_validate_and_maybe_escalate`, whose retry agent sees the
+                # WHOLE section and so must not be told it holds a slice.
+                shard_custom_instruction = self._append_preflight_table_guidance(
+                    pre_block_instruction,
+                    preflight_parse_result,
+                    scope_note=self._SHARD_SCOPE_NOTE,
+                )
                 structured_data, response_with_metering = _asyncio.run(
                     concurrent_structured_output_async(
                         model_id=model_id,
@@ -5163,7 +5224,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         config=self.config,
                         context="Extraction",
                         checkpoint_callback=self._checkpoint_callback,
-                        custom_instruction=custom_instruction,
+                        custom_instruction=shard_custom_instruction,
                         section_id=(
                             f"{section_info.class_label}_"
                             f"{section_info.start_page}_{section_info.end_page}"
@@ -7151,6 +7212,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
             ),
             preflight_parse_result,
+            # Shard agents read the block's page-marker rule and its section-wide
+            # row totals against a slice of the section; the note reconciles both.
+            scope_note=self._SHARD_SCOPE_NOTE,
         )
 
         prompt_template = self.config.extraction.task_prompt or ""

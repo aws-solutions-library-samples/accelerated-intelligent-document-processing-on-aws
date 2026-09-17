@@ -310,7 +310,10 @@ extraction:
 > never needs to write the rows out itself. That last part is what keeps output
 > tokens (and cost) down: an agent that does not know the rows exist re-emits them
 > one by one. Both the single-pass and the **sharded** path send this block; on the
-> sharded path each shard agent also gets its own concrete page range. Sharding is
+> sharded path each shard agent also gets its own concrete page range, plus a note
+> that the table and row totals in the block are for the whole section rather than
+> for its own pages — so parsing fewer rows than the total is the correct outcome
+> for a shard, not an incomplete one. Sharding is
 > the default for any multi-page table document, and until
 > [issue #900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)
 > its agents were the only ones not receiving the block.

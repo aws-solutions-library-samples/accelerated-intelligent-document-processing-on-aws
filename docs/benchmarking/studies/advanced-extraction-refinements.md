@@ -438,6 +438,10 @@ that is observability only, with no effect on what the model sees.
 > **Resolved after this study closed (#900).** The block now lives in one shared
 > helper, `ExtractionService._append_preflight_table_guidance`, called from both the
 > single-pass path and `_build_agentic_shard_plan`, so shard agents receive it too.
+> The sharded copy carries one extra paragraph the single-pass copy does not: a scope
+> note telling the shard that its text already holds only its own pages (header block
+> included, so `parse_table` keeps the column headers) and that the block's table and
+> row totals are section-wide, so parsing fewer rows is correct for a shard.
 > The single-pass text is byte-identical to what produced the numbers on this page —
 > a unit test asserts the block against the pre-refactor literal — so those numbers
 > remain valid as the pre-change baseline. **The token saving on the sharded path is

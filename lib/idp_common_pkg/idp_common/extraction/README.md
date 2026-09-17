@@ -1305,15 +1305,44 @@ output tokens.
 Both are applied on **both** agentic paths: the single-pass path in
 `_invoke_extraction_model` and the sharded plan in `_build_agentic_shard_plan`
 (the default for any multi-page table document). The pre-flight parse reached the
-sharded path in #898 and the instruction block in #900; before that, the shard
-agents — the ones the page-marker paragraph was written for — were the only ones
-not receiving it.
+sharded path in #898 and the instruction block in #900. Be precise about which
+shard agents were missing the block before #900: `_build_agentic_shard_plan`
+serves the **Step Functions** runtime (`runtime: step_functions`, the shipped
+default in `base-extraction.yaml`), and it was the only route that dropped the
+block. The in-process runtime shards inside `_invoke_extraction_model` and passes
+that method's already-augmented instruction to
+`concurrent_structured_output_async`, so in-process shard agents had the block all
+along — deployed stacks nevertheless hit the broken route, because they run on
+Step Functions.
 
 `_build_agentic_shard_plan` returns **one** `custom_instruction` for all of a
 section's shards, so the block's page wording stays generic ("when you are
 assigned a page range"). The concrete assignment is appended per shard by
 `agentic_idp._run_shard_agent`, which adds `You are processing shard i of N,
 covering pages A-B of T` immediately after the block.
+
+Two sentences of that block are, however, actively **wrong** when a shard agent
+reads them, so both sharded call sites pass
+`_append_preflight_table_guidance(..., scope_note=_SHARD_SCOPE_NOTE)`, which
+inserts a correcting paragraph directly after the page-marker rule (the
+single-agent path passes nothing, keeping its text byte-identical):
+
+- "extract ONLY text between markers for your pages" — a shard's text already
+  contains only its pages, and every shard after the first is prefixed with a
+  `--- DOCUMENT HEADER (page 1, for context only) ---` block that
+  `_build_shard_payloads` deliberately places **outside** the `--- PAGE N ---`
+  markers because it carries the table's column-header row. An agent obeying the
+  rule literally discards that header, the deterministic parse then fails on text
+  starting mid-table, and the agent falls back to emitting rows itself — a
+  completeness risk, not only a cost one. The note tells the shard to pass **all**
+  of its text to `parse_table`, header block included.
+- the table and row totals are **section-wide** (`_preflight_table_parse` parses
+  the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system prompt
+  tells the agent to verify `row_count` against the document and never stop until
+  every row is captured. A shard covering 2 of 6 pages that reads those totals as
+  its own target can over-extract or fail to terminate. The note says the totals
+  cover the whole section and that `parse_table` on the shard's pages will
+  legitimately return fewer rows.
 
 ### Page Markers and Batch Extraction
 
