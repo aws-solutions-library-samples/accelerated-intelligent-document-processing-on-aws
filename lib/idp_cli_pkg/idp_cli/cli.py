@@ -3651,7 +3651,9 @@ def _manifest_has_baselines(manifest_path: str) -> bool:
         else:
             df = pd.read_csv(manifest_path)
 
-        return "baseline_source" in df.columns and df["baseline_source"].notna().any()
+        return "baseline_source" in df.columns and bool(
+            df["baseline_source"].notna().any()
+        )
     except Exception:
         return False
 
@@ -3713,7 +3715,7 @@ def _create_test_set_from_manifest(
 
     # Copy input files
     for _, row in df.iterrows():
-        source_path = row["document_path"]
+        source_path = str(row["document_path"])
         filename = os.path.basename(source_path)
 
         # Upload to test set input directory
@@ -3733,7 +3735,7 @@ def _create_test_set_from_manifest(
 
         # Copy baseline if exists
         if "baseline_source" in row and pd.notna(row["baseline_source"]):
-            baseline_path = row["baseline_source"]
+            baseline_path = str(row["baseline_source"])
 
             # Upload all files in the baseline directory recursively
             import glob as glob_module

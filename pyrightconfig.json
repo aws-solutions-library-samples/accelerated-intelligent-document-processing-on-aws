@@ -1,7 +1,7 @@
 {
   "include": [
     "lib/idp_common_pkg/idp_common",
-    "idp_cli/idp_cli",
+    "lib/idp_cli_pkg/idp_cli",
     "src/lambda"
   ],
   
