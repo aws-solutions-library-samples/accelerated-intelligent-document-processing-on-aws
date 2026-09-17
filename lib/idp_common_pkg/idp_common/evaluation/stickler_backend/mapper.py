@@ -571,7 +571,10 @@ class SticklerConfigMapper:
         This modifies the schema in-place to replace:
         - x-aws-idp-evaluation-method → x-aws-stickler-comparator (except for structured arrays)
         - x-aws-idp-evaluation-threshold → x-aws-stickler-threshold (for non-arrays)
-        - x-aws-idp-evaluation-match-threshold → x-aws-stickler-match-threshold (for array items)
+        - x-aws-idp-evaluation-match-threshold → x-aws-stickler-match-threshold — placed ONLY
+          on the ``items`` object schema (Stickler 1.0 rejects this key on the
+          array field itself with an "unread extension" error, breaking change
+          #312; the element-class builder reads it off the item object)
         - x-aws-idp-evaluation-weight → x-aws-stickler-weight
 
         Also adds empty "required" arrays to objects that don't have one,
@@ -696,10 +699,14 @@ class SticklerConfigMapper:
             # One Bedrock round trip per cell means a 54-row invoice needs ~3,000
             # sequential calls (~45 min), so the 900 s evaluation Lambda can never
             # finish it at any retry count; observed wedging a whole stack.
-            # Downgrade to Stickler's type-appropriate deterministic default
-            # (string -> Levenshtein, number -> Numeric, boolean -> Exact), which
-            # is what a matching cost function should be anyway, unless the author
-            # explicitly opts in for a small list.
+            # Downgrade to Stickler's per-field default (picked from type AND
+            # field name — string ``*_id`` -> Exact, string ``notes`` -> Fuzzy,
+            # numeric -> Numeric, boolean -> Exact, date-typed -> Date) via the
+            # root ``x-aws-stickler-infer-unspecified`` flag set by
+            # ``build_stickler_model_config``, which is a strictly better
+            # matching cost function than the pre-1.0 type-only fallback. The
+            # override is only bypassed when the author explicitly opts in for a
+            # small list.
             # ``_coerce_bool`` handles YAML-quoted ``"false"`` / ``"no"``
             # / ``"off"`` (all truthy under raw Python ``bool()``, so
             # ``not schema.get(...)`` would let a config with
@@ -724,8 +731,9 @@ class SticklerConfigMapper:
                     f"'{X_AWS_IDP_EVALUATION_LLM_IN_LIST}: true' on this field to "
                     f"override (only safe for very small lists)."
                 )
-                # Drop the method so no x-aws-stickler-comparator is emitted and
-                # Stickler's JsonSchemaFieldConverter applies its own type default.
+                # Drop the method so no x-aws-stickler-comparator is emitted
+                # and Stickler's 1.0 infer-unspecified pass picks by type +
+                # name-token instead.
                 # Deliberately fall THROUGH rather than returning early: this
                 # field's threshold / weight / clip-under-threshold / aggregate
                 # extensions are translated further down and must still be
@@ -995,7 +1003,12 @@ class SticklerConfigMapper:
         # translation pass emits ``x-aws-stickler-comparator`` for every
         # annotated field before Stickler's inference sees the schema, and
         # Stickler leaves annotated fields alone.
-        schema["x-aws-stickler-infer-unspecified"] = True
+        #
+        # ``setdefault`` (not direct assignment) so an author who deliberately
+        # authored ``x-aws-stickler-infer-unspecified: false`` (e.g. a raw
+        # Stickler-shaped config passed straight through) keeps their choice
+        # rather than being silently overwritten to True here.
+        schema.setdefault("x-aws-stickler-infer-unspecified", True)
 
         # Extract model name
         model_name = (

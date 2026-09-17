@@ -214,10 +214,19 @@ class LLMComparator(BaseComparator):
         Compare two values using LLM-based semantic evaluation.
 
         Named ``_compare`` because Stickler 1.0's ``BaseComparator`` made
-        that the abstract template-method hook (v1.0 breaking change
-        #305 removed the pre-1.0 ``compare()`` -> ``_compare()``
-        deprecation shim). Stickler's own ``compare()`` still owns the
-        None policy and calls into this method for non-None pairs.
+        that the abstract template-method hook (v1.0 breaking change #305
+        removed the pre-1.0 ``compare()`` -> ``_compare()`` shim).
+        Stickler's own ``compare()`` template applies its shared None
+        policy first (both None -> 1.0; exactly one None -> 0.0) and only
+        delegates here for non-None pairs.
+
+        Behavioral change from 0.5.0: an expected/actual asymmetry with
+        exactly one side None now scores 0.0 deterministically instead
+        of reaching the LLM judge. Semantically the judge would return
+        0.0 anyway for that shape, so the change is a cost/latency win;
+        the None-handling block in ``compare_llm`` below remains for
+        direct callers (tests) that invoke ``compare_llm`` outside the
+        comparator protocol.
 
         Args:
             value1: First value to compare (expected)

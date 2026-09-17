@@ -32,7 +32,7 @@
       "confidence": null,
       "confidence_threshold": null,
       "error_details": null,
-      "evaluation_method": "Hungarian (threshold: 0.80)",
+      "evaluation_method": "Hungarian (threshold: 0.50)",
       "evaluation_threshold": null,
       "expected": [
         {

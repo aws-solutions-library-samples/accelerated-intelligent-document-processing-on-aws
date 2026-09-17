@@ -318,6 +318,69 @@ class TestSticklerEvaluationService:
             annotation = typing.get_args(annotation)[0]
         assert getattr(annotation, "match_threshold", None) == 0.55
 
+    def test_list_match_threshold_reaches_display_and_verdict(self):
+        """Regression: after Stickler 1.0 moved ``x-aws-stickler-match-threshold``
+        off the array field onto the item object, the reader in
+        ``stickler_backend.results`` must unwrap arrays to find the key —
+        otherwise both the ``Method`` display and the empty-rows verdict
+        fallback collapse to the document-level default (0.8), silently
+        overriding the configured value.
+
+        Pins the fix by evaluating a section against a config with a
+        configured list-match-threshold and asserting the display carries
+        it through to ``evaluation_method``.
+        """
+        from unittest.mock import patch
+
+        config = {
+            "classes": [
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$id": "reg",
+                    "x-aws-idp-document-type": "Reg",
+                    "x-aws-idp-evaluation-match-threshold": 0.8,
+                    "type": "object",
+                    "properties": {
+                        "Items": {
+                            "type": "array",
+                            "x-aws-idp-evaluation-match-threshold": 0.55,
+                            "items": {
+                                "type": "object",
+                                "properties": {"sku": {"type": "string"}},
+                            },
+                        }
+                    },
+                }
+            ]
+        }
+        svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+        section = Section(
+            section_id="1",
+            classification="Reg",
+            page_ids=["1"],
+            confidence=1.0,
+            extraction_result_uri="s3://bucket/expected.json",
+        )
+        payload = {"Items": [{"sku": "A"}]}
+        with (
+            patch(
+                "idp_common.evaluation.service.s3.get_json_content",
+                return_value={"inference_result": payload},
+            ),
+            patch("idp_common.evaluation.service.s3.write_content"),
+        ):
+            result = svc.evaluate_section(
+                section=section, expected_results=payload, actual_results=payload
+            )
+        list_attr = next(a for a in result.attributes if a.name == "Items")
+        # The display must carry the field-level 0.55 through, not
+        # collapse to the document-level 0.80.
+        assert "0.55" in list_attr.evaluation_method, (
+            f"Expected list-level match threshold 0.55 in display, "
+            f"got {list_attr.evaluation_method!r}"
+        )
+        assert "0.80" not in list_attr.evaluation_method
+
     def test_stickler_model_not_found(self, service):
         """Test error when Stickler model not found for class."""
         with pytest.raises(ValueError, match="No schema configuration"):

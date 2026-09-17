@@ -45,6 +45,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _read_match_threshold(schema: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Read ``x-aws-stickler-match-threshold`` from a schema fragment.
+
+    Stickler 1.0 rejects this extension on the array field itself (breaking
+    change #312 — "unread extension" error); it belongs on the item OBJECT.
+    Our mapper writes it only under ``items``, so a read against the array's
+    own dict returns None and the caller collapses to the document default.
+    This helper unwraps arrays and reads from the item schema so reports and
+    row-verdict fallbacks see the configured value again.
+    """
+    if not isinstance(schema, dict):
+        return None
+    direct = schema.get("x-aws-stickler-match-threshold")
+    if direct is not None:
+        return direct
+    if schema.get("type") == "array":
+        items = schema.get("items")
+        if isinstance(items, dict):
+            value = items.get("x-aws-stickler-match-threshold")
+            if isinstance(value, (int, float)):
+                return float(value)
+    return None
+
+
 def resolve_leaf_schema(
     field_schema: Dict[str, Any], expected_key: str
 ) -> Optional[Dict[str, Any]]:
@@ -213,7 +237,9 @@ def annotate_nested_comparison_methods(
             comparator = leaf_schema.get("x-aws-stickler-comparator")
             threshold = leaf_schema.get("x-aws-stickler-threshold")
             weight = leaf_schema.get("x-aws-stickler-weight")
-            list_match_threshold = leaf_schema.get("x-aws-stickler-match-threshold")
+            # For a top-level list row (leaf_schema IS the array) the
+            # match-threshold key lives under ``items`` on Stickler 1.0.
+            list_match_threshold = _read_match_threshold(leaf_schema)
         else:
             comparator = threshold = weight = list_match_threshold = None
 
@@ -446,7 +472,11 @@ def transform_stickler_result(
         field_configs[field_name] = {
             "threshold": configured_threshold,
             "applied_threshold": applied_threshold,
-            "match_threshold": field_schema.get("x-aws-stickler-match-threshold"),
+            # For a structured array, ``x-aws-stickler-match-threshold`` lives
+            # under ``items`` on Stickler 1.0 (see ``_read_match_threshold``).
+            # Reading it off the array field directly would return None and
+            # collapse the display + verdict to the document default.
+            "match_threshold": _read_match_threshold(field_schema),
             "comparator": field_schema.get("x-aws-stickler-comparator"),
             "weight": field_schema.get("x-aws-stickler-weight"),
         }
