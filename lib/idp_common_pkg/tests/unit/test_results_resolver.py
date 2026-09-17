@@ -200,7 +200,7 @@ def test_build_comparator_diff_flags_source_change():
     """
     runs = {
         "run-a": {
-            "0.invoice_id": {
+            "invoice_id": {
                 "comparator": "ExactComparator",
                 "threshold": 1.0,
                 "source": "configured",
@@ -208,7 +208,7 @@ def test_build_comparator_diff_flags_source_change():
             }
         },
         "run-b": {
-            "0.invoice_id": {
+            "invoice_id": {
                 "comparator": "ExactComparator",
                 "threshold": 1.0,
                 "source": "auto-inferred",
@@ -218,7 +218,7 @@ def test_build_comparator_diff_flags_source_change():
     }
     diff = index._build_comparator_diff(runs)
     assert len(diff) == 1
-    assert diff[0]["attribute"] == "0.invoice_id"
+    assert diff[0]["attribute"] == "invoice_id"
     assert diff[0]["entries"]["run-a"]["source"] == "configured"
     assert diff[0]["entries"]["run-b"]["source"] == "auto-inferred"
 
@@ -232,7 +232,7 @@ def test_build_comparator_diff_ignores_identical_signatures():
     """
     runs = {
         "run-a": {
-            "0.amount": {
+            "amount": {
                 "comparator": "NumericComparator",
                 "threshold": 0.95,
                 "source": "auto-inferred",
@@ -240,7 +240,7 @@ def test_build_comparator_diff_ignores_identical_signatures():
             }
         },
         "run-b": {
-            "0.amount": {
+            "amount": {
                 "comparator": "NumericComparator",
                 "threshold": 0.95,
                 "source": "auto-inferred",
@@ -259,7 +259,7 @@ def test_build_comparator_diff_flags_missing_side():
     change in one panel."""
     runs = {
         "run-a": {
-            "0.new_field": {
+            "new_field": {
                 "comparator": "LevenshteinComparator",
                 "threshold": 0.7,
                 "source": "auto-inferred",
@@ -276,10 +276,110 @@ def test_build_comparator_diff_flags_missing_side():
 @pytest.mark.unit
 def test_build_comparator_diff_needs_two_runs():
     """Diff over one run (or zero) is meaningless — return empty."""
-    assert (
-        index._build_comparator_diff({"only-run": {"0.x": {"comparator": "X"}}}) == []
-    )
+    assert index._build_comparator_diff({"only-run": {"x": {"comparator": "X"}}}) == []
     assert index._build_comparator_diff({}) == []
+
+
+@pytest.mark.unit
+def test_iter_completed_doc_keys_is_deterministic():
+    """DDB Scan makes no order guarantee. Two calls from the same test set
+    that end up sampling different documents produce section counts that
+    disagree, and the panel renders every attribute as one-sided schema-
+    shape drift purely because Scan returned items in different orders.
+    ``_iter_completed_doc_keys`` MUST sort the collected doc keys before
+    yielding so a repeated call under the same table state picks the same
+    doc every time — and so two runs of the same test set converge on
+    the same representative document.
+    """
+    fake_table = Mock()
+    fake_table.scan.return_value = {
+        # Deliberate reverse-lex order to prove sorting kicks in
+        "Items": [
+            {"ObjectKey": "runid/zeta.pdf", "EvaluationStatus": "COMPLETED"},
+            {"ObjectKey": "runid/alpha.pdf", "EvaluationStatus": "COMPLETED"},
+            {"ObjectKey": "runid/mu.pdf", "EvaluationStatus": "COMPLETED"},
+            {"ObjectKey": "runid/skip-me.pdf", "EvaluationStatus": "FAILED"},
+        ],
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index, "dynamodb") as fake_dynamodb,
+    ):
+        fake_dynamodb.Table.return_value = fake_table
+        keys = list(index._iter_completed_doc_keys("runid", limit=3))
+    assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"], (
+        "Sample doc selection must be lexicographically deterministic so "
+        "two runs of the same test set pick the same representative doc"
+    )
+
+
+@pytest.mark.unit
+def test_load_sample_attribute_methods_swallows_read_timeout():
+    """The panel is a UI nicety — it must NOT fault compare_test_runs on
+    a transient S3 hiccup. ``botocore.exceptions.ReadTimeoutError`` is a
+    subclass of ``BotoCoreError``, NOT ``ClientError``, so an earlier
+    ``except (ClientError, ValueError, KeyError)`` let timeouts escape.
+    Broadened to ``except Exception`` — pin the contract here.
+    """
+    from botocore.exceptions import ReadTimeoutError
+
+    fake_s3 = Mock()
+    fake_s3.get_object.side_effect = ReadTimeoutError(endpoint_url="http://x")
+    with (
+        patch.dict(os.environ, {"OUTPUT_BUCKET": "b", "TRACKING_TABLE": "T"}),
+        patch.object(index, "s3", fake_s3),
+        patch.object(
+            index, "_iter_completed_doc_keys", return_value=iter(["runid/doc1.pdf"])
+        ),
+    ):
+        # Must return {} rather than propagating ReadTimeoutError.
+        assert index._load_sample_attribute_methods("runid") == {}
+
+
+@pytest.mark.unit
+def test_load_sample_attribute_methods_uses_section_agnostic_key():
+    """Section IDs are positional per document. Different docs in the
+    same test set have different section counts, so a diff key that
+    embeds ``section_id`` reports one-sided schema-shape drift every
+    time two runs sample differently. Attribute names alone are the
+    correct diff key — they're the schema, not a run-instance detail.
+    """
+    fake_s3 = Mock()
+
+    class _Body:
+        def read(self):
+            return json.dumps(
+                {
+                    "section_results": [
+                        {
+                            "section_id": "2",
+                            "attributes": [
+                                {
+                                    "name": "invoice_id",
+                                    "comparator_type": "ExactComparator",
+                                    "evaluation_threshold": 1.0,
+                                    "inference_source": "auto-inferred",
+                                    "inference_why": ["name-token"],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ).encode()
+
+    fake_s3.get_object.return_value = {"Body": _Body()}
+    with (
+        patch.dict(os.environ, {"OUTPUT_BUCKET": "b", "TRACKING_TABLE": "T"}),
+        patch.object(index, "s3", fake_s3),
+        patch.object(
+            index, "_iter_completed_doc_keys", return_value=iter(["runid/doc.pdf"])
+        ),
+    ):
+        methods = index._load_sample_attribute_methods("runid")
+    # Key is the bare attribute name — NO ``section_id.`` prefix. Otherwise
+    # two runs of the same test set that sampled docs with different
+    # section counts would appear as full schema-shape drift.
+    assert set(methods.keys()) == {"invoice_id"}
 
 
 @pytest.mark.unit

@@ -1193,7 +1193,7 @@ wheels = [
 
 [[package]]
 name = "idp-common"
-version = "0.6.7"
+version = "0.6.8"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
@@ -1234,7 +1234,7 @@ all = [
     { name = "pypdfium2" },
     { name = "python-docx" },
     { name = "requests" },
-    { name = "stickler-eval" },
+    { name = "stickler-eval", extra = ["docsplit"] },
     { name = "strands-agents" },
     { name = "strands-agents-tools" },
     { name = "xlrd" },
@@ -1261,6 +1261,7 @@ code-intel = [
 dev = [
     { name = "ipykernel" },
     { name = "jupyter" },
+    { name = "jupyter-server" },
     { name = "python-dotenv" },
 ]
 docs-service = [
@@ -1271,7 +1272,7 @@ evaluation = [
     { name = "genson" },
     { name = "numpy" },
     { name = "ruamel-yaml" },
-    { name = "stickler-eval" },
+    { name = "stickler-eval", extra = ["docsplit"] },
 ]
 extraction = [
     { name = "pillow" },
@@ -1337,7 +1338,9 @@ test = [
     { name = "requests" },
     { name = "rich" },
     { name = "ruff" },
-    { name = "stickler-eval" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "stickler-eval", extra = ["docsplit"] },
     { name = "strands-agents" },
     { name = "tabulate" },
     { name = "typer" },
@@ -1376,6 +1379,7 @@ requires-dist = [
     { name = "jsonschema", marker = "extra == 'all'", specifier = ">=4.0.0" },
     { name = "jsonschema", marker = "extra == 'synthesis'", specifier = ">=4.0.0" },
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.1.1,<2.0.0" },
+    { name = "jupyter-server", marker = "extra == 'dev'", specifier = ">=2.21.0" },
     { name = "moto", marker = "extra == 'test'", specifier = ">=5.1.8" },
     { name = "moto", extras = ["s3", "cloudformation"], marker = "extra == 'test'", specifier = "==5.1.8" },
     { name = "mypy-boto3-bedrock-runtime", marker = "extra == 'agentic-extraction'", specifier = ">=1.39.0" },
@@ -1429,11 +1433,13 @@ requires-dist = [
     { name = "ruamel-yaml", marker = "python_full_version >= '3.10' and extra == 'evaluation'", specifier = ">=0.17.0,<0.19.0" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.14.0,<0.16" },
     { name = "scikit-learn", marker = "extra == 'multi-document-discovery'", specifier = ">=1.5.0" },
+    { name = "scikit-learn", marker = "extra == 'test'", specifier = ">=1.5.0" },
     { name = "scipy", marker = "extra == 'multi-document-discovery'", specifier = ">=1.14.0" },
+    { name = "scipy", marker = "extra == 'test'", specifier = ">=1.14.0" },
     { name = "seed-data", marker = "extra == 'synthesis-generator'", specifier = ">=0.0.6" },
-    { name = "stickler-eval", marker = "extra == 'all'", specifier = "==0.5.0" },
-    { name = "stickler-eval", marker = "extra == 'evaluation'", specifier = "==0.5.0" },
-    { name = "stickler-eval", marker = "extra == 'test'", specifier = "==0.5.0" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'all'", specifier = "==1.0.0" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'evaluation'", specifier = "==1.0.0" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agentic-extraction'", specifier = "==1.14.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agents'", specifier = "==1.14.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'all'", specifier = "==1.14.0" },
@@ -1648,6 +1654,18 @@ wheels = [
 ]
 
 [[package]]
+name = "json-schema-to-pydantic"
+version = "0.4.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/d8/423895b918706c80db1cee679c13fbe810200b9a9d9a9442c7a58d35c3f2/json_schema_to_pydantic-0.4.11.tar.gz", hash = "sha256:35448ed711a28dd33396b095c8492939b4925aa30eb31942e9b8e08d04279465", size = 56597, upload-time = "2026-03-09T20:53:55.692Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/64/7cfeb8c6d2a5e73e0f8d732032aa62be9a7724c04beb461d677de0b4beb3/json_schema_to_pydantic-0.4.11-py3-none-any.whl", hash = "sha256:da2ccc39d070ee03dbcf0517d16720e3e33f7aa8d61257ace09af8c51bd46348", size = 17842, upload-time = "2026-03-09T20:53:54.576Z" },
+]
+
+[[package]]
 name = "json5"
 version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1830,7 +1848,7 @@ wheels = [
 
 [[package]]
 name = "jupyter-server"
-version = "2.20.0"
+version = "2.21.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1852,9 +1870,9 @@ dependencies = [
     { name = "traitlets" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/dc/db3a582633170186f8c8b31298d7eb26ad0eb031a1f53476c258b64eed05/jupyter_server-2.20.0.tar.gz", hash = "sha256:b5778ba337d8015a3dc2b80803ecdd5ac18d3797fddf61a50ea5fb472b4ebe14", size = 756523, upload-time = "2026-06-17T12:09:09.435Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/3d/3c9f8bce5d5448107bd285cd80185e76c9c871d076b580dfd90997e52904/jupyter_server-2.21.1.tar.gz", hash = "sha256:a8960aa29263f6041283e97d4756b099fb49b767baab6371891ecb1bd40a63df", size = 761651, upload-time = "2026-09-15T16:00:07.853Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/71/8c002223e873a870f5c41dc69b0a7c922301123e4a31d5d01ecb700aef77/jupyter_server-2.20.0-py3-none-any.whl", hash = "sha256:c3b67c93c471e947c18b5026f04f21614218adb706df8f48227d3ee8e0a7cdcc", size = 393143, upload-time = "2026-06-17T12:09:07.234Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/39/91bc08650cc8e3efeb7a83c25e20ebddcc9b70d28b4eb6f51a4fb55da7a4/jupyter_server-2.21.1-py3-none-any.whl", hash = "sha256:2a6467606af7dbae2e7e31640030025969e15db6a649eae334af90415dc71dca", size = 394641, upload-time = "2026-09-15T16:00:05.526Z" },
 ]
 
 [[package]]
@@ -2791,6 +2809,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523", size = 63772, upload-time = "2023-11-25T06:56:14.81Z" },
+]
+
+[[package]]
+name = "phonenumberslite"
+version = "9.0.39"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/ba/e6ce17d4b551685016b84df859e752b0ef6dcc7260742752b5b8731d8cc4/phonenumberslite-9.0.39.tar.gz", hash = "sha256:99b87ac617cb68faf828e2b6d88a204b3cf04a5e71c77aae6a85e1a9195f887a", size = 292866, upload-time = "2026-09-10T11:26:34.73Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/16/f709f28eec10500c6b10fab27eb231c16bbef25ba2643f194750b7501484/phonenumberslite-9.0.39-py2.py3-none-any.whl", hash = "sha256:a571a691c01b3c3e5c4e2b61f783ce41d4fdeb568d96269510b964f543bbef14", size = 473135, upload-time = "2026-09-10T11:26:33.134Z" },
 ]
 
 [[package]]
@@ -4031,24 +4058,26 @@ wheels = [
 
 [[package]]
 name = "stickler-eval"
-version = "0.5.0"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jinja2" },
+    { name = "json-schema-to-pydantic" },
     { name = "jsonschema" },
     { name = "munkres" },
     { name = "numpy" },
-    { name = "pandas" },
-    { name = "psutil" },
+    { name = "phonenumberslite" },
     { name = "pydantic" },
     { name = "python-dateutil" },
     { name = "rapidfuzz" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/bb/0e78b24108f32d9569eaff3d789e205ee4ffa49b214c4b0b195c804f0124/stickler_eval-0.5.0.tar.gz", hash = "sha256:81957d7206b61a582cb96bb77f0872274759cc048f6579b09dfce4f1440f657f", size = 201904, upload-time = "2026-06-26T21:20:40.287Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/e5/06766bc3c892fd4ff1a3280fe69945a0b01b56e6fc501e11c79c58304df2/stickler_eval-1.0.0.tar.gz", hash = "sha256:d711975aa322128092b2b6514278caf8b3c04964dfb7eab3cebfb6097e8d5328", size = 316012, upload-time = "2026-09-14T17:19:00.081Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/ad/b8b7e09a3dac62b92fcb4252040161781792719203fd35e809fe9294fe3f/stickler_eval-0.5.0-py3-none-any.whl", hash = "sha256:e186533978b63039099bef4e04755527912b5a20dee034824e1813bd0dbdc9bd", size = 237727, upload-time = "2026-06-26T21:20:37.336Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/bd/a5fe522cc92cb35149210de70db2f8dfb12d780176b5e3c9e942655e9e76/stickler_eval-1.0.0-py3-none-any.whl", hash = "sha256:e8bee25b0e45e0fa8e59023e882b66fe4ce9f5496e51d07683af8af85aae798c", size = 347922, upload-time = "2026-09-14T17:18:58.477Z" },
+]
+
+[package.optional-dependencies]
+docsplit = [
+    { name = "pandas" },
 ]
 
 [[package]]

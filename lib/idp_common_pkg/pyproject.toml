@@ -50,6 +50,12 @@ dev = [
   "python-dotenv (>=1.1.0,<2.0.0)",
   "ipykernel (>=6.29.5,<7.0.0)",
   "jupyter (>=1.1.1,<2.0.0)",
+  # Floor pin to lift the ``jupyter`` meta-package's transitive resolution past
+  # GHSA-c3mw-737p-c7g2 (jupyter-server <=2.20.0: 5xx request logging leaks
+  # token-bearing Referer headers). Fixed in 2.21.0. Never touches a Lambda —
+  # this dep exists so ``notebooks/`` runs locally — but the ``dep-audit``
+  # gate audits every pinned dep regardless of runtime path.
+  "jupyter-server>=2.21.0",
 ]
 
 # Image handling dependencies

@@ -566,9 +566,15 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
         )
         return
 
-    yielded = 0
+    # Collect ALL completed doc keys, then sort deterministically before
+    # returning — DynamoDB Scan makes no order guarantee, so two runs of the
+    # same test set could otherwise sample different documents (in a
+    # multi-class run, even different classes), and the diff would report
+    # every attribute as one-sided schema-shape drift purely because Scan
+    # returned items in different orders.
+    collected: list[str] = []
     exclusive_start_key = None
-    while yielded < limit:
+    while True:
         scan_kwargs = {
             "FilterExpression": "begins_with(PK, :pk_prefix)",
             "ExpressionAttributeValues": {":pk_prefix": f"doc#{test_run_id}"},
@@ -587,15 +593,14 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
             if item.get("EvaluationStatus") != "COMPLETED":
                 continue
             doc_key = item.get("ObjectKey")
-            if not doc_key:
-                continue
-            yield doc_key
-            yielded += 1
-            if yielded >= limit:
-                return
+            if isinstance(doc_key, str) and doc_key:
+                collected.append(doc_key)
         exclusive_start_key = response.get("LastEvaluatedKey")
         if not exclusive_start_key:
-            return
+            break
+
+    for doc_key in sorted(collected)[:limit]:
+        yield doc_key
 
 
 def _load_sample_attribute_methods(test_run_id):
@@ -634,10 +639,13 @@ def _load_sample_attribute_methods(test_run_id):
         try:
             body = s3.get_object(Bucket=output_bucket, Key=key)["Body"].read()
             eval_data = json.loads(body)
-        except (ClientError, ValueError, KeyError) as e:
-            # Log at WARNING (not DEBUG) so a broken path leaves an
-            # operator-visible trace. The panel is silent on empty diff, so
-            # a mis-keyed read otherwise fails completely quietly.
+        except Exception as e:  # noqa: BLE001
+            # Broad ``except`` matches the "returns {} on any read/parse
+            # failure" contract in the docstring. Narrowing to (ClientError,
+            # ValueError, KeyError) missed ``ReadTimeoutError`` — a subclass
+            # of ``BotoCoreError``, NOT ``ClientError`` — which would fault
+            # the entire compare_test_runs response on a transient S3 hiccup.
+            # The panel is a UI nicety, it must never break the parent request.
             logger.warning(
                 f"results.json not readable at s3://{output_bucket}/{key}: {e}"
             )
@@ -645,17 +653,27 @@ def _load_sample_attribute_methods(test_run_id):
 
         methods = {}
         for section in eval_data.get("section_results") or []:
-            section_id = section.get("section_id") or "0"
             for attr in section.get("attributes") or []:
                 name = attr.get("name")
                 if not name:
                     continue
+                # Diff key is the attribute NAME only — no ``section_id.``
+                # prefix. Section IDs are positional per document, so two runs
+                # of the same test set that happened to sample differently-
+                # sectioned docs would render every attribute as one-sided
+                # schema-shape drift. The diff is over attribute schemas,
+                # not run-instance section indexes, so dropping the section
+                # prefix is the correct key semantically. Duplicate names
+                # across sections keep the last-write's value — the whole
+                # point of provenance is a schema property, and identical
+                # attribute names across sections carry the same schema.
+                #
                 # ``comparator_type`` is Stickler's class name (e.g.
                 # ``FuzzyComparator``); ``evaluation_method`` is the display
                 # string. Prefer the class name for the diff key so two runs
                 # that differ only in the threshold-suffix format still compare
                 # equal on comparator identity.
-                methods[f"{section_id}.{name}"] = {
+                methods[name] = {
                     "comparator": attr.get("comparator_type")
                     or attr.get("evaluation_method"),
                     "threshold": attr.get("evaluation_threshold"),
@@ -725,22 +743,45 @@ def compare_test_runs(test_run_ids):
     # Get results for each test run
     results = []
     configs = []
-    runs_methods = {}
+    runs_methods: dict = {}
 
-    for test_run_id in test_run_ids:
-        logger.info(f"Getting results for test run: {test_run_id}")
-        test_result = get_test_results(test_run_id)
-        if test_result:
-            logger.info(f"Found results for {test_run_id}: {test_result.keys()}")
-            results.append(test_result)
-            config = _get_test_run_config(test_run_id)
-            configs.append({"testRunId": test_run_id, "config": config})
-            # Load one sample doc's per-attribute methods for the Comparator
-            # Changes panel. Failures degrade to an empty dict so the rest
-            # of compare_test_runs still returns.
-            runs_methods[test_run_id] = _load_sample_attribute_methods(test_run_id)
-        else:
-            logger.warning(f"No results found for test run: {test_run_id}")
+    # Fan out the sample-attribute-methods reads across runs in parallel.
+    # Each call scans the tracking table and reads S3 — serial fanout would
+    # add (N-1) x (scan+get_object) latency to every compare_test_runs
+    # invocation. Bounded to the number of runs (typically 2-4). Isolated
+    # from the sequential critical path so a slow probe on run A doesn't
+    # block starting run B's probe.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max(1, min(4, len(test_run_ids)))) as pool:
+        methods_futures = {
+            trid: pool.submit(_load_sample_attribute_methods, trid)
+            for trid in test_run_ids
+        }
+
+        for test_run_id in test_run_ids:
+            logger.info(f"Getting results for test run: {test_run_id}")
+            test_result = get_test_results(test_run_id)
+            if test_result:
+                logger.info(f"Found results for {test_run_id}: {test_result.keys()}")
+                results.append(test_result)
+                config = _get_test_run_config(test_run_id)
+                configs.append({"testRunId": test_run_id, "config": config})
+            else:
+                logger.warning(f"No results found for test run: {test_run_id}")
+
+        # Collect the parallel sample-methods reads. Any single-run failure
+        # degrades to an empty dict so the rest of compare_test_runs still
+        # returns.
+        for trid, fut in methods_futures.items():
+            try:
+                runs_methods[trid] = fut.result()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Sample-attribute-methods read failed for {trid}: {e}. "
+                    f"Comparator diff will be empty for this run."
+                )
+                runs_methods[trid] = {}
 
     logger.info(f"Total results found: {len(results)}")
 
