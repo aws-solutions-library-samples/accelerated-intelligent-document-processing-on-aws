@@ -117,7 +117,34 @@ ran on that change.
 
 ⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
 added to the branch-protection rule for `develop` as *required status checks*, or a
-PR can still be merged while they are red or pending.
+PR can still be merged while they are red or pending. **Today they are not**, and
+`develop` has no branch protection at all — so every gate on this page is advisory.
+
+Run `make check-branch-protection` to measure it rather than trust this paragraph.
+It parses `.github/workflows/*.yml` for the job names GitHub turns into check
+contexts and compares them with the live required-check list, reporting anything
+required-but-never-reported (a renamed job) or reported-but-not-required (a new
+gate). Three contexts cover all eight shared gates, because
+`test_ci_gate_parity.py`'s `SHARED_GATES` are *steps* inside three jobs and GitHub
+can only require job-level contexts:
+
+| Check context | Workflow / job | Covers |
+|---|---|---|
+| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | `lint-cicd`, `typecheck-pr`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
+| `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
+
+`build-docs.yml` and `generate-dep-manifest.yml` must **not** be required: their
+`pull_request` triggers are path-filtered, so on a PR touching no matching path the
+workflow never runs, the check is never reported, and a required one would sit
+pending forever and block every merge.
+
+The command is opt-in (network + a token with `administration:read`) and is in
+neither `lint-cicd` nor `SHARED_GATES`, because enabling protection needs repository
+**admin** — tracked by
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+Once that is closed it should become a required, blocking check, run with
+`--fail-on-skip`.
 
 **Trigger matrix** — what runs, when:
 

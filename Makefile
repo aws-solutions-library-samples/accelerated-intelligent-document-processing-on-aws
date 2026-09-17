@@ -393,6 +393,19 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings c
 cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
 	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
+# Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
+# in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
+# with administration:read, and it reports "not protected" until issue #933 is
+# closed — enabling branch protection needs repository ADMIN, which no contributor
+# and no CI token here has. Wiring it into a blocking gate today would red-line
+# every branch for a condition nobody working in the tree can fix.
+#
+# TODO(#933): once protection is enabled, make this a required, blocking check —
+# add it to lint-cicd and pass --fail-on-skip so a missing token is an error
+# rather than a silent pass.
+check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
+	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
+
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
 	@echo "Running type checks..."

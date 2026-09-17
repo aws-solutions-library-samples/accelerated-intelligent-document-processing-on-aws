@@ -88,6 +88,35 @@ other, or if `lint-cicd` becomes weaker than local `make lint`; and
 parameter wiring that `cfn-lint`'s own rule cannot see. Both exist because every
 parity gap they cover was originally found by hand, months late.
 
+### Whether any of this actually blocks a merge
+
+Parity means both CIs *run* a gate. Whether a red gate can *stop* a merge is a
+repository setting, and today it does not: `develop` has no branch protection, so
+every gate in this table is advisory — a pull request can be merged with all checks
+red, and because the GitHub workflows are `pull_request`-only, a direct push to
+`develop` runs none of them.
+
+```bash
+make check-branch-protection    # reads the live setting via the GitHub API
+```
+
+The check derives the expected required-check list by parsing
+`.github/workflows/*.yml` for the job names GitHub turns into status-check contexts,
+rather than from a hardcoded list that would drift on the next rename. It then
+asserts protection is enabled, that every context a PR produces is required, that
+stale approvals are dismissed, that force-push and deletion are blocked, and that an
+approving review is required. It also names the contexts that must **stay** advisory:
+the docs and dependency-manifest workflows are path-filtered, so requiring them would
+leave a check pending forever and block every merge.
+
+It is opt-in and blocks nothing: it needs network access and a token with
+`administration:read`, and it reports "not protected" until
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+is closed, since enabling protection needs repository **admin**. With no token or no
+network it exits 0 with an explanation. Once #933 closes it should become a required,
+blocking check, run with `--fail-on-skip`. Its own parsing and assertion logic is
+covered offline by `scripts/tests/test_check_branch_protection.py`.
+
 ## 3. Web UI unit tests
 
 ```bash

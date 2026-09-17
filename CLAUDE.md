@@ -125,9 +125,40 @@ nothing checked.
 
 ⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
 push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
-to `develop` runs nothing on GitHub. And being visible is not being blocking —
-each check must also be a required status check on `develop` in branch-protection
-settings.
+to `develop` runs nothing on GitHub.
+
+### Visible is not blocking — `make check-branch-protection`
+
+Parity between the two CIs only means both *run* the gates. Whether a red gate can
+actually stop a merge is a **repository setting**, not anything in this tree, and
+today it does not: `develop` has no branch protection at all, so every gate above
+is advisory. A pull request can be merged with all checks red.
+
+That used to be a bolded prose warning in this file, which is how it sat unnoticed
+for months. It is now measured:
+
+```bash
+make check-branch-protection          # reads the live setting via the GitHub API
+```
+
+The command derives the expected required-check list by **parsing**
+`.github/workflows/*.yml` for job names (a hardcoded inventory would drift the
+moment a job is renamed), then asserts against the live API that protection is on,
+that every check a PR produces is required, that stale approvals are dismissed,
+that force-push and deletion are blocked, and that an approving review is
+required. It also reports which contexts must stay advisory: `build-docs.yml` and
+`generate-dep-manifest.yml` are path-filtered, so requiring them would leave a
+check pending forever and block every merge.
+
+It is **opt-in and non-blocking on purpose**: it needs network access and a token
+with `administration:read`, and it reports "not protected" until
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+is closed — enabling protection needs repository **admin**, which no contributor
+and no CI token here has. In `lint-cicd` it would red-line every branch for a
+condition nobody in the tree can fix, so it is in neither `lint-cicd` nor
+`test_ci_gate_parity.py`'s `SHARED_GATES`. With no token or no network it exits 0
+with an explanation; `--fail-on-skip` turns that into an error, which is how it
+should be run once #933 closes and it becomes a required, blocking gate.
 
 ### Testing
 
@@ -177,8 +208,9 @@ make srt-fix       # Interactive fix mode
 - SRT runs on every push and MR in GitLab CI (`srt_security_review`, `fast_checks`)
   **and** on every GitHub pull request (`.github/workflows/security-checks.yml`).
   A change merged on GitHub used to skip it entirely — see the note in that
-  workflow. ⚠️ Being visible is not being blocking: the check must also be a
-  required status check on `develop` in branch-protection settings.
+  workflow. ⚠️ Being visible is not being blocking: run
+  `make check-branch-protection` to see whether this check is actually required
+  on `develop` (it is not, yet — issue #933).
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -472,6 +504,9 @@ Testing samples available in `samples/`:
 - `scripts/sdlc/validate_buildspec.py` - Validates CodeBuild buildspec files
 - `scripts/sdlc/validate_service_role_permissions.py` - Verifies IAM service role permissions
 - `scripts/sdlc/typecheck_pr_changes.py` - Type checks only changed files in PRs
+- `scripts/sdlc/check_branch_protection.py` - Checks that `develop`'s required
+  status checks match the jobs the workflows actually run (`make
+  check-branch-protection`; opt-in, read-only GitHub API, see issue #933)
 
 ## AWS Access for Live Troubleshooting
 
