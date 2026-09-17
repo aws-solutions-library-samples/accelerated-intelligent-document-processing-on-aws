@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import gzip
 import json
 import logging
 import math
@@ -1549,12 +1550,31 @@ def _aggregate_test_run_metrics(test_run_id):
     return athena_result
 
 
+def _captured_config_of(item):
+    """The configuration a run captured, whether stored compressed or inline.
+
+    Runs record their configuration as a gzip Binary attribute; runs created
+    before that stored the body inline under ``Config``.
+    """
+    if item.get("_config_storage") == "compressed":
+        blob = item.get("_compressed_config")
+        if blob is None:
+            return {}
+        raw = blob if isinstance(blob, bytes) else bytes(blob)
+        try:
+            return json.loads(gzip.decompress(raw).decode("utf-8"))
+        except Exception as e:
+            logger.error(f"Failed to decompress captured test run config: {e}")
+            return {}
+    return item.get("Config", {})
+
+
 def _get_test_run_config(test_run_id):
     """Get test run configuration from metadata record"""
     table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
     response = table.get_item(Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"})
 
-    config = response.get("Item", {}).get("Config", {})
+    config = _captured_config_of(response.get("Item", {}))
 
     # Convert DynamoDB Decimal objects to regular Python types for JSON serialization
     def convert_decimals(obj):

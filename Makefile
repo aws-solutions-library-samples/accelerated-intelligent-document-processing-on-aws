@@ -448,10 +448,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd feature-platform/seller-entitlement-service && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -q -p no:cacheprovider
-	@echo "Running circuit breaker Lambda tests..."
+	@echo "Running circuit breaker + queue processor Lambda tests (slot ownership, counter reconcile, config pin, idempotent start #904)..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/circuit_breaker_manager \
-	    src/lambda/queue_processor/test_check_circuit_breaker.py \
+	    src/lambda/queue_processor \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
 	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
 	@# Both suites import their own ``index`` module; run each in its
