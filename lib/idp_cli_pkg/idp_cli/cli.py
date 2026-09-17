@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 import time
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 _SETUP_HELP = """\
 Error: Required packages not found.
@@ -81,7 +81,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Console is guaranteed importable — a missing rich exits above, not stubs to None.
+#
+# `console` is for HUMAN output only. Anything a consumer parses — JSON, YAML, a
+# schema someone redirects to a file — must go through emit_raw/emit_json below.
 console = Console()
+
+
+def emit_raw(text: str) -> None:
+    """
+    Write machine-readable output to stdout byte-for-byte as produced.
+
+    Do NOT route a payload a consumer parses through Rich. `console.print` alters
+    it three ways, and only the third depends on colour being on:
+
+    1. It hard-wraps at the console width. When stdout is not a terminal Rich
+       assumes 80 columns, so `idp-cli config-download > config.yaml` breaks every
+       line longer than 80 characters *in the redirected file* — the YAML then
+       fails to parse. This happens whether or not styling is enabled.
+    2. It parses the payload as Rich markup, so `[foo]` inside a string value is
+       silently deleted, and text like `[/x]` raises `MarkupError` outright.
+    3. With styling on (a real terminal, a pty, or `FORCE_COLOR` in the
+       environment) it syntax-highlights, putting ANSI escapes at char 0 so
+       `json.loads` / `jq` fail immediately.
+
+    See issue #905, where (3) was reported against `config-revisions --json`.
+    """
+    click.echo(text)
+
+
+def emit_json(payload: Any) -> None:
+    """
+    Write a JSON payload to stdout, unstyled, unwrapped and unmodified.
+
+    `payload` may be an already-serialized JSON string (e.g. pydantic's
+    `model_dump_json()`) or any JSON-serializable object, which is pretty-printed
+    so a human reading the same output is not punished for it.
+    """
+    emit_raw(
+        payload
+        if isinstance(payload, str)
+        else json.dumps(payload, indent=2, default=str)
+    )
 
 
 def _build_from_local_code(
@@ -2447,7 +2487,7 @@ def status(
             if output_format == "json":
                 # JSON output for programmatic use
                 json_output = display.format_status_json(status_data, stats)
-                console.print(json_output)
+                emit_json(json_output)
 
                 # Determine exit code from JSON
                 import json as json_module
@@ -4213,8 +4253,8 @@ def config_create(
                 f"  3. Deploy: [cyan]idp-cli deploy --stack-name <name> --custom-config {output}[/cyan]"
             )
         else:
-            # Write to stdout
-            console.print(yaml_content)
+            # Write to stdout — raw, since this is normally redirected to a file
+            emit_raw(yaml_content)
 
     except FileNotFoundError as e:
         console.print(f"[red]✗ Error: {e}[/red]")
@@ -4632,7 +4672,7 @@ def config_download(
             console.print(f"[green]✓ Configuration saved to: {output}[/green]")
         else:
             console.print()
-            console.print(result.yaml_content)
+            emit_raw(result.yaml_content)
 
     except Exception as e:
         logger.error(f"Error downloading config: {e}", exc_info=True)
@@ -4859,7 +4899,7 @@ def config_revisions(
         result = client.config.revisions(config_profile=config_version)
 
         if as_json:
-            console.print_json(result.model_dump_json())
+            emit_json(result.model_dump_json(indent=2))
             return
 
         console.print(
@@ -5573,7 +5613,7 @@ def discover(
                         )
                         console.print()
                         console.print("[bold]Generated JSON Schema:[/bold]")
-                        console.print(json.dumps(result.json_schema, indent=2))
+                        emit_json(result.json_schema)
                         console.print()
 
                 if result.json_schema:
@@ -5632,9 +5672,9 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
         console.print()
         console.print("[bold]Discovered schemas:[/bold]")
         if len(all_schemas) == 1:
-            console.print(json.dumps(all_schemas[0], indent=2))
+            emit_json(all_schemas[0])
         else:
-            console.print(json.dumps(all_schemas, indent=2))
+            emit_json(all_schemas)
         console.print()
     elif output:
         output_path = Path(output)
@@ -5753,8 +5793,6 @@ def multi_discover(
       idp-cli discover-multidoc --dir ./samples/ --save-to-config \\
           --stack-name IDP --config-profile v2
     """
-    import json
-
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, TextColumn
     from rich.table import Table
@@ -5943,7 +5981,7 @@ def multi_discover(
         if all_schemas:
             console.print()
             console.print("[bold]Discovered schemas:[/bold]")
-            console.print(json.dumps(all_schemas, indent=2))
+            emit_json(all_schemas)
 
     # Print reflection report if available
     if result.reflection_report:
@@ -6698,12 +6736,11 @@ def bootstrap(
             if schema is None:
                 console.print("[red]✗ Failed to author a schema[/red]")
                 sys.exit(1)
-            import json as _json
 
             console.print(f"[green]✓ Schema authored (tier: {tier})[/green]")
             if matched:
                 console.print(f"  Catalog match: {matched}")
-            console.print(_json.dumps(schema, indent=2))
+            emit_json(schema)
             return
 
         from idp_sdk import IDPClient

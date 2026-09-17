@@ -27,6 +27,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+  - [Machine-readable output](#machine-readable-output)
 - [Commands Reference](#commands-reference)
   - [deploy](#deploy)
   - [publish](#publish)
@@ -173,6 +174,30 @@ idp-cli deploy --profile production --stack-name my-stack ...
 # Profile at the end
 idp-cli deploy --stack-name my-stack --profile production ...
 ```
+
+### Machine-readable output
+
+Every payload the CLI writes to stdout for a program to read is written verbatim:
+no colour, no syntax highlighting, and no wrapping to the terminal width. That
+covers `config-revisions --json`, `status --format json`, the YAML that
+`config-download` and `config-template` print when `--output` is omitted, and the
+JSON schemas `discover`, `discover-multidoc` and `bootstrap` print. Piping,
+redirecting and copy-pasting them are all safe:
+
+```bash
+# Parse JSON directly
+idp-cli config-revisions --stack-name my-stack --config-profile lending --json \
+    | jq -r '.revisions[] | select(.published) | .revision'
+
+# Redirect YAML straight to a file
+idp-cli config-download --stack-name my-stack > config.yaml
+```
+
+Human-facing output — tables, progress, status lines — is still styled when
+stdout is a terminal, and Rich disables the styling itself when it is not. Before
+v0.6.9 these payloads were rendered the same way as that human output, so
+`--json` carried ANSI escape codes and a long line of downloaded YAML was folded
+at 80 columns ([#905](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/905)).
 
 ### Deploy a stack and process documents in 3 commands:
 
