@@ -732,6 +732,68 @@ class ExtractionService:
         )
         return result
 
+    @staticmethod
+    def _append_preflight_table_guidance(
+        custom_instruction: str | None,
+        preflight_parse_result: dict | None,
+    ) -> str | None:
+        """Append the PRE-PARSED TABLE DATA block to an agent instruction.
+
+        Returns ``custom_instruction`` unchanged when there is no successful
+        pre-flight parse to describe, so the caller can apply this
+        unconditionally.
+
+        The block tells the agent that the section's tables have *already* been
+        parsed deterministically — how many tables, how many rows, which columns
+        — and then walks it through the tool chain that keeps the rows out of the
+        model's output: ``parse_table`` → ``map_table_to_schema`` →
+        ``finalize_table_extraction``, with the closing note that ``finalize``
+        reads the mapped rows from agent state so no JSON rows need to be
+        generated. Suppressing that row-by-row JSON fallback is the whole point:
+        it is the same failure mode whose removal cut Extraction output tokens
+        from 1,512,506 to 681,222 over an identical 12-run arm in the
+        advanced-extraction study.
+
+        Shared by the single-pass agentic path and the sharded SFN plan
+        (issue #900). It used to live inline in the single-pass path only, so the
+        shard agents — the DEFAULT for any multi-page table document, and the
+        ones the page-marker paragraph was written for — never received it, even
+        after #898 gave the sharded path the same pre-flight parse.
+
+        The page-range wording stays generic ("when you are assigned a page
+        range") rather than naming a concrete range, because the plan builds ONE
+        instruction for all of a section's shards and
+        ``agentic_idp._run_shard_agent`` already appends each shard's own
+        ``pages N-M of T`` sentence immediately after this block.
+        """
+        if (preflight_parse_result or {}).get("status") != "success":
+            return custom_instruction
+
+        total_rows = sum(
+            t.get("row_count", 0) for t in preflight_parse_result.get("tables", [])
+        )
+        columns = preflight_parse_result.get("columns", [])
+        table_count = preflight_parse_result.get("table_count", 0)
+
+        guidance = (
+            f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
+            f"Found {table_count} table(s) with {total_rows} total rows.\n"
+            f"Table columns: {columns}\n\n"
+            f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
+            f"markers between pages. When you are assigned a page range, "
+            f"extract ONLY text between markers for your pages before "
+            f"calling parse_table.\n\n"
+            f"EFFICIENT EXTRACTION WORKFLOW:\n"
+            f"1. Extract scalar fields from your pages' text\n"
+            f"2. Call parse_table with your pages' text\n"
+            f"3. Call map_table_to_schema with column_mapping + static_fields\n"
+            f"   (merged rows are auto-split — no manual handling needed)\n"
+            f"4. Call finalize_table_extraction with table_array_field + "
+            f"scalar_fields\n\n"
+            f"finalize reads mapped rows from state — no JSON generation needed."
+        )
+        return f"{custom_instruction}{guidance}" if custom_instruction else guidance
+
     def _apply_lazy_images(
         self,
         send_images: bool,
@@ -4980,41 +5042,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # the LLM having to call parse_table and then generate JSON row-by-row.
             # The LLM only needs to provide a column-to-field mapping, and the
             # map_table_to_schema tool does the bulk transformation instantly.
+            # (`_preflight_table_parse` logs the parse itself, for both agentic
+            # paths; `_append_preflight_table_guidance` builds the instruction
+            # block, likewise for both paths.)
             preflight_parse_result = self._preflight_table_parse(ocr_analysis)
-            if preflight_parse_result is not None:
-                if preflight_parse_result.get("status") == "success":
-                    total_rows = sum(
-                        t.get("row_count", 0)
-                        for t in preflight_parse_result.get("tables", [])
-                    )
-                    columns = preflight_parse_result.get("columns", [])
-                    table_count = preflight_parse_result.get("table_count", 0)
-
-                    # (`_preflight_table_parse` logs the parse itself, for both
-                    # agentic paths.)
-                    # Build efficient extraction guidance with pre-parsed summary
-                    preflight_guidance = (
-                        f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
-                        f"Found {table_count} table(s) with {total_rows} total rows.\n"
-                        f"Table columns: {columns}\n\n"
-                        f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
-                        f"markers between pages. When you are assigned a page range, "
-                        f"extract ONLY text between markers for your pages before "
-                        f"calling parse_table.\n\n"
-                        f"EFFICIENT EXTRACTION WORKFLOW:\n"
-                        f"1. Extract scalar fields from your pages' text\n"
-                        f"2. Call parse_table with your pages' text\n"
-                        f"3. Call map_table_to_schema with column_mapping + static_fields\n"
-                        f"   (merged rows are auto-split — no manual handling needed)\n"
-                        f"4. Call finalize_table_extraction with table_array_field + "
-                        f"scalar_fields\n\n"
-                        f"finalize reads mapped rows from state — no JSON generation needed."
-                    )
-
-                    if custom_instruction:
-                        custom_instruction += preflight_guidance
-                    else:
-                        custom_instruction = preflight_guidance
+            custom_instruction = self._append_preflight_table_guidance(
+                custom_instruction, preflight_parse_result
+            )
 
             # Determine if images should be sent to the agentic model.
             # If the task prompt does not reference {DOCUMENT_IMAGE}, sending
@@ -7084,6 +7118,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         branch, but standalone so the per-shard SFN Lambda (and the merge step)
         can each rebuild the identical plan deterministically. Requires
         ``_prepare_section_context`` to have populated the per-section state.
+
+        The returned ``custom_instruction`` is ONE instruction for **all** of the
+        section's shards (the in-process runtime shares it the same way), so it
+        cannot name a single shard's page range. It does not need to:
+        ``agentic_idp._run_shard_agent`` appends each shard's own "shard i of N,
+        covering pages A-B of T" sentence directly after it.
         """
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
@@ -7098,8 +7138,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._class_schema
         )
         ocr_analysis = self._analyze_ocr_for_tables(self._document_text)
-        custom_instruction = self._build_table_parsing_guidance(
-            schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
+        # Pre-flight parse FIRST: its result feeds BOTH the shard agents'
+        # instruction block and the lazy_images decision below. It used to run
+        # only for lazy_images, after the instruction was already built, so the
+        # shard agents never learned that their tables had already been parsed
+        # (issue #900) — no row/column summary and no "finalize reads the rows
+        # from state" workflow, which is exactly the guidance that stops an agent
+        # re-emitting every row as output tokens.
+        preflight_parse_result = self._preflight_table_parse(ocr_analysis)
+        custom_instruction = self._append_preflight_table_guidance(
+            self._build_table_parsing_guidance(
+                schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
+            ),
+            preflight_parse_result,
         )
 
         prompt_template = self.config.extraction.task_prompt or ""
@@ -7110,7 +7161,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # mattered most.
         send_images = self._apply_lazy_images(
             "{DOCUMENT_IMAGE}" in prompt_template,
-            self._preflight_table_parse(ocr_analysis),
+            preflight_parse_result,
             len(self._page_texts),
         )
         shard_payloads = self._build_shard_payloads(

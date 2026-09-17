@@ -1279,6 +1279,42 @@ Mapped rows accumulate in agent state as `mapped_table_rows` (supports multiple 
 - **`table_array_field`**: Schema field name for the table array (e.g., `"transactions"`)
 - **`scalar_fields`**: Non-table fields (e.g., `{"statement_period": "Jan 2025"}`)
 
+### The pre-flight parse and the PRE-PARSED TABLE DATA instruction
+
+Before the agent runs at all, the service parses the section's tables itself —
+`ExtractionService._preflight_table_parse`, gated on `table_parsing.enabled` and
+at least 50 estimated table rows in the OCR text. The parse result drives two
+things:
+
+1. **`lazy_images`** — a successful parse means the loop is text-driven, so the
+   up-front page-image attachment is suppressed (see the config note in
+   [extraction-and-confidence.md](../../../../docs/extraction-and-confidence.md)).
+2. **The agent instruction** — `_append_preflight_table_guidance` appends a
+   `**PRE-PARSED TABLE DATA AVAILABLE**` block naming the table count, the total
+   row count and the column list, explaining the `--- PAGE N ---` markers, and
+   walking the agent through the three-tool chain above, ending with the point
+   that `finalize_table_extraction` reads the mapped rows **from agent state** so
+   no JSON rows need to be generated.
+
+That closing point is the cost lever. An agent that does not know the rows are
+already parsed falls back to emitting them as output tokens, which is the
+expensive failure mode the tool chain exists to avoid — removing an analogous
+fallback took one 12-run benchmark arm from 1,512,506 to 681,222 Extraction
+output tokens.
+
+Both are applied on **both** agentic paths: the single-pass path in
+`_invoke_extraction_model` and the sharded plan in `_build_agentic_shard_plan`
+(the default for any multi-page table document). The pre-flight parse reached the
+sharded path in #898 and the instruction block in #900; before that, the shard
+agents — the ones the page-marker paragraph was written for — were the only ones
+not receiving it.
+
+`_build_agentic_shard_plan` returns **one** `custom_instruction` for all of a
+section's shards, so the block's page wording stays generic ("when you are
+assigned a page range"). The concrete assignment is appended per shard by
+`agentic_idp._run_shard_agent`, which adds `You are processing shard i of N,
+covering pages A-B of T` immediately after the block.
+
 ### Page Markers and Batch Extraction
 
 When processing multi-page documents, the service inserts page boundary markers between page texts:
