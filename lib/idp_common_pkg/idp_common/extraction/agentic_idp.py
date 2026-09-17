@@ -47,7 +47,10 @@ from idp_common.bedrock.client import (
     is_grok_model,
     strips_sampling_params,
 )
-from idp_common.bedrock.model_utils import get_model_max_output_tokens
+from idp_common.bedrock.model_utils import (
+    get_model_max_output_tokens,
+    metering_model_id,
+)
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.topk_resolver import resolve_candidates
@@ -2254,8 +2257,17 @@ async def structured_output_async(
 
     # Return best effort result
     if result and response:
-        # Build metering dict with token usage
-        metering_dict = {f"{context}/bedrock/{model_id}": BedrockUsage(**token_usage)}
+        # Build metering dict with token usage. As at the Converse site in
+        # bedrock/client.py, the key names the model actually invoked: a ``:1m``
+        # suffix is a beta header rather than part of the model ID, and its
+        # long-context premium applies only above 200K input tokens, which this
+        # accumulated usage (summed across every agent-loop turn) cannot tell
+        # apart from many smaller turns. See issue #899.
+        metering_dict = {
+            f"{context}/bedrock/{metering_model_id(model_id)}": BedrockUsage(
+                **token_usage
+            )
+        }
 
         # Include table parsing stats if tool was used
         tool_stats = agent.state.get("table_parsing_stats")

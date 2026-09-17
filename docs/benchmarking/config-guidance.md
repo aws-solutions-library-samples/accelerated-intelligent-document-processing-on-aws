@@ -640,13 +640,26 @@ The two core cells, which are what a customer actually chooses between:
    prompts and tool schemas are tuned on, and #839's Payslip variance is a Sonnet-5-only
    behaviour on real forms), so this is not a recommendation to switch — it is the measured
    price of the default on transaction lists.
-4. **The 1M-context variant is a capacity feature you pay for on every call.** Sonnet 5 `:1m`
-   costs +10% (simple) and **+51%** (advanced) over Sonnet 5 with identical accuracy at
-   every size that fits — and it *truncated* the 800-row document in simple mode (43 rows)
-   where Sonnet 5 returned 800. Its window only helps a request that would otherwise be
-   refused, and §3 shows the product refuses at 25 pages regardless of model, so on this
-   corpus there is no request it rescues. Choose it for documents between ~200K and ~1M
-   tokens in a single section, and pair it with advanced mode.
+4. **The 1M-context variant buys capacity this corpus never needs.** Sonnet 5 `:1m`
+   matched Sonnet 5's accuracy at every size that fits — and it *truncated* the 800-row
+   document in simple mode (43 rows) where Sonnet 5 returned 800. Its window only helps a
+   request that would otherwise be refused, and §3 shows the product refuses at 25 pages
+   regardless of model, so on this corpus there is no request it rescues. Choose it for
+   documents between ~200K and ~1M tokens in a single section, and pair it with advanced
+   mode.
+
+   ⚠️ **The costs recorded for `:1m` in this edition's tables are inflated and should not
+   be read as a price of the variant.** This edition ran before
+   [#899](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/899)
+   was fixed, when `pricing.yaml` charged Anthropic's long-context premium (2× input,
+   1.5× output) on every `:1m` request instead of only above 200,000 input tokens. No
+   request in this grid came near that threshold, so the premium was charged on requests
+   that never incurred it, and the +10% (simple) / +51% (advanced) deltas this edition
+   reported against plain Sonnet 5 are not the price of the variant — below 200K the two
+   are billed at identical rates, and what is left of the difference is token volume, not
+   rate (in simple mode the `:1m` arm also truncated, so it did less work). The rows have
+   not been re-run or repriced. Token volumes, accuracy, recall and timings are
+   unaffected; only the dollar columns for `:1m` rows are.
 5. **Opus 5 is the most complete model in the grid, by one run.** 0.993 grid recall against
    Sonnet 5's 0.977: the difference is that Opus 5 truncated one 400-row document once
    (`enforce-warn` / `wide_400`, 43 rows) where Sonnet 5 truncated the 800-row document

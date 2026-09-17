@@ -16,6 +16,35 @@
 # - Lambda: https://aws.amazon.com/lambda/pricing/
 #
 # For private pricing agreements, update this file or use the UI Pricing editor.
+#
+# -----------------------------------------------------------------------------
+# Long-context (":1m") entries carry the STANDARD rates, not the premium
+# -----------------------------------------------------------------------------
+# A ":1m" model ID opts a request into Anthropic's 1M-token context window. The
+# long-context premium (2x input, 1.5x output) applies only to a request whose
+# input exceeds 200,000 tokens — cache reads included in that total. At or below
+# 200K, which is where nearly every request in this solution lands, the standard
+# rates apply.
+#
+# Nothing downstream can tell the two cases apart. Token counts are summed per
+# (step, model) across every call made on a document before any price is
+# applied (idp_common.utils.merge_metering_data, then
+# idp_common.reporting.save_reporting_data, the Athena rollups, the Web UI and
+# the benchmark harness), so charging the premium off a threshold would bill it
+# on, say, ten 30K-token calls that each stayed far below the band. These
+# entries therefore hold the same rates as the base model, and each records its
+# model's real premium rates in a comment for whoever implements per-request
+# banding later.
+#
+# Consequence to be aware of: a genuinely long request — above 200K input
+# tokens — is under-reported, by up to 2x on its input tokens. See
+# docs/cost-calculator.md and issue #899.
+#
+# The entries are kept rather than deleted for two reasons: this file doubles as
+# the list of model IDs configuration validation accepts, and metering records
+# written before this change still carry ":1m" keys, which must keep resolving
+# to an exact price. New records do not: the metering key now names the model
+# actually invoked, without the suffix.
 # =============================================================================
 
 pricing:
@@ -255,27 +284,35 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 6.6E-6, output 2.475E-5, cacheRead 6.6E-7,
+  # cacheWrite 8.25E-6 per token.
   - name: bedrock/us.anthropic.claude-sonnet-4-6:1m
     units:
       - name: inputTokens
-        price: "6.6E-6"
+        price: "3.3E-6"
       - name: outputTokens
-        price: "2.475E-5"
+        price: "1.65E-5"
       - name: cacheReadInputTokens
-        price: "6.6E-7"
+        price: "3.3E-7"
       - name: cacheWriteInputTokens
-        price: "8.25E-6"
+        price: "4.125E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 6.6E-6, output 2.475E-5, cacheRead 6.6E-7,
+  # cacheWrite 8.25E-6 per token.
   - name: bedrock/us.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
-        price: "6.6E-6"
+        price: "3.3E-6"
       - name: outputTokens
-        price: "2.475E-5"
+        price: "1.65E-5"
       - name: cacheReadInputTokens
-        price: "6.6E-7"
+        price: "3.3E-7"
       - name: cacheWriteInputTokens
-        price: "8.25E-6"
+        price: "4.125E-6"
   
   - name: bedrock/us.anthropic.claude-opus-4-20250514-v1:0
     units:
@@ -321,16 +358,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/us.anthropic.claude-opus-4-6-v1:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   - name: bedrock/us.anthropic.claude-opus-4-7
     units:
@@ -343,16 +384,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/us.anthropic.claude-opus-4-7:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   - name: bedrock/us.anthropic.claude-opus-4-8
     units:
@@ -365,19 +410,24 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/us.anthropic.claude-opus-4-8:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
-  # Claude Opus 5 — same pricing as Opus 4.8 ($5/$25 per MTok; :1m long-context
-  # tier at $10/$37.50). 1M context window is the model default.
+  # Claude Opus 5 — same pricing as Opus 4.8 ($5/$25 per MTok; Anthropic's
+  # long-context tier, $10/$37.50, applies above 200K input tokens only).
+  # 1M context window is the model default.
   - name: bedrock/us.anthropic.claude-opus-5
     units:
       - name: inputTokens
@@ -389,16 +439,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/us.anthropic.claude-opus-5:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - OpenAI GPT-5.x (bedrock-mantle Responses API)
@@ -690,27 +744,35 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 6.6E-6, output 2.475E-5, cacheRead 6.6E-7,
+  # cacheWrite 8.25E-6 per token.
   - name: bedrock/eu.anthropic.claude-sonnet-4-6:1m
     units:
       - name: inputTokens
-        price: "6.6E-6"
+        price: "3.3E-6"
       - name: outputTokens
-        price: "2.475E-5"
+        price: "1.65E-5"
       - name: cacheReadInputTokens
-        price: "6.6E-7"
+        price: "3.3E-7"
       - name: cacheWriteInputTokens
-        price: "8.25E-6"
+        price: "4.125E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 6.6E-6, output 2.475E-5, cacheRead 6.6E-7,
+  # cacheWrite 8.25E-6 per token.
   - name: bedrock/eu.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
-        price: "6.6E-6"
+        price: "3.3E-6"
       - name: outputTokens
-        price: "2.475E-5"
+        price: "1.65E-5"
       - name: cacheReadInputTokens
-        price: "6.6E-7"
+        price: "3.3E-7"
       - name: cacheWriteInputTokens
-        price: "8.25E-6"
+        price: "4.125E-6"
   
   - name: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
     units:
@@ -734,16 +796,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/eu.anthropic.claude-opus-4-6-v1:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   - name: bedrock/eu.anthropic.claude-opus-4-7
     units:
@@ -756,16 +822,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/eu.anthropic.claude-opus-4-7:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   - name: bedrock/eu.anthropic.claude-opus-4-8
     units:
@@ -778,16 +848,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/eu.anthropic.claude-opus-4-8:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   # Claude Opus 5 — same pricing as Opus 4.8 (:1m long-context tier above 200K)
   - name: bedrock/eu.anthropic.claude-opus-5
@@ -801,16 +875,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/eu.anthropic.claude-opus-5:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Global/Cross-Region
@@ -892,27 +970,35 @@ pricing:
       - name: cacheWriteInputTokens
         price: "3.75E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 6.0E-6, output 2.25E-5, cacheRead 6.0E-7,
+  # cacheWrite 7.5E-6 per token.
   - name: bedrock/global.anthropic.claude-sonnet-4-6:1m
     units:
       - name: inputTokens
-        price: "6.0E-6"
+        price: "3.0E-6"
       - name: outputTokens
-        price: "2.25E-5"
+        price: "1.5E-5"
       - name: cacheReadInputTokens
-        price: "6.0E-7"
+        price: "3.0E-7"
       - name: cacheWriteInputTokens
-        price: "7.5E-6"
+        price: "3.75E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 6.0E-6, output 2.25E-5, cacheRead 6.0E-7,
+  # cacheWrite 7.5E-6 per token.
   - name: bedrock/global.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
-        price: "6.0E-6"
+        price: "3.0E-6"
       - name: outputTokens
-        price: "2.25E-5"
+        price: "1.5E-5"
       - name: cacheReadInputTokens
-        price: "6.0E-7"
+        price: "3.0E-7"
       - name: cacheWriteInputTokens
-        price: "7.5E-6"
+        price: "3.75E-6"
   
   - name: bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0
     units:
@@ -936,16 +1022,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/global.anthropic.claude-opus-4-6-v1:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   - name: bedrock/global.anthropic.claude-opus-4-7
     units:
@@ -958,16 +1048,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/global.anthropic.claude-opus-4-7:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   - name: bedrock/global.anthropic.claude-opus-4-8
     units:
@@ -980,16 +1074,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/global.anthropic.claude-opus-4-8:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   # Claude Opus 5 — same pricing as Opus 4.8 (:1m long-context tier above 200K)
   - name: bedrock/global.anthropic.claude-opus-5
@@ -1003,16 +1101,20 @@ pricing:
       - name: cacheWriteInputTokens
         price: "6.25E-6"
 
+  # ":1m" long-context tier, priced at the standard rates: see the
+  # long-context note in the header. Above 200K input tokens Anthropic
+  # charges input 10.0E-6, output 3.75E-5, cacheRead 1.0E-6,
+  # cacheWrite 12.5E-6 per token.
   - name: bedrock/global.anthropic.claude-opus-5:1m
     units:
       - name: inputTokens
-        price: "10.0E-6"
+        price: "5.0E-6"
       - name: outputTokens
-        price: "3.75E-5"
+        price: "2.5E-5"
       - name: cacheReadInputTokens
-        price: "1.0E-6"
+        price: "5.0E-7"
       - name: cacheWriteInputTokens
-        price: "12.5E-6"
+        price: "6.25E-6"
 
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Third-Party

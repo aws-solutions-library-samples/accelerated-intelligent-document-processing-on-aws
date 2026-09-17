@@ -141,6 +141,27 @@ long-context premium is never charged, which is correct only as long as requests
 under 200K. Filed as
 [issue #899](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/899).
 
+**Correction, fixed in v0.6.9.** The second option was implemented, because the
+first turns out not to be implementable at all. Threshold-aware pricing needs a
+per-request input count, and no consumer of `pricing.yaml` has one: metering
+values are summed per (step, model) across every call on a document
+(`merge_metering_data`) before any price is looked up, and the Athena rollups, the
+Web UI, this harness and Test Studio then sum further. A 200K threshold applied to
+those sums would charge the premium on, say, ten 30K-token calls — including in
+the agentic path this study measured, where Strands reports only
+`accumulated_usage`, already summed across the agent loop's turns. So metering
+keys no longer carry the `:1m` suffix (they name the inference profile actually
+invoked), and the 18 `:1m` entries in `pricing.yaml` were re-rated to their base
+model's rates, which also corrects any recomputation of older `:1m`-keyed
+metering. Two things did not change: a request genuinely above 200K input tokens
+is now under-reported by up to 2× on input (documented in
+[cost-calculator.md](../../cost-calculator.md)), and the reconciliation against a
+real AWS bill or CUR line item called for above **still has not been done** — the
+$65.84-vs-$62.32 repricing above remains the best estimate of this arm's real
+cost, not a verified figure. Cost figures already written to the reporting tables,
+including this study's, are not retroactively rewritten; the numbers in the table
+above stay as they were measured.
+
 **Verdict on the refinement itself: still not a default,** for the completeness
 reason rather than the price. The `:1m` arm returned every row in 12 of 12 runs — but
 so did the baseline's own second replicate. 24 baseline runs produced two short runs,

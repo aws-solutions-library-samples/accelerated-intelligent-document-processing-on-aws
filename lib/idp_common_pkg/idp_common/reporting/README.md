@@ -142,6 +142,46 @@ reporter = SaveReportingData(
 4. **Cost Calculation**: `estimated_cost = value × unit_cost` for each metering record
 5. **Fallback Handling**: Missing pricing defaults to $0.0 with warning logs
 
+### One rate per unit: pricing sees sums, never single requests
+
+Step 4 prices an **aggregate**. By the time `save_metering_data` runs, every call
+made on a document has been merged by `idp_common.utils.merge_metering_data`,
+which adds values per (metering key, unit); the Athena rollups
+(`src/lambda/data_mart_rollup`), the Web UI document cost table, the benchmark
+harness and the Test Studio results resolver all sum further, across documents
+and hours. So a metering value is "all input tokens this step spent on this
+model", and nothing downstream can recover how many requests produced it or how
+large the largest one was.
+
+That rules out pricing that depends on the size of an individual request. Two
+models have it:
+
+- **Claude `:1m`** — the long-context premium (2x input, 1.5x output) applies
+  only above 200,000 input tokens per request, cache reads included.
+- **OpenAI GPT-6 Astra** — input above 272,000 tokens per request costs roughly
+  double.
+
+A threshold applied here would be wrong, not merely approximate: ten 30K-token
+calls sum to 300K and would be charged a premium none of them incurred. Both
+models are therefore priced at their standard rate throughout, which under-reports
+a genuinely oversized request and is correct for everything else. See
+`config_library/pricing.yaml` (the long-context note in its header) and
+`docs/cost-calculator.md`.
+
+Two consequences for this module's callers:
+
+- **Metering keys name the model that was invoked**, so they carry no `:1m`
+  suffix — `idp_common.bedrock.model_utils.metering_model_id` strips it at the
+  two emission sites (`bedrock/client.py`, `extraction/agentic_idp.py`), the same
+  way the client strips it before calling Bedrock. A service-tier suffix
+  (`:flex`, `:priority`) is kept, because it changes the price of the whole
+  request and has its own pricing entry.
+- **`:1m` pricing entries are retained anyway**, at the standard rates, so that
+  metering written before that change still resolves to an exact price rather
+  than falling through to the substring match or to $0.0. (They are also the
+  model-ID list configuration validation accepts; see
+  `idp_common.config.merge_utils._load_valid_bedrock_models`.)
+
 ### Enhanced Metering Schema
 
 When cost calculation is enabled, metering records include additional fields:

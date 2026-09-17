@@ -92,6 +92,39 @@ The GenAI IDP Accelerator solution includes a built-in cost estimation feature i
 
 This real-time cost tracking helps you monitor actual usage patterns and optimize costs based on real-world usage.
 
+### What the estimate cannot express: prices that change with request size
+
+The estimate multiplies a token count by one rate per unit. Some models instead
+charge a different rate above a size threshold, and a single rate cannot say both
+things, so those models are reported at one of the two rates:
+
+- **Long-context Claude models (a `:1m` model ID)** are reported at the
+  **standard** rate. Anthropic's long-context premium — 2x input, 1.5x output —
+  applies only to a request whose input exceeds **200,000 tokens** (cache reads
+  count toward that total), and virtually every request this solution makes is
+  well under it: a request is one section or one shard, not a whole document.
+  Reporting the standard rate is therefore right for nearly all traffic. The
+  residual gap is that a genuinely long request — over 200K input tokens in a
+  single call, which requires a very large section — is **under-reported**, by up
+  to 2x on its input tokens.
+
+  Before v0.6.9 these models were reported at the premium rate on *every*
+  request, which overstated their cost by up to 1.8x in document cost tables,
+  the Athena rollups, benchmark summaries and evaluation reports. Nothing was
+  ever overspent — the defect was in the rate card, not in what Bedrock
+  charged — but `:1m` models looked far more expensive than they are. If you
+  compare reports across that upgrade, expect reported `:1m` costs to drop.
+
+- **OpenAI GPT-6 Astra** has the mirror-image case: it bills input above
+  **272,000 tokens** at roughly double, and is reported at its standard rate, so
+  a very large request is under-reported.
+
+Neither threshold can be applied by the cost report itself. Token counts are
+summed per processing step and model across every call made on a document before
+any price is looked up, so a report cannot tell one 250,000-token request from
+ten 25,000-token ones. Only the per-request numbers in your AWS bill, or a Cost
+and Usage Report, can settle a long-context bill exactly.
+
 ### AWS Cost Management Tools
 
 In addition to the built-in cost tracking, consider using these AWS tools:

@@ -77,6 +77,56 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
     return model_id, None
 
 
+# The suffix that selects Anthropic's 1M-token context beta. Unlike a service-tier
+# suffix (``:flex``, ``:priority``), it is not part of the model ID Bedrock is
+# called with: the client strips it and sends the ``context-1m-2025-08-07`` beta
+# header instead.
+LONG_CONTEXT_SUFFIX = ":1m"
+
+
+def metering_model_id(model_id: str) -> str:
+    """
+    Reduce a configured model ID to the identity that should appear in a
+    metering key (and therefore drive cost reporting).
+
+    A suffix belongs in a metering key only when it changes the price of *every*
+    request made with it. A service tier does: ``:flex`` and ``:priority`` are
+    priced differently per token for the whole request, and they have their own
+    ``config_library/pricing.yaml`` entries, so they are kept.
+
+    ``:1m`` does not. It opts the request into Anthropic's 1M-token context
+    window, whose long-context premium (2x input, 1.5x output) applies only to
+    requests whose input exceeds 200,000 tokens; below that the standard rates
+    apply. The suffix is also not sent to Bedrock — the client removes it and
+    passes the ``context-1m-2025-08-07`` beta header — so a metering key that
+    carries it names something that was never invoked. Metering values are
+    summed per (context, model) across every call on a document before any price
+    is applied (``idp_common.utils.merge_metering_data`` then
+    ``idp_common.reporting.save_reporting_data``), so the threshold cannot be
+    evaluated per request downstream and the premium cannot be charged
+    correctly from the key. Reporting the standard rate is right for the
+    overwhelming majority of requests; see ``docs/cost-calculator.md`` and issue
+    #899.
+
+    Examples:
+        >>> metering_model_id("us.anthropic.claude-sonnet-5:1m")
+        'us.anthropic.claude-sonnet-5'
+
+        >>> metering_model_id("us.amazon.nova-2-lite-v1:0:flex")
+        'us.amazon.nova-2-lite-v1:0:flex'
+
+    Args:
+        model_id: The configured model ID, possibly with a ``:1m`` suffix
+
+    Returns:
+        The model ID to use in the metering key. Anything else (including an
+        empty value or an ARN) is returned unchanged.
+    """
+    if model_id and model_id.endswith(LONG_CONTEXT_SUFFIX):
+        return model_id[: -len(LONG_CONTEXT_SUFFIX)]
+    return model_id
+
+
 def resolve_model_id_from_arn(model_id: str) -> str:
     """
     Reduce a Bedrock model ARN to the model ID it names.
