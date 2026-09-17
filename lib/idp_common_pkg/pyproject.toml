@@ -254,6 +254,13 @@ all = [
   "amazon-textract-textractor[pandas]==1.9.2",
   "numpy==1.26.4",
   "pandas==2.2.3",
+  # Discovery/clustering module deps — before Stickler 1.0 these were pulled
+  # transitively via ``stickler-eval==0.5.0``; 1.0 dropped scikit-learn as a
+  # runtime dep and scoped scipy to its ``semantic`` extra, so
+  # ``idp_common[all]`` would otherwise stop being sufficient to run
+  # ``idp_common.discovery.clustering_service`` and ``discovery_agent``.
+  "scikit-learn>=1.5.0",
+  "scipy>=1.14.0",
   "requests==2.33.0",
   "pyarrow==23.0.1",
   "openpyxl==3.1.5",

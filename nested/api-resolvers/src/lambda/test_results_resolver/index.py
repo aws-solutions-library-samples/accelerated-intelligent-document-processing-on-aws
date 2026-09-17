@@ -557,8 +557,16 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
     results.json`` paths that 404 for every run, silently blanking the
     Comparator Changes panel 100% of the time.
     """
+    # Use the low-level boto3 CLIENT (documented thread-safe), not the
+    # shared module-level ``dynamodb`` RESOURCE. AWS docs explicitly say
+    # "Resources are not thread safe. These specific resources should not
+    # be shared across threads or processes." ``compare_test_runs`` fans
+    # this call out across up to 4 threads simultaneously, so sharing the
+    # module-level resource-backed Table would be a real race hazard.
+    # Clients marshal each request independently.
     try:
-        table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+        ddb_client = boto3.client("dynamodb")
+        table_name = os.environ["TRACKING_TABLE"]
     except Exception as e:
         logger.warning(
             f"Could not open tracking table for {test_run_id}: {e}. "
@@ -576,13 +584,16 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
     exclusive_start_key = None
     while True:
         scan_kwargs = {
+            "TableName": table_name,
             "FilterExpression": "begins_with(PK, :pk_prefix)",
-            "ExpressionAttributeValues": {":pk_prefix": f"doc#{test_run_id}"},
+            "ExpressionAttributeValues": {
+                ":pk_prefix": {"S": f"doc#{test_run_id}"}
+            },
         }
         if exclusive_start_key is not None:
             scan_kwargs["ExclusiveStartKey"] = exclusive_start_key
         try:
-            response = table.scan(**scan_kwargs)
+            response = ddb_client.scan(**scan_kwargs)
         except Exception as e:
             logger.warning(
                 f"DynamoDB scan for doc#{test_run_id} failed: {e}. "
@@ -590,9 +601,12 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
             )
             return
         for item in response.get("Items", []):
-            if item.get("EvaluationStatus") != "COMPLETED":
+            # Low-level Scan returns typed AttributeValue dicts (``{"S": ...}``);
+            # unwrap the two keys we consult.
+            eval_status = item.get("EvaluationStatus", {}).get("S")
+            if eval_status != "COMPLETED":
                 continue
-            doc_key = item.get("ObjectKey")
+            doc_key = item.get("ObjectKey", {}).get("S")
             if isinstance(doc_key, str) and doc_key:
                 collected.append(doc_key)
         exclusive_start_key = response.get("LastEvaluatedKey")
@@ -653,27 +667,38 @@ def _load_sample_attribute_methods(test_run_id):
 
         methods = {}
         for section in eval_data.get("section_results") or []:
+            # Diff key is ``{document_class}.{attribute_name}`` — NOT
+            # ``{section_id}.{attribute_name}`` and NOT the bare
+            # attribute name. Two reasons:
+            #
+            #  * section_id is a run-instance detail (position in the
+            #    document) and shifts across differently-sectioned
+            #    samples, so keying by it produces one-sided drift on
+            #    every same-test-set compare that happens to pick
+            #    differently-shaped docs.
+            #  * The bare attribute name COLLIDES across classes in a
+            #    multi-class packet — an ``Amount`` field on an
+            #    ``Invoice`` section and an ``Amount`` field on a
+            #    ``Receipt`` section have DIFFERENT schemas / comparators,
+            #    but a name-only key would flatten them into the same
+            #    entry and the last-written value would silently win,
+            #    hiding real cross-class differences.
+            #
+            # ``{document_class}.{attribute_name}`` is the right level:
+            # same-class sections carry the same schema (so collapsing
+            # them is correct), different-class sections stay distinct.
+            document_class = section.get("document_class") or ""
             for attr in section.get("attributes") or []:
                 name = attr.get("name")
                 if not name:
                     continue
-                # Diff key is the attribute NAME only — no ``section_id.``
-                # prefix. Section IDs are positional per document, so two runs
-                # of the same test set that happened to sample differently-
-                # sectioned docs would render every attribute as one-sided
-                # schema-shape drift. The diff is over attribute schemas,
-                # not run-instance section indexes, so dropping the section
-                # prefix is the correct key semantically. Duplicate names
-                # across sections keep the last-write's value — the whole
-                # point of provenance is a schema property, and identical
-                # attribute names across sections carry the same schema.
-                #
+                key = f"{document_class}.{name}" if document_class else name
                 # ``comparator_type`` is Stickler's class name (e.g.
                 # ``FuzzyComparator``); ``evaluation_method`` is the display
                 # string. Prefer the class name for the diff key so two runs
                 # that differ only in the threshold-suffix format still compare
                 # equal on comparator identity.
-                methods[name] = {
+                methods[key] = {
                     "comparator": attr.get("comparator_type")
                     or attr.get("evaluation_method"),
                     "threshold": attr.get("evaluation_threshold"),

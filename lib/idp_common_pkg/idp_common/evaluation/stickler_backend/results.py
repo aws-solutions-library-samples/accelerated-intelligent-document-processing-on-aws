@@ -663,8 +663,21 @@ def transform_stickler_result(
         # feeding it the container's own explain entry (which Stickler
         # reports as a default LevenshteinComparator for the class-level
         # rollup) would replace those with misleading scalar-style output.
-        _is_container_value = isinstance(expected_value, (list, dict)) or isinstance(
-            actual_value, (list, dict)
+        # Consult the SCHEMA type, not just the runtime values — when both
+        # expected and actual are None (a missing optional list/object
+        # attribute), an "is it a list/dict?" check on the values misses
+        # the container shape and the display collapses to the scalar
+        # branch that reads Stickler's class-level rollup entry.
+        _field_schema_here = properties.get(field_name, {}) or {}
+        _field_type = _field_schema_here.get("type")
+        _is_container_schema = _field_type in ("array", "object") or (
+            isinstance(_field_type, list)
+            and any(t in ("array", "object") for t in _field_type)
+        )
+        _is_container_value = (
+            isinstance(expected_value, (list, dict))
+            or isinstance(actual_value, (list, dict))
+            or _is_container_schema
         )
         if (
             comparator_method is None

@@ -1020,13 +1020,16 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   // per-attribute comparison across DIFFERENT test sets is meaningless
   // because the two schemas are unrelated, so the diff would just enumerate
   // every attribute as one-sided "schema-shape drift". Only surface the
-  // panel when the two runs are from the same test set.
-  const comparatorDiffTestSetNames = new Set<string>(
-    Object.values(completeTestRuns)
-      .map((run) => (run.testSetName as string | undefined) ?? '')
-      .filter((n) => n !== ''),
-  );
-  const comparatorDiffSameTestSet = comparatorDiffTestSetNames.size === 1;
+  // panel when EVERY run has a defined, non-empty testSetName AND all
+  // runs share the same one. A previous version filtered undefined
+  // testSetNames out before the size check, so a run with a missing
+  // testSetName merged with a run that had one collapsed to size 1 and
+  // spuriously rendered the panel.
+  const comparatorDiffTestSetNamesRaw = Object.values(completeTestRuns).map((run) => (run.testSetName as string | undefined) ?? '');
+  const comparatorDiffSameTestSet =
+    comparatorDiffTestSetNamesRaw.length > 0 &&
+    comparatorDiffTestSetNamesRaw.every((n) => n !== '') &&
+    new Set(comparatorDiffTestSetNamesRaw).size === 1;
 
   const downloadButton = (
     <ButtonDropdown

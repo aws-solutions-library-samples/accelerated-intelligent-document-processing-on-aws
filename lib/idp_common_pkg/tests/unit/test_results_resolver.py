@@ -291,21 +291,35 @@ def test_iter_completed_doc_keys_is_deterministic():
     doc every time — and so two runs of the same test set converge on
     the same representative document.
     """
-    fake_table = Mock()
-    fake_table.scan.return_value = {
+    # ``_iter_completed_doc_keys`` now uses the low-level boto3 CLIENT
+    # (thread-safe under fanout) rather than the module-level resource,
+    # so the Scan response comes back as typed AttributeValue dicts.
+    fake_client = Mock()
+    fake_client.scan.return_value = {
         # Deliberate reverse-lex order to prove sorting kicks in
         "Items": [
-            {"ObjectKey": "runid/zeta.pdf", "EvaluationStatus": "COMPLETED"},
-            {"ObjectKey": "runid/alpha.pdf", "EvaluationStatus": "COMPLETED"},
-            {"ObjectKey": "runid/mu.pdf", "EvaluationStatus": "COMPLETED"},
-            {"ObjectKey": "runid/skip-me.pdf", "EvaluationStatus": "FAILED"},
+            {
+                "ObjectKey": {"S": "runid/zeta.pdf"},
+                "EvaluationStatus": {"S": "COMPLETED"},
+            },
+            {
+                "ObjectKey": {"S": "runid/alpha.pdf"},
+                "EvaluationStatus": {"S": "COMPLETED"},
+            },
+            {
+                "ObjectKey": {"S": "runid/mu.pdf"},
+                "EvaluationStatus": {"S": "COMPLETED"},
+            },
+            {
+                "ObjectKey": {"S": "runid/skip-me.pdf"},
+                "EvaluationStatus": {"S": "FAILED"},
+            },
         ],
     }
     with (
         patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
-        patch.object(index, "dynamodb") as fake_dynamodb,
+        patch.object(index.boto3, "client", return_value=fake_client),
     ):
-        fake_dynamodb.Table.return_value = fake_table
         keys = list(index._iter_completed_doc_keys("runid", limit=3))
     assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"], (
         "Sample doc selection must be lexicographically deterministic so "
@@ -337,12 +351,13 @@ def test_load_sample_attribute_methods_swallows_read_timeout():
 
 
 @pytest.mark.unit
-def test_load_sample_attribute_methods_uses_section_agnostic_key():
-    """Section IDs are positional per document. Different docs in the
-    same test set have different section counts, so a diff key that
-    embeds ``section_id`` reports one-sided schema-shape drift every
-    time two runs sample differently. Attribute names alone are the
-    correct diff key — they're the schema, not a run-instance detail.
+def test_load_sample_attribute_methods_uses_document_class_key():
+    """Diff key is ``{document_class}.{attribute_name}`` — NOT
+    ``{section_id}.{attribute_name}`` (positional; false drift across
+    differently-sectioned docs) and NOT the bare attribute name (collides
+    across classes in a multi-class packet, hiding real cross-class
+    differences). Same-class sections share a schema and legitimately
+    collapse; different-class sections stay distinct.
     """
     fake_s3 = Mock()
 
@@ -353,16 +368,33 @@ def test_load_sample_attribute_methods_uses_section_agnostic_key():
                     "section_results": [
                         {
                             "section_id": "2",
+                            "document_class": "Invoice",
                             "attributes": [
                                 {
-                                    "name": "invoice_id",
-                                    "comparator_type": "ExactComparator",
-                                    "evaluation_threshold": 1.0,
+                                    "name": "Amount",
+                                    "comparator_type": "NumericComparator",
+                                    "evaluation_threshold": 0.95,
                                     "inference_source": "auto-inferred",
                                     "inference_why": ["name-token"],
                                 }
                             ],
-                        }
+                        },
+                        # Different class, same-named attribute — MUST stay
+                        # distinct in the diff (different schemas can carry
+                        # different comparators).
+                        {
+                            "section_id": "3",
+                            "document_class": "Receipt",
+                            "attributes": [
+                                {
+                                    "name": "Amount",
+                                    "comparator_type": "NumericComparator",
+                                    "evaluation_threshold": 0.99,
+                                    "inference_source": "configured",
+                                    "inference_why": None,
+                                }
+                            ],
+                        },
                     ]
                 }
             ).encode()
@@ -376,10 +408,12 @@ def test_load_sample_attribute_methods_uses_section_agnostic_key():
         ),
     ):
         methods = index._load_sample_attribute_methods("runid")
-    # Key is the bare attribute name — NO ``section_id.`` prefix. Otherwise
-    # two runs of the same test set that sampled docs with different
-    # section counts would appear as full schema-shape drift.
-    assert set(methods.keys()) == {"invoice_id"}
+    # Two entries — one per class — NOT one entry with the last-write
+    # winning. If this collapses to a single ``Amount`` key, the diff
+    # can't tell that ``Invoice.Amount`` and ``Receipt.Amount`` diverge.
+    assert set(methods.keys()) == {"Invoice.Amount", "Receipt.Amount"}
+    assert methods["Invoice.Amount"]["source"] == "auto-inferred"
+    assert methods["Receipt.Amount"]["source"] == "configured"
 
 
 @pytest.mark.unit
