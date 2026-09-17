@@ -4,14 +4,15 @@
 """A metering key names the model that was invoked, so it carries no ``:1m``.
 
 The suffix is not part of the model ID sent to Bedrock — the client strips it and
-sends the ``context-1m-2025-08-07`` beta header instead — and it does not change
-the price of every request, only of requests above 200,000 input tokens. It used
-to survive into the metering key and pick up a premium rate card on every
-request; see ``tests/unit/reporting/test_long_context_pricing.py`` and issue
-#899.
+sends the ``context-1m-2025-08-07`` beta header instead — and it names no separate
+price, because the 1M context window is billed at the model's standard per-token
+rates. Keeping it in the key therefore bought a second pricing entry for the same
+rates, and that is exactly where a premium rate card was reintroduced and charged
+on every request; see ``tests/unit/reporting/test_long_context_pricing.py`` and
+issue #899.
 
 A service tier is the opposite case and must be kept: ``:flex`` / ``:priority``
-change the per-token price of the whole request and have their own
+re-price every request made in them and have their own
 ``config_library/pricing.yaml`` entries.
 """
 
@@ -31,10 +32,14 @@ _IDP_COMMON = Path(__file__).resolve().parents[3] / "idp_common"
 # Every place a Bedrock metering key is built. A new one must either route the
 # model ID through metering_model_id() or be listed here with the reason it need
 # not — an unexplained omission is how the defect returns for one code path.
+# The value is (reason, expected number of raw sites in that file), so a NEW raw
+# site added to an exempt file is still caught -- the exemption covers the sites
+# audited when it was written, not the filename forever.
 METERING_KEY_EXEMPT = {
     "bedrock/openai_responses.py": (
         "OpenAI Responses models have no :1m variant (the 1M-context suffix is "
-        "an Anthropic beta), so there is no suffix to strip"
+        "an Anthropic beta), so there is no suffix to strip",
+        2,
     ),
 }
 
@@ -136,31 +141,50 @@ class TestClientMeteringKey:
         ]
 
 
+# Any f-string building a "<step>/bedrock/<model>" metering key. The step part is
+# matched as any identifier rather than the literal name ``context``, so renaming
+# that variable at a new site does not silently opt it out of this guard.
+_METERING_KEY_FSTRING = re.compile(r'f"\{\w+\}/bedrock/\{([^}]+)\}')
+
+
 def test_every_bedrock_metering_key_site_strips_the_suffix() -> None:
     """Guard the two emission sites, and any third one added later."""
-    pattern = re.compile(r'f"\{context\}/bedrock/\{([^}]+)\}')
     offenders = []
+    exempt_counts: dict[str, int] = {}
     for path in sorted(_IDP_COMMON.rglob("*.py")):
-        for match in pattern.finditer(path.read_text(encoding="utf-8")):
-            rel = path.relative_to(_IDP_COMMON).as_posix()
-            if "metering_model_id(" in match.group(1) or rel in METERING_KEY_EXEMPT:
+        rel = path.relative_to(_IDP_COMMON).as_posix()
+        for match in _METERING_KEY_FSTRING.finditer(path.read_text(encoding="utf-8")):
+            if "metering_model_id(" in match.group(1):
+                continue
+            if rel in METERING_KEY_EXEMPT:
+                exempt_counts[rel] = exempt_counts.get(rel, 0) + 1
                 continue
             offenders.append(f"{rel}: {match.group(0)}")
 
     assert not offenders, (
         "these Bedrock metering keys use the raw model ID, so a ':1m' suffix "
-        "would reach cost reporting and pick up the long-context rate card on "
+        "would reach cost reporting and could pick up a rate card of its own on "
         f"every request: {offenders}. Wrap the model ID in metering_model_id(), "
         "or add the file to METERING_KEY_EXEMPT with the reason."
     )
+
+    # An exempt file is exempt for the sites that were audited, not for any
+    # number of them.
+    for rel, (reason, expected) in METERING_KEY_EXEMPT.items():
+        assert exempt_counts.get(rel, 0) == expected, (
+            f"{rel} is exempt for {expected} raw metering key site(s) "
+            f"({reason}), but {exempt_counts.get(rel, 0)} were found. Review the "
+            "new site and either wrap it or update the expected count."
+        )
 
 
 def test_the_agentic_extraction_path_is_covered_by_that_guard() -> None:
     """The path the defect was measured on: it has no per-call usage at all.
 
-    Strands reports ``accumulated_usage``, already summed across every turn of
-    the agent loop, so even at emission time nothing there could evaluate a
-    200K-per-request threshold.
+    Strands reports ``accumulated_usage``, already summed across every turn of the
+    agent loop. That does not matter for ``:1m``, which has no size-dependent
+    price, but it is why this path could not implement one for a model that does
+    (GPT-6 Astra) without new per-call instrumentation.
     """
     source = (_IDP_COMMON / "extraction" / "agentic_idp.py").read_text(encoding="utf-8")
     assert 'f"{context}/bedrock/{metering_model_id(model_id)}"' in source

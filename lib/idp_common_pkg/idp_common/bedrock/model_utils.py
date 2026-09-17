@@ -77,10 +77,14 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
     return model_id, None
 
 
-# The suffix that selects Anthropic's 1M-token context beta. Unlike a service-tier
-# suffix (``:flex``, ``:priority``), it is not part of the model ID Bedrock is
-# called with: the client strips it and sends the ``context-1m-2025-08-07`` beta
-# header instead.
+# The suffix that selects Anthropic's 1M-token context beta. Like a service-tier
+# suffix (``:flex``, ``:priority``), it is stripped before Bedrock is called —
+# ``parse_model_id`` removes a tier and passes it as ``converse_params
+# ["serviceTier"]``, while this one is replaced by the ``context-1m-2025-08-07``
+# beta header. What separates them is pricing, not the wire format: a service
+# tier re-prices *every* request made in it (flex 0.5x, priority 1.75x) and has
+# its own ``config_library/pricing.yaml`` entries, whereas the 1M window carries
+# no price difference at all.
 LONG_CONTEXT_SUFFIX = ":1m"
 
 
@@ -89,24 +93,23 @@ def metering_model_id(model_id: str) -> str:
     Reduce a configured model ID to the identity that should appear in a
     metering key (and therefore drive cost reporting).
 
-    A suffix belongs in a metering key only when it changes the price of *every*
-    request made with it. A service tier does: ``:flex`` and ``:priority`` are
-    priced differently per token for the whole request, and they have their own
+    A suffix belongs in a metering key only when it names a different price. A
+    service tier does: ``:flex`` and ``:priority`` are priced differently per
+    token for the whole request, and they have their own
     ``config_library/pricing.yaml`` entries, so they are kept.
 
-    ``:1m`` does not. It opts the request into Anthropic's 1M-token context
-    window, whose long-context premium (2x input, 1.5x output) applies only to
-    requests whose input exceeds 200,000 tokens; below that the standard rates
-    apply. The suffix is also not sent to Bedrock — the client removes it and
-    passes the ``context-1m-2025-08-07`` beta header — so a metering key that
-    carries it names something that was never invoked. Metering values are
-    summed per (context, model) across every call on a document before any price
-    is applied (``idp_common.utils.merge_metering_data`` then
-    ``idp_common.reporting.save_reporting_data``), so the threshold cannot be
-    evaluated per request downstream and the premium cannot be charged
-    correctly from the key. Reporting the standard rate is right for the
-    overwhelming majority of requests; see ``docs/cost-calculator.md`` and issue
-    #899.
+    ``:1m`` does not. It opts the request into the 1M-token context window, which
+    Anthropic prices at the standard per-token rates on Claude 4.6 and later —
+    the only models the suffix is offered on here — so there is no second rate for
+    the key to select (see the long-context note in ``config_library/pricing.yaml``
+    for the citation). The suffix is also not sent to Bedrock: the client removes
+    it and passes the ``context-1m-2025-08-07`` beta header, so a key that carries
+    it names something that was never invoked. Collapsing it keeps one price per
+    model instead of two entries holding identical rates, and stops a premium rate
+    card being reintroduced under a key nothing invoked — which is exactly the
+    defect in issue #899, where ``:1m`` entries carried a flat 2x input / 1.5x
+    output premium (the rate card of the earlier Sonnet 4 / 4.5 1M beta, which
+    never applied to these models) and overstated every reported cost on them.
 
     Examples:
         >>> metering_model_id("us.anthropic.claude-sonnet-5:1m")

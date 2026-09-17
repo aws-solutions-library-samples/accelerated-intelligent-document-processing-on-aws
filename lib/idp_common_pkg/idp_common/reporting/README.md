@@ -153,20 +153,31 @@ and hours. So a metering value is "all input tokens this step spent on this
 model", and nothing downstream can recover how many requests produced it or how
 large the largest one was.
 
-That rules out pricing that depends on the size of an individual request. Two
-models have it:
+That matters for any model whose price depends on the size of an individual
+request. One model offered here has such a band: **OpenAI GPT-6 Astra**, whose
+input above 272,000 tokens per request costs roughly double (see
+`docs/openai-models.md`). It is priced at its standard rate throughout, which
+under-reports a genuinely oversized request and is correct for everything else.
 
-- **Claude `:1m`** — the long-context premium (2x input, 1.5x output) applies
-  only above 200,000 input tokens per request, cache reads included.
-- **OpenAI GPT-6 Astra** — input above 272,000 tokens per request costs roughly
-  double.
+Claude's `:1m` variants are **not** such a case, though they were treated as one
+until v0.6.9: the 1M context window is priced at the model's standard rates, so
+there is only one rate to report. See the long-context note in
+`config_library/pricing.yaml` and `docs/cost-calculator.md`.
 
-A threshold applied here would be wrong, not merely approximate: ten 30K-token
-calls sum to 300K and would be charged a premium none of them incurred. Both
-models are therefore priced at their standard rate throughout, which under-reports
-a genuinely oversized request and is correct for everything else. See
-`config_library/pricing.yaml` (the long-context note in its header) and
-`docs/cost-calculator.md`.
+**Where banding could and could not be implemented.** Not here, and not anywhere
+downstream of `merge_metering_data()` — a threshold applied to these sums would be
+wrong rather than approximate, since ten 30K-token calls sum to 300K and would be
+charged a premium none of them incurred. It *would* be implementable at the
+emission site: `BedrockClient._invoke_with_retry` in `bedrock/client.py` builds
+the metering key with that one request's `usage` dict already in a local variable,
+and `merge_metering_data` merges strictly by key string, so emitting long calls
+under a premium-rated key and short calls under the base key would be exactly
+correct — not approximate — and would need no change here. The exception is the
+Strands agentic path (`extraction/agentic_idp.py`), which sees only
+`response.metrics.accumulated_usage` — a running sum with no per-call breakdown —
+so banding there would need new per-call instrumentation (a `stream_async` /
+`ModelStopReason.usage` reader or a model-call hook; both idioms are already used
+in `agents/common/`).
 
 Two consequences for this module's callers:
 
@@ -174,11 +185,13 @@ Two consequences for this module's callers:
   suffix — `idp_common.bedrock.model_utils.metering_model_id` strips it at the
   two emission sites (`bedrock/client.py`, `extraction/agentic_idp.py`), the same
   way the client strips it before calling Bedrock. A service-tier suffix
-  (`:flex`, `:priority`) is kept, because it changes the price of the whole
-  request and has its own pricing entry.
-- **`:1m` pricing entries are retained anyway**, at the standard rates, so that
-  metering written before that change still resolves to an exact price rather
-  than falling through to the substring match or to $0.0. (They are also the
+  (`:flex`, `:priority`) is kept, because it re-prices every request made in it
+  and has its own pricing entry.
+- **`:1m` pricing entries are retained anyway**, at the base model's rates, so
+  that a `:1m` key still resolves to an exact price rather than falling through to
+  the substring match or to $0.0. Such keys still arrive from metering written
+  before the change and, for the agent-cost path, from the Athena rollups, which
+  build the key from the raw configured model ID. (The entries are also the
   model-ID list configuration validation accepts; see
   `idp_common.config.merge_utils._load_valid_bedrock_models`.)
 

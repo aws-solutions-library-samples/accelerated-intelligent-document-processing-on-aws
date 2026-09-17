@@ -2259,10 +2259,9 @@ async def structured_output_async(
     if result and response:
         # Build metering dict with token usage. As at the Converse site in
         # bedrock/client.py, the key names the model actually invoked: a ``:1m``
-        # suffix is a beta header rather than part of the model ID, and its
-        # long-context premium applies only above 200K input tokens, which this
-        # accumulated usage (summed across every agent-loop turn) cannot tell
-        # apart from many smaller turns. See issue #899.
+        # suffix is a beta header rather than part of the model ID, and the 1M
+        # context window it selects carries no price premium, so it names no
+        # separate rate. See issue #899.
         metering_dict = {
             f"{context}/bedrock/{metering_model_id(model_id)}": BedrockUsage(
                 **token_usage

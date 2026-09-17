@@ -1653,7 +1653,7 @@ class BedrockClient:
             # (merge_metering_data) and priced (save_reporting_data) as numbers.
             # The key names what was actually invoked, so a ``:1m`` suffix is
             # dropped (metering_model_id) — it is a beta header, not a model, and
-            # its long-context premium applies only above 200K input tokens.
+            # the 1M context window it selects is priced at the standard rates.
             usage = response.get("usage", {})
             response_with_metering = {
                 "response": response,

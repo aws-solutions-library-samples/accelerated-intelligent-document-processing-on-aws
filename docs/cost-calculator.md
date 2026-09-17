@@ -94,36 +94,46 @@ This real-time cost tracking helps you monitor actual usage patterns and optimiz
 
 ### What the estimate cannot express: prices that change with request size
 
-The estimate multiplies a token count by one rate per unit. Some models instead
-charge a different rate above a size threshold, and a single rate cannot say both
-things, so those models are reported at one of the two rates:
+The estimate multiplies a token count by one rate per unit. A model that instead
+charges a different rate above a size threshold cannot be expressed that way, so
+it is reported at one of its two rates. One model offered here works like that:
 
-- **Long-context Claude models (a `:1m` model ID)** are reported at the
-  **standard** rate. Anthropic's long-context premium — 2x input, 1.5x output —
-  applies only to a request whose input exceeds **200,000 tokens** (cache reads
-  count toward that total), and virtually every request this solution makes is
-  well under it: a request is one section or one shard, not a whole document.
-  Reporting the standard rate is therefore right for nearly all traffic. The
-  residual gap is that a genuinely long request — over 200K input tokens in a
-  single call, which requires a very large section — is **under-reported**, by up
-  to 2x on its input tokens.
+- **OpenAI GPT-6 Astra** bills input above **272,000 tokens** at roughly double,
+  and the estimate uses its standard rate, so a request over that line is
+  **under-reported**. This is easy to hit by accident, because the accelerator
+  derives its shard and summarization budgets from the model's declared window.
+  See [OpenAI models](openai-models.md) for the derived budgets and two ways to
+  remove the discrepancy.
 
-  Before v0.6.9 these models were reported at the premium rate on *every*
-  request, which overstated their cost by up to 1.8x in document cost tables,
-  the Athena rollups, benchmark summaries and evaluation reports. Nothing was
-  ever overspent — the defect was in the rate card, not in what Bedrock
-  charged — but `:1m` models looked far more expensive than they are. If you
-  compare reports across that upgrade, expect reported `:1m` costs to drop.
+**Long-context Claude models (a `:1m` model ID) are not such a case.** The `:1m`
+suffix selects the 1M-token context window, and that window is priced at the
+model's standard per-token rates — a 900K-token request costs the same per token
+as a 9K-token one. There is one rate, and the estimate reports it. Bedrock's
+published price list confirms it: every one of the six models offered with the
+suffix has exactly one input-token rate per routing mode and service tier, with no
+token-volume band at all (AWS Price List offer file
+`AmazonBedrockFoundationModels`, version 20260911124410, retrieved 2026-09-17),
+and Anthropic states the same directly in its
+[long context pricing](https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing).
 
-- **OpenAI GPT-6 Astra** has the mirror-image case: it bills input above
-  **272,000 tokens** at roughly double, and is reported at its standard rate, so
-  a very large request is under-reported.
+Before v0.6.9 these models were reported at a premium — 2× input, 1.5× output —
+on every request. That premium was the rate card of an earlier Claude 1M-context
+beta and applied to none of the models offered with the suffix, so it simply
+overstated their cost, by up to 1.8× in document cost tables, the Athena rollups,
+benchmark summaries and evaluation reports. Nothing was ever overspent; the defect
+was in the rate card, not in what Bedrock charged. If you compare reports across
+that upgrade, expect reported `:1m` costs to drop
+([#899](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/899)).
 
-Neither threshold can be applied by the cost report itself. Token counts are
-summed per processing step and model across every call made on a document before
-any price is looked up, so a report cannot tell one 250,000-token request from
-ten 25,000-token ones. Only the per-request numbers in your AWS bill, or a Cost
-and Usage Report, can settle a long-context bill exactly.
+A banded price like Astra's cannot be resolved by the cost report itself: token
+counts are summed per processing step and model across every call made on a
+document before any price is looked up, so the report cannot tell one
+250,000-token request from ten 25,000-token ones. Charging a band off that sum
+would be wrong, not approximate. It could be resolved where the metering record is
+first written, which does see one request at a time — everywhere except the
+agentic extraction path, where the agent framework reports only usage already
+accumulated across the agent loop. Until then, only the per-request numbers in
+your AWS bill, or a Cost and Usage Report, settle a large-request bill exactly.
 
 ### AWS Cost Management Tools
 
