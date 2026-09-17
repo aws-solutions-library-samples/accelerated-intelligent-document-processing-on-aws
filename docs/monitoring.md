@@ -75,16 +75,33 @@ That failure is quiet. Every other signal looks *idle* rather than broken: no
 errors, no failed executions, latency graphs simply stop. The usual first symptom
 is a person noticing that nothing has processed for hours.
 
-Two metrics in the stack's own namespace (`<StackName>`) make it visible, both on
-the **Workflow Concurrency Counter** widget:
+The counter can also drift the other way. Admission is gated on
+`active_count < MaxConcurrentWorkflows`, so a counter driven **below zero** raises
+the effective ceiling by exactly that much, indefinitely, and nothing errors:
+documents process, queues drain, every graph looks healthy, and the stack simply
+spends more on Bedrock and Textract than it was configured to. Two guards in the
+tracker prevent it: the decrement is refused when the counter is already at zero,
+and it carries a `dec#<executionArn>` marker written in the same DynamoDB
+transaction, so a redelivered terminal event cannot release a second slot. The
+markers expire via the `ConcurrencyTable` TTL attribute (`ExpiresAfter`, seven
+days) rather than accumulating one item per document forever.
+
+Three metrics in the stack's own namespace (`<StackName>`) make all of this
+visible, all on the **Workflow Concurrency Counter** widget:
 
 - **`ConcurrencyCounterActive`** — the counter value, published on every document
-  completion. Continuous, so there is a history to inspect after the fact.
+  completion. Continuous, so there is a history to inspect after the fact. Its
+  **Minimum** is plotted as well as its Average, because a single dip below zero
+  is what matters and an average hides it.
 - **`ConcurrencyCounterDrift`** — claimed slots minus executions actually
   running. Sampled only when an increment is *refused*, i.e. when drift is
   actually blocking work.
+- **`ConcurrencyCounterUnderflow`** — a decrement that was refused because the
+  counter was already at zero. Nothing else reports this: the counter and the
+  document both end up correct, so without this metric a duplicate release is
+  invisible.
 
-Two alarms publish to `AlertsTopic`:
+Four alarms publish to `AlertsTopic`:
 
 - **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
   fires on the *symptom*, once slots are already being held wrongly.
@@ -92,15 +109,28 @@ Two alarms publish to `AlertsTopic`:
   dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
   so an event it could not process is a slot that was never released, and it
   alarms on the first message rather than waiting for drift to accumulate.
+- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement. The floor
+  already prevented the damage, so this is a *correctness* signal: something
+  released a slot twice, and the reason is worth finding.
+- **`ConcurrencyCounterNegativeAlarm`** — the counter observed below zero. This
+  should be unreachable now that the decrement is floored; if it fires, the
+  counter is being written by something that bypasses the floor.
 
-The queue processor also **self-heals**: on a refused increment it
-reconciles the counter against `ListExecutions`, requiring the same discrepancy
-in two samples at least five minutes apart, only ever lowering it, and writing
-conditionally on the value it sampled.
+The queue processor also **self-heals**: on a refused increment it reconciles the
+counter against `ListExecutions`, writing conditionally on the value it sampled.
+Correcting **downward** requires the same discrepancy in two samples at least
+five minutes apart, because lowering the counter wrongly over-admits work. A
+**negative** counter is repaired on first observation instead — raising the
+counter only tightens admission, so the caution is unnecessary and leaving it
+negative is the more expensive option. The repair never writes a value below
+zero, and publishes the pre-repair (negative) value so the alarm above still
+fires on a counter that self-healed.
 
 **Reading the widget:** the counter tracking a busy queue is normal. The counter
 sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
-in flight and the Step Functions widget shows nothing starting is the leak.
+in flight and the Step Functions widget shows nothing starting is the upward
+leak. The counter minimum below the zero annotation, or any
+`ConcurrencyCounterUnderflow` bar, is the downward one.
 
 ### Stale Output Purge on Re-upload
 
@@ -270,6 +300,8 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
 | `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | Threshold is fixed (≥ 1); the bound itself is `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
+| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was already 0 — a slot released twice | `AlertsTopic` | — |
+| `ConcurrencyCounterNegativeAlarm` | Concurrency counter observed below 0 in 5 min — the ceiling is being exceeded | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
 | `DocumentQueueStalledAlarm` | Oldest queued document older than the threshold **and** nothing left the queue, for 30 min | `AlertsTopic` | `QueueStalledAgeThresholdSeconds` (default `1800`, i.e. 30 min) |

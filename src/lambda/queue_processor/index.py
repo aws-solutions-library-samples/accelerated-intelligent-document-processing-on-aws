@@ -279,6 +279,11 @@ def reconcile_counter() -> Optional[int]:
     3. **Conditional write** on the exact value we sampled, so a concurrent
        increment or decrement makes this a no-op instead of clobbering it.
 
+    A NEGATIVE counter is the one case that gets none of that caution, because it
+    is the opposite failure: see ``_repair_negative_counter``. It used to get no
+    treatment at all — an ``active <= 0`` early return here declined to act on
+    exactly the state that needed correcting (issue #915).
+
     Returns the corrected value, or None if no correction was made.
     """
     now = int(time.time())
@@ -295,7 +300,13 @@ def reconcile_counter() -> Optional[int]:
         return None
 
     active = int(item.get("active_count", 0))
-    if active <= 0:
+    if active < 0:
+        # An underflowed counter raises the effective ceiling instead of lowering
+        # it, so it is repaired on sight rather than sampled twice.
+        return _repair_negative_counter(active)
+    if active == 0:
+        # No slots claimed, so there is nothing to reconcile and no reason to pay
+        # for a ListExecutions sweep.
         return None
 
     running = _count_running_executions()
@@ -362,7 +373,9 @@ def reconcile_counter() -> Optional[int]:
         return None
 
     # Two independent samples, GRACE apart, both saw the counter too high.
-    target = max(running, int(prev_running or 0))
+    # max(..., 0) is belt-and-braces: both inputs are counts, so the corrected
+    # value can never be the negative counter this function now also repairs.
+    target = max(running, int(prev_running or 0), 0)
     if target >= active:
         return None
 
@@ -388,6 +401,58 @@ def reconcile_counter() -> Optional[int]:
         f"RECONCILED leaked concurrency counter: {active} -> {target} "
         f"(running executions: {running}, previous sample: {prev_running}). "
         f"{active - target} slot(s) had been held by workflows that already ended."
+    )
+    return target
+
+
+def _repair_negative_counter(active: int) -> Optional[int]:
+    """Raise a NEGATIVE counter back to what is actually running.
+
+    A negative ``active_count`` is not drift, it is arithmetic that ran past its
+    floor, and it fails in the opposite and worse direction: the admission gate is
+    ``active_count < MAX_CONCURRENT``, so every unit below zero is one more
+    workflow admitted above MaxConcurrentWorkflows, indefinitely, with no error
+    anywhere (issue #915). The workflow tracker's decrement is now floored and
+    deduplicated so it cannot get here, but a counter that already went negative —
+    or one edited by hand — still needs a way back.
+
+    The two-sample caution in ``reconcile_counter`` exists because *lowering* the
+    counter over-admits work. Raising it out of a negative value only ever
+    tightens admission, so this acts on the first observation. It still writes
+    conditionally on the exact value read, and can never write below zero.
+    """
+    running = _count_running_executions()
+    # None means the probe failed, or that it stopped counting past the ceiling.
+    # Either way zero is a safe floor: it is much closer to the truth than a
+    # negative counter, and it cannot admit MORE work than we already are.
+    target = max(running, 0) if running is not None else 0
+
+    # Publish the pre-repair value even if the write below no-ops. Nothing else
+    # records an underflow that the reconciler silently cleaned up, and an
+    # operator needs to know the ceiling was breached, not just that it is fixed.
+    _emit_counter_active_metric(active)
+
+    try:
+        concurrency_table.update_item(
+            Key={"counter_id": COUNTER_ID},
+            UpdateExpression=(
+                "SET active_count = :new REMOVE drift_observed_at, drift_running"
+            ),
+            ConditionExpression="active_count = :expected",
+            ExpressionAttributeValues={":new": target, ":expected": active},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # The counter moved under us; re-read it on a later invocation.
+            logger.info("Counter changed during underflow repair; skipping")
+            return None
+        logger.error(f"Failed to repair negative concurrency counter: {e}")
+        return None
+
+    logger.warning(
+        f"REPAIRED a NEGATIVE concurrency counter: {active} -> {target} "
+        f"(running executions: {running}). While it was negative the stack could "
+        f"admit up to {-active} workflows ABOVE MaxConcurrentWorkflows."
     )
     return target
 
@@ -541,6 +606,29 @@ def _emit_drift_metric(drift: int, active: int, running: int) -> None:
         )
     except Exception as e:  # never let telemetry break message processing
         logger.warning(f"Could not emit concurrency drift metric: {e}")
+
+
+def _emit_counter_active_metric(active: int) -> None:
+    """Publish the counter value on its own, without a drift sample.
+
+    Used by the underflow-repair path: there is no meaningful drift to report
+    there, but the negative value itself has to reach CloudWatch so
+    ConcurrencyCounterNegativeAlarm can fire on it.
+    """
+    try:
+        cloudwatch = boto3.client("cloudwatch")
+        cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": "ConcurrencyCounterActive",
+                    "Value": active,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit concurrency counter metric: {e}")
 
 
 def check_circuit_breaker() -> tuple[bool, str]:

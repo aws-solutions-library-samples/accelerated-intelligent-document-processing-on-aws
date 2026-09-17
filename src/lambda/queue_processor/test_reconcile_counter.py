@@ -13,6 +13,15 @@ document started for hours.
 Reconciliation therefore has to be *safe*, because wrongly lowering the counter
 over-admits work. These tests pin the three safeguards: two samples a grace
 period apart, never raising the counter, and a conditional write.
+
+A NEGATIVE counter is the mirror-image failure and needs the opposite treatment.
+It over-admits by construction — admission is gated on
+``active_count < MAX_CONCURRENT``, so a counter at -N runs N workflows above the
+ceiling for as long as it stays there. Correcting it UPWARD only tightens
+admission, so it does not need the two-sample caution; the ``active <= 0`` early
+return used to decline to act on exactly that state (issue #915), and
+``TestNegativeCounterRepair`` / ``TestNegativeRepairAgainstDynamoDB`` cover the
+repair that replaced it.
 """
 
 import importlib.util
@@ -20,8 +29,10 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import boto3
 import pytest
 from botocore.exceptions import ClientError
+from moto import mock_aws
 
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "index.py")
 _MODULE_NAME = "queue_processor_reconcile_under_test"
@@ -74,6 +85,61 @@ def index_module(monkeypatch):
         sys.modules.pop(_MODULE_NAME, None)
 
 
+@pytest.fixture
+def moto_index_module(monkeypatch):
+    """Same module, but with a real DynamoDB table behind it.
+
+    Only used by the negative-counter repair tests, where what matters is the
+    value DynamoDB is left holding rather than the arguments passed to it. Step
+    Functions stays mocked: the number of running executions is an input to the
+    repair, not part of the behaviour being pinned.
+    """
+    env_vars = {
+        "CONCURRENCY_TABLE": "test-concurrency",
+        "STATE_MACHINE_ARN": SM_ARN,
+        "MAX_CONCURRENT": "100",
+        "RECONCILE_GRACE_SECONDS": "300",
+        "METRIC_NAMESPACE": "TestStack",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - dummy moto credential
+    }
+    fake_docs_service = MagicMock()
+    fake_docs_service.create_document_service = MagicMock(return_value=MagicMock())
+    for name, mod in {
+        "idp_common": MagicMock(),
+        "idp_common.models": MagicMock(),
+        "idp_common.docs_service": fake_docs_service,
+        "idp_common.config": MagicMock(),
+        "aws_xray_sdk": MagicMock(),
+        "aws_xray_sdk.core": MagicMock(),
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    with patch.dict(os.environ, env_vars, clear=False), mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="test-concurrency",
+            KeySchema=[{"AttributeName": "counter_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "counter_id", "AttributeType": "S"}
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        name = f"{_MODULE_NAME}_moto"
+        spec = importlib.util.spec_from_file_location(name, _INDEX_PATH)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+
+        module.sfn = MagicMock()
+        module._emit_drift_metric = MagicMock()
+        module._emit_counter_active_metric = MagicMock()
+        yield module
+        sys.modules.pop(name, None)
+
+
 def _counter(active, drift_at=None, drift_running=None):
     item = {"active_count": active}
     if drift_at is not None:
@@ -115,6 +181,95 @@ class TestNoCorrectionWhenHealthy:
             "UpdateExpression"
         ]
         assert "REMOVE drift_observed_at" in expr
+
+
+class TestNegativeCounterRepair:
+    """A NEGATIVE counter is the opposite failure, and the worse one: admission
+    is gated on ``active_count < MAX_CONCURRENT``, so a counter at -N hands out N
+    workflows above MaxConcurrentWorkflows for as long as it stays negative, and
+    nothing errors while it does. The workflow tracker's decrement is now floored
+    so it cannot get there, but a counter that already went negative needed a way
+    back and had none: the ``active <= 0`` early return declined to act on exactly
+    that state (issue #915).
+
+    Repairing UPWARD only ever tightens admission, so unlike a downward
+    correction it does not need two samples — but it is still conditional on the
+    value observed, and can never write a negative value of its own.
+    """
+
+    def test_a_negative_counter_is_repaired_on_first_observation(self, index_module):
+        index_module.concurrency_table.get_item.return_value = _counter(-3)
+        index_module.sfn.list_executions.return_value = _running(7)
+
+        assert index_module.reconcile_counter() == 7
+
+        kwargs = index_module.concurrency_table.update_item.call_args.kwargs
+        assert "SET active_count = :new" in kwargs["UpdateExpression"]
+        assert kwargs["ExpressionAttributeValues"][":new"] == 7
+
+    def test_the_repair_is_conditional_on_the_value_observed(self, index_module):
+        index_module.concurrency_table.get_item.return_value = _counter(-3)
+        index_module.sfn.list_executions.return_value = _running(7)
+
+        index_module.reconcile_counter()
+
+        kwargs = index_module.concurrency_table.update_item.call_args.kwargs
+        assert kwargs["ConditionExpression"] == "active_count = :expected"
+        assert kwargs["ExpressionAttributeValues"][":expected"] == -3
+
+    def test_the_repair_never_writes_a_negative_value(self, index_module):
+        """Nothing is running, so the correct value is 0 — not the -5 it holds
+        and not anything below zero."""
+        index_module.concurrency_table.get_item.return_value = _counter(-5)
+        index_module.sfn.list_executions.return_value = _running(0)
+
+        assert index_module.reconcile_counter() == 0
+        assert (
+            index_module.concurrency_table.update_item.call_args.kwargs[
+                "ExpressionAttributeValues"
+            ][":new"]
+            == 0
+        )
+
+    def test_an_unusable_execution_probe_still_clears_the_negative(self, index_module):
+        """Zero is a safe floor when ListExecutions cannot be trusted: it is far
+        closer to the truth than a negative counter and it cannot admit MORE work
+        than the stack is already admitting."""
+        index_module.concurrency_table.get_item.return_value = _counter(-4)
+        index_module.sfn.list_executions.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException"}}, "ListExecutions"
+        )
+
+        assert index_module.reconcile_counter() == 0
+
+    def test_a_concurrent_change_aborts_the_repair(self, index_module):
+        index_module.concurrency_table.get_item.return_value = _counter(-3)
+        index_module.sfn.list_executions.return_value = _running(7)
+        index_module.concurrency_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+
+        assert index_module.reconcile_counter() is None
+
+    def test_the_negative_value_is_published_so_the_alarm_can_fire(
+        self, index_module
+    ):
+        """A repair that left no trace would hide the fact that the ceiling was
+        breached. ConcurrencyCounterUnderflowAlarm watches this metric going
+        below zero."""
+        index_module.concurrency_table.get_item.return_value = _counter(-3)
+        index_module.sfn.list_executions.return_value = _running(7)
+        cw = MagicMock()
+
+        with patch("boto3.client", return_value=cw):
+            index_module.reconcile_counter()
+
+        published = [
+            (m["MetricName"], m["Value"])
+            for call in cw.put_metric_data.call_args_list
+            for m in call.kwargs["MetricData"]
+        ]
+        assert ("ConcurrencyCounterActive", -3) in published
 
 
 class TestTwoSampleRequirement:
@@ -497,3 +652,66 @@ class TestDriftSampleWriteGuards:
             assert index_module.reconcile_counter() is None
 
         cw.put_metric_data.assert_not_called()
+
+
+class TestNegativeRepairAgainstDynamoDB:
+    """The same repair, against a real (moto) table rather than a mocked one.
+
+    The mocked tests above assert the arguments; this one asserts the OUTCOME,
+    because the repair's correctness rests on DynamoDB semantics the mock cannot
+    reproduce — the conditional write either lands on the item or it does not, and
+    the value left behind is what admission control will read next.
+    """
+
+    def test_the_persisted_counter_ends_up_non_negative(self, moto_index_module):
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -4}
+        )
+        module.sfn.list_executions.return_value = _running(6)
+
+        assert module.reconcile_counter() == 6
+
+        item = module.concurrency_table.get_item(
+            Key={"counter_id": module.COUNTER_ID}, ConsistentRead=True
+        )["Item"]
+        assert int(item["active_count"]) == 6
+
+    def test_a_negative_counter_with_nothing_running_lands_on_zero(
+        self, moto_index_module
+    ):
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -2}
+        )
+        module.sfn.list_executions.return_value = _running(0)
+
+        assert module.reconcile_counter() == 0
+
+        item = module.concurrency_table.get_item(
+            Key={"counter_id": module.COUNTER_ID}, ConsistentRead=True
+        )["Item"]
+        assert int(item["active_count"]) == 0
+
+    def test_a_stale_drift_sample_is_cleared_by_the_repair(self, moto_index_module):
+        """A counter that drifted UP, was sampled, then went negative must not
+        keep the old sample: it describes a state that no longer exists and would
+        drive the next downward correction from stale numbers."""
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={
+                "counter_id": module.COUNTER_ID,
+                "active_count": -1,
+                "drift_observed_at": 1,
+                "drift_running": 5,
+            }
+        )
+        module.sfn.list_executions.return_value = _running(3)
+
+        module.reconcile_counter()
+
+        item = module.concurrency_table.get_item(
+            Key={"counter_id": module.COUNTER_ID}, ConsistentRead=True
+        )["Item"]
+        assert "drift_observed_at" not in item
+        assert "drift_running" not in item
