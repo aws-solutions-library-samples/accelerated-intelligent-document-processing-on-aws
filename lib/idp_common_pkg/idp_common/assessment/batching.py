@@ -76,8 +76,8 @@ _DEADLINE_SAFETY_RESERVE_SECONDS = 90.0
 # success and no issue at all).
 #
 # Why 5% for "materially short": reconciliation pads the assessment to exactly one
-# entry per extracted row, so a healthy run scores every row and the expected
-# shortfall is 0%. The threshold is not 0 because the ladder ALREADY reports small
+# entry per extracted row, so a run whose model scored every row lands at 0%
+# shortfall. The threshold is not 0 because the ladder ALREADY reports small
 # residual shortfalls precisely (``assessment_incomplete`` names the exact row
 # count), and a 1-2 row gap on an 800-row table is that issue's job, not a second
 # document-level alarm — 5% is the point where a reader should stop trusting the
@@ -87,8 +87,22 @@ _DEADLINE_SAFETY_RESERVE_SECONDS = 90.0
 # longer a usable sample of the document — the #901 run was ~76% unscored. Below
 # that it is a warning: coverage is degraded but the scored majority is still
 # informative.
+#
+# Why an ABSOLUTE floor on the error rung as well as the fraction: a fraction alone
+# makes short lists fire hardest. One unscored row in a four-row list is 25%, and an
+# error renders the section red ("Incomplete") in the Sections panel — so a shipped
+# two-entry list attribute (e.g. ENDORSEMENTS in lending-package-sample) with a
+# single ``None`` confidence leaf would present as an error-severity document
+# defect. Error severity is reserved for a shortfall that is large in ABSOLUTE rows
+# of unreviewable data, not merely large as a proportion of a tiny list: below the
+# floor the same shortfall is still reported, as a warning ("Degraded"), and the
+# ladder's own ``assessment_incomplete`` still names the exact rows. 10 unscored
+# rows is more data than a reviewer can be assumed to spot-check by hand, and it is
+# ~1% of the #901 shape (912 of 1,200 unscored), so the case the guard exists for is
+# unaffected.
 _COVERAGE_SHORTFALL_WARNING_FRACTION = 0.05
 _COVERAGE_SHORTFALL_ERROR_FRACTION = 0.25
+_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS = 10
 
 
 def _deadline_allows(deadline_epoch: float | None, estimated_seconds: float) -> bool:
@@ -732,9 +746,9 @@ def _new_split_stats() -> dict[str, Any]:
         # #894 terminal condition: list field(s) where the model STILL truncated
         # its response with exactly ONE row in the call. There is no smaller batch
         # than one row, so halving cannot converge and re-running the same call is
-        # pure waste — the ladder gives up for that field instead of retrying until
-        # the Lambda's 900s wall (which then made Step Functions retry the whole
-        # section twice more). See _record_oversized_row / _assess_slice_adaptive.
+        # pure waste — the ladder gives up for that field instead of spending the
+        # remaining rungs on it, and reports the real cause.
+        # See _record_oversized_row / _assess_slice_adaptive.
         "oversized_row_fields": [],
         "oversized_row_model": None,  # model that truncated on a single row
         "oversized_row_output_cap": None,  # that model's max output tokens
@@ -765,14 +779,19 @@ def _record_oversized_row(
     bank statement carrying a 100-row inner ``Transactions`` list, so the sizer's
     ``cols=2 per_row~80`` estimate is off by two orders of magnitude; see #894).
 
-    Recording it here lets the ladder skip the same-model retry rung (which is what
-    burned the 900s Assessment Lambda budget three times over) and lets
+    Recording it here lets the ladder skip the futile same-model retry rung and lets
     :func:`build_assessment_issues` report the ACTUAL cause with the numbers an
     operator needs: the model, its output cap, the field, and the row's approximate
     serialized size.
+
+    The ``logger.error`` fires **once per field per section** (the first time the
+    condition is recorded for that field). Every row of a long list can hit it — one
+    probe produced 81 identical error lines — and the message is a diagnosis of the
+    field, not of the row, so repeating it only buries everything else in the log.
     """
     fields = stats.setdefault("oversized_row_fields", [])
-    if big_field not in fields:
+    first_for_field = big_field not in fields
+    if first_for_field:
         fields.append(big_field)
 
     try:
@@ -801,17 +820,30 @@ def _record_oversized_row(
             stats["oversized_row_model"] = model_id
             stats["oversized_row_output_cap"] = output_cap
 
+    if not first_for_field:
+        # Already diagnosed for this field — see the docstring. Keep a cheap trace
+        # for anyone counting how many rows hit it.
+        logger.debug(
+            "Assessment: another single-row truncation on '%s' (~%s chars).",
+            big_field,
+            row_chars if row_chars is not None else "unknown",
+        )
+        return
+
     logger.error(
         "Assessment giving up on '%s': the model (%s, max output tokens %s) "
         "truncated its response with a SINGLE row in the call (~%s chars "
         "serialized). No smaller batch exists, so shrinking/retrying cannot help. "
         "Fix: use a confidence model with a larger output budget, or reduce the "
         "size of each list item (e.g. avoid wrapping a class that already contains "
-        "a long inner list in a multi-instance list) — not a smaller batch size.",
+        "a long inner list in a multi-instance list) — not a smaller batch size. "
+        "(Logged once per field; further single-row truncations on '%s' are at "
+        "DEBUG.)",
         big_field,
         model_id or "(unknown)",
         output_cap if output_cap else "unknown",
         row_chars if row_chars is not None else "unknown",
+        big_field,
     )
 
 
@@ -1229,12 +1261,39 @@ def build_assessment_issues(
     ]
 
 
+def _ladder_reported_error(ladder_issues: list[Any] | None) -> bool:
+    """True when ``build_assessment_issues`` already emitted an **error** issue.
+
+    Used to suppress the coverage rung: the ladder's error rungs
+    (``assessment_schema_mismatch``, ``assessment_row_too_large``,
+    ``assessment_incomplete``) describe the SAME unscored rows *with a cause
+    attached*, so emitting the coverage issue as well double-counts
+    ``ProcessingIssueCount`` and can state a second, different row count. It also
+    breaks the schema-mismatch rung's deliberate "emitted alone" contract, and would
+    append "the extracted values themselves are unaffected" directly beneath a
+    diagnosis that says extraction produced off-schema data.
+
+    Accepts ``ProcessingIssue`` objects, plain dicts, or bare code/severity-less
+    values, so either composition site can pass whatever it has.
+    """
+    for issue in ladder_issues or []:
+        severity = (
+            issue.get("severity")
+            if isinstance(issue, dict)
+            else getattr(issue, "severity", None)
+        )
+        if str(severity or "").lower() == "error":
+            return True
+    return False
+
+
 def audit_explainability(
     assessment: dict[str, Any] | None,
     extraction_results: dict[str, Any] | None,
     *,
     geometry_mode: str | None = None,
     section_id: str | None = None,
+    ladder_issues: list[Any] | None = None,
 ) -> tuple[dict[str, list[int]], list[Any]]:
     """Verify every extracted value has correctly-structured explainability.
 
@@ -1251,11 +1310,19 @@ def audit_explainability(
     - **Coverage (#901 item 3):** the share of extracted list rows that actually
       carry a confidence. A materially short section emits
       ``assessment_coverage_incomplete`` — ``warning`` past
-      ``_COVERAGE_SHORTFALL_WARNING_FRACTION``, ``error`` past
-      ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` — so partial coverage is visible
-      instead of the section reporting unqualified success. This is a *symptom*
-      report computed from the final data; it deliberately makes no claim about the
-      cause (the ladder's own issue, when present, carries that).
+      ``_COVERAGE_SHORTFALL_WARNING_FRACTION``, ``error`` only past
+      ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` **and**
+      ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` absolute unscored rows (a
+      fraction alone makes a one-row gap in a four-row list an error) — so partial
+      coverage is visible instead of the section reporting unqualified success. This
+      is a *symptom* report computed from the final data; it deliberately makes no
+      claim about the cause.
+
+      Pass ``ladder_issues`` (the return of :func:`build_assessment_issues` for the
+      same section) to suppress this rung when the ladder already reported an
+      error-severity issue: that issue covers the same rows *with* a cause, so both
+      would double-count ``ProcessingIssueCount``. Callers that compose
+      ``build_assessment_issues(...) + audit_issues`` should always pass it.
 
     Returns ``(gaps, issues)`` where ``gaps`` maps ``field -> [missing row idx]``
     (fed back into the ladder once by the caller) and ``issues`` is a list of
@@ -1352,35 +1419,61 @@ def audit_explainability(
     # The per-field gaps above are computed anyway but were previously discarded by
     # every caller, so a section could come back with a fraction of its rows scored
     # and still report unqualified success. Thresholds and their rationale live on
-    # _COVERAGE_SHORTFALL_*_FRACTION above.
+    # _COVERAGE_SHORTFALL_* above.
+    #
+    # Suppressed entirely when the ladder already emitted an error for this section (see
+    # ``ladder_issues``): that issue is the same shortfall with a cause attached, and
+    # emitting both double-counts ProcessingIssueCount with two counts that can
+    # legitimately disagree (``unrecoverable_rows`` tracks only the largest list
+    # field; this audit counts every list field).
     total_list_rows = sum(
         len(v) for v in extraction_results.values() if isinstance(v, list)
     )
     unscored_list_rows = sum(len(idxs) for idxs in gaps.values())
-    if total_list_rows:
+    if total_list_rows and not _ladder_reported_error(ladder_issues):
         shortfall = unscored_list_rows / total_list_rows
         if shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION:
             scored = total_list_rows - unscored_list_rows
+            # Error severity needs BOTH a large proportion and a large absolute
+            # number of unscored rows — see _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS.
             severity = (
                 "error"
-                if shortfall >= _COVERAGE_SHORTFALL_ERROR_FRACTION
+                if (
+                    shortfall >= _COVERAGE_SHORTFALL_ERROR_FRACTION
+                    and unscored_list_rows
+                    >= _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+                )
                 else "warning"
             )
             worst = sorted(gaps.items(), key=lambda kv: -len(kv[1]))[:3]
             worst_str = ", ".join(f"'{f}' ({len(idxs)} row(s))" for f, idxs in worst)
+            # No row scored at all is a different statement from partial coverage:
+            # "covers only part of this section" is false at zero, and claiming the
+            # extracted data is fine is a claim this audit cannot make when nothing
+            # was scored (the cause may be upstream of confidence entirely).
+            if scored == 0:
+                message = (
+                    f"None of the {total_list_rows} extracted list row(s) carry a "
+                    f"confidence score ({worst_str}), so this section has no "
+                    "confidence surface at all and confidence-based review (HITL "
+                    "thresholds) does not apply to any of it. The extracted values "
+                    "themselves were kept; treat every row as unverified."
+                )
+            else:
+                message = (
+                    f"Only {scored} of {total_list_rows} extracted list row(s) "
+                    f"({(1 - shortfall):.0%}) carry a confidence score; "
+                    f"{unscored_list_rows} row(s) are unscored ({worst_str}). "
+                    "The extracted values themselves are unaffected, but "
+                    "confidence-based review (HITL thresholds) covers only part "
+                    "of this section — treat unscored rows as unverified."
+                )
             issues.append(
                 ProcessingIssue(
                     stage="assessment",
                     severity=severity,
                     code="assessment_coverage_incomplete",
-                    message=(
-                        f"Only {scored} of {total_list_rows} extracted list row(s) "
-                        f"({(1 - shortfall):.0%}) carry a confidence score; "
-                        f"{unscored_list_rows} row(s) are unscored ({worst_str}). "
-                        "The extracted data is complete and unaffected, but "
-                        "confidence-based review (HITL thresholds) covers only part "
-                        "of this section — treat unscored rows as unverified."
-                    ),
+                    message=message,
                     root_cause=(
                         f"{unscored_list_rows}/{total_list_rows} list rows have no "
                         "confidence after the self-healing ladder finished"
@@ -1438,8 +1531,8 @@ def _assess_slice_adaptive(
     confidence output does not fit the model's cap, so no batch size can work. The
     condition is recorded via :func:`_record_oversized_row` (which also names
     ``model_id`` and its output cap in the log) and the caller's retry rung is
-    skipped, instead of re-running the same impossible call until the Lambda's
-    wall-clock limit kills the section.
+    skipped, instead of spending further rungs re-running the same impossible call
+    and then reporting a generic "rows could not be scored".
 
     Returns ``{"rows": [per-row assessment...], "scalars": {enhanced non-big
     fields}, "alerts": [...], "metering": {...}, "duration": float}`` where
@@ -1458,7 +1551,7 @@ def _assess_slice_adaptive(
     # #894 terminal condition: one row in the call and it STILL truncated. Halving
     # is exhausted and re-running is futile — record the real cause (row too large
     # for this model's output cap) so the caller skips the retry rung and the
-    # operator gets an actionable message instead of a 900s timeout.
+    # operator gets an actionable message instead of "shrink the batch size".
     if truncated and len(rows) == 1:
         _record_oversized_row(
             stats, big_field=big_field, row=rows[0], model_id=model_id
@@ -1618,8 +1711,9 @@ def assess_results_batched(
       with a SINGLE row in the call, no batch size can fit that row — halving is
       abandoned, the same-model retry rung is skipped, escalation is capped at one
       round, and the cause is recorded in ``oversized_row_fields`` (surfaced as
-      ``assessment_row_too_large``). Previously the ladder kept re-running the
-      impossible call until the Lambda's wall-clock limit killed the section.
+      ``assessment_row_too_large``). Previously the ladder spent every remaining rung
+      re-running the impossible call and then reported a generic
+      ``assessment_incomplete``, whose remedy (a smaller batch) cannot work.
 
     Returns ``{"assessment", "alerts", "metering", "parsing_succeeded",
     "duration_seconds", "split_stats"}``. Falls back to a single call (still
@@ -2089,9 +2183,8 @@ def _retry_missing_rows(
     truncated with a SINGLE row of ``big_field`` in the call
     (``split_stats['oversized_row_fields']``), the same-model retry rung is skipped
     outright and escalation is capped at ONE round. Retrying cannot converge — the
-    batch was already one row — and each futile round costs a full model call, which
-    is how a 100-row bank statement wrapped as a multi-instance list consumed the
-    Assessment Lambda's entire 900s budget three times in a row.
+    batch was already one row — and each futile round costs a full model call (on a
+    batching shape, 8 rows at batch 4, this halves the primary calls 28 → 14).
 
     The self-healing ladder, cheapest-first:
     1. **Same-model retry** — up to ``max_retries`` rounds on ``one_call`` (each
@@ -2142,9 +2235,8 @@ def _retry_missing_rows(
 
     # #894 oversized-row guard: the first pass already proved the model truncates
     # with a SINGLE row of this field in the call, so every same-model retry round
-    # would re-run the identical impossible call (each ~60s) and then bisect it
-    # again — the loop that consumed the whole 900s Assessment Lambda budget and
-    # made Step Functions retry the section twice more (Sandbox.Timedout x3, #894).
+    # would re-run the identical impossible call (each ~60s) and then bisect it again,
+    # ending in the same unscored rows plus a misleading "shrink the batch" remedy.
     # Skip rung 1 entirely and allow at most ONE escalation round: a model with a
     # bigger output cap is the only remedy that can legitimately succeed, and one
     # round is enough to find out (a round that recovers nothing stops the ladder).

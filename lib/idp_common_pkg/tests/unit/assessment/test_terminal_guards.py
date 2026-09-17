@@ -10,14 +10,21 @@ failure into a bounded, reported one:
   model truncated. That converges only while a smaller batch can fit. With a
   multi-instance class (``x-aws-idp-multi-instance: true``) one "row" of the outer
   list is a WHOLE document instance carrying its own long inner list, so a call
-  with a single row still truncates and halving cannot help. The ladder used to
-  keep re-running that impossible call — a ~60s model call per attempt, times the
-  retry rounds — until the Assessment Lambda hit its 900s wall, at which point
-  Step Functions retried the section twice more and the document stuck in
-  ASSESSING. It now stops at one row, records the cause, and reports
-  ``assessment_row_too_large`` naming the model, its output cap and the offending
-  row's size, because the remedy is a larger-output model or a smaller list item —
-  never a smaller batch.
+  with a single row still truncates and halving cannot help. The ladder had no
+  terminal condition for that: it kept spending model calls on a batch that could
+  not fit, and then reported the generic "rows could not be scored", whose remedy
+  (shrink ``list_batch_size``) is the one thing that provably cannot work. It now
+  stops at one row, records the cause, and reports ``assessment_row_too_large``
+  naming the model, its output cap and the offending row's size, because the remedy
+  is a larger-output model or a smaller list item — never a smaller batch.
+
+  ⚠️ What these tests do NOT establish is the cause of the 900 s
+  ``Sandbox.Timedout`` ×3 reported in #894. The saving here is real on multi-row
+  shapes (see the call-count assertions) and the diagnosis is right on the
+  single-outer-row shape #894 actually reports, but the same-model retry rung
+  already stopped on no progress before this change and the wall-clock deadline
+  guard was already present in the release where the timeouts were observed. #894
+  stays open both for the batch sizer and for the timeout's cause.
 
 - **#901 item 3 coverage.** ``audit_explainability`` already computes which rows
   carry no confidence, but every caller discarded that, so a section could return
@@ -106,14 +113,14 @@ class AlwaysTruncates:
         return self.escalation_model
 
 
-def _run(svc, *, rows, max_retries, **kw):
+def _run(svc, *, rows, max_retries, batch_size=4, **kw):
     return assess_results_batched(
         svc,
         class_label="mi-wrapped",
         extraction_results={"statements": rows},
         document_text="...",
         page_images=[],
-        batch_size=4,
+        batch_size=batch_size,
         confidence_model_id=NOVA_LITE,
         geometry_mode="ocr_only",
         max_retries=max_retries,
@@ -153,6 +160,51 @@ def test_single_row_truncation_stops_the_retry_rung():
     assert stats["oversized_row_chars"] > 0
     assert stats["oversized_row_class"] == "mi-wrapped"
     assert split_stats_are_notable(stats)
+
+
+def test_single_outer_row_with_a_larger_batch_size_is_diagnosed_not_shortened():
+    """The shape #894 actually reports: ONE multi-instance outer row, sizer-derived
+    batch of 12.
+
+    This pins an asymmetry worth being explicit about. With ``len(rows) <=
+    batch_size`` there is no list field large enough to batch, so
+    ``assess_results_batched`` takes its ``if not list_fields:`` branch and calls the
+    model directly — ``_assess_slice_adaptive`` (where the terminal condition is
+    detected) is not reached on the first pass, so the *pre-rung* skip cannot fire.
+    The condition is instead detected inside the first retry round, which then stops
+    the rung.
+
+    So on this shape the guard saves **no model calls** (2 with it, 2 without: the
+    retry rung already stopped on "no progress"). What it changes is the diagnosis:
+    the section now reports ``assessment_row_too_large`` naming the model, its
+    output cap and the row size, instead of ``assessment_incomplete``, whose remedy
+    ("shrink the batch") cannot work. The call-count saving is real only on
+    multi-row shapes, where the first pass bisects — see
+    ``test_single_row_truncation_stops_the_retry_rung``.
+    """
+    svc = AlwaysTruncates("statements")
+    result = _run(
+        svc, rows=_rows(1), max_retries=2, batch_size=12, escalation_enabled=False
+    )
+    stats = result["split_stats"]
+
+    # One direct call (1 row <= batch 12, so no batching) + one retry round that
+    # detects the terminal condition and stops the rung. NOT max_retries rounds.
+    assert svc.primary_calls == [1, 1]
+    assert stats["oversized_row_fields"] == ["statements"]
+    assert stats["oversized_row_model"] == NOVA_LITE
+    assert stats["oversized_row_output_cap"]
+    assert stats["oversized_row_class"] == "mi-wrapped"
+    assert stats["unrecoverable_rows"] == 1
+    assert stats["rows_recovered_by_retry"] == 0
+
+    issue = build_assessment_issues(stats, section_id="1", confidence_model=NOVA_LITE)[
+        0
+    ]
+    assert issue.code == "assessment_row_too_large"
+    assert issue.severity == "error"
+    assert NOVA_LITE in issue.message
+    assert "list_batch_size cannot help" in issue.message
 
 
 def test_oversized_row_issue_names_model_cap_and_cause():
@@ -259,10 +311,14 @@ def _coverage_case(total: int, scored: int) -> tuple[dict, dict]:
     return {"transactions": assessed}, data
 
 
-def _coverage_issue(total: int, scored: int):
+def _coverage_issue(total: int, scored: int, ladder_issues=None):
     assessment, data = _coverage_case(total, scored)
     _gaps, issues = audit_explainability(
-        assessment, data, geometry_mode="off", section_id="1"
+        assessment,
+        data,
+        geometry_mode="off",
+        section_id="1",
+        ladder_issues=ladder_issues,
     )
     found = [i for i in issues if i.code == "assessment_coverage_incomplete"]
     return found[0] if found else None
@@ -299,4 +355,85 @@ def test_severely_short_coverage_reports_an_error():
     assert issue.severity == "error"
     assert issue.details["unscored_rows"] == 912
     assert "'transactions'" in issue.message
-    assert "extracted data is complete" in issue.message
+    assert "extracted values themselves are unaffected" in issue.message
+
+
+def test_error_severity_needs_an_absolute_row_floor_not_just_a_fraction():
+    """A short list must not produce an ERROR, which the UI renders as a red
+    "Incomplete" section.
+
+    One unscored row in a four-row list is 25% — and short list attributes are
+    ordinary (a two-entry ENDORSEMENTS array in the shipped lending-package sample),
+    where a single ``None`` confidence leaf marks the whole row unscored. Error
+    severity therefore also requires 10+ unscored rows in absolute terms; below that
+    the shortfall is still reported, as a warning.
+    """
+    # Fraction well past 25%, absolute count tiny → warning, never error.
+    for total, scored in ((2, 1), (3, 2), (4, 3), (5, 4), (20, 19)):
+        issue = _coverage_issue(total, scored)
+        assert issue is not None, (total, scored)
+        assert issue.severity == "warning", (total, scored)
+
+    # Exactly at 25% but only 9 unscored rows → still a warning (floor not met).
+    nine = _coverage_issue(36, 27)
+    assert nine is not None
+    assert nine.details["unscored_rows"] == 9
+    assert nine.severity == "warning"
+
+    # 25% AND 10 unscored rows → error.
+    ten = _coverage_issue(40, 30)
+    assert ten is not None
+    assert ten.details["unscored_rows"] == 10
+    assert ten.severity == "error"
+
+
+def test_zero_coverage_does_not_claim_partial_coverage():
+    """At 0% scored, "covers only part of this section" is simply false, and this
+    audit cannot vouch for the extracted data either — it only knows nothing was
+    scored."""
+    issue = _coverage_issue(30, 0)
+    assert issue is not None
+    assert issue.severity == "error"
+    assert "None of the 30 extracted list row(s)" in issue.message
+    assert "covers only part" not in issue.message
+    assert "complete" not in issue.message
+
+
+def test_coverage_issue_is_suppressed_when_the_ladder_already_reported_an_error():
+    """The ladder's own error rung describes the SAME unscored rows WITH a cause.
+
+    Emitting both doubles ``ProcessingIssueCount`` with two counts that can
+    legitimately disagree (``unrecoverable_rows`` tracks only the largest list field,
+    this audit counts every list field), and in the schema-mismatch case it appends
+    "the extracted values themselves are unaffected" directly under a diagnosis that
+    says extraction produced off-schema data.
+    """
+    # The #901 shape with the ladder reporting assessment_incomplete for it.
+    ladder = build_assessment_issues(
+        {"unrecoverable_rows": 912, "truncated_calls": 3},
+        section_id="1",
+        confidence_model=NOVA_LITE,
+    )
+    assert [i.code for i in ladder] == ["assessment_incomplete"]
+    assert _coverage_issue(1200, 288, ladder_issues=ladder) is None
+
+    # Schema mismatch keeps its "emitted alone" contract.
+    mismatch = build_assessment_issues(
+        {"schema_mismatch_fields": ["transactions"], "unrecoverable_rows": 1200},
+        section_id="1",
+        confidence_model=NOVA_LITE,
+    )
+    assert [i.code for i in mismatch] == ["assessment_schema_mismatch"]
+    assert _coverage_issue(1200, 0, ladder_issues=mismatch) is None
+
+    # A non-error ladder issue (info/warning) does NOT suppress it: those do not
+    # claim the rows are unscored, so the coverage shortfall is still news.
+    recovered = build_assessment_issues(
+        {"rows_recovered_by_retry": 4, "truncated_calls": 1},
+        section_id="1",
+        confidence_model=NOVA_LITE,
+    )
+    assert [i.code for i in recovered] == ["assessment_recovered_with_retries"]
+    assert _coverage_issue(1200, 288, ladder_issues=recovered) is not None
+    # Plain dicts are accepted too (either composition site may pass serialized ones).
+    assert _coverage_issue(1200, 288, ladder_issues=[{"severity": "error"}]) is None

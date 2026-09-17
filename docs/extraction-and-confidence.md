@@ -1275,10 +1275,13 @@ extraction:
 >    output cap is the only remedy that can legitimately succeed), and the section
 >    reports `assessment_row_too_large` (error) naming the model, its output cap,
 >    the field and class, and the offending row's approximate serialized size.
->    Before this guard the impossible call was re-run — a ~60 s model call per
->    attempt, times the retry rounds and the bisection tree — until the Assessment
->    Lambda hit its 900 s limit, after which Step Functions retried the whole
->    section twice more and the document stuck in `ASSESSING`.
+>    Before this guard there was no terminal condition for that case: the impossible
+>    call was re-run through the retry rounds and the bisection tree, and the section
+>    ended up reporting the generic `assessment_incomplete`, whose remedy (a smaller
+>    batch) cannot work. Measured on a shape that batches — 8 rows at batch 4 — the
+>    guard halves the primary model calls (28 → 14); on the single-outer-row shape
+>    that [#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894)
+>    reports, the call count is unchanged and what improves is the diagnosis.
 >
 >    The known trigger is a **multi-instance class**
 >    (`x-aws-idp-multi-instance: true`): the wrapper makes the *instance* array the
@@ -1287,13 +1290,17 @@ extraction:
 >    cannot be fully assessed.** The batch sizer measures only the outer row's
 >    column count (it reports `cols=2 per_row~80` for a row holding 100
 >    transactions) and derives a batch size that is wrong by orders of magnitude;
->    fixing the sizer to descend into inner lists is tracked as open issue
->    [#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894).
->    What this guard changes is only the failure mode: the run now stops in seconds
->    with an actionable message instead of burning ~45 minutes and stalling the
->    document. Until #894 is fixed, score such a class with a large-output-cap
->    confidence model (`escalation_model`), or split the inner list into its own
->    class.
+>    fixing the sizer to descend into inner lists is tracked as open issue #894.
+>    What this guard changes is the reporting, and the wasted calls on shapes that
+>    batch — not the outcome for such a class. ⚠️ The symptom originally reported on
+>    #894 (an Assessment Lambda hitting its 900 s limit three times,
+>    `Sandbox.Timedout` ×3, leaving the document in `ASSESSING` after a 45-second
+>    extraction) is **not explained by this loop**, so treat it as still open: the
+>    same-model retry rung already stopped on no progress before this change, and the
+>    ladder's wall-clock deadline guard was already in place in the release where
+>    those timeouts were observed. Until #894 is fixed, score such a class with a
+>    large-output-cap confidence model (`escalation_model`), or split the inner list
+>    into its own class.
 >
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,
@@ -1331,7 +1338,11 @@ extraction:
 > Transient failures (throttling, read timeouts, 5xx) are unchanged — they still
 > raise so Step Functions retries the section. ⚠️ Because confidence is absent on a
 > degraded section, HITL confidence routing and the UI threshold signals do not
-> apply to it; check the section's Status column. Re-batching the oversized
+> apply to it; check the **Status** column of the Sections panel — that is where this
+> particular issue shows. It is written to the section record only, not into the
+> section's `result.json`, so unlike issues from a *successful* assessment run it
+> does **not** appear in the Visual Editor's Processing Report tab (which renders
+> `metadata.processing_issues` from that file). Re-batching the oversized
 > confidence input so the pass *succeeds* rather than degrading is still open as
 > part of #901.
 >

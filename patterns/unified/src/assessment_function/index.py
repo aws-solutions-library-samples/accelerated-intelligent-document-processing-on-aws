@@ -120,8 +120,18 @@ def degrade_section_to_no_confidence(document, section_id, error):
     So for a DETERMINISTIC failure the document is no longer marked
     ``Status.FAILED``. Instead the confidence gap is recorded as an
     error-severity ``ProcessingIssue`` on the section, which the caller persists via
-    ``update_document_section`` and the UI surfaces alongside the extraction
-    results. ``processresults_function`` fails a document only when a section
+    ``update_document_section``.
+
+    **Where it is visible.** That write goes to the section's DynamoDB record, so the
+    issue appears in the **Status** column of the document's Sections panel (and its
+    popover). It does NOT appear in the Visual Editor's **Processing Report** tab:
+    that tab renders ``metadata.processing_issues`` from the section's extraction
+    ``result.json`` in S3, and this degrade path deliberately does not rewrite that
+    file — the assessment run that would have produced a fresh copy is the thing
+    that just failed. (Issues from a *successful* assessment run do reach both,
+    because the service writes them into the result JSON as well.)
+
+    ``processresults_function`` fails a document only when a section
     document comes back ``Status.FAILED`` (a section's ``errors`` list is read only
     inside that branch), so leaving the status alone is what makes the document
     succeed-without-confidence.
