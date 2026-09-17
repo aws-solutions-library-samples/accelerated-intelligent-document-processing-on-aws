@@ -277,6 +277,51 @@ def _has_nonzero_counts(node: Optional[Dict[str, Any]]) -> bool:
     return False
 
 
+# Stickler 1.0's ``spec.explain()`` uses ``"explicit"`` for a leaf whose
+# comparator was set on the ``StructuredModel`` class (which is what a
+# translated ``x-aws-stickler-comparator`` looks like from Stickler's side),
+# and one of ``"type"`` / ``"name-token"`` when the schema-level
+# ``x-aws-stickler-infer-unspecified: true`` flag caused native inference
+# to pick. Both non-explicit values fold into the operator-facing
+# ``"auto-inferred"`` label; ``"configured"`` reads better than
+# ``"explicit"`` on the report Source column.
+_INFERRED_SOURCE_LABEL = "auto-inferred"
+_CONFIGURED_SOURCE_LABEL = "configured"
+
+
+def _resolve_provenance(
+    root_model_cls: Any, field_name: str
+) -> "tuple[Optional[str], Optional[List[str]]]":
+    """Look up a leaf's Stickler ``spec.explain()`` entry and return
+    ``(inference_source, inference_why)`` for it.
+
+    ``model_factory.get_stickler_model`` stashes ``spec.explain()`` output as
+    ``model_class.__idp_explain__``. Returns ``(None, None)`` when the model
+    class isn't available (non-Stickler path, or a section whose model failed
+    to build), when the field isn't in the explain dict (Stickler shape
+    drift), or when Stickler's ``source`` value is missing. In every
+    ``None`` case ``AttributeEvaluationResult`` just omits the field, which
+    older ``results.json`` readers already tolerate.
+    """
+    if root_model_cls is None:
+        return None, None
+    explain = getattr(root_model_cls, "__idp_explain__", None)
+    if not isinstance(explain, dict):
+        return None, None
+    entry = explain.get(field_name)
+    if not isinstance(entry, dict):
+        return None, None
+    source = entry.get("source")
+    if not isinstance(source, str):
+        return None, None
+    if source == "explicit":
+        # Operator-configured — no trace to surface; the operator's own
+        # config authored the choice.
+        return _CONFIGURED_SOURCE_LABEL, None
+    why = entry.get("why")
+    return _INFERRED_SOURCE_LABEL, list(why) if isinstance(why, list) else None
+
+
 def transform_stickler_result(
     section: "Section",
     expected_instance: "StructuredModel",
@@ -537,6 +582,18 @@ def transform_stickler_result(
                 root_model_cls=root_model_cls,
             )
 
+        # Provenance from Stickler 1.0's ``spec.explain()`` (stashed on the
+        # model class in ``model_factory.get_stickler_model``). Stickler's
+        # own ``source`` values ("explicit" vs "type" / "name-token") map
+        # onto our binary ``configured`` / ``auto-inferred`` distinction.
+        # ``None`` when the model class isn't available (non-Stickler path,
+        # auto-generated section whose model failed to build) — the field
+        # then round-trips through results.json without changing anything
+        # older readers relied on.
+        inference_source, inference_why = _resolve_provenance(
+            root_model_cls, field_name
+        )
+
         attribute_results.append(
             AttributeEvaluationResult(
                 name=field_name,
@@ -558,6 +615,8 @@ def transform_stickler_result(
                 ),
                 weight=field_config.get("weight"),
                 field_comparison_details=detailed_comparisons,
+                inference_source=inference_source,
+                inference_why=inference_why,
             )
         )
 

@@ -995,9 +995,26 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
       )
     : {};
 
+  // Sentinel keys planted by the resolver (e.g. ``_comparator_diff``) live in
+  // the metrics payload alongside real test-run entries but carry no
+  // ``status`` field. Filter them by key prefix before checking run
+  // completeness — otherwise ``undefined !== 'COMPLETE'`` is true and
+  // would spuriously flag "incomplete runs" whenever the diff sentinel is
+  // present.
   const hasIncompleteRuns = comparisonData.metrics
-    ? Object.values(comparisonData.metrics).some((testRun) => testRun.status !== 'COMPLETE' && testRun.status !== 'PARTIAL_COMPLETE')
+    ? Object.entries(comparisonData.metrics)
+        .filter(([key]) => !key.startsWith('_'))
+        .some(([, testRun]) => testRun.status !== 'COMPLETE' && testRun.status !== 'PARTIAL_COMPLETE')
     : false;
+
+  // Comparator Changes payload planted by the resolver at
+  // ``metrics._comparator_diff``. When two runs applied the same comparator +
+  // threshold + source to every attribute, this is an empty array and the
+  // panel is hidden.
+  const comparatorDiff = ((comparisonData.metrics as Record<string, unknown> | undefined)?._comparator_diff ?? []) as Array<{
+    attribute: string;
+    entries: Record<string, { comparator?: string; threshold?: number; source?: string; why?: string[] } | null>;
+  }>;
 
   const downloadButton = (
     <ButtonDropdown
@@ -1396,6 +1413,72 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
               );
             })()}
           </Container>
+
+          {/* Comparator Changes panel — surfaces attributes whose applied
+              comparator, threshold or source ("configured" vs
+              "auto-inferred") differs between runs. Hidden when nothing
+              differs so it doesn't add noise to the common case.
+              Rendered right after Configuration Comparison because it
+              reflects a downstream effect of config changes on Stickler's
+              per-field decisions — the same "what changed between runs"
+              theme, just at the comparator layer. */}
+          {comparatorDiff.length > 0 && (
+            <Container
+              header={
+                <Header
+                  variant="h3"
+                  description="Attributes whose applied comparator, threshold or provenance differs between runs. Source: 'configured' means the operator's x-aws-idp-evaluation-method won; 'auto-inferred' means Stickler picked from the field type and name-token."
+                >
+                  Comparator Changes
+                </Header>
+              }
+            >
+              <Table<{
+                attribute: string;
+                entries: Record<string, { comparator?: string; threshold?: number; source?: string; why?: string[] } | null>;
+              }>
+                resizableColumns
+                wrapLines={preferences.wrapLines}
+                variant="embedded"
+                items={comparatorDiff}
+                columnDefinitions={[
+                  {
+                    id: 'attribute',
+                    header: 'Attribute',
+                    cell: (item) => String(item.attribute),
+                    width: 260,
+                  },
+                  ...Object.keys(completeTestRuns).map((testRunId) => ({
+                    id: testRunId,
+                    header: createTestRunHeader(testRunId, true),
+                    cell: (item: {
+                      entries: Record<string, { comparator?: string; threshold?: number; source?: string; why?: string[] } | null>;
+                    }) => {
+                      const entry = item.entries?.[testRunId];
+                      if (!entry) return <Box color="text-status-inactive">—</Box>;
+                      const method = entry.comparator ?? 'unknown';
+                      const threshold =
+                        entry.threshold !== undefined && entry.threshold !== null ? ` @ ${Number(entry.threshold).toFixed(2)}` : '';
+                      const source = entry.source ? ` (${entry.source})` : '';
+                      // Tooltip carries Stickler's decision trace (``why``)
+                      // for auto-inferred rows; ``title`` is the lightest-
+                      // weight native tooltip and doesn't need a Popover
+                      // dependency for what is at most a two-line trace.
+                      const why = Array.isArray(entry.why) ? entry.why.join('\n') : '';
+                      return (
+                        <span title={why || undefined}>
+                          {method}
+                          {threshold}
+                          <span style={{ color: '#687078' }}>{source}</span>
+                        </span>
+                      );
+                    },
+                  })),
+                ]}
+                empty="No comparator changes across runs"
+              />
+            </Container>
+          )}
 
           {/* Average Accuracy and Split Metrics Comparison */}
           <Container header={<Header variant="h3">Average Accuracy and Split Metrics Comparison</Header>}>

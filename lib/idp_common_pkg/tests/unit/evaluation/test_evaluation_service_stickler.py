@@ -155,6 +155,58 @@ class TestSticklerEvaluationService:
         model = svc._get_stickler_model("Form")
         assert model.match_threshold == 0.85
 
+    def test_provenance_capture_configured_vs_auto_inferred(self):
+        """Comparator Changes panel needs to know, per attribute, whether the
+        applied comparator was operator-configured or Stickler-inferred.
+        ``model_factory.get_stickler_model`` stashes ``spec.explain()`` on
+        ``model_class.__idp_explain__`` — one leaf has an operator-authored
+        method, another lets Stickler's native inference fire, and the
+        stashed dict should show both cases side by side.
+        """
+        config = {
+            "classes": [
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$id": "mix",
+                    "x-aws-idp-document-type": "Mix",
+                    "type": "object",
+                    "properties": {
+                        # Operator-configured: mapper translates to
+                        # x-aws-stickler-comparator, Stickler marks "explicit".
+                        "agency_name": {
+                            "type": "string",
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": 0.9,
+                        },
+                        # Un-annotated — infer-unspecified flag fires, name-token
+                        # rule picks Exact for the ``*_id`` suffix.
+                        "invoice_id": {"type": "string"},
+                        # Un-annotated numeric — type + name-token both point at
+                        # Numeric.
+                        "total_amount": {"type": "number"},
+                    },
+                }
+            ]
+        }
+        svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+        model_class = svc._get_stickler_model("Mix")
+        explain = getattr(model_class, "__idp_explain__", None)
+        assert isinstance(explain, dict), (
+            "model_factory must stash Stickler's spec.explain() output as "
+            "__idp_explain__ on the built model class"
+        )
+        # Configured leaf: source is ``explicit`` (operator's translated
+        # ``x-aws-stickler-comparator`` reached Stickler).
+        assert explain["agency_name"]["source"] == "explicit"
+        assert explain["agency_name"]["comparator"] == "FuzzyComparator"
+        # Un-annotated leaves: source is one of Stickler's inference labels
+        # (``type`` or ``name-token``), never ``explicit``.
+        assert explain["invoice_id"]["source"] in ("type", "name-token")
+        assert explain["total_amount"]["source"] in ("type", "name-token")
+        # And the picker actually used the name-token rule for both.
+        assert explain["invoice_id"]["comparator"] == "ExactComparator"
+        assert explain["total_amount"]["comparator"] == "NumericComparator"
+
     def test_idp_llm_comparator_registered_via_public_api(self):
         """R5: IDPLLMComparator is registered under a distinct name in Stickler's
         registry (no private-dict rewrite of the built-in LLMComparator)."""

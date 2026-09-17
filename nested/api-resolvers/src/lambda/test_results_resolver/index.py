@@ -14,6 +14,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 sqs = boto3.client("sqs")
+s3 = boto3.client("s3")
 athena = boto3.client("athena")
 
 
@@ -541,6 +542,130 @@ def float_to_decimal(obj):
     return obj
 
 
+def _load_sample_attribute_methods(test_run_id):
+    """Read one representative document's ``results.json`` for a test run
+    and flatten to ``{section.attribute -> {method, threshold, source}}``.
+
+    Backs the Comparator Changes panel on the Compare Test Runs page:
+    surfaces per-attribute Stickler comparator choice AND its provenance
+    (``configured`` / ``auto-inferred``) so the UI can highlight the
+    subset of attributes whose comparator or source differs between two
+    runs. Reads the FIRST completed doc's ``results.json`` — the
+    provenance is a property of the config + Stickler version, not of
+    the individual document, so one doc is representative for the whole
+    run's schema.
+
+    Returns ``{}`` on any read/parse failure — the panel then renders
+    empty rather than blocking the whole compare_test_runs response,
+    which serves many other pieces of information.
+    """
+    output_bucket = os.environ.get("OUTPUT_BUCKET")
+    if not output_bucket:
+        logger.info(
+            "OUTPUT_BUCKET env var not set — skipping sample-attribute methods load"
+        )
+        return {}
+
+    try:
+        table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+        response = table.get_item(
+            Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"}
+        )
+        item = response.get("Item") or {}
+        files = item.get("Files") or []
+        if not files:
+            return {}
+    except Exception as e:
+        logger.warning(
+            f"Could not read test run metadata for {test_run_id}: {e}. "
+            f"Comparator diff will be empty for this run."
+        )
+        return {}
+
+    # Try each file in order — a run's first document may have failed to
+    # evaluate; the second is still representative of the run's schema.
+    # Stop at the first readable results.json; log the rest as debug.
+    for file_entry in files[:5]:  # cap probe count for latency
+        doc_key = file_entry if isinstance(file_entry, str) else file_entry.get("Key")
+        if not doc_key:
+            continue
+        # Mirrors idp_common.evaluation.contract.EVALUATION_RESULTS_KEY_TEMPLATE
+        # (kept literal here to avoid pulling the whole evaluation package into
+        # this resolver's Lambda dependency graph — the resolver is not on
+        # the evaluation critical path). If the template shape ever changes,
+        # this string and the constant in ``contract.py`` must move together.
+        key = f"{doc_key}/evaluation/results.json"
+        try:
+            body = s3.get_object(Bucket=output_bucket, Key=key)["Body"].read()
+            eval_data = json.loads(body)
+        except (ClientError, ValueError, KeyError) as e:
+            logger.debug(
+                f"results.json not readable at s3://{output_bucket}/{key}: {e}"
+            )
+            continue
+
+        methods = {}
+        for section in eval_data.get("section_results") or []:
+            section_id = section.get("section_id") or "0"
+            for attr in section.get("attributes") or []:
+                name = attr.get("name")
+                if not name:
+                    continue
+                # ``comparator_type`` is Stickler's class name (e.g.
+                # ``FuzzyComparator``); ``evaluation_method`` is the display
+                # string. Prefer the class name for the diff key so two runs
+                # that differ only in the threshold-suffix format still compare
+                # equal on comparator identity.
+                methods[f"{section_id}.{name}"] = {
+                    "comparator": attr.get("comparator_type")
+                    or attr.get("evaluation_method"),
+                    "threshold": attr.get("evaluation_threshold"),
+                    "source": attr.get("inference_source"),
+                    "why": attr.get("inference_why"),
+                }
+        return methods
+
+    return {}
+
+
+def _build_comparator_diff(runs_methods):
+    """Diff per-attribute {comparator, threshold, source} across runs.
+
+    Emits one row per attribute whose triple differs between at least two
+    runs. Attributes present in only some runs are still emitted so the
+    UI can flag schema-shape drift alongside comparator drift.
+
+    Input: ``{test_run_id: {attribute_path: {comparator, threshold, source, why}}}``.
+    Output: ``[{attribute, entries: {test_run_id: {...}}}]``, sorted by
+    attribute path so the panel is stable across compares.
+    """
+    if not runs_methods or len(runs_methods) < 2:
+        return []
+
+    all_attrs = set()
+    for methods in runs_methods.values():
+        all_attrs.update(methods.keys())
+
+    diff_rows = []
+    for attr in sorted(all_attrs):
+        entries = {run_id: methods.get(attr) for run_id, methods in runs_methods.items()}
+        # Compare on the three-key signature that drives the panel. ``why`` is
+        # informational (rendered in a tooltip) and can vary in phrasing without
+        # implying a real difference — omit from the diff decision.
+        signatures = {
+            run_id: (
+                (entry or {}).get("comparator"),
+                (entry or {}).get("threshold"),
+                (entry or {}).get("source"),
+            )
+            for run_id, entry in entries.items()
+        }
+        if len(set(signatures.values())) > 1:
+            diff_rows.append({"attribute": attr, "entries": entries})
+
+    return diff_rows
+
+
 def compare_test_runs(test_run_ids):
     """Compare multiple test runs"""
     logger.info(f"Comparing test runs: {test_run_ids}")
@@ -554,6 +679,7 @@ def compare_test_runs(test_run_ids):
     # Get results for each test run
     results = []
     configs = []
+    runs_methods = {}
 
     for test_run_id in test_run_ids:
         logger.info(f"Getting results for test run: {test_run_id}")
@@ -563,6 +689,10 @@ def compare_test_runs(test_run_ids):
             results.append(test_result)
             config = _get_test_run_config(test_run_id)
             configs.append({"testRunId": test_run_id, "config": config})
+            # Load one sample doc's per-attribute methods for the Comparator
+            # Changes panel. Failures degrade to an empty dict so the rest
+            # of compare_test_runs still returns.
+            runs_methods[test_run_id] = _load_sample_attribute_methods(test_run_id)
         else:
             logger.warning(f"No results found for test run: {test_run_id}")
 
@@ -573,6 +703,12 @@ def compare_test_runs(test_run_ids):
         return {"metrics": [], "configs": []}
 
     metrics_comparison = {result["testRunId"]: result for result in results}
+    # Plant the comparator diff inside the metrics AWSJSON payload under a
+    # ``_``-prefixed key so it rides on the response without a new GraphQL
+    # field. Every UI consumer of ``metrics`` already keys by test-run-id
+    # UUID; the ``_comparator_diff`` sentinel key is filtered out by the
+    # UI's ``!key.startsWith('_')`` guard on those iterations.
+    metrics_comparison["_comparator_diff"] = _build_comparator_diff(runs_methods)
     configs_comparison = _build_config_comparison(configs)
 
     logger.info(f"Configs data: {configs}")

@@ -192,6 +192,97 @@ def test_compare_test_runs_structure():
 
 
 @pytest.mark.unit
+def test_build_comparator_diff_flags_source_change():
+    """A leaf that stayed on the same comparator+threshold but flipped from
+    operator-configured to auto-inferred (the operator removed the
+    annotation and Stickler's native inference now decides) is a real
+    change even though the numbers are the same. The panel must show it.
+    """
+    runs = {
+        "run-a": {
+            "0.invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": "configured",
+                "why": None,
+            }
+        },
+        "run-b": {
+            "0.invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": "auto-inferred",
+                "why": ["name-token:invoice_id -> ExactComparator@1.0"],
+            }
+        },
+    }
+    diff = index._build_comparator_diff(runs)
+    assert len(diff) == 1
+    assert diff[0]["attribute"] == "0.invoice_id"
+    assert diff[0]["entries"]["run-a"]["source"] == "configured"
+    assert diff[0]["entries"]["run-b"]["source"] == "auto-inferred"
+
+
+@pytest.mark.unit
+def test_build_comparator_diff_ignores_identical_signatures():
+    """When every leaf's (comparator, threshold, source) triple agrees
+    across runs the diff is empty and the panel stays hidden. ``why``
+    variance alone must not surface a row — the trace is informational
+    and its phrasing can differ without implying a scoring change.
+    """
+    runs = {
+        "run-a": {
+            "0.amount": {
+                "comparator": "NumericComparator",
+                "threshold": 0.95,
+                "source": "auto-inferred",
+                "why": ["name-token:amount -> NumericComparator@0.95"],
+            }
+        },
+        "run-b": {
+            "0.amount": {
+                "comparator": "NumericComparator",
+                "threshold": 0.95,
+                "source": "auto-inferred",
+                # Different phrasing, same decision — must not trigger a row.
+                "why": ["type:float -> NumericComparator@0.95"],
+            }
+        },
+    }
+    assert index._build_comparator_diff(runs) == []
+
+
+@pytest.mark.unit
+def test_build_comparator_diff_flags_missing_side():
+    """An attribute present in only one run is schema-shape drift — surface
+    it alongside comparator drift so the operator sees BOTH kinds of
+    change in one panel."""
+    runs = {
+        "run-a": {
+            "0.new_field": {
+                "comparator": "LevenshteinComparator",
+                "threshold": 0.7,
+                "source": "auto-inferred",
+            }
+        },
+        "run-b": {},
+    }
+    diff = index._build_comparator_diff(runs)
+    assert len(diff) == 1
+    assert diff[0]["entries"]["run-a"]["comparator"] == "LevenshteinComparator"
+    assert diff[0]["entries"]["run-b"] is None
+
+
+@pytest.mark.unit
+def test_build_comparator_diff_needs_two_runs():
+    """Diff over one run (or zero) is meaningless — return empty."""
+    assert (
+        index._build_comparator_diff({"only-run": {"0.x": {"comparator": "X"}}}) == []
+    )
+    assert index._build_comparator_diff({}) == []
+
+
+@pytest.mark.unit
 def test_build_config_comparison():
     """Test configuration comparison"""
     configs = {
