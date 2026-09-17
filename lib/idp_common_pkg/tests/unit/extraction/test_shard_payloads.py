@@ -9,7 +9,7 @@ or Strands (pure prompt construction), so they run as plain unit tests.
 
 import pytest
 
-from idp_common.extraction.service import ExtractionService
+from idp_common.extraction.service import ExtractionService, SectionInfo
 
 pytestmark = pytest.mark.unit
 
@@ -45,6 +45,17 @@ def _set_pages(svc: ExtractionService, page_texts: list[str]) -> None:
 
 def _shard_text(payload) -> str:
     return "".join(c.get("text", "") for c in payload["content"])
+
+
+def _png_bytes() -> bytes:
+    """A 1x1 PNG — the image-attach path decodes page images with PIL."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 class TestBuildShardPayloads:
@@ -134,6 +145,108 @@ class TestTableHeaderContext:
 
     def test_empty(self):
         assert ExtractionService._table_header_context("") == ""
+
+
+class TestShardPlanLazyImages:
+    """The SHARDED agentic path must make the same lazy_images decision the
+    single-pass path makes.
+
+    It did not: `_build_agentic_shard_plan` never ran the pre-flight table parse
+    and never consulted `table_parsing.lazy_images`, so every shard carried its
+    page images on every agent turn. Sharding is the default for multi-page table
+    documents, which is exactly where the shipped `lazy_images: true` default was
+    supposed to save the tokens — so the optimization was dead where it mattered
+    most, and no test noticed because the config-level tests only cover the knob's
+    value (see TestLazyImagesConfig in test_tool_writeback.py).
+    """
+
+    PROMPT_WITH_IMAGE = "Extract from:\n{DOCUMENT_TEXT}\n{DOCUMENT_IMAGE}\nEnd."
+
+    def _service(self, lazy_images: bool) -> ExtractionService:
+        cfg = {
+            "extraction": {
+                "task_prompt": self.PROMPT_WITH_IMAGE,
+                "agentic": {
+                    "enabled": True,
+                    "max_concurrent_batches": 4,
+                    # A per-shard token budget, not a credential — Bandit's B105
+                    # matches on the "token" in the key name.
+                    "shard_token_budget": 5000,  # nosec B105
+                    "table_parsing": {
+                        "enabled": True,
+                        "lazy_images": lazy_images,
+                    },
+                },
+            },
+            "classes": [
+                {
+                    "$id": "Doc",
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                }
+            ],
+        }
+        svc = ExtractionService(region="us-west-2", config=cfg)
+        svc._class_label = "Doc"
+        svc._class_schema = cfg["classes"][0]
+        svc._attribute_descriptions = "x: a field"
+        return svc
+
+    @staticmethod
+    def _table_page(page_index: int) -> str:
+        """A page holding a parseable Markdown table with 40 data rows.
+
+        Two such pages clear the pre-flight gate (>= 50 estimated table rows)
+        and are dense enough to split into more than one shard.
+        """
+        rows = "\n".join(
+            f"| {page_index}-{i} | Row {i} | {i * 10}.00 | {'w' * 200} |"
+            for i in range(40)
+        )
+        return (
+            "| RowID | Description | Amount | Notes |\n"
+            "|-------|-------------|--------|-------|\n" + rows
+        )
+
+    def _plan(self, lazy_images: bool):
+        svc = self._service(lazy_images)
+        pages = [self._table_page(p) for p in range(6)]
+        svc._page_texts = pages
+        svc._document_text = "\n".join(pages)
+        # Real PNG bytes: the attach path decodes each page image with PIL.
+        svc._page_images = [_png_bytes() for _ in range(6)]
+        section_info = SectionInfo(
+            class_label="Doc",
+            sorted_page_ids=[str(p + 1) for p in range(6)],
+            page_indices=list(range(6)),
+            output_bucket="b",
+            output_key="k",
+            output_uri="s3://b/k",
+            start_page=1,
+            end_page=6,
+        )
+        _, _, payloads, _ = svc._build_agentic_shard_plan(section_info)
+        assert len(payloads) > 1, "test needs a genuinely sharded section"
+        return payloads
+
+    @staticmethod
+    def _image_blocks(payload) -> int:
+        return sum(1 for c in payload["content"] if "image" in c)
+
+    def test_preflight_parse_suppresses_shard_images(self):
+        payloads = self._plan(lazy_images=True)
+        assert all(self._image_blocks(p) == 0 for p in payloads)
+
+    def test_lazy_images_off_still_attaches_shard_images(self):
+        payloads = self._plan(lazy_images=False)
+        assert all(self._image_blocks(p) > 0 for p in payloads)
+
+    def test_assessment_images_survive_suppression(self):
+        # lazy_images governs the EXTRACTION prompt only. The in-shard assessment
+        # pass reuses the page bytes regardless, so suppressing them for the agent
+        # must not blind assessment.
+        payloads = self._plan(lazy_images=True)
+        assert all(p["assess_page_images"] for p in payloads)
 
 
 class TestAnalyzeSchemaMinItems:

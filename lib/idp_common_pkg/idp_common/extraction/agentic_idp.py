@@ -397,6 +397,33 @@ def _invoke_checkpoint_callback(agent: Agent) -> None:
         )
 
 
+def _date_format_error_fields(exc: Exception) -> set[str]:
+    """Field names in a Pydantic ValidationError that failed only on date format.
+
+    A schema's ``format: date`` becomes a real ``datetime.date`` in the generated
+    model, so a correctly-parsed ``05/09/2024`` is rejected. Distinguishing that
+    from a genuine structural mismatch is what lets the tool tell the agent to
+    re-map with a date transform instead of re-emitting every row by hand.
+
+    Row indices are stripped, so a 1,200-row table reports one field, not 1,200.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return set()
+    try:
+        entries = errors()
+    except Exception:  # pragma: no cover - defensive
+        return set()
+    fields: set[str] = set()
+    for err in entries:
+        if not str(err.get("type", "")).startswith("date_"):
+            continue
+        leaf = [p for p in err.get("loc", ()) if not isinstance(p, int)]
+        if leaf:
+            fields.add(str(leaf[-1]))
+    return fields
+
+
 def create_dynamic_extraction_tool_and_patch_tool(model_class: type[TargetModel]):
     """
     Create a dynamic tool function that extracts data according to a Pydantic model.
@@ -655,17 +682,31 @@ def create_dynamic_extraction_tool_and_patch_tool(model_class: type[TargetModel]
                 "scalar_fields": list(scalar_fields.keys()),
             }
         except Exception as e:
+            date_fields = _date_format_error_fields(e)
             logger.warning(
                 "finalize_table_extraction validation failed",
-                extra={"error": str(e)},
+                extra={"error": str(e), "date_format_fields": sorted(date_fields)},
             )
+            remedy = "Check that table_array_field and scalar_fields match the schema."
+            if date_fields:
+                fields = ", ".join(sorted(date_fields))
+                # The schema's date type accepts ISO-8601 only. Re-mapping with a
+                # date transform converts every row in Python; re-emitting the
+                # rows by hand instead costs one output token per character of
+                # every row, which is the single largest cost in this path.
+                remedy = (
+                    f"{len(date_fields)} field(s) failed only on date FORMAT: "
+                    f"{fields}. Do NOT re-emit the rows yourself. Call "
+                    f"map_table_to_schema again with the same column_mapping plus "
+                    f"value_transforms={{'<field>': 'date_to_iso_mdy'}} (or "
+                    f"'date_to_iso_dmy' / 'date_to_iso' — choose the reading the "
+                    f"page actually uses), then call this tool again."
+                )
             return {
                 "status": "validation_error",
-                "message": (
-                    f"Validation failed: {str(e)[:500]}. "
-                    f"Check that table_array_field and scalar_fields match the schema."
-                ),
+                "message": f"Validation failed: {str(e)[:500]}. {remedy}",
                 "row_count": row_count,
+                "date_format_fields": sorted(date_fields),
             }
 
     return (
@@ -1390,6 +1431,7 @@ def _prepare_prompt_content(
     existing_data: BaseModel | None,
     model_id: str | None = None,
     prompt_cache: str = "auto",
+    attach_page_images: bool = True,
 ) -> list[ContentBlock]:
     """
     Prepare prompt content from various input types.
@@ -1401,6 +1443,11 @@ def _prepare_prompt_content(
         prompt: Input content (text string, PIL Image, or Message dict)
         page_images: Optional list of page image bytes to include
         existing_data: Optional existing extraction data to update
+        attach_page_images: When False, ``page_images`` are NOT appended to the
+            first turn; they serve only to register the ``view_image`` tool. The
+            extraction service uses this because its ``{DOCUMENT_IMAGE}``
+            substitution has already placed the page images inside ``prompt``'s
+            content — appending them here as well sent every page image twice.
         model_id: Target model. Used ONLY to decide whether a trailing
             ``cachePoint`` block may be appended — a model that does not support
             prompt caching rejects the whole request (see below). When None the
@@ -1435,7 +1482,7 @@ def _prepare_prompt_content(
         prompt_content = [ContentBlock(text=str(prompt))]
 
     # Add page images if provided - no limit with latest Bedrock API
-    if page_images:
+    if page_images and attach_page_images:
         logger.info(
             "Attaching images to agentic extraction prompt",
             extra={"image_count": len(page_images)},
@@ -1866,6 +1913,7 @@ async def structured_output_async(
     checkpoint_buffer_data: dict[str, Any] | None = None,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
+    attach_page_images: bool = True,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Extract structured data using Strands agents with tool-based validation.
@@ -2093,6 +2141,7 @@ async def structured_output_async(
         existing_data=existing_data,
         model_id=model_id,
         prompt_cache=config.extraction.prompt_cache,
+        attach_page_images=attach_page_images,
     )
 
     # Track token usage
@@ -2276,6 +2325,7 @@ def structured_output(
     checkpoint_buffer_data: dict[str, Any] | None = None,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
+    attach_page_images: bool = True,
 ) -> tuple[BaseModel, BedrockInvokeModelResponse]:
     """
     Synchronous version of structured_output_async.
@@ -2366,6 +2416,7 @@ def structured_output(
                         checkpoint_buffer_data=checkpoint_buffer_data,
                         schema_validator=schema_validator,
                         emit_field_assessment=emit_field_assessment,
+                        attach_page_images=attach_page_images,
                     )
                 )
             except Exception as e:
@@ -2402,6 +2453,7 @@ def structured_output(
                 checkpoint_buffer_data=checkpoint_buffer_data,
                 schema_validator=schema_validator,
                 emit_field_assessment=emit_field_assessment,
+                attach_page_images=attach_page_images,
             )
         )
 
