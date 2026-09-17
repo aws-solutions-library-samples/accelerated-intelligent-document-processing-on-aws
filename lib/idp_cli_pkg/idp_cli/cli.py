@@ -86,18 +86,36 @@ logger = logging.getLogger(__name__)
 # schema someone redirects to a file — must go through emit_raw/emit_json below.
 console = Console()
 
+# `err_console` is human output on a command whose STDOUT carries a payload.
+#
+# On those paths the progress and header lines cannot share stdout with the
+# payload: `idp-cli status --batch-id b --format json | jq` failed at char 0 on
+# four lines of search progress, and `config-download > config.yaml` wrote
+# "Downloading config from stack: my-stack" as the file's first line, which
+# `yaml.safe_load` then accepted *silently* as an extra top-level key. Sending
+# them to stderr is the conventional Unix split: an interactive user still sees
+# every line, and a consumer reading stdout gets only the payload.
+err_console = Console(stderr=True)
+
 
 def emit_raw(text: str) -> None:
     """
-    Write machine-readable output to stdout byte-for-byte as produced.
+    Write machine-readable output to stdout unrendered, with a trailing newline.
+
+    "Unrendered" is the guarantee, not "byte-identical": `click.echo` appends a
+    newline if the text lacks one (matching what `console.print` did, so no
+    consumer sees a change) and strips ANSI escapes from the payload when stdout
+    is not a tty. Neither applies to the JSON and YAML this carries. What it does
+    NOT do is reformat, wrap, or reinterpret the text — which is the point.
 
     Do NOT route a payload a consumer parses through Rich. `console.print` alters
     it three ways, and only the third depends on colour being on:
 
-    1. It hard-wraps at the console width. When stdout is not a terminal Rich
-       assumes 80 columns, so `idp-cli config-download > config.yaml` breaks every
-       line longer than 80 characters *in the redirected file* — the YAML then
-       fails to parse. This happens whether or not styling is enabled.
+    1. It hard-wraps at the console width. Rich takes that width from whichever
+       standard stream is a tty, falling back to 80 columns when none is, so
+       `idp-cli config-download > config.yaml` breaks every line longer than the
+       *terminal's* width — or 80 when there is no terminal at all — inside the
+       redirected file, and the YAML then fails to parse. Styling need not be on.
     2. It parses the payload as Rich markup, so `[foo]` inside a string value is
        silently deleted, and text like `[/x]` raises `MarkupError` outright.
     3. With styling on (a real terminal, a pty, or `FORCE_COLOR` in the
@@ -2344,15 +2362,21 @@ def status(
     try:
         from .search_tracking_table import TrackingTableSearcher
 
+        # Progress, headers and errors on this command go to stderr, because
+        # `--format json` puts a payload on stdout and the batch-id search used to
+        # print four lines ahead of it — so `status --batch-id b --format json | jq`
+        # failed at char 0, the same symptom #905 reported for config-revisions.
+        # The rendered table further down stays on stdout: there it IS the output.
+
         # Validate mutually exclusive options
         if not batch_id and not document_id:
-            console.print(
+            err_console.print(
                 "[red]✗ Error: Must specify either --batch-id or --document-id[/red]"
             )
             sys.exit(1)
 
         if batch_id and document_id:
-            console.print(
+            err_console.print(
                 "[red]✗ Error: Cannot specify both --batch-id and --document-id[/red]"
             )
             sys.exit(1)
@@ -2380,7 +2404,7 @@ def status(
                 ]
                 all_items = []
 
-                console.print(
+                err_console.print(
                     f"[yellow]Searching for documents with PK containing '{batch_id}'...[/yellow]"
                 )
 
@@ -2399,12 +2423,12 @@ def status(
                     "object_status": "ALL",
                 }
 
-                console.print(
+                err_console.print(
                     f"[green]✓ Found {len(all_items)} matching documents[/green]"
                 )
 
             if not search_results.get("success"):
-                console.print(
+                err_console.print(
                     f"[red]✗ Search failed: {search_results.get('error')}[/red]"
                 )
                 sys.exit(1)
@@ -2413,7 +2437,7 @@ def status(
                 msg = f"No documents found matching batch-id '{batch_id}'"
                 if object_status:
                     msg += f" with status '{object_status}'"
-                console.print(f"[yellow]{msg}[/yellow]")
+                err_console.print(f"[yellow]{msg}[/yellow]")
                 sys.exit(1)
 
             # Extract document IDs from search results
@@ -2428,17 +2452,22 @@ def status(
 
             # Display search results summary if not waiting
             if not wait and not get_time:
-                console.print()
-                console.print(f"[bold blue]Search Results for: {batch_id}[/bold blue]")
+                err_console.print()
+                err_console.print(
+                    f"[bold blue]Search Results for: {batch_id}[/bold blue]"
+                )
                 if object_status:
-                    console.print(f"[dim]Status filter: {object_status}[/dim]")
-                console.print(f"[dim]Documents found: {len(document_ids)}[/dim]")
-                console.print()
+                    err_console.print(f"[dim]Status filter: {object_status}[/dim]")
+                err_console.print(f"[dim]Documents found: {len(document_ids)}[/dim]")
+                err_console.print()
 
-                # Show details if requested
-                if show_details:
+                # Show details if requested. Skipped for --format json: this renders
+                # a Rich table through the searcher's own stdout console, which would
+                # land in front of the payload, and a caller asking for JSON wants
+                # the machine-readable document list, not a second rendered copy.
+                if show_details and output_format != "json":
                     searcher.display_results(search_results, show_details=True)
-                    console.print()
+                    err_console.print()
 
         else:
             # Single document
@@ -2462,10 +2491,10 @@ def status(
         if wait:
             # JSON format not compatible with live monitoring
             if output_format == "json":
-                console.print(
+                err_console.print(
                     "[yellow]Warning: --format json ignored with --wait (using table display for live monitoring)[/yellow]"
                 )
-                console.print()
+                err_console.print()
 
             from idp_sdk import IDPClient as _IDPClient
 
@@ -2513,7 +2542,7 @@ def status(
 
     except Exception as e:
         logger.error(f"Error checking status: {e}", exc_info=True)
-        console.print(f"[red]✗ Error: {e}[/red]")
+        err_console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
 
 
@@ -4257,14 +4286,16 @@ def config_create(
             emit_raw(yaml_content)
 
     except FileNotFoundError as e:
-        console.print(f"[red]✗ Error: {e}[/red]")
-        console.print(
+        # stderr, like config-download: without --output this command's stdout is
+        # the YAML, and a diagnostic does not belong in a redirected config file.
+        err_console.print(f"[red]✗ Error: {e}[/red]")
+        err_console.print(
             "[yellow]Tip: Run from the project root directory or set IDP_PROJECT_ROOT[/yellow]"
         )
         sys.exit(1)
     except Exception as e:
         logger.error(f"Error creating config: {e}", exc_info=True)
-        console.print(f"[red]✗ Error: {e}[/red]")
+        err_console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
 
 
@@ -4649,16 +4680,20 @@ def config_download(
             # Revisions belong to a profile; "revision 7 of whatever is active"
             # would silently change meaning the moment someone activates
             # another profile.
-            console.print(
+            err_console.print(
                 "[red]Error: --config-revision requires --config-profile[/red]"
             )
             sys.exit(1)
 
-        console.print(
+        # Progress goes to stderr: without --output the YAML goes to stdout, and
+        # `config-download > config.yaml` must not put a progress line in the file.
+        err_console.print(
             f"[bold blue]Downloading config from stack: {stack_name}[/bold blue]"
         )
         if config_revision is not None:
-            console.print(f"Profile: {config_version} (revision r{config_revision})")
+            err_console.print(
+                f"Profile: {config_version} (revision r{config_revision})"
+            )
 
         client = IDPClient(stack_name=stack_name, region=region)
         result = client.config.download(
@@ -4671,12 +4706,12 @@ def config_download(
         if output:
             console.print(f"[green]✓ Configuration saved to: {output}[/green]")
         else:
-            console.print()
+            err_console.print()
             emit_raw(result.yaml_content)
 
     except Exception as e:
         logger.error(f"Error downloading config: {e}", exc_info=True)
-        console.print(f"[red]✗ Error: {e}[/red]")
+        err_console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
 
 
@@ -6699,19 +6734,25 @@ def bootstrap(
     from idp_common.synthesis import bootstrap as bootstrap_mod
     from idp_common.synthesis import engine as synthesis_engine
 
-    console.print("[bold blue]IDP Config Bootstrap[/bold blue]")
-    console.print(f"Prompt: {prompt}")
+    # Local mode prints the schema to stdout, so its progress lines have to go
+    # elsewhere for `idp-cli bootstrap "..." > schema.json` to yield parseable
+    # JSON. With --stack-name nothing machine-readable reaches stdout, so there
+    # the lines stay on stdout as before.
+    progress = console if stack_name else err_console
+
+    progress.print("[bold blue]IDP Config Bootstrap[/bold blue]")
+    progress.print(f"Prompt: {prompt}")
     if stack_name:
-        console.print(f"Stack: {stack_name}")
+        progress.print(f"Stack: {stack_name}")
     else:
-        console.print("[yellow]Local mode — schema will not be saved[/yellow]")
+        progress.print("[yellow]Local mode — schema will not be saved[/yellow]")
 
     available, reason = synthesis_engine.generator_available()
     if not available:
-        console.print(
+        progress.print(
             f"[yellow]Note: document generator unavailable ({reason}).[/yellow]"
         )
-        console.print(f"[yellow]{synthesis_engine.INSTALL_HINT}[/yellow]")
+        progress.print(f"[yellow]{synthesis_engine.INSTALL_HINT}[/yellow]")
 
     request = bootstrap_mod.BootstrapRequest(
         prompt=prompt,
@@ -6726,7 +6767,7 @@ def bootstrap(
     )
 
     def _status(pct, msg):
-        console.print(f"  [{pct:3.0f}%] {msg}")
+        progress.print(f"  [{pct:3.0f}%] {msg}")
 
     try:
         if not stack_name:
@@ -6734,12 +6775,12 @@ def bootstrap(
                 request, status_cb=_status
             )
             if schema is None:
-                console.print("[red]✗ Failed to author a schema[/red]")
+                progress.print("[red]✗ Failed to author a schema[/red]")
                 sys.exit(1)
 
-            console.print(f"[green]✓ Schema authored (tier: {tier})[/green]")
+            progress.print(f"[green]✓ Schema authored (tier: {tier})[/green]")
             if matched:
-                console.print(f"  Catalog match: {matched}")
+                progress.print(f"  Catalog match: {matched}")
             emit_json(schema)
             return
 

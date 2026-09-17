@@ -49,14 +49,23 @@ def unstyled_cli_console():
 
     Autouse and package-wide on purpose. As a per-test fixture this was easy to
     omit from a new test, which then carried the same sensitivity back in.
+
+    `err_console` — the stderr console the payload-bearing commands send their
+    progress lines to — is pinned the same way. `CliRunner.result.output` is the
+    two streams combined, so an unpinned stderr console would put escapes into the
+    text most of this suite asserts on, in exactly the way this fixture exists to
+    prevent.
     """
     from rich.console import Console
 
     from idp_cli import cli as cli_module
 
     original = cli_module.console
+    original_err = cli_module.err_console
     cli_module.console = Console(width=200, force_terminal=False)
+    cli_module.err_console = Console(stderr=True, width=200, force_terminal=False)
     try:
         yield cli_module.console
     finally:
         cli_module.console = original
+        cli_module.err_console = original_err
