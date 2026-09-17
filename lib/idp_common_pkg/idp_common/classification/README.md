@@ -141,7 +141,7 @@ is per section. That is why the default was measured before being turned on:
 `topk` costs +17 % of the classification step, which is ~3 % of total document cost
 on the default model (so ~0.5 % of the bill) and changes accuracy by nothing
 consistent. `mode: off` restores the zero-cost path exactly. See
-`docs/benchmarking/classification-confidence.md`, and note the finding that a
+`docs/benchmarking/studies/classification-confidence.md`, and note the finding that a
 *small* classifier's score is a coarse two-level flag while a mid-tier one's is
 graded — the mode being on does not make the number equally useful everywhere.
 

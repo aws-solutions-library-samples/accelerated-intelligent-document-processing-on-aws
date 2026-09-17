@@ -1,0 +1,15 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+core-tt-simple-sep,scale_25.pdf,,0,COMPLETED,True,1.0,1.0,25,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9968,0.0,,,,,40.21703,0.0488
+core-tt-simple-sep,scale_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9999,0.0,,,,,62.210405,0.1448
+core-tt-simple-sep,scale_400.pdf,,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.999,0.0,,,,,215.550332,0.5309
+core-tt-simple-sep,scale_800.pdf,,0,COMPLETED,True,17.0,1.0,800,0.5,,1.0,1.0,,,,,,1.0,0,,,0.9991,0.0,,,,,498.457342,1.6272
+core-tt-simple-sep,scale_1200.pdf,,0,FAILED,False,25.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,24.346827,0.4002
+core-tt-simple-sep,scale_1600.pdf,,0,FAILED,False,33.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,26.278446,0.5285
+core-tt-simple-sep,scale_3200.pdf,,0,FAILED,False,66.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,46.482934,1.0557
+core-tt-adv-sep,scale_25.pdf,,0,COMPLETED,True,1.0,1.0,25,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9657,0.0,,,,,58.599083,0.2265
+core-tt-adv-sep,scale_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9856,0.0,,,,,105.860417,0.3796
+core-tt-adv-sep,scale_400.pdf,,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9845,0.0,,,,,243.557508,1.5302
+core-tt-adv-sep,scale_800.pdf,,0,COMPLETED,True,17.0,1.0,800,1.0,,1.0,1.0,,,,,,1.0,0,,,0.989,0.0,,,,,286.658739,2.7973
+core-tt-adv-sep,scale_1200.pdf,,0,COMPLETED,True,25.0,1.0,1200,1.0,,0.9996,1.0,,,,,,1.0,0,,,0.9837,0.0,,,,,324.507142,4.2517
+core-tt-adv-sep,scale_1600.pdf,,0,COMPLETED,True,33.0,1.0,1600,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9764,0.0,,,,,464.000806,5.7466
+core-tt-adv-sep,scale_3200.pdf,,0,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9879,0.0,,,,,806.764498,11.3918

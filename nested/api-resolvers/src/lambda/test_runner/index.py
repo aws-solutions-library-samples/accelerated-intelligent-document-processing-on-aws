@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import gzip
 import json
 import logging
 import os
@@ -399,8 +400,6 @@ def _decompress_config_item(item):
     Decompress a DynamoDB config item if it uses compressed storage format.
     Inlined here to avoid dependency on idp_common (not available in this Lambda).
     """
-    import gzip as _gzip
-
     if item.get("_config_storage") != "compressed":
         return item  # Legacy inline format — return as-is
 
@@ -423,7 +422,7 @@ def _decompress_config_item(item):
         # preset has `criteria_validation.temperature: 0.0`) failed every
         # startTestRun at submit until this matched the revision path.
         config_data = json.loads(
-            _gzip.decompress(raw_bytes).decode("utf-8"), parse_float=Decimal
+            gzip.decompress(raw_bytes).decode("utf-8"), parse_float=Decimal
         )
     except Exception as e:
         logger.error(f"Failed to decompress config data: {e}")
@@ -671,6 +670,45 @@ def _confidence_fingerprint_of(config):
         return None
 
 
+_CONFIG_STORAGE_MARKER = "_config_storage"
+_CONFIG_STORAGE_COMPRESSED = "compressed"
+_COMPRESSED_CONFIG_FIELD = "_compressed_config"
+_MAX_COMPRESSED_CONFIG_BYTES = 300 * 1024
+
+
+def _json_default(value):
+    if isinstance(value, Decimal):
+        return int(value) if value % 1 == 0 else float(value)
+    return str(value)
+
+
+def _compress_captured_config(config):
+    """gzip the captured ``{"Config": <body>}`` for the run's DynamoDB item.
+
+    Same storage shape as the configuration table, so a profile that fits
+    there also fits on every run that captures it. Raises ValueError when even
+    the compressed body would crowd out the attributes written to the item
+    later (the copier's Files list, the cached testRunResult aggregate).
+    """
+    raw = json.dumps(config, default=_json_default, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    compressed = gzip.compress(raw)
+    logger.info(
+        f"Captured configuration: {len(raw):,} bytes -> {len(compressed):,} bytes "
+        "compressed"
+    )
+    if len(compressed) > _MAX_COMPRESSED_CONFIG_BYTES:
+        raise ValueError(
+            f"Configuration is too large to record on a test run: "
+            f"{len(compressed):,} bytes after compression "
+            f"({len(raw):,} bytes raw); the limit is "
+            f"{_MAX_COMPRESSED_CONFIG_BYTES:,} bytes. Reduce the configuration "
+            "profile (fewer classes, shorter prompts or descriptions) and retry."
+        )
+    return compressed
+
+
 def _store_test_run_metadata(
     tracking_table,
     test_run_id,
@@ -704,7 +742,8 @@ def _store_test_run_metadata(
             "CompletedFiles": 0,
             "FailedFiles": 0,
             "Files": files,
-            "Config": config,
+            _CONFIG_STORAGE_MARKER: _CONFIG_STORAGE_COMPRESSED,
+            _COMPRESSED_CONFIG_FIELD: _compress_captured_config(config),
             "CreatedAt": created_at,
         }
 

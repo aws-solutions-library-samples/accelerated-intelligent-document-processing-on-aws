@@ -13,6 +13,7 @@ what was actually exercised against live AWS infrastructure, and what was found.
 
 | Release | Verdict | Record |
 |---------|---------|--------|
+| **v0.6.8** | ✅ Ship — 18 of 18 tiers pass (typecheck baseline unchanged); 4 findings, none in shipped product code — one account quota, three test-tooling (two false-red gates, one unrepeatable test) | [v0.6.8.md](./v0.6.8.md) |
 | **v0.6.6** | ✅ Ship — 14 of 14 tiers pass; 3 findings, none in shipped product code | [v0.6.6.md](./v0.6.6.md) |
 
 <!-- APPEND NEW ROWS ABOVE THIS LINE (newest first). -->

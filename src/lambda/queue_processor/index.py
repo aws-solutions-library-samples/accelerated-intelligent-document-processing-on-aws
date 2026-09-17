@@ -1,9 +1,11 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
@@ -69,6 +71,91 @@ if RECONCILE_SAMPLE_MAX_AGE_SECONDS < RECONCILE_GRACE_SECONDS * 2:
     )
     RECONCILE_SAMPLE_MAX_AGE_SECONDS = _clamped
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
+
+# Step Functions execution names: 1-80 chars, no whitespace, brackets, wildcards
+# or the characters " # % \ ^ | ~ ` $ & , ; : /. The name also becomes the last
+# ARN segment, which document_versions.build_run_id and the classification cache
+# key both take with ``split(":")[-1]``, so it is kept to a set that is safe in
+# an S3 key and a DynamoDB sort key as well.
+_EXECUTION_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_EXECUTION_NAME_MAX_LEN = 80
+
+
+class ExecutionAlreadyStarted(Exception):
+    """StartExecution was refused because this message already started a workflow.
+
+    Raised when Step Functions answers ``ExecutionAlreadyExists`` for the
+    deterministic name derived from the SQS message: an earlier delivery of the
+    same message already started the execution, so this delivery must be acked
+    as a no-op rather than start a second one.
+    """
+
+    def __init__(self, execution_name: str, execution_arn: str):
+        super().__init__(
+            f"Execution {execution_name} already exists as {execution_arn}"
+        )
+        self.execution_name = execution_name
+        self.execution_arn = execution_arn
+
+
+def execution_name_for(input_key: str, message_id: str) -> Optional[str]:
+    """Derive the idempotent execution name for one SQS message.
+
+    SQS is at-least-once: a message whose StartExecution succeeded is redelivered
+    whenever the invocation that handled it dies before it can report the batch
+    outcome (issue #904 saw one message delivered 24 times and started 6 times).
+    Step Functions refuses a second StartExecution with the same name for 90
+    days, so naming the execution after the message turns every redelivery into
+    a harmless ``ExecutionAlreadyExists``.
+
+    The message id, not the document, is the key: the same object re-uploaded,
+    reprocessed from the UI or re-run through the SDK is a NEW message and must
+    get a new execution, while every redelivery of one message carries the same
+    id. A human-readable prefix from the object's basename is kept so the
+    Step Functions console still reads like a document list.
+
+    Returns None when there is no message id (a direct invocation), in which case
+    Step Functions assigns a name and duplicate protection does not apply.
+    """
+    if not message_id:
+        return None
+    token = message_id
+    if _EXECUTION_NAME_UNSAFE.search(token) or len(token) > 64:
+        token = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32]
+    basename = (input_key or "").rsplit("/", 1)[-1]
+    prefix = _EXECUTION_NAME_UNSAFE.sub("-", basename).strip("-.")
+    room = _EXECUTION_NAME_MAX_LEN - len(token) - 1
+    prefix = prefix[:room].rstrip("-.")
+    return f"{prefix}-{token}" if prefix else token
+
+
+def execution_arn_for(execution_name: str) -> str:
+    """The ARN Step Functions gives an execution of our state machine by name."""
+    return (
+        state_machine_arn.replace(":stateMachine:", ":execution:", 1)
+        + f":{execution_name}"
+    )
+
+
+def ack_message(receipt_handle: str) -> bool:
+    """Delete one message as soon as its workflow exists.
+
+    Lambda only deletes the successful messages of a batch when the invocation
+    returns. If it times out first, SQS gets no response at all and redelivers
+    the whole batch, including messages whose executions were already started.
+    Deleting each message right after its StartExecution closes that window
+    (the later batch-level delete of an already-deleted message is a no-op).
+    Non-fatal: if this fails the deterministic execution name still makes the
+    redelivery harmless.
+    """
+    if not DOCUMENT_QUEUE_URL or not receipt_handle:
+        return False
+    try:
+        sqs.delete_message(QueueUrl=DOCUMENT_QUEUE_URL, ReceiptHandle=receipt_handle)
+        return True
+    except (ClientError, BotoCoreError) as e:
+        logger.warning(f"Could not delete message after starting its workflow: {e}")
+        return False
 
 
 def update_counter(increment: bool = True) -> bool:
@@ -521,17 +608,24 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
         logger.warning(f"Failed to extend visibility for OPEN-state message: {e}")
 
 
-def start_workflow(document: Document) -> Dict[str, Any]:
+def start_workflow(
+    document: Document, execution_name: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Start Step Functions workflow
 
     Args:
         document: The Document object to process
+        execution_name: Deterministic name for the execution (see
+            ``execution_name_for``). None lets Step Functions pick one, which
+            disables duplicate protection.
 
     Returns:
         Dict containing execution details
 
     Raises:
+        ExecutionAlreadyStarted: If an execution with this name already exists,
+            i.e. an earlier delivery of the same message already started it
         ClientError: If Step Functions operation fails
     """
     # Update document status and timing
@@ -667,10 +761,15 @@ def start_workflow(document: Document) -> Dict[str, Any]:
         f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)"
     )
 
+    start_args: Dict[str, Any] = {
+        "stateMachineArn": state_machine_arn,
+        "input": json.dumps(event),
+    }
+    if execution_name:
+        start_args["name"] = execution_name
+
     try:
-        execution = sfn.start_execution(
-            stateMachineArn=state_machine_arn, input=json.dumps(event)
-        )
+        execution = sfn.start_execution(**start_args)
 
         # Set workflow execution ARN and start_time in the document
         document.workflow_execution_arn = execution.get("executionArn", "")
@@ -678,6 +777,17 @@ def start_workflow(document: Document) -> Dict[str, Any]:
 
         logger.info(f"Workflow started: {execution.get('executionArn', '')}")
         return execution
+    except ClientError as e:
+        if (
+            execution_name
+            and e.response.get("Error", {}).get("Code") == "ExecutionAlreadyExists"
+        ):
+            raise ExecutionAlreadyStarted(
+                execution_name, execution_arn_for(execution_name)
+            ) from e
+        logger.error(f"Error starting workflow: {str(e)}")
+        document.workflow_execution_arn = document.workflow_execution_arn or ""
+        raise
     except Exception as e:
         logger.error(f"Error starting workflow: {str(e)}")
         # Ensure we have a default workflow_execution_arn to avoid None errors
@@ -772,8 +882,36 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
         workflow_started = False
         try:
             # Start workflow with the document
-            execution = start_workflow(document)
+            try:
+                execution = start_workflow(
+                    document, execution_name_for(object_key, message_id)
+                )
+            except ExecutionAlreadyStarted as dup:
+                # An earlier delivery of this same message already started the
+                # workflow, and the invocation handling it died before SQS
+                # learned the outcome. That execution owns its slot; the
+                # increment above was for a start that did not happen, so hand
+                # it back, then ack the message so it stops being redelivered.
+                logger.warning(
+                    f"Message {message_id} for {object_key} was redelivered after "
+                    f"its workflow already started as {dup.execution_arn}; acking "
+                    f"without starting a second execution."
+                )
+                try:
+                    update_counter(increment=False)
+                except Exception as counter_error:
+                    logger.error(
+                        f"Failed to decrement counter: {counter_error}", exc_info=True
+                    )
+                ack_message(receipt_handle)
+                return True, message_id
             workflow_started = True
+
+            # Delete the message NOW rather than at the end of the batch: if this
+            # invocation times out on a later message, Lambda reports nothing to
+            # SQS and every message in the batch, this one included, would be
+            # redelivered (#904).
+            ack_message(receipt_handle)
 
             # Update document status in document service.
             #

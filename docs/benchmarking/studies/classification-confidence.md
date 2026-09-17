@@ -5,8 +5,8 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 > **A focused study, not a release audit.** It answers one question: when
 > classification reports a confidence, is the number worth acting on — and does the
 > answer depend on the classifier? For "which extraction config should I pick?" see
-> [Configuration Guidance](./config-guidance.md); for release-over-release safety see
-> the [Release Audit Trail](./releases/).
+> [Configuration Guidance](../config-guidance.md); for release-over-release safety see
+> the [Release Audit Trail](../releases/).
 
 # Classification Confidence — Does the Score Carry Signal?
 

@@ -1386,7 +1386,7 @@ variance. It changed classification accuracy by nothing consistent (+0.013 on
 Nova 2 Lite, −0.007 on Haiku 4.5, opposite signs, single runs). Page-level
 classification is one inference *per page*, so if you process very large packets
 and want none of this, `off` costs exactly nothing. See the
-[classification-confidence benchmark](./benchmarking/classification-confidence.md).
+[classification-confidence benchmark](./benchmarking/studies/classification-confidence.md).
 
 A page is scored on the probability of the class **actually stored**, not simply
 the highest probability in the list — those differ when the model's `class`
@@ -1502,7 +1502,7 @@ overconfident, and the default classification model is a small one. That is why
 default.
 
 **This is measured, not asserted.** On 298 pages of a deliberately confusable
-13-class corpus, in `topk` mode ([full study](./benchmarking/classification-confidence.md)):
+13-class corpus, in `topk` mode ([full study](./benchmarking/studies/classification-confidence.md)):
 
 | | Nova 2 Lite (default) | Claude Haiku 4.5 |
 |---|---|---|

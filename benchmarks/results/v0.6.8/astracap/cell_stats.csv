@@ -1,0 +1,7 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+astra-adv-sep,2,0,23.28455,1.0678,0.0459,22.5295,24.0396,1.0,1.0,995.71297
+astra-adv-wide,0,2,,,,,,,,
+astra-simple-sep,0,2,,,,,,,,
+sonnet5-adv-sep,2,0,23.23875,5.43207,0.2338,19.3977,27.0798,1.0,1.0,1090.34695
+sonnet5-adv-wide,0,2,,,,,,,,
+sonnet5-simple-sep,0,2,,,,,,,,

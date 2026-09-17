@@ -146,6 +146,49 @@ features:
         sellerBucket: aws-ml-blog-eu-central-1
         templateKey: artifacts/genai-idp-mp/extensions/idp-auto-optimizer/template.yaml
 
+  - featureId: idp-monitor
+    # "(Beta)" is deliberate and load-bearing here for the same reason as above:
+    # the listing (*IDP Accelerator - Monitor (Beta)*) ships a beta EULA, so the
+    # name in the UI has to match what the customer agreed to. And as above, this
+    # value only wins while the extension is NOT YET INSTALLED — once installed
+    # the UI prefers the displayName the feature's own RegisterFeature custom
+    # resource wrote, i.e. the `FeatureDisplayName` parameter default in the
+    # closed-source repo's template.yaml (and its feature.yaml). All of those
+    # have to say exactly "Monitor (Beta)" or the label changes the moment the
+    # customer installs it.
+    displayName: "Monitor (Beta)"
+    description: "Real-time monitoring dashboard: document volume, latency, cost
+      breakdown and trends, failures, throttles, AI insights, and versioned
+      dashboard configuration."
+    iconUrl: ""
+    showInNav: true
+    # AWS Marketplace SaaS product identity, from the seller Management Portal.
+    # Same seller account as Auto Optimizer, but a separate product — the two ids
+    # are not interchangeable (see the note on the entry above for what each one
+    # is for: productCode → seller-side GetEntitlements, productId → the buyer-side
+    # SearchAgreements `ResourceIdentifier` filter the host actually calls).
+    productCode: "2xy2xlcioaff273q384162u09"
+    productId: "prod-xo22pu7olmj3y"
+    marketplaceListingUrl: "https://aws.amazon.com/marketplace/pp/prodview-guhlipxo6hpl2"
+    # Listed and published, so — as with Auto Optimizer — the only honest answer
+    # comes from real AWS Marketplace rather than a simulator.
+    licenseMode: marketplace-live
+    # Seed/fallback only — the live value comes from latest.json at runtime.
+    latestVersion: "v0.2.0"
+    # Same public buckets, regions and `artifacts/genai-idp-mp/` prefix as Auto
+    # Optimizer, under this extension's own featureId. See the notes on the entry
+    # above for why the keys are version-free and why the objects are public-read.
+    regions:
+      us-west-2:
+        sellerBucket: aws-ml-blog-us-west-2
+        templateKey: artifacts/genai-idp-mp/extensions/idp-monitor/template.yaml
+      us-east-1:
+        sellerBucket: aws-ml-blog-us-east-1
+        templateKey: artifacts/genai-idp-mp/extensions/idp-monitor/template.yaml
+      eu-central-1:
+        sellerBucket: aws-ml-blog-eu-central-1
+        templateKey: artifacts/genai-idp-mp/extensions/idp-monitor/template.yaml
+
   # Example shape for an additional paid extension:
   # - featureId: my-paid-extension
   #   displayName: "My Paid Extension"

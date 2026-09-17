@@ -1,7 +1,7 @@
 {
   "meta": {
-    "stack": "IDPRel068",
-    "stack_version": "0.6.8.dev2",
+    "stack": "IDPUpg067to068",
+    "stack_version": "0.6.8",
     "suite": "sizerab",
     "class": "bank_statement",
     "overrides": [
@@ -15,17 +15,19 @@
       "tiny_form",
       "small_narrow"
     ],
+    "docs_reference": [],
     "docs_unlaunchable": [],
     "docs_other_class": [],
-    "commit": "580bfb5d1",
-    "pricing_sha256": "aa52446ac3eed120ffb91faf57667785c0f1fe66c5378ebf69796f0c6a41fde5",
-    "scored_at": "2026-09-10T19:04:57.312780Z",
+    "commit": "d584958e0",
+    "pricing_sha256": "4884220eae2aab0bc52945120a0ae8b6ee9c46c0517baddddb717e659624efbc",
+    "scored_at": "2026-09-12T20:56:39.864410Z",
     "region": "us-west-2"
   },
   "rows": [
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
+      "sub_doc": null,
       "repeat": 0,
       "resolved": {
         "ocr": "textract_tables",
@@ -46,206 +48,25 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185138",
+      "run_id": "bench-tiny_form-20260912-202632",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 19.164899,
-      "cost": 0.0289,
-      "cost_by_phase": {
-        "OCR": 0.01533,
-        "Classification": 2e-05,
-        "Extraction": 0.01303,
-        "Assessment": 0.00049,
-        "Summarization": 2e-05
-      },
-      "cost_by_key": {
-        "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00091,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.00024
-      },
-      "tokens": {
-        "inputTokens": 3121,
-        "outputTokens": 770,
-        "cacheReadInputTokens": 2751,
-        "cacheWriteInputTokens": 765
-      },
-      "tokens_by_phase": {
-        "Extraction": {
-          "inputTokens": 1950,
-          "outputTokens": 353,
-          "cacheReadInputTokens": 1440,
-          "cacheWriteInputTokens": 0
-        },
-        "Assessment": {
-          "inputTokens": 1171,
-          "outputTokens": 417,
-          "cacheReadInputTokens": 1311,
-          "cacheWriteInputTokens": 765
-        }
-      },
-      "forced_tool_attempted": null,
-      "forced_tool_honored": null,
-      "forced_tool_honored_rate": null,
-      "forced_tool_skips": null,
-      "validation_sections": 1,
-      "validation_valid_rate": 1.0,
-      "validation_errors": 0,
-      "coercions": null,
-      "coercion_refusals": null,
-      "sections": 1,
-      "sections_expected": 1,
-      "sections_correct": 1.0,
-      "rows_truth": 5,
-      "rows_extracted": 5,
-      "completeness_recall": 1.0,
-      "truncation_prefix": 5,
-      "dups": 0,
-      "n_gaps": 0,
-      "scalar_accuracy": 1.0,
-      "typed_accuracy": null,
-      "typed_fields": null,
-      "cell_accuracy": 1.0,
-      "cells_compared": 10,
-      "mean_confidence": 0.9989,
-      "pct_conf_below_0.9": 0.0,
-      "n_conf_leaves": 22
-    },
-    {
-      "cell": "core-tt-simple-sep",
-      "doc": "tiny_form.pdf",
-      "repeat": 1,
-      "resolved": {
-        "ocr": "textract_tables",
-        "extraction_mode": "simple",
-        "assessment": "separate",
-        "geometry": "ocr_only",
-        "escalation": "off",
-        "extraction_model": "sonnet46",
-        "confidence_model": "nova_lite",
-        "classification_model": "nova_2_lite",
-        "reasoning_effort": "low",
-        "enforcement": "warn",
-        "forcing": "off",
-        "schema_restatement": "on",
-        "section_splitting": "llm_determined",
-        "boundary_prompt": "current",
-        "conf_batch": "b8",
-        "class_confidence": "topk",
-        "ocr_dpi": "300",
-        "multi_instance": "off",
-        "multi_instance_detection": "on"
-      },
-      "run_id": "bench-tiny_form-20260910-185142",
-      "status": "COMPLETED",
-      "success": true,
-      "page_count": 1.0,
-      "wall_s": 17.961626,
-      "cost": 0.0288,
-      "cost_by_phase": {
-        "OCR": 0.01527,
-        "Classification": 2e-05,
-        "Extraction": 0.01303,
-        "Assessment": 0.00045,
-        "Summarization": 2e-05
-      },
-      "cost_by_key": {
-        "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00085,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.0002
-      },
-      "tokens": {
-        "inputTokens": 3121,
-        "outputTokens": 770,
-        "cacheReadInputTokens": 3516,
-        "cacheWriteInputTokens": 0
-      },
-      "tokens_by_phase": {
-        "Extraction": {
-          "inputTokens": 1950,
-          "outputTokens": 353,
-          "cacheReadInputTokens": 1440,
-          "cacheWriteInputTokens": 0
-        },
-        "Assessment": {
-          "inputTokens": 1171,
-          "outputTokens": 417,
-          "cacheReadInputTokens": 2076,
-          "cacheWriteInputTokens": 0
-        }
-      },
-      "forced_tool_attempted": null,
-      "forced_tool_honored": null,
-      "forced_tool_honored_rate": null,
-      "forced_tool_skips": null,
-      "validation_sections": 1,
-      "validation_valid_rate": 1.0,
-      "validation_errors": 0,
-      "coercions": null,
-      "coercion_refusals": null,
-      "sections": 1,
-      "sections_expected": 1,
-      "sections_correct": 1.0,
-      "rows_truth": 5,
-      "rows_extracted": 5,
-      "completeness_recall": 1.0,
-      "truncation_prefix": 5,
-      "dups": 0,
-      "n_gaps": 0,
-      "scalar_accuracy": 1.0,
-      "typed_accuracy": null,
-      "typed_fields": null,
-      "cell_accuracy": 1.0,
-      "cells_compared": 10,
-      "mean_confidence": 0.9989,
-      "pct_conf_below_0.9": 0.0,
-      "n_conf_leaves": 22
-    },
-    {
-      "cell": "core-tt-simple-sep",
-      "doc": "tiny_form.pdf",
-      "repeat": 2,
-      "resolved": {
-        "ocr": "textract_tables",
-        "extraction_mode": "simple",
-        "assessment": "separate",
-        "geometry": "ocr_only",
-        "escalation": "off",
-        "extraction_model": "sonnet46",
-        "confidence_model": "nova_lite",
-        "classification_model": "nova_2_lite",
-        "reasoning_effort": "low",
-        "enforcement": "warn",
-        "forcing": "off",
-        "schema_restatement": "on",
-        "section_splitting": "llm_determined",
-        "boundary_prompt": "current",
-        "conf_batch": "b8",
-        "class_confidence": "topk",
-        "ocr_dpi": "300",
-        "multi_instance": "off",
-        "multi_instance_detection": "on"
-      },
-      "run_id": "bench-tiny_form-20260910-185144",
-      "status": "COMPLETED",
-      "success": true,
-      "page_count": 1.0,
-      "wall_s": 16.680914,
+      "wall_s": 17.077535,
       "cost": 0.0279,
       "cost_by_phase": {
-        "OCR": 0.01519,
-        "Classification": 2e-05,
+        "OCR": 0.01518,
+        "Classification": 1e-05,
         "Extraction": 0.01226,
-        "Assessment": 0.00044,
-        "Summarization": 2e-05
+        "Assessment": 0.00045,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00074,
+        "lambda/duration": 0.00073,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.01199,
         "bedrock/us.amazon.nova-lite-v1:0": 0.0002
       },
@@ -299,7 +120,8 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
-      "repeat": 3,
+      "sub_doc": null,
+      "repeat": 1,
       "resolved": {
         "ocr": "textract_tables",
         "extraction_mode": "simple",
@@ -319,24 +141,25 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185147",
+      "run_id": "bench-tiny_form-20260912-202659",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 19.893838,
-      "cost": 0.0289,
+      "wall_s": 16.557313,
+      "cost": 0.0287,
       "cost_by_phase": {
-        "OCR": 0.01538,
+        "OCR": 0.01517,
         "Classification": 2e-05,
-        "Extraction": 0.01305,
-        "Assessment": 0.00044,
-        "Summarization": 2e-05
+        "Extraction": 0.013,
+        "Assessment": 0.0005,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00096,
+        "lambda/duration": 0.00077,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
         "bedrock/us.amazon.nova-lite-v1:0": 0.0002
       },
@@ -390,6 +213,193 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "tiny_form.pdf",
+      "sub_doc": null,
+      "repeat": 2,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "b8",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
+      },
+      "run_id": "bench-tiny_form-20260912-202756",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 1.0,
+      "wall_s": 17.189473,
+      "cost": 0.0287,
+      "cost_by_phase": {
+        "OCR": 0.0152,
+        "Classification": 1e-05,
+        "Extraction": 0.01301,
+        "Assessment": 0.00043,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.015,
+        "lambda/duration": 0.00073,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.0002
+      },
+      "tokens": {
+        "inputTokens": 3121,
+        "outputTokens": 770,
+        "cacheReadInputTokens": 3516,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Extraction": {
+          "inputTokens": 1950,
+          "outputTokens": 353,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 1171,
+          "outputTokens": 417,
+          "cacheReadInputTokens": 2076,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 5,
+      "rows_extracted": 5,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 5,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": 1.0,
+      "cells_compared": 10,
+      "mean_confidence": 0.9989,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 22
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "tiny_form.pdf",
+      "sub_doc": null,
+      "repeat": 3,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "b8",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
+      },
+      "run_id": "bench-tiny_form-20260912-202824",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 1.0,
+      "wall_s": 16.277892,
+      "cost": 0.0287,
+      "cost_by_phase": {
+        "OCR": 0.0152,
+        "Classification": 1e-05,
+        "Extraction": 0.013,
+        "Assessment": 0.00043,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.015,
+        "lambda/duration": 0.00073,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.0002
+      },
+      "tokens": {
+        "inputTokens": 3121,
+        "outputTokens": 770,
+        "cacheReadInputTokens": 3516,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Extraction": {
+          "inputTokens": 1950,
+          "outputTokens": 353,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 1171,
+          "outputTokens": 417,
+          "cacheReadInputTokens": 2076,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 5,
+      "rows_extracted": 5,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 5,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": 1.0,
+      "cells_compared": 10,
+      "mean_confidence": 0.9989,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 22
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "tiny_form.pdf",
+      "sub_doc": null,
       "repeat": 4,
       "resolved": {
         "ocr": "textract_tables",
@@ -410,44 +420,45 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-tiny_form-20260910-185151",
+      "run_id": "bench-tiny_form-20260912-202922",
       "status": "COMPLETED",
       "success": true,
       "page_count": 1.0,
-      "wall_s": 18.861349,
-      "cost": 0.0281,
+      "wall_s": 17.389426,
+      "cost": 0.0287,
       "cost_by_phase": {
-        "OCR": 0.01534,
-        "Classification": 2e-05,
-        "Extraction": 0.0123,
+        "OCR": 0.01518,
+        "Classification": 1e-05,
+        "Extraction": 0.01303,
         "Assessment": 0.00044,
         "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.015,
-        "lambda/duration": 0.00089,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01203,
+        "lambda/duration": 0.00074,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.01273,
         "bedrock/us.amazon.nova-lite-v1:0": 0.0002
       },
       "tokens": {
-        "inputTokens": 3124,
-        "outputTokens": 727,
-        "cacheReadInputTokens": 3515,
+        "inputTokens": 3121,
+        "outputTokens": 770,
+        "cacheReadInputTokens": 3516,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Extraction": {
           "inputTokens": 1950,
-          "outputTokens": 310,
+          "outputTokens": 353,
           "cacheReadInputTokens": 1440,
           "cacheWriteInputTokens": 0
         },
         "Assessment": {
-          "inputTokens": 1174,
+          "inputTokens": 1171,
           "outputTokens": 417,
-          "cacheReadInputTokens": 2075,
+          "cacheReadInputTokens": 2076,
           "cacheWriteInputTokens": 0
         }
       },
@@ -481,6 +492,7 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "small_narrow.pdf",
+      "sub_doc": null,
       "repeat": 0,
       "resolved": {
         "ocr": "textract_tables",
@@ -501,38 +513,39 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-small_narrow-20260910-185234",
+      "run_id": "bench-small_narrow-20260912-202949",
       "status": "COMPLETED",
       "success": true,
       "page_count": 3.0,
-      "wall_s": 60.98056,
-      "cost": 0.1456,
+      "wall_s": 56.947913,
+      "cost": 0.1455,
       "cost_by_phase": {
-        "OCR": 0.04544,
-        "Classification": 0.00273,
-        "Extraction": 0.09131,
-        "Assessment": 0.00608,
-        "Summarization": 2e-05
+        "OCR": 0.04525,
+        "Classification": 0.0029,
+        "Extraction": 0.09121,
+        "Assessment": 0.00609,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00368,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00252,
+        "lambda/duration": 0.00341,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00267,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
         "bedrock/us.amazon.nova-lite-v1:0": 0.00497
       },
       "tokens": {
         "inputTokens": 30753,
-        "outputTokens": 11330,
+        "outputTokens": 11384,
         "cacheReadInputTokens": 146776,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Classification": {
           "inputTokens": 3497,
-          "outputTokens": 470,
+          "outputTokens": 532,
           "cacheReadInputTokens": 3912,
           "cacheWriteInputTokens": 0
         },
@@ -544,7 +557,7 @@
         },
         "Assessment": {
           "inputTokens": 19298,
-          "outputTokens": 7062,
+          "outputTokens": 7054,
           "cacheReadInputTokens": 141424,
           "cacheWriteInputTokens": 0
         }
@@ -572,13 +585,14 @@
       "typed_fields": null,
       "cell_accuracy": 1.0,
       "cells_compared": 200,
-      "mean_confidence": 0.9994,
+      "mean_confidence": 0.9997,
       "pct_conf_below_0.9": 0.0,
       "n_conf_leaves": 307
     },
     {
       "cell": "core-tt-simple-sep",
       "doc": "small_narrow.pdf",
+      "sub_doc": null,
       "repeat": 1,
       "resolved": {
         "ocr": "textract_tables",
@@ -599,234 +613,39 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-small_narrow-20260910-185238",
+      "run_id": "bench-small_narrow-20260912-203048",
       "status": "COMPLETED",
       "success": true,
       "page_count": 3.0,
-      "wall_s": 60.93435,
-      "cost": 0.1455,
+      "wall_s": 55.263119,
+      "cost": 0.1453,
       "cost_by_phase": {
-        "OCR": 0.04542,
-        "Classification": 0.00268,
-        "Extraction": 0.09136,
-        "Assessment": 0.00607,
-        "Summarization": 2e-05
+        "OCR": 0.04528,
+        "Classification": 0.00277,
+        "Extraction": 0.09119,
+        "Assessment": 0.00604,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00369,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00245,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.005
-      },
-      "tokens": {
-        "inputTokens": 30753,
-        "outputTokens": 11400,
-        "cacheReadInputTokens": 146776,
-        "cacheWriteInputTokens": 0
-      },
-      "tokens_by_phase": {
-        "Classification": {
-          "inputTokens": 3497,
-          "outputTokens": 444,
-          "cacheReadInputTokens": 3912,
-          "cacheWriteInputTokens": 0
-        },
-        "Extraction": {
-          "inputTokens": 7958,
-          "outputTokens": 3798,
-          "cacheReadInputTokens": 1440,
-          "cacheWriteInputTokens": 0
-        },
-        "Assessment": {
-          "inputTokens": 19298,
-          "outputTokens": 7158,
-          "cacheReadInputTokens": 141424,
-          "cacheWriteInputTokens": 0
-        }
-      },
-      "forced_tool_attempted": null,
-      "forced_tool_honored": null,
-      "forced_tool_honored_rate": null,
-      "forced_tool_skips": null,
-      "validation_sections": 1,
-      "validation_valid_rate": 1.0,
-      "validation_errors": 0,
-      "coercions": null,
-      "coercion_refusals": null,
-      "sections": 1,
-      "sections_expected": 1,
-      "sections_correct": 1.0,
-      "rows_truth": 100,
-      "rows_extracted": 100,
-      "completeness_recall": 1.0,
-      "truncation_prefix": 100,
-      "dups": 0,
-      "n_gaps": 0,
-      "scalar_accuracy": 1.0,
-      "typed_accuracy": null,
-      "typed_fields": null,
-      "cell_accuracy": 1.0,
-      "cells_compared": 200,
-      "mean_confidence": 0.9994,
-      "pct_conf_below_0.9": 0.0,
-      "n_conf_leaves": 307
-    },
-    {
-      "cell": "core-tt-simple-sep",
-      "doc": "small_narrow.pdf",
-      "repeat": 2,
-      "resolved": {
-        "ocr": "textract_tables",
-        "extraction_mode": "simple",
-        "assessment": "separate",
-        "geometry": "ocr_only",
-        "escalation": "off",
-        "extraction_model": "sonnet46",
-        "confidence_model": "nova_lite",
-        "classification_model": "nova_2_lite",
-        "reasoning_effort": "low",
-        "enforcement": "warn",
-        "forcing": "off",
-        "schema_restatement": "on",
-        "section_splitting": "llm_determined",
-        "boundary_prompt": "current",
-        "conf_batch": "b8",
-        "class_confidence": "topk",
-        "ocr_dpi": "300",
-        "multi_instance": "off",
-        "multi_instance_detection": "on"
-      },
-      "run_id": "bench-small_narrow-20260910-185241",
-      "status": "COMPLETED",
-      "success": true,
-      "page_count": 3.0,
-      "wall_s": 61.631564,
-      "cost": 0.1456,
-      "cost_by_phase": {
-        "OCR": 0.04551,
-        "Classification": 0.0027,
-        "Extraction": 0.09128,
-        "Assessment": 0.00613,
-        "Summarization": 2e-05
-      },
-      "cost_by_key": {
-        "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00374,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00249,
-        "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
-        "bedrock/us.amazon.nova-lite-v1:0": 0.005
-      },
-      "tokens": {
-        "inputTokens": 30753,
-        "outputTokens": 11416,
-        "cacheReadInputTokens": 146776,
-        "cacheWriteInputTokens": 0
-      },
-      "tokens_by_phase": {
-        "Classification": {
-          "inputTokens": 3497,
-          "outputTokens": 460,
-          "cacheReadInputTokens": 3912,
-          "cacheWriteInputTokens": 0
-        },
-        "Extraction": {
-          "inputTokens": 7958,
-          "outputTokens": 3798,
-          "cacheReadInputTokens": 1440,
-          "cacheWriteInputTokens": 0
-        },
-        "Assessment": {
-          "inputTokens": 19298,
-          "outputTokens": 7158,
-          "cacheReadInputTokens": 141424,
-          "cacheWriteInputTokens": 0
-        }
-      },
-      "forced_tool_attempted": null,
-      "forced_tool_honored": null,
-      "forced_tool_honored_rate": null,
-      "forced_tool_skips": null,
-      "validation_sections": 1,
-      "validation_valid_rate": 1.0,
-      "validation_errors": 0,
-      "coercions": null,
-      "coercion_refusals": null,
-      "sections": 1,
-      "sections_expected": 1,
-      "sections_correct": 1.0,
-      "rows_truth": 100,
-      "rows_extracted": 100,
-      "completeness_recall": 1.0,
-      "truncation_prefix": 100,
-      "dups": 0,
-      "n_gaps": 0,
-      "scalar_accuracy": 1.0,
-      "typed_accuracy": null,
-      "typed_fields": null,
-      "cell_accuracy": 1.0,
-      "cells_compared": 200,
-      "mean_confidence": 0.9994,
-      "pct_conf_below_0.9": 0.0,
-      "n_conf_leaves": 307
-    },
-    {
-      "cell": "core-tt-simple-sep",
-      "doc": "small_narrow.pdf",
-      "repeat": 3,
-      "resolved": {
-        "ocr": "textract_tables",
-        "extraction_mode": "simple",
-        "assessment": "separate",
-        "geometry": "ocr_only",
-        "escalation": "off",
-        "extraction_model": "sonnet46",
-        "confidence_model": "nova_lite",
-        "classification_model": "nova_2_lite",
-        "reasoning_effort": "low",
-        "enforcement": "warn",
-        "forcing": "off",
-        "schema_restatement": "on",
-        "section_splitting": "llm_determined",
-        "boundary_prompt": "current",
-        "conf_batch": "b8",
-        "class_confidence": "topk",
-        "ocr_dpi": "300",
-        "multi_instance": "off",
-        "multi_instance_detection": "on"
-      },
-      "run_id": "bench-small_narrow-20260910-185244",
-      "status": "COMPLETED",
-      "success": true,
-      "page_count": 3.0,
-      "wall_s": 63.501674,
-      "cost": 0.1458,
-      "cost_by_phase": {
-        "OCR": 0.04553,
-        "Classification": 0.00274,
-        "Extraction": 0.09128,
-        "Assessment": 0.00619,
-        "Summarization": 2e-05
-      },
-      "cost_by_key": {
-        "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.00384,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00253,
+        "lambda/duration": 0.00333,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00258,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
         "bedrock/us.amazon.nova-lite-v1:0": 0.00498
       },
       "tokens": {
         "inputTokens": 30753,
-        "outputTokens": 11342,
+        "outputTokens": 11363,
         "cacheReadInputTokens": 146776,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Classification": {
           "inputTokens": 3497,
-          "outputTokens": 474,
+          "outputTokens": 495,
           "cacheReadInputTokens": 3912,
           "cacheWriteInputTokens": 0
         },
@@ -873,7 +692,8 @@
     {
       "cell": "core-tt-simple-sep",
       "doc": "small_narrow.pdf",
-      "repeat": 4,
+      "sub_doc": null,
+      "repeat": 2,
       "resolved": {
         "ocr": "textract_tables",
         "extraction_mode": "simple",
@@ -893,38 +713,39 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
-      "run_id": "bench-small_narrow-20260910-185248",
+      "run_id": "bench-small_narrow-20260912-203205",
       "status": "COMPLETED",
       "success": true,
       "page_count": 3.0,
-      "wall_s": 59.24237,
-      "cost": 0.1455,
+      "wall_s": 56.200042,
+      "cost": 0.1452,
       "cost_by_phase": {
-        "OCR": 0.04537,
-        "Classification": 0.00273,
-        "Extraction": 0.09127,
-        "Assessment": 0.00608,
-        "Summarization": 2e-05
+        "OCR": 0.04526,
+        "Classification": 0.00266,
+        "Extraction": 0.09122,
+        "Assessment": 0.00607,
+        "Summarization": 1e-05
       },
       "cost_by_key": {
         "textract/analyze_document-Tables": 0.045,
-        "lambda/duration": 0.0036,
-        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00251,
+        "lambda/duration": 0.0034,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00247,
         "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
         "bedrock/us.amazon.nova-lite-v1:0": 0.00495
       },
       "tokens": {
         "inputTokens": 30753,
-        "outputTokens": 11242,
+        "outputTokens": 11213,
         "cacheReadInputTokens": 146776,
         "cacheWriteInputTokens": 0
       },
       "tokens_by_phase": {
         "Classification": {
           "inputTokens": 3497,
-          "outputTokens": 467,
+          "outputTokens": 453,
           "cacheReadInputTokens": 3912,
           "cacheWriteInputTokens": 0
         },
@@ -936,7 +757,7 @@
         },
         "Assessment": {
           "inputTokens": 19298,
-          "outputTokens": 6977,
+          "outputTokens": 6962,
           "cacheReadInputTokens": 141424,
           "cacheWriteInputTokens": 0
         }
@@ -964,7 +785,207 @@
       "typed_fields": null,
       "cell_accuracy": 1.0,
       "cells_compared": 200,
-      "mean_confidence": 0.9992,
+      "mean_confidence": 0.9997,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "small_narrow.pdf",
+      "sub_doc": null,
+      "repeat": 3,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "b8",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
+      },
+      "run_id": "bench-small_narrow-20260912-203303",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 56.487868,
+      "cost": 0.1453,
+      "cost_by_phase": {
+        "OCR": 0.04526,
+        "Classification": 0.00265,
+        "Extraction": 0.0912,
+        "Assessment": 0.00614,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/duration": 0.00341,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00248,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.00497
+      },
+      "tokens": {
+        "inputTokens": 30753,
+        "outputTokens": 11308,
+        "cacheReadInputTokens": 146776,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3497,
+          "outputTokens": 456,
+          "cacheReadInputTokens": 3912,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 7958,
+          "outputTokens": 3798,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 19298,
+          "outputTokens": 7054,
+          "cacheReadInputTokens": 141424,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "mean_confidence": 0.9997,
+      "pct_conf_below_0.9": 0.0,
+      "n_conf_leaves": 307
+    },
+    {
+      "cell": "core-tt-simple-sep",
+      "doc": "small_narrow.pdf",
+      "sub_doc": null,
+      "repeat": 4,
+      "resolved": {
+        "ocr": "textract_tables",
+        "extraction_mode": "simple",
+        "assessment": "separate",
+        "geometry": "ocr_only",
+        "escalation": "off",
+        "extraction_model": "sonnet46",
+        "confidence_model": "nova_lite",
+        "classification_model": "nova_2_lite",
+        "reasoning_effort": "low",
+        "enforcement": "warn",
+        "forcing": "off",
+        "schema_restatement": "on",
+        "section_splitting": "llm_determined",
+        "boundary_prompt": "current",
+        "conf_batch": "b8",
+        "class_confidence": "topk",
+        "ocr_dpi": "300",
+        "multi_instance": "off",
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
+      },
+      "run_id": "bench-small_narrow-20260912-203356",
+      "status": "COMPLETED",
+      "success": true,
+      "page_count": 3.0,
+      "wall_s": 55.59831,
+      "cost": 0.1453,
+      "cost_by_phase": {
+        "OCR": 0.04525,
+        "Classification": 0.00271,
+        "Extraction": 0.09121,
+        "Assessment": 0.00609,
+        "Summarization": 1e-05
+      },
+      "cost_by_key": {
+        "textract/analyze_document-Tables": 0.045,
+        "lambda/duration": 0.00336,
+        "bedrock/us.amazon.nova-2-lite-v1:0": 0.00251,
+        "bedrock/us.anthropic.claude-sonnet-4-6": 0.0894,
+        "bedrock/us.amazon.nova-lite-v1:0": 0.005
+      },
+      "tokens": {
+        "inputTokens": 30753,
+        "outputTokens": 11423,
+        "cacheReadInputTokens": 146776,
+        "cacheWriteInputTokens": 0
+      },
+      "tokens_by_phase": {
+        "Classification": {
+          "inputTokens": 3497,
+          "outputTokens": 467,
+          "cacheReadInputTokens": 3912,
+          "cacheWriteInputTokens": 0
+        },
+        "Extraction": {
+          "inputTokens": 7958,
+          "outputTokens": 3798,
+          "cacheReadInputTokens": 1440,
+          "cacheWriteInputTokens": 0
+        },
+        "Assessment": {
+          "inputTokens": 19298,
+          "outputTokens": 7158,
+          "cacheReadInputTokens": 141424,
+          "cacheWriteInputTokens": 0
+        }
+      },
+      "forced_tool_attempted": null,
+      "forced_tool_honored": null,
+      "forced_tool_honored_rate": null,
+      "forced_tool_skips": null,
+      "validation_sections": 1,
+      "validation_valid_rate": 1.0,
+      "validation_errors": 0,
+      "coercions": null,
+      "coercion_refusals": null,
+      "sections": 1,
+      "sections_expected": 1,
+      "sections_correct": 1.0,
+      "rows_truth": 100,
+      "rows_extracted": 100,
+      "completeness_recall": 1.0,
+      "truncation_prefix": 100,
+      "dups": 0,
+      "n_gaps": 0,
+      "scalar_accuracy": 1.0,
+      "typed_accuracy": null,
+      "typed_fields": null,
+      "cell_accuracy": 1.0,
+      "cells_compared": 200,
+      "mean_confidence": 0.9994,
       "pct_conf_below_0.9": 0.0,
       "n_conf_leaves": 307
     }
@@ -990,7 +1011,8 @@
         "class_confidence": "topk",
         "ocr_dpi": "300",
         "multi_instance": "off",
-        "multi_instance_detection": "on"
+        "multi_instance_detection": "on",
+        "shard_pages": "default"
       },
       "n_runs": 10,
       "n_success": 10,
@@ -998,11 +1020,11 @@
       "max_repeat": 5,
       "cost": {
         "n": 10,
-        "mean": 0.08706,
-        "stdev": 0.06171,
-        "cv": 0.7088,
+        "mean": 0.08693,
+        "stdev": 0.06155,
+        "cv": 0.708,
         "min": 0.0279,
-        "max": 0.1458
+        "max": 0.1455
       },
       "completeness_recall": {
         "n": 10,
@@ -1078,11 +1100,11 @@
       },
       "wall_s": {
         "n": 10,
-        "mean": 39.88531,
-        "stdev": 22.56717,
-        "cv": 0.5658,
-        "min": 16.68091,
-        "max": 63.50167
+        "mean": 36.49889,
+        "stdev": 20.66804,
+        "cv": 0.5663,
+        "min": 16.27789,
+        "max": 56.94791
       }
     }
   }

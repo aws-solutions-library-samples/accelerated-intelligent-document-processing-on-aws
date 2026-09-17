@@ -294,3 +294,89 @@ class TestFinalizeTableExtractionValidation:
             agent=agent,
         )
         assert result["status"] == "validation_error"
+
+
+# =============================================================================
+# Date-format failures (the deterministic pipeline's dead end)
+# =============================================================================
+
+
+import datetime  # noqa: E402
+
+
+class DatedTransaction(BaseModel):
+    """A row whose date field is a real date, as `format: date` generates."""
+
+    date: datetime.date
+    description: str
+
+
+class DatedStatement(BaseModel):
+    account_number: str
+    transactions: list[DatedTransaction]
+
+
+class TestFinalizeDateFormatDiagnostics:
+    """A date-format-only failure must be told apart from a structural one.
+
+    A schema's ``format: date`` becomes ``datetime.date`` in the generated
+    model, so parser rows carrying ``05/09/2024`` fail every time. Before this
+    diagnostic the tool answered "check that the fields match the schema", and
+    the agent's response was to re-emit all N rows itself — the single largest
+    output-token cost on the agentic path.
+    """
+
+    def _agent_with(self, dates):
+        agent = MockAgent()
+        agent.state.set(
+            "mapped_table_rows",
+            {
+                "mapped_rows": [{"date": d, "description": "x"} for d in dates],
+                "row_count": len(dates),
+            },
+        )
+        return agent
+
+    def test_date_format_failure_names_the_field_and_the_remedy(self):
+        finalize = _get_finalize_tool(DatedStatement)
+        result = finalize(
+            table_array_field="transactions",
+            scalar_fields={"account_number": "1234"},
+            agent=self._agent_with(["05/09/2024", "12/16/2024"]),
+        )
+        assert result["status"] == "validation_error"
+        assert result["date_format_fields"] == ["date"]
+        assert "date_to_iso_mdy" in result["message"]
+        assert "map_table_to_schema" in result["message"]
+        assert "Do NOT re-emit" in result["message"]
+
+    def test_one_field_reported_however_many_rows_fail(self):
+        finalize = _get_finalize_tool(DatedStatement)
+        result = finalize(
+            table_array_field="transactions",
+            scalar_fields={"account_number": "1234"},
+            agent=self._agent_with(["05/09/2024"] * 200),
+        )
+        assert result["date_format_fields"] == ["date"]
+
+    def test_iso_dates_finalize_successfully(self):
+        finalize = _get_finalize_tool(DatedStatement)
+        result = finalize(
+            table_array_field="transactions",
+            scalar_fields={"account_number": "1234"},
+            agent=self._agent_with(["2024-05-09", "2024-12-16"]),
+        )
+        assert result["status"] == "success"
+        assert result["row_count"] == 2
+
+    def test_structural_failure_does_not_claim_a_date_remedy(self):
+        """A missing required field must not be reported as a date problem."""
+        finalize = _get_finalize_tool(DatedStatement)
+        result = finalize(
+            table_array_field="transactions",
+            scalar_fields={},  # account_number missing
+            agent=self._agent_with(["2024-05-09"]),
+        )
+        assert result["status"] == "validation_error"
+        assert result["date_format_fields"] == []
+        assert "date_to_iso" not in result["message"]
