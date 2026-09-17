@@ -413,3 +413,116 @@ class TestMapTableStateAccumulation:
         stats = agent.state.get("table_parsing_stats")
         assert stats["rows_mapped"] == 2
         assert stats["mapping_used"] is True
+
+
+# =============================================================================
+# Date transforms
+# =============================================================================
+
+
+class TestMapTableDateTransforms:
+    """Tests for the date_to_iso* value transforms.
+
+    These exist because ``finalize_table_extraction`` validates against a model
+    generated from the class schema, where ``format: date`` is a real
+    ``datetime.date``. A correctly parsed ``05/09/2024`` cannot validate, and
+    the agent's only other recourse is to re-emit every row by hand.
+    """
+
+    def _rows(self, dates):
+        return _make_agent_with_parse_result(
+            columns=["Date"], rows=[{"Date": d} for d in dates]
+        )
+
+    def test_mdy_transform_converts_ambiguous_dates(self):
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["05/09/2024", "12/16/2024"])
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso_mdy"},
+            agent=agent,
+        )
+        assert [r["Date"] for r in result["mapped_rows"]] == [
+            "2024-05-09",
+            "2024-12-16",
+        ]
+
+    def test_dmy_transform_reads_the_other_order(self):
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["05/09/2024"])
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso_dmy"},
+            agent=agent,
+        )
+        assert result["mapped_rows"][0]["Date"] == "2024-09-05"
+
+    def test_auto_converts_unambiguous_and_refuses_ambiguous(self):
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["15/03/2024", "01/02/2024"])
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso"},
+            agent=agent,
+        )
+        # Unambiguous (15 cannot be a month) converts; ambiguous is left alone.
+        assert result["mapped_rows"][0]["Date"] == "2024-03-15"
+        assert result["mapped_rows"][1]["Date"] == "01/02/2024"
+        assert any("refused" in w.lower() for w in result["warnings"])
+
+    def test_explicit_order_never_overrides_an_unambiguous_value(self):
+        """A 15 is not a month however the caller reads the column."""
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["15/03/2024"])
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso_mdy"},
+            agent=agent,
+        )
+        assert result["mapped_rows"][0]["Date"] == "2024-03-15"
+
+    def test_iso_values_pass_through_unchanged(self):
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["2024-03-15"])
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso_mdy"},
+            agent=agent,
+        )
+        assert result["mapped_rows"][0]["Date"] == "2024-03-15"
+        assert not [w for w in result["warnings"] if "refused" in w.lower()]
+
+    def test_unparseable_value_is_left_alone_and_reported(self):
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["not a date"])
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso_mdy"},
+            agent=agent,
+        )
+        assert result["mapped_rows"][0]["Date"] == "not a date"
+        assert any("refused" in w.lower() for w in result["warnings"])
+
+    def test_refusal_warnings_are_capped_per_field_not_per_row(self):
+        """A 1,200-row table must not emit 1,200 warnings."""
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["01/02/2024"] * 50)
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso"},
+            agent=agent,
+        )
+        assert len([w for w in result["warnings"] if "refused" in w.lower()]) == 1
+
+    def test_unknown_transform_is_reported_once(self):
+        tool_fn = create_map_table_to_schema_tool()
+        agent = self._rows(["05/09/2024", "06/09/2024"])
+        result = tool_fn(
+            column_mapping={"Date": "Date"},
+            value_transforms={"Date": "date_to_iso_ymd"},  # not a real transform
+            agent=agent,
+        )
+        assert result["mapped_rows"][0]["Date"] == "05/09/2024"
+        unknown = [w for w in result["warnings"] if "Unknown value transform" in w]
+        assert len(unknown) == 1
+        assert "date_to_iso_mdy" in unknown[0]

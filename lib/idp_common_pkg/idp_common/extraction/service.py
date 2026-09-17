@@ -693,6 +693,133 @@ class ExtractionService:
         )
         return payloads
 
+    def _preflight_table_parse(self, ocr_analysis: dict[str, Any]) -> dict | None:
+        """Parse the section's tables deterministically before the agent runs.
+
+        Returns the ``parse_markdown_tables`` result, or ``None`` when pre-flight
+        does not apply (table parsing disabled, or too few estimated rows for the
+        table pipeline to be the right tool).
+
+        Shared by the single-pass agentic path and the sharded SFN plan. It used
+        to live inline in the single-pass path only, which meant the sharded path
+        — the default for any multi-page table document — never knew a table had
+        already been parsed, and so never applied the ``lazy_images``
+        optimization below.
+        """
+        tp_config = self.config.extraction.agentic.table_parsing
+        if not (tp_config.enabled and ocr_analysis.get("estimated_row_count", 0) >= 50):
+            return None
+        from idp_common.extraction.tools.table_parser import parse_markdown_tables
+
+        result = parse_markdown_tables(
+            text=self._document_text,
+            max_empty_line_gap=tp_config.max_empty_line_gap,
+            auto_merge_adjacent_tables=tp_config.auto_merge_adjacent_tables,
+        )
+        # Logged here rather than at the call sites so both agentic paths are
+        # equally observable: the sharded path used to run no pre-flight at all,
+        # and once it did, it still emitted no evidence of having done so.
+        logger.info(
+            "Pre-flight table parsing complete",
+            extra={
+                "status": result.get("status"),
+                "table_count": result.get("table_count", 0),
+                "total_rows": sum(
+                    t.get("row_count", 0) for t in result.get("tables", [])
+                ),
+                "columns": result.get("columns", []),
+            },
+        )
+        return result
+
+    def _apply_lazy_images(
+        self,
+        send_images: bool,
+        preflight_parse_result: dict | None,
+        page_count: int,
+    ) -> bool:
+        """Apply the ``lazy_images`` cost optimization to an image decision.
+
+        When the deterministic table parser already parsed the section's
+        table(s) in pre-flight, the agentic loop is text/markdown-driven
+        (``parse_table`` / ``map_table_to_schema`` never read images) and the
+        agent can still fetch a page on demand via the ``view_image`` tool.
+        Pre-loaded images are re-sent on every agent turn and dominate cost on
+        multi-page documents (and push large documents toward context limits),
+        so the up-front attachment is suppressed. Gated by config
+        (``lazy_images``, default on) so image-dependent corpora can opt back in.
+
+        Returning False only decides the POLICY. On the single-pass path the
+        page images are already inside the prompt content that
+        ``_build_extraction_content`` rendered for ``{DOCUMENT_IMAGE}``, so the
+        caller must also apply :meth:`_limit_content_images` to that content —
+        otherwise the suppression is a no-op (which is what shipped: see the
+        note there). ``view_image`` stays available on the single-pass path
+        because the full page list is still handed to the agent for tool
+        registration, with attachment turned off; per-shard agents get no
+        ``view_image`` tool at all, so for them this is text-only.
+        """
+        suppress = (
+            send_images
+            and self.config.extraction.agentic.table_parsing.lazy_images
+            and (preflight_parse_result or {}).get("status") == "success"
+        )
+        if not suppress:
+            return send_images
+        logger.info(
+            "Skipping up-front image attachment for agentic extraction "
+            "(pre-flight table parse succeeded; table tool is text-driven, "
+            "view_image remains available on demand)",
+            extra={"page_count": page_count},
+        )
+        return False
+
+    @staticmethod
+    def _limit_content_images(content: Any, limit: int | None) -> tuple[Any, int, int]:
+        """Enforce an image budget on ALREADY-RENDERED prompt content.
+
+        ``{DOCUMENT_IMAGE}`` is substituted in ``_build_extraction_content``,
+        which runs before the agentic branch decides anything about images. So
+        by the time ``_apply_lazy_images`` / ``max_images_per_agent`` have an
+        opinion, every page image is already an image block in ``content``, and
+        the ``page_images=`` argument they were being applied to is a *second*
+        copy. That made all three of the following true on the single-pass
+        agentic path, and none of them were caught by a test:
+
+        * ``lazy_images`` suppressed nothing — the images stayed in ``content``;
+        * ``max_images_per_agent`` capped nothing — a 25-page section with
+          ``{DOCUMENT_IMAGE}`` still attached 25 images against a default cap of
+          20, which is the oversized-first-turn overflow the cap exists for;
+        * with suppression off, every page image was attached **twice** (once by
+          the substitution, once by ``_prepare_prompt_content``).
+
+        The policy is therefore applied to the content itself, and the images
+        handed to the agent alongside it are for ``view_image`` only
+        (``attach_page_images=False``).
+
+        Args:
+            content: rendered content (list of blocks, or anything else — a
+                non-list prompt has no image blocks and is returned unchanged).
+            limit: max image blocks to keep; 0 drops them all, None = unlimited.
+
+        Returns:
+            ``(content, kept, dropped)``.
+        """
+        if limit is None or not isinstance(content, list):
+            return content, 0, 0
+        kept: list[Any] = []
+        n_images = 0
+        dropped = 0
+        for block in content:
+            is_image = isinstance(block, dict) and block.get("image") is not None
+            if is_image:
+                if n_images >= limit:
+                    dropped += 1
+                    continue
+                n_images += 1
+            kept.append(block)
+        return kept, n_images, dropped
+
     @staticmethod
     def _slice_images(images: list[bytes], start: int, end: int) -> list[bytes]:
         """Slice page images to a page range, tolerating an empty/short list."""
@@ -4492,6 +4619,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     prompt=message_prompt,
                     existing_data=existing_model,
                     page_images=agentic_images,
+                    # Attachment is decided on the content; this pool is for view_image.
+                    attach_page_images=False,
                     config=self.config,
                     context="ExtractionEscalation",
                     custom_instruction=instruction,
@@ -4515,6 +4644,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     prompt=message_prompt,
                     existing_data=existing_model,
                     page_images=agentic_images,
+                    # Attachment is decided on the content; this pool is for view_image.
+                    attach_page_images=False,
                     config=self.config,
                     context="ExtractionEscalation",
                     custom_instruction=instruction,
@@ -4849,22 +4980,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # the LLM having to call parse_table and then generate JSON row-by-row.
             # The LLM only needs to provide a column-to-field mapping, and the
             # map_table_to_schema tool does the bulk transformation instantly.
-            preflight_parse_result = None
-            if (
-                self.config.extraction.agentic.table_parsing.enabled
-                and ocr_analysis.get("estimated_row_count", 0) >= 50
-            ):
-                from idp_common.extraction.tools.table_parser import (
-                    parse_markdown_tables,
-                )
-
-                tp_config = self.config.extraction.agentic.table_parsing
-                preflight_parse_result = parse_markdown_tables(
-                    text=self._document_text,
-                    max_empty_line_gap=tp_config.max_empty_line_gap,
-                    auto_merge_adjacent_tables=tp_config.auto_merge_adjacent_tables,
-                )
-
+            preflight_parse_result = self._preflight_table_parse(ocr_analysis)
+            if preflight_parse_result is not None:
                 if preflight_parse_result.get("status") == "success":
                     total_rows = sum(
                         t.get("row_count", 0)
@@ -4873,15 +4990,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     columns = preflight_parse_result.get("columns", [])
                     table_count = preflight_parse_result.get("table_count", 0)
 
-                    logger.info(
-                        "Pre-flight table parsing complete",
-                        extra={
-                            "total_rows": total_rows,
-                            "table_count": table_count,
-                            "columns": columns,
-                        },
-                    )
-
+                    # (`_preflight_table_parse` logs the parse itself, for both
+                    # agentic paths.)
                     # Build efficient extraction guidance with pre-parsed summary
                     preflight_guidance = (
                         f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
@@ -4920,41 +5030,48 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             prompt_template = (
                 select_extraction_task_prompt(self.config.extraction) or ""
             )
-            send_images = "{DOCUMENT_IMAGE}" in prompt_template
-
-            # Cost optimization: when the deterministic table parser already
-            # parsed the document's table(s) in pre-flight, the agentic loop is
-            # text/markdown-driven (parse_table / map_table_to_schema never read
-            # images) and the agent can still fetch a page on demand via the
-            # view_image tool. Pre-loading every page image re-sends them on
-            # every agent turn and dominates cost on multi-page docs (and can
-            # push large docs toward context-window limits). So suppress the
-            # up-front image attachment when a successful pre-flight table parse
-            # covers the doc. Gated by config (lazy_images, default on) so
-            # image-dependent corpora can opt back in. Local+live A/B: identical
-            # completeness/accuracy (recall 1.0) with images off on this path.
-            suppress_images_for_table = (
-                send_images
-                and self.config.extraction.agentic.table_parsing.lazy_images
-                and preflight_parse_result is not None
-                and preflight_parse_result.get("status") == "success"
-            )
-            if suppress_images_for_table:
-                send_images = False
-
-            agentic_images = (
-                self._cap_agent_images(self._page_images) if send_images else []
-            )
+            prompt_wants_images = "{DOCUMENT_IMAGE}" in prompt_template
             num_pages = len(self._page_images) or len(section_info.sorted_page_ids)
+            # Local+live A/B: identical completeness/accuracy (recall 1.0) with
+            # images off on this path.
+            send_images = self._apply_lazy_images(
+                prompt_wants_images, preflight_parse_result, num_pages
+            )
 
-            if suppress_images_for_table and self._page_images:
-                logger.info(
-                    "Skipping up-front image attachment for agentic extraction "
-                    "(pre-flight table parse succeeded; table tool is text-driven, "
-                    "view_image remains available on demand)",
-                    extra={"page_count": num_pages},
+            # Enforce the decision on the CONTENT, which is where the images
+            # actually are (see _limit_content_images). `agentic_images` is the
+            # pool the view_image tool reads from — never a second attachment,
+            # hence attach_page_images=False at every call below.
+            cap = self.config.extraction.agentic.max_images_per_agent or None
+            image_limit = 0 if not send_images else cap
+            if isinstance(message_prompt, dict):
+                limited, kept_images, dropped_images = self._limit_content_images(
+                    message_prompt.get("content"), image_limit
                 )
-            elif not send_images and self._page_images:
+                message_prompt = {**message_prompt, "content": limited}
+            else:
+                (
+                    message_prompt,
+                    kept_images,
+                    dropped_images,
+                ) = self._limit_content_images(message_prompt, image_limit)
+            if dropped_images:
+                logger.info(
+                    "Agentic image policy applied to the prompt content",
+                    extra={
+                        "images_kept": kept_images,
+                        "images_dropped": dropped_images,
+                        "limit": image_limit,
+                        "reason": (
+                            "lazy_images" if not send_images else "max_images_per_agent"
+                        ),
+                    },
+                )
+            # The full page list still reaches the agent — for the view_image
+            # tool only, so a suppressed page can still be fetched on demand.
+            agentic_images = self._page_images
+
+            if not prompt_wants_images and self._page_images:
                 logger.info(
                     "Skipping image attachment for agentic extraction "
                     "(task prompt does not reference {DOCUMENT_IMAGE})",
@@ -5038,6 +5155,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     prompt=message_prompt,
                     existing_data=existing_data_model,
                     page_images=agentic_images,
+                    # Attachment is decided on the content; this pool is for view_image.
+                    attach_page_images=False,
                     config=self.config,
                     context="Extraction",
                     checkpoint_callback=self._checkpoint_callback,
@@ -6984,7 +7103,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
 
         prompt_template = self.config.extraction.task_prompt or ""
-        send_images = "{DOCUMENT_IMAGE}" in prompt_template
+        # Same lazy_images decision as the single-pass agentic path. This path is
+        # the DEFAULT for multi-page table documents, and it used to skip the
+        # check entirely: every shard carried its page images on every agent
+        # turn, so the shipped `lazy_images: true` default had no effect where it
+        # mattered most.
+        send_images = self._apply_lazy_images(
+            "{DOCUMENT_IMAGE}" in prompt_template,
+            self._preflight_table_parse(ocr_analysis),
+            len(self._page_texts),
+        )
         shard_payloads = self._build_shard_payloads(
             prompt_template=prompt_template,
             send_images=send_images,
