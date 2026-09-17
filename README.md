@@ -217,7 +217,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 ### Planning & Operations
 
 - [Capacity Planning](./docs/capacity-planning.md) - Comprehensive capacity planning, performance optimization, and resource scaling guidance
-- [Well-Architected Framework Assessment](./docs/well-architected.md) - Analysis based on AWS Well-Architected Framework
+- [Well-Architected Framework Review](./docs/well-architected.md) - What the solution implements per pillar, plus a checklist template you fill in for your own deployment
 - [AWS Services & IAM Roles](./docs/aws-services-and-roles.md) - AWS services used and IAM role requirements
 - [Cost Calculator](./docs/cost-calculator.md) - Framework for estimating solution costs
 

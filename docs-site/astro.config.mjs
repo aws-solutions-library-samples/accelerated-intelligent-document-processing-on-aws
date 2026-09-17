@@ -254,7 +254,7 @@ export default defineConfig({
           label: "Planning & Security",
           items: [
             {
-              label: "Well-Architected Assessment",
+              label: "Well-Architected Review",
               slug: "well-architected",
             },
             {
