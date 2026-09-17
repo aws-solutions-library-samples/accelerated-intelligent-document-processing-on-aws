@@ -5981,10 +5981,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 escalation_batch_size=esc_batch,
                 max_escalation_rounds=confidence_cfg.max_escalation_rounds,
                 deadline_epoch=self._assessment_deadline_epoch,
+                model_id=confidence_cfg.model,
             )
             split_stats["unrecoverable_rows"] += len(
                 _missing_row_indices(merged_assessment.get(field), rows)
             )
+
+        # #894: name the class alongside the oversized-row field(s) so the emitted
+        # issue points at the class whose list item does not fit the model's output
+        # budget (the ladder itself only sees field names).
+        if split_stats.get("oversized_row_fields"):
+            split_stats["oversized_row_class"] = section_info.class_label
 
         # Re-enrich so any spliced-in rows carry confidence_threshold like the
         # rest — and keep the alerts it builds: enumerating the full merged list

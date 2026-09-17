@@ -11,7 +11,7 @@ from aws_xray_sdk.core import patch_all, xray_recorder
 
 from idp_common import assessment, get_config, s3
 from idp_common.docs_service import create_document_service
-from idp_common.models import Document, Status
+from idp_common.models import Document, ProcessingIssue, Status
 from idp_common.utils import (
     calculate_lambda_metering,
     merge_metering_data,
@@ -104,6 +104,64 @@ def check_document_for_throttling_errors(document):
             return True, error_msg
 
     return False, None
+
+
+def degrade_section_to_no_confidence(document, section_id, error):
+    """#901: keep a successful extraction when assessment fails deterministically.
+
+    Assessment is an *enrichment* pass: extraction already ran, already wrote its
+    results to S3, and was already paid for (two observed runs discarded $17.34 and
+    $7.05 of correct extraction — 1,200/1,200 rows at 1.000 cell accuracy — because
+    the confidence pass hit a deterministic
+    ``ValidationException: Input is too long for requested model.``). Failing the
+    document threw away the expensive, correct part of the work to report the loss
+    of the cheap, advisory part.
+
+    So for a DETERMINISTIC failure the document is no longer marked
+    ``Status.FAILED``. Instead the confidence gap is recorded as an
+    error-severity ``ProcessingIssue`` on the section, which the caller persists via
+    ``update_document_section`` and the UI surfaces alongside the extraction
+    results. ``processresults_function`` fails a document only when a section
+    document comes back ``Status.FAILED`` (a section's ``errors`` list is read only
+    inside that branch), so leaving the status alone is what makes the document
+    succeed-without-confidence.
+
+    This is deliberately NOT applied to transient failures: the caller checks
+    throttling and ``is_transient_error`` FIRST and re-raises those so Step
+    Functions retries the section as before. Only a failure that would fail
+    identically on every retry degrades — a retry cannot fix an input that is too
+    long for the model.
+
+    Returns the recorded ``ProcessingIssue``.
+    """
+    issue = ProcessingIssue(
+        stage="assessment",
+        severity="error",
+        code="assessment_failed_confidence_unavailable",
+        message=(
+            "Confidence assessment failed for this section, so its extracted "
+            "values have NO confidence scores and are not covered by "
+            "confidence-based review (HITL thresholds). The extracted data itself "
+            "is complete and was kept. Deterministic failures are not retried; if "
+            "the confidence model rejected the input as too long, use a "
+            "confidence model with a larger context window, reduce "
+            "extraction.confidence.list_batch_size, or process smaller sections."
+        ),
+        root_cause=f"{type(error).__name__}: {error}",
+        section_id=section_id,
+    )
+    for s in document.sections:
+        if s.section_id == section_id:
+            # Replace only assessment-stage issues; extraction's own issues on this
+            # section (extraction_incomplete, extraction_validation_failed, ...)
+            # must survive, because the section write REPLACES the whole map.
+            s.processing_issues = [
+                pi
+                for pi in (s.processing_issues or [])
+                if getattr(pi, "stage", None) != "assessment"
+            ] + [issue]
+            break
+    return issue
 
 
 @xray_recorder.capture("assessment_function")
@@ -366,13 +424,21 @@ def _handle(event, context):
             )
             raise TransientError(e, where=f"assessment section {section_id}") from e
         else:
+            # #901: a DETERMINISTIC assessment failure must not discard a
+            # successful extraction. Retrying cannot help (the throttling and
+            # is_transient_error branches above already claimed everything that
+            # can), and the extraction results are already in S3, so keep them and
+            # degrade: no Status.FAILED, an error-severity ProcessingIssue on the
+            # section instead, persisted by the update_document_section call below.
             logger.error(
-                f"Non-throttling exception: {type(e).__name__}. Marking document as failed."
+                f"Deterministic (non-retryable) assessment failure: "
+                f"{type(e).__name__}. Keeping the extraction results and marking "
+                f"section {section_id} as having no confidence scores instead of "
+                f"failing the document."
             )
-            # Set document status to failed for non-throttling exceptions
             updated_document = document
-            updated_document.status = Status.FAILED
-            updated_document.errors.append(str(e))
+            issue = degrade_section_to_no_confidence(updated_document, section_id, e)
+            logger.warning(f"Recorded assessment ProcessingIssue: {issue.code}")
 
     # (The optional post-assessment validation checks — previously gated behind
     # the removed `confidence.validation_enabled` toggle — are no longer run

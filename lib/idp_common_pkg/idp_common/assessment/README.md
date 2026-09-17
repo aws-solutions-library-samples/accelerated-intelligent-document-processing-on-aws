@@ -268,7 +268,10 @@ The activity is surfaced for visibility (only when a run actually had to shrink)
 - **`metadata.assessment_batch_split_stats`** on the section result — a dict with
   `truncated_calls`, `splits`, `min_batch_size_used`, `rows_recovered_by_retry`,
   `unrecoverable_rows`, `derived_batch_size`, `configured_batch_size`,
-  `escalation_model`, `escalation_rounds`, and `rows_recovered_by_escalation`.
+  `escalation_model`, `escalation_rounds`, and `rows_recovered_by_escalation`,
+  plus `oversized_row_fields` / `oversized_row_model` /
+  `oversized_row_output_cap` / `oversized_row_chars` / `oversized_row_class` when
+  the give-up guard below fired.
 - An **`⚠ Assessment Batch Splitting`** block in the agentic extraction
   **processing report**.
 
@@ -362,6 +365,29 @@ honoring a threshold declared on the `$defs` definition instead of the property
 is a change to threshold *inheritance* and belongs with `threshold_resolver`'s
 rules.
 
+**Oversized-row guard (give up instead of retrying, [#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894)).**
+Halving a truncated batch converges only while a *smaller* batch can fit. If the
+model still returns `stopReason=max_tokens` with a **single row** in the call,
+that one row's confidence output exceeds the model's cap and **no batch size can
+work**. The ladder now stops there: it records the terminal condition in
+`split_stats["oversized_row_fields"]` (with the model, its output cap, the
+offending row's approximate serialized size and the class), **skips the same-model
+retry rung entirely**, allows at most **one** escalation round (a bigger output
+cap is the only remedy that can legitimately succeed), and emits
+`assessment_row_too_large` (**error**).
+
+Before this guard the ladder kept re-running the impossible call — each attempt a
+full ~60s model call, times the retry rounds and the bisection tree — until the
+Assessment Lambda hit its 900s wall; Step Functions then retried the whole section
+twice more (`Sandbox.Timedout` x3) and the document stuck in `ASSESSING`. The
+observed trigger is a class marked `x-aws-idp-multi-instance: true`: the wrapper
+makes the *instance list* the outer list field, so one "row" is a whole document
+instance carrying its own long inner list (a 100-row `Transactions` table). The
+sizer reports that row as `cols=2 per_row~80` and derives a 12-row batch, which is
+wrong by orders of magnitude — **that sizing bug is not fixed** and #894 stays open
+for it. What is fixed is that the run now fails fast with an actionable message
+instead of burning 45 minutes.
+
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the
 > agentic `validation` gate won't catch *extra* attributes unless the class schema
@@ -379,18 +405,40 @@ without reading raw metadata. Severity ladder:
 | Condition | code | severity |
 |-----------|------|----------|
 | List extracted for a non-array/off-schema attribute (retry+escalation skipped) | `assessment_schema_mismatch` | **error** |
+| A single row still truncated the model — no batch size can fit it (#894) | `assessment_row_too_large` | **error** |
 | Rows still unscored after the full ladder | `assessment_incomplete` | **error** |
 | Wall-clock guard cut escalation short | `assessment_deadline_reached` | **warning** |
 | Healed, but needed shrinking/escalation | `assessment_recovered_with_retries` | **info** |
 
 `assessment_schema_mismatch` takes precedence over `assessment_incomplete`: when
 both fire, the schema mismatch is the true root cause and is emitted alone.
+`assessment_row_too_large` ranks next for the same reason — the generic "rows could
+not be scored" message sends an operator to shrink `list_batch_size`, which is the
+one remedy that provably cannot work when the batch was already a single row.
 
 A **completeness gate** (`audit_explainability`) runs after the ladder on both
 the standalone and in-shard paths: it confirms every extracted value has a real
 (non-null), in-range confidence and — when `geometry.mode != "off"` — a bounding
 box, emitting `assessment_confidence_out_of_range` / `assessment_geometry_incomplete`
-for anything structurally wrong. Issues are attached to each `Section`
+for anything structurally wrong.
+
+It also reports **partial coverage**
+([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)
+item 3). The gate already computed which rows carry no confidence, but every
+caller discarded that, so a section could return a fraction of its rows scored and
+still report unqualified success (one run scored 1,146 leaves where 5-page shards
+scored 4,807 — ~24% coverage, no issue raised; the *reason* coverage fell rather
+than failing was never established, and this issue makes no claim about it). When
+unscored rows exceed **5%** of the extracted list rows the gate emits
+`assessment_coverage_incomplete` — **warning** up to 25% unscored, **error** at or
+above it — carrying `expected_rows`, `scored_rows`, `unscored_rows` and a per-field
+breakdown. 5% is the "stop trusting the surface as a whole" line rather than 0%,
+because reconciliation pads one assessment entry per extracted row (so a healthy
+run is at 0%) and small residual shortfalls are already named precisely by
+`assessment_incomplete`; 25% marks the point where the scored rows are no longer a
+usable sample of the section.
+
+Issues are attached to each `Section`
 (`section.processing_issues`), rolled up to `Document.processing_issue_count`,
 and rendered in the extraction processing report.
 
