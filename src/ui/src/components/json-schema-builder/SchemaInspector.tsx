@@ -26,7 +26,6 @@ import ExamplesEditor from './constraints/ExamplesEditor';
 import PageTypesEditor, { PageTypeEntry } from './constraints/PageTypesEditor';
 import {
   TYPE_OPTIONS,
-  EVALUATION_METHOD_OPTIONS,
   EVALUATION_THRESHOLD_DEFAULTS,
   EVALUATION_MATCH_THRESHOLD_DEFAULTS,
   METHODS_REQUIRING_THRESHOLD,
@@ -58,6 +57,7 @@ import {
   VALIDATION_ENGINE_OPTIONS,
 } from '../../constants/schemaConstants';
 import { designationProblem } from '../../utils/idpSchemaExtensions';
+import { availableEvaluationMethods, isStructuredArrayAttribute } from './utils/evaluationMethods';
 
 interface SchemaAttribute {
   type?: string;
@@ -1027,7 +1027,7 @@ const SchemaInspector = ({
           <RuleJsonSection key={selectedAttributeName} selectedAttribute={selectedAttribute} onUpdate={onUpdate} />
         )}
 
-        {!isRuleSchema && <MetadataFields attribute={selectedAttribute} onUpdate={onUpdate} />}
+        {!isRuleSchema && <MetadataFields attribute={selectedAttribute} onUpdate={onUpdate} availableClasses={availableClasses} />}
 
         {!isRuleSchema && <StringConstraints attribute={selectedAttribute} onUpdate={onUpdate} />}
 
@@ -1102,33 +1102,11 @@ const SchemaInspector = ({
           (() => {
             // Detect if this is a structured array (List[Object])
             // Must check BOTH inline objects AND $ref to classes (matches backend logic)
-            const isStructuredArray =
-              selectedAttribute.type === 'array' && (selectedAttribute.items?.type === 'object' || selectedAttribute.items?.$ref);
+            const isStructuredArray = isStructuredArrayAttribute(selectedAttribute);
 
-            // Filter available methods based on field type
-            const availableMethods = EVALUATION_METHOD_OPTIONS.filter((opt) => {
-              // HUNGARIAN requires structured array
-              if (opt.requiresStructuredItems) {
-                return isStructuredArray;
-              }
-              // Methods with validFor restrictions
-              if (opt.validFor) {
-                // For arrays with SIMPLE items (Array[String], Array[Number], etc.)
-                // check if method is valid for the ITEM type
-                if (selectedAttribute.type === 'array' && !isStructuredArray) {
-                  const itemType = selectedAttribute.items?.type || 'string';
-                  return opt.validFor.includes(itemType);
-                }
-                // For structured arrays (Array[Object]), check if method is valid for arrays
-                if (selectedAttribute.type === 'array' && isStructuredArray) {
-                  return opt.validFor.includes('array');
-                }
-                // For other types, check directly
-                return opt.validFor.includes(selectedAttribute.type as string);
-              }
-              // Default: allow for non-structured-arrays
-              return !isStructuredArray;
-            });
+            // Filter available methods by the property's type, resolving a bare
+            // `$ref` to its target first (#906) and never returning an empty list.
+            const availableMethods = availableEvaluationMethods(selectedAttribute, availableClasses);
 
             const currentMethod = selectedAttribute[X_AWS_IDP_EVALUATION_METHOD] as string | undefined;
 

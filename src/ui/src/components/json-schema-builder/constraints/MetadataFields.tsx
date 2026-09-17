@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FormField, Textarea, Input } from '@cloudscape-design/components';
-import { formatValueForInput, parseInputValue } from '../utils/schemaHelpers';
+import { ClassLike, formatValueForInput, parseInputValue, resolveAttributeType } from '../utils/schemaHelpers';
 
 interface SchemaAttribute {
   type?: string;
@@ -13,9 +13,11 @@ interface SchemaAttribute {
 interface MetadataFieldsProps {
   attribute: SchemaAttribute;
   onUpdate: (updates: Partial<SchemaAttribute>) => void;
+  /** Used only to resolve a `$ref`'d attribute's real type when parsing Default Value. */
+  availableClasses?: ClassLike[];
 }
 
-const MetadataFields = ({ attribute, onUpdate }: MetadataFieldsProps): React.JSX.Element => {
+const MetadataFields = ({ attribute, onUpdate, availableClasses }: MetadataFieldsProps): React.JSX.Element => {
   // Local state for buffering user input without immediate parsing
   const [examplesInput, setExamplesInput] = useState('');
   const [defaultValueInput, setDefaultValueInput] = useState('');
@@ -61,7 +63,10 @@ const MetadataFields = ({ attribute, onUpdate }: MetadataFieldsProps): React.JSX
       onUpdate(updates);
       return;
     }
-    const parsed = parseInputValue(defaultValueInput, attribute.type);
+    // Resolve a bare `$ref` to its target type first: read straight off the node
+    // it is `undefined`, so a JSON default typed into an object field was stored
+    // as the raw string rather than parsed (GitHub #906).
+    const parsed = parseInputValue(defaultValueInput, resolveAttributeType(attribute, availableClasses));
     onUpdate({ default: parsed });
   };
 
