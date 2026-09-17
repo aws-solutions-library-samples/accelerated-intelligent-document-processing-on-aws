@@ -14,8 +14,8 @@ a flaky stack and left documents in the shard map for 45+ minutes.
 ``idp_common.utils.transient_errors`` (tested in
 ``tests/unit/utils/test_transient_errors.py``) stops the retries. This module covers
 the other half: the extraction path translates the bare stream error into a message
-that names the model, says the fault is a capability limit rather than a transient
-one, and suggests a model that does work.
+that names the model, says the failure reproduces on retry with the same request (so
+it is treated as deterministic rather than transient), and lists what to change.
 
 Placement note: the strands-dependent tests under ``tests/unit/extraction/agentic_idp/``
 are skipped by that directory's ``conftest.py`` whenever ``CI`` is set, so a test
@@ -74,12 +74,16 @@ class TestTheMessage:
         msg = _agentic._explain_invalid_tool_use_sequence(_stream_error(), _NOVA_LITE)
         assert _NOVA_LITE in msg
 
-    def test_it_says_the_fault_is_a_capability_limit_not_a_transient_one(self):
+    def test_it_says_the_failure_reproduces_rather_than_being_transient(self):
         """Without this the fast failure reads as a broken stack, and the operator
-        retries the whole batch instead of changing the model."""
+        retries the whole batch instead of changing the configuration. The wording
+        stops short of "model capability limit": AWS's Nova tool-use troubleshooting
+        guide attributes this error largely to inference parameters and output
+        budget, and the agentic path sends no ``topK``."""
         msg = _agentic._explain_invalid_tool_use_sequence(_stream_error(), _NOVA_LITE)
-        assert "capability limitation" in msg
-        assert "NOT a transient fault" in msg
+        assert "reproduces on retry with the same request" in msg
+        assert "deterministic rather than transient" in msg
+        assert "capability limitation" not in msg
 
     def test_it_names_the_outcome_and_the_bedrock_code(self):
         """So the message can be matched to the raw log line it replaces."""
@@ -90,10 +94,23 @@ class TestTheMessage:
     def test_it_suggests_what_to_change(self):
         msg = _agentic._explain_invalid_tool_use_sequence(_stream_error(), _NOVA_LITE)
         assert "extraction.model" in msg
-        # The simple path needs no tool use at all, so it is the other way out.
+        # The simple path needs no tool use in its default configuration (the
+        # experimental extraction.forced_tool is the exception), so it is one way out.
         assert "extraction.mode to simple" in msg
         for model in _agentic._AGENTIC_CAPABLE_EXAMPLE_MODELS:
             assert model in msg
+
+    def test_it_offers_emitting_less_per_call_and_links_the_vendor_guide(self):
+        """AWS's Nova tool-use troubleshooting guide ties this error to inference
+        parameters and output budget, so "emit less" is a first-class remedy and the
+        guide itself belongs in the message."""
+        msg = _agentic._explain_invalid_tool_use_sequence(_stream_error(), _NOVA_LITE)
+        assert "extraction.agentic.shard_token_budget" in msg
+        assert "extraction.agentic.max_pages_per_shard" in msg
+        assert (
+            "https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html"
+            in msg
+        )
 
     def test_it_keeps_the_underlying_error(self):
         msg = _agentic._explain_invalid_tool_use_sequence(_stream_error(), _NOVA_LITE)

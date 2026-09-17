@@ -93,9 +93,12 @@ _AGENTIC_CAPABLE_EXAMPLE_MODELS = (
 def _explain_invalid_tool_use_sequence(exc: BaseException, model_id: str | None) -> str:
     """The message for a model that cannot emit a valid tool-use sequence (#895).
 
-    States the outcome, that it is a capability limit rather than a transient
-    fault (so nobody reads the fast failure as a flaky stack), which model
-    produced it, and what to change.
+    States the outcome, that it reproduces on retry with the same request (so
+    nobody reads the fast failure as a flaky stack), which model produced it, and
+    what to change. Deliberately does NOT claim a hard model capability limit:
+    AWS's Nova tool-use troubleshooting guide attributes this error primarily to
+    inference parameters and output budget, and this repository does not send
+    ``topK`` on the agentic path, so the remedies include emitting less per call.
     """
     which = model_id or "the configured extraction model"
     alternatives = ", ".join(_AGENTIC_CAPABLE_EXAMPLE_MODELS)
@@ -103,13 +106,18 @@ def _explain_invalid_tool_use_sequence(exc: BaseException, model_id: str | None)
         f"Advanced (agentic) extraction failed: {which} produced an invalid "
         "tool-use sequence, which Bedrock reports mid-stream as "
         "modelStreamErrorException / 'Model produced invalid sequence as part of "
-        "ToolUse'. This is a model capability limitation, NOT a transient fault: "
-        "the agentic path depends on well-formed toolUse blocks, so retrying the "
-        "same request on the same model reproduces it. Suggested action: switch "
-        "extraction.model (or the per-class x-aws-idp-extraction-model override) "
-        f"to a model known to work for Advanced extraction — e.g. {alternatives} — "
-        "or set extraction.mode to simple, which needs no tool use and works on "
-        f"every model. Amazon Nova Lite in particular cannot run the Advanced path. "
+        "ToolUse'. This reproduces on retry with the same request, so it is treated "
+        "as deterministic rather than transient and is not retried. Suggested "
+        "actions: (1) switch extraction.model (or the per-class "
+        "x-aws-idp-extraction-model override) to a model measured on this path — "
+        f"e.g. {alternatives}; (2) reduce extraction.agentic.shard_token_budget / "
+        "extraction.agentic.max_pages_per_shard so each call emits less, since this "
+        "error is also reported when a tool-output turn runs past the output budget; "
+        "or (3) set extraction.mode to simple, which needs no tool use in its "
+        "default configuration and works on every model. Amazon Nova Lite has not "
+        "completed the Advanced path in this repository's benchmarks. See AWS's Nova "
+        "tool-use troubleshooting guide: "
+        "https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html "
         f"(underlying error: {exc})"
     )
 

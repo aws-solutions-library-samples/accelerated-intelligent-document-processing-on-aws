@@ -66,10 +66,10 @@ code lookup, the exception-type check and the class-name lookup — so it beats 
 verdict those would give. The only entry today is Bedrock's `Model produced invalid
 sequence as part of ToolUse` (#895): `modelStreamErrorException` stays transient as a
 code, because `ConverseStream` genuinely does break mid-stream for transport reasons,
-but a model that emits a malformed `toolUse` block emits it again on attempt 8.
-`is_model_tool_use_sequence_error(exc)` is the matching predicate, used by
-`extraction/agentic_idp.py` to raise `ModelInvalidToolUseSequence` with the model id
-and the remedy. Keep the tuple narrow: text that merely sounds deterministic
+but a model that emits a malformed `toolUse` block emits it again on attempt 8 (the
+shard retrier's `MaxAttempts`). `is_model_tool_use_sequence_error(exc)` is the matching
+predicate, used by `extraction/agentic_idp.py` to raise `ModelInvalidToolUseSequence`
+with the model id and the remedies. Keep the tuple narrow: text that merely sounds deterministic
 ("invalid request", "unsupported") also appears inside genuinely transient wrappers.
 
 ```python

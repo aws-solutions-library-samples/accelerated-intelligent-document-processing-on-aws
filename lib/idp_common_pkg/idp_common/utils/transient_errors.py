@@ -143,12 +143,14 @@ MODEL_TOOL_USE_SEQUENCE_MARKER = "invalid sequence as part of tooluse"
 #: Why this exception to rule 1 exists (#895): ``modelStreamErrorException`` as a
 #: CLASS is legitimately transient — ``ConverseStream`` really does break mid-stream
 #: for transport reasons — so it stays in ``TRANSIENT_ERROR_NAMES``. But the "Model
-#: produced invalid sequence as part of ToolUse" OUTCOME is a model capability
-#: limit: the model emitted a tool-use block the protocol rejects, and it will emit
-#: the same block on attempt 8. One Nova Lite benchmark grid logged 247 of these,
-#: each retried by the agentic ladder's caller and then by Step Functions, which
-#: turned "this model cannot run the agentic path" into documents sitting in the
-#: shard map for 45 minutes instead of a fast, readable failure.
+#: produced invalid sequence as part of ToolUse" OUTCOME reproduces on retry with
+#: the same request: the model emits a tool-use block the protocol rejects, and it
+#: emits the same block on attempt 8. One Nova Lite benchmark grid logged 247 of
+#: these, each retried by Step Functions for every shard of every document (the
+#: in-call retry ladder never retried it — ``modelStreamErrorException`` is not in
+#: ``DEFAULT_RETRYABLE_ERRORS``), which turned "this model cannot run the agentic
+#: path" into documents sitting in the shard map for 45 minutes instead of a fast,
+#: readable failure.
 #:
 #: Keep this tuple NARROW and outcome-specific. Text that merely sounds
 #: deterministic ("invalid request", "unsupported") also appears inside genuinely

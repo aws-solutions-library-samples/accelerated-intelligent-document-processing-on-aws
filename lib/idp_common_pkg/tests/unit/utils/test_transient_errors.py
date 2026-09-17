@@ -308,7 +308,8 @@ class TestInvalidToolUseSequenceIsNotTransient:
 
     def test_raise_if_transient_returns_silently_so_the_bare_raise_stands(self):
         """``raise_if_transient`` must NOT surface this as ``TransientError`` — that
-        name is what ``workflow.asl.json`` retries six times per shard."""
+        name is what ``workflow.asl.json`` retries up to eight times per shard task
+        (``MaxAttempts: 8`` on the ``ShardExtractionStep`` retrier)."""
         raise_if_transient(_stream_error(_TOOL_USE_MESSAGE), where="shard runtime")
 
     def test_the_verdict_beats_the_code_the_type_and_the_class_name(self):
