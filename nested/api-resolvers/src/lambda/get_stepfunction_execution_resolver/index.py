@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 from boto3.dynamodb.conditions import Key as DDBKey
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Configure detailed logging
 logger = logging.getLogger()
@@ -30,40 +31,6 @@ _USER_SCOPE_CACHE_TTL = 60  # seconds
 # ARN of this stack's document-processing state machine. Every executionArn the
 # caller supplies must belong to it.
 _STATE_MACHINE_ARN = os.environ.get("STATE_MACHINE_ARN", "")
-
-# --- inline log sanitizer ---------------------------------------------------
-# Minimal inline redactor. Kept here rather than importing from idp_common to
-# avoid adding a Lambda Layer dependency to this resolver. If this file grows
-# to need idp_common anyway, promote to
-# `from idp_common.utils.log_sanitizer import sanitize_event_for_logging`.
-_LOG_SENSITIVE_KEYS = (
-    "password",
-    "secret",
-    "token",
-    "authorization",
-    "apikey",
-    "api_key",
-    "cookie",
-    "credential",
-    "claims",
-    "identity",
-)
-
-
-def _sanitize_for_log(obj):
-    """Deep-copy `obj` redacting values whose keys match the denylist."""
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            if isinstance(k, str) and any(s in k.lower() for s in _LOG_SENSITIVE_KEYS):
-                out[k] = "***REDACTED***" if v is not None else None
-            else:
-                out[k] = _sanitize_for_log(v)
-        return out
-    if isinstance(obj, list):
-        return [_sanitize_for_log(v) for v in obj]
-    return obj
-
 
 def _unauthorized(message: str) -> PermissionError:
     """Build the denial the dispatcher turns into a 403.
@@ -237,7 +204,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     try:
         # Log incoming request
-        logger.info(f"Received request: {json.dumps(_sanitize_for_log(event))}")
+        logger.info(f"Received request: {json.dumps(sanitize_event_for_logging(event))}")
 
         execution_arn = event["arguments"]["executionArn"]
         logger.info(f"Getting execution details for: {execution_arn}")
