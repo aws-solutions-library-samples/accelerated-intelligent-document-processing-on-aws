@@ -15,6 +15,7 @@ import pytest
 
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
+    DocumentEvaluationResult,
     SectionEvaluationResult,
 )
 from idp_common.evaluation.service import EvaluationService
@@ -206,6 +207,84 @@ class TestSticklerEvaluationService:
         # And the picker actually used the name-token rule for both.
         assert explain["invoice_id"]["comparator"] == "ExactComparator"
         assert explain["total_amount"]["comparator"] == "NumericComparator"
+
+    def test_inference_source_survives_to_dict_round_trip(self):
+        """End-to-end regression for the ``results.json`` writer.
+
+        Both the ``inference_source`` dataclass field on
+        ``AttributeEvaluationResult`` and the resolver flow that reads it
+        from ``results.json`` are already covered — but nothing asserted
+        that the writer, ``DocumentEvaluationResult.to_dict()``, emits the
+        field into the JSON blob it produces. The first shipped iteration
+        of this feature omitted the field from ``to_dict``'s explicit
+        allowlist, so every provenance value made it as far as the
+        section-evaluation result and then vanished at the serialization
+        boundary — leaving the Test Studio Comparator Changes panel
+        source-blind in production even though every unit test passed.
+
+        This test round-trips a full ``evaluate_section`` -> ``to_dict``
+        pipeline for a doc with one operator-configured and one
+        un-annotated leaf, and asserts BOTH ``inference_source`` values
+        appear in the serialized attribute dict — the shape the resolver
+        actually reads.
+        """
+        from unittest.mock import patch
+
+        config = {
+            "classes": [
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$id": "roundtrip",
+                    "x-aws-idp-document-type": "Roundtrip",
+                    "type": "object",
+                    "properties": {
+                        "agency_name": {
+                            "type": "string",
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": 0.9,
+                        },
+                        "invoice_id": {"type": "string"},
+                    },
+                }
+            ]
+        }
+        svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+        section = Section(
+            section_id="1",
+            classification="Roundtrip",
+            page_ids=["1"],
+            confidence=1.0,
+            extraction_result_uri="s3://bucket/expected.json",
+        )
+        payload = {"agency_name": "Acme Media", "invoice_id": "INV-42"}
+        with (
+            patch(
+                "idp_common.evaluation.service.s3.get_json_content",
+                return_value={"inference_result": payload},
+            ),
+            patch("idp_common.evaluation.service.s3.write_content"),
+        ):
+            section_result = svc.evaluate_section(
+                section=section, expected_results=payload, actual_results=payload
+            )
+        # Wrap into the document-level dataclass so ``to_dict`` uses the same
+        # code path that ``EvaluationService`` uses to write ``results.json``.
+        doc_result = DocumentEvaluationResult(
+            document_id="test-doc",
+            section_results=[section_result],
+            overall_metrics={},
+            execution_time=0.0,
+            output_uri="s3://bucket/results.json",
+        )
+        serialized = doc_result.to_dict()
+        attrs = {a["name"]: a for a in serialized["section_results"][0]["attributes"]}
+        # The writer MUST carry both provenance keys through — the resolver
+        # reads them off ``results.json`` and the panel goes source-blind
+        # if either is absent.
+        assert "inference_source" in attrs["agency_name"]
+        assert "inference_source" in attrs["invoice_id"]
+        assert attrs["agency_name"]["inference_source"] == "configured"
+        assert attrs["invoice_id"]["inference_source"] == "auto-inferred"
 
     def test_idp_llm_comparator_registered_via_public_api(self):
         """R5: IDPLLMComparator is registered under a distinct name in Stickler's

@@ -1016,6 +1016,18 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
     entries: Record<string, { comparator?: string; threshold?: number; source?: string; why?: string[] } | null>;
   }>;
 
+  // Same guard as the per-field metrics panel further down (line ~1810):
+  // per-attribute comparison across DIFFERENT test sets is meaningless
+  // because the two schemas are unrelated, so the diff would just enumerate
+  // every attribute as one-sided "schema-shape drift". Only surface the
+  // panel when the two runs are from the same test set.
+  const comparatorDiffTestSetNames = new Set<string>(
+    Object.values(completeTestRuns)
+      .map((run) => (run.testSetName as string | undefined) ?? '')
+      .filter((n) => n !== ''),
+  );
+  const comparatorDiffSameTestSet = comparatorDiffTestSetNames.size === 1;
+
   const downloadButton = (
     <ButtonDropdown
       variant="normal"
@@ -1422,7 +1434,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
               reflects a downstream effect of config changes on Stickler's
               per-field decisions — the same "what changed between runs"
               theme, just at the comparator layer. */}
-          {comparatorDiff.length > 0 && (
+          {comparatorDiff.length > 0 && comparatorDiffSameTestSet && (
             <Container
               header={
                 <Header
@@ -1475,7 +1487,6 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                     },
                   })),
                 ]}
-                empty="No comparator changes across runs"
               />
             </Container>
           )}

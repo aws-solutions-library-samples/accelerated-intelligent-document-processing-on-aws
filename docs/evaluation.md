@@ -51,7 +51,7 @@ https://github.com/user-attachments/assets/0ff17f3e-1eb5-4883-9d6f-3d4e4e84cbea
   - [How It Works](#how-it-works)
   - [Dynamic Schema Generation](#dynamic-schema-generation)
     - [How It Works](#how-it-works-1)
-    - [Type Inference Rules](#type-inference-rules)
+    - [Comparator Inference Rules](#comparator-inference-rules)
     - [Auto-Generated Schema Example](#auto-generated-schema-example)
     - [Result Annotation](#result-annotation)
     - [When to Use Auto-Generation](#when-to-use-auto-generation)
@@ -131,7 +131,7 @@ The evaluation framework is powered by [Stickler](https://github.com/awslabs/sti
 - **Extensible Comparators**: Support for exact, fuzzy, numeric, semantic, and LLM-based comparison
 - **Native JSON Schema Support**: Direct use of JSON Schema with custom extensions
 
-The IDP solution installs Stickler from PyPI (`stickler-eval==0.5.0`, verified at import via `idp_common.evaluation.stickler_version`).
+The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.0`, verified at import via `idp_common.evaluation.stickler_version`).
 
 ### Architecture
 
@@ -243,20 +243,42 @@ flowchart TD
     Annotate --> Results[Return Evaluation Results]
 ```
 
-### Type Inference Rules
+### Comparator Inference Rules
 
-The auto-generation system infers evaluation methods based on detected data types:
+Un-annotated leaves are picked by Stickler 1.0's native inference (turned on
+by the mapper via `x-aws-stickler-infer-unspecified: true` at the schema root).
+The pre-1.0 IDP-side type-only fallback that stamped every string as
+`FUZZY@0.85` and every number as `NUMERIC_EXACT@0.01` is deleted — Stickler's
+picker is strictly better because it looks at the field NAME as well as the
+Python type, so `invoice_id` gets Exact while `notes` gets Fuzzy.
 
-| Data Type | Evaluation Method | Default Threshold | Use Case |
-|-----------|-------------------|-------------------|----------|
-| `string` | FUZZY | 0.85 | Text fields, names, addresses |
-| `integer` | NUMERIC_EXACT | 0.01 | Counts, IDs, whole numbers |
-| `float` | NUMERIC_EXACT | 0.01 | Amounts, percentages, decimals |
-| `boolean` | EXACT | N/A | True/false flags |
-| `object` | Nested structure | N/A | Address, contact info (recursive) |
-| `array[object]` | HUNGARIAN | N/A | Transactions, line items (optimal matching) |
-| `array[primitive]` | Simple array | N/A | Tags, categories, lists |
-| `null` | EXACT (string) | N/A | Optional fields, missing values |
+Base defaults (fire on type alone):
+
+| Data Type | Comparator | Default Threshold |
+|-----------|------------|-------------------|
+| `string` | LevenshteinComparator | 0.70 |
+| `integer` / `float` | NumericComparator | 0.95 |
+| `string` with `format: date` / `date-time` / `time` | DateComparator | 0.95 |
+| `boolean` | ExactComparator | 1.00 |
+| `array[object]` | Structured — element fields are picked by these same rules; Hungarian matches rows |
+| `array[primitive]` | Element comparator picked by these same rules |
+
+Name-token overrides (fire on top of the type rule, using the field name):
+
+| Field-name suffix or token | Overrides to | Default Threshold |
+|----------------------------|--------------|-------------------|
+| `*_id` | ExactComparator | 1.00 |
+| `notes`, `description` | FuzzyComparator | 0.60 |
+| `amount`, `total`, `*_amount` | NumericComparator | 0.95 |
+| `*_date`, `*_time`, `date`, `dob` | DateComparator | 0.95 |
+
+For the authoritative and current list see Stickler's release notes
+([v1.0.0](https://github.com/awslabs/stickler/releases/tag/v1.0.0)) — this
+table is a summary; upstream is the source of truth. The applied comparator
+and its provenance (`configured` vs `auto-inferred`) are recorded per
+attribute in every `results.json` (`inference_source` + `inference_why`),
+and the Test Studio Compare Test Runs page surfaces them in the Comparator
+Changes panel.
 
 ### Auto-Generated Schema Example
 
@@ -1497,7 +1519,7 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 
 ### Stickler Version Information
 
-The solution installs Stickler from PyPI (`stickler-eval==0.5.0`, pinned in
+The solution installs Stickler from PyPI (`stickler-eval==1.0.0`, pinned in
 `lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from

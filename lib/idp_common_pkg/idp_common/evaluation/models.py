@@ -313,6 +313,16 @@ class DocumentEvaluationResult:
                             "confidence_threshold": ar.confidence_threshold,
                             "weight": ar.weight,
                             "field_comparison_details": ar.field_comparison_details,
+                            # Provenance from Stickler 1.0's ``spec.explain()``.
+                            # Load-bearing for the Test Studio Comparator
+                            # Changes panel — the resolver reads these keys off
+                            # ``results.json``. Omitting them here (as the
+                            # first draft of this feature did) collapses every
+                            # attribute's ``source`` to None in the panel and
+                            # the source-flip case (the whole point) never
+                            # surfaces.
+                            "inference_source": ar.inference_source,
+                            "inference_why": ar.inference_why,
                         }
                         for ar in sr.attributes
                     ],

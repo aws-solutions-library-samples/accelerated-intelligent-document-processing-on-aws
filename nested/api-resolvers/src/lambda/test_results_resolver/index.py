@@ -542,6 +542,61 @@ def float_to_decimal(obj):
     return obj
 
 
+def _iter_completed_doc_keys(test_run_id, limit=5):
+    """Yield up to ``limit`` completed ``ObjectKey`` values for a test run.
+
+    Uses the same source of truth as the aggregation Lambda
+    (``patterns/unified/src/test_execution_aggregation_function/index.py``):
+    scan ``doc#{test_run_id}`` items, filter ``EvaluationStatus ==
+    "COMPLETED"``, and return each item's ``ObjectKey`` — which is the
+    FULL S3 key (``{test_run_id}/{file_name}``), not the bare file name
+    that ``testrun#`` metadata's ``Files`` list holds.
+
+    Using ``Files`` (the initial approach) built ``{file_name}/evaluation/
+    results.json`` paths that 404 for every run, silently blanking the
+    Comparator Changes panel 100% of the time.
+    """
+    try:
+        table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
+    except Exception as e:
+        logger.warning(
+            f"Could not open tracking table for {test_run_id}: {e}. "
+            f"Comparator diff will be empty for this run."
+        )
+        return
+
+    yielded = 0
+    exclusive_start_key = None
+    while yielded < limit:
+        scan_kwargs = {
+            "FilterExpression": "begins_with(PK, :pk_prefix)",
+            "ExpressionAttributeValues": {":pk_prefix": f"doc#{test_run_id}"},
+        }
+        if exclusive_start_key is not None:
+            scan_kwargs["ExclusiveStartKey"] = exclusive_start_key
+        try:
+            response = table.scan(**scan_kwargs)
+        except Exception as e:
+            logger.warning(
+                f"DynamoDB scan for doc#{test_run_id} failed: {e}. "
+                f"Comparator diff will be empty for this run."
+            )
+            return
+        for item in response.get("Items", []):
+            if item.get("EvaluationStatus") != "COMPLETED":
+                continue
+            doc_key = item.get("ObjectKey")
+            if not doc_key:
+                continue
+            yield doc_key
+            yielded += 1
+            if yielded >= limit:
+                return
+        exclusive_start_key = response.get("LastEvaluatedKey")
+        if not exclusive_start_key:
+            return
+
+
 def _load_sample_attribute_methods(test_run_id):
     """Read one representative document's ``results.json`` for a test run
     and flatten to ``{section.attribute -> {method, threshold, source}}``.
@@ -553,7 +608,9 @@ def _load_sample_attribute_methods(test_run_id):
     runs. Reads the FIRST completed doc's ``results.json`` — the
     provenance is a property of the config + Stickler version, not of
     the individual document, so one doc is representative for the whole
-    run's schema.
+    run's schema. Continues probing candidates if the first doc's file
+    parses but yields zero attributes (a Stickler shape drift or a
+    section-exclusion edge case).
 
     Returns ``{}`` on any read/parse failure — the panel then renders
     empty rather than blocking the whole compare_test_runs response,
@@ -566,40 +623,21 @@ def _load_sample_attribute_methods(test_run_id):
         )
         return {}
 
-    try:
-        table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
-        response = table.get_item(
-            Key={"PK": f"testrun#{test_run_id}", "SK": "metadata"}
-        )
-        item = response.get("Item") or {}
-        files = item.get("Files") or []
-        if not files:
-            return {}
-    except Exception as e:
-        logger.warning(
-            f"Could not read test run metadata for {test_run_id}: {e}. "
-            f"Comparator diff will be empty for this run."
-        )
-        return {}
-
-    # Try each file in order — a run's first document may have failed to
-    # evaluate; the second is still representative of the run's schema.
-    # Stop at the first readable results.json; log the rest as debug.
-    for file_entry in files[:5]:  # cap probe count for latency
-        doc_key = file_entry if isinstance(file_entry, str) else file_entry.get("Key")
-        if not doc_key:
-            continue
-        # Mirrors idp_common.evaluation.contract.EVALUATION_RESULTS_KEY_TEMPLATE
-        # (kept literal here to avoid pulling the whole evaluation package into
-        # this resolver's Lambda dependency graph — the resolver is not on
-        # the evaluation critical path). If the template shape ever changes,
-        # this string and the constant in ``contract.py`` must move together.
+    # Mirrors idp_common.evaluation.contract.EVALUATION_RESULTS_KEY_TEMPLATE
+    # (kept literal here to avoid pulling the whole evaluation package into
+    # this resolver's Lambda dependency graph — the resolver is not on the
+    # evaluation critical path). If the template shape ever changes, this
+    # string and the constant in ``contract.py`` must move together.
+    for doc_key in _iter_completed_doc_keys(test_run_id, limit=5):
         key = f"{doc_key}/evaluation/results.json"
         try:
             body = s3.get_object(Bucket=output_bucket, Key=key)["Body"].read()
             eval_data = json.loads(body)
         except (ClientError, ValueError, KeyError) as e:
-            logger.debug(
+            # Log at WARNING (not DEBUG) so a broken path leaves an
+            # operator-visible trace. The panel is silent on empty diff, so
+            # a mis-keyed read otherwise fails completely quietly.
+            logger.warning(
                 f"results.json not readable at s3://{output_bucket}/{key}: {e}"
             )
             continue
@@ -623,7 +661,14 @@ def _load_sample_attribute_methods(test_run_id):
                     "source": attr.get("inference_source"),
                     "why": attr.get("inference_why"),
                 }
-        return methods
+        if methods:
+            return methods
+        # Zero attributes on a parseable file — likely a section-excluded doc
+        # or a shape drift. Try the next candidate rather than returning empty.
+        logger.info(
+            f"results.json at s3://{output_bucket}/{key} parsed but had no "
+            f"attributes; trying next candidate"
+        )
 
     return {}
 

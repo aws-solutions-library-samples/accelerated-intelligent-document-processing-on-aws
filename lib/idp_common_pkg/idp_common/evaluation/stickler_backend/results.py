@@ -58,8 +58,8 @@ def _read_match_threshold(schema: Optional[Dict[str, Any]]) -> Optional[float]:
     if not isinstance(schema, dict):
         return None
     direct = schema.get("x-aws-stickler-match-threshold")
-    if direct is not None:
-        return direct
+    if isinstance(direct, (int, float)):
+        return float(direct)
     if schema.get("type") == "array":
         items = schema.get("items")
         if isinstance(items, dict):
@@ -303,16 +303,24 @@ def _has_nonzero_counts(node: Optional[Dict[str, Any]]) -> bool:
     return False
 
 
-# Stickler 1.0's ``spec.explain()`` uses ``"explicit"`` for a leaf whose
-# comparator was set on the ``StructuredModel`` class (which is what a
-# translated ``x-aws-stickler-comparator`` looks like from Stickler's side),
-# and one of ``"type"`` / ``"name-token"`` when the schema-level
-# ``x-aws-stickler-infer-unspecified: true`` flag caused native inference
-# to pick. Both non-explicit values fold into the operator-facing
-# ``"auto-inferred"`` label; ``"configured"`` reads better than
-# ``"explicit"`` on the report Source column.
+# Stickler 1.0's ``spec.explain()`` emits four ``source`` values:
+#   * ``"explicit"``  — comparator set on the ``StructuredModel`` class
+#                       (what a translated ``x-aws-stickler-comparator`` looks
+#                       like from Stickler's side)
+#   * ``"type"``      — no annotation; type rule fired (e.g. ``float`` -> Numeric)
+#   * ``"name-token"``— no annotation; name-token rule fired (e.g. ``*_id`` -> Exact)
+#   * ``"degrade"``   — Stickler downgraded an unsupported / degenerate comparator
+#                       (the LLM-in-structured-list downgrade the mapper triggers
+#                       is the case idp will most often see here)
+#
+# ``configured`` is the operator-facing label for ``explicit``; ``auto-inferred``
+# folds ``type`` + ``name-token`` because the panel doesn't need to distinguish
+# them (the ``why`` trace already spells out which rule fired). ``degrade`` gets
+# its own label — it means Stickler had to override the operator's authored
+# choice, which is exactly the case an operator most wants to see flagged.
 _INFERRED_SOURCE_LABEL = "auto-inferred"
 _CONFIGURED_SOURCE_LABEL = "configured"
+_DEGRADED_SOURCE_LABEL = "downgraded"
 
 
 def _resolve_provenance(
@@ -345,7 +353,10 @@ def _resolve_provenance(
         # config authored the choice.
         return _CONFIGURED_SOURCE_LABEL, None
     why = entry.get("why")
-    return _INFERRED_SOURCE_LABEL, list(why) if isinstance(why, list) else None
+    why_list = list(why) if isinstance(why, list) else None
+    if source == "degrade":
+        return _DEGRADED_SOURCE_LABEL, why_list
+    return _INFERRED_SOURCE_LABEL, why_list
 
 
 def transform_stickler_result(
