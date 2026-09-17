@@ -1,0 +1,90 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Code owners for the GenAI Intelligent Document Processing accelerator.
+#
+# HOW THIS FILE WAS DERIVED
+# -------------------------
+# Ownership was measured, not assigned. For every major subsystem we counted
+# per-author file revisions across the whole history:
+#
+#     git log --format='%an' -- <path> | sort | uniq -c | sort -rn
+#
+# and mapped each author to a GitHub account from the commit's `author.login`
+# as reported by the GitHub API — not from a guess at their handle. A path
+# appears below only when BOTH are true:
+#
+#   1. a named engineer other than the default owner wrote the majority (or a
+#      near-majority co-share) of that path's history, and
+#   2. that engineer's commits resolve to a real GitHub username.
+#
+# Two subsystems meet (1) but not (2) and are therefore deliberately absent —
+# see the "UNASSIGNED" note at the bottom and MAINTAINERS.md for the numbers.
+#
+# HOW GITHUB READS THIS FILE
+# --------------------------
+# The LAST matching pattern wins, so the broad default-owner line must come
+# first and the specific paths after it. Every specific line keeps @rstrahan as
+# a co-owner, because "last match wins" would otherwise remove the maintainer
+# from the reviewers of his own repository's subsystems.
+#
+# A review request is only routed to a user who has write access to this
+# repository. An entry for someone without write access is silently ignored —
+# so if a line below stops routing, check repository access before editing the
+# handle.
+#
+# See MAINTAINERS.md for who these people are and what they own, and
+# GOVERNANCE.md for how a change actually gets accepted.
+
+# ---------------------------------------------------------------------------
+# Default owner: everything not matched by a more specific rule below.
+# ---------------------------------------------------------------------------
+*                                                @rstrahan
+
+# ---------------------------------------------------------------------------
+# Agent framework and agent tooling — the Strands-based agents behind Agent
+# Analysis, Agent Chat, Code Intelligence and the MCP tool surface.
+# History: @kaleko 40%, @webarch-ai 29%, @rstrahan 6% of file revisions.
+# ---------------------------------------------------------------------------
+/lib/idp_common_pkg/idp_common/agents/            @kaleko @webarch-ai @rstrahan
+/lib/idp_common_pkg/tests/unit/agents/            @kaleko @webarch-ai @rstrahan
+/docs/agent-analysis.md                           @kaleko @rstrahan
+
+# ---------------------------------------------------------------------------
+# Business rule validation, including the Z3 solver path.
+# History: @Behrad-Gh 77% of file revisions in the module.
+# ---------------------------------------------------------------------------
+/lib/idp_common_pkg/idp_common/rule_validation/   @Behrad-Gh @rstrahan
+/lib/idp_common_pkg/tests/unit/rule_validation/   @Behrad-Gh @rstrahan
+/docs/rule-validation.md                          @Behrad-Gh @rstrahan
+/docs/rule-validation-z3.md                       @Behrad-Gh @rstrahan
+
+# ---------------------------------------------------------------------------
+# Python SDK for programmatic access (lib/idp_sdk).
+# History: @rstrahan 46%, @webarch-ai 39% — genuinely co-owned, so both are
+# asked rather than only the default owner.
+# ---------------------------------------------------------------------------
+/lib/idp_sdk/                                     @rstrahan @webarch-ai
+
+# ---------------------------------------------------------------------------
+# Workshop content, authored in full by @tomron-aws (100% of its history).
+# ---------------------------------------------------------------------------
+/workshop/                                        @tomron-aws @rstrahan
+
+# ---------------------------------------------------------------------------
+# UNASSIGNED — known owner, unknown GitHub username
+# ---------------------------------------------------------------------------
+# The following paths are majority-owned by an engineer whose commits carry an
+# email address that is not attached to any GitHub account, so the API returns
+# no `author.login` for them and they do not appear in the repository's
+# contributor list at all. Rather than guess a handle — which would silently
+# route reviews to nobody or, worse, to the wrong person — they are left to the
+# default owner until the maintainer supplies the correct usernames:
+#
+#   /lib/idp_common_pkg/idp_common/synthesis/              Jeremy Feldman (86%)
+#   /lib/idp_common_pkg/tests/unit/synthesis/              Jeremy Feldman (63%)
+#   /feature-platform/idp-data-generator/                  Jeremy Feldman (86%)
+#   /docs/extensions/idp-data-generator.md                 Jeremy Feldman (100%)
+#   /publish.py                                            Taniya Mathur (70%)
+#
+# To fix: add the handle here and in MAINTAINERS.md, keeping the two consistent.
