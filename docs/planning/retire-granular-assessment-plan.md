@@ -2,6 +2,9 @@
 
 **Author:** design, 2026-07-03
 **Status:** PROPOSAL → implement in sequenced PRs (do NOT reorder).
+**Reproducibility:** planning documents written before September 2026 predate the
+project's [reproducibility rules](../benchmarking/index.md#reproducibility--honesty-rules)
+— treat their numbers as unaudited unless they cite committed benchmark data.
 **Owner note:** this is a *major* update. The hard constraint: **no silent quality
 regression for customers on non-agentic (simple) + separate confidence + granular
 who process long documents / large lists.**
@@ -19,8 +22,9 @@ who process long documents / large lists.**
 - Granular is also expensive + broken caching: its `<<CACHEPOINT>>` doesn't help
   (per-task content pollutes the cacheable prefix; 20-way ThreadPool causes a
   cacheWrite storm — measured ~1:1 write:read). A/B (RealKIE, 20 docs) showed
-  **granular OFF = −74% cost ($0.354→$0.092/doc), equal accuracy/coverage, BETTER
-  calibration (−0.026 → +0.024)**. See `scratch/ab5/OPTION-A-RESULT.md`.
+  **granular OFF = substantially cheaper per document at equal accuracy/coverage,
+  with better calibration**. No percentage is quoted: that A/B's output was never
+  committed, so none of its figures can be reproduced or audited.
 
 **Conclusion:** granular should go, but only AFTER the standalone path can batch
 large lists on its own. Then deletion is a strict improvement.
