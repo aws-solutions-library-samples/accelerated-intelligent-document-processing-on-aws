@@ -82,6 +82,26 @@ def test_no_blanket_retry_of_every_function_error(states, task):
     )
 
 
+@pytest.mark.parametrize("task", TASKS)
+def test_the_deterministic_tool_use_failure_is_not_retried_by_name(states, task):
+    """#895: the "Model produced invalid sequence as part of ToolUse" outcome is a
+    model capability limit, so neither the Bedrock code that carries it nor the
+    exception the extraction path translates it into may appear in a Retry list.
+
+    Classification in ``idp_common.utils.transient_errors`` is what stops these
+    retries, and it only works because the state machine never lists the names
+    directly — a ``ModelStreamErrorException`` entry here would retry the failure six
+    times per shard regardless of how the handler classifies it.
+    """
+    st = _find_state(states, task)
+    names = {n.lower() for r in st["Retry"] for n in r["ErrorEquals"]}
+    for forbidden in ("modelstreamerrorexception", "modelinvalidtoolusesequence"):
+        assert forbidden not in names, (
+            f"{task} lists {forbidden} — a model that cannot emit a valid tool-use "
+            "sequence would be retried instead of failing fast (#895)"
+        )
+
+
 def test_the_handlers_actually_raise_the_listed_name():
     """The ASL name is only useful if the three handlers re-raise under it."""
     src_dir = ASL_PATH.parents[1] / "src"

@@ -43,7 +43,7 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 |---|---|---|
 | **How it works** | One Bedrock inference returns the structured result | Strands agent with a structured-output tool; can shard large sections, validate against the schema, and self-correct |
 | **Pros** | Cheapest & fastest; fewest moving parts; works with every model incl. OpenAI GPT-5.x | Highest accuracy on complex/nested schemas; guaranteed schema compliance; deterministic **table parsing** for big tables; **sharding** for long docs; model **escalation** on validation failure |
-| **Cons** | No built-in validation/retry; a single huge document must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a tool-use model (no OpenAI GPT-5.x); still in **preview** |
+| **Cons** | No built-in validation/retry; a single huge document must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a model that reliably emits tool use (no OpenAI GPT-5.x, and not Amazon Nova Lite — see below); still in **preview** |
 | **Choose when** | Most documents; small–medium size; simple/flat schemas; lowest cost matters | Complex/nested schemas, strict validation needs, **large documents or big multi-row tables**, business-critical accuracy |
 
 > **Rule of thumb:** start Simple. Move to Advanced when you hit nested-schema accuracy limits, need schema-format validation, or the document is large enough that one inference can't hold it (long tables, 20+ dense pages).
@@ -154,8 +154,29 @@ Agentic extraction requires models with tool-use support:
   - `anthropic.claude-3-5-sonnet-20241022-v2:0` — Best balance of speed and accuracy
   - `anthropic.claude-3-7-sonnet-20250219-v1:0` — Latest with enhanced capabilities
 - **Anthropic Claude Opus** models (for highest accuracy requirements)
-- **Amazon Nova Pro** (AWS native alternative)
+- **Amazon Nova Pro** (AWS native alternative) — but see the Nova Lite note below;
+  the v0.6.8 sweep hit the same mid-stream tool-use failure on Nova Pro's advanced
+  cells, so treat it as unproven on this path rather than recommended
 - **Amazon Nova Premier** (for complex multi-modal extraction)
+
+> **⚠️ Amazon Nova Lite cannot run Advanced (agentic) extraction.** On the agentic
+> path Nova Lite fails mid-stream with Bedrock's
+> `modelStreamErrorException: Model produced invalid sequence as part of ToolUse`
+> — the model emits a `toolUse` block the protocol rejects. The v0.6.8 benchmark
+> refresh logged 247 of these in one three-hour window across 40 shard-runtime log
+> streams, all of them `us.amazon.nova-lite-v1:0`
+> ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)).
+> Since v0.6.9 this outcome is classified as **deterministic**, so the shard fails
+> in seconds with a message naming the model and the remedy instead of being
+> retried by the state machine.
+>
+> **This is specific to Advanced extraction.** Nova Lite remains fully supported —
+> and is the shipped default — for the **confidence-assessment** pass
+> (`extraction.confidence`), and it works for **Simple** extraction, which needs no
+> tool use at all. Use `extraction.mode: simple` with Nova Lite, or keep Advanced
+> and set `extraction.model` to a model measured on this path (Claude Sonnet 5,
+> Sonnet 4.6, Opus 5, OpenAI GPT-6 Astra, xAI Grok 4.6). See
+> [Benchmarking → which models are measured](benchmarking/index.md#which-models-are-actually-measured).
 
 > **⚠️ OpenAI GPT-5.x cannot be used with agentic extraction.** All
 > `openai.gpt-5.*` models (`openai.gpt-5.4`, `openai.gpt-5.5`, and GPT-5.6
@@ -2061,6 +2082,17 @@ the system automatically adds `confidence_threshold` from configuration.
 - Verify `extraction.confidence.enabled: true` and `mode` is not `off`.
 - Confirm the assessment Lambda deployed successfully.
 - For agentic + `separate`/`integrated`, remember the standalone step is intentionally bypassed (intelligent skip) once extraction writes `explainability_info` — this is expected, not a failure.
+
+**`Model produced invalid sequence as part of ToolUse` (Advanced extraction)**
+
+- The configured extraction model emitted a `toolUse` block Bedrock rejected
+  mid-stream. This is a **model capability limit, not a transient fault** — the same
+  request on the same model reproduces it — so it is not retried
+  ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)).
+  The failure message names the model and lists models measured on this path.
+- Remedy: set `extraction.model` (or a class's `x-aws-idp-extraction-model`
+  override) to a tool-use-capable model, or set `extraction.mode: simple`, which
+  needs no tool use. Amazon Nova Lite in particular cannot run the Advanced path.
 
 **Template errors**
 

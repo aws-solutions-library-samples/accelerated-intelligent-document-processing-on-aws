@@ -59,9 +59,59 @@ from idp_common.utils.strands_agent_tools.todo_list import (
     update_todo,
     view_todo_list,
 )
+from idp_common.utils.transient_errors import is_model_tool_use_sequence_error
 
 # Supported image formats for Bedrock API
 SUPPORTED_IMAGE_FORMATS = {"jpeg", "png", "gif", "webp"}
+
+
+class ModelInvalidToolUseSequence(Exception):
+    """The extraction model could not emit a valid tool-use sequence.
+
+    Raised ``from`` Bedrock's ``modelStreamErrorException`` / ``EventStreamError``
+    so the Step Functions cause and the document's error name the model and the
+    remedy instead of repeating the bare "Model produced invalid sequence as part
+    of ToolUse". Deterministic — the class name is deliberately in no retry list,
+    and ``transient_errors`` classifies the underlying outcome as non-transient
+    too, so neither the caller nor the state machine retries it (#895).
+    """
+
+
+#: Models this repository documents as working for Advanced (agentic) extraction.
+#: Kept short and taken from ``docs/extraction-and-confidence.md`` + ``pricing.yaml``
+#: rather than invented; the first entry is the shipped default extraction model
+#: (``config/system_defaults/base-extraction.yaml``).
+_AGENTIC_CAPABLE_EXAMPLE_MODELS = (
+    "us.anthropic.claude-sonnet-5",
+    "us.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-opus-5",
+    "us.openai.gpt-6-astra",
+    "us.xai.grok-4.6",
+)
+
+
+def _explain_invalid_tool_use_sequence(exc: BaseException, model_id: str | None) -> str:
+    """The message for a model that cannot emit a valid tool-use sequence (#895).
+
+    States the outcome, that it is a capability limit rather than a transient
+    fault (so nobody reads the fast failure as a flaky stack), which model
+    produced it, and what to change.
+    """
+    which = model_id or "the configured extraction model"
+    alternatives = ", ".join(_AGENTIC_CAPABLE_EXAMPLE_MODELS)
+    return (
+        f"Advanced (agentic) extraction failed: {which} produced an invalid "
+        "tool-use sequence, which Bedrock reports mid-stream as "
+        "modelStreamErrorException / 'Model produced invalid sequence as part of "
+        "ToolUse'. This is a model capability limitation, NOT a transient fault: "
+        "the agentic path depends on well-formed toolUse blocks, so retrying the "
+        "same request on the same model reproduces it. Suggested action: switch "
+        "extraction.model (or the per-class x-aws-idp-extraction-model override) "
+        f"to a model known to work for Advanced extraction — e.g. {alternatives} — "
+        "or set extraction.mode to simple, which needs no tool use and works on "
+        f"every model. Amazon Nova Lite in particular cannot run the Advanced path. "
+        f"(underlying error: {exc})"
+    )
 
 
 def detect_image_format(image_bytes: bytes) -> str:
@@ -1563,6 +1613,7 @@ async def _invoke_agent_for_extraction(
     data_format: type[TargetModel],
     max_extraction_retries: int = 3,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
+    model_id: str | None = None,
 ) -> tuple[Any, TargetModel | None]:
     """
     Invoke agent and retry if extraction fails.
@@ -1580,6 +1631,9 @@ async def _invoke_agent_for_extraction(
             constraints (e.g. ``format`` keywords) that the Pydantic model does
             not, and to give the agent one more self-correction round with the
             list of violations. When None, only Pydantic type validation runs.
+        model_id: The extraction model, used only to name it in the two failure
+            translations below. ``None`` keeps the historical behavior for callers
+            that don't pass it (only the tests, today).
 
     Returns:
         Tuple of (response, validated_result or None)
@@ -1590,7 +1644,16 @@ async def _invoke_agent_for_extraction(
         # invoke_agent_with_retry already handles network errors and throttling
         try:
             response = await invoke_agent_with_retry(agent=agent, input=prompt_content)
-        except Exception as e:  # noqa: BLE001 - translate one specific failure mode
+        except Exception as e:  # noqa: BLE001 - translate two specific failure modes
+            if is_model_tool_use_sequence_error(e):
+                # #895: Bedrock reports this as modelStreamErrorException, a code
+                # that is otherwise transient, so it used to be retried by Step
+                # Functions for every shard of every document. A model that emits a
+                # malformed toolUse block emits it again, so fail once, here, with
+                # the model named and a working alternative suggested.
+                msg = _explain_invalid_tool_use_sequence(e, model_id)
+                logger.error(msg, extra={"model_id": model_id})
+                raise ModelInvalidToolUseSequence(msg) from e
             if _is_context_overflow_error(e):
                 raise ValueError(
                     "Extraction input exceeds the model's context window. The "
@@ -2231,6 +2294,7 @@ async def structured_output_async(
         data_format=data_format,
         max_extraction_retries=3,
         schema_validator=schema_validator,
+        model_id=model_id,
     )
 
     # Accumulate token usage

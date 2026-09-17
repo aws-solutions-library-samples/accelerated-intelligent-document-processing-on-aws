@@ -41,6 +41,17 @@ Classification rules, in order:
    ``InternalError``), the streaming error, and the standard-library / botocore /
    urllib3 network and timeout exception TYPES. Message markers are limited to
    network-transport text that carries no error code of its own.
+4. A deterministic OUTCOME inside a transient CODE overrides the code. Rule 1
+   judges a node by its code because a code is more reliable than prose — but a
+   few Bedrock codes cover both a transport fault and a reproducible model/protocol
+   fault, and for those the message is the only thing that separates them.
+   ``DETERMINISTIC_MESSAGE_MARKERS`` names those outcomes, and because it must
+   beat rule 1's code lookup and rule 3's ``type(node).__name__`` lookup it is
+   evaluated FIRST for each node — before every other check — and a match ends the
+   walk with "not transient". This is the mirror image of
+   ``TRANSIENT_MESSAGE_MARKERS`` (transient text in an exception with no code) and
+   is deliberately just as narrow: only text naming a reproducible outcome
+   qualifies. The one entry today is Bedrock's mid-stream ToolUse failure (#895).
 """
 
 from __future__ import annotations
@@ -115,6 +126,36 @@ TRANSIENT_MESSAGE_MARKERS: tuple[str, ...] = (
     "remote end closed connection",
 )
 
+#: Bedrock's text for "the model emitted a malformed tool-use block mid-stream",
+#: lower-cased for substring matching. The full wire message is
+#: ``An error occurred (modelStreamErrorException) when calling the ConverseStream
+#: operation: Model produced invalid sequence as part of ToolUse. Please refer to
+#: the model tool use troubleshooting guide.``
+MODEL_TOOL_USE_SEQUENCE_MARKER = "invalid sequence as part of tooluse"
+
+#: Message substrings that mark a DETERMINISTIC outcome even though the error CODE
+#: carrying them is in ``TRANSIENT_ERROR_NAMES``. This cuts the OPPOSITE way to
+#: ``TRANSIENT_MESSAGE_MARKERS`` above, so it is evaluated FIRST in
+#: :func:`_verdict` — ahead of the ``ClientError`` code lookup, the
+#: ``type(node).__name__`` lookup and the transient markers — and a match ends the
+#: chain walk with "not transient".
+#:
+#: Why this exception to rule 1 exists (#895): ``modelStreamErrorException`` as a
+#: CLASS is legitimately transient — ``ConverseStream`` really does break mid-stream
+#: for transport reasons — so it stays in ``TRANSIENT_ERROR_NAMES``. But the "Model
+#: produced invalid sequence as part of ToolUse" OUTCOME is a model capability
+#: limit: the model emitted a tool-use block the protocol rejects, and it will emit
+#: the same block on attempt 8. One Nova Lite benchmark grid logged 247 of these,
+#: each retried by the agentic ladder's caller and then by Step Functions, which
+#: turned "this model cannot run the agentic path" into documents sitting in the
+#: shard map for 45 minutes instead of a fast, readable failure.
+#:
+#: Keep this tuple NARROW and outcome-specific. Text that merely sounds
+#: deterministic ("invalid request", "unsupported") also appears inside genuinely
+#: transient wrappers; only a phrase naming a reproducible model/protocol outcome
+#: belongs here, and each entry needs its own justification.
+DETERMINISTIC_MESSAGE_MARKERS: tuple[str, ...] = (MODEL_TOOL_USE_SEQUENCE_MARKER,)
+
 #: Exception TYPES that are transient wherever they appear in the followed chain.
 TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
     botocore.exceptions.ReadTimeoutError,
@@ -166,6 +207,12 @@ def _client_error_code(exc: BaseException) -> str | None:
 
 def _verdict(node: BaseException) -> bool | None:
     """True/False when ``node`` decides on its own; None when it must be looked through."""
+    text = str(node).lower()
+    # Rule 4 FIRST: a deterministic outcome overrides an otherwise-transient code,
+    # exception type or class name. Anything below this line would say "transient"
+    # for a modelStreamErrorException carrying the ToolUse text (#895).
+    if any(marker in text for marker in DETERMINISTIC_MESSAGE_MARKERS):
+        return False
     if isinstance(node, TransientError):
         return True
     if isinstance(node, TRANSIENT_EXCEPTION_TYPES):
@@ -177,10 +224,22 @@ def _verdict(node: BaseException) -> bool | None:
         return code.lower() in TRANSIENT_ERROR_NAMES
     if type(node).__name__.lower() in TRANSIENT_ERROR_NAMES:
         return True
-    text = str(node).lower()
     if any(marker in text for marker in TRANSIENT_MESSAGE_MARKERS):
         return True
     return None
+
+
+def is_model_tool_use_sequence_error(exc: BaseException) -> bool:
+    """True when ``exc`` — or something it was explicitly raised ``from`` — is
+    Bedrock's "Model produced invalid sequence as part of ToolUse" outcome (#895).
+
+    Callers use this to translate the bare stream error into a message that names
+    the model and the remedy; :func:`is_transient_error` independently reports it
+    as NOT transient, so the failure is not retried either way.
+    """
+    return any(
+        MODEL_TOOL_USE_SEQUENCE_MARKER in str(node).lower() for node in _chain(exc)
+    )
 
 
 def is_transient_error(exc: BaseException) -> bool:

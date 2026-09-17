@@ -1889,3 +1889,18 @@ make both loud without changing what is extracted:
   remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
   issue: a
   successful call proves the estimate wrong, and a failed section never reaches the record.
+- `ModelInvalidToolUseSequence` — the same shape for a model that cannot emit a valid
+  tool-use sequence at all: raised `from` Bedrock's `EventStreamError` /
+  `modelStreamErrorException` when `is_model_tool_use_sequence_error` matches
+  `Model produced invalid sequence as part of ToolUse`, on the **first** attempt (the
+  `max_extraction_retries` loop is for a model that answers badly, not one that cannot
+  answer). `_explain_invalid_tool_use_sequence` names the model id — threaded down from
+  `structured_output_async`, because Strands puts the model id in the exception's
+  `__notes__`, which is not part of `str(e)` — states that this is a capability limit
+  rather than a transient fault, and suggests either a model measured on this path
+  (`_AGENTIC_CAPABLE_EXAMPLE_MODELS`, taken from `docs/extraction-and-confidence.md` and
+  `config_library/pricing.yaml`) or `extraction.mode: simple`, which needs no tool use.
+  The class name is in no retry list, and `transient_errors` independently classifies
+  the underlying outcome as deterministic, so neither the caller nor the state machine
+  retries it. Before #895 a Nova Lite grid logged 247 of these in three hours, each one
+  surfaced as `TransientError` and retried six times per shard.
