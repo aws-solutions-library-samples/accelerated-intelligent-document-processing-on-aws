@@ -121,6 +121,8 @@ proto2-*.png
 proto3-*.png
 live-*.png
 live-testsets-snapshot.md
+# scratch/ux-recordings/ (covered by scratch/ above) holds narrated video and
+# frames of live stacks from scripts/ux_recorder.py — real documents, never committed.
 
 # draw.io editor backup files
 *.bkp
