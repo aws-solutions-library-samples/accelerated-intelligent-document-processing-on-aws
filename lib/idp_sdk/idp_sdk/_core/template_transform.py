@@ -117,6 +117,15 @@ class HeadlessTemplateTransformer:
             "ExternalIdPGroupMappingFunctionLogGroup",
             "ExternalIdPGroupMappingCognitoPolicy",
             "ExternalIdPGroupMappingPermission",
+            # Email subscription of AdminEmail to AlertsTopic (#922). Not a
+            # Cognito resource, but it is keyed to the same removed parameter:
+            # AdminEmail is stripped below, and a resource left Ref'ing a deleted
+            # parameter is a HARD template error at validate time, exactly like
+            # the SuppressAdminInvite condition documented further down. The
+            # topic and all 12 alarms stay; a headless deployment has no operator
+            # address to subscribe, so it subscribes its own recipients to the
+            # SNSAlertsTopicARN output.
+            "AlertsTopicAdminEmailSubscription",
         }
 
         self.waf_resources: Set[str] = {
@@ -336,6 +345,9 @@ class HeadlessTemplateTransformer:
             # CloudFormation rejects the whole template at validate/create time,
             # so every headless deploy failed before creating a single resource.
             "SuppressAdminInvite",
+            # Same failure mode: guards AlertsTopicAdminEmailSubscription and
+            # reads both AdminEmail and SuppressAdminInvite, all removed here.
+            "ShouldSubscribeAdminToAlerts",
         }
 
         # ---- Rules to remove ----
