@@ -1279,6 +1279,71 @@ Mapped rows accumulate in agent state as `mapped_table_rows` (supports multiple 
 - **`table_array_field`**: Schema field name for the table array (e.g., `"transactions"`)
 - **`scalar_fields`**: Non-table fields (e.g., `{"statement_period": "Jan 2025"}`)
 
+### The pre-flight parse and the PRE-PARSED TABLE DATA instruction
+
+Before the agent runs at all, the service parses the section's tables itself —
+`ExtractionService._preflight_table_parse`, gated on `table_parsing.enabled` and
+at least 50 estimated table rows in the OCR text. The parse result drives two
+things:
+
+1. **`lazy_images`** — a successful parse means the loop is text-driven, so the
+   up-front page-image attachment is suppressed (see the config note in
+   [extraction-and-confidence.md](../../../../docs/extraction-and-confidence.md)).
+2. **The agent instruction** — `_append_preflight_table_guidance` appends a
+   `**PRE-PARSED TABLE DATA AVAILABLE**` block naming the table count, the total
+   row count and the column list, explaining the `--- PAGE N ---` markers, and
+   walking the agent through the three-tool chain above, ending with the point
+   that `finalize_table_extraction` reads the mapped rows **from agent state** so
+   no JSON rows need to be generated.
+
+That closing point is the cost lever. An agent that does not know the rows are
+already parsed falls back to emitting them as output tokens, which is the
+expensive failure mode the tool chain exists to avoid — removing an analogous
+fallback took one 12-run benchmark arm from 1,512,506 to 681,222 Extraction
+output tokens.
+
+Both are applied on **both** agentic paths: the single-pass path in
+`_invoke_extraction_model` and the sharded plan in `_build_agentic_shard_plan`
+(the default for any multi-page table document). The pre-flight parse reached the
+sharded path in #898 and the instruction block in #900. Be precise about which
+shard agents were missing the block before #900: `_build_agentic_shard_plan`
+serves the **Step Functions** runtime (`runtime: step_functions`, the shipped
+default in `base-extraction.yaml`), and it was the only route that dropped the
+block. The in-process runtime shards inside `_invoke_extraction_model` and passes
+that method's already-augmented instruction to
+`concurrent_structured_output_async`, so in-process shard agents had the block all
+along — deployed stacks nevertheless hit the broken route, because they run on
+Step Functions.
+
+`_build_agentic_shard_plan` returns **one** `custom_instruction` for all of a
+section's shards, so the block's page wording stays generic ("when you are
+assigned a page range"). The concrete assignment is appended per shard by
+`agentic_idp._run_shard_agent`, which adds `You are processing shard i of N,
+covering pages A-B of T` immediately after the block.
+
+Two sentences of that block are, however, actively **wrong** when a shard agent
+reads them, so both sharded call sites pass
+`_append_preflight_table_guidance(..., scope_note=_SHARD_SCOPE_NOTE)`, which
+inserts a correcting paragraph directly after the page-marker rule (the
+single-agent path passes nothing, keeping its text byte-identical):
+
+- "extract ONLY text between markers for your pages" — a shard's text already
+  contains only its pages, and every shard after the first is prefixed with a
+  `--- DOCUMENT HEADER (page 1, for context only) ---` block that
+  `_build_shard_payloads` deliberately places **outside** the `--- PAGE N ---`
+  markers because it carries the table's column-header row. An agent obeying the
+  rule literally discards that header, the deterministic parse then fails on text
+  starting mid-table, and the agent falls back to emitting rows itself — a
+  completeness risk, not only a cost one. The note tells the shard to pass **all**
+  of its text to `parse_table`, header block included.
+- the table and row totals are **section-wide** (`_preflight_table_parse` parses
+  the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system prompt
+  tells the agent to verify `row_count` against the document and never stop until
+  every row is captured. A shard covering 2 of 6 pages that reads those totals as
+  its own target can over-extract or fail to terminate. The note says the totals
+  cover the whole section and that `parse_table` on the shard's pages will
+  legitimately return fewer rows.
+
 ### Page Markers and Batch Extraction
 
 When processing multi-page documents, the service inserts page boundary markers between page texts:
@@ -1889,3 +1954,27 @@ make both loud without changing what is extracted:
   remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
   issue: a
   successful call proves the estimate wrong, and a failed section never reaches the record.
+- `ModelInvalidToolUseSequence` — the same shape for a model whose tool-use sequence
+  Bedrock rejects: raised `from` Bedrock's `EventStreamError` /
+  `modelStreamErrorException` when `is_model_tool_use_sequence_error` matches
+  `Model produced invalid sequence as part of ToolUse`, on the **first** attempt (the
+  `max_extraction_retries` loop is for a model that answers badly, not one whose answer
+  the protocol rejects). `_explain_invalid_tool_use_sequence` names the model id —
+  threaded down from `structured_output_async`, because Strands puts the model id in the
+  exception's `__notes__`, which is not part of `str(e)` — says the failure reproduces on
+  retry with the same request and so is treated as deterministic rather than transient,
+  and lists three remedies: emit less per call
+  (`extraction.agentic.shard_token_budget` / `max_pages_per_shard`), switch to a model
+  measured on this path (`_AGENTIC_CAPABLE_EXAMPLE_MODELS`, taken from
+  `docs/extraction-and-confidence.md` and `config_library/pricing.yaml`), or
+  `extraction.mode: simple`, which needs no tool use in its default configuration
+  (`extraction.forced_tool` is the exception, and is off by default). The wording stops
+  short of "model capability limit" on purpose: AWS's
+  [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
+  attributes this error largely to inference parameters and output budget, and the
+  agentic path sends no `top_k` (see `_get_inference_params`), so the observed failures
+  are consistent with configuration rather than proven incapacity. The class name is in
+  no retry list, and `transient_errors` independently classifies the underlying outcome
+  as deterministic, so neither the caller nor the state machine retries it. Before #895 a
+  Nova Lite grid logged 247 of these in three hours, each one surfaced as
+  `TransientError` and retried up to eight times per shard task.
