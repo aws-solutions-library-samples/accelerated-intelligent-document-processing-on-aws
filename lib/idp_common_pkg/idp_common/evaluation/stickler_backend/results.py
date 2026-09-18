@@ -383,12 +383,20 @@ def _resolve_provenance(
     explain = getattr(root_model_cls, "__idp_explain__", None)
     if not isinstance(explain, dict):
         return None, None
+    # A container attribute in an auto-generated schema may have per-leaf
+    # explain entries without a top-level entry for the container itself
+    # (Stickler emits the top-level entry when a comparator is declared on
+    # the class; an inference-only container has none). Don't bail here —
+    # the descendant scan below is the primary information source, and the
+    # rollup can still surface the leaf provenance even if the container
+    # itself is missing. ``entry`` defaults to ``{}`` so subsequent
+    # ``.get("source")`` / ``.get("why")`` return safe values.
     entry = explain.get(field_name)
     if not isinstance(entry, dict):
-        return None, None
+        entry = {}
     source = entry.get("source")
     if not isinstance(source, str):
-        return None, None
+        source = None
 
     # Scan descendants — anything under ``{field_name}.``. Stickler emits
     # dotted paths for both nested objects and structured-list items
@@ -427,16 +435,22 @@ def _resolve_provenance(
     if descendant_sources:
         # ``degrade`` beats ``type``/``name-token`` because a downgrade is
         # the case the operator most needs to see; every leaf ``explicit``
-        # keeps the container ``configured``. Note the container's own
+        # keeps the container ``configured``. The container's own
         # ``degrade`` (if Stickler ever emits it) is escalated by the same
-        # rule via ``source`` being folded into ``combined_sources``.
-        combined_sources = descendant_sources + [source]
+        # rule via ``source`` being folded into ``combined_sources``. A
+        # missing top-level entry (``source is None``) contributes nothing
+        # to the label decision — the leaves alone drive it.
+        combined_sources = list(descendant_sources)
+        if source is not None:
+            combined_sources.append(source)
         # Include the container's own ``why`` in the rollup trace when it
         # carries non-configured provenance — the earlier version dropped
         # this line entirely, so a container that inferred (say ``type``)
         # + inferring leaves emitted the leaves' traces but silently
         # discarded the container's own inference reason.
-        container_why = entry.get("why") if source != "explicit" else None
+        container_why = (
+            entry.get("why") if source is not None and source != "explicit" else None
+        )
         combined_whys: List[str] = list(descendant_whys)
         if isinstance(container_why, list):
             combined_whys = [str(w) for w in container_why] + combined_whys
@@ -444,9 +458,18 @@ def _resolve_provenance(
             return _DEGRADED_SOURCE_LABEL, combined_whys or None
         if any(s in ("type", "name-token") for s in combined_sources):
             return _INFERRED_SOURCE_LABEL, combined_whys or None
+        # Every descendant is ``explicit``: the container is fully
+        # configured. If the top-level entry itself was missing this is a
+        # safe approximation (the leaves carry the configuration).
         return _CONFIGURED_SOURCE_LABEL, None
 
-    # Scalar attribute — use the top-level entry directly.
+    # Scalar attribute — use the top-level entry directly. If the entry is
+    # missing (auto-generated schema with no explicit Stickler configuration
+    # AND no descendants either), we have no basis to label the attribute;
+    # return ``(None, None)`` so ``AttributeEvaluationResult`` just omits
+    # the field, which older ``results.json`` readers already tolerate.
+    if source is None:
+        return None, None
     why = entry.get("why")
     return _label(source, list(why) if isinstance(why, list) else None)
 

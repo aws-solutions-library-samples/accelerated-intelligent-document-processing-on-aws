@@ -588,6 +588,12 @@ def test_load_sample_attribute_methods_uses_document_class_key():
     fake_s3 = Mock()
 
     class _Body:
+        # Real botocore StreamingBody has ``.close()``; the resolver now
+        # calls it explicitly to release the urllib3 connection promptly
+        # under the parallel fanout in ``compare_test_runs``.
+        def close(self):
+            pass
+
         def read(self):
             return json.dumps(
                 {

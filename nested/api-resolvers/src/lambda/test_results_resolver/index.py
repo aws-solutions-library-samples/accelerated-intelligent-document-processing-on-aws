@@ -8,7 +8,7 @@ import math
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -751,9 +751,20 @@ def _load_sample_attribute_methods(test_run_id):
     for doc_key in _iter_completed_doc_keys(test_run_id, limit=5):
         results_s3_key = f"{doc_key}/evaluation/results.json"
         try:
-            body = s3_bounded.get_object(Bucket=output_bucket, Key=results_s3_key)[
-                "Body"
-            ].read()
+            # Explicitly close the StreamingBody after reading so the
+            # underlying urllib3 connection is released promptly under the
+            # 4-way parallel fanout that ``compare_test_runs`` uses.
+            # CPython would GC-close on assignment eventually, but under
+            # concurrent load or on non-CPython runtimes a leaked
+            # connection compounds — the try/finally makes the release
+            # deterministic without changing behaviour on the happy path.
+            response = s3_bounded.get_object(
+                Bucket=output_bucket, Key=results_s3_key
+            )
+            try:
+                body = response["Body"].read()
+            finally:
+                response["Body"].close()
             eval_data = json.loads(body)
         except Exception as e:  # noqa: BLE001
             # Broad ``except`` matches the "returns {} on any read/parse
@@ -910,11 +921,30 @@ def compare_test_runs(test_run_ids):
                 logger.warning(f"No results found for test run: {test_run_id}")
 
         # Collect the parallel sample-methods reads. Any single-run failure
-        # degrades to an empty dict so the rest of compare_test_runs still
-        # returns.
+        # or timeout degrades to an empty dict so the rest of
+        # compare_test_runs still returns. A per-future timeout of 12 s is
+        # a hard bound against the 20 s dispatcher ceiling — the underlying
+        # ``s3_bounded`` client already caps each S3 fetch at 3 s connect /
+        # 4 s read, so 12 s is generous headroom that still leaves enough
+        # dispatcher budget for ``_build_comparator_diff`` and the
+        # response marshalling below.
+        _METHODS_FUTURE_TIMEOUT_SECONDS = 12
         for trid, fut in methods_futures.items():
             try:
-                runs_methods[trid] = fut.result()
+                runs_methods[trid] = fut.result(
+                    timeout=_METHODS_FUTURE_TIMEOUT_SECONDS
+                )
+            except FuturesTimeoutError:
+                logger.warning(
+                    f"Sample-attribute-methods read for {trid} exceeded "
+                    f"{_METHODS_FUTURE_TIMEOUT_SECONDS}s; Comparator diff "
+                    f"will be empty for this run."
+                )
+                runs_methods[trid] = {}
+                # Cancel best-effort — a submitted future may already be
+                # running (cancel() only stops PENDING futures) but this
+                # keeps a cancelled label on any that hadn't started yet.
+                fut.cancel()
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     f"Sample-attribute-methods read failed for {trid}: {e}. "
@@ -934,15 +964,26 @@ def compare_test_runs(test_run_ids):
     # field. Every UI consumer of ``metrics`` MUST filter ``_``-prefixed
     # keys before iterating — see ``src/ui/src/components/test-studio/
     # TestComparison.tsx`` for the shared helper. The convention is
-    # UUIDs-only-in-values, so the assertion below catches a future
-    # regression (a run-id that starts with ``_`` would silently shadow
-    # the sentinel) rather than letting it corrupt the compare view.
-    assert not any(k.startswith("_") for k in metrics_comparison), (
-        "test-run-id keys must not start with '_' — the sentinel "
-        "'_comparator_diff' would collide. Got: "
-        f"{[k for k in metrics_comparison if k.startswith('_')]}"
-    )
-    metrics_comparison["_comparator_diff"] = _build_comparator_diff(runs_methods)
+    # UUIDs-only-in-values, so the guard below catches a future regression
+    # (a run-id that starts with ``_`` would silently shadow the sentinel)
+    # rather than letting it corrupt the compare view.
+    #
+    # Use an explicit runtime check, NOT ``assert`` — ``assert`` is stripped
+    # under ``python -O`` / ``PYTHONOPTIMIZE=1``, so the invariant would
+    # silently disappear on Lambda runtimes that use optimized bytecode.
+    # If the collision hits, drop the sentinel rather than crash the whole
+    # response: the panel simply won't render for that compare, but the
+    # rest of ``metrics`` still reaches the UI.
+    colliding_keys = [k for k in metrics_comparison if k.startswith("_")]
+    if colliding_keys:
+        logger.error(
+            "compareTestRuns: test-run-id key(s) start with '_', which "
+            "collides with the ``_comparator_diff`` sentinel — dropping the "
+            "sentinel to avoid corrupting the response. Colliding: %s",
+            colliding_keys,
+        )
+    else:
+        metrics_comparison["_comparator_diff"] = _build_comparator_diff(runs_methods)
     configs_comparison = _build_config_comparison(configs)
 
     logger.info(f"Configs data: {configs}")

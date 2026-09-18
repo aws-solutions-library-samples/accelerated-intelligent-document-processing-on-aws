@@ -5078,22 +5078,33 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         ),
                     },
                 )
-            # The full page list reaches the agent for the view_image tool
-            # only, so a suppressed page can still be fetched on demand —
-            # but only when the prompt genuinely wants images at all. When
-            # the operator's task prompt has no ``{DOCUMENT_IMAGE}`` slot,
-            # the images are irrelevant to the run: registering ``view_image``
-            # against the page list would let the agent burn tokens fetching
-            # images the prompt never asked for. Pass ``[]`` so the tool
-            # isn't registered at all in that case (matches the shard path,
-            # which never gets ``view_image``).
+            # ``view_image`` tool pool. Gated on ``prompt_wants_images``
+            # (not ``send_images``) — deliberate behavioural difference
+            # from the pre-lazy_images shape (``self._page_images if
+            # send_images else []``):
             #
-            # Apply ``_cap_agent_images`` to the ``view_image`` pool too —
-            # the original PR (#396) capped this pool and a later refactor
-            # dropped it. ``max_images_per_agent`` is the operator's cap
-            # on how many images the agent can see AT ALL; without the
-            # cap here, view_image could pull page N > cap on demand and
-            # bypass the operator's constraint entirely.
+            # * ``prompt_wants_images = False`` (no ``{DOCUMENT_IMAGE}`` in
+            #   prompt): registering ``view_image`` against the page list
+            #   would let the agent burn tokens fetching images the run
+            #   never asked for. Pass ``[]`` — no tool registration.
+            #   Matches the shard path, which never gets ``view_image``.
+            #
+            # * ``prompt_wants_images = True`` AND ``lazy_images`` suppressed
+            #   the up-front attachment (``send_images = False``): the whole
+            #   point of ``lazy_images`` is that the agent CAN still fetch
+            #   pages on demand while the up-front payload stays small.
+            #   Gating on ``send_images`` here would empty the pool and
+            #   defeat that.
+            #
+            # * ``prompt_wants_images = True`` AND images are being sent:
+            #   ``view_image`` remains available in addition to the
+            #   attached images (a page N > cap can still be fetched).
+            #
+            # ``_cap_agent_images`` is applied to the pool so ``view_image``
+            # respects the operator's ``max_images_per_agent`` cap — the
+            # original PR (#396) capped this pool and a later refactor
+            # dropped it. Without the cap, ``view_image`` could pull a
+            # page beyond the operator's constraint on demand.
             agentic_images = (
                 self._cap_agent_images(self._page_images) if prompt_wants_images else []
             )
@@ -7152,9 +7163,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # check entirely: every shard carried its page images on every agent
         # turn, so the shipped `lazy_images: true` default had no effect where it
         # mattered most.
+        #
+        # Only run the preflight table parse when the prompt actually
+        # references ``{DOCUMENT_IMAGE}`` — ``_apply_lazy_images`` short-
+        # circuits to ``send_images`` (False) whenever the prompt has no
+        # image slot, so the parsed table result is discarded in that case.
+        # Skipping the parse when we won't consume the result avoids a full
+        # markdown-table parse of the section text on every text-only run.
+        prompt_wants_images = "{DOCUMENT_IMAGE}" in prompt_template
         send_images = self._apply_lazy_images(
-            "{DOCUMENT_IMAGE}" in prompt_template,
-            self._preflight_table_parse(ocr_analysis),
+            prompt_wants_images,
+            self._preflight_table_parse(ocr_analysis) if prompt_wants_images else None,
         )
         shard_payloads = self._build_shard_payloads(
             prompt_template=prompt_template,
