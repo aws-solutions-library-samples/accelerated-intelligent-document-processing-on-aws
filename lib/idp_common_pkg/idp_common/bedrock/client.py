@@ -1480,6 +1480,18 @@ class BedrockClient:
         # Get guardrail configuration if available
         guardrail_config = self.get_guardrail_config()
 
+        # Enforce Bedrock's many-image dimension cap (#994). This is the only
+        # point that sees the WHOLE request, and the cap binds on the request's
+        # image count — a 29-page section whose pages are each individually
+        # legal fails as a whole — so the per-image guard at
+        # prepare_bedrock_image_attachment structurally cannot catch it. Covers
+        # every service that goes through this client (classification,
+        # assessment, summarization, OCR, evaluation, few-shot examples); the
+        # extraction page-image pool is additionally clamped at load time so the
+        # reduction is recorded in section metadata and reaches the Strands
+        # agentic path, which does not route through here.
+        self._fit_request_images(messages)
+
         # Build converse parameters
         converse_params: Dict[str, Any] = {
             "modelId": use_model_id,
@@ -1517,6 +1529,30 @@ class BedrockClient:
         )
 
         return result
+
+    @staticmethod
+    def _fit_request_images(messages: Any) -> None:
+        """Downscale this request's images to Bedrock's many-image cap (#994).
+
+        Delegates to ``idp_common.image.fit_images_in_request``, which is a
+        no-op unless the request carries more than 20 image/document blocks.
+        Imported lazily: Pillow is not in the ``[core]`` extra, and an install
+        without it cannot be attaching images in the first place. Never raises —
+        the guard exists to stop a request failing, so it must not become a new
+        way for one to fail.
+        """
+        try:
+            from idp_common import image
+        except ImportError:
+            return
+        try:
+            image.fit_images_in_request(messages)
+        except Exception as e:  # noqa: BLE001 - best-effort guard
+            logger.warning(
+                "Skipped the Bedrock many-image dimension fit (%s); sending the "
+                "request unchanged.",
+                e,
+            )
 
     @staticmethod
     def _apply_max_tokens_limit(converse_params: Dict[str, Any], limit: int) -> bool:

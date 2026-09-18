@@ -135,6 +135,27 @@ response = client.invoke_model(
 )
 ```
 
+### Images are fitted to Bedrock's many-image cap before every call (#994)
+
+Immediately before `converse`, `invoke_model` sweeps the assembled request with
+`idp_common.image.fit_images_in_request`. Bedrock caps each image at 8,000 px per
+side normally, but at **2,000 px** once the request carries more than 20 image
+blocks — counting `document` blocks and images nested in a `toolResult`. That limit
+binds on the request's image **count**, so no per-image guard can see it: every page
+is individually legal and the request fails as a whole with `image exceed max
+allowed size for many-image requests: 2000 pixels`.
+
+This is the only place in the library that sees a complete request, which is why the
+sweep lives here rather than in each stage. It therefore covers classification,
+assessment, summarization, evaluation and few-shot examples as well as extraction
+(which additionally clamps at page-load time, so the reduction is auditable and the
+agentic path — which builds its own requests — is covered).
+
+The sweep is best-effort: an image it cannot resize is sent unchanged with a warning
+rather than failing a request Bedrock might accept, and one aggregate `WARNING` per
+request replaces the per-image line. To avoid the re-encode entirely, set the
+stage's `image.target_width` / `target_height` to 2,000 or less.
+
 ### How CachePoint Works
 
 When the `invoke_model` method processes your content:

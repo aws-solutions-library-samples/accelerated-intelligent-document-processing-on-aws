@@ -17,7 +17,10 @@ This module handles image preparation for multimodal LLM prompts and OCR process
 | `prepare_image(image_source, target_width, target_height, allow_upscale)` | Load image from S3 URI or bytes, then resize |
 | `apply_adaptive_binarization(image_data)` | Apply adaptive binarization for OCR preprocessing |
 | `prepare_bedrock_image_attachment(image_data)` | Format image bytes as a Bedrock API content block — fits the image to Bedrock's per-image limit first |
-| `fit_image_to_bedrock_limit(image_data, max_encoded_bytes, max_dimension)` | Downscale an image until its **base64-encoded** size and dimensions fit Bedrock's limits; returns `(bytes, ImageFit | None)` |
+| `fit_image_to_bedrock_limit(image_data, max_encoded_bytes, max_dimension, log_fit)` | Downscale an image until its **base64-encoded** size and dimensions fit Bedrock's limits; returns `(bytes, ImageFit | None)` |
+| `fit_images_in_request(messages)` | Apply Bedrock's **many-image** dimension cap across a whole Converse request, in place; returns the number of images downscaled |
+| `max_dimension_for_image_count(image_count)` | The per-image dimension cap that applies to a request carrying `image_count` image blocks (8,000 px, or 2,000 px above 20) |
+| `bedrock_image_format(image_data)` | The Bedrock `format` string for these bytes (`jpeg`/`png`/`gif`/`webp`); raises `ValueError` otherwise |
 | `base64_encoded_size(raw_size)` | Bytes a payload occupies once base64-encoded — the number Bedrock compares against its limit |
 
 ## Usage
@@ -90,6 +93,45 @@ naming the sizes if the image still does not fit after nine passes, so the failu
 attributable rather than Bedrock's generic error. Bytes PIL cannot read pass through
 unchanged; `prepare_bedrock_image_attachment` still raises its existing
 "Unsupported image format" for those.
+
+### A request with MORE THAN 20 images caps every image at 2,000 px (#994)
+
+The 8,000 px cap above is the single-image cap. A **second, stricter** cap applies
+to the whole request once it carries more than 20 image blocks
+(`BEDROCK_MANY_IMAGE_COUNT_THRESHOLD`): every image in it must then be within
+**2,000 px** per side (`BEDROCK_MANY_IMAGE_MAX_DIMENSION`), or Bedrock rejects the
+request with `image exceed max allowed size for many-image requests: 2000 pixels`.
+On Bedrock, `document` blocks count toward the 20 alongside `image` blocks, and so
+do images returned inside a `toolResult` (the agentic `view_image` tool).
+
+Measured on 29 stored pages against `us.anthropic.claude-sonnet-5` in `us-west-2`:
+2,001 px rejected, 2,000 px accepted at 117,035 input tokens — and the same pages
+at 2,150 px accepted in a 5-image request. So the limit binds on the request's
+image **count**, which a per-image guard structurally cannot see: every page is
+individually legal and the request still fails. That is why
+`fit_image_to_bedrock_limit` alone was not enough.
+
+`fit_images_in_request(messages)` is where the cap is enforced, called from
+`BedrockClient.invoke_model` immediately before the `converse` call — the only
+point in the library that sees a complete request. It counts the blocks, decides
+the cap with `max_dimension_for_image_count`, downscales what is over it, and
+refreshes each block's declared `format` (a lossless image can come back as JPEG).
+It is deliberately best-effort: an image it cannot fit is sent unchanged with a
+warning rather than failing a request Bedrock might accept, and it logs one
+aggregate line per request rather than one per image (`log_fit=False`).
+
+Extraction additionally applies the cap at load time in `_load_document_images`,
+where the reduction lands in `metadata.image_downscale`, and where it also covers
+the agentic (Strands) path that builds its own requests and never passes through
+`BedrockClient.invoke_model`. Because Strands re-sends attached pages on every
+turn and `view_image` adds a second copy of a page, that path counts each page
+twice when deciding whether the threshold is crossed.
+
+The 2,000 px figure is Claude's, and it is the **floor** across families — Nova
+documents a 25 MB total-payload budget and no stricter per-image cap — so applying
+it uniformly cannot cause a rejection that would not otherwise happen. It costs
+roughly 15% of the image tokens, because Converse downscales to about this size
+before tokenizing in any case.
 
 ### Adaptive Binarization for OCR
 

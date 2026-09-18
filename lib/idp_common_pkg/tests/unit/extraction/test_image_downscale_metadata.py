@@ -4,7 +4,13 @@
 """#778: an oversize page image is fitted when the section's images are loaded,
 the reduction is recorded for the section's metadata, and the record is reset
 with the per-section context (not the per-invocation one, which runs AFTER the
-images are loaded and would wipe it before _save_results reads it)."""
+images are loaded and would wipe it before _save_results reads it).
+
+#994 extends the same load-time fit with Bedrock's many-image DIMENSION cap:
+above 20 image blocks in one request every image is capped at 2,000 px per side.
+Applying it here as well as in the Bedrock client keeps the reduction auditable
+in section metadata and covers the agentic (Strands) path, which builds its own
+requests and so bypasses ``BedrockClient.invoke_model``."""
 
 import io
 import random
@@ -14,7 +20,11 @@ import pytest
 from PIL import Image
 
 from idp_common.extraction.service import ExtractionService
-from idp_common.image import BEDROCK_IMAGE_MAX_ENCODED_BYTES, base64_encoded_size
+from idp_common.image import (
+    BEDROCK_IMAGE_MAX_ENCODED_BYTES,
+    BEDROCK_MANY_IMAGE_MAX_DIMENSION,
+    base64_encoded_size,
+)
 from idp_common.models import Document, Page, Status
 
 pytestmark = pytest.mark.unit
@@ -89,6 +99,102 @@ def test_no_entry_when_every_page_fits(service, document):
     with patch("idp_common.image.prepare_image", return_value=_small_png()):
         service._load_document_images(document, ["1", "2"])
     assert service._pending_image_fit_metadata is None
+
+
+def _wide_png(size=(1585, 2048)) -> bytes:
+    """A flat page just over the 2,000 px many-image cap and well under the
+    byte budget, so only the dimension rule can trigger a fit."""
+    buf = io.BytesIO()
+    Image.new("RGB", size, (255, 255, 255)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _doc_with_pages(count: int) -> Document:
+    doc = Document(
+        id="d",
+        input_key="d.pdf",
+        input_bucket="in",
+        output_bucket="out",
+        status=Status.EXTRACTING,
+    )
+    for i in range(1, count + 1):
+        doc.pages[str(i)] = Page(
+            page_id=str(i),
+            image_uri=f"s3://in/d.pdf/pages/{i}/image.png",
+            parsed_text_uri=f"s3://in/d.pdf/pages/{i}/parsed.txt",
+        )
+    return doc
+
+
+def _page_dimensions(data: bytes) -> tuple[int, int]:
+    with Image.open(io.BytesIO(data)) as img:
+        return img.size
+
+
+def test_a_section_over_twenty_pages_is_clamped_to_the_many_image_cap(service):
+    """21 pages means 21 image blocks in one request, which drops the per-image
+    cap to 2,000 px — each page is individually legal, so only the count reveals
+    it (#994)."""
+    doc = _doc_with_pages(21)
+    page_ids = [str(i) for i in range(1, 22)]
+    with patch("idp_common.image.prepare_image", return_value=_wide_png()):
+        images = service._load_document_images(doc, page_ids)
+
+    assert len(images) == 21
+    assert all(
+        max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
+    )
+    pending = service._pending_image_fit_metadata
+    assert pending is not None and len(pending) == 21
+    assert "px exceeds 2000 px per side" in pending[0]["reason"]
+
+
+def test_a_twenty_page_section_keeps_full_resolution(service):
+    """At exactly 20 the stricter cap does not apply, so nothing is degraded."""
+    doc = _doc_with_pages(20)
+    page_ids = [str(i) for i in range(1, 21)]
+    with patch("idp_common.image.prepare_image", return_value=_wide_png()):
+        images = service._load_document_images(doc, page_ids)
+
+    assert all(_page_dimensions(img) == (1585, 2048) for img in images)
+    assert service._pending_image_fit_metadata is None
+
+
+def test_missing_pages_do_not_count_toward_the_threshold(service):
+    """``sorted_page_ids`` can name pages the document does not have; those are
+    skipped, so they must not push the count over the threshold and clamp the
+    pages that ARE sent."""
+    doc = _doc_with_pages(5)
+    page_ids = [str(i) for i in range(1, 30)]  # 24 of them are absent
+    with patch("idp_common.image.prepare_image", return_value=_wide_png()):
+        images = service._load_document_images(doc, page_ids)
+
+    assert len(images) == 5
+    assert all(_page_dimensions(img) == (1585, 2048) for img in images)
+
+
+def test_agentic_mode_halves_the_effective_page_threshold():
+    """Strands re-sends the attached pages each turn and ``view_image`` adds a
+    second copy of a page to the same request, so an agentic section crosses the
+    20-block threshold at ~11 pages, not 21. Clamping early costs ~15% of the
+    image tokens; not clamping costs the whole request."""
+    agentic = ExtractionService(
+        region="us-west-2",
+        config={
+            "classes": [],
+            "extraction": {
+                "model": "us.anthropic.claude-sonnet-4-6",
+                "agentic": {"enabled": True},
+            },
+        },
+    )
+    doc = _doc_with_pages(11)
+    with patch("idp_common.image.prepare_image", return_value=_wide_png()):
+        images = agentic._load_document_images(doc, [str(i) for i in range(1, 12)])
+
+    assert all(
+        max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
+    )
 
 
 def test_reset_context_clears_the_record_for_the_next_section(service, document):

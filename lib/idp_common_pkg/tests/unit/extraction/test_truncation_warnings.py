@@ -23,8 +23,15 @@ from types import SimpleNamespace
 import pytest
 
 from idp_common.config.models import IDPConfig
-from idp_common.extraction.service import ExtractionInputTooLarge, ExtractionService
-from idp_common.utils.bedrock_utils import is_input_token_overflow
+from idp_common.extraction.service import (
+    ExtractionImageRejected,
+    ExtractionInputTooLarge,
+    ExtractionService,
+)
+from idp_common.utils.bedrock_utils import (
+    is_image_request_rejection,
+    is_input_token_overflow,
+)
 
 ROW = {
     "type": "object",
@@ -525,13 +532,35 @@ class TestInputPreflight:
         )
 
     def test_image_tokens_come_from_pixels_when_readable(self):
+        """Claude prices an image in 28px patches, CAPPED by the model's
+        resolution tier — 1,568 tokens on Sonnet 4.6, 4,784 on Sonnet 5. The
+        older uncapped (w*h)/750 figure returned 6,000 for this page, ~4x the
+        real cost, which is what made an image-heavy request look like a
+        context-window overflow when Bedrock had actually rejected the images
+        themselves (#994)."""
         from PIL import Image
 
         buf = io.BytesIO()
         Image.new("RGB", (1500, 3000)).save(buf, format="PNG")
+        block = {"format": "png", "source": {"bytes": buf.getvalue()}}
+
+        # Uncapped patch count for 1500x3000 is 54*108 = 5,832, so both tiers cap.
         assert (
             ExtractionService._image_token_estimate(
-                {"format": "png", "source": {"bytes": buf.getvalue()}}, 1600
+                block, 1600, "us.anthropic.claude-sonnet-4-6"
+            )
+            == 1568
+        )
+        assert (
+            ExtractionService._image_token_estimate(
+                block, 1600, "us.anthropic.claude-sonnet-5"
+            )
+            == 4784
+        )
+        # Non-Claude families keep the deliberately generous legacy figure.
+        assert (
+            ExtractionService._image_token_estimate(
+                block, 1600, "us.amazon.nova-pro-v1"
             )
             == 6000
         )
@@ -542,6 +571,27 @@ class TestInputPreflight:
             == 1600
         )
         assert ExtractionService._image_token_estimate("not a dict", 1600) == 1600
+
+    def test_preflight_records_the_image_shape_for_the_failure_message(self):
+        """A request can be rejected for its image COUNT or per-image SIZE rather
+        than its token total, so both are remembered (#994)."""
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (2550, 3301)).save(buf, format="PNG")
+        svc = _svc()
+        content = [
+            {"image": {"format": "png", "source": {"bytes": buf.getvalue()}}}
+        ] * 21
+        svc._simple_mode_input_preflight(
+            content=content,
+            system_prompt="sys",
+            model_id="us.anthropic.claude-sonnet-5",
+            section_id="3",
+        )
+        est = svc._last_simple_input_estimate
+        assert est["images"] == 21
+        assert est["max_image_dimension"] == 3301
 
     def test_silent_when_the_request_fits(self, monkeypatch, caplog):
         svc = _svc()
@@ -645,6 +695,81 @@ class TestShardWrapperAndMatcher:
         assert is_input_token_overflow(
             ValueError("input token count 210000 exceeds the maximum")
         )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "image exceed max allowed size for many-image requests: 2000 pixels",
+            "The image exceeds 5 MB maximum: 7167852 bytes > 5242880 bytes",
+            "image dimensions exceed the maximum allowed",
+            "too many images in request",
+        ],
+    )
+    def test_an_image_rejection_is_not_classified_as_an_overflow(self, message):
+        """The wording overlaps with the context-window wording enough that the
+        overflow matcher used to claim these, so the user was told to shard a
+        request whose problem was pixel dimensions (#994)."""
+        from botocore.exceptions import ClientError
+
+        exc = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": message}}, "Converse"
+        )
+        assert is_image_request_rejection(exc)
+        assert not is_input_token_overflow(exc)
+
+    def test_a_genuine_overflow_is_not_claimed_by_the_image_matcher(self):
+        assert not is_image_request_rejection(
+            ValueError("Input is too long for requested model.")
+        )
+        assert not is_image_request_rejection(
+            ValueError("input token count 210000 exceeds the maximum")
+        )
+
+    def test_the_shard_wrapper_explains_an_image_rejection_separately(self):
+        import asyncio
+
+        from botocore.exceptions import ClientError
+
+        svc = _svc()
+
+        async def shard(**kw):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ValidationException",
+                        "Message": (
+                            "image exceed max allowed size for many-image "
+                            "requests: 2000 pixels"
+                        ),
+                    }
+                },
+                "Converse",
+            )
+
+        with pytest.raises(ExtractionImageRejected) as ei:
+            asyncio.run(svc._run_shard_or_explain_overflow(shard, section_id="s1"))
+        msg = str(ei.value)
+        # The remedy must be about image size, not about shard/page budgets.
+        assert "target_width" in msg
+        assert "max_pages_per_shard" not in msg
+        assert isinstance(ei.value.__cause__, ClientError)
+
+    def test_an_overflow_on_a_many_image_request_names_the_image_cap_too(self):
+        """When the failing request also had the shape that Bedrock rejects on
+        image dimensions, the overflow message says so — otherwise the reader
+        lowers a page budget that may not be the binding limit."""
+        svc = _svc()
+        svc._last_simple_input_estimate = {
+            "estimated_input_tokens": 250_000,
+            "max_input_tokens": 200_000,
+            "pages": 29,
+            "images": 29,
+            "max_image_dimension": 3301,
+        }
+        msg = svc._explain_input_overflow(
+            ValueError("Input is too long"), "s1", is_agentic=False
+        )
+        assert "29 image(s)" in msg and "3301px" in msg and "2000px" in msg
 
     def test_an_already_explained_agentic_overflow_gets_no_second_remedy(self):
         svc = _svc()

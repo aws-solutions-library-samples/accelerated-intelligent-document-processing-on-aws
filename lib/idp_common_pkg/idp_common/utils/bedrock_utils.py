@@ -157,6 +157,37 @@ def _clamped_or_log(
     return allowed
 
 
+# Bedrock rejects a request whose IMAGES are wrong — too many pixels per side, too
+# many bytes — with a ValidationException too, and the wording overlaps with the
+# context-window wording enough to be misclassified ("image exceeds ... maximum").
+# Issue #994 is exactly that: a many-image extraction request rejected on the
+# 2,000px-per-side cap that applies once a request carries more than 20 images,
+# reported to the user as a context-window overflow, which sent them tuning page
+# budgets that could not fix it. Classify the image case first and separately.
+_IMAGE_REJECTION_MARKERS = (
+    "many-image request",
+    "image exceeds",
+    "images exceed",
+    "image dimensions exceed",
+    "image dimension",
+    "too many images",
+    "image size",
+    "invalid image",
+    "image is too large",
+)
+
+
+def is_image_request_rejection(error: BaseException) -> bool:
+    """True if ``error`` is Bedrock rejecting an image's dimensions or bytes.
+
+    Distinct from :func:`is_input_token_overflow`: no amount of shrinking the
+    text or reducing pages per shard fixes it — the images themselves must be
+    downscaled (see ``idp_common.image.fit_images_in_request``).
+    """
+    msg = str(error).lower()
+    return any(marker in msg for marker in _IMAGE_REJECTION_MARKERS)
+
+
 def is_input_token_overflow(error: BaseException) -> bool:
     """True if ``error`` is a Bedrock input/context overflow.
 
@@ -164,7 +195,12 @@ def is_input_token_overflow(error: BaseException) -> bool:
     "Input Tokens Exceeded", "input token count ... exceeds the maximum" — so the
     match is loose. Shared by summarization (which degrades to a stub) and
     extraction (which explains the failure); keep the one matcher.
+
+    An image dimension/byte rejection is NOT an overflow even though the wording
+    overlaps, so it is excluded first (#994).
     """
+    if is_image_request_rejection(error):
+        return False
     code = ""
     response = getattr(error, "response", None)
     if isinstance(response, dict):

@@ -1205,6 +1205,31 @@ is auditable. To avoid the downscale (and the warning) on every request, set
 `target_width` / `target_height` so pages render inside the budget. See
 [#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778).
 
+### A request with more than 20 page images caps every image at 2,000 px
+
+The 8,000 px figure above is the **single-image** limit. A second, stricter limit
+applies to the request as a whole: once one request carries **more than 20** image
+blocks, every image in it must be within **2,000 px** per side, or Bedrock rejects
+the request with `image exceed max allowed size for many-image requests: 2000
+pixels`. `document` blocks count toward the 20 alongside images, and so do images
+the agentic extraction tool returns mid-run.
+
+This is what made a 21+ page section fail even though every page was individually
+well inside 8,000 px, and the failure used to be reported as a context-window
+overflow — so tuning page or shard budgets looked like the fix when it was not
+([#994](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/994)).
+The pipeline now **detects the request shape and downscales the images to 2,000 px
+itself**, logging one `WARNING` per request that says how many images were reduced.
+Extraction records the reduction in the section's `metadata.image_downscale` as
+before.
+
+The re-encode costs roughly 15% of the image tokens and a little time per request.
+To avoid it, either set `target_width` / `target_height` to `2000` (or less) for
+stages that send many page images, or keep sections to 20 pages or fewer. If you
+process documents whose sections routinely exceed 20 pages, setting the target
+dimensions is the better choice: the resolution loss is identical, and you get the
+smaller payload on every request instead of re-deriving it each time.
+
 ### Configuration Benefits
 
 - **High-Resolution Processing**: Empty strings preserve full document resolution for maximum OCR accuracy

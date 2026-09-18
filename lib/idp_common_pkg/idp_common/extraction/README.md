@@ -667,6 +667,22 @@ leave no entry. The attach-time choke point (`prepare_bedrock_image_attachment`)
 fits as well, so the shard runtime and every other caller are covered even when
 they bypass this loader; only the loader records metadata.
 
+The same loader also applies Bedrock's **many-image dimension cap** (#994): a
+request carrying more than 20 image blocks caps every image in it at 2,000 px per
+side, so `_load_document_images` counts the pages it is actually about to attach
+(page ids not present in `document.pages` are skipped and do not count) and passes
+`max_dimension=image.max_dimension_for_image_count(count)` into the same fit. The
+count is **doubled when `agentic.enabled`**: Strands re-sends the attached page
+images on every turn of the agent loop and a `view_image` tool result adds a second
+copy of a page to the same request, so a section at or just under 20 pages can
+cross the threshold mid-loop. That is a heuristic, deliberately pessimistic —
+clamping to 2,000 px costs ~15% of the image tokens, a rejected request costs the
+section. `BedrockClient.invoke_model` sweeps every request with
+`image.fit_images_in_request` as the authoritative backstop (it is the only place
+that sees the whole request, tool results included); the loader exists so the
+reduction is auditable per page and so the agentic path, which builds its own
+requests, is covered too.
+
 ## Multi-document sections (`instance_count`)
 
 Classification splits sections on document *type*. When a packet concatenates
@@ -1941,12 +1957,21 @@ make both loud without changing what is extracted:
 - `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
   `ValidationException` (in the shard path, `from` the agentic `ValueError` whose cause is
   that `ValidationException`; the transient check follows the whole chain) with the section size (from the logged pre-flight estimate,
-  `_simple_mode_input_preflight`: text chars/4 + images at Bedrock's pixels/750) and the
+  `_simple_mode_input_preflight`: text chars/4 + images priced by
+  `bedrock.model_utils.estimate_image_tokens`, which is Claude's 28px-patch count capped
+  at the model's resolution tier — 1,568 tokens before Claude 4.7, 4,784 after. The older
+  uncapped `(w*h)/750` figure over-stated a 2550x3301 page 2.4x, 11,223 against a measured
+  4,761, which is how an image **rejection** came to be explained as a token overflow
+  (#994); non-Claude families keep the legacy figure, where over-stating is harmless) and the
   remedy; the wording is mode-aware (`_explain_input_overflow`) and the matcher is the shared
   `bedrock_utils.is_input_token_overflow` (also used by summarization). The class name is in
   no retry list, so #787 keeps it hard. The matcher judges a `ClientError` by its code
   first (only `ValidationException` can be an overflow; a throttle mentioning "input tokens
-  per minute" is not) and by text otherwise. The Step Functions shard runtime raises it too
+  per minute" is not) and by text otherwise, and returns `False` outright for an image
+  rejection (below). When the failing request also had a shape Bedrock rejects on image
+  dimensions (>20 images, or any image over 2,000 px — both recorded by the pre-flight),
+  the message says so, so the reader does not spend the next hour lowering a page budget
+  that is not the binding limit. The Step Functions shard runtime raises it too
   (`_run_shard_or_explain_overflow` is `async` and wraps the **await** of
   `extract_one_shard`), with the Advanced-mode wording; when the agentic path has already
   translated the overflow (`agentic_idp._is_context_overflow_error`, which also recognises
@@ -1954,6 +1979,18 @@ make both loud without changing what is extracted:
   remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
   issue: a
   successful call proves the estimate wrong, and a failed section never reaches the record.
+- `ExtractionImageRejected` — Bedrock rejected the request over its **images**, not its
+  token count: an image over 8,000 px per side, over 2,000 px in a request carrying more
+  than 20 images, or over 5 MB base64. Matched by
+  `bedrock_utils.is_image_request_rejection`, which is checked **before**
+  `is_input_token_overflow` at both raise sites (`extract_from_section`'s handler and
+  `_run_shard_or_explain_overflow`) because Bedrock's wording overlaps enough that the
+  overflow matcher would otherwise claim it — the bug reported in #994, where users were
+  told to shard a request whose problem was pixel dimensions.
+  `_explain_image_rejection` names the request's image count and largest dimension and
+  gives the only remedy that applies: lower `extraction.image.target_width` /
+  `target_height`. Deterministic, so like `ExtractionInputTooLarge` the class name is in no
+  retry list.
 - `ModelInvalidToolUseSequence` — the same shape for a model whose tool-use sequence
   Bedrock rejects: raised `from` Bedrock's `EventStreamError` /
   `modelStreamErrorException` when `is_model_tool_use_sequence_error` matches

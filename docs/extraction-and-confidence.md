@@ -729,6 +729,22 @@ passes, reason). A page that already fits leaves no entry. Set the service's
 would rather control the resolution than have it reduced per request; see
 [Image Processing Configuration](./configuration.md#effective-per-image-budget-375-mib-enforced-post-base64).
 
+The same mechanism also applies Bedrock's **many-image** dimension cap: a request
+carrying more than 20 image blocks caps every image at **2,000 px** per side, so a
+section over 20 pages has its pages downscaled to that before the request goes out
+([#994](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/994)).
+Each reduced page appears in `metadata.image_downscale` with a `reason` naming the
+pixel limit rather than the byte limit. Advanced (agentic) extraction counts each
+page twice when deciding whether the request will cross 20 blocks, because the
+agent re-sends attached pages every turn and its `view_image` tool can add a second
+copy of a page to the same request. See
+[A request with more than 20 page images](./configuration.md#a-request-with-more-than-20-page-images-caps-every-image-at-2000-px).
+
+If Bedrock does reject a request over its images, extraction now fails with
+`ExtractionImageRejected` and a message naming the image count and the largest
+dimension in the request, instead of `ExtractionInputTooLarge` and advice about
+shard budgets that cannot address it.
+
 ### Schema validation (`extraction.validation`)
 
 Validates the result against the **full class JSON Schema** — most importantly the

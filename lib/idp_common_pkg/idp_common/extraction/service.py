@@ -98,6 +98,18 @@ class ExtractionInputTooLarge(Exception):
     """
 
 
+class ExtractionImageRejected(Exception):
+    """Bedrock rejected a section's request because of the IMAGES it carried.
+
+    A different failure from :class:`ExtractionInputTooLarge` even though both
+    surface as a ``ValidationException``: the remedy is smaller page images, not
+    fewer tokens or smaller shards. Reducing pages per shard or switching to
+    Advanced mode does not help, and #994 shows what happens when the two are
+    conflated — users tune budgets that cannot fix it. Deterministic, so like
+    ``ExtractionInputTooLarge`` the class name is NOT in any retry list.
+    """
+
+
 # The shipped default of ``extraction.confidence.list_batch_size``. The field is
 # ``gt=0`` so it cannot express "unset", and its default is persisted into
 # ``Config#default`` on every stack update — so it cannot simply be changed to 0
@@ -1564,6 +1576,23 @@ class ExtractionService:
         target_width = self.config.extraction.image.target_width
         target_height = self.config.extraction.image.target_height
 
+        # Bedrock drops the per-image dimension cap from 8,000px to 2,000px per side
+        # once a request carries MORE than 20 image blocks (#994). Which cap applies
+        # therefore depends on how many pages this section is about to attach, so it
+        # is decided here, once, from the page count rather than per image.
+        #
+        # Agentic (Strands) extraction doubles the effective count: the attached page
+        # images are re-sent on every turn of the agent loop, and a ``view_image``
+        # tool result adds a second copy of a page to the same request. A section at
+        # or just under 20 pages can therefore cross the threshold mid-loop, so the
+        # count is doubled when agentic is enabled — pessimistic by design, since
+        # clamping to 2,000px costs far less than a hard request rejection.
+        pages_to_attach = sum(1 for pid in sorted_page_ids if pid in document.pages)
+        effective_image_count = pages_to_attach
+        if self.config.extraction.agentic.enabled:
+            effective_image_count *= 2
+        max_dimension = image.max_dimension_for_image_count(effective_image_count)
+
         page_images = []
         for page_id in sorted_page_ids:
             if page_id not in document.pages:
@@ -1576,7 +1605,10 @@ class ExtractionService:
             # a stored page image over 3.75 MiB fails the whole request (#778).
             # Fit it here — where the reduction can be recorded per page — rather
             # than at the attach choke point, whose fit is then a pass-through.
-            image_content, fit = image.fit_image_to_bedrock_limit(image_content)
+            # ``max_dimension`` additionally applies the many-image pixel cap.
+            image_content, fit = image.fit_image_to_bedrock_limit(
+                image_content, max_dimension=max_dimension
+            )
             if fit is not None:
                 if self._pending_image_fit_metadata is None:
                     self._pending_image_fit_metadata = []
@@ -2062,18 +2094,23 @@ class ExtractionService:
 
         Simple mode sends ONE request per section — that is the difference from
         Advanced mode, which shards. Text is chars/4; an image is priced from its
-        pixels the way Bedrock does (width x height / 750), falling back to the
-        sizing module's reserve figure when the bytes cannot be read. The
-        estimate is not recorded as a processing issue: if the call then
-        succeeds the estimate was wrong, and if it fails the section never
-        reaches the record — the failure itself carries the explanation (see
-        ``_explain_input_overflow``). Returns the estimate.
+        pixel dimensions using the model's own visual-token math (see
+        ``_image_token_estimate``), falling back to the sizing module's reserve
+        figure when the bytes cannot be read. The estimate is not recorded as a
+        processing issue: if the call then succeeds the estimate was wrong, and if
+        it fails the section never reaches the record — the failure itself carries
+        the explanation (see ``_explain_input_overflow``). Returns the estimate.
+
+        The image COUNT and the largest image dimension are recorded alongside the
+        token figures because a request can be rejected for either reason, and the
+        failure message has to be able to tell them apart (#994).
         """
         from idp_common.bedrock.sizing import _TOKENS_PER_IMAGE
 
         text_tokens = estimate_tokens(system_prompt or "")
         images = 0
         image_tokens = 0
+        max_image_dimension = 0
         for block in content or []:
             if not isinstance(block, dict):
                 continue
@@ -2082,8 +2119,11 @@ class ExtractionService:
             if "image" in block:
                 images += 1
                 image_tokens += self._image_token_estimate(
-                    block["image"], _TOKENS_PER_IMAGE
+                    block["image"], _TOKENS_PER_IMAGE, model_id
                 )
+                size = self._image_dimensions(block["image"])
+                if size:
+                    max_image_dimension = max(max_image_dimension, size[0], size[1])
         estimate = text_tokens + image_tokens
         max_input = 0
         try:
@@ -2096,6 +2136,7 @@ class ExtractionService:
             "max_input_tokens": max_input,
             "pages": pages,
             "images": images,
+            "max_image_dimension": max_image_dimension,
         }
         if max_input and estimate > max_input:
             logger.warning(
@@ -2113,9 +2154,8 @@ class ExtractionService:
         return estimate
 
     @staticmethod
-    def _image_token_estimate(image_block: Any, fallback: int) -> int:
-        """Bedrock's image pricing is ~(width x height) / 750 tokens; read the
-        dimensions from the bytes when possible, else use ``fallback``."""
+    def _image_dimensions(image_block: Any) -> tuple[int, int] | None:
+        """``(width, height)`` of a Converse image block, or None if unreadable."""
         try:
             import io
 
@@ -2127,11 +2167,29 @@ class ExtractionService:
                 data = src.get("bytes") if isinstance(src, dict) else None
             if isinstance(data, (bytes, bytearray)) and data:
                 with Image.open(io.BytesIO(bytes(data))) as im:
-                    w, h = im.size
-                return max(1, int(w * h / 750))
+                    return im.size
         except Exception:  # noqa: BLE001 - estimate only
             pass
-        return int(fallback)
+        return None
+
+    @classmethod
+    def _image_token_estimate(
+        cls, image_block: Any, fallback: int, model_id: str | None = None
+    ) -> int:
+        """Tokens one image block costs, from its pixel dimensions.
+
+        Delegates to ``bedrock.model_utils.estimate_image_tokens``, which applies
+        Claude's 28px-patch math and the per-model visual-token CAP. The older
+        uncapped (w*h)/750 figure over-stated a full-page scan by ~2.4x, which is
+        what made a per-image dimension rejection look like a context-window
+        overflow (#994). Falls back to ``fallback`` when the bytes are unreadable.
+        """
+        from idp_common.bedrock.model_utils import estimate_image_tokens
+
+        size = cls._image_dimensions(image_block)
+        if size is None:
+            return int(fallback)
+        return estimate_image_tokens(size[0], size[1], model_id)
 
     async def _run_shard_or_explain_overflow(self, fn: Any, **kwargs: Any) -> Any:
         """Await one shard coroutine; re-raise a Bedrock input overflow as
@@ -2139,11 +2197,20 @@ class ExtractionService:
         Functions shard path fails with the same actionable cause as the in-process
         path. ``fn`` is ``async`` (``extract_one_shard``): the try must wrap the
         await, not the call that merely creates the coroutine."""
-        from idp_common.utils.bedrock_utils import is_input_token_overflow
+        from idp_common.utils.bedrock_utils import (
+            is_image_request_rejection,
+            is_input_token_overflow,
+        )
 
         try:
             return await fn(**kwargs)
         except Exception as e:
+            if is_image_request_rejection(e):
+                msg = self._explain_image_rejection(
+                    e, str(kwargs.get("section_id") or "?")
+                )
+                logger.error(msg)
+                raise ExtractionImageRejected(msg) from e
             if is_input_token_overflow(e):
                 msg = self._explain_input_overflow(
                     e, str(kwargs.get("section_id") or "?"), is_agentic=True
@@ -2170,6 +2237,21 @@ class ExtractionService:
             if est.get("estimated_input_tokens") and est.get("max_input_tokens")
             else (f" ({pages} page(s))" if pages else "")
         )
+        if (
+            est.get("images", 0) > image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD
+            or est.get("max_image_dimension", 0)
+            > image.BEDROCK_MANY_IMAGE_MAX_DIMENSION
+        ):
+            # The request's shape is also capable of a per-image REJECTION, which
+            # Bedrock words similarly (#994). Say so, so the reader does not spend
+            # the next hour lowering a page budget that is not the binding limit.
+            size += (
+                f" — note this request carried {est.get('images', 0)} image(s), "
+                f"largest {est.get('max_image_dimension', 0)}px per side; Bedrock "
+                f"also caps images at {image.BEDROCK_MANY_IMAGE_MAX_DIMENSION}px "
+                f"per side once a request carries more than "
+                f"{image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD}"
+            )
         if is_agentic and "remedies:" in str(exc).lower():
             advice = ""  # agentic_idp already translated it with its own remedies
         elif is_agentic:
@@ -2185,6 +2267,33 @@ class ExtractionService:
                 "which shards a section across requests, or split the document."
             )
         return f"Error processing section {section_id}: {exc}{size}{advice}"
+
+    def _explain_image_rejection(self, exc: BaseException, section_id: str) -> str:
+        """The message for a Bedrock IMAGE rejection on a section (#994).
+
+        Names the request's image count and largest dimension, then the remedy
+        that actually applies — smaller ``extraction.image.target_width`` /
+        ``target_height`` — rather than the token/shard advice that belongs to a
+        context-window overflow.
+        """
+        est = getattr(self, "_last_simple_input_estimate", None) or {}
+        images = est.get("images") or len(self._page_images or [])
+        largest = est.get("max_image_dimension") or 0
+        shape = f" (request carried {images} image(s)"
+        if largest:
+            shape += f", largest {largest}px per side"
+        shape += ")"
+        return (
+            f"Error processing section {section_id}: {exc}{shape}. Bedrock rejected "
+            "the IMAGES in this request, not its token count: images are capped at "
+            f"{image.BEDROCK_IMAGE_MAX_DIMENSION}px per side, dropping to "
+            f"{image.BEDROCK_MANY_IMAGE_MAX_DIMENSION}px once a request carries more "
+            f"than {image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD} images, and each image "
+            "must be under 5 MB base64-encoded. Lower "
+            "extraction.image.target_width / target_height so pages are rendered "
+            "smaller; reducing pages per shard or switching extraction mode does "
+            "not address this."
+        )
 
     def _analyze_ocr_for_tables(self, ocr_text: str) -> dict[str, Any]:
         """
@@ -6655,8 +6764,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._save_results(document, section, result, section_info, section_id, t0)
 
         except Exception as e:
-            from idp_common.utils.bedrock_utils import is_input_token_overflow
+            from idp_common.utils.bedrock_utils import (
+                is_image_request_rejection,
+                is_input_token_overflow,
+            )
 
+            if is_image_request_rejection(e):
+                # Checked FIRST: Bedrock words an image dimension/byte rejection
+                # closely enough to a context overflow that the overflow matcher
+                # would claim it and hand back advice that cannot work (#994).
+                error_msg = self._explain_image_rejection(e, section_id)
+                logger.error(error_msg)
+                document.errors.append(error_msg)
+                raise ExtractionImageRejected(error_msg) from e
             if is_input_token_overflow(e):
                 # The failure itself is the signal: the section never reaches the
                 # record, so the explanation travels in the exception (Step

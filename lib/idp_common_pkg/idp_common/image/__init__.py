@@ -5,7 +5,7 @@ import io
 import logging
 import math
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 from PIL import Image, ImageFilter, UnidentifiedImageError
 
@@ -30,6 +30,25 @@ BEDROCK_IMAGE_MAX_RAW_BYTES = BEDROCK_IMAGE_MAX_ENCODED_BYTES // 4 * 3  # 3,932,
 # size (documented on the Message reference: "no more than 3.75 MB, 8000 px, and
 # 8000 px"); it applies to every model routed through Converse, not only Claude.
 BEDROCK_IMAGE_MAX_DIMENSION = 8000
+# A SECOND, stricter dimension cap applies to a request that carries MANY images
+# (#994). Anthropic's vision reference: "If a single API request contains more
+# than 20 images, a stricter per-image dimension limit applies to every image in
+# that request … resize each image so that neither dimension exceeds 2000 px, or
+# keep the request to 20 or fewer image and document blocks." All image blocks
+# count, including images returned inside tool results and — on Bedrock —
+# document blocks. Measured on 29 stored pages, us.anthropic.claude-sonnet-5,
+# us-west-2: 2,001 px REJECTED ("exceed max allowed size for many-image
+# requests: 2000 pixels"), 2,000 px ACCEPTED (117,035 input tokens); the same
+# pages at 2,150 px were ACCEPTED in a 5-image request. So the cap binds on the
+# request's image COUNT, which a per-image guard structurally cannot see — every
+# page is individually fine. fit_images_in_request applies it where the count is
+# known. The values are Claude's, and they are the FLOOR across families (Nova
+# documents a 25 MB total-payload budget and no stricter per-image cap), so
+# applying them uniformly cannot cause a rejection that would not otherwise
+# happen; it costs ~15% of the image tokens, because Converse downscales to
+# roughly this size before tokenizing anyway.
+BEDROCK_MANY_IMAGE_MAX_DIMENSION = 2000
+BEDROCK_MANY_IMAGE_COUNT_THRESHOLD = 20
 # Aim a little under the limit so PNG's non-linear compression cannot land a
 # resized image a few hundred bytes over and force another pass.
 _FIT_TARGET_FRACTION = 0.92
@@ -55,6 +74,21 @@ def base64_encoded_size(raw_size: int) -> int:
     against.
     """
     return (raw_size + 2) // 3 * 4
+
+
+def max_dimension_for_image_count(image_count: int) -> int:
+    """The per-image dimension cap that applies to a request of ``image_count`` images.
+
+    ``BEDROCK_IMAGE_MAX_DIMENSION`` (8,000 px) normally, dropping to
+    ``BEDROCK_MANY_IMAGE_MAX_DIMENSION`` (2,000 px) once the request carries
+    more than ``BEDROCK_MANY_IMAGE_COUNT_THRESHOLD`` image blocks. Count every
+    image the request will carry, not just page images.
+    """
+    return (
+        BEDROCK_MANY_IMAGE_MAX_DIMENSION
+        if image_count > BEDROCK_MANY_IMAGE_COUNT_THRESHOLD
+        else BEDROCK_IMAGE_MAX_DIMENSION
+    )
 
 
 @dataclass(frozen=True)
@@ -102,6 +136,7 @@ def fit_image_to_bedrock_limit(
     image_data: bytes,
     max_encoded_bytes: int = BEDROCK_IMAGE_MAX_ENCODED_BYTES,
     max_dimension: int = BEDROCK_IMAGE_MAX_DIMENSION,
+    log_fit: bool = True,
 ) -> Tuple[bytes, Optional[ImageFit]]:
     """Shrink ``image_data`` until it fits Bedrock's per-image limits.
 
@@ -116,6 +151,11 @@ def fit_image_to_bedrock_limit(
     Raises ``ValueError`` if the image still does not fit after the bounded
     number of passes, naming the sizes, so the failure is attributable instead
     of surfacing as Bedrock's generic ValidationException.
+
+    ``log_fit=False`` suppresses the per-image warning for callers that fit many
+    images at once and log one aggregate line instead
+    (``fit_images_in_request``); 25 identical warnings say nothing the summary
+    does not.
     """
     encoded = base64_encoded_size(len(image_data))
     try:
@@ -204,6 +244,8 @@ def fit_image_to_bedrock_limit(
                 passes=passes,
                 reason=reason,
             )
+            if not log_fit:
+                return data, fit
             logger.warning(
                 "Page image exceeded Bedrock's per-image limit (%s); downscaled "
                 "%dx%d %s (%s B) -> %dx%d %s (%s B, %s B encoded) in %d pass(es) "
@@ -231,6 +273,102 @@ def fit_image_to_bedrock_limit(
         f"{width}x{height} {fmt} {len(data):,} B ({encoded:,} B encoded) against "
         f"{max_encoded_bytes:,} B encoded / {max_dimension} px limits."
     )
+
+
+def _walk_content_blocks(content: Any) -> Iterator[Dict[str, Any]]:
+    """Yield every Converse content block in ``content``, tool results included.
+
+    Images nested in a ``toolResult`` count toward the many-image threshold the
+    same as top-level ones (the agentic ``view_image`` tool returns pages this
+    way), so the walk has to descend into them.
+    """
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        yield block
+        tool_result = block.get("toolResult")
+        if isinstance(tool_result, dict):
+            yield from _walk_content_blocks(tool_result.get("content"))
+
+
+def fit_images_in_request(messages: Any) -> int:
+    """Apply the many-image dimension cap across one Converse request, in place.
+
+    Counts the image (and, per the Bedrock note in
+    ``BEDROCK_MANY_IMAGE_MAX_DIMENSION``, document) blocks the request carries
+    and, when that count is over the threshold, downscales any image above
+    2,000 px per side. This is the only place that can enforce the cap
+    correctly: it binds on the request's image COUNT, so a per-image guard —
+    ``fit_image_to_bedrock_limit`` at ``prepare_bedrock_image_attachment`` —
+    passes every individually-legal page and the request fails as a whole.
+
+    Best-effort by design: a page that cannot be fitted is left alone with a
+    warning rather than raising, because the alternative is failing a request
+    that Bedrock might still have accepted.
+
+    Args:
+        messages: The Converse ``messages`` list (mutated in place).
+
+    Returns:
+        Number of images downscaled.
+    """
+    blocks = [
+        block
+        for message in (messages or [])
+        if isinstance(message, dict)
+        for block in _walk_content_blocks(message.get("content"))
+    ]
+    image_blocks = [b for b in blocks if isinstance(b.get("image"), dict)]
+    counted = len(image_blocks) + sum(
+        1 for b in blocks if isinstance(b.get("document"), dict)
+    )
+    max_dimension = max_dimension_for_image_count(counted)
+    if max_dimension >= BEDROCK_IMAGE_MAX_DIMENSION:
+        return 0
+
+    clamped = 0
+    for block in image_blocks:
+        image_block = block["image"]
+        source = image_block.get("source")
+        if not isinstance(source, dict):
+            continue  # s3Location source: Bedrock fetches it, we cannot resize it
+        data = source.get("bytes")
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            continue
+        try:
+            fitted, fit = fit_image_to_bedrock_limit(
+                bytes(data), max_dimension=max_dimension, log_fit=False
+            )
+            if fit is None:
+                continue
+            source["bytes"] = fitted
+            image_block["format"] = bedrock_image_format(fitted)
+        except Exception as e:  # noqa: BLE001 - never fail a request over the guard
+            logger.warning(
+                "Could not downscale an image to the %d px many-image cap (%s); "
+                "sending it unchanged. Bedrock may reject the request.",
+                max_dimension,
+                e,
+            )
+            continue
+        clamped += 1
+
+    if clamped:
+        logger.warning(
+            "Request carries %d image/document block(s), over Bedrock's "
+            "many-image threshold of %d, so the stricter %d px per-side cap "
+            "applies to EVERY image in it; downscaled %d image(s) to fit. Set "
+            "the stage's image.target_width/target_height to %d (or fewer pages "
+            "per request) to avoid the re-encode.",
+            counted,
+            BEDROCK_MANY_IMAGE_COUNT_THRESHOLD,
+            max_dimension,
+            clamped,
+            BEDROCK_MANY_IMAGE_MAX_DIMENSION,
+        )
+    return clamped
 
 
 def resize_image(
@@ -479,11 +617,21 @@ def prepare_bedrock_image_attachment(image_data: bytes) -> Dict[str, Any]:
         Formatted image attachment for Bedrock API
     """
     image_data, _fit = fit_image_to_bedrock_limit(image_data)
-    # Detect image format from image data
-    image = Image.open(io.BytesIO(image_data))
-    format_mapping = {"JPEG": "jpeg", "PNG": "png", "GIF": "gif", "WEBP": "webp"}
-    detected_format = format_mapping.get(image.format)
-    if not detected_format:
-        raise ValueError(f"Unsupported image format: {image.format}")
+    detected_format = bedrock_image_format(image_data)
     logger.info(f"Detected image format: {detected_format}")
     return {"image": {"format": detected_format, "source": {"bytes": image_data}}}
+
+
+def bedrock_image_format(image_data: bytes) -> str:
+    """The Converse ``format`` string for these bytes ("jpeg", "png", …).
+
+    Raises ``ValueError`` for anything Bedrock does not accept. Callers that
+    re-encode an image (a fit can turn a PNG into a JPEG) must refresh the
+    declared format from the new bytes, or Bedrock rejects the mismatch.
+    """
+    image = Image.open(io.BytesIO(image_data))
+    format_mapping = {"JPEG": "jpeg", "PNG": "png", "GIF": "gif", "WEBP": "webp"}
+    detected_format = format_mapping.get(image.format or "")
+    if not detected_format:
+        raise ValueError(f"Unsupported image format: {image.format}")
+    return detected_format
