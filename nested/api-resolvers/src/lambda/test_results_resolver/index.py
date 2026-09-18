@@ -8,14 +8,71 @@ import math
 import os
 import re
 import time
+from concurrent.futures import (
+    ALL_COMPLETED,
+    ThreadPoolExecutor,
+    wait as futures_wait,
+)
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 sqs = boto3.client("sqs")
+s3 = boto3.client("s3")
 athena = boto3.client("athena")
+
+# A short-timeout S3 client for the compareTestRuns fanout only. The default
+# botocore read/connect timeouts are 60s each; four parallel probes under the
+# 20s dispatcher budget can therefore chain into a 60s+ tail on a slow S3
+# request and 504 the entire compare response. This client is used only by
+# ``_load_sample_attribute_methods`` (a UI-nicety panel that must never fault
+# the parent request) — bounded to 3s connect and 4s read so worst-case 4-way
+# fanout still fits well under the 20s dispatcher ceiling. Non-compare S3
+# usage in this file (``get_test_results``, etc.) keeps the module-level
+# ``s3`` client with defaults.
+s3_bounded = boto3.client(
+    "s3",
+    config=BotoConfig(connect_timeout=3, read_timeout=4, retries={"max_attempts": 1}),
+)
+
+# Two bounded DynamoDB clients for the ``compareTestRuns`` /
+# ``getTestRuns`` critical paths. Both cap the DDB half of the request at
+# 3s connect / 5s read / 2 retries — the module-level ``dynamodb``
+# resource's default 60s timeouts could burn the whole 20s dispatcher
+# budget from the DDB side alone. Non-compare paths that don't share
+# that budget (``get_test_results``, cache-update writes, etc.) keep the
+# default-timeout module-level ``dynamodb`` resource.
+#
+# ``ddb_bounded`` is a DIRECT low-level client: no request marshalling,
+# no response unmarshalling. Callers must build typed AttributeValue
+# dicts (``{"PK": {"S": "..."}}``) and read typed responses. Used by
+# ``_iter_completed_doc_keys`` which is written for the typed shape.
+#
+# ``ddb_bounded_marshalling`` is a RESOURCE-attached client: identical
+# class, but the resource installs serializer/deserializer event
+# handlers on it so untyped Python-native values are marshalled on the
+# way out and typed responses are unmarshalled on the way in. Used by
+# ``_batch_get_test_run_items`` whose caller in
+# ``_query_test_runs_from_gsi`` passes untyped keys straight from
+# ``table.query()`` and whose downstream (``_build_test_run_list``)
+# reads unmarshalled fields (``item["TestRunId"]`` as a bare string).
+#
+# The two clients are NOT interchangeable: passing untyped keys to
+# ``ddb_bounded`` raises ``botocore.ParamValidationError``, and reading
+# ``.get("S")`` on ``ddb_bounded_marshalling``'s response returns
+# ``None`` because the field is already a bare string. That misuse is
+# how getTestRuns started returning empty in an earlier round.
+ddb_bounded = boto3.client(
+    "dynamodb",
+    config=BotoConfig(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2}),
+)
+ddb_bounded_marshalling = boto3.resource(
+    "dynamodb",
+    config=BotoConfig(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2}),
+).meta.client
 
 
 lambda_client = boto3.client("lambda")
@@ -208,6 +265,11 @@ def handler(event, context):
         start_date_time = args.get("startDateTime")
         end_date_time = args.get("endDateTime")
         time_period_hours = args.get("timePeriodHours", 2)
+        # Caller-supplied max — clamped to [1, _GET_TEST_RUNS_ABSOLUTE_MAX]
+        # in ``get_test_runs``. Default matches _GET_TEST_RUNS_ABSOLUTE_MAX
+        # so pre-existing callers (that don't pass maxItems) keep the
+        # historical shape of "up to 100 recent runs in the range".
+        max_items = args.get("maxItems")
 
         if start_date_time and end_date_time:
             start_iso, end_iso = start_date_time, end_date_time
@@ -217,8 +279,11 @@ def handler(event, context):
                 datetime.utcnow() - timedelta(hours=time_period_hours)
             ).isoformat() + "Z"
 
-        logger.info(f"Processing getTestRuns request: {start_iso} → {end_iso}")
-        return get_test_runs(start_iso, end_iso)
+        logger.info(
+            f"Processing getTestRuns request: {start_iso} → {end_iso} "
+            f"(maxItems={max_items})"
+        )
+        return get_test_runs(start_iso, end_iso, max_items=max_items)
     elif field_name == "getTestRun":
         test_run_id = event["arguments"]["testRunId"]
         logger.info(f"Processing getTestRun request for test run: {test_run_id}")
@@ -542,6 +607,334 @@ def float_to_decimal(obj):
     return obj
 
 
+def _iter_completed_doc_keys(test_run_id, limit=5):
+    """Yield up to ``limit`` completed ``ObjectKey`` values for a test run.
+
+    Reads the testrun's ``Files`` list from ``testrun#{id}`` metadata and
+    probes each candidate document with ``BatchGetItem`` on the
+    ``doc#{test_run_id}/{file_name}`` PK. The doc row's ``ObjectKey`` is
+    ``{test_run_id}/{file_name}``, matching the naming used everywhere else
+    in this file (see ``_count_completed_documents``), so the panel's S3
+    key template (``{ObjectKey}/evaluation/results.json``) resolves.
+
+    Previously this ran an unbounded paginated ``Scan`` with client-side
+    ``begins_with(PK, "doc#{run_id}")`` filter, then discarded all but
+    ``limit`` results. On a mature tracking table (tens of thousands of
+    doc rows) each Scan exceeded the 29s API Gateway dispatcher timeout
+    and returned 504 for the whole Compare Test Runs page. The docstring
+    that ruled out ``Files`` claimed it "built ``{file_name}/evaluation/
+    results.json`` paths that 404" — that was a missing ``{test_run_id}/``
+    prefix in the first attempt, not a property of ``Files`` itself.
+    Sorting the ``Files`` list also gives the determinism the Scan
+    pagination was added to guarantee.
+    """
+    # Use the ``ddb_bounded`` client (3s connect / 5s read) rather than
+    # ``dynamodb.meta.client``'s default 60s timeouts — this probe is on
+    # the same ``compare_test_runs`` fanout as the S3 read below (which
+    # uses ``s3_bounded``), and default DDB timeouts would let a slow
+    # tracking-table query burn the whole 20s dispatcher budget from the
+    # DDB side even after S3 was bounded. Clients are documented thread-
+    # safe so the module-level shared instance is reused across the up-to-4
+    # ThreadPoolExecutor workers.
+    try:
+        ddb_client = ddb_bounded
+        table_name = os.environ["TRACKING_TABLE"]
+    except Exception as e:
+        logger.warning(
+            f"Could not open tracking table for {test_run_id}: {e}. "
+            f"Comparator diff will be empty for this run."
+        )
+        return
+
+    try:
+        meta_response = ddb_client.get_item(
+            TableName=table_name,
+            Key={
+                "PK": {"S": f"testrun#{test_run_id}"},
+                "SK": {"S": "metadata"},
+            },
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not read testrun#{test_run_id} metadata: {e}. "
+            f"Comparator diff will be empty for this run."
+        )
+        return
+
+    # Accept both L (list of strings — the shape the test_runner writes via
+    # the boto3 resource client) and SS (string set — the shape some legacy
+    # runs and manual DDB imports use). An L-only read silently returned
+    # an empty file list for those runs, blanking the Comparator Changes
+    # panel with no visible cause. Both shapes convert to a Python list.
+    files_attr = meta_response.get("Item", {}).get("Files", {})
+    if "L" in files_attr:
+        files = [
+            entry.get("S") for entry in files_attr.get("L", []) if entry.get("S")
+        ]
+    elif "SS" in files_attr:
+        files = [s for s in files_attr.get("SS", []) if s]
+    else:
+        files = []
+    if not files:
+        return
+
+    # Dedupe before building BatchGetItem keys — DynamoDB rejects a request
+    # that contains duplicate keys with ``ValidationException``, so a Files
+    # list with any duplicate entry (from a re-upload without cleanup, or
+    # a manual DDB edit) would fail the whole request and reduce the
+    # Comparator Changes panel to empty for the run. ``dict.fromkeys``
+    # dedupes while preserving order, and we then sort — the sort is what
+    # gives two runs of the same test set the same representative doc.
+    unique_files = list(dict.fromkeys(files))
+
+    # Sorted iteration gives deterministic candidate ordering — two runs of
+    # the same test set otherwise probe documents in different orders and
+    # the Comparator Changes panel could pick different-shape samples.
+    # Cap the search at ``_ITER_SAMPLE_MAX_PROBE`` files so a large test
+    # set with sparse completion doesn't blow the compare dispatcher
+    # budget: a 5,000-file run with the first 4,900 files still processing
+    # would otherwise page through 50 BatchGetItem calls at ~1-8s each
+    # (throttling + retry backoff) just to find ``limit=5`` completed
+    # docs. 500 keys is 5 batches, well inside the fanout deadline; if
+    # that isn't enough completed docs, the panel gets fewer samples
+    # (or none) but the compare response still returns on time.
+    _ITER_SAMPLE_MAX_PROBE = 500
+    doc_keys = [
+        f"{test_run_id}/{file_name}" for file_name in sorted(unique_files)
+    ][:_ITER_SAMPLE_MAX_PROBE]
+
+    # BatchGetItem in 100-key chunks. Small runs (~5-10 docs) resolve in a
+    # single call. UnprocessedKeys are re-issued with capped exponential
+    # backoff — under throttling the pre-retry code silently omitted
+    # completed docs, which meant two identical compare_test_runs calls
+    # could pick different-shape sample docs and report false schema
+    # drift on the panel.
+    yielded = 0
+    for i in range(0, len(doc_keys), 100):
+        if yielded >= limit:
+            return
+        batch = doc_keys[i : i + 100]
+        collected_items = []
+        pending = {
+            "Keys": [{"PK": {"S": f"doc#{dk}"}, "SK": {"S": "none"}} for dk in batch]
+        }
+        # ``break`` on failure rather than ``return``: an exception on
+        # retry N > 0 must still let the outer loop process items that
+        # attempt 0 collected — the ``return`` variant discarded them,
+        # so a transient throttle mid-batch could silently blank
+        # previously-collected completed docs from the sample.
+        for attempt in range(6):
+            try:
+                response = ddb_client.batch_get_item(RequestItems={table_name: pending})
+            except Exception as e:
+                logger.warning(
+                    f"BatchGetItem for doc#{test_run_id}/* failed: {e}. "
+                    f"Comparator diff may be short for this run."
+                )
+                break
+            collected_items.extend(response.get("Responses", {}).get(table_name, []))
+            pending = response.get("UnprocessedKeys", {}).get(table_name)
+            if not pending or not pending.get("Keys"):
+                break
+            # Skip the trailing sleep on the final attempt — the ``range``
+            # exhausts and we exit via the ``for/else``, so sleeping there
+            # burns latency for nothing.
+            if attempt < 5:
+                time.sleep(min(0.05 * (2**attempt), 0.5))
+        else:
+            logger.warning(
+                f"BatchGetItem for doc#{test_run_id}/* still had "
+                f"{len(pending.get('Keys', []))} unprocessed keys after 6 "
+                f"attempts; sample may be incomplete."
+            )
+        # Preserve the sorted batch order — batch_get_item does not
+        # guarantee response order. Normalize EvaluationStatus casing —
+        # the sibling ``_count_completed_documents`` reads the same field
+        # with ``.upper()`` (writers have historically been inconsistent
+        # about casing on ABORTED-then-recovered runs), so this probe
+        # must apply the same normalization or same-source rows are
+        # classified differently by the two callers.
+        completed_object_keys: set[str] = set()
+        for item in collected_items:
+            eval_status = item.get("EvaluationStatus", {}).get("S", "").upper()
+            if eval_status != "COMPLETED":
+                continue
+            doc_key = item.get("ObjectKey", {}).get("S")
+            if isinstance(doc_key, str) and doc_key:
+                completed_object_keys.add(doc_key)
+        for doc_key in batch:
+            if yielded >= limit:
+                return
+            if doc_key in completed_object_keys:
+                yield doc_key
+                yielded += 1
+
+
+def _load_sample_attribute_methods(test_run_id):
+    """Read one representative document's ``results.json`` for a test run
+    and flatten to ``{section.attribute -> {method, threshold, source}}``.
+
+    Backs the Comparator Changes panel on the Compare Test Runs page:
+    surfaces per-attribute Stickler comparator choice AND its provenance
+    (``configured`` / ``auto-inferred``) so the UI can highlight the
+    subset of attributes whose comparator or source differs between two
+    runs. Reads the FIRST completed doc's ``results.json`` — the
+    provenance is a property of the config + Stickler version, not of
+    the individual document, so one doc is representative for the whole
+    run's schema. Continues probing candidates if the first doc's file
+    parses but yields zero attributes (a Stickler shape drift or a
+    section-exclusion edge case).
+
+    Returns ``{}`` on any read/parse failure — the panel then renders
+    empty rather than blocking the whole compare_test_runs response,
+    which serves many other pieces of information.
+    """
+    output_bucket = os.environ.get("OUTPUT_BUCKET")
+    if not output_bucket:
+        logger.info(
+            "OUTPUT_BUCKET env var not set — skipping sample-attribute methods load"
+        )
+        return {}
+
+    # Mirrors idp_common.evaluation.contract.EVALUATION_RESULTS_KEY_TEMPLATE
+    # (kept literal here to avoid pulling the whole evaluation package into
+    # this resolver's Lambda dependency graph — the resolver is not on the
+    # evaluation critical path). If the template shape ever changes, this
+    # string and the constant in ``contract.py`` must move together.
+    for doc_key in _iter_completed_doc_keys(test_run_id, limit=5):
+        results_s3_key = f"{doc_key}/evaluation/results.json"
+        try:
+            # Explicitly close the StreamingBody after reading so the
+            # underlying urllib3 connection is released promptly under the
+            # 4-way parallel fanout that ``compare_test_runs`` uses.
+            # CPython would GC-close on assignment eventually, but under
+            # concurrent load or on non-CPython runtimes a leaked
+            # connection compounds — the try/finally makes the release
+            # deterministic without changing behaviour on the happy path.
+            response = s3_bounded.get_object(
+                Bucket=output_bucket, Key=results_s3_key
+            )
+            try:
+                body = response["Body"].read()
+            finally:
+                response["Body"].close()
+            eval_data = json.loads(body)
+        except Exception as e:  # noqa: BLE001
+            # Broad ``except`` matches the "returns {} on any read/parse
+            # failure" contract in the docstring. Narrowing to (ClientError,
+            # ValueError, KeyError) missed ``ReadTimeoutError`` — a subclass
+            # of ``BotoCoreError``, NOT ``ClientError`` — which would fault
+            # the entire compare_test_runs response on a transient S3 hiccup.
+            # The panel is a UI nicety, it must never break the parent request.
+            logger.warning(
+                f"results.json not readable at "
+                f"s3://{output_bucket}/{results_s3_key}: {e}"
+            )
+            continue
+
+        methods = {}
+        for section in eval_data.get("section_results") or []:
+            # Diff key is ``{document_class}.{attribute_name}`` — NOT
+            # ``{section_id}.{attribute_name}`` and NOT the bare
+            # attribute name. Two reasons:
+            #
+            #  * section_id is a run-instance detail (position in the
+            #    document) and shifts across differently-sectioned
+            #    samples, so keying by it produces one-sided drift on
+            #    every same-test-set compare that happens to pick
+            #    differently-shaped docs.
+            #  * The bare attribute name COLLIDES across classes in a
+            #    multi-class packet — an ``Amount`` field on an
+            #    ``Invoice`` section and an ``Amount`` field on a
+            #    ``Receipt`` section have DIFFERENT schemas / comparators,
+            #    but a name-only key would flatten them into the same
+            #    entry and the last-written value would silently win,
+            #    hiding real cross-class differences.
+            #
+            # ``{document_class}.{attribute_name}`` is the right level:
+            # same-class sections carry the same schema (so collapsing
+            # them is correct), different-class sections stay distinct.
+            document_class = section.get("document_class") or ""
+            for attr in section.get("attributes") or []:
+                name = attr.get("name")
+                if not name:
+                    continue
+                attr_key = f"{document_class}.{name}" if document_class else name
+                # ``comparator_type`` is Stickler's class name (e.g.
+                # ``FuzzyComparator``); ``evaluation_method`` is the display
+                # string. Prefer the class name for the diff key so two runs
+                # that differ only in the threshold-suffix format still compare
+                # equal on comparator identity.
+                methods[attr_key] = {
+                    "comparator": attr.get("comparator_type")
+                    or attr.get("evaluation_method"),
+                    "threshold": attr.get("evaluation_threshold"),
+                    "source": attr.get("inference_source"),
+                    "why": attr.get("inference_why"),
+                }
+        if methods:
+            return methods
+        # Zero attributes on a parseable file — likely a section-excluded doc
+        # or a shape drift. Try the next candidate rather than returning empty.
+        logger.info(
+            f"results.json at s3://{output_bucket}/{results_s3_key} parsed but "
+            f"had no attributes; trying next candidate"
+        )
+
+    return {}
+
+
+def _build_comparator_diff(runs_methods):
+    """Diff per-attribute {comparator, threshold, source} across runs.
+
+    Emits one row per attribute whose triple differs between at least two
+    runs. Attributes present in only some runs are still emitted so the
+    UI can flag schema-shape drift alongside comparator drift.
+
+    Input: ``{test_run_id: {attribute_path: {comparator, threshold, source, why}}}``.
+    Output: ``[{attribute, entries: {test_run_id: {...}}}]``, sorted by
+    attribute path so the panel is stable across compares.
+    """
+    if not runs_methods or len(runs_methods) < 2:
+        return []
+
+    all_attrs = set()
+    for methods in runs_methods.values():
+        all_attrs.update(methods.keys())
+
+    diff_rows = []
+    for attr in sorted(all_attrs):
+        entries = {
+            run_id: methods.get(attr) for run_id, methods in runs_methods.items()
+        }
+        # Compare on the (comparator, threshold, source) signature that drives
+        # the panel. ``why`` is informational (rendered in a tooltip) and can
+        # vary in phrasing without implying a real difference — omit from the
+        # diff decision.
+        #
+        # ``source`` is included ONLY when every entry has one. Pre-Stickler-
+        # 1.0 ``results.json`` writes (STICKLER_RESULT_VERSION < 3.0) had no
+        # ``inference_source`` field, so comparing an old run against a new
+        # run would otherwise flag every attribute as changed on the source
+        # axis alone — hiding real comparator drift and drowning the panel
+        # in false rows during upgrade windows. Missing on one side, ignore
+        # the axis; missing on all sides, ditto.
+        sources = [(entry or {}).get("source") for entry in entries.values()]
+        include_source = all(s is not None for s in sources)
+        signatures = {
+            run_id: (
+                (entry or {}).get("comparator"),
+                (entry or {}).get("threshold"),
+                (entry or {}).get("source") if include_source else None,
+            )
+            for run_id, entry in entries.items()
+        }
+        if len(set(signatures.values())) > 1:
+            diff_rows.append({"attribute": attr, "entries": entries})
+
+    return diff_rows
+
+
 def compare_test_runs(test_run_ids):
     """Compare multiple test runs"""
     logger.info(f"Comparing test runs: {test_run_ids}")
@@ -555,17 +948,98 @@ def compare_test_runs(test_run_ids):
     # Get results for each test run
     results = []
     configs = []
+    runs_methods: dict = {}
 
-    for test_run_id in test_run_ids:
-        logger.info(f"Getting results for test run: {test_run_id}")
-        test_result = get_test_results(test_run_id)
-        if test_result:
-            logger.info(f"Found results for {test_run_id}: {test_result.keys()}")
-            results.append(test_result)
-            config = _get_test_run_config(test_run_id)
-            configs.append({"testRunId": test_run_id, "config": config})
-        else:
-            logger.warning(f"No results found for test run: {test_run_id}")
+    # Fan out the sample-attribute-methods reads across runs in parallel.
+    # Each call scans the tracking table and reads S3 — serial fanout would
+    # add (N-1) x (scan+get_object) latency to every compare_test_runs
+    # invocation. Bounded to the number of runs (typically 2-4). Isolated
+    # from the sequential critical path so a slow probe on run A doesn't
+    # block starting run B's probe.
+    #
+    # NOTE — deliberately NOT using ``with ThreadPoolExecutor(...) as pool``:
+    # its ``__exit__`` calls ``shutdown(wait=True)``, which blocks the
+    # caller on RUNNING futures. Per-future ``fut.result(timeout=)`` alone
+    # cannot bound total elapsed time (``fut.cancel()`` is a no-op on
+    # RUNNING futures), so a single hung probe could keep the whole
+    # response past the 20s dispatcher ceiling. Explicit
+    # ``shutdown(wait=False, cancel_futures=True)`` in ``finally`` releases
+    # PENDING futures immediately; RUNNING futures keep executing on their
+    # daemon-ish worker threads until Lambda reclaims them, but they no
+    # longer block ``compare_test_runs`` from returning.
+    #
+    # Total wall-clock budget for the whole ``compare_test_runs`` call is
+    # ~17s (leaves ~3s for the 20s dispatcher's response marshalling).
+    # The budget is deadline-based, not per-step: the sequential
+    # ``get_test_results`` + ``_get_test_run_config`` loop below can eat
+    # several seconds of it on a mature stack, and the futures — which
+    # are ALREADY RUNNING while that loop executes — need whatever
+    # remains. ``fanout_deadline_seconds = remaining`` at the
+    # ``futures_wait`` call keeps the total bounded even when prep is slow.
+    _OVERALL_BUDGET_SECONDS = 17.0
+    fanout_start = time.monotonic()
+    pool = ThreadPoolExecutor(max_workers=max(1, min(4, len(test_run_ids))))
+    try:
+        methods_futures = {
+            trid: pool.submit(_load_sample_attribute_methods, trid)
+            for trid in test_run_ids
+        }
+
+        for test_run_id in test_run_ids:
+            logger.info(f"Getting results for test run: {test_run_id}")
+            test_result = get_test_results(test_run_id)
+            if test_result:
+                logger.info(f"Found results for {test_run_id}: {test_result.keys()}")
+                results.append(test_result)
+                config = _get_test_run_config(test_run_id)
+                configs.append({"testRunId": test_run_id, "config": config})
+            else:
+                logger.warning(f"No results found for test run: {test_run_id}")
+
+        # Remaining budget after the sequential prep loop. Anything not
+        # done by the deadline is treated as an empty methods dict for
+        # that run. The underlying ``s3_bounded`` (3s/4s) and
+        # ``ddb_bounded`` (3s/5s) clients cap each probe at ~9s of
+        # network time, so any budget >= 10s here comfortably covers a
+        # well-behaved probe; the deadline exists to bound the
+        # pathological hung case, not the healthy one.
+        elapsed = time.monotonic() - fanout_start
+        fanout_deadline_seconds = max(0.0, _OVERALL_BUDGET_SECONDS - elapsed)
+        logger.info(
+            "compare_test_runs fanout: %.2fs elapsed in prep, %.2fs remaining budget",
+            elapsed,
+            fanout_deadline_seconds,
+        )
+        done_futures, not_done = futures_wait(
+            list(methods_futures.values()),
+            timeout=fanout_deadline_seconds,
+            return_when=ALL_COMPLETED,
+        )
+        for trid, fut in methods_futures.items():
+            if fut in not_done:
+                logger.warning(
+                    f"Sample-attribute-methods read for {trid} exceeded "
+                    f"the {fanout_deadline_seconds:.2f}s fanout deadline "
+                    f"(overall {_OVERALL_BUDGET_SECONDS}s budget minus prep); "
+                    f"Comparator diff will be empty for this run."
+                )
+                runs_methods[trid] = {}
+                continue
+            try:
+                # timeout=0 — future is in ``done_futures`` so this returns
+                # immediately with the result or a stored exception.
+                runs_methods[trid] = fut.result(timeout=0)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Sample-attribute-methods read failed for {trid}: {e}. "
+                    f"Comparator diff will be empty for this run."
+                )
+                runs_methods[trid] = {}
+    finally:
+        # ``cancel_futures=True`` cancels PENDING futures. RUNNING ones
+        # keep running until they complete on their own, but ``wait=False``
+        # means we don't block on them — they don't hold up the response.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     logger.info(f"Total results found: {len(results)}")
 
@@ -574,6 +1048,31 @@ def compare_test_runs(test_run_ids):
         return {"metrics": [], "configs": []}
 
     metrics_comparison = {result["testRunId"]: result for result in results}
+    # Plant the comparator diff inside the metrics AWSJSON payload under a
+    # ``_``-prefixed key so it rides on the response without a new GraphQL
+    # field. Every UI consumer of ``metrics`` MUST filter ``_``-prefixed
+    # keys before iterating — see ``src/ui/src/components/test-studio/
+    # TestComparison.tsx`` for the shared helper. The convention is
+    # UUIDs-only-in-values, so the guard below catches a future regression
+    # (a run-id that starts with ``_`` would silently shadow the sentinel)
+    # rather than letting it corrupt the compare view.
+    #
+    # Use an explicit runtime check, NOT ``assert`` — ``assert`` is stripped
+    # under ``python -O`` / ``PYTHONOPTIMIZE=1``, so the invariant would
+    # silently disappear on Lambda runtimes that use optimized bytecode.
+    # If the collision hits, drop the sentinel rather than crash the whole
+    # response: the panel simply won't render for that compare, but the
+    # rest of ``metrics`` still reaches the UI.
+    colliding_keys = [k for k in metrics_comparison if k.startswith("_")]
+    if colliding_keys:
+        logger.error(
+            "compareTestRuns: test-run-id key(s) start with '_', which "
+            "collides with the ``_comparator_diff`` sentinel — dropping the "
+            "sentinel to avoid corrupting the response. Colliding: %s",
+            colliding_keys,
+        )
+    else:
+        metrics_comparison["_comparator_diff"] = _build_comparator_diff(runs_methods)
     configs_comparison = _build_config_comparison(configs)
 
     logger.info(f"Configs data: {configs}")
@@ -846,12 +1345,103 @@ def get_test_results(test_run_id):
         }
 
 
-def _query_test_runs_from_gsi(table, start_iso, end_iso):
+def _batch_get_test_run_items(keys, table_name):
+    """BatchGetItem for testrun metadata rows, with UnprocessedKeys retry.
+
+    Sits behind ``_query_test_runs_from_gsi`` on the ``getTestRuns`` path.
+    ``max_items`` (100) matches DynamoDB's per-call
+    BatchGetItem cap, so this always fits in a single round trip — no
+    parallelism needed. ``UnprocessedKeys`` are re-issued with capped
+    exponential backoff rather than dropped; the pre-cap code returned
+    partial results silently under throttling, making the list appear
+    shorter than it actually was.
+    """
+    if not keys:
+        return []
+    if len(keys) > 100:
+        # BatchGetItem hard limit — shouldn't happen with the caller cap,
+        # but guard so a future caller change is a loud AssertionError
+        # rather than a partial silent read.
+        raise AssertionError(
+            f"_batch_get_test_run_items called with {len(keys)} keys; "
+            f"DynamoDB BatchGetItem caps at 100 per call."
+        )
+
+    # ``ddb_bounded_marshalling`` (bounded 3s/5s) — the MARSHALLING
+    # variant, NOT the direct ``ddb_bounded``. Caller in
+    # ``_query_test_runs_from_gsi`` passes untyped keys straight from
+    # ``table.query()``, and ``_build_test_run_list`` downstream reads
+    # unmarshalled fields (``item["TestRunId"]`` as a bare string).
+    # The direct low-level client would raise ``ParamValidationError``
+    # on the untyped keys and (if that were bypassed) return typed
+    # AttributeValue responses that break every field access below.
+    # See the client construction comment for the two-clients story.
+    ddb_client = ddb_bounded_marshalling
+    collected = []
+    pending = {"Keys": keys}
+    for attempt in range(6):
+        try:
+            response = ddb_client.batch_get_item(RequestItems={table_name: pending})
+        except Exception as exc:  # noqa: BLE001
+            # Broadened from ``ClientError`` — ``ReadTimeoutError`` is a
+            # ``BotoCoreError`` subclass and NOT a ``ClientError``, so a
+            # transient network hiccup would otherwise 500 the entire
+            # getTestRuns response instead of returning the partial list.
+            # The list render must never fault on a subset failure —
+            # matches the "swallow anything transient" contract in
+            # ``_load_sample_attribute_methods``.
+            logger.warning(
+                f"BatchGetItem for {len(pending.get('Keys', []))} testrun "
+                f"keys failed: {exc}. Returning partial results."
+            )
+            return collected
+        collected.extend(response.get("Responses", {}).get(table_name, []))
+        pending = response.get("UnprocessedKeys", {}).get(table_name)
+        if not pending or not pending.get("Keys"):
+            return collected
+        # Skip the trailing sleep on the final attempt — the loop is about
+        # to exit via range exhaustion anyway, so sleeping there just
+        # burns latency on the compareTestRuns critical path.
+        if attempt < 5:
+            time.sleep(min(0.05 * (2**attempt), 0.5))
+    logger.warning(
+        f"BatchGetItem still has {len(pending.get('Keys', []))} unprocessed "
+        f"testrun keys after 6 attempts; dropping them from this list render"
+    )
+    return collected
+
+
+# Absolute ceiling on the number of testruns ``getTestRuns`` will return in
+# a single call. The REST dispatcher enforces a 20s read timeout against
+# every resolver (http_api_dispatcher/index.py:63); hydrating every testrun
+# in the range via BatchGetItem grows linearly with the count and started
+# missing that ceiling on mature stacks (~500 rows -> ~20s+). The GSI is
+# sorted newest first, so returning the N most recent covers the common
+# "what happened recently" UI need. Users who want an older run narrow
+# the date range; the underlying pagination substrate (LastEvaluatedKey
+# on the GSI Query) is still there for the follow-up TestRunConnection
+# API. Callers may pass a smaller ``maxItems`` to fetch fewer rows and
+# render faster — the value is clamped to ``[1, this ceiling]`` in
+# ``get_test_runs``.
+#
+# 100 matches DynamoDB's BatchGetItem max per call, so the hydrate step
+# is guaranteed to fit in a single round trip regardless of table load.
+# Raising this without redesigning the hydrate step (single-batch today)
+# reintroduces the throttle-amplification problem we just removed.
+_GET_TEST_RUNS_ABSOLUTE_MAX = 100
+
+
+def _query_test_runs_from_gsi(table, start_iso, end_iso, max_items):
     """Query test runs from TypeDateIndex GSI instead of scanning the full table.
 
     Uses GSI to find testrun keys efficiently, then BatchGetItem for full records
     (GSI projection doesn't include all fields like Context, ConfigVersion, etc.).
     Falls back to scan if GSI query returns no results (backfill may not be complete).
+
+    Capped at ``max_items`` — see the module-level comment for
+    why. The GSI's ``ScanIndexForward=False`` guarantees the cap keeps the
+    NEWEST N runs in the range, which is what the UI list view wants by
+    default.
     """
     from boto3.dynamodb.conditions import Key
 
@@ -862,31 +1452,39 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso):
         & Key("InitialEventTime").between(start_iso, end_iso),
         "ScanIndexForward": False,  # Newest first
         "ProjectionExpression": "PK, SK",
+        "Limit": max_items,
     }
 
     try:
-        while True:
+        # The Limit caps DDB's own page size, so on a busy index DDB may
+        # return a short first page with a LastEvaluatedKey — we still
+        # need to paginate until we have max_items items
+        # or run out of range. Never fetch past the cap.
+        while len(gsi_items) < max_items:
             response = table.query(**query_kwargs)
             gsi_items.extend(response.get("Items", []))
-
             if "LastEvaluatedKey" not in response:
                 break
             query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+            query_kwargs["Limit"] = max_items - len(gsi_items)
 
-        logger.info(f"GSI query returned {len(gsi_items)} test run keys")
+        # Never yield more than the cap; sorted newest-first by the GSI.
+        gsi_items = gsi_items[:max_items]
+        logger.info(
+            f"GSI query returned {len(gsi_items)} test run keys (capped at {max_items})"
+        )
 
-        # If GSI returned results, fetch full records via BatchGetItem
+        # If GSI returned results, fetch full records via BatchGetItem.
+        # With the cap, this is guaranteed to fit in a single BatchGetItem
+        # call (100 keys max per call). ``table.query`` returned untyped
+        # Python values; ``_batch_get_test_run_items`` uses
+        # ``ddb_bounded_marshalling`` which auto-marshals on the way out
+        # and auto-unmarshals on the way in, so untyped keys are the
+        # right shape here — see the client construction comment.
         if gsi_items:
-            items = []
             keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi_items]
             table_name = table.table_name
-            # DynamoDB BatchGetItem supports max 100 keys per call
-            for i in range(0, len(keys), 100):
-                batch_keys = keys[i : i + 100]
-                batch_response = boto3.resource("dynamodb").batch_get_item(
-                    RequestItems={table_name: {"Keys": batch_keys}}
-                )
-                items.extend(batch_response.get("Responses", {}).get(table_name, []))
+            items = _batch_get_test_run_items(keys, table_name)
             logger.info(f"BatchGetItem returned {len(items)} full test run records")
             return items
 
@@ -898,7 +1496,10 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso):
     except Exception as e:
         logger.warning(f"GSI query failed, falling back to scan: {e}")
 
-    # Fallback scan
+    # Fallback scan — same cap applies. DDB Scan with FilterExpression pays
+    # RCU for every row read (not just the filtered survivors), so an
+    # uncapped fallback on a large tracking table is even more expensive
+    # than the GSI path we are protecting.
     items = []
     scan_kwargs = {
         "FilterExpression": "begins_with(PK, :pk) AND SK = :sk AND CreatedAt >= :start AND CreatedAt <= :end",
@@ -908,17 +1509,25 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso):
             ":start": start_iso,
             ":end": end_iso,
         },
+        "Limit": max_items,
     }
 
-    while True:
+    while len(items) < max_items:
         response = table.scan(**scan_kwargs)
         items.extend(response.get("Items", []))
-
         if "LastEvaluatedKey" not in response:
             break
         scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        # Shrink Limit on each iteration so a heavily-filtered Scan on
+        # subsequent pages does not burn ~max_items worth of RCU when
+        # we only need (max_items - already_collected) more rows. Matches
+        # the GSI path above.
+        scan_kwargs["Limit"] = max_items - len(items)
 
-    logger.info(f"Fallback scan returned {len(items)} test runs")
+    items = items[:max_items]
+    logger.info(
+        f"Fallback scan returned {len(items)} test runs (capped at {max_items})"
+    )
     return items
 
 
@@ -963,12 +1572,32 @@ def _build_test_run_list(items):
     return test_runs
 
 
-def get_test_runs(start_iso, end_iso):
-    """Get list of test runs within a date range"""
+def get_test_runs(start_iso, end_iso, max_items=None):
+    """Get list of test runs within a date range.
+
+    ``max_items`` is a caller-driven cap; clamped to
+    ``[1, _GET_TEST_RUNS_ABSOLUTE_MAX]``. ``None`` (or omitted) uses the
+    server default (also ``_GET_TEST_RUNS_ABSOLUTE_MAX``) so untouched
+    callers keep the historical shape.
+    """
     table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
 
-    logger.info(f"Fetching test runs between: {start_iso} and {end_iso}")
-    items = _query_test_runs_from_gsi(table, start_iso, end_iso)
+    if max_items is None:
+        effective_max = _GET_TEST_RUNS_ABSOLUTE_MAX
+    else:
+        try:
+            requested = int(max_items)
+        except (TypeError, ValueError):
+            requested = _GET_TEST_RUNS_ABSOLUTE_MAX
+        # Clamp — never below 1, never above the server's own hard ceiling
+        # (which is bounded by BatchGetItem's per-call limit).
+        effective_max = max(1, min(_GET_TEST_RUNS_ABSOLUTE_MAX, requested))
+
+    logger.info(
+        f"Fetching test runs between: {start_iso} and {end_iso} "
+        f"(effective_max={effective_max})"
+    )
+    items = _query_test_runs_from_gsi(table, start_iso, end_iso, effective_max)
     logger.info(f"Test runs found: {len(items)}")
 
     return _build_test_run_list(items)
@@ -1374,6 +2003,24 @@ def _captured_config_of(item):
 
     Runs record their configuration as a gzip Binary attribute; runs created
     before that stored the body inline under ``Config``.
+
+    Uses ``parse_float=Decimal`` for the compressed path so non-integer
+    numbers land as ``Decimal``, matching the legacy-inline path where
+    DDB's resource client returns them as ``Decimal`` already. Same
+    reason ``_decompress_config_item`` uses this in ``test_runner``.
+
+    Caveat — integer-valued numbers are not perfectly type-symmetric
+    across the two storage formats. ``_json_default`` collapses an
+    integer-valued ``Decimal`` (``Decimal('0.0')``, ``Decimal('3.0')``)
+    to a Python ``int`` at compress time, so the JSON payload writes
+    ``0`` / ``3`` rather than ``0.0`` / ``3.0``; ``parse_int`` on
+    read-back keeps those as ``int``, while the legacy-inline path
+    would have kept them as ``Decimal``. Downstream consumers that
+    switch on ``isinstance(x, Decimal)`` for integer-valued numbers
+    should treat ``int`` and ``Decimal`` as equivalent for the
+    integer case (JSON has no representation for "integer-valued
+    Decimal" — the whole path is inherently lossy for the int/float
+    distinction on that specific shape).
     """
     if item.get("_config_storage") == "compressed":
         blob = item.get("_compressed_config")
@@ -1381,7 +2028,9 @@ def _captured_config_of(item):
             return {}
         raw = blob if isinstance(blob, bytes) else bytes(blob)
         try:
-            return json.loads(gzip.decompress(raw).decode("utf-8"))
+            return json.loads(
+                gzip.decompress(raw).decode("utf-8"), parse_float=Decimal
+            )
         except Exception as e:
             logger.error(f"Failed to decompress captured test run config: {e}")
             return {}

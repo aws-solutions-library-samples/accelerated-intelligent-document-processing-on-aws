@@ -648,9 +648,11 @@ class TestMatchThresholdOnItemsSchema:
         }
         result = SticklerConfigMapper.build_stickler_model_config(schema)["schema"]
         arr = result["properties"]["LineItems"]
-        assert arr["x-aws-stickler-match-threshold"] == 0.55
-        # Items schema now also carries the threshold so Stickler's
-        # element-class builder reads it (structured_model.py:594).
+        # Stickler 1.0's importer rejects ``x-aws-stickler-match-threshold``
+        # on the array field itself with an "unread extension" error
+        # (breaking change #312). The value must land on the item OBJECT —
+        # ``items`` — where the element-class builder reads it.
+        assert "x-aws-stickler-match-threshold" not in arr
         assert arr["items"]["x-aws-stickler-match-threshold"] == 0.55
 
     def test_no_match_threshold_leaves_items_untouched(self):
