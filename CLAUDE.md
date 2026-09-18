@@ -145,13 +145,25 @@ The command derives the expected required-check list by **parsing**
 `.github/workflows/*.yml` for job names (a hardcoded inventory would drift the
 moment a job is renamed), then asserts against the live API that protection is on,
 that every check a PR produces is required, that stale approvals are dismissed,
-that force-push and deletion are blocked, and that an approving review is
-required. It also reports which contexts must stay advisory: `build-docs.yml` and
-`generate-dep-manifest.yml` are path-filtered, so requiring them would leave a
-check pending forever and block every merge.
+that force-push and deletion are blocked, that an approving review is required,
+and that `enforce_admins` is on. It also reports which contexts must stay
+advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, and
+`Test Results` is an action-created check run behind an `if:`, so requiring any of
+them would leave a check pending forever and block every merge.
+
+Three things about what it reads. All eight shared gates are *steps* in one job
+(`developer_tests`), so they are **one** requireable context sharing one red mark,
+not three and not eight. It reads classic branch protection **and** rulesets,
+because a branch can be governed entirely by a ruleset while the classic endpoint
+reports nothing. And it separates "not protected" from "cannot see": the classic
+endpoint needs repository admin and answers 404 without it, so `GET
+.../branches/<branch>` (readable with `pull`) is cross-checked, and `--json`
+reports `protected: null` rather than `false` when the answer is genuinely
+unknown.
 
 It is **opt-in and non-blocking on purpose**: it needs network access and a token
-with `administration:read`, and it reports "not protected" until
+(`pull` suffices for a verified answer; `administration:read` only adds classic
+setting detail), and it reports "not protected" until
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
 is closed — enabling protection needs repository **admin**, which no contributor
 and no CI token here has. In `lint-cicd` it would red-line every branch for a

@@ -124,25 +124,50 @@ Run `make check-branch-protection` to measure it rather than trust this paragrap
 It parses `.github/workflows/*.yml` for the job names GitHub turns into check
 contexts and compares them with the live required-check list, reporting anything
 required-but-never-reported (a renamed job) or reported-but-not-required (a new
-gate). Three contexts cover all eight shared gates, because
-`test_ci_gate_parity.py`'s `SHARED_GATES` are *steps* inside three jobs and GitHub
-can only require job-level contexts:
+gate).
+
+Three contexts cover every gate on this page. All eight of
+`test_ci_gate_parity.py`'s `SHARED_GATES` are *steps* inside a **single** job,
+`developer_tests`, and GitHub can only require job-level contexts, never
+individual steps — so those eight gates collapse to exactly **one** requireable
+context, not eight and not three. That has a practical consequence worth knowing
+before you read a red check: because the eight share one context, they also share
+one red mark, so a required-check failure does not say which of the eight failed.
+The other two contexts are the two security jobs, one each.
 
 | Check context | Workflow / job | Covers |
 |---|---|---|
-| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | `lint-cicd`, `typecheck-pr`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | all eight shared gates: `lint-cicd`, `typecheck-pr`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
 | `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
 
-`build-docs.yml` and `generate-dep-manifest.yml` must **not** be required: their
-`pull_request` triggers are path-filtered, so on a PR touching no matching path the
-workflow never runs, the check is never reported, and a required one would sit
-pending forever and block every merge.
+Three further contexts must **not** be required, because none of them reports on
+every pull request and a required check that does not report sits pending forever
+and blocks every merge: `build` (`build-docs.yml`) and `Generate Dependency
+Manifests` (`generate-dep-manifest.yml`) have path-filtered `pull_request`
+triggers, and `Test Results` is a check run the
+`publish-unit-test-result-action` step creates via `check_name:` behind an `if:`.
+That last one is not a job at all, so job-level YAML parsing cannot see it; the
+checker reads `check_name:` inputs specifically to find it.
 
-The command is opt-in (network + a token with `administration:read`) and is in
-neither `lint-cicd` nor `SHARED_GATES`, because enabling protection needs repository
-**admin** — tracked by
+The command reads **both** enforcement mechanisms — classic branch protection
+(`.../branches/develop/protection`) and rulesets
+(`.../rules/branches/develop`) — because a branch can be fully governed by a
+ruleset while the classic endpoint reports nothing. It also distinguishes "not
+protected" from "cannot see": the classic endpoint needs repository **admin** and
+returns 404 without it, so it cross-checks `.../branches/develop`, which carries a
+`protected` boolean and is readable with plain `pull` access. As measured in
+2026-09, `develop` reports `"protected": false` there and no ruleset rule governs
+the branch (the repository's five active rulesets are inherited from the
+enterprise: four `target=repository`, one `target=tag`), so the tool reaches a
+**verified** "not protected" rather than an ambiguous one. `--json` reports
+`protected: null` when even that read fails, which is not the same as `false`.
+
+The command is opt-in and is in neither `lint-cicd` nor `SHARED_GATES`, because
+enabling protection needs repository **admin** — tracked by
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+A `pull`-scoped token is enough to run it; `administration:read` only adds the
+detail of the classic settings.
 Once that is closed it should become a required, blocking check, run with
 `--fail-on-skip`.
 

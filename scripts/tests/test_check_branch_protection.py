@@ -21,8 +21,18 @@ script pass vacuously:
   merge. This repo has two of those (``build-docs.yml``,
   ``generate-dep-manifest.yml``).
 
+* the derivation must keep producing **all three** contexts that have to be
+  required, not just the lint one. See ``MUST_BE_REQUIRED``: a guard covering one
+  of the three let a plausible ``paths:`` filter drop both security gates out of
+  the required set with the whole suite green.
+* "cannot see" is not "not protected". The classic-protection endpoint needs
+  repository admin and answers 404 without it, so a 404 alone cannot distinguish
+  an unprotected branch from an invisible one. The tool resolves that with two
+  further reads and reports a tri-state; these tests pin all four states.
+
 The recorded payloads follow the shape of
-``GET /repos/{owner}/{repo}/branches/{branch}/protection``.
+``GET /repos/{owner}/{repo}/branches/{branch}/protection`` and
+``GET /repos/{owner}/{repo}/rules/branches/{branch}``.
 """
 
 from __future__ import annotations
@@ -60,9 +70,45 @@ mod = _load_script()
 
 EXPECTED = ["Dependency Audit (SCA)", "Lint, Type Check, and Test"]
 
+# Every check context that MUST come out of the derivation as required-eligible,
+# mapped to a gate command that anchors it to real work.
+#
+# Naming all three is the whole point of this constant. The guard it replaces
+# checked only the job running `make lint-cicd`, so adding a `paths:` filter to
+# `security-checks.yml`'s `pull_request` trigger — a change a maintainer might
+# plausibly make to save CI minutes — collapsed the derived required set to
+# ['Lint, Type Check, and Test'] with every test in this file still green. Both
+# security gates silently dropped out, and worse, the tool would then have
+# reported them under `unknown_required_checks`, actively advising an
+# administrator to UN-require the SRT scan and the dependency audit.
+#
+# The names are asserted directly because that is the string branch protection
+# has to match; the gate command is asserted alongside so that keeping the name
+# while gutting the job's work also fails.
+MUST_BE_REQUIRED = {
+    "Lint, Type Check, and Test": "make lint-cicd",
+    "SRT Security Review": "make srt-scan",
+    "Dependency Audit (SCA)": "scripts/security/dep_audit.py",
+}
+
+# The mirror image: contexts this repo does produce, but not on every pull
+# request, so requiring one would leave it pending forever and block every merge.
+# Deliberately NOT asserted as required-eligible.
+MUST_STAY_ADVISORY = {
+    "build": "build-docs.yml is paths-filtered",
+    "Generate Dependency Manifests": "generate-dep-manifest.yml is paths-filtered",
+    "Test Results": "action-created via check_name:, behind a conditional step",
+}
+
 
 def _fully_protected(contexts: list[str] | None = None) -> Dict[str, Any]:
-    """A recorded protection payload with everything this repo should require."""
+    """A recorded protection payload with everything this repo should require.
+
+    ``enforce_admins`` is enabled here. It used to be ``False``, which meant this
+    fixture — the suite's own definition of "fully protected" — described a
+    configuration where an administrator can push straight past every required
+    check and the review requirement. That is not the target state.
+    """
     return {
         "required_status_checks": {
             "strict": True,
@@ -76,8 +122,9 @@ def _fully_protected(contexts: list[str] | None = None) -> Dict[str, Any]:
             "dismiss_stale_reviews": True,
             "require_code_owner_reviews": False,
             "required_approving_review_count": 1,
+            "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []},
         },
-        "enforce_admins": {"enabled": False},
+        "enforce_admins": {"enabled": True},
         "allow_force_pushes": {"enabled": False},
         "allow_deletions": {"enabled": False},
         "required_conversation_resolution": {"enabled": True},
@@ -271,6 +318,62 @@ def test_gate_attribution_ignores_prose_that_looks_like_a_target(
 
 
 @pytest.mark.unit
+def test_unconditional_action_check_name_is_required_eligible(tmp_path: Path) -> None:
+    """An action-created check that always reports can safely be required."""
+    _write_workflow(
+        tmp_path,
+        "w.yml",
+        """
+        name: W
+        on:
+          pull_request:
+            branches: ["**"]
+        jobs:
+          j:
+            name: J
+            runs-on: ubuntu-latest
+            steps:
+              - uses: some/action@v1
+                with:
+                  check_name: Always Reports
+        """,
+    )
+    contexts = mod.discover_check_contexts(tmp_path)
+    assert mod.expected_contexts(contexts) == ["Always Reports", "J"]
+    action = next(c for c in contexts if c.context == "Always Reports")
+    assert action.created_by_action and action.required_eligible
+
+
+@pytest.mark.unit
+def test_conditional_action_check_name_is_advisory(tmp_path: Path) -> None:
+    """A check run behind an `if:` is not created on every PR, so it can't be required."""
+    _write_workflow(
+        tmp_path,
+        "w.yml",
+        """
+        name: W
+        on:
+          pull_request:
+            branches: ["**"]
+        jobs:
+          j:
+            name: J
+            runs-on: ubuntu-latest
+            steps:
+              - uses: some/action@v1
+                if: always() && hashFiles('r.xml') != ''
+                with:
+                  check_name: Sometimes Reports
+        """,
+    )
+    contexts = mod.discover_check_contexts(tmp_path)
+    assert mod.expected_contexts(contexts) == ["J"]
+    action = next(c for c in contexts if c.context == "Sometimes Reports")
+    assert action.created_by_action and not action.required_eligible
+    assert "conditional" in action.reason
+
+
+@pytest.mark.unit
 def test_invalid_yaml_raises_rather_than_silently_reporting_no_jobs(
     tmp_path: Path,
 ) -> None:
@@ -312,11 +415,90 @@ def test_this_repos_workflows_yield_a_non_empty_expected_list() -> None:
 
 
 @pytest.mark.unit
+def test_every_context_that_must_be_required_is_in_the_derived_required_set() -> None:
+    """All three, not just the lint one — see MUST_BE_REQUIRED for why.
+
+    This is the assertion that fails when a `paths:` filter is added to
+    `security-checks.yml`, which is what previously slipped through green.
+    """
+    expected = set(mod.expected_contexts(mod.discover_check_contexts(mod.WORKFLOWS_DIR)))
+    missing = sorted(set(MUST_BE_REQUIRED) - expected)
+    assert not missing, (
+        f"these contexts dropped out of the derived required set: {missing}. "
+        f"Derived: {sorted(expected)}. A context that is not required-eligible is "
+        f"one the tool will not ask to be required — and if it is already "
+        f"required, the tool will report it as unknown and advise removing it."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("context", "gate"), sorted(MUST_BE_REQUIRED.items()))
+def test_context_that_must_be_required_is_eligible_and_runs_its_gate(
+    context: str, gate: str
+) -> None:
+    """Each required context exists, is eligible, and still runs its gate.
+
+    Two assertions rather than one: the name is what branch protection matches on,
+    and the gate command is what makes requiring it worth anything. Renaming the
+    job fails the first; keeping the name while removing the work fails the second.
+    """
+    matches = [
+        c for c in mod.discover_check_contexts(mod.WORKFLOWS_DIR) if c.context == context
+    ]
+    assert matches, f"no workflow job produces the context {context!r}"
+    for match in matches:
+        assert match.required_eligible, (
+            f"{context!r} is not required-eligible ({match.reason!r}). If its "
+            f"pull_request trigger gained a paths: filter, this gate now skips "
+            f"silently on PRs touching no matching path and the tool would advise "
+            f"un-requiring it."
+        )
+        assert any(gate in attributed for attributed in match.gates), (
+            f"{context!r} no longer runs {gate!r}; it is still required-eligible "
+            f"but no longer gates what it is required for. Attributed: "
+            f"{match.gates}"
+        )
+
+
+@pytest.mark.unit
 def test_path_filtered_repo_workflows_are_reported_as_advisory_only() -> None:
     """build-docs and generate-dep-manifest are path-filtered on purpose."""
     contexts = mod.discover_check_contexts(mod.WORKFLOWS_DIR)
     advisory = {c.workflow for c in contexts if not c.required_eligible}
     assert {"build-docs.yml", "generate-dep-manifest.yml"} <= advisory
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("context", "why"), sorted(MUST_STAY_ADVISORY.items()))
+def test_context_that_must_stay_advisory_is_not_required_eligible(
+    context: str, why: str
+) -> None:
+    """A required check that does not always report blocks every merge forever."""
+    matches = [
+        c for c in mod.discover_check_contexts(mod.WORKFLOWS_DIR) if c.context == context
+    ]
+    assert matches, f"the context {context!r} is no longer derived at all"
+    for match in matches:
+        assert not match.required_eligible, (
+            f"{context!r} became required-eligible, but {why} — requiring it would "
+            f"leave a check pending forever on every PR that does not trigger it"
+        )
+
+
+@pytest.mark.unit
+def test_action_created_check_run_is_derived_from_check_name() -> None:
+    """`Test Results` is a check run an action creates, not a job.
+
+    No job-level parsing can find it, so `check_name:` is read off the step. It
+    matters that it is derived at all: if it were not, and somebody required it,
+    the tool would report it as a name nothing produces and advise removing it.
+    """
+    contexts = mod.discover_check_contexts(mod.WORKFLOWS_DIR)
+    results = [c for c in contexts if c.context == "Test Results"]
+    assert len(results) == 1, "expected exactly one `Test Results` context"
+    assert results[0].created_by_action
+    assert results[0].workflow == "developer-tests.yml"
+    assert "conditional" in results[0].reason
 
 
 # --------------------------------------------------------------------------- #
@@ -335,6 +517,198 @@ def test_unprotected_branch_is_a_finding_that_names_the_issue() -> None:
             "the finding must name the checks that should be required, so the "
             "reader can act on it without re-deriving the list"
         )
+
+
+# --------------------------------------------------------------------------- #
+# "cannot see" vs "not protected", and rulesets as the second mechanism
+# --------------------------------------------------------------------------- #
+
+# Recorded verbatim from GET /repos/{slug}/rules/branches/develop on
+# 2026-09-18 with a token whose permissions are
+# {"admin": false, "maintain": true, "pull": true, "push": true, "triage": true}.
+# Every rule is inherited from the `amazon` enterprise and every one is
+# REPOSITORY-scoped, so none of them protects the branch — the repository's five
+# active rulesets are four target=repository and one target=tag. This payload is
+# why a non-empty response must not be read as "protected".
+REAL_BRANCH_RULES_RESPONSE = [
+    {
+        "type": "repository_visibility",
+        "parameters": {"public": True, "internal": False, "private": True},
+        "ruleset_source_type": "Enterprise",
+        "ruleset_source": "amazon",
+        "ruleset_id": 5369255,
+    },
+    {
+        "type": "repository_visibility",
+        "parameters": {"public": True, "internal": True, "private": False},
+        "ruleset_source_type": "Enterprise",
+        "ruleset_source": "amazon",
+        "ruleset_id": 5369259,
+    },
+    {
+        "type": "repository_delete",
+        "ruleset_source_type": "Enterprise",
+        "ruleset_source": "amazon",
+        "ruleset_id": 14294791,
+    },
+    {
+        "type": "repository_transfer",
+        "ruleset_source_type": "Enterprise",
+        "ruleset_source": "amazon",
+        "ruleset_id": 14294817,
+    },
+]
+
+
+@pytest.mark.unit
+def test_repository_scoped_ruleset_rules_do_not_protect_a_branch() -> None:
+    """The live response is non-empty yet protects no branch — see the payload note."""
+    assert mod.branch_scoped_rules(REAL_BRANCH_RULES_RESPONSE) == []
+    assert mod.ruleset_required_check_names(REAL_BRANCH_RULES_RESPONSE) == []
+
+
+@pytest.mark.unit
+def test_branch_scoped_rule_types_are_kept_including_unknown_ones() -> None:
+    """Filtering is by the `repository_` prefix, so a new branch rule type counts."""
+    rules = REAL_BRANCH_RULES_RESPONSE + [
+        {"type": "pull_request"},
+        {"type": "some_future_branch_rule"},
+    ]
+    assert [r["type"] for r in mod.branch_scoped_rules(rules)] == [
+        "pull_request",
+        "some_future_branch_rule",
+    ]
+
+
+@pytest.mark.unit
+def test_verified_absent_is_distinguished_from_unverifiable() -> None:
+    """A 404 without admin means "cannot see", not "not protected".
+
+    Reporting the ambiguous case as absent would be a false all-clear in exactly
+    the situation that matters most: right after somebody enables protection.
+    """
+    verified = mod.ProtectionState(
+        state=mod.PROTECTION_VERIFIED_ABSENT,
+        classic_status=404,
+        admin_permission=False,
+        protected_flag=False,
+    )
+    findings = mod.evaluate(None, EXPECTED, "develop", 404, state=verified)
+    assert [f.key for f in findings] == ["not_protected"]
+    assert "verified" in findings[0].message
+    assert verified.protected is False
+
+    unverifiable = mod.ProtectionState(
+        state=mod.PROTECTION_UNVERIFIABLE,
+        classic_status=404,
+        admin_permission=False,
+        protected_flag=None,
+    )
+    findings = mod.evaluate(None, EXPECTED, "develop", 404, state=unverifiable)
+    assert [f.key for f in findings] == ["protection_unverifiable"]
+    assert "NOT a clean bill of health" in findings[0].message
+    assert unverifiable.protected is None, (
+        "the tri-state must stay tri-state: collapsing unknown to False is the "
+        "false all-clear this state exists to prevent"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("classic_status", "protected_flag", "rules", "expected_state"),
+    [
+        (404, False, [], "verified_absent"),
+        (404, None, [], "unverifiable"),
+        (404, True, [], "unverifiable"),
+        (404, True, [{"type": "pull_request"}], "protected_by_ruleset"),
+        (200, True, [], "protected_classic"),
+    ],
+)
+def test_protection_state_classification(
+    monkeypatch: pytest.MonkeyPatch,
+    classic_status: int,
+    protected_flag: bool | None,
+    rules: list[dict],
+    expected_state: str,
+) -> None:
+    """All four states, from the three reads that produce them."""
+    classic = _fully_protected() if classic_status == 200 else None
+    monkeypatch.setattr(
+        mod, "fetch_protection", lambda *_a, **_k: (classic, classic_status)
+    )
+    monkeypatch.setattr(mod, "fetch_admin_permission", lambda *_a, **_k: False)
+    monkeypatch.setattr(mod, "fetch_branch_summary", lambda *_a, **_k: protected_flag)
+    monkeypatch.setattr(
+        mod, "fetch_branch_rules", lambda *_a, **_k: (REAL_BRANCH_RULES_RESPONSE + rules, 200)
+    )
+    state = mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
+    assert state.state == expected_state
+
+
+@pytest.mark.unit
+def test_ruleset_protection_is_evaluated_not_just_reported() -> None:
+    """A branch governed only by a ruleset must still be checked, not assumed fine."""
+    bare = mod.ProtectionState(
+        state=mod.PROTECTION_RULESET,
+        classic_status=404,
+        branch_rules=[{"type": "creation"}],
+    )
+    keys = {f.key for f in mod.evaluate(None, EXPECTED, "develop", 404, state=bare)}
+    assert keys == {
+        "ruleset_no_required_status_checks",
+        "ruleset_no_pull_request_review",
+        "ruleset_force_pushes_allowed",
+        "ruleset_deletions_allowed",
+    }
+
+
+@pytest.mark.unit
+def test_fully_configured_ruleset_has_no_findings() -> None:
+    rules = [
+        {"type": "pull_request"},
+        {"type": "non_fast_forward"},
+        {"type": "deletion"},
+        {
+            "type": "required_status_checks",
+            "parameters": {
+                "required_status_checks": [
+                    {"context": name, "integration_id": 15368} for name in EXPECTED
+                ]
+            },
+        },
+    ]
+    state = mod.ProtectionState(
+        state=mod.PROTECTION_RULESET,
+        classic_status=404,
+        branch_rules=rules,
+        ruleset_required_checks=mod.ruleset_required_check_names(rules),
+    )
+    assert mod.evaluate(None, EXPECTED, "develop", 404, state=state) == []
+    assert state.protected is True
+
+
+@pytest.mark.unit
+def test_ruleset_required_checks_count_towards_classic_protection() -> None:
+    """Both mechanisms gate at once, so the union is what actually blocks a merge."""
+    payload = _fully_protected(contexts=["Lint, Type Check, and Test"])
+    state = mod.ProtectionState(
+        state=mod.PROTECTION_CLASSIC,
+        classic=payload,
+        classic_status=200,
+        ruleset_required_checks=["Dependency Audit (SCA)"],
+    )
+    assert mod.evaluate(payload, EXPECTED, "develop", 200, state=state) == []
+
+
+@pytest.mark.unit
+def test_required_but_conditional_check_is_not_reported_as_unknown() -> None:
+    """`Test Results` is produced, just not always — do not advise removing it."""
+    payload = _fully_protected(contexts=EXPECTED + ["Test Results"])
+    findings = mod.evaluate(
+        payload, EXPECTED, "develop", derived=EXPECTED + ["Test Results"]
+    )
+    assert [f.key for f in findings] == ["required_but_not_always_reported"]
+    assert "do NOT" in findings[0].remedy
 
 
 @pytest.mark.unit
@@ -414,6 +788,24 @@ def test_protection_with_no_required_checks_is_a_finding() -> None:
             lambda p: p["allow_deletions"].__setitem__("enabled", True),
             "deletions_allowed",
         ),
+        # enforce_admins was fetched and never examined. With it off, an admin can
+        # push straight past every setting above, so protection can read as
+        # complete while remaining bypassable by whoever is most likely merging.
+        (
+            lambda p: p["enforce_admins"].__setitem__("enabled", False),
+            "admins_not_enforced",
+        ),
+        (
+            lambda p: p.__setitem__("enforce_admins", None),
+            "admins_not_enforced",
+        ),
+        # A bypass list makes "1 approval required" mean nothing for its members.
+        (
+            lambda p: p["required_pull_request_reviews"][
+                "bypass_pull_request_allowances"
+            ].__setitem__("apps", [{"slug": "some-app"}]),
+            "pull_request_review_bypass_allowed",
+        ),
     ],
 )
 def test_each_weakened_setting_is_reported(mutate, expected_key: str) -> None:
@@ -439,6 +831,52 @@ def test_invalid_repo_slug_is_rejected_before_any_request(repo: str) -> None:
 def test_invalid_branch_name_is_rejected_before_any_request() -> None:
     with pytest.raises(ValueError, match="invalid branch name"):
         mod.fetch_protection(mod.DEFAULT_REPO, "bad branch", "unused-token")  # noqa: S106
+
+
+@pytest.mark.unit
+def test_invalid_slug_is_rejected_by_every_endpoint_wrapper() -> None:
+    """Validation must not be left behind on the newer reads."""
+    with pytest.raises(ValueError, match="invalid repo slug"):
+        mod.fetch_branch_summary("not-a-slug", "develop", "t")  # noqa: S106
+    with pytest.raises(ValueError, match="invalid repo slug"):
+        mod.fetch_branch_rules("not-a-slug", "develop", "t")  # noqa: S106
+    with pytest.raises(ValueError, match="invalid repo slug"):
+        mod.resolve_protection_state("not-a-slug", "develop", "t")  # noqa: S106
+
+
+@pytest.mark.unit
+def test_every_api_call_is_a_get_with_no_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tool must stay read-only now that it reads four endpoints, not one.
+
+    Asserted on the request objects it actually builds rather than by reading the
+    source, so adding a write would fail here rather than pass review.
+    """
+    seen: list[Any] = []
+
+    class _FakeResponse:
+        status = 200
+
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    def _urlopen(request: Any, timeout: int = 0) -> _FakeResponse:
+        seen.append(request)
+        return _FakeResponse()
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _urlopen)
+    mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
+
+    assert len(seen) == 4, "expected the four documented reads"
+    for request in seen:
+        assert request.get_method() == "GET"
+        assert request.data is None
+        assert request.full_url.startswith("https://api.github.com/")
 
 
 @pytest.mark.unit
@@ -481,20 +919,65 @@ def test_main_exit_codes_and_json_report(
         mod.discover_check_contexts(mod.WORKFLOWS_DIR)
     )
 
-    monkeypatch.setattr(mod, "fetch_protection", lambda *_a, **_k: (None, 404))
+    monkeypatch.setattr(
+        mod,
+        "resolve_protection_state",
+        lambda *_a, **_k: mod.ProtectionState(
+            state=mod.PROTECTION_VERIFIED_ABSENT,
+            classic_status=404,
+            admin_permission=False,
+            protected_flag=False,
+        ),
+    )
     assert mod.main(["--json"]) == 1
     report = json.loads(capsys.readouterr().out)
     assert report["protected"] is False
+    assert report["protection_state"] == "verified_absent"
+    assert report["protection_reads"]["branch_protected_flag"] is False
     assert report["issue"] == 933
     assert report["expected_required_checks"] == real_expected
+    assert "Test Results" in report["action_created_contexts"]
 
     monkeypatch.setattr(
         mod,
-        "fetch_protection",
-        lambda *_a, **_k: (_fully_protected(contexts=real_expected), 200),
+        "resolve_protection_state",
+        lambda *_a, **_k: mod.ProtectionState(
+            state=mod.PROTECTION_CLASSIC,
+            classic=_fully_protected(contexts=real_expected),
+            classic_status=200,
+            admin_permission=True,
+            protected_flag=True,
+        ),
     )
     assert mod.main([]) == 0
     assert "✅" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_json_reports_null_protected_when_the_state_is_unverifiable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`protected` must be null, not false, when the answer could not be read.
+
+    A periodic run that emitted `false` here would report a clean "still
+    unprotected, nothing changed" in the one case where something did change.
+    """
+    monkeypatch.setattr(mod, "resolve_token", lambda: "t")  # noqa: S106
+    monkeypatch.setattr(
+        mod,
+        "resolve_protection_state",
+        lambda *_a, **_k: mod.ProtectionState(
+            state=mod.PROTECTION_UNVERIFIABLE,
+            classic_status=404,
+            admin_permission=False,
+            protected_flag=None,
+        ),
+    )
+    assert mod.main(["--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["protected"] is None
+    assert report["protection_state"] == "unverifiable"
+    assert [f["key"] for f in report["findings"]] == ["protection_unverifiable"]
 
 
 @pytest.mark.unit

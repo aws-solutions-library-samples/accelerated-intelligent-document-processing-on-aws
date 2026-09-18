@@ -104,13 +104,29 @@ The check derives the expected required-check list by parsing
 `.github/workflows/*.yml` for the job names GitHub turns into status-check contexts,
 rather than from a hardcoded list that would drift on the next rename. It then
 asserts protection is enabled, that every context a PR produces is required, that
-stale approvals are dismissed, that force-push and deletion are blocked, and that an
-approving review is required. It also names the contexts that must **stay** advisory:
-the docs and dependency-manifest workflows are path-filtered, so requiring them would
-leave a check pending forever and block every merge.
+stale approvals are dismissed, that force-push and deletion are blocked, that an
+approving review is required, and that `enforce_admins` is on — without it an
+administrator can push straight past everything else. It also names the contexts
+that must **stay** advisory: the docs and dependency-manifest workflows are
+path-filtered, and `Test Results` is a check run an action creates behind an `if:`,
+so none of them reports on every PR and requiring one would leave a check pending
+forever and block every merge.
 
-It is opt-in and blocks nothing: it needs network access and a token with
-`administration:read`, and it reports "not protected" until
+Three details are worth knowing about what it reads. All eight shared gates are
+*steps* inside one job, so they collapse to a single requireable context and share
+a single red mark — a required-check failure does not say which of the eight
+failed. It reads **both** enforcement mechanisms, classic branch protection and
+rulesets, because a branch can be fully governed by a ruleset while the classic
+endpoint reports nothing. And it distinguishes "not protected" from "cannot see":
+the classic endpoint needs repository **admin** and answers 404 without it, so the
+tool cross-checks `GET /repos/{slug}/branches/{branch}`, which carries a
+`protected` boolean and is readable with plain `pull` access. `--json` therefore
+reports `protected: null` — not `false` — when the state genuinely could not be
+determined.
+
+It is opt-in and blocks nothing: it needs network access and a token (`pull` access
+is enough to reach a verified answer; `administration:read` only adds the detail of
+the classic settings), and it reports "not protected" until
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
 is closed, since enabling protection needs repository **admin**. With no token or no
 network it exits 0 with an explanation. Once #933 closes it should become a required,
