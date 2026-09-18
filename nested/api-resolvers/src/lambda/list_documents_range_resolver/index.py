@@ -31,6 +31,12 @@ from boto3.dynamodb.conditions import Key
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_scope import scope_allows  # noqa: E402
 
+# Same story for the log redactor: byte-identical copy of
+# idp_common/utils/log_sanitizer.py, kept in step by
+# scripts/sync_resolver_log_sanitizer.sh and asserted by
+# scripts/tests/test_resolver_log_sanitizer.py.
+from log_sanitizer import sanitize_event_for_logging  # noqa: E402
+
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -297,7 +303,9 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
 def handler(event, context):
     """AppSync Lambda resolver handler."""
     logger.info("listDocumentsByDateRange invoked")
-    logger.debug(f"Event: {json.dumps(event, default=str)}")
+    logger.debug(
+        "Event: %s", json.dumps(sanitize_event_for_logging(event), default=str)
+    )
 
     args = event.get("arguments", {})
     start_date_time = args.get("startDateTime")

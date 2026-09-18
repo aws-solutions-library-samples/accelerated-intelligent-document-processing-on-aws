@@ -41,7 +41,7 @@ HOOK_ERRORS_PATH = PATTERN_ROOT / "src" / "pipeline_hooks_function" / "hook_erro
 # precede a placeholder — `"arn:${Partition}:states:::lambda:invoke"` became
 # `"arn: 1:states:::lambda:invoke"`, i.e. the parsed document silently
 # misrepresented all nine hook/task `Resource` values.
-_UNQUOTED_PLACEHOLDER_RE = re.compile(r"\"\s*:\s*\$\{[A-Za-z0-9_]+\}")
+_UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 
 # The dispatcher Lambda's ARN substitution. A hook state is identified by the
 # function it invokes rather than by its name, so a hook state named differently

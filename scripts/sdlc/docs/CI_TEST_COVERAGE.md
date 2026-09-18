@@ -117,7 +117,65 @@ ran on that change.
 
 ⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
 added to the branch-protection rule for `develop` as *required status checks*, or a
-PR can still be merged while they are red or pending.
+PR can still be merged while they are red or pending. **Today they are not**, and
+`develop` has no branch protection at all — so every gate on this page is advisory.
+
+Run `make check-branch-protection` to measure it rather than trust this paragraph.
+It parses `.github/workflows/*.yml` for the job names GitHub turns into check
+contexts and compares them with the live required-check list, reporting anything
+required-but-never-reported (a renamed job) or reported-but-not-required (a new
+gate).
+
+Three contexts cover every gate on this page. All eight of
+`test_ci_gate_parity.py`'s `SHARED_GATES` are *steps* inside a **single** job,
+`developer_tests`, and GitHub can only require job-level contexts, never
+individual steps — so those eight gates collapse to exactly **one** requireable
+context, not eight and not three. That has a practical consequence worth knowing
+before you read a red check: because the eight share one context, they also share
+one red mark, so a required-check failure does not say which of the eight failed.
+The other two contexts are the two security jobs, one each.
+
+| Check context | Workflow / job | Covers |
+|---|---|---|
+| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | all eight shared gates: `lint-cicd`, `typecheck-pr`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
+| `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
+
+Three further contexts must **not** be required, because none of them reports on
+every pull request and a required check that does not report sits pending forever
+and blocks every merge: `build` (`build-docs.yml`) and `Generate Dependency
+Manifests` (`generate-dep-manifest.yml`) have path-filtered `pull_request`
+triggers, and `Test Results` is a check run the
+`publish-unit-test-result-action` step creates via `check_name:` behind an `if:`.
+That last one is not a job at all, so job-level YAML parsing cannot see it; the
+checker reads `check_name:` inputs specifically to find it.
+
+The command reads **both** enforcement mechanisms — classic branch protection
+(`.../branches/develop/protection`) and rulesets
+(`.../rules/branches/develop`) — because a branch can be fully governed by a
+ruleset while the classic endpoint reports nothing. It also distinguishes "not
+protected" from "cannot see": the classic endpoint needs repository **admin** and
+returns 404 without it, so it cross-checks `.../branches/develop`, which carries a
+`protected` boolean and is readable with plain `pull` access. As measured in
+2026-09, `develop` reports `"protected": false` there and no ruleset rule governs
+the branch (the repository's five active rulesets are inherited from the
+enterprise: four `target=repository`, one `target=tag`), so the tool reaches a
+**verified** "not protected" rather than an ambiguous one. `--json` reports
+`protected: null` when even that read fails, which is not the same as `false`.
+
+The command is opt-in and is in neither `lint-cicd` nor `SHARED_GATES`, because
+enabling protection needs repository **admin** — tracked by
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+A `pull`-scoped token is enough to run it, and enough to check one of the six
+assertions after protection is enabled: `.../branches/develop` carries a nested
+`protection.required_status_checks` object at that scope, so the required-check
+comparison is made from it rather than being abandoned as unverifiable.
+`administration:read` is what the other five need — required approvals, stale-review
+dismissal, the force-push and deletion blocks, and `enforce_admins` — and a run
+without it emits a `protection_detail_unreadable` finding saying those five are
+unverified rather than verified-good, so such a run still exits non-zero.
+Once that is closed it should become a required, blocking check, run with
+`--fail-on-skip`.
 
 **Trigger matrix** — what runs, when:
 
@@ -228,7 +286,8 @@ Notes:
 ### Step 1: Stack Deployment
 **What it tests**: CloudFormation stack deployment
 - Template validation
-- Nested stack creation (AppSync, Pattern, DocumentKB, MultiDocDiscovery)
+- Nested stack creation (`APIRESOLVERSTACK`, `PATTERNSTACK`, `DOCUMENTKB`,
+  `MULTIDOCDISCOVERYSTACK`)
 - Resource creation and initialization
 - Stack outputs verification
 
@@ -844,7 +903,8 @@ run_command("idp-cli test-result --stack-name {stack} --test-run-id {id} --wait"
 
 ### Stack Deletion
 - Cancels all Bedrock ingestion jobs
-- Deletes nested stacks first (AppSync, Pattern, DocumentKB, MultiDocDiscovery)
+- Deletes nested stacks first (`APIRESOLVERSTACK`, `PATTERNSTACK`, `DOCUMENTKB`,
+  `MULTIDOCDISCOVERYSTACK`)
 - Deletes main stack
 - Cleans up S3 buckets, DynamoDB tables, Lambda functions
 
