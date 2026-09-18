@@ -171,7 +171,7 @@ def _handle(event, context):
     )
 
     # X-Ray annotations
-    xray_recorder.put_annotation("document_id", {document.id})
+    xray_recorder.put_annotation("document_id", document.id)
     xray_recorder.put_annotation("processing_stage", "assessment")
 
     # Find the section we're processing

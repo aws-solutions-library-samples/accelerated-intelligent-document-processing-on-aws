@@ -524,13 +524,13 @@ Conversational AI agent framework with specialized agents for analytics, error a
 
 Utilities for invoking Amazon Bedrock LLMs with retry logic, prompt caching, and token tracking. `invoke_model()` works across Anthropic Claude, Amazon Nova, and **OpenAI GPT-5.x** models — the latter are transparently routed to the `bedrock-mantle` OpenAI Responses API (with a `reasoning_effort` parameter in place of temperature/top_p/top_k, and a `stream_responses_api()` generator for streaming). OpenAI models are not supported for agentic extraction or Discovery. See the [OpenAI GPT-5.x Models](./openai-models.md) guide and the [bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md) for details.
 
-### AppSync (`idp_common.appsync`)
+### Document Service (`idp_common.docs_service`)
 
-Document state persistence through the AppSync GraphQL API.
+Document state persistence to the DynamoDB TrackingTable. `create_document_service()` (or `DocumentServiceFactory.create_service()`) returns a `DocumentDynamoDBService`, which the pipeline uses to create and update document records. Tracking is DynamoDB-only, so the factory's `mode` argument and the legacy `api_url` keyword are accepted but ignored, and `get_document_tracking_mode()` always returns `"dynamodb"` — the factory shape is retained so pre-migration call sites keep working.
 
 ### DynamoDB (`idp_common.dynamodb`)
 
-Document tracking, HITL state management, and configuration storage.
+Document tracking, HITL state management, and configuration storage. Provides `DocumentDynamoDBService` (the document-state backend behind `docs_service`) and the lower-level `DynamoDBClient`.
 
 ### Reporting (`idp_common.reporting`)
 

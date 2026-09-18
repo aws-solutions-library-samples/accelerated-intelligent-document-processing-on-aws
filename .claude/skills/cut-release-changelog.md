@@ -32,7 +32,7 @@ Two checks before proceeding:
 - **The version must be final, not a dev/rc build.** A `VERSION` of
   `0.6.4.dev4`, `0.6.4rc1`, `0.6.4a1` means the release has not been stamped
   yet. Stop and tell the user to run `make version V=0.6.4` first (that target
-  rewrites `VERSION` plus the eight package version files — see the
+  rewrites `VERSION` plus the nine package version files — see the
   `##@ Version Management` block in the `Makefile`). Never hand-edit `VERSION`
   as part of this skill, and never strip the suffix yourself to guess the
   release number.

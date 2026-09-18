@@ -372,7 +372,10 @@ works against the public release bucket). The check is disabled when
 flowchart LR
     subgraph MainStack [Main IDP Accelerator Stack]
         UI[Web UI<br/>nav + FeaturePage]
-        AppSync[(AppSync API<br/>feature-platform resolvers)]
+        RestApi[API Gateway REST API<br/>POST /op/&lt;field&gt;]
+        Dispatcher[Dispatcher Lambda<br/>HttpApiDispatcherFunction]
+        UiResolvers[feature-platform<br/>UI-facing resolver Lambdas]
+        InstallResolvers[feature-platform<br/>install-hook resolver Lambdas]
         InstalledDDB[(InstalledFeatures<br/>DDB table)]
         WebBucket[(WebUIBucket<br/>features/&lt;id&gt;/v&lt;ver&gt;/)]
         FeatureBucket[(FeatureBucket<br/>catalog artifacts)]
@@ -388,14 +391,19 @@ flowchart LR
         ENT[Entitlements]
     end
 
-    UI -- listCatalogFeatures --> AppSync
-    UI -- listInstalledFeatures --> AppSync
-    UI -- checkFeatureEntitlement --> AppSync
-    UI -- getFeatureLaunchUrl --> AppSync
-    AppSync --> InstalledDDB
-    AppSync --> FeatureBucket
-    AppSync -. only when endpoint set .-> ENT
-    FCR --> InstalledDDB
+    UI -- listCatalogFeatures --> RestApi
+    UI -- listInstalledFeatures --> RestApi
+    UI -- checkFeatureEntitlement --> RestApi
+    UI -- getFeatureLaunchUrl --> RestApi
+    UI -- subscribeFeature --> RestApi
+    UI -- unsubscribeFeature --> RestApi
+    RestApi -- Cognito authorizer --> Dispatcher
+    Dispatcher -- invoke by field --> UiResolvers
+    UiResolvers --> InstalledDDB
+    UiResolvers --> FeatureBucket
+    UiResolvers -. only when endpoint set .-> ENT
+    FCR -- direct Lambda invoke --> InstallResolvers
+    InstallResolvers --> InstalledDDB
     FCR --> WebBucket
     UI -- dynamic UMD load --> WebBucket
     UI -- feature REST calls --> FAPI
@@ -405,7 +413,7 @@ flowchart LR
 
 | Component | Lives in | Purpose |
 |-----------|----------|---------|
-| `FeaturePlatformStack` | nested stack from `feature-platform/main-stack-extensions/template.yaml` | Owns the `InstalledFeatures` table, the feature-platform Lambdas, and AppSync data sources / resolvers |
+| `FeaturePlatformStack` | nested stack from `feature-platform/main-stack-extensions/template.yaml` | Owns the `InstalledFeatures` DynamoDB table and the feature-platform resolver Lambdas. The six UI-facing fields are reached through the REST API dispatcher (`HttpApiDispatcherFunction` in `nested/api-resolvers/`), which the stack feeds by exporting each resolver's ARN; the six install-time fields are invoked directly by feature stacks via `lambda:InvokeFunction` on those same exported ARNs. |
 | `FeatureBucket` | main `template.yaml`, condition-gated on `EnableFeaturePlatform` | Holds the catalog of published features (CFN template + UI bundle + `feature.yaml` manifest per feature). Auto-created and pre-populated with the bundled sample feature unless `FeaturePlatformFeatureBucket` is supplied. |
 | Pipeline hooks | `patterns/unified/` (`PipelineHooksDispatcherFunction` + `preprocessing` / `postprocessing` / `postHook` config) | Lets features inject Lambdas at the `preprocessing` and `postprocessing` points (which bracket the pipeline) plus five post-step extension points in between. Inert when no hooks are registered. |
 | Feature stack | standalone CFN template published by the author via `idp-feature-cli publish` | Creates the feature's own resources + registers into the main stack |

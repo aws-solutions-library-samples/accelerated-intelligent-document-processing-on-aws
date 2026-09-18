@@ -24,7 +24,7 @@ flowchart LR
     Templates["idp-main_<version>.yaml<br/>(many)"]
   end
 
-  Nav -- "AppSync query" --> Resolver
+  Nav -- "POST /op/getLatestPublishedVersion" --> Resolver
   Resolver -- "Unsigned ListObjectsV2" --> Templates
   Resolver -- "{ latestVersion, templateUrl }" --> Nav
   Nav -- "Compare to settings.Version" --> Nav
@@ -68,7 +68,7 @@ prefix you're publishing to. This means:
   --headless` / GovCloud) automatically strip the resolver, the
   parameters, and the Settings entries via the
   `HeadlessTemplateTransformer` — the indicator is a UI-only feature
-  and is removed alongside the rest of the AppSync stack.
+  and is removed alongside the rest of the API-resolvers stack.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -118,7 +118,7 @@ stack — but rendering the link to non-admins would be misleading.
 ## Files
 
 - `src/lambda/version_check_resolver/index.py` — Lambda resolver
-- `nested/appsync/src/api/schema.graphql` — `LatestPublishedVersion` GraphQL type and `getLatestPublishedVersion` query
+- `nested/api-resolvers/src/api/schema.graphql` — `LatestPublishedVersion` type and `getLatestPublishedVersion` operation in the retained GraphQL contract (used for UI codegen and dispatcher argument validation, not by any GraphQL service)
 - `src/ui/src/hooks/use-latest-version.ts` — React hook
 - `src/ui/src/utils/version-compare.ts` — semver-aware comparator
 - `src/ui/src/components/genaiidp-layout/navigation.tsx` — badge + popover rendering
