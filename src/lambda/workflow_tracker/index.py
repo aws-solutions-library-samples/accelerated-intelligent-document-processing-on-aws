@@ -10,6 +10,7 @@ import logging
 from idp_common.models import Document, Status, Page, Section  # type: ignore[import-untyped]
 from idp_common.docs_service import create_document_service  # type: ignore[import-untyped]
 from idp_common.document_versions import build_run_id, snapshot_output_versions  # type: ignore[import-untyped]
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional
 
@@ -814,7 +815,7 @@ def notify_circuit_breaker_success() -> None:
 
 
 def handler(event, context):
-    logger.info(f"Processing event: {json.dumps(event)}")
+    logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
     counter_value = None
     decrement_attempted = False
     # Read before the try: the error path below decrements too, and it needs the

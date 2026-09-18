@@ -31,6 +31,7 @@ import boto3
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -451,7 +452,9 @@ def _handle_action(event: dict) -> dict:
 
 def handler(event: dict, context) -> dict:
     """Lambda handler for circuit breaker management."""
-    logger.info(f"Circuit breaker event: {json.dumps(event)}")
+    logger.info(
+        f"Circuit breaker event: {json.dumps(sanitize_event_for_logging(event))}"
+    )
 
     try:
         if "Records" in event:

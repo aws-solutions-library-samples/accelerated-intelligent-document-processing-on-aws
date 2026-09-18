@@ -17,6 +17,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 patch_all()
 
@@ -1202,7 +1203,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
 
 @xray_recorder.capture("queue_processor")
 def handler(event, context):
-    logger.info(f"Processing event: {json.dumps(event)}")
+    logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
     logger.info(f"Processing batch of {len(event['Records'])} messages")
 
     failed_message_ids = []

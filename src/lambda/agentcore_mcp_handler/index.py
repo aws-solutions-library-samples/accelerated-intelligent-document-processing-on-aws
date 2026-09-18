@@ -29,6 +29,19 @@ except ImportError as _logging_import_error:
         f"{_logging_import_error}"
     )
 
+# The log redactor lives in idp_common.utils, which does not pull in strands, but
+# it is guarded for the same reason as the logging import above: this module must
+# load even when the agents layer is missing. The fallback is fail-closed — with
+# no redactor available the handler logs a placeholder instead of the event, since
+# the event is the tool's argument payload as the caller supplied it.
+try:
+    from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+except ImportError:  # pragma: no cover - only reachable with no agents layer
+
+    def sanitize_event_for_logging(event, **_kwargs):  # type: ignore[misc]
+        return "<redactor unavailable: idp_common not importable>"
+
+
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
@@ -42,8 +55,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     logger.info(f"=== Lambda Handler Started ===")
     logger.info(f"Code Version: {CODE_VERSION}")
     logger.info(f"Code Updated: {CODE_UPDATED}")
-    logger.info(f"Received event: {json.dumps(event)}")
-    
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
+
     # Log context details for debugging
     logger.info(f"Context type: {type(context)}")
     if hasattr(context, 'client_context'):
@@ -85,7 +98,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(f"Tool module: {tool.__class__.__module__}")
         
         # Parameters are sent directly as top-level event fields
-        logger.info(f"Executing tool: {tool_name} with event: {json.dumps(event)}")
+        # The whole event is the tool's parameter payload (see `tool.execute(**event)`
+        # below), so it is caller-supplied data and is redacted before logging.
+        logger.info(
+            f"Executing tool: {tool_name} with event: "
+            f"{json.dumps(sanitize_event_for_logging(event))}"
+        )
         logger.info(f"Tool execution starting...")
         result = tool.execute(**event)
         logger.info(f"Tool execution completed successfully")

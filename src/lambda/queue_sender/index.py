@@ -10,6 +10,7 @@ import logging
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from aws_xray_sdk.core import xray_recorder, patch_all
 
 # Patch AWS SDK calls for X-Ray tracing
@@ -87,7 +88,7 @@ def resolve_active_config_version(config_table):
 
 @xray_recorder.capture("queue_sender")
 def handler(event, context):
-    logger.info(f"Processing event: {json.dumps(event)}")
+    logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
 
     detail = event["detail"]
     object_key = detail["object"]["key"]

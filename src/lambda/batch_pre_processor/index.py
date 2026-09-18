@@ -33,6 +33,7 @@ from typing import Dict, List, Optional, Tuple
 import boto3
 from idp_common.job_service import create_job_service
 from idp_common.models import Status
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -59,7 +60,7 @@ class ZipBoundsExceeded(ValueError):
 
 def handler(event, context):
     """Process EventBridge events for uploaded ZIP files."""
-    logger.info(f"Processing event: {event}")
+    logger.info(f"Processing event: {sanitize_event_for_logging(event)}")
 
     # EventBridge event format
     bucket = event["detail"]["bucket"]["name"]

@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 # Set up logging
 logger = logging.getLogger()
@@ -20,7 +21,10 @@ DATA_RETENTION_DAYS = int(os.environ.get('DATA_RETENTION_DAYS', '365'))
 def handler(event, context):
     """Handler for creating new chat sessions"""
     try:
-        logger.info(f"Creating chat session with event: {json.dumps(event)}")
+        logger.info(
+            f"Creating chat session with event: "
+            f"{json.dumps(sanitize_event_for_logging(event))}"
+        )
          
         # Generate session ID
         session_id = str(uuid.uuid4())

@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""The api-resolver Lambdas redact logs with the CANONICAL denylist, not a copy.
+"""Lambdas that log their invocation event redact it with the CANONICAL denylist.
 
 ``lib/idp_common_pkg/idp_common/utils/log_sanitizer.py`` is the one redactor. Ten
 resolvers under ``nested/api-resolvers/src/lambda/`` used to hand-copy a shortened
@@ -11,12 +11,12 @@ A denylist that is duplicated by hand is a denylist that is eventually wrong, an
 the failure is silent: the redactor still runs, still looks correct in review, and
 just passes the newer key names straight through.
 
-So the split is now mechanical, and derived here from the template rather than from
-a list of names kept in a comment:
+So the split is now mechanical, and derived here from the templates rather than
+from a list of names kept in a comment:
 
-* A resolver that carries an ``IDPCommon*Layer`` imports
+* A function that carries an ``IDPCommon*Layer`` imports
   ``idp_common.utils.log_sanitizer`` directly — there is nothing to copy.
-* A resolver that carries no layer cannot import the library at runtime at all
+* A function that carries no layer cannot import the library at runtime at all
   (SAM packages each function from its own ``CodeUri``, so it cannot reach a
   sibling directory either). Those get a **byte-identical** committed copy of the
   module as ``log_sanitizer.py``, kept in step by
@@ -28,24 +28,47 @@ This is the same guarded-vendoring shape as
 ``src/lambda/chat_stream_processor/vendored/`` and its
 ``test_vendored_in_sync.py``.
 
+Scope: BOTH Lambda trees
+------------------------
+
+This file is named for the api-resolver tree because that is the tree it was
+written against, and the name is left alone so that the thirty committed copies of
+the canonical module — whose docstring cites it — do not all have to be rewritten
+to rename a test. It now covers ``src/lambda/`` as well, and that is the point of
+the widening rather than an incidental extra: when the scan below was rooted at the
+resolver tree alone it reported a clean tree while **forty** log calls in
+**thirty-eight** files under ``src/lambda/`` wrote their whole invocation event to
+CloudWatch, including the agent chat processor's — prompt, caller ``sub`` and
+caller group list on every turn. The sites it could not see outnumbered the ones it
+could by roughly four to one. A guard whose reach is narrower than the defect class
+it describes reads, from a green test run, exactly like a guard that works.
+
+The roots are listed once in ``LAMBDA_ROOTS`` and asserted against the sync
+script's own root list, so a tree can not be added to one and forgotten in the
+other. ``LAMBDA_ROOTS`` is not the whole repository, and the trees it leaves out are
+themselves asserted rather than left implicit — see
+``test_every_lambda_tree_is_either_covered_or_explicitly_out_of_scope``, which is
+the lesson of this widening applied to itself: the reason nobody noticed the
+resolver-only root for months is that a green run looks identical whether the guard
+covers one tree or fifteen.
+
 What each test below forbids:
 
 * **logging the invocation event without sanitizing it** — see
-  ``test_no_resolver_logs_the_raw_invocation_event``. This is the one that closes
-  the actual defect class of #921; every other test here proves the *copies* are
-  consistent, which is a different and weaker property. A resolver can pass all of
-  them while writing ``identity.claims`` to CloudWatch in full, because it simply
+  ``test_no_lambda_logs_the_raw_invocation_event``. This is the one that closes the
+  actual defect class of #921 and #977; every other test here proves the *copies*
+  are consistent, which is a different and weaker property. A function can pass all
+  of them while writing ``identity.claims`` to CloudWatch in full, because it simply
   never mentions the sanitizer at all. Two resolvers did exactly that
   (``finetuning_jobs_resolver``, ``list_documents_range_resolver``) and the first
   round of these guards was green with both in the tree.
-* reintroducing a hand-rolled key list anywhere under the resolver tree, under any
+* reintroducing a hand-rolled key list anywhere under either tree, under any
   variable name (the original copies were all called ``_LOG_SENSITIVE_KEYS``, but
   renaming one must not buy an exemption);
 * a vendored copy drifting from the canonical module by even one byte;
-* a resolver importing ``idp_common`` for the sanitizer while carrying no layer to
+* a function importing ``idp_common`` for the sanitizer while carrying no layer to
   provide it — that is an ImportError at cold start, not a lint nit;
-* the sync script's target list drifting from the set of resolvers that actually
-  import the vendored copy.
+* the sync script scanning a different set of trees than this guard does.
 
 The canonical module is loaded **by path**, not via ``import idp_common``: an
 editable install in the environment may resolve to a different checkout entirely,
@@ -57,6 +80,8 @@ from __future__ import annotations
 import ast
 import importlib.util
 import re
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -65,16 +90,75 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL = REPO_ROOT / "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py"
+
+# The two trees of Lambda handler directories. Every immediate subdirectory of
+# each is treated as one function's package, which is how SAM packages them.
 RESOLVER_ROOT = REPO_ROOT / "nested/api-resolvers/src/lambda"
-TEMPLATE = REPO_ROOT / "nested/api-resolvers/template.yaml"
-# Most resolver functions are declared in the nested stack, but not all of them:
-# FinetuningJobsResolverFunction lives in the PARENT template and points its
-# CodeUri back into nested/api-resolvers/src/lambda. Scanning only the nested
-# template left it looking layer-free when it in fact carries IDPCommonBaseLayer,
-# so adding the canonical import there — the correct thing to do — would have
-# failed this suite and told the author to vendor a copy instead.
-TEMPLATES = (TEMPLATE, REPO_ROOT / "template.yaml")
+SRC_LAMBDA_ROOT = REPO_ROOT / "src/lambda"
+LAMBDA_ROOTS = (RESOLVER_ROOT, SRC_LAMBDA_ROOT)
+
+# Templates are discovered by CONTENT, via the same script `make cfn-lint` and
+# `make check-arn-partitions` use, rather than from a list of paths kept here.
+# The list-of-paths version of this had already been wrong once: it named the
+# nested api-resolvers template only, and so read FinetuningJobsResolverFunction —
+# declared in the PARENT template — as carrying no layer, which is the direction
+# that produces wrong advice. Widening to src/lambda would have reintroduced the
+# same bug twice over, because those functions are declared across four templates
+# (the parent, patterns/unified, nested/api-resolvers and nested/multi-doc-
+# discovery) and nothing says a fifth will not appear.
+DISCOVER_TEMPLATES = REPO_ROOT / "scripts/discover_templates.sh"
 SYNC_SCRIPT = REPO_ROOT / "scripts/sync_resolver_log_sanitizer.sh"
+
+# Lambda source trees this guard does NOT cover, each with the reason. Keyed by
+# repo-relative path, and compared at test time against the set of directories that
+# actually hold ``AWS::Serverless::Function`` CodeUri packages, so a tree cannot be
+# added to the repository — or renamed — without a decision being made about it.
+#
+# Every entry here is a tree whose handlers are built and deployed independently of
+# the two main ones, or is not deployed by this solution at all. Widening to them is
+# a separate change: several do log their raw invocation event, and the pipeline
+# functions under ``patterns/unified/src`` in particular are the ones whose logs
+# operators read most often when diagnosing a document, so what to keep in them is
+# a judgement worth its own review rather than a mechanical sweep appended to this
+# one. #985 scopes this change to ``src/lambda``.
+UNCOVERED_LAMBDA_TREES = {
+    "patterns/unified/src": (
+        "the document-processing pipeline steps; their events are Step Functions "
+        "payloads rather than caller-supplied API events, and several log them in "
+        "full — the largest remaining instance of this defect class"
+    ),
+    "nested/bedrockkb/src": (
+        "the Bedrock Knowledge Base custom resources, deployed only when the "
+        "knowledge base is enabled"
+    ),
+    "nested/multi-doc-discovery": (
+        "a container-image build helper (docker_build_lambda), not a handler that "
+        "receives an API or pipeline event"
+    ),
+    "feature-platform/main-stack-extensions/lambdas": (
+        "the feature-platform control plane, built and versioned separately from "
+        "the main stack"
+    ),
+    "feature-platform/confbench-testset": "an optional feature extension package",
+    "feature-platform/feature-template": "the scaffold a new feature is copied from",
+    "feature-platform/idp-data-generator": "an optional feature extension package",
+    "feature-platform/pii-anonymizer": (
+        "an optional feature extension package, and its hook vendors third-party "
+        "code kept byte-for-byte — see its PROVENANCE.md"
+    ),
+    "feature-platform/sample-feature": "a sample feature, shipped as documentation",
+    "feature-platform/sample-health-insurance-review": (
+        "a sample feature, shipped as documentation"
+    ),
+    "feature-platform/seller-entitlement-service/lambdas": (
+        "the marketplace seller-side service, deployed to a separate account"
+    ),
+    "samples/lambda-hook-inference": (
+        "sample hook implementations, deployed by the reader rather than by this "
+        "solution"
+    ),
+    "notebooks/examples": "a notebook example, not part of any deployed stack",
+}
 
 VENDORED_NAME = "log_sanitizer.py"
 VENDORED_MODULE = "log_sanitizer"
@@ -116,40 +200,77 @@ def _canonical_deny_keys() -> frozenset[str]:
     return frozenset(module._DEFAULT_DENY_KEY_SUBSTRINGS)
 
 
-def _resolver_dirs() -> list[Path]:
-    return sorted(p for p in RESOLVER_ROOT.iterdir() if p.is_dir())
+def _lambda_dirs() -> list[Path]:
+    """Every handler directory under either root, as a resolved path.
+
+    Returned as paths rather than bare names because the two trees are indexed
+    together from here on, and a name is not unique across them.
+    """
+    dirs: list[Path] = []
+    for root in LAMBDA_ROOTS:
+        dirs.extend(p.resolve() for p in root.iterdir() if p.is_dir())
+    return sorted(dirs)
 
 
-def _index_source(resolver: Path) -> str:
-    index = resolver / "index.py"
-    return index.read_text(encoding="utf-8") if index.exists() else ""
+def _python_files(directory: Path) -> list[Path]:
+    """Every Python file in a handler package, including subpackages.
+
+    Not just ``index.py``: ``src/lambda/chat_stream_processor`` puts its handler in
+    ``app.py`` and carries two vendored processor modules under ``vendored/``, and
+    both of those logged their raw event. An index-only scan is blind to a whole
+    function.
+    """
+    return sorted(directory.rglob("*.py"))
 
 
-def _layers_by_code_uri() -> dict[str, list[str]]:
-    """Map resolver directory name to the IDPCommon layer refs its function declares.
+@lru_cache(maxsize=1)
+def _templates() -> tuple[Path, ...]:
+    """Every CloudFormation template in the repo, found by content.
+
+    Delegates to ``scripts/discover_templates.sh``, which is itself covered by
+    ``scripts/tests/test_discover_templates.py`` and is what the cfn-lint and
+    ARN-partition gates use. Sharing it means this guard cannot come to disagree
+    with those about what a template is.
+    """
+    result = subprocess.run(
+        ["bash", str(DISCOVER_TEMPLATES), "cfn"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    paths = tuple(
+        REPO_ROOT / line for line in result.stdout.splitlines() if line.strip()
+    )
+    assert paths, (
+        f"{DISCOVER_TEMPLATES.relative_to(REPO_ROOT)} found no templates; the layer "
+        "scan below would then read every function as carrying no layer"
+    )
+    return paths
+
+
+@lru_cache(maxsize=1)
+def _serverless_functions() -> tuple[tuple[Path, tuple[str, ...]], ...]:
+    """Every ``AWS::Serverless::Function`` CodeUri directory and its layer refs.
 
     Parsed with regex rather than a YAML loader: the templates are full of short-form
     intrinsics (``!Ref``, ``!Sub``, ``!If``) that a plain ``yaml.safe_load`` refuses,
     and all this needs is which resource block names which layer. Resource blocks
     start at exactly two spaces of indentation.
 
-    Three things this deliberately does NOT assume, each of which used to drop a
-    resolver silently — and a resolver missing from this map reads as "carries no
+    Two things this deliberately does NOT assume, each of which used to drop a
+    function silently — and a function missing from this list reads as "carries no
     layer", the direction that produces wrong advice:
 
     * a leading ``./`` on the CodeUri (``ListDocumentsGSIResolverFunction`` omits it);
-    * that the function is declared in the nested template (see ``TEMPLATES``);
-    * that the layer parameter name ends in ``Arn`` — the nested stack receives
+    * that the layer parameter name ends in ``Arn`` — a nested stack receives
       ``IDPCommonBaseLayerArn`` as a parameter, while the parent declares the layer
       resource itself and refers to it as ``IDPCommonBaseLayer``.
 
-    CodeUri is resolved to a real path and kept only when it lands directly inside
-    ``RESOLVER_ROOT``, so the parent template's own ``src/lambda/<name>`` functions
-    (relative to the repo root, a different tree) cannot collide with a resolver of
-    the same name.
+    Nor does it assume which template a function is declared in; see ``_templates``.
     """
-    layers: dict[str, list[str]] = {}
-    for template in TEMPLATES:
+    functions: list[tuple[Path, tuple[str, ...]]] = []
+    for template in _templates():
         lines = template.read_text(encoding="utf-8").splitlines()
         starts = [
             i for i, line in enumerate(lines) if re.match(r"^  [A-Za-z0-9]+:\s*$", line)
@@ -158,36 +279,121 @@ def _layers_by_code_uri() -> dict[str, list[str]]:
         for start, end in zip(starts, starts[1:]):
             block = "\n".join(lines[start:end])
             match = re.search(r"CodeUri:\s*(\S+)", block)
-            if not match:
+            if not match or "AWS::Serverless::Function" not in block:
                 continue
             code_dir = (template.parent / match.group(1)).resolve()
-            if code_dir.parent != RESOLVER_ROOT:
-                continue
-            layers[code_dir.name] = re.findall(
-                r"!Ref (IDPCommon\w*Layer(?:Arn)?)\b", block
-            )
+            layers = tuple(re.findall(r"!Ref (IDPCommon\w*Layer(?:Arn)?)\b", block))
+            functions.append((code_dir, layers))
+    return tuple(functions)
+
+
+@lru_cache(maxsize=1)
+def _layers_by_code_dir() -> dict[Path, list[str]]:
+    """Map handler directory under ``LAMBDA_ROOTS`` to its IDPCommon layer refs.
+
+    Keyed by the resolved CodeUri directory and kept only when that directory sits
+    directly inside one of ``LAMBDA_ROOTS``, so that two functions with the same
+    directory name in different trees cannot collide, and so a CodeUri pointing
+    somewhere else entirely is ignored.
+
+    Two resources can share one CodeUri (``backfill_gsi_attributes`` backs both a
+    trigger and a worker; ``start_codebuild`` backs a UI build and an ECR cleanup),
+    so the layer lists are unioned rather than overwritten: the directory's code has
+    to work under whichever resource loads it, and "some resource attaches the
+    layer" is not enough to justify a canonical import. That distinction is not
+    exercised by today's tree — no shared CodeUri has a layer on one resource and
+    not the other — so it is a deliberate choice about the safe direction rather
+    than a fix for an observed bug.
+    """
+    layers: dict[Path, list[str]] = {}
+    roots = {root.resolve() for root in LAMBDA_ROOTS}
+    for code_dir, found in _serverless_functions():
+        if code_dir.parent not in roots:
+            continue
+        existing = layers.setdefault(code_dir, [])
+        existing.extend(layer for layer in found if layer not in existing)
     return layers
 
 
-def _imported_modules(resolver: Path) -> dict[str, set[str]]:
-    """Map module -> names imported from it, for REAL imports in ``index.py``.
+def _lambda_trees() -> dict[str, int]:
+    """Repo-relative parent directory of every Python Lambda package -> count.
+
+    A "tree" is a directory whose children are handler packages; ``LAMBDA_ROOTS``
+    holds the two this guard scans. Derived from the templates so that the guard's
+    reach can be compared against the repository as it actually is, rather than
+    against an assumption about it.
+    """
+    trees: dict[str, int] = {}
+    seen: set[Path] = set()
+    for code_dir, _layers in _serverless_functions():
+        if code_dir in seen or not code_dir.is_dir():
+            continue
+        if not any(code_dir.glob("*.py")):
+            continue  # a container-image or non-Python function
+        seen.add(code_dir)
+        key = code_dir.parent.relative_to(REPO_ROOT).as_posix()
+        trees[key] = trees.get(key, 0) + 1
+    return trees
+
+
+def test_every_lambda_tree_is_either_covered_or_explicitly_out_of_scope():
+    """The guard's reach is asserted, not assumed.
+
+    ``LAMBDA_ROOTS`` covers two of the trees in this repository that hold Python
+    Lambda packages. That is a deliberate boundary rather than a complete one, and
+    the whole reason the previous resolver-only boundary went unnoticed for months
+    is that nothing anywhere compared it against the repository: a green run reads
+    the same whether the scan covers one tree or all of them.
+
+    So compare it here. Every tree that holds an ``AWS::Serverless::Function`` with
+    Python sources must be either scanned by this guard or named in
+    ``UNCOVERED_LAMBDA_TREES`` with a reason. A new tree — a new feature-platform
+    package, a new nested stack — then arrives as a failure asking for a decision,
+    which is the only mechanism that reliably produces one.
+    """
+    trees = _lambda_trees()
+    covered = {root.relative_to(REPO_ROOT).as_posix() for root in LAMBDA_ROOTS}
+    assert covered <= set(trees), (
+        "LAMBDA_ROOTS names a tree that holds no Python Lambda package at all, so "
+        "the scan there covers nothing: "
+        f"{sorted(covered - set(trees))}"
+    )
+    unaccounted = sorted(set(trees) - covered - set(UNCOVERED_LAMBDA_TREES))
+    assert not unaccounted, (
+        "These directories hold Python Lambda packages that this guard does not "
+        "scan, and are not listed in UNCOVERED_LAMBDA_TREES. Either add the tree to "
+        "LAMBDA_ROOTS (and to the roots list in "
+        "scripts/sync_resolver_log_sanitizer.sh) and fix whatever the scan reports, "
+        "or record why it is out of scope:\n  "
+        + "\n  ".join(f"{tree} ({trees[tree]} function directories)" for tree in unaccounted)
+    )
+    stale = sorted(set(UNCOVERED_LAMBDA_TREES) - set(trees) - covered)
+    assert not stale, (
+        "These UNCOVERED_LAMBDA_TREES entries no longer name a tree holding Python "
+        "Lambda packages — renamed, removed, or now covered. A stale exemption is "
+        f"how a real gap gets waved through later: {stale}"
+    )
+
+
+def _imported_modules(path: Path) -> dict[str, set[str]]:
+    """Map module -> names imported from it, for REAL imports in one file.
 
     AST-parsed, not substring-matched. A comment or docstring that quotes an import
-    line is not an import, and the resolvers are full of exactly such prose: every
+    line is not an import, and these trees are full of exactly such prose: every
     vendored ``log_sanitizer.py`` carries the canonical module's ``Usage::`` block,
     whose body line reads ``from idp_common.utils.log_sanitizer import ...``. The
-    substring form of this check passed only because this change happened to delete
-    the old comment blocks that quoted the same path; re-adding one such comment to
-    a layer-free resolver would have failed the suite for no real reason.
+    substring form of this check passed only because an earlier change happened to
+    delete the old comment blocks that quoted the same path; re-adding one such
+    comment to a layer-free function would have failed the suite for no real reason.
 
-    On an ``index.py`` Python cannot parse, fall back to a line-anchored text match
-    so an unreadable file cannot silently read as importing nothing.
+    On a file Python cannot parse, fall back to a line-anchored text match so an
+    unreadable file cannot silently read as importing nothing.
     """
-    source = _index_source(resolver)
+    source = path.read_text(encoding="utf-8") if path.exists() else ""
     if not source:
         return {}
     try:
-        tree = ast.parse(source, filename=str(resolver / "index.py"))
+        tree = ast.parse(source, filename=str(path))
     except SyntaxError:
         found: dict[str, set[str]] = {}
         for module in (CANONICAL_IMPORT, VENDORED_MODULE):
@@ -209,9 +415,18 @@ def _imported_modules(resolver: Path) -> dict[str, set[str]]:
     return imports
 
 
-def _imports_canonical_sanitizer(resolver: Path) -> bool:
-    """The resolver imports the sanitizer from ``idp_common`` — so it needs a layer."""
-    for module, names in _imported_modules(resolver).items():
+def _directory_imports(directory: Path) -> dict[str, set[str]]:
+    """Every module imported by any Python file in a handler package."""
+    merged: dict[str, set[str]] = {}
+    for path in _python_files(directory):
+        for module, names in _imported_modules(path).items():
+            merged.setdefault(module, set()).update(names)
+    return merged
+
+
+def _imports_canonical_sanitizer(directory: Path) -> bool:
+    """The function imports the sanitizer from ``idp_common`` — so it needs a layer."""
+    for module, names in _directory_imports(directory).items():
         if module == CANONICAL_IMPORT or module.startswith(f"{CANONICAL_IMPORT}."):
             return True
         if module == "idp_common.utils" and VENDORED_MODULE in names:
@@ -219,14 +434,14 @@ def _imports_canonical_sanitizer(resolver: Path) -> bool:
     return False
 
 
-def _imports_vendored_sanitizer(resolver: Path) -> bool:
-    """The resolver imports its own committed copy as a top-level sibling module."""
-    return VENDORED_MODULE in _imported_modules(resolver)
+def _imports_vendored_sanitizer(directory: Path) -> bool:
+    """The function imports its own committed copy as a top-level sibling module."""
+    return VENDORED_MODULE in _directory_imports(directory)
 
 
-def _imports_the_sanitizer(resolver: Path) -> bool:
-    return _imports_canonical_sanitizer(resolver) or _imports_vendored_sanitizer(
-        resolver
+def _imports_the_sanitizer(directory: Path) -> bool:
+    return _imports_canonical_sanitizer(directory) or _imports_vendored_sanitizer(
+        directory
     )
 
 
@@ -265,10 +480,10 @@ def _string_literals(node: ast.AST, depth: int = 0) -> list[str] | None:
     return values
 
 
-# --- does the resolver actually sanitize what it logs? ---------------------------
+# --- does the Lambda actually sanitize what it logs? -----------------------------
 #
 # Everything above proves the copies are consistent with each other. None of it
-# proves any resolver *uses* one. This does.
+# proves any function *uses* one. This does.
 #
 # The check is on the DATAFLOW, not on the spelling. It would have been much
 # shorter to forbid the literal text `json.dumps(event)`, and that version is worse
@@ -304,7 +519,9 @@ def _is_log_call(node: ast.expr) -> bool:
     """A ``logger.info(...)``-shaped call, or a bare ``print(...)``.
 
     ``print`` counts: in Lambda it lands in the same CloudWatch stream as the
-    logger, so it leaks identically.
+    logger, so it leaks identically. Two functions under ``src/lambda`` did in fact
+    use ``print`` for this (``calculate_capacity``, ``update_settings``), so this is
+    not a hypothetical.
     """
     if not isinstance(node, ast.Call):
         return False
@@ -334,7 +551,7 @@ def _whole_event_reaches(node: ast.AST) -> bool:
 
     * **Narrowed.** ``event["arguments"]``, ``event.get("fieldName")``,
       ``event.identity`` each evaluate to a piece of the event, not the event.
-      Resolvers log field names and operation names constantly and that is fine —
+      Handlers log field names and operation names constantly and that is fine —
       flagging it would make this test unusable and get it deleted.
     * **Sanitized.** The name appears only inside a ``sanitize_event_for_logging``
       call, which is the required form.
@@ -451,32 +668,89 @@ def _raw_event_log_hits(path: Path) -> list[str]:
     return hits
 
 
-def test_no_resolver_logs_the_raw_invocation_event():
-    """A resolver that logs its event sanitizes it. This is the #921 defect itself.
+def _label(path: Path) -> str:
+    """Repo-relative where possible; absolute for the synthetic self-test trees."""
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
 
-    The invocation event carries ``identity.claims`` — Cognito ``sub``, ``email``
-    and group membership — on every authenticated call, which is precisely what the
-    canonical denylist exists to redact. Writing it to CloudWatch in full is the
-    leak; having a tidy, consistent, byte-identical copy of the redactor sitting
-    unused in the same directory does not help.
 
-    No allowlist, deliberately. If a resolver genuinely must log a raw event, that
-    is a decision worth making in a review, not a name added to a list here.
+def _raw_event_log_offenders(roots=LAMBDA_ROOTS) -> list[str]:
+    """Every raw-event log call under ``roots``, as ``path:line in func()``.
+
+    Takes the roots as an argument so that the self-test below can run the real
+    collector over a synthetic tree, rather than asserting that the collector works
+    by inspecting the code that implements it.
     """
     offenders = []
-    for resolver in _resolver_dirs():
-        index = resolver / "index.py"
-        if not index.exists():
-            continue
-        for hit in _raw_event_log_hits(index):
-            offenders.append(f"{resolver.name}/{hit}")
+    for root in roots:
+        for directory in sorted(p for p in root.iterdir() if p.is_dir()):
+            for path in _python_files(directory):
+                for hit in _raw_event_log_hits(path):
+                    offenders.append(f"{_label(path.parent)}/{hit}")
+    return offenders
+
+
+def test_no_lambda_logs_the_raw_invocation_event():
+    """A Lambda that logs its event sanitizes it. This is the #921/#977 defect itself.
+
+    An api-resolver's invocation event carries ``identity.claims`` — Cognito
+    ``sub``, ``email`` and group membership — on every authenticated call, and the
+    chat and agent processors' events carry the user's prompt, which is the content
+    of a private conversation. Both are precisely what the canonical denylist exists
+    to redact. Writing them to CloudWatch in full is the leak; having a tidy,
+    consistent, byte-identical copy of the redactor sitting unused in the same
+    directory does not help.
+
+    No allowlist, deliberately. Forty sites across both trees were fixed rather than
+    exempted, including the 13 CloudFormation custom-resource handlers among them,
+    whose events are stack metadata today: an exemption granted on the strength of what a given event
+    happens to contain has to be re-audited every time that event's producer
+    changes, and nothing would prompt that re-audit. If a function genuinely must
+    log a raw event, that is a decision worth making in a review, not a name added
+    to a list here.
+    """
+    offenders = _raw_event_log_offenders()
     assert not offenders, (
         "These log calls can write the unredacted invocation event — including "
-        "identity.claims (Cognito sub, email, groups) — to CloudWatch. Wrap the "
-        f"logged value in {SANITIZER_FUNC}(...), imported from {CANONICAL_IMPORT} "
-        "if the function carries an idp-common layer or from the vendored "
-        "`log_sanitizer` module if it does not:\n  " + "\n  ".join(offenders)
+        "identity.claims (Cognito sub, email, groups) and any user-supplied prompt "
+        f"— to CloudWatch. Wrap the logged value in {SANITIZER_FUNC}(...), imported "
+        f"from {CANONICAL_IMPORT} if the function carries an idp-common layer or "
+        "from the vendored `log_sanitizer` module if it does not:\n  "
+        + "\n  ".join(offenders)
     )
+
+
+def test_the_raw_event_scan_reaches_handlers_in_both_lambda_trees():
+    """The scan finds real event handlers under each root, not just under one.
+
+    ``test_no_lambda_logs_the_raw_invocation_event`` passes both when a tree is
+    clean and when it is not being read, and those two are indistinguishable from
+    its output. This separates them: each root must contain at least one function
+    whose first parameter is named ``event``, which is the shape the scan keys on.
+    A root pointing at a directory that holds handlers but no such function — the
+    tree renamed and a stub left behind, say — is reported here rather than
+    silently reducing the scan to a no-op. (A root that does not exist at all fails
+    earlier and louder: ``Path.iterdir`` raises.)
+
+    Counting per root rather than asserting a total keeps this honest without
+    pinning a number that changes whenever a Lambda is added.
+    """
+    for root in LAMBDA_ROOTS:
+        handlers = 0
+        for directory in (p for p in root.iterdir() if p.is_dir()):
+            for path in _python_files(directory):
+                handlers += len(
+                    _event_handling_functions(
+                        ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                    )
+                )
+        assert handlers, (
+            f"the raw-event scan found no function taking `{EVENT_PARAM}` as its "
+            f"first parameter anywhere under {_label(root)}, so it is scanning "
+            "nothing there and would pass however that tree is written"
+        )
 
 
 comprehension_types = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
@@ -521,8 +795,8 @@ def _denylist_positions(tree: ast.AST) -> dict[int, str]:
     return where
 
 
-def test_no_resolver_defines_its_own_denylist():
-    """No hand-rolled sensitive-key list anywhere under the resolver tree.
+def test_no_lambda_defines_its_own_denylist():
+    """No hand-rolled sensitive-key list anywhere under either Lambda tree.
 
     Detected structurally — any collection literal of strings that overlaps the
     canonical denylist — so renaming ``_LOG_SENSITIVE_KEYS`` to something else does
@@ -537,34 +811,35 @@ def test_no_resolver_defines_its_own_denylist():
         if any(k in ("password", "secret", "token") for k in obj): ...
 
     Neither one ever binds the list to a name, and both were invisible: dropping
-    either into a resolver left this suite green.
+    either into a handler left this suite green.
     """
     canonical_keys = {k.lower() for k in _canonical_deny_keys()}
     offenders = []
-    for path in sorted(RESOLVER_ROOT.rglob("*.py")):
-        if path.name == VENDORED_NAME:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        positions = _denylist_positions(tree)
-        # `ast.walk` is breadth-first, so a wrapper such as `frozenset({...})` is
-        # visited before the literal it wraps; keeping the first match per
-        # (line, key set) reports the outermost node once rather than twice.
-        seen: set[tuple[int, tuple[str, ...]]] = set()
-        for node in ast.walk(tree):
-            literals = _string_literals(node)
-            if literals is None:
+    for root in LAMBDA_ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            if path.name == VENDORED_NAME:
                 continue
-            hits = {s.lower() for s in literals} & canonical_keys
-            if len(hits) < _DENYLIST_MATCH_THRESHOLD:
-                continue
-            key = (getattr(node, "lineno", -1), tuple(sorted(hits)))
-            if key in seen:
-                continue
-            seen.add(key)
-            offenders.append(
-                f"{path.relative_to(REPO_ROOT)}:{key[0]} "
-                f"{positions.get(id(node), '<expression>')} {sorted(hits)}"
-            )
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            positions = _denylist_positions(tree)
+            # `ast.walk` is breadth-first, so a wrapper such as `frozenset({...})` is
+            # visited before the literal it wraps; keeping the first match per
+            # (line, key set) reports the outermost node once rather than twice.
+            seen: set[tuple[int, tuple[str, ...]]] = set()
+            for node in ast.walk(tree):
+                literals = _string_literals(node)
+                if literals is None:
+                    continue
+                hits = {s.lower() for s in literals} & canonical_keys
+                if len(hits) < _DENYLIST_MATCH_THRESHOLD:
+                    continue
+                key = (getattr(node, "lineno", -1), tuple(sorted(hits)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                offenders.append(
+                    f"{_label(path)}:{key[0]} "
+                    f"{positions.get(id(node), '<expression>')} {sorted(hits)}"
+                )
     assert not offenders, (
         "These files define their own log-redaction denylist instead of using the "
         "canonical one. Import sanitize_event_for_logging — from "
@@ -575,21 +850,28 @@ def test_no_resolver_defines_its_own_denylist():
     )
 
 
+def _vendored_copies() -> list[Path]:
+    copies: list[Path] = []
+    for root in LAMBDA_ROOTS:
+        copies.extend(root.rglob(VENDORED_NAME))
+    return sorted(copies)
+
+
 def test_vendored_copies_match_canonical():
     """Every vendored copy is byte-identical to the canonical module."""
-    copies = sorted(RESOLVER_ROOT.rglob(VENDORED_NAME))
+    copies = _vendored_copies()
     assert copies, "expected at least one vendored log_sanitizer.py"
     canonical_text = CANONICAL.read_text(encoding="utf-8")
     for copy in copies:
         assert copy.read_text(encoding="utf-8") == canonical_text, (
-            f"{copy.relative_to(REPO_ROOT)} has drifted from "
-            f"{CANONICAL.relative_to(REPO_ROOT)}. Edit the canonical file only, "
-            "then run scripts/sync_resolver_log_sanitizer.sh."
+            f"{_label(copy)} has drifted from {_label(CANONICAL)}. Edit the "
+            "canonical file only, then run "
+            "scripts/sync_resolver_log_sanitizer.sh."
         )
 
 
 def test_vendored_denylist_is_exactly_canonical():
-    """The denylist these resolvers actually apply is the canonical one.
+    """The denylist these functions actually apply is the canonical one.
 
     Byte-identity already implies this, but assert it on the loaded module too: this
     is the property that matters at runtime, and it is what fails if a future key is
@@ -600,31 +882,34 @@ def test_vendored_denylist_is_exactly_canonical():
         "The canonical denylist no longer covers keys it is required to cover: "
         f"{sorted(PREVIOUSLY_MISSING_KEYS - canonical_keys)}"
     )
-    for index, copy in enumerate(sorted(RESOLVER_ROOT.rglob(VENDORED_NAME))):
+    for index, copy in enumerate(_vendored_copies()):
         module = _load_module_by_path(copy, f"_vendored_log_sanitizer_{index}")
         assert frozenset(module._DEFAULT_DENY_KEY_SUBSTRINGS) == canonical_keys, (
-            f"{copy.relative_to(REPO_ROOT)} applies a different denylist than "
-            "the canonical module. Run scripts/sync_resolver_log_sanitizer.sh."
+            f"{_label(copy)} applies a different denylist than the canonical "
+            "module. Run scripts/sync_resolver_log_sanitizer.sh."
         )
 
 
 def test_vendored_importers_have_a_copy_and_vice_versa():
-    """A resolver importing the vendored module has one, and no copy is orphaned.
+    """A function importing the vendored module has one, and no copy is orphaned.
 
     An orphaned copy is dead weight in the package; a missing one is an ImportError
-    at cold start.
+    at cold start. This is also what keeps the sync script honest now that it
+    derives its own targets from these same imports: if the script's detection ever
+    stopped matching an import it would leave that directory without a copy, and
+    this is the test that says so.
     """
     importers, holders = set(), set()
-    for resolver in _resolver_dirs():
-        if _imports_vendored_sanitizer(resolver):
-            importers.add(resolver.name)
-        if (resolver / VENDORED_NAME).exists():
-            holders.add(resolver.name)
+    for directory in _lambda_dirs():
+        if _imports_vendored_sanitizer(directory):
+            importers.add(_label(directory))
+        if (directory / VENDORED_NAME).exists():
+            holders.add(_label(directory))
     assert importers == holders, (
-        "Vendored log_sanitizer.py copies and the resolvers importing them are out "
+        "Vendored log_sanitizer.py copies and the functions importing them are out "
         f"of step. Importing without a copy: {sorted(importers - holders)}; "
-        f"carrying an unused copy: {sorted(holders - importers)}. Fix the target "
-        "list in scripts/sync_resolver_log_sanitizer.sh and re-run it."
+        f"carrying an unused copy: {sorted(holders - importers)}. Re-run "
+        "scripts/sync_resolver_log_sanitizer.sh."
     )
 
 
@@ -632,63 +917,97 @@ def test_canonical_importers_carry_an_idp_common_layer():
     """Importing idp_common for the sanitizer requires a layer that provides it.
 
     Without one the import raises at cold start and every invocation fails, so this
-    is the pairing that makes the two-route split safe: drop a resolver's layer and
+    is the pairing that makes the two-route split safe: drop a function's layer and
     this test tells you to vendor the module instead.
+
+    This is also the assertion that makes it safe for the template scan to miss a
+    directory. Five directories under ``src/lambda`` are not placed by the CodeUri
+    scan: three (``create_chat_session_resolver``, ``finetuning_data_generator``,
+    ``ipset_updater``) are referenced by no template in the repository at all, and
+    two are not Lambda packages — ``finetuning_state_machine`` holds a Step
+    Functions definition, and ``external_idp_group_mapping`` holds the standalone,
+    unit-tested twin of a handler the parent template deploys as ``InlineCode``.
+    All five read as carrying no layer, which is the conservative answer, and this
+    test is what would fail if one of them nonetheless imported the library.
     """
-    layers = _layers_by_code_uri()
+    layers = _layers_by_code_dir()
     broken = []
-    for resolver in _resolver_dirs():
-        if not _imports_canonical_sanitizer(resolver):
+    for directory in _lambda_dirs():
+        if not _imports_canonical_sanitizer(directory):
             continue
-        if not layers.get(resolver.name):
-            broken.append(resolver.name)
+        if not layers.get(directory):
+            broken.append(_label(directory))
     assert not broken, (
-        f"These resolvers import {CANONICAL_IMPORT} but their function in "
-        f"{' or '.join(str(t.relative_to(REPO_ROOT)) for t in TEMPLATES)} declares "
-        "no IDPCommon layer, so the import fails at cold start. Either attach the "
-        "layer or vendor the module with scripts/sync_resolver_log_sanitizer.sh: "
-        f"{sorted(broken)}"
+        f"These functions import {CANONICAL_IMPORT} but declare no IDPCommon layer "
+        "in any CloudFormation template in this repo, so the import fails at cold "
+        "start. Either attach the layer or vendor the module with "
+        f"scripts/sync_resolver_log_sanitizer.sh: {sorted(broken)}"
     )
 
 
 def test_every_resolver_directory_is_found_in_a_template():
-    """Every resolver directory maps to a declared function, in either template.
+    """Every api-resolver directory maps to a declared function.
 
-    This is the guard on the guard. A resolver the template scan cannot find reads
+    This is the guard on the guard. A function the template scan cannot find reads
     as "declares no IDPCommon layer", which is the unsafe direction: the layer test
     above would reject a correct canonical import and steer the author into
     vendoring a module the function could have imported from the layer it already
     carries. That is exactly what happened to finetuning_jobs_resolver (declared in
     the parent template) and list_documents_gsi_resolver (CodeUri without a
     leading `./`).
+
+    Asserted for the resolver tree only, because the same invariant is simply not
+    true of ``src/lambda``: five directories there are not Lambda packages with a
+    CodeUri at all, for the reasons set out on
+    ``test_canonical_importers_carry_an_idp_common_layer`` above. Making this test
+    tree-wide would therefore mean either failing on those or carrying an exemption
+    list for them, and neither buys anything — for a directory that does not use the
+    redactor the layer answer is irrelevant, and for one that does, that test
+    already fails in the safe direction.
     """
-    found = _layers_by_code_uri()
-    missing = [r.name for r in _resolver_dirs() if r.name not in found]
+    found = _layers_by_code_dir()
+    missing = [
+        _label(d)
+        for d in _lambda_dirs()
+        if d.parent == RESOLVER_ROOT.resolve() and d not in found
+    ]
     assert not missing, (
         "These directories under nested/api-resolvers/src/lambda have no matching "
-        f"CodeUri in {' or '.join(str(t.relative_to(REPO_ROOT)) for t in TEMPLATES)}, "
-        "so the layer scan cannot tell whether they carry an IDPCommon layer and "
-        f"will assume they do not: {sorted(missing)}"
+        "CodeUri in any CloudFormation template in this repo, so the layer scan "
+        "cannot tell whether they carry an IDPCommon layer and will assume they do "
+        f"not: {sorted(missing)}"
     )
 
 
-def test_sync_script_targets_the_layerless_resolvers():
-    """The sync script's target list is exactly the set that cannot import idp_common."""
-    script = SYNC_SCRIPT.read_text(encoding="utf-8")
-    block = re.search(r"targets=\(\n(.*?)\n\)", script, re.S)
-    assert block, f"could not find the targets=( ... ) list in {SYNC_SCRIPT}"
-    listed = {line.strip() for line in block.group(1).splitlines() if line.strip()}
+def test_sync_script_scans_the_same_roots_as_this_guard():
+    """The sync script and this guard look at the same trees.
 
-    layers = _layers_by_code_uri()
-    expected = {
-        resolver.name
-        for resolver in _resolver_dirs()
-        if _imports_the_sanitizer(resolver) and not layers.get(resolver.name)
+    The script used to carry a hand-written list of the nine resolver directories
+    that needed a copy, and this test compared that list to the set derived here —
+    two copies of one fact, with a test in the middle to stop them diverging. With
+    thirty directories the list became the largest maintenance cost of the whole
+    arrangement, so the script now derives its destinations from the imports in the
+    handler sources, exactly as ``_imports_vendored_sanitizer`` does.
+
+    What remains un-derivable is which trees to look in, so that stays an explicit
+    list in both places and is compared here. A root present in one and absent from
+    the other is the failure this replaces: the script would leave a whole tree
+    unsynced, or the guard would stop checking one, and in both cases every test
+    here would still pass.
+    """
+    script = SYNC_SCRIPT.read_text(encoding="utf-8")
+    block = re.search(r"roots=\(\n(.*?)\n\)", script, re.S)
+    assert block, f"could not find the roots=( ... ) list in {_label(SYNC_SCRIPT)}"
+    listed = {
+        line.strip().strip('"').strip("'")
+        for line in block.group(1).splitlines()
+        if line.strip() and not line.strip().startswith("#")
     }
+    expected = {root.relative_to(REPO_ROOT).as_posix() for root in LAMBDA_ROOTS}
     assert listed == expected, (
-        "scripts/sync_resolver_log_sanitizer.sh does not target the right "
-        f"resolvers. Missing from the script: {sorted(expected - listed)}; listed "
-        f"but no longer layerless: {sorted(listed - expected)}."
+        "scripts/sync_resolver_log_sanitizer.sh scans a different set of Lambda "
+        f"trees than this guard. Only in the script: {sorted(listed - expected)}; "
+        f"only in the guard: {sorted(expected - listed)}."
     )
 
 
@@ -718,23 +1037,26 @@ _RAW_EVENT_LOGS_THAT_MUST_BE_SEEN = {
     "concatenation": 'logger.info("e: " + str(event))',
     "inside a container": 'logger.info("e: %s", {"event": event})',
     "json.dumps with kwargs": 'logger.info(json.dumps(event, default=str))',
+    "json.dumps then sliced": 'print(f"{json.dumps(event, default=str)[:1000]}")',
     "pprint.pformat": "logger.info(pprint.pformat(event))",
     "debug level": 'logger.debug(f"{json.dumps(event)}")',
     "exception level": 'logger.exception(f"failed on {event}")',
     "print instead of logger": "print(json.dumps(event))",
+    "print of the bare name": "print(event)",
     "logger.log with a level": 'logger.log(logging.INFO, f"{event}")',
     "module-level logging alias": 'LOG.info("%s", event)',
     "attribute logger": 'self.log.info("%s", event)',
     "keyword argument": 'logger.info("x", extra={"raw": event})',
 }
 
-# Narrowing an event down to a field is normal and must stay usable: resolvers log
+# Narrowing an event down to a field is normal and must stay usable: handlers log
 # the operation name and argument keys on nearly every call. Flagging these would
 # make the test unusable, and an unusable test gets deleted rather than fixed.
 _RAW_EVENT_LOGS_THAT_MUST_NOT_TRIP = {
     "sanitized, f-string": 'logger.info(f"e: {json.dumps(sanitize_event_for_logging(event))}")',
     "sanitized, lazy arg": 'logger.info("e: %s", sanitize_event_for_logging(event))',
     "sanitized with kwargs": 'logger.info(json.dumps(sanitize_event_for_logging(event), default=str))',
+    "sanitized then sliced": 'print(f"{json.dumps(sanitize_event_for_logging(event), default=str)[:1000]}")',
     "subscript": 'logger.info(f"{event[\'fieldName\']}")',
     "get() call": 'logger.info(f"{event.get(\'fieldName\')}")',
     "chained get()": 'logger.info(f"{event.get(\'arguments\', {}).get(\'id\')}")',
@@ -797,13 +1119,16 @@ _SHAPES_THAT_MUST_NOT_TRIP = {
 #
 # * A vendored copy silently drifting from the canonical module —
 #   `test_vendored_copies_match_canonical` is the guarantee.
-# * A resolver hand-rolling a NEW local denylist in its own `index.py` — byte
+# * A function hand-rolling a NEW local denylist in its own `index.py` — byte
 #   identity of the copies says nothing whatsoever about that.
-#   `test_no_resolver_defines_its_own_denylist` is the only guard, so its gaps are
+#   `test_no_lambda_defines_its_own_denylist` is the only guard, so its gaps are
 #   real gaps and not merely defence in depth.
-# * A resolver logging the raw event while using no denylist at all —
-#   `test_no_resolver_logs_the_raw_invocation_event`. This is the one that maps to
-#   the original defect; the other two are about consistency.
+# * A function logging the raw event while using no denylist at all —
+#   `test_no_lambda_logs_the_raw_invocation_event`. This is the one that maps to the
+#   original defect; the other two are about consistency.
+# * That scan looking at only one of the two Lambda trees, or at only `index.py`
+#   within a directory — `test_the_raw_event_scan_reaches_handlers_in_both_lambda_trees`
+#   and `test_the_raw_event_scan_covers_whole_directories_under_every_root`.
 
 
 def _scan_snippet(log_call: str, *, param: str = EVENT_PARAM) -> list[str]:
@@ -819,12 +1144,17 @@ def _scan_snippet(log_call: str, *, param: str = EVENT_PARAM) -> list[str]:
 
 @pytest.mark.parametrize("label", sorted(_RAW_EVENT_LOGS_THAT_MUST_BE_SEEN))
 def test_the_raw_event_scan_sees_every_way_of_logging_the_event(label):
-    """The same leak, spelled twenty ways, is still the same leak.
+    """The same leak, spelled twenty-two ways, is still the same leak.
 
     This is the test that makes the guard worth having. A check that forbade the
-    literal string ``json.dumps(event)`` would pass every one of the nineteen other
-    entries here while the event still lands in CloudWatch verbatim — the scanner
-    would be pinned to the shape of the line that happened to be wrong in #921.
+    literal string ``json.dumps(event)`` would pass every other entry here while the
+    event still lands in CloudWatch verbatim — the scanner would be pinned to the
+    shape of the line that happened to be wrong in #921. The spellings are not
+    hypothetical: of the forty sites fixed under ``src/lambda``, three used ``print``
+    rather than a logger, six passed the event as a lazy ``%s`` argument, three
+    interpolated the bare name into an f-string, and two sliced
+    ``json.dumps(event, default=str)`` to bound its length — which caps log volume
+    and redacts nothing.
     """
     hits = _scan_snippet(_RAW_EVENT_LOGS_THAT_MUST_BE_SEEN[label])
     assert hits, (
@@ -838,7 +1168,7 @@ def test_the_raw_event_scan_sees_every_way_of_logging_the_event(label):
 def test_the_raw_event_scan_allows_sanitized_and_narrowed_logging(label):
     """Sanitized events, and single fields pulled out of an event, are fine.
 
-    False positives here are not harmless: resolvers log the operation name on
+    False positives here are not harmless: handlers log the operation name on
     nearly every call, so a scan that flagged ``event.get("fieldName")`` would need
     dozens of suppressions and would be deleted instead of fixed.
     """
@@ -847,6 +1177,49 @@ def test_the_raw_event_scan_allows_sanitized_and_narrowed_logging(label):
         f"the raw-event scan wrongly flagged `{label}`: `{snippet}` does not log "
         "the whole unredacted event"
     )
+
+
+def test_the_raw_event_scan_covers_whole_directories_under_every_root(tmp_path):
+    """Both roots are walked, and every Python file in a directory, not just index.py.
+
+    Run against a synthetic pair of trees rather than against the repo, because the
+    repo is clean: with no offending file anywhere, "the collector walks both roots"
+    and "the collector walks nothing" are indistinguishable from a green run. This
+    is the mutation probe for the widening itself, kept as a permanent test so that
+    narrowing a root or going back to an ``index.py``-only scan fails here instead
+    of quietly halving the coverage.
+    """
+    leak = "def handler(event, context):\n    logger.info(json.dumps(event))\n"
+    clean = "def handler(event, context):\n    logger.info('called')\n"
+
+    roots = []
+    for root_name, offender in (
+        ("tree_one", "index.py"),
+        # A handler that is not in `index.py`, and is not even at the top level of
+        # its directory: `src/lambda/chat_stream_processor` keeps its two processor
+        # modules under `vendored/`, and both logged their raw event.
+        ("tree_two", "vendored/processor.py"),
+    ):
+        root = tmp_path / root_name
+        package = root / "some_function"
+        (package / "vendored").mkdir(parents=True)
+        (package / "unrelated.py").write_text(clean, encoding="utf-8")
+        (package / offender).write_text(leak, encoding="utf-8")
+        roots.append(root)
+
+    offenders = _raw_event_log_offenders(roots)
+    assert len(offenders) == 2, (
+        "the collector did not report one leak per synthetic root; it is not "
+        f"walking both roots, or not walking whole directories: {offenders}"
+    )
+    assert any("index.py" in o for o in offenders)
+    assert any("processor.py" in o for o in offenders), (
+        "a handler outside index.py was not scanned"
+    )
+
+    # And the clean sibling file is not reported, so the two assertions above are
+    # not passing because everything is flagged.
+    assert not any("unrelated.py" in o for o in offenders)
 
 
 def test_the_raw_event_scan_ignores_an_unrelated_local_named_event():
@@ -889,7 +1262,7 @@ def test_the_raw_event_scan_ignores_an_unrelated_local_named_event():
 def _denylist_key_hits(source: str) -> set[str]:
     """Every canonical key the real scan would match in ``source``.
 
-    Uses exactly the same traversal as ``test_no_resolver_defines_its_own_denylist``
+    Uses exactly the same traversal as ``test_no_lambda_defines_its_own_denylist``
     — every expression position, not just assignments — so these self-tests cannot
     pass while the real scan is narrower.
     """
@@ -936,9 +1309,9 @@ def test_the_import_scan_ignores_prose_that_quotes_an_import(tmp_path):
     Every vendored copy carries the canonical ``Usage::`` docstring, one line of
     which is a real-looking ``from idp_common.utils.log_sanitizer import ...``.
     """
-    resolver = tmp_path / "prose_resolver"
-    resolver.mkdir()
-    (resolver / "index.py").write_text(
+    handler = tmp_path / "prose_handler"
+    handler.mkdir()
+    (handler / "index.py").write_text(
         '"""Handler.\n'
         "\n"
         "Usage::\n"
@@ -949,20 +1322,32 @@ def test_the_import_scan_ignores_prose_that_quotes_an_import(tmp_path):
         f"from {VENDORED_MODULE} import sanitize_event_for_logging\n",
         encoding="utf-8",
     )
-    assert not _imports_canonical_sanitizer(resolver)
-    assert _imports_vendored_sanitizer(resolver)
-    assert _imports_the_sanitizer(resolver)
+    assert not _imports_canonical_sanitizer(handler)
+    assert _imports_vendored_sanitizer(handler)
+    assert _imports_the_sanitizer(handler)
 
 
 def test_the_import_scan_sees_a_real_import_wherever_it_sits(tmp_path):
-    """Including indented inside a function or a try block."""
-    resolver = tmp_path / "indented_resolver"
-    resolver.mkdir()
-    (resolver / "index.py").write_text(
+    """Including indented inside a function, a try block, or a non-index module."""
+    handler = tmp_path / "indented_handler"
+    (handler / "vendored").mkdir(parents=True)
+    (handler / "index.py").write_text(
         "def handler(event, context):\n"
         f"    from {CANONICAL_IMPORT} import sanitize_event_for_logging\n"
         "    return sanitize_event_for_logging(event)\n",
         encoding="utf-8",
     )
-    assert _imports_canonical_sanitizer(resolver)
-    assert not _imports_vendored_sanitizer(resolver)
+    assert _imports_canonical_sanitizer(handler)
+    assert not _imports_vendored_sanitizer(handler)
+
+    # A handler package whose only importer is a module other than index.py still
+    # counts: chat_stream_processor imports the sanitizer from its vendored copies
+    # of the two chat processors, not from app.py.
+    nested = tmp_path / "nested_handler"
+    (nested / "vendored").mkdir(parents=True)
+    (nested / "index.py").write_text("PLACEHOLDER = 1\n", encoding="utf-8")
+    (nested / "vendored" / "processor.py").write_text(
+        f"from {CANONICAL_IMPORT} import sanitize_event_for_logging\n",
+        encoding="utf-8",
+    )
+    assert _imports_canonical_sanitizer(nested)
