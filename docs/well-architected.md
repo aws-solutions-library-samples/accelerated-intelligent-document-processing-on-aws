@@ -245,12 +245,12 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 123 IAM policy statements are written against `Resource: "*"` — 51 in
+extensions, 125 IAM policy statements are written against `Resource: "*"` — 51 in
 `template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
 API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 28
-of the 123, and the X-Ray read actions, `textract:DetectDocumentText` and
+of the 125, and the X-Ray read actions, `textract:DetectDocumentText` and
 `textract:AnalyzeDocument` are account-scoped in the same way. The rest have not been
 audited statement by statement, so treat the number as a surface to review rather than as a
 count of findings. A permissions boundary is the practical lever for narrowing whatever you
