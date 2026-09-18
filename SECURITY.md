@@ -58,8 +58,8 @@ not be able to read, use the private channel. If in doubt, use the private chann
 | `develop` | Fixes land here first; not a supported deployment target |
 
 The project maintains one line of development. Security fixes land on `develop` and
-ship in the next release, which is published roughly every one to two weeks; they
-are not backported to earlier tags and there is no long-term-support branch (see
+ship in the next release; they are not backported to earlier tags and there is no
+long-term-support branch (see
 [GOVERNANCE.md](./GOVERNANCE.md#branch-and-release-model)). Older releases remain
 deployable — each `CHANGELOG.md` entry keeps its version-pinned template URLs — but
 they do not receive fixes. If you are running an older release, the remediation for

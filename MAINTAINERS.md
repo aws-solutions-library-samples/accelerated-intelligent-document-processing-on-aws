@@ -43,10 +43,9 @@ Contributions from outside it are equally welcome — see
 ## Response expectations
 
 The project does not publish a response-time commitment for issues or pull
-requests. Recent history is the honest guide: a release goes out roughly every one
-to two weeks and pull requests are typically reviewed within that cycle, but
-nothing here is a service-level agreement. If a change is time-sensitive, say so
-in the pull request description.
+requests. Maintenance is best-effort: pull requests are typically reviewed within
+the current release cycle, but nothing here is a service-level agreement. If a
+change is time-sensitive, say so in the pull request description.
 
 Concierge support for customization, deployment, and integration of production use
 cases is available through
