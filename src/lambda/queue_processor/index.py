@@ -597,8 +597,9 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
     """Push SQS visibility to RECOVERY_TIMEOUT_SECONDS so OPEN-state retries
     don't burn through the queue's maxReceiveCount during a long Bedrock outage.
 
-    Non-fatal: if the call fails, the message still reappears on the default
-    30s visibility timeout and the next invocation handles the retry.
+    Non-fatal: if the call fails, the message still reappears on the
+    ``DocumentQueue.VisibilityTimeout`` (60s — raised from 30s in the
+    per-message ack fix for #904) and the next invocation handles the retry.
     """
     if not DOCUMENT_QUEUE_URL:
         return
@@ -834,7 +835,16 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             logger.info(
                 f"Document {object_key} was aborted by user, skipping workflow start"
             )
-            return True, message_id  # Return success to remove message from queue
+            # Delete the message immediately rather than relying on the
+            # batch-outcome path. If this invocation times out on a later
+            # message, Lambda reports nothing to SQS and every message in
+            # the batch — including this aborted one — would be
+            # redelivered, causing the "check if aborted, skip, return"
+            # cycle to repeat until the message eventually hits its
+            # maxReceiveCount. Same invariant the workflow-started path
+            # below enforces (see #904).
+            ack_message(receipt_handle)
+            return True, message_id
 
         # Check circuit breaker before paying the cost of X-Ray setup and
         # counter increment.

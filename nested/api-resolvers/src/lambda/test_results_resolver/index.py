@@ -8,7 +8,11 @@ import math
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import (
+    ALL_COMPLETED,
+    ThreadPoolExecutor,
+    wait as futures_wait,
+)
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -32,6 +36,20 @@ athena = boto3.client("athena")
 s3_bounded = boto3.client(
     "s3",
     config=BotoConfig(connect_timeout=3, read_timeout=4, retries={"max_attempts": 1}),
+)
+
+# Same reasoning applied to the DynamoDB half of the compare fanout. The
+# module-level ``dynamodb`` resource's underlying client has botocore's
+# default 60s connect/read timeouts, so a single slow ``GetItem`` /
+# ``BatchGetItem`` on the tracking table could burn the whole dispatcher
+# budget from the DDB side even after ``s3_bounded`` capped the S3 side.
+# 3s connect / 5s read matches the S3 shape (DDB responses can be larger
+# than a single-object S3 read, so an extra second of read budget) with
+# ``max_attempts=2`` — throttling retries are cheap and worth one shot
+# rather than the client-shim's 0 retries.
+ddb_bounded = boto3.client(
+    "dynamodb",
+    config=BotoConfig(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2}),
 )
 
 
@@ -588,14 +606,16 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
     Sorting the ``Files`` list also gives the determinism the Scan
     pagination was added to guarantee.
     """
-    # boto3 clients are documented thread-safe, so reuse the client hanging
-    # off the module-level ``dynamodb`` resource rather than constructing a
-    # fresh one on every invocation. Under ``compare_test_runs``' up-to-4
-    # ThreadPoolExecutor fanout, per-call construction was 4 fresh
-    # credential-resolution + session-init cycles per compare, wasted for
-    # what boto3 already caches per client instance.
+    # Use the ``ddb_bounded`` client (3s connect / 5s read) rather than
+    # ``dynamodb.meta.client``'s default 60s timeouts — this probe is on
+    # the same ``compare_test_runs`` fanout as the S3 read below (which
+    # uses ``s3_bounded``), and default DDB timeouts would let a slow
+    # tracking-table query burn the whole 20s dispatcher budget from the
+    # DDB side even after S3 was bounded. Clients are documented thread-
+    # safe so the module-level shared instance is reused across the up-to-4
+    # ThreadPoolExecutor workers.
     try:
-        ddb_client = dynamodb.meta.client
+        ddb_client = ddb_bounded
         table_name = os.environ["TRACKING_TABLE"]
     except Exception as e:
         logger.warning(
@@ -701,18 +721,18 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
         # about casing on ABORTED-then-recovered runs), so this probe
         # must apply the same normalization or same-source rows are
         # classified differently by the two callers.
-        by_object_key = {}
+        completed_object_keys: set[str] = set()
         for item in collected_items:
             eval_status = item.get("EvaluationStatus", {}).get("S", "").upper()
             if eval_status != "COMPLETED":
                 continue
             doc_key = item.get("ObjectKey", {}).get("S")
             if isinstance(doc_key, str) and doc_key:
-                by_object_key[doc_key] = doc_key
+                completed_object_keys.add(doc_key)
         for doc_key in batch:
             if yielded >= limit:
                 return
-            if doc_key in by_object_key:
+            if doc_key in completed_object_keys:
                 yield doc_key
                 yielded += 1
 
@@ -903,7 +923,20 @@ def compare_test_runs(test_run_ids):
     # invocation. Bounded to the number of runs (typically 2-4). Isolated
     # from the sequential critical path so a slow probe on run A doesn't
     # block starting run B's probe.
-    with ThreadPoolExecutor(max_workers=max(1, min(4, len(test_run_ids)))) as pool:
+    #
+    # NOTE — deliberately NOT using ``with ThreadPoolExecutor(...) as pool``:
+    # its ``__exit__`` calls ``shutdown(wait=True)``, which blocks the
+    # caller on RUNNING futures. Per-future ``fut.result(timeout=)`` alone
+    # cannot bound total elapsed time (``fut.cancel()`` is a no-op on
+    # RUNNING futures), so a single hung probe could keep the whole
+    # response past the 20s dispatcher ceiling. Explicit
+    # ``shutdown(wait=False, cancel_futures=True)`` in ``finally`` releases
+    # PENDING futures immediately; RUNNING futures keep executing on their
+    # daemon-ish worker threads until Lambda reclaims them, but they no
+    # longer block ``compare_test_runs`` from returning.
+    _OVERALL_FANOUT_DEADLINE_SECONDS = 15
+    pool = ThreadPoolExecutor(max_workers=max(1, min(4, len(test_run_ids))))
+    try:
         methods_futures = {
             trid: pool.submit(_load_sample_attribute_methods, trid)
             for trid in test_run_ids
@@ -920,37 +953,42 @@ def compare_test_runs(test_run_ids):
             else:
                 logger.warning(f"No results found for test run: {test_run_id}")
 
-        # Collect the parallel sample-methods reads. Any single-run failure
-        # or timeout degrades to an empty dict so the rest of
-        # compare_test_runs still returns. A per-future timeout of 12 s is
-        # a hard bound against the 20 s dispatcher ceiling — the underlying
-        # ``s3_bounded`` client already caps each S3 fetch at 3 s connect /
-        # 4 s read, so 12 s is generous headroom that still leaves enough
-        # dispatcher budget for ``_build_comparator_diff`` and the
-        # response marshalling below.
-        _METHODS_FUTURE_TIMEOUT_SECONDS = 12
+        # Overall wall-clock deadline for all fanout futures combined. 15s
+        # is a hard bound below the 20s dispatcher ceiling — the underlying
+        # ``s3_bounded`` client caps each S3 fetch at 3s connect / 4s read
+        # so a well-behaved probe finishes in <7s. 15s leaves ~5s of
+        # dispatcher budget for ``_build_comparator_diff`` and response
+        # marshalling below. Anything not done by the deadline is treated
+        # as an empty methods dict for that run.
+        done_futures, not_done = futures_wait(
+            list(methods_futures.values()),
+            timeout=_OVERALL_FANOUT_DEADLINE_SECONDS,
+            return_when=ALL_COMPLETED,
+        )
         for trid, fut in methods_futures.items():
-            try:
-                runs_methods[trid] = fut.result(
-                    timeout=_METHODS_FUTURE_TIMEOUT_SECONDS
-                )
-            except FuturesTimeoutError:
+            if fut in not_done:
                 logger.warning(
                     f"Sample-attribute-methods read for {trid} exceeded "
-                    f"{_METHODS_FUTURE_TIMEOUT_SECONDS}s; Comparator diff "
-                    f"will be empty for this run."
+                    f"the {_OVERALL_FANOUT_DEADLINE_SECONDS}s fanout "
+                    f"deadline; Comparator diff will be empty for this run."
                 )
                 runs_methods[trid] = {}
-                # Cancel best-effort — a submitted future may already be
-                # running (cancel() only stops PENDING futures) but this
-                # keeps a cancelled label on any that hadn't started yet.
-                fut.cancel()
+                continue
+            try:
+                # timeout=0 — future is in ``done_futures`` so this returns
+                # immediately with the result or a stored exception.
+                runs_methods[trid] = fut.result(timeout=0)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     f"Sample-attribute-methods read failed for {trid}: {e}. "
                     f"Comparator diff will be empty for this run."
                 )
                 runs_methods[trid] = {}
+    finally:
+        # ``cancel_futures=True`` cancels PENDING futures. RUNNING ones
+        # keep running until they complete on their own, but ``wait=False``
+        # means we don't block on them — they don't hold up the response.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     logger.info(f"Total results found: {len(results)}")
 

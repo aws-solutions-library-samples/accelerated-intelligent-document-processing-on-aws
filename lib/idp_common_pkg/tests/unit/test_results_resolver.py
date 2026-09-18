@@ -368,7 +368,7 @@ def test_iter_completed_doc_keys_is_deterministic():
     }
     with (
         patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
-        patch.object(index.dynamodb.meta, "client", fake_client),
+        patch.object(index, "ddb_bounded", fake_client),
     ):
         keys = list(index._iter_completed_doc_keys("runid", limit=3))
     assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"], (
@@ -412,7 +412,7 @@ def test_iter_completed_doc_keys_accepts_files_stored_as_string_set():
     }
     with (
         patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
-        patch.object(index.dynamodb.meta, "client", fake_client),
+        patch.object(index, "ddb_bounded", fake_client),
     ):
         keys = list(index._iter_completed_doc_keys("runid", limit=3))
     assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"]
@@ -456,7 +456,7 @@ def test_iter_completed_doc_keys_dedupes_files_before_batch_get():
     }
     with (
         patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
-        patch.object(index.dynamodb.meta, "client", fake_client),
+        patch.object(index, "ddb_bounded", fake_client),
     ):
         keys = list(index._iter_completed_doc_keys("runid", limit=5))
 
