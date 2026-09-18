@@ -147,6 +147,127 @@ class TestTableHeaderContext:
         assert ExtractionService._table_header_context("") == ""
 
 
+PROMPT_WITH_IMAGE = "Extract from:\n{DOCUMENT_TEXT}\n{DOCUMENT_IMAGE}\nEnd."
+
+
+def _table_page(page_index: int) -> str:
+    """A page holding a parseable Markdown table with 40 data rows.
+
+    Two such pages clear the pre-flight gate (>= 50 estimated table rows) and are
+    dense enough to split into more than one shard.
+    """
+    rows = "\n".join(
+        f"| {page_index}-{i} | Row {i} | {i * 10}.00 | {'w' * 200} |" for i in range(40)
+    )
+    return (
+        "| RowID | Description | Amount | Notes |\n"
+        "|-------|-------------|--------|-------|\n" + rows
+    )
+
+
+def _table_doc_service(lazy_images: bool = True) -> ExtractionService:
+    """A service whose section is a 6-page Markdown-table document.
+
+    Shared by the two shard-plan test classes below: this is the section that
+    both makes `_build_agentic_shard_plan` shard (more than one payload) and
+    makes its pre-flight table parse succeed, which is what the lazy_images
+    decision and the pre-parsed guidance block both hang off.
+    """
+    cfg = {
+        "extraction": {
+            "task_prompt": PROMPT_WITH_IMAGE,
+            "agentic": {
+                "enabled": True,
+                "max_concurrent_batches": 4,
+                # A per-shard token budget, not a credential — Bandit's B105
+                # matches on the "token" in the key name.
+                "shard_token_budget": 5000,  # nosec B105
+                "table_parsing": {
+                    "enabled": True,
+                    "lazy_images": lazy_images,
+                },
+            },
+        },
+        "classes": [
+            {
+                "$id": "Doc",
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+            }
+        ],
+    }
+    svc = ExtractionService(region="us-west-2", config=cfg)
+    svc._class_label = "Doc"
+    svc._class_schema = cfg["classes"][0]
+    svc._attribute_descriptions = "x: a field"
+    pages = [_table_page(p) for p in range(6)]
+    svc._page_texts = pages
+    svc._document_text = "\n".join(pages)
+    # Real PNG bytes: the attach path decodes each page image with PIL.
+    svc._page_images = [_png_bytes() for _ in range(6)]
+    return svc
+
+
+def _shard_plan(svc: ExtractionService) -> tuple[list, str | None]:
+    """Build the shard plan for the 6-page table section; return payloads + CI."""
+    section_info = SectionInfo(
+        class_label="Doc",
+        sorted_page_ids=[str(p + 1) for p in range(6)],
+        page_indices=list(range(6)),
+        output_bucket="b",
+        output_key="k",
+        output_uri="s3://b/k",
+        start_page=1,
+        end_page=6,
+    )
+    _, _, payloads, custom_instruction = svc._build_agentic_shard_plan(section_info)
+    assert len(payloads) > 1, "test needs a genuinely sharded section"
+    return payloads, custom_instruction
+
+
+def _sent_shard_instruction(base_instruction: str | None) -> str:
+    """Run `_run_shard_agent` for shard 2 of 3 (pages 3-5 of 6), Bedrock stubbed,
+    and return the `custom_instruction` it actually sent.
+
+    The plan hands every shard the SAME instruction; this is where each shard's
+    own page range gets appended, so it is the only place the two halves of the
+    wording can be checked together.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from pydantic import BaseModel
+
+    from idp_common.extraction import agentic_idp
+
+    class M(BaseModel):
+        a: str | None = None
+
+    fake = AsyncMock(return_value=(M(), {}))
+    with patch.object(agentic_idp, "structured_output_async", fake):
+        asyncio.run(
+            agentic_idp._run_shard_agent(
+                shard_index=1,
+                total_shards=3,
+                page_start=2,
+                page_end=5,
+                total_pages=6,
+                model_id="m",
+                data_format=M,
+                shard_prompt="p",
+                config=None,  # type: ignore[arg-type]
+                context="Extraction",
+                max_retries=1,
+                connect_timeout=1.0,
+                read_timeout=1.0,
+                max_tokens=None,
+                checkpoint_callback=None,
+                base_custom_instruction=base_instruction,
+            )
+        )
+    return fake.await_args.kwargs["custom_instruction"]
+
+
 class TestShardPlanLazyImages:
     """The SHARDED agentic path must make the same lazy_images decision the
     single-pass path makes.
@@ -160,74 +281,9 @@ class TestShardPlanLazyImages:
     value (see TestLazyImagesConfig in test_tool_writeback.py).
     """
 
-    PROMPT_WITH_IMAGE = "Extract from:\n{DOCUMENT_TEXT}\n{DOCUMENT_IMAGE}\nEnd."
-
-    def _service(self, lazy_images: bool) -> ExtractionService:
-        cfg = {
-            "extraction": {
-                "task_prompt": self.PROMPT_WITH_IMAGE,
-                "agentic": {
-                    "enabled": True,
-                    "max_concurrent_batches": 4,
-                    # A per-shard token budget, not a credential — Bandit's B105
-                    # matches on the "token" in the key name.
-                    "shard_token_budget": 5000,  # nosec B105
-                    "table_parsing": {
-                        "enabled": True,
-                        "lazy_images": lazy_images,
-                    },
-                },
-            },
-            "classes": [
-                {
-                    "$id": "Doc",
-                    "type": "object",
-                    "properties": {"x": {"type": "string"}},
-                }
-            ],
-        }
-        svc = ExtractionService(region="us-west-2", config=cfg)
-        svc._class_label = "Doc"
-        svc._class_schema = cfg["classes"][0]
-        svc._attribute_descriptions = "x: a field"
-        return svc
-
     @staticmethod
-    def _table_page(page_index: int) -> str:
-        """A page holding a parseable Markdown table with 40 data rows.
-
-        Two such pages clear the pre-flight gate (>= 50 estimated table rows)
-        and are dense enough to split into more than one shard.
-        """
-        rows = "\n".join(
-            f"| {page_index}-{i} | Row {i} | {i * 10}.00 | {'w' * 200} |"
-            for i in range(40)
-        )
-        return (
-            "| RowID | Description | Amount | Notes |\n"
-            "|-------|-------------|--------|-------|\n" + rows
-        )
-
-    def _plan(self, lazy_images: bool):
-        svc = self._service(lazy_images)
-        pages = [self._table_page(p) for p in range(6)]
-        svc._page_texts = pages
-        svc._document_text = "\n".join(pages)
-        # Real PNG bytes: the attach path decodes each page image with PIL.
-        svc._page_images = [_png_bytes() for _ in range(6)]
-        section_info = SectionInfo(
-            class_label="Doc",
-            sorted_page_ids=[str(p + 1) for p in range(6)],
-            page_indices=list(range(6)),
-            output_bucket="b",
-            output_key="k",
-            output_uri="s3://b/k",
-            start_page=1,
-            end_page=6,
-        )
-        _, _, payloads, _ = svc._build_agentic_shard_plan(section_info)
-        assert len(payloads) > 1, "test needs a genuinely sharded section"
-        return payloads
+    def _plan(lazy_images: bool):
+        return _shard_plan(_table_doc_service(lazy_images))[0]
 
     @staticmethod
     def _image_blocks(payload) -> int:
@@ -247,6 +303,293 @@ class TestShardPlanLazyImages:
         # must not blind assessment.
         payloads = self._plan(lazy_images=True)
         assert all(p["assess_page_images"] for p in payloads)
+
+
+class TestPreflightTableGuidanceBlock:
+    """`_append_preflight_table_guidance` is the ONE home of the PRE-PARSED TABLE
+    DATA block, shared by the single-pass and sharded agentic paths (#900).
+
+    The literal below is the block exactly as the single-pass path emitted it
+    before the refactor. Asserting equality against it is what makes the sharded
+    fix attributable: if the shared helper had also reworded the single-pass
+    instruction, an A/B against the study's numbers would be measuring two
+    changes at once.
+    """
+
+    EXPECTED = (
+        "\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
+        "Found 2 table(s) with 30 total rows.\n"
+        "Table columns: ['Date', 'Amount']\n\n"
+        "PAGE MARKERS: The document text contains '--- PAGE N ---' "
+        "markers between pages. When you are assigned a page range, "
+        "extract ONLY text between markers for your pages before "
+        "calling parse_table.\n\n"
+        "EFFICIENT EXTRACTION WORKFLOW:\n"
+        "1. Extract scalar fields from your pages' text\n"
+        "2. Call parse_table with your pages' text\n"
+        "3. Call map_table_to_schema with column_mapping + static_fields\n"
+        "   (merged rows are auto-split — no manual handling needed)\n"
+        "4. Call finalize_table_extraction with table_array_field + "
+        "scalar_fields\n\n"
+        "finalize reads mapped rows from state — no JSON generation needed."
+    )
+
+    PREFLIGHT = {
+        "status": "success",
+        "table_count": 2,
+        "tables": [{"row_count": 18}, {"row_count": 12}],
+        "columns": ["Date", "Amount"],
+    }
+
+    def test_block_is_byte_identical_to_the_pre_refactor_text(self):
+        out = ExtractionService._append_preflight_table_guidance(None, self.PREFLIGHT)
+        assert out == self.EXPECTED
+
+    def test_appends_to_an_existing_instruction(self):
+        # The single-pass path did `custom_instruction += block`; the shared
+        # helper must keep that, leading blank line included.
+        base = "**IMPORTANT - USE TABLE PARSING TOOL**"
+        out = ExtractionService._append_preflight_table_guidance(base, self.PREFLIGHT)
+        assert out == base + self.EXPECTED
+
+    def test_reports_table_count_row_total_and_columns(self):
+        out = ExtractionService._append_preflight_table_guidance(None, self.PREFLIGHT)
+        assert out is not None
+        assert "Found 2 table(s) with 30 total rows." in out
+        assert "Table columns: ['Date', 'Amount']" in out
+
+    def test_no_block_when_preflight_did_not_run(self):
+        assert ExtractionService._append_preflight_table_guidance(None, None) is None
+        assert (
+            ExtractionService._append_preflight_table_guidance("base", None) == "base"
+        )
+
+    def test_no_block_when_preflight_failed(self):
+        failed = {"status": "no_tables_found", "table_count": 0, "tables": []}
+        assert ExtractionService._append_preflight_table_guidance(None, failed) is None
+        assert (
+            ExtractionService._append_preflight_table_guidance("base", failed) == "base"
+        )
+
+    def test_single_pass_gets_no_scope_note(self):
+        # The scope note is for shard agents only. Its absence here is what the
+        # byte-identity assertion above depends on; asserted separately so a
+        # future default value for `scope_note=` fails on its own terms.
+        out = ExtractionService._append_preflight_table_guidance(None, self.PREFLIGHT)
+        assert out is not None
+        assert "YOUR SCOPE" not in out
+
+    def test_scope_note_sits_between_the_marker_rule_and_the_workflow(self):
+        # The note qualifies the page-marker rule ("extract ONLY text between
+        # markers for your pages"), so it has to follow that rule and precede the
+        # workflow steps that tell the agent what to hand parse_table.
+        out = ExtractionService._append_preflight_table_guidance(
+            None, self.PREFLIGHT, scope_note="SCOPE-NOTE-MARKER"
+        )
+        assert out is not None
+        assert (
+            out.index("markers between pages")
+            < out.index("SCOPE-NOTE-MARKER")
+            < out.index("EFFICIENT EXTRACTION WORKFLOW")
+        )
+        # Everything else is untouched: the block with the note removed is the
+        # single-pass block.
+        assert out.replace("SCOPE-NOTE-MARKER\n\n", "") == self.EXPECTED
+
+
+class TestShardPlanPreflightGuidance:
+    """The SHARDED path's shard agents must receive the PRE-PARSED TABLE DATA
+    block too (#900).
+
+    They did not. `_build_agentic_shard_plan` built `custom_instruction` from
+    `_build_table_parsing_guidance` alone, so shard agents got no row/column
+    summary and no "finalize reads the rows from state" workflow — the guidance
+    that stops an agent re-emitting every parsed row as output tokens. Sharding
+    is the default for any multi-page table document, so the agents that most
+    needed the block were the only ones not getting it. Uses the same
+    table-document fixture as `TestShardPlanLazyImages` (the section that clears
+    the pre-flight gate).
+    """
+
+    @staticmethod
+    def _instruction() -> str | None:
+        return _shard_plan(_table_doc_service())[1]
+
+    def test_shard_instruction_carries_the_preflight_block(self):
+        ci = self._instruction()
+        assert ci and "**PRE-PARSED TABLE DATA AVAILABLE**" in ci
+        # The four-step workflow, i.e. the part that keeps rows out of the output.
+        assert "finalize reads mapped rows from state" in ci
+        assert "--- PAGE N ---" in ci
+
+    def test_block_reports_the_real_parse_result(self):
+        import re
+
+        ci = self._instruction()
+        assert ci is not None
+        m = re.search(r"Found (\d+) table\(s\) with (\d+) total rows\.", ci)
+        assert m, ci
+        # Real numbers from the deterministic parser, not placeholders. The gate
+        # for pre-flight is >= 50 estimated rows, so the section must clear it.
+        assert int(m.group(1)) >= 1
+        assert int(m.group(2)) >= 50
+        assert "Table columns: ['RowID', 'Description', 'Amount', 'Notes']" in ci
+
+    def test_shard_instruction_carries_the_scope_note(self):
+        # Two sentences of the shared block are wrong when a SHARD agent reads
+        # them, so the sharded call site passes a scope note that corrects both.
+        ci = self._instruction()
+        assert ci is not None
+        assert "YOUR SCOPE" in ci
+        # (1) The marker rule says "extract ONLY text between markers for your
+        # pages" — but a shard's text is already only its pages, and dropping the
+        # header block would strip the table's column headers.
+        assert "ALREADY contains only your assigned pages" in ci
+        assert "pass ALL of it to parse_table" in ci
+        # (2) The row/table totals are section-wide, not the shard's target.
+        assert "for the WHOLE section" in ci
+        assert "legitimately return fewer rows" in ci
+
+    def test_scope_note_names_the_header_block_the_shards_actually_carry(self):
+        # The note tells the agent to keep a specific marker; if
+        # `_build_shard_payloads` ever renames it, the instruction would be
+        # pointing at a string that no longer appears in the text. Pin both ends
+        # against the same literal, taken from a real later shard.
+        payloads, ci = _shard_plan(_table_doc_service())
+        assert ci is not None
+        header_marker = "--- DOCUMENT HEADER (page 1, for context only) ---"
+        assert header_marker in _shard_text(payloads[1])
+        assert header_marker in ci
+        # ...and that block sits OUTSIDE the page markers, which is why an agent
+        # obeying the unqualified marker rule would have discarded it.
+        shard_text = _shard_text(payloads[1])
+        assert shard_text.index(header_marker) < shard_text.index("--- PAGE ")
+
+    def test_shard_agent_gets_the_scope_note_before_its_page_range(self):
+        # Same division of labour as the block itself: the generic scope note
+        # comes from the plan, the concrete "covering pages A-B of T" from
+        # `_run_shard_agent` right after it.
+        sent = _sent_shard_instruction(self._instruction())
+        assert "YOUR SCOPE" in sent
+        assert sent.index("YOUR SCOPE") < sent.index("covering pages 3-5 of 6")
+
+    def test_no_block_when_table_parsing_is_disabled(self):
+        # table_parsing.enabled: false -> no pre-flight parse -> nothing to
+        # describe. The instruction must fall back to whatever
+        # _build_table_parsing_guidance produced on its own.
+        svc = _table_doc_service()
+        svc.config.extraction.agentic.table_parsing.enabled = False
+        _payloads, ci = _shard_plan(svc)
+        assert "PRE-PARSED TABLE DATA AVAILABLE" not in (ci or "")
+
+    def test_shard_agent_gets_the_block_and_its_own_page_range(self):
+        # The plan returns ONE instruction for ALL shards, so the block's page
+        # wording stays generic ("when you are assigned a page range"); the
+        # concrete range is appended per shard downstream by
+        # agentic_idp._run_shard_agent. Pin that division of labour end to end —
+        # the block is only coherent because the assignment follows it.
+        sent = _sent_shard_instruction(self._instruction())
+        assert "**PRE-PARSED TABLE DATA AVAILABLE**" in sent
+        assert "covering pages 3-5 of 6" in sent
+        # Block first, page assignment after it.
+        assert sent.index("PRE-PARSED TABLE DATA") < sent.index("covering pages 3-5")
+
+
+class TestInProcessShardedScopeNote:
+    """The OTHER sharded route needs the scope note too.
+
+    There are two ways shard agents get built. `_build_agentic_shard_plan` serves
+    the Step Functions runtime (`runtime: step_functions`, the shipped default);
+    the in-process runtime instead shards inside `_invoke_extraction_model` and
+    hands `concurrent_structured_output_async` the instruction that method already
+    built — which is why in-process shard agents were the ones already receiving
+    the PRE-PARSED TABLE DATA block before #900. They read the same two sentences
+    from inside a shard, so they get the same correction.
+
+    The single-agent path must NOT: it holds the whole section, and so does the
+    escalation retry in `_validate_and_maybe_escalate`, which reuses the
+    unmodified instruction.
+    """
+
+    @staticmethod
+    def _captured(svc: ExtractionService) -> dict:
+        from unittest.mock import patch
+
+        from pydantic import BaseModel
+
+        class M(BaseModel):
+            x: str | None = None
+
+        section_info = SectionInfo(
+            class_label="Doc",
+            sorted_page_ids=[str(p + 1) for p in range(6)],
+            page_indices=list(range(6)),
+            output_bucket="b",
+            output_key="k",
+            output_uri="s3://b/k",
+            start_page=1,
+            end_page=6,
+        )
+        content = svc._build_prompt_content(PROMPT_WITH_IMAGE, svc._page_images)
+        captured: dict = {}
+
+        def fake_concurrent(**kwargs):
+            captured.update(kwargs)
+            return M(x="a"), {"metering": {}}
+
+        with patch(
+            "idp_common.extraction.service.concurrent_structured_output_async",
+            side_effect=fake_concurrent,
+        ):
+            svc._invoke_extraction_model(content, "system", section_info)
+        assert captured, "the sharded in-process branch was never reached"
+        return captured
+
+    def test_in_process_shard_agents_get_the_scope_note(self):
+        ci = self._captured(_table_doc_service())["custom_instruction"]
+        assert "**PRE-PARSED TABLE DATA AVAILABLE**" in ci
+        assert "YOUR SCOPE" in ci
+        assert "for the WHOLE section" in ci
+
+    def test_single_agent_path_keeps_the_unqualified_block(self):
+        # max_concurrent_batches = 1 -> no sharding -> single agent over the whole
+        # section, whose instruction must stay byte-identical to the pre-#900
+        # text (the advanced-extraction study's baseline).
+        from unittest.mock import patch
+
+        from pydantic import BaseModel
+
+        class M(BaseModel):
+            x: str | None = None
+
+        svc = _table_doc_service()
+        svc.config.extraction.agentic.max_concurrent_batches = 1
+        section_info = SectionInfo(
+            class_label="Doc",
+            sorted_page_ids=[str(p + 1) for p in range(6)],
+            page_indices=list(range(6)),
+            output_bucket="b",
+            output_key="k",
+            output_uri="s3://b/k",
+            start_page=1,
+            end_page=6,
+        )
+        content = svc._build_prompt_content(PROMPT_WITH_IMAGE, svc._page_images)
+        captured: dict = {}
+
+        def fake_single(**kwargs):
+            captured.update(kwargs)
+            return M(x="a"), {"metering": {}}
+
+        with patch(
+            "idp_common.extraction.service.structured_output",
+            side_effect=fake_single,
+        ):
+            svc._invoke_extraction_model(content, "system", section_info)
+        assert captured, "the single-agent branch was never reached"
+        ci = captured["custom_instruction"]
+        assert "**PRE-PARSED TABLE DATA AVAILABLE**" in ci
+        assert "YOUR SCOPE" not in ci
 
 
 class TestAnalyzeSchemaMinItems:
