@@ -1023,7 +1023,7 @@ def format_split_stats_report(stats: dict[str, Any] | None) -> str:
     if stats.get("deadline_reached"):
         lines.append(
             "  - ⏱ Self-healing stopped early: Lambda wall-clock budget reached "
-            "(remaining rows left unscored to avoid a timeout)."
+            "(any rows still unscored were not attempted, to avoid a timeout)."
         )
     if stats.get("batch_count"):
         conc = stats.get("concurrent_batches") or 1
@@ -1061,9 +1061,17 @@ def build_assessment_issues(
       ("rows could not be scored") sends the operator to shrink the batch size,
       which is the one remedy that provably cannot work here.
     - else ``unrecoverable_rows > 0`` → ``assessment_incomplete`` (**error**): rows
-      are still unscored after the full self-healing ladder.
+      are still unscored after the full self-healing ladder. When
+      ``deadline_reached`` is also set, the message names the time budget as the
+      cause and gives its remedy, because the rung below cannot be reached in that
+      case — the wall-clock guard only fires while rows are missing, which is
+      precisely this rung's condition. Do not read the ordering as "a deadline stop
+      is reported as a warning": with rows outstanding it is an error, and the
+      severity is right, since the rows are unscored either way.
     - else ``deadline_reached`` → ``assessment_deadline_reached`` (**warning**):
-      the wall-clock guard stopped escalation before coverage completed.
+      the wall-clock guard stopped recovery on a section whose coverage was
+      nonetheless completed — the remaining work was unnecessary. Reachable when
+      a later rung finished the rows after an earlier one was cut short.
     - else rows were ACTUALLY recovered (retry or escalation counters > 0) →
       ``assessment_recovered_with_retries`` (**info**): self-healed, but
       token-inefficiently (worth flagging).
@@ -1197,6 +1205,24 @@ def build_assessment_issues(
 
     if unrecoverable > 0:
         chain = f" after escalation to {escalation_model}" if escalation_model else ""
+        # When the wall-clock guard is what stopped recovery, say so HERE rather than
+        # relying on the assessment_deadline_reached rung below: that rung is
+        # unreachable in this case, because the guard can only fire while rows are
+        # still missing, which is exactly the condition this rung matches. Severity
+        # stays `error` — rows really are unscored, and the operator impact is the
+        # same — but the remedy differs (more Lambda time or less work per section,
+        # not a different model), so the cause has to travel with the issue an
+        # operator actually sees. See the note on this ladder's ordering above.
+        timed_out = bool(stats.get("deadline_reached"))
+        budget = (
+            " Recovery stopped early to stay inside the Lambda time budget, so "
+            "these rows were not attempted rather than proven unscorable: allow "
+            "more time (a larger Assessment Lambda timeout) or reduce the work per "
+            "section (lower extraction.confidence.list_batch_size, or smaller "
+            "sections)."
+            if timed_out
+            else ""
+        )
         return [
             ProcessingIssue(
                 stage="assessment",
@@ -1204,7 +1230,7 @@ def build_assessment_issues(
                 code="assessment_incomplete",
                 message=(
                     f"{unrecoverable} list row(s) could not be confidence-scored"
-                    f"{chain}; those rows have no confidence."
+                    f"{chain}; those rows have no confidence.{budget}"
                 ),
                 root_cause=root_cause
                 or f"{unrecoverable} rows unrecoverable after self-healing",
@@ -1221,8 +1247,9 @@ def build_assessment_issues(
                 code="assessment_deadline_reached",
                 message=(
                     "Confidence self-healing stopped early to stay within the "
-                    "Lambda time budget; coverage completed but escalation was "
-                    "cut short."
+                    "Lambda time budget. Every extracted row is scored, so this "
+                    "section is unaffected; a later one may not be, because the "
+                    "budget is per Lambda invocation."
                 ),
                 root_cause=root_cause or "wall-clock budget reached",
                 section_id=section_id,
@@ -2126,8 +2153,34 @@ def _splice_missing_rows(
     ``(merged_metering, added_duration, recovered_any)``."""
     added_duration = 0.0
     recovered_any = False
+    # Measured seconds for the last call in THIS pass, used to price the next one.
+    # None until a chunk completes; only ever raises the estimate, never lowers it.
+    measured_call_seconds: float | None = None
     for start in range(0, len(missing), batch_size):
         idx_chunk = missing[start : start + batch_size]
+        # Wall-clock guard (#958), at CHUNK granularity. Checking a whole ROUND
+        # against a worst-case aggregate (chunks x 60s) does not bound time, it caps
+        # the CHUNK COUNT: with 800s left it refuses any round past 11 chunks however
+        # fast the model is, which for a 200-row list at the token-aware batch size
+        # of 4 threw away recovery that measurably took under a second. Pricing ONE
+        # call and stopping mid-pass bounds the wall clock exactly, keeps every row
+        # the budget did cover, and applies identically to the retry and escalation
+        # rungs -- both reach the model through here -- so the cheap rung can no
+        # longer be refused while the slower, dearer one proceeds.
+        est_call_seconds = max(
+            measured_call_seconds or 0.0, _ESTIMATED_MODEL_CALL_SECONDS
+        )
+        if not _deadline_allows(deadline_epoch, est_call_seconds):
+            stats["deadline_reached"] = True
+            logger.warning(
+                "assess_results_batched: stopping '%s' recovery with %d row(s) "
+                "still unscored - the next call, estimated at %.0fs, would exceed "
+                "the Lambda time budget. Rows already recovered are kept.",
+                big_field,
+                len(missing) - start,
+                est_call_seconds,
+            )
+            break
         try:
             sliced = _assess_slice_adaptive(
                 call,
@@ -2146,6 +2199,7 @@ def _splice_missing_rows(
         merged_metering = utils.merge_metering_data(merged_metering, sliced["metering"])
         merged_alerts.extend(sliced["alerts"])
         added_duration += sliced["duration"]
+        measured_call_seconds = float(sliced["duration"] or 0.0)
         for local_i, orig_i in enumerate(idx_chunk):
             if local_i < len(retry_rows) and not _row_confidence_missing(
                 retry_rows[local_i]
@@ -2281,38 +2335,16 @@ def _retry_missing_rows(
         )
 
     # Rung 1: same-model retry rounds.
-    # Measured seconds per chunk from the round just run, used to estimate the next
-    # one. None until a round has completed, and only ever RAISES the estimate —
-    # see _ESTIMATED_MODEL_CALL_SECONDS.
-    measured_chunk_seconds: float | None = None
     for _round in range(retry_rounds):
         missing = _missing_row_indices(merged_assessment.get(big_field), rows)
         if not missing:
             break
-        # Wall-clock guard (#958): estimate this retry round's cost the same way the
-        # escalation rung below does — chunks × per-call seconds — and stop if it
-        # will not fit in the Lambda's remaining time minus the safety reserve.
-        # Without this the rung was bounded only by `retry_rounds` and by "a round
-        # that recovered nothing", so a series of calls that each make partial
-        # progress and never bisect was unbounded in wall-clock terms: the only
-        # ladder path the guard did not cover, and the most concrete lead on the
-        # 900 s Assessment timeouts reported in #894.
-        n_chunks = math.ceil(len(missing) / max(1, batch_size))
-        est_round_seconds = n_chunks * max(
-            measured_chunk_seconds or 0.0, _ESTIMATED_MODEL_CALL_SECONDS
-        )
-        if not _deadline_allows(deadline_epoch, est_round_seconds):
-            stats["deadline_reached"] = True
-            logger.warning(
-                "assess_results_batched: skipping retry of %d unscored '%s' rows "
-                "— estimated %.0fs (%d chunk(s)) would exceed the Lambda time "
-                "budget; stopping self-healing and flagging deadline_reached.",
-                len(missing),
-                big_field,
-                est_round_seconds,
-                n_chunks,
-            )
-            break
+        # The wall-clock guard for this rung lives inside _splice_missing_rows, per
+        # CHUNK rather than per round (#958). A round-level check has to price the
+        # whole round before making any of its calls, and the only safe price is a
+        # worst-case one — which turns the guard into a cap on chunk COUNT rather
+        # than a bound on time, and so refuses rounds that would have finished in a
+        # fraction of the budget remaining. See the comment at that check.
         logger.info(
             "assess_results_batched: retrying %d unscored '%s' rows (round %d)",
             len(missing),
@@ -2335,8 +2367,12 @@ def _retry_missing_rows(
             model_id=model_id,
         )
         added_duration += dur
-        if n_chunks:
-            measured_chunk_seconds = dur / n_chunks
+        # The per-chunk guard stopped this pass mid-way, so the budget is spent:
+        # start no further round. (Another round would make no model call — its
+        # first chunk would hit the same guard — but it would log a misleading
+        # "retrying N rows" line first.)
+        if stats.get("deadline_reached"):
+            break
         # #894: the retry itself can be the first place a slice bisects down to one
         # row and still truncates. Stop this rung as soon as that is known instead
         # of spending the remaining rounds on the same impossible call.

@@ -431,7 +431,8 @@ without reading raw metadata. Severity ladder:
 | List extracted for a non-array/off-schema attribute (retry+escalation skipped) | `assessment_schema_mismatch` | **error** |
 | A single row still truncated the model — no batch size can fit it (#894) | `assessment_row_too_large` | **error** |
 | Rows still unscored after the full ladder | `assessment_incomplete` | **error** |
-| Wall-clock guard cut escalation short | `assessment_deadline_reached` | **warning** |
+| Wall-clock guard stopped recovery, but every row ended up scored anyway | `assessment_deadline_reached` | **warning** |
+| Wall-clock guard stopped recovery with rows still unscored | `assessment_incomplete` (message names the time budget) | **error** |
 | Healed, but needed shrinking/escalation | `assessment_recovered_with_retries` | **info** |
 
 `assessment_schema_mismatch` takes precedence over `assessment_incomplete`: when
@@ -492,16 +493,41 @@ and rendered in the extraction processing report.
 The escalation ladder adds sequential model calls inside the 900s
 Extraction/Assessment Lambdas. To avoid a hard timeout, both handlers thread the
 Lambda's `context.get_remaining_time_in_millis()` down as an absolute
-`deadline_epoch`; before starting **any new recovery round — a same-model retry
-round (#958) or an escalation round — and before each further bisection**, the
-ladder checks that the estimated cost (chunks × `_ESTIMATED_MODEL_CALL_SECONDS`,
-60s, floored at that value even when a measured duration is available) fits in the
-remaining time minus a 90s safety reserve. If not, it stops, keeps what was
-recovered, and flags `deadline_reached` (→ `assessment_deadline_reached` warning) —
-converting a would-be timeout into a soft, flagged, complete document. The retry
-rung was the last one to get this check: until #958 it stopped only after
+`deadline_epoch`. Every path that can spend a model call consults it, and all of
+them price a call at `_ESTIMATED_MODEL_CALL_SECONDS` (60s) or the last measured
+duration, whichever is larger, against the remaining time minus a 90s safety
+reserve:
+
+| Where | Granularity | Added |
+|---|---|---|
+| Further bisection of a truncated slice (`_assess_slice_adaptive`) | per split | 1.5 |
+| Every recovery call, retry **and** escalation (`_splice_missing_rows`) | **per chunk** | #958 |
+| Before an escalation *round* (`_retry_missing_rows` rung 2) | per round | 1.5 |
+
+When a check fails the ladder stops, keeps everything already recovered, and sets
+`deadline_reached` — converting a would-be timeout into a soft, flagged, complete
+document.
+
+The retry rung was the last to be covered: until #958 it stopped only after
 `max_retries` rounds or on a round that recovered nothing, so rounds that each made
-partial progress were unbounded in wall-clock terms. As defense in depth, the Step Functions
+partial progress were unbounded in wall-clock terms. Note **why that check is per
+chunk and not per round.** A round-level check has to price a whole round before
+making any of its calls, and the only safe price is a worst case — chunks × 60s.
+That is not a bound on time, it is a cap on chunk COUNT: with 800s remaining it
+refuses any round past 11 chunks however fast the model actually is, which for a
+200-row list at a token-aware batch size of 4 discarded recovery that measurably
+took under a second and turned a clean section into an error-severity
+`assessment_incomplete`. Pricing one call at a time bounds the wall clock exactly,
+keeps every row the budget did cover, and treats both rungs alike — before #958 the
+cheap same-model rung could be refused while the slower, dearer escalation rung
+proceeded, because the two sized their chunks differently.
+
+**What an operator sees.** With rows still unscored the section reports
+`assessment_incomplete` (**error**) whose message names the time budget and its
+remedy — more Lambda time, or less work per section. It does **not** report
+`assessment_deadline_reached`: that rung sits below `assessment_incomplete` in the
+severity ladder and the guard only fires while rows are missing, so the warning is
+reachable only when a later rung went on to score every row anyway. As defense in depth, the Step Functions
 `ExtractionStep`/`AssessmentStep`/`ShardExtractionStep` retry sets include
 `States.Timeout` / `Lambda.Unknown`, so a genuine timeout is retried and resumes
 via the per-shard S3 persistence and the Assessment step's "skip if

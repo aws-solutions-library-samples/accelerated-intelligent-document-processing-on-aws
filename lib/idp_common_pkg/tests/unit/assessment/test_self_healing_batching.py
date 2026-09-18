@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from idp_common.assessment import batching as mod
 from idp_common.assessment.batching import (
     assess_results_batched,
     compute_token_aware_batch_size,
@@ -437,14 +438,24 @@ class PartialProgressService:
     900 s Lambda into its wall.
     """
 
-    def __init__(self, list_field: str, scored_per_call: int = 1):
+    def __init__(
+        self,
+        list_field: str,
+        scored_per_call: int = 1,
+        sleep_seconds: float = 0.0,
+    ):
         self.list_field = list_field
         self.scored_per_call = scored_per_call
+        self.sleep_seconds = sleep_seconds
         self.primary_calls: list[int] = []
 
     def assess_results(self, **kw):
+        import time as _time
+
         rows = kw["extraction_results"].get(self.list_field, [])
         self.primary_calls.append(len(rows))
+        if self.sleep_seconds:
+            _time.sleep(self.sleep_seconds)
         scored = [
             {"amount": {"confidence": 0.9 if i < self.scored_per_call else None}}
             for i in range(len(rows))
@@ -461,12 +472,12 @@ class PartialProgressService:
         )
 
 
-def _partial_progress_run(deadline_epoch, *, max_retries=4):
+def _partial_progress_run(deadline_epoch, *, max_retries=4, rows=12):
     svc = PartialProgressService("transactions")
     result = assess_results_batched(
         svc,
         class_label="bank-statement",
-        extraction_results={"transactions": _rows(12), "account_holder": "Jane Doe"},
+        extraction_results={"transactions": _rows(rows), "account_holder": "Jane Doe"},
         document_text="...",
         page_images=[],
         batch_size=4,
@@ -523,6 +534,97 @@ def test_no_deadline_leaves_the_retry_rung_running():
 
     assert result["split_stats"]["deadline_reached"] is False
     assert len(svc.primary_calls) > 3
+
+
+def test_a_large_list_with_ample_time_recovers_exactly_as_with_no_deadline():
+    """The guard must bound the rung by TIME, not cap its chunk count.
+
+    This is the case an earlier round-level version of the guard got wrong, and it
+    is the shape the ladder exists for. A round-level check has to price the whole
+    round before making any call, and the only safe price is a worst case
+    (chunks × 60s); at 200 rows and the token-aware batch size of 4 that priced a
+    round at 2,280s and refused it outright with 800s in hand — throwing away
+    recovery that measurably took under a second, and reporting an error-severity
+    ``assessment_incomplete`` where the unguarded code returned clean. Pricing ONE
+    call at a time makes the guard a real time bound: with ample budget the outcome
+    must be byte-identical to having no deadline at all.
+    """
+    import time as _time
+
+    rows = 200
+    guarded = _partial_progress_run(_time.time() + 800.0, rows=rows)
+    unguarded = _partial_progress_run(None, rows=rows)
+
+    assert guarded[1]["split_stats"]["deadline_reached"] is False
+    for key in ("rows_recovered_by_retry", "unrecoverable_rows"):
+        assert guarded[1]["split_stats"][key] == unguarded[1]["split_stats"][key], key
+    assert len(guarded[0].primary_calls) == len(unguarded[0].primary_calls)
+
+
+def test_a_mid_pass_stop_keeps_the_rows_it_already_recovered(monkeypatch):
+    """Stopping is per chunk, so the rows already spliced back are kept.
+
+    The constants are scaled down so the budget can run out *during* a pass in a
+    unit test: each call sleeps, and the reserve plus per-call estimate are set
+    small enough that the first few chunks fit and a later one does not.
+    """
+    import time as _time
+
+    monkeypatch.setattr(mod, "_ESTIMATED_MODEL_CALL_SECONDS", 0.02)
+    monkeypatch.setattr(mod, "_DEADLINE_SAFETY_RESERVE_SECONDS", 0.02)
+
+    svc = PartialProgressService("transactions", sleep_seconds=0.02)
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(40), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=4,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        deadline_epoch=_time.time() + 0.25,
+    )
+
+    stats = result["split_stats"]
+    assert stats["deadline_reached"] is True
+    # Stopped mid-pass rather than refusing the pass: some rows were recovered and
+    # some were not, and the recovered ones are still scored.
+    assert stats["rows_recovered_by_retry"] > 0
+    assert stats["unrecoverable_rows"] > 0
+    scored = [
+        r
+        for r in result["assessment"]["transactions"]
+        if r.get("amount", {}).get("confidence") is not None
+    ]
+    assert len(scored) == 40 - stats["unrecoverable_rows"]
+
+
+def test_a_deadline_stop_with_rows_outstanding_names_the_budget_in_the_issue():
+    """The cause must reach the issue an operator actually sees.
+
+    ``build_assessment_issues`` emits the FIRST matching rung, and
+    ``unrecoverable_rows > 0`` outranks ``deadline_reached``. Since the guard can
+    only fire while rows are still missing, the ``assessment_deadline_reached``
+    warning is unreachable from this path — so the ``assessment_incomplete`` error
+    has to carry the time-budget cause and its remedy itself, or an operator is
+    told rows are unscorable when they were simply never attempted.
+    """
+    import time as _time
+
+    _svc, result = _partial_progress_run(_time.time() + 1.0)
+    issues = build_assessment_issues(result["split_stats"], section_id="1")
+
+    assert [(i.code, i.severity) for i in issues] == [
+        ("assessment_incomplete", "error")
+    ]
+    message = issues[0].message
+    assert "Lambda time budget" in message
+    assert "not attempted" in message
+    # The remedy must be time/work, not "use a different model".
+    assert "list_batch_size" in message
 
 
 # --------------------------------------------------------------------------- #
