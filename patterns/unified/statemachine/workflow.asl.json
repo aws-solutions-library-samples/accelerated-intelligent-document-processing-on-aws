@@ -337,6 +337,12 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": "$.HookResults.postOcr.error",
@@ -424,6 +430,12 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -691,6 +703,12 @@
             "Catch": [
               {
                 "ErrorEquals": [
+                  "HookFatalError"
+                ],
+                "Next": "PostExtractionHookFailed"
+              },
+              {
+                "ErrorEquals": [
                   "States.ALL"
                 ],
                 "ResultPath": "$.HookResults.error",
@@ -751,6 +769,11 @@
           "SectionComplete": {
             "Type": "Pass",
             "End": true
+          },
+          "PostExtractionHookFailed": {
+            "Type": "Fail",
+            "Error": "HookFatalError",
+            "Cause": "A postExtraction hook failed and its policy is onError:fail, so the section is aborted rather than assessed and merged as though the hook had succeeded. This Map has no Catch, so the failure propagates out and fails the execution - which is what onError:fail asks for."
           }
         }
       },
@@ -991,6 +1014,12 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": "$.HookResults.postRuleValidation.error",
@@ -1096,6 +1125,12 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -1219,7 +1254,7 @@
     },
     "PostprocessingHook": {
       "Type": "Task",
-      "Comment": "Standalone postprocessing extension point \u2014 runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the routing decision). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state \u2014 by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which surfaces here as a failed execution.",
+      "Comment": "Standalone postprocessing extension point \u2014 runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the routing decision). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state \u2014 by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which the dispatcher raises as HookFatalError - caught by the FIRST Catch entry below, ahead of States.ALL, and routed to PostStepHookFailed. Until #919 that entry did not exist, so States.ALL swallowed the fail policy and this comment's claim was false.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
@@ -1254,6 +1289,12 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": null,
@@ -1274,6 +1315,11 @@
     "WorkflowComplete": {
       "Type": "Pass",
       "End": true
+    },
+    "PostStepHookFailed": {
+      "Type": "Fail",
+      "Error": "HookFatalError",
+      "Cause": "A pipeline hook failed and its policy is onError:fail, so the document is aborted rather than continuing as though the hook had succeeded. Every hook state lists HookFatalError BEFORE its States.ALL catcher: ASL takes the FIRST matching catcher, and States.ALL - which deliberately routes FORWARD so that a non-gating hook fault cannot discard an otherwise-good document - matches this error too. Reordering those two entries silently restores the fail-open behaviour of issue #919."
     },
     "FailState": {
       "Type": "Fail",

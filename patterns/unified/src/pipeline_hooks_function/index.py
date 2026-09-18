@@ -51,6 +51,18 @@ to the pre-mutation behavior. The state machine copies this value into the
 canonical path the next step reads via a small `Apply<Point>HookDocument`
 Pass state (see statemachine/workflow.asl.json).
 
+Failure policy (`onError`, per hook):
+  - `continue` (default): the failure is recorded in `results` and the next hook
+    at that point runs. The workflow proceeds.
+  - `skip-remaining`: later hooks at that point are skipped. The workflow
+    proceeds.
+  - `fail`: the dispatcher raises :class:`hook_errors.HookFatalError`, which
+    every hook state in statemachine/workflow.asl.json catches BY NAME — ahead
+    of its `States.ALL` catcher — and routes to a terminal Fail state. That
+    ordering is the whole mechanism: `States.ALL` matches this error too, and
+    when it was listed first the fail policy was silently swallowed and the
+    document was processed as though the hook had succeeded (#919).
+
 Resolution rules:
   1. If the SFN input has `document.config_version`, use it.
   2. Else, scan the table for the row with IsActive=true.
@@ -81,6 +93,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
+from hook_errors import HookFatalError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -797,7 +810,15 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
                 r["documentUpdateRejected"] = reason
 
         if not r["ok"] and h["onError"] == "fail":
-            raise RuntimeError(
+            # HookFatalError, NOT a bare RuntimeError: every post-step hook state
+            # catches States.ALL and routes FORWARD (a hook fault must not
+            # discard an otherwise-good document), which swallowed this policy
+            # whole — the pipeline continued as though the hook had succeeded
+            # (#919). The states now catch this name FIRST, ahead of States.ALL,
+            # and route to a terminal Fail state. The name is load-bearing: it is
+            # the `errorType` Step Functions matches, and it is spelled in
+            # statemachine/workflow.asl.json.
+            raise HookFatalError(
                 f"Pipeline hook {h['featureId']} at {point} failed and onError=fail: {r.get('error')}"
             )
         if not r["ok"] and h["onError"] == "skip-remaining":

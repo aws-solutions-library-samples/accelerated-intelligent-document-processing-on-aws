@@ -429,7 +429,8 @@ should attach that boundary to every `AWS::IAM::Role` it creates.
 **What it tests**: the [pipeline-hook](../../../docs/feature-platform.md#pipeline-hooks)
 mechanism — the platform's supported way for a feature or an admin to inject
 business logic into document processing — at both standalone hook points
-(`preprocessing` and `postprocessing`).
+(`preprocessing` and `postprocessing`), plus the `onError: fail` gating policy at
+a post-step point (`ocr.postHook`).
 - **Why it exists**: before this step, **none of the seven hook points had any
   end-to-end coverage.** Unit tests exercise the dispatcher with fakes, but four
   things only exist on a real stack: the dispatcher reading a hook out of a real
@@ -452,12 +453,26 @@ business logic into document processing — at both standalone hook points
     **accepted** rather than refused by the dispatcher's guardrails
   - the hook's marker is present in the **persisted** document (tracking row),
     proving the mutation survived past the workflow
+  - a hook declaring `onError: fail` and failing on purpose **aborts** the
+    document: the execution reaches `FAILED`, its `executionFailedEventDetails.error`
+    is `HookFatalError`, and `ClassificationStep` was never entered. This is the
+    live half of the fix for #919, where six of the seven hook states caught
+    `States.ALL` ahead of any fatal-error catcher and routed the document forward,
+    making the policy inert. Only a real execution proves the catcher ordering in
+    the deployed state machine; the offline test
+    (`patterns/unified/tests/test_workflow_hook_fatal_catch.py`) proves it in the
+    source ASL
 
 **Test Document**: `samples/lending_package.pdf`
 **Duration**: ~5-7 minutes
 **Execution**: Runs in the parallel pool. It registers its hook in its **own**
 config version (`test-pipeline-hooks`) and never activates it, so the other steps
-sharing this stack are unaffected.
+sharing this stack are unaffected. The `onError: fail` phase likewise uses its own
+config version (`test-pipeline-hooks-fail`) and its own uniquely named copy of the
+sample document, so the deliberately FAILED execution it produces cannot be
+confused with — or overwrite — another step's assertions. It gates at
+`ocr.postHook` rather than a later point so aborting costs one OCR call and no
+Bedrock spend.
 **Implementation**: `test_step14_pipeline_hooks` in
 `scripts/sdlc/codebuild_deployment.py`. Deploys a real `idp-citest-hook-*` Lambda
 built from `idp_common.hooks` — the documented helper pair — so the test also

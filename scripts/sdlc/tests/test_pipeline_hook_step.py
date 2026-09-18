@@ -507,3 +507,152 @@ class TestExecutionWaitBarrier:
 
         src = inspect.getsource(cbd._find_target_execution)
         assert "return None, scanned" in src
+
+    def test_finder_passes_the_status_filter_through(self, cbd):
+        """The onError:fail phase looks for a FAILED execution, so the status is
+        a parameter rather than a hardcoded SUCCEEDED."""
+        seen = {}
+
+        class _Sfn:
+            def list_executions(self, **kwargs):
+                seen.update(kwargs)
+                return {"executions": []}
+
+        cbd._find_target_execution(_Sfn(), "arn:sm", "v1", status_filter="FAILED")
+        assert seen["statusFilter"] == "FAILED"
+        cbd._find_target_execution(_Sfn(), "arn:sm", "v1")
+        assert seen["statusFilter"] == "SUCCEEDED", "default must not change"
+
+
+@pytest.mark.unit
+class TestOnErrorFailPhase:
+    """Step 14's second phase: `onError: fail` must ABORT the document (#919).
+
+    The policy is the documented way for a hook to GATE the pipeline, but each
+    post-step hook state caught `States.ALL` and routed FORWARD — and States.ALL
+    matches the dispatcher's fail-policy error too, so the document continued as
+    though the hook had succeeded. Phase 1 registers both hooks with
+    `onError: continue` deliberately (a hook fault must not make a coverage test
+    flaky), which is exactly why nothing exercised the fail policy live.
+
+    These tests cannot run the phase (it needs a stack), so they pin the parts
+    that would make it pass for the wrong reason.
+    """
+
+    def _src(self, cbd):
+        import inspect
+
+        return inspect.getsource(cbd._assert_onerror_fail_aborts)
+
+    def test_fatal_error_name_matches_the_dispatcher_exception(self, cbd):
+        """The name is load-bearing in three places: the exception class the
+        dispatcher raises, the `ErrorEquals` in workflow.asl.json, and this
+        step's assertion. Read the class from the Lambda source so a rename
+        cannot leave this constant behind (which would make the phase assert a
+        name that never surfaces — #919 one level up)."""
+        import importlib.util
+
+        repo_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        )
+        hook_errors_path = os.path.join(
+            repo_root,
+            "patterns",
+            "unified",
+            "src",
+            "pipeline_hooks_function",
+            "hook_errors.py",
+        )
+        spec = importlib.util.spec_from_file_location("hook_errors", hook_errors_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert cbd._HOOK_FATAL_ERROR == module.HookFatalError.__name__
+
+    def test_phase_registers_a_post_step_hook_with_the_fail_policy(self, cbd):
+        """A FLAT point (preprocessing/postprocessing) would not exercise the
+        bug: PreprocessingHook already routed States.ALL to a Fail state. The
+        phase must register at a `<step>.postHook` point."""
+        src = self._src(cbd)
+        assert 'cfg["ocr"]["postHook"]' in src
+        assert '"onError": "fail"' in src
+        assert '{"key": "fail", "value": "true"}' in src
+
+    def test_phase_requires_a_failed_execution(self, cbd):
+        src = self._src(cbd)
+        assert 'status_filter="FAILED"' in src
+        # And it must distinguish fail-open from never-started, or the failure
+        # message sends the next reader to the wrong place.
+        assert 'status_filter="SUCCEEDED"' in src
+
+    def test_phase_asserts_the_document_did_not_go_forward(self, cbd):
+        """The class-closing assertion: a FAILED execution alone does not prove
+        the gate held, because States.ALL could have routed forward and the
+        execution failed later for another reason."""
+        src = self._src(cbd)
+        assert "ClassificationStep" in src
+
+    def test_phase_asserts_the_error_name_that_surfaced(self, cbd):
+        src = self._src(cbd)
+        assert "exec_error != _HOOK_FATAL_ERROR" in src
+
+    def test_phase_is_called_by_step14(self, cbd):
+        import inspect
+
+        src = inspect.getsource(cbd.test_step14_pipeline_hooks)
+        assert "_assert_onerror_fail_aborts(" in src
+        assert 'return {"success": False, "error": fail_err}' in src
+
+    def test_phase_uses_its_own_config_version_and_document(self, cbd):
+        """It must not perturb phase 1's assertions or the other parallel steps
+        sharing this stack — and its FAILED tracking row must be unmistakably
+        its own."""
+        src = self._src(cbd)
+        assert "_HOOK_FAIL_CONFIG_VERSION" in src
+        assert cbd._HOOK_FAIL_CONFIG_VERSION != "test-pipeline-hooks"
+        assert "mkdtemp" in src and "hookfail-" in src
+
+    def test_run_inference_does_not_gate_on_its_exit_code(self, cbd):
+        """The document is MEANT to fail, so run-inference may exit non-zero;
+        check=True there would fail the step before any assertion ran."""
+        src = self._src(cbd)
+        run_at = src.index("run-inference")
+        assert "check=False" in src[run_at:]
+
+    def test_hook_source_fails_on_demand(self, cbd, monkeypatch):
+        """The `fail=true` arg is what makes the hook fail, and it must raise
+        before touching S3 so the failure is unambiguous."""
+        monkeypatch.setenv("MARKER_KEY", cbd._HOOK_MARKER_KEY)
+        monkeypatch.setenv("WORKING_BUCKET", "test-working-bucket")
+        ns = {}
+        exec(  # noqa: S102 — our own shipped source under test  # nosec B102 - executes this repo's own shipped source under test
+            compile(cbd._HOOK_SOURCE, "index.py", "exec"), ns
+        )
+        event = {
+            "hookPoint": "postOcr",
+            "args": [{"key": "fail", "value": "true"}],
+            # A compressed reference the handler could not resolve offline: if it
+            # reached load_hook_document this would raise something else.
+            "document": {"compressed": True, "s3_uri": "s3://nope/x.json"},
+        }
+        with pytest.raises(RuntimeError, match="deliberate failure"):
+            ns["lambda_handler"](event, None)
+
+    def test_hook_source_does_not_fail_without_the_arg(self, cbd, monkeypatch):
+        """Guard the other side: phase 1 (and every real hook) must be unaffected
+        by the failure switch."""
+        monkeypatch.setenv("MARKER_KEY", cbd._HOOK_MARKER_KEY)
+        monkeypatch.setenv("WORKING_BUCKET", "test-working-bucket")
+        ns = {}
+        exec(  # noqa: S102 — our own shipped source under test  # nosec B102 - executes this repo's own shipped source under test
+            compile(cbd._HOOK_SOURCE, "index.py", "exec"), ns
+        )
+        out = ns["lambda_handler"](
+            {
+                "hookPoint": "postprocessing",
+                "args": [{"key": "note", "value": "ci"}, {"key": "fail", "value": ""}],
+                "document": {"id": "w2.pdf", "num_pages": 1, "sections": []},
+            },
+            None,
+        )
+        assert out["ciHookRan"] is True

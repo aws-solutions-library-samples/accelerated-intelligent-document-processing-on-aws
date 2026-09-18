@@ -501,6 +501,8 @@ extraction:
       arn: <hook-lambda-arn>    # Lambda to invoke
       order: 100                # lower runs first within a point (default 100)
       onError: continue         # continue | skip-remaining | fail (default continue)
+                                # fail aborts the document in a terminal Fail
+                                # state — see "onError: fail" below
       enabled: true             # default true
       allowDocumentUpdate: true # default true — may this hook return an
                                 # `updatedDocument`? Set false to pin it to
@@ -523,9 +525,25 @@ document is marked according to the hook's semantics — e.g.
 nothing left to skip, so the dispatcher logs it and reports `haltIgnored: true`
 rather than appearing to act on it. `onError` controls failure handling:
 `continue` (log and proceed), `skip-remaining` (stop later hooks at that
-point), or `fail` (fail the workflow — for `preprocessing` this stops the
-execution in a terminal `PreprocessingHookFailed` state rather than continuing
-to normal processing).
+point), or `fail`.
+
+**`onError: fail` aborts the document at every hook point** — the dispatcher
+raises a distinct `HookFatalError`, and each hook state in the state machine
+catches that error *before* its `States.ALL` catcher and routes to a terminal
+`Fail` state (`PreprocessingHookFailed`, `PostStepHookFailed`, or
+`PostExtractionHookFailed`). The document ends FAILED and no later step runs. A
+dispatcher fault that is *not* the fail policy — a timeout, a throttle, a bug —
+still follows the `States.ALL` catcher, which for the post-step points routes
+forward so a non-gating hook fault cannot discard an otherwise-good document.
+
+⚠️ **Before v0.6.9 this only worked at `preprocessing`.** At the other six
+points the `States.ALL` catcher matched the dispatcher's failure first and routed
+the document *forward*, so `onError: fail` was silently inert: a gating hook —
+PII redaction being the case that matters — could fail and the document would be
+processed anyway, with nothing to signal it
+([#919](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/919)).
+If you have a hook relying on `fail` to gate, re-deploy on v0.6.9 or later and
+re-check any documents processed since the hook was registered.
 
 **At `postprocessing`, prefer `onError: continue`** (the default). By the time it
 runs, every expensive step has succeeded and the output objects are written, so

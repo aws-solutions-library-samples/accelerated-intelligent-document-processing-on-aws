@@ -48,6 +48,7 @@ def _path_setup():
     yield
     sys.path.remove(LAMBDA_DIR)
     sys.modules.pop("index", None)
+    sys.modules.pop("hook_errors", None)
 
 
 def _reload():
@@ -154,24 +155,114 @@ def test_pinned_config_version_from_document_is_honored(monkeypatch):
     assert seen_versions == ["pinned-v1.0.0"]
 
 
-def test_onerror_fail_raises(monkeypatch):
-    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
-    mod = _reload()
-    hook = {"featureId": "f", "arn": "arn:f", "order": 1, "onError": "fail"}
-    monkeypatch.setattr(mod, "_read_hooks_from_config", lambda *a, **k: [hook])
+def _failing_hook_env(monkeypatch, mod, hooks):
+    """Every hook at the point fails; the policy decides what happens next."""
+    monkeypatch.setattr(mod, "_read_hooks_from_config", lambda *a, **k: hooks)
     monkeypatch.setattr(mod, "_resolve_active_version", lambda *a, **k: "default")
     monkeypatch.setattr(
         mod,
         "_invoke_hook",
-        lambda h, p: {"featureId": "f", "arn": "arn:f", "ok": False, "error": "boom"},
+        lambda h, p: {
+            "featureId": h["featureId"],
+            "arn": h["arn"],
+            "ok": False,
+            "error": "boom",
+        },
     )
-
     # Patch the resource so .Table() returns a sentinel; dispatch path doesn't
     # touch it beyond passing it through to the patched readers above.
     monkeypatch.setattr(mod._dynamodb, "Table", lambda name: object())
 
-    with pytest.raises(RuntimeError, match="onError=fail"):
+
+def test_onerror_fail_raises_hook_fatal_error(monkeypatch):
+    """`onError: fail` raises the DISTINCT type the state machine catches.
+
+    It used to raise a bare RuntimeError, which was indistinguishable from any
+    other dispatcher fault — and every post-step hook state catches States.ALL
+    and routes FORWARD, so the fail policy was swallowed and the document was
+    processed as though the hook had succeeded (#919).
+    """
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    hook = {"featureId": "f", "arn": "arn:f", "order": 1, "onError": "fail"}
+    _failing_hook_env(monkeypatch, mod, [hook])
+
+    with pytest.raises(mod.HookFatalError, match="onError=fail"):
         mod.lambda_handler({"hookPoint": "postExtraction", "document": {}}, None)
+
+
+def test_fatal_error_class_name_is_the_string_the_state_machine_catches():
+    """The class NAME is load-bearing, not just the type.
+
+    Step Functions matches a Task error by name; for the optimized
+    `states:::lambda:invoke` integration that name is the function-error
+    payload's `errorType`, which the Python runtime sets to the exception
+    class's bare `__name__`. So renaming this class without renaming it in
+    `workflow.asl.json` restores #919 silently — the ASL would catch a name that
+    never surfaces. `patterns/unified/tests/test_workflow_hook_fatal_catch.py`
+    asserts the ordering of those catchers; this keeps the two spellings tied
+    together from the suite that runs in both CIs.
+    """
+    mod = _reload()
+    assert mod.HookFatalError.__name__ == "HookFatalError"
+    asl = os.path.join(
+        os.path.dirname(LAMBDA_DIR), "..", "statemachine", "workflow.asl.json"
+    )
+    with open(os.path.abspath(asl), encoding="utf-8") as fh:
+        assert mod.HookFatalError.__name__ in fh.read()
+
+
+def test_onerror_continue_does_not_raise(monkeypatch):
+    """`continue` (also the default for a hook that omits onError) records the
+    failure and lets the pipeline proceed — the non-gating case that the
+    States.ALL catchers exist for."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    hooks = [
+        {"featureId": "explicit", "arn": "arn:1", "order": 1, "onError": "continue"},
+        # normalization applies the default; _read_hooks_from_config would have
+        # filled this in, so mirror what it produces.
+        {"featureId": "defaulted", "arn": "arn:2", "order": 2, "onError": "continue"},
+    ]
+    _failing_hook_env(monkeypatch, mod, hooks)
+
+    out = mod.lambda_handler({"hookPoint": "postExtraction", "document": {}}, None)
+    assert out["invoked"] == 2  # both ran despite both failing
+    assert [r["ok"] for r in out["results"]] == [False, False]
+
+
+def test_onerror_skip_remaining_does_not_raise(monkeypatch):
+    """`skip-remaining` is also non-fatal: it stops the rest of the hooks at this
+    point and returns normally. Only `fail` aborts the document."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    hooks = [
+        {"featureId": "f1", "arn": "arn:1", "order": 1, "onError": "skip-remaining"},
+        {"featureId": "f2", "arn": "arn:2", "order": 2, "onError": "fail"},
+    ]
+    _failing_hook_env(monkeypatch, mod, hooks)
+
+    # f1 halts the loop before f2 is ever invoked, so no HookFatalError.
+    out = mod.lambda_handler({"hookPoint": "postExtraction", "document": {}}, None)
+    assert out["invoked"] == 1
+
+
+def test_onerror_fail_does_not_raise_when_the_hook_succeeds(monkeypatch):
+    """The policy fires on FAILURE only — a healthy `fail`-policy hook (the PII
+    redaction case) must not abort the document it just redacted."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    hook = {"featureId": "pii", "arn": "arn:pii", "order": 1, "onError": "fail"}
+    monkeypatch.setattr(mod, "_read_hooks_from_config", lambda *a, **k: [hook])
+    monkeypatch.setattr(mod, "_resolve_active_version", lambda *a, **k: "default")
+    monkeypatch.setattr(mod._dynamodb, "Table", lambda name: object())
+    monkeypatch.setattr(
+        mod,
+        "_invoke_hook",
+        lambda h, p: {"featureId": "pii", "arn": "arn:pii", "ok": True, "result": {}},
+    )
+    out = mod.lambda_handler({"hookPoint": "postOcr", "document": {}}, None)
+    assert out["invoked"] == 1
 
 
 def test_onerror_skip_remaining_stops_after_failure(monkeypatch):
