@@ -1,72 +1,96 @@
 # Document Service Factory
 
-The `docs_service` module provides a factory pattern for creating document services, allowing you to switch between AppSync and DynamoDB implementations while maintaining the same interface.
+The `docs_service` module is a thin factory in front of the document tracking
+service. It has exactly one backend: **DynamoDB**. `create_service()` always
+returns a [`DocumentDynamoDBService`](dynamodb/README.md) writing to the
+TrackingTable.
 
-## Overview
+The factory exists because dozens of Lambda handlers call
+`create_document_service()` rather than constructing the DynamoDB service
+themselves, and because it once selected between two backends. AWS AppSync has
+since been removed from the solution entirely — the web UI talks to an API
+Gateway REST API, and backend workers write the TrackingTable directly instead of
+publishing GraphQL mutations. See
+[AppSync → REST API Migration](../../../docs/migration-appsync-to-rest.md) for
+why.
 
-This module enables runtime switching between different document tracking backends:
+## What survives only as a back-compat shim
 
-- **AppSync Mode**: Uses AWS AppSync GraphQL API for document operations
-- **DynamoDB Mode**: Uses direct DynamoDB operations for document tracking
+Several parts of this module's surface are deliberately inert. They are kept so
+existing call sites keep importing and running without edits; none of them
+changes behavior:
 
-The factory pattern ensures that your Lambda functions can work with either backend without code changes, controlled by environment variables.
+| Surface | Behavior today |
+|---|---|
+| `create_service(mode=...)` / `create_document_service(mode=...)` | The `mode` argument is accepted and **ignored**. DynamoDB is always used. |
+| `api_url=` keyword | Accepted and **dropped** (`kwargs.pop("api_url", None)`) before the DynamoDB service is constructed. It was the AppSync endpoint. |
+| `is_appsync_mode()` / `DocumentServiceFactory.is_appsync_mode()` | Always returns `False`. |
+| `is_dynamodb_mode()` / `DocumentServiceFactory.is_dynamodb_mode()` | Always returns `True`. |
+| `get_document_tracking_mode()` / `get_current_mode()` | Always returns `"dynamodb"`. |
+| `DOCUMENT_TRACKING_MODE` env var | Still set to `dynamodb` on the pattern Lambdas, but **the code never reads it**. Setting it to anything else has no effect. |
+| `SUPPORTED_MODES`, `DEFAULT_MODE`, `DYNAMODB_MODE` | Retained module constants; `SUPPORTED_MODES == ["dynamodb"]` and `DEFAULT_MODE == "dynamodb"`. |
+
+If you are auditing this module, the constant `False`/`True` returns above are
+intentional, not a bug — removing them would break callers that still branch on
+them.
 
 ## Key Components
 
 ### DocumentServiceFactory
 
-The main factory class that creates appropriate service instances:
-
 ```python
 from idp_common.docs_service import DocumentServiceFactory
 
-# Create service based on environment variable
+# Create the DynamoDB-backed service
 service = DocumentServiceFactory.create_service()
 
-# Override mode explicitly
-service = DocumentServiceFactory.create_service(mode='dynamodb')
-
-# Pass additional parameters
-service = DocumentServiceFactory.create_service(
-    mode='appsync',
-    api_url='https://example.appsync-api.us-east-1.amazonaws.com/graphql'
-)
+# Extra keyword arguments are forwarded to DocumentDynamoDBService
+service = DocumentServiceFactory.create_service(table_name="my-tracking-table")
 ```
 
-### Convenience Functions
+`create_service()` forwards `**kwargs` to `DocumentDynamoDBService`, so
+`dynamodb_client=` and `table_name=` both work. With neither, the service builds
+its own client from the `TRACKING_TABLE` environment variable.
 
-Simplified functions for common operations:
+### Convenience Functions
 
 ```python
 from idp_common.docs_service import (
     create_document_service,
     get_document_tracking_mode,
-    is_appsync_mode,
-    is_dynamodb_mode
+    is_dynamodb_mode,
 )
 
-# Create service using convenience function
 service = create_document_service()
 
-# Check current mode
-current_mode = get_document_tracking_mode()
-if is_appsync_mode():
-    print("Using AppSync backend")
-elif is_dynamodb_mode():
-    print("Using DynamoDB backend")
+assert get_document_tracking_mode() == "dynamodb"
+assert is_dynamodb_mode() is True
 ```
 
 ## Environment Configuration
 
-The factory uses the `DOCUMENT_TRACKING_MODE` environment variable to determine which service to create:
+The factory itself reads no environment variables. The service it returns reads:
+
+- `TRACKING_TABLE` — DynamoDB TrackingTable name (used when no explicit
+  `table_name`/`dynamodb_client` is passed)
+- `AWS_REGION` — region for the DynamoDB client
+
+## Installation
+
+The extra that carries this module's dependencies is `docs_service`, and it is
+the one every Lambda `requirements.txt` in this repo uses:
+
+```
+../../lib/idp_common_pkg[classification,docs_service]
+```
 
 ```bash
-# Use AppSync (default)
-export DOCUMENT_TRACKING_MODE=appsync
-
-# Use DynamoDB
-export DOCUMENT_TRACKING_MODE=dynamodb
+pip install -e "lib/idp_common_pkg[core,docs_service]"
 ```
+
+There is also a vestigial `appsync` extra in `pyproject.toml`. It installs
+`requests` for a module that no longer exists, no `requirements.txt` references
+it, and you should not use it.
 
 ## Usage Patterns
 
@@ -76,17 +100,14 @@ export DOCUMENT_TRACKING_MODE=dynamodb
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
 
-# Create service (mode determined by environment)
 service = create_document_service()
 
-# Use the service (same interface regardless of backend)
 document = Document(
     input_key="my-document.pdf",
     status=Status.QUEUED,
     queued_time="2024-01-01T12:00:00Z"
 )
 
-# These methods work with both AppSync and DynamoDB services
 service.create_document(document)
 service.update_document(document)
 retrieved_doc = service.get_document("my-document.pdf")
@@ -94,157 +115,142 @@ retrieved_doc = service.get_document("my-document.pdf")
 
 ### Lambda Function Integration
 
+This is how the pattern Lambdas use it — see
+`patterns/unified/src/classification_function/index.py` for a live example:
+
 ```python
-import os
 from idp_common.docs_service import create_document_service
+from idp_common.models import Document, Status
 
 def lambda_handler(event, context):
-    # Service type determined by environment variable
-    service = create_document_service()
-    
-    # Your document processing logic here
-    document = process_document(event)
-    
-    # Update document status
-    service.update_document(document)
-    
+    document = Document.load_document(
+        event_data=event["document"],
+        working_bucket=working_bucket,
+        logger=logger,
+    )
+
+    document.status = Status.CLASSIFYING
+    document.workflow_execution_arn = event.get("execution_arn")
+
+    document_service = create_document_service()
+    document_service.update_document(document)
+
     return {"statusCode": 200}
 ```
 
-### Testing with Different Backends
+### Testing
+
+Because there is a single backend, a test only needs to assert the concrete
+class (or inject a mocked DynamoDB client):
 
 ```python
-import pytest
-from unittest.mock import patch
+from unittest.mock import Mock
+
 from idp_common.docs_service import create_document_service
+from idp_common.dynamodb import DynamoDBClient
 
-def test_with_appsync():
-    with patch.dict(os.environ, {"DOCUMENT_TRACKING_MODE": "appsync"}):
-        service = create_document_service()
-        assert service.__class__.__name__ == "DocumentAppSyncService"
 
-def test_with_dynamodb():
-    with patch.dict(os.environ, {"DOCUMENT_TRACKING_MODE": "dynamodb"}):
-        service = create_document_service()
-        assert service.__class__.__name__ == "DocumentDynamoDBService"
+def test_factory_returns_dynamodb_service():
+    service = create_document_service(table_name="test-table")
+    assert service.__class__.__name__ == "DocumentDynamoDBService"
+
+
+def test_with_mocked_client():
+    service = create_document_service(dynamodb_client=Mock(spec=DynamoDBClient))
+    service.create_document(test_document)
+    service.client.transact_write_items.assert_called_once()
 ```
 
-### Configuration-based Service Creation
+A legacy `mode=` argument in an older test is harmless — it is ignored — so
+`create_document_service(mode="dynamodb")` and
+`create_document_service(mode="appsync")` return the same DynamoDB service.
 
-```python
-from idp_common.docs_service import DocumentServiceFactory
+## Service Interface
 
-class DocumentProcessor:
-    def __init__(self, config):
-        # Create service based on configuration
-        self.service = DocumentServiceFactory.create_service(
-            mode=config.get('tracking_mode', 'appsync'),
-            **config.get('service_params', {})
-        )
-    
-    def process(self, document):
-        # Process document using configured service
-        return self.service.update_document(document)
-```
+The returned `DocumentDynamoDBService` provides:
 
-## Service Interface Compatibility
-
-Both AppSync and DynamoDB services implement the same interface:
-
-### Common Methods
-
-- `create_document(document, expires_after=None) -> str`
+- `create_document(document, expires_after=None) -> Optional[str]`
 - `update_document(document) -> Document`
+- `get_document(object_key) -> Optional[Document]`
+- `batch_get_documents(object_keys) -> List[Dict[str, Any]]`
+- `list_documents(...) -> Dict[str, Any]`
+- `list_documents_date_hour(...) -> Dict[str, Any]`
+- `list_documents_date_shard(...) -> Dict[str, Any]`
+- `update_document_status(...)`
+- `update_document_section(...)`
+- `create_document_run(...)` / `list_document_runs(...)` /
+  `get_document_run(...)` / `delete_document_run(...)`
 - `calculate_ttl(days=30) -> int`
 
-### AppSync-specific Methods
-
-- Uses GraphQL mutations for operations
-- Requires AppSync API URL configuration
-- Handles GraphQL-specific error responses
-
-### DynamoDB-specific Methods
-
-- Uses direct DynamoDB operations
-- Requires DynamoDB table name configuration
-- Includes additional query methods:
-  - `get_document(object_key) -> Optional[Document]`
-  - `list_documents(...) -> Dict[str, Any]`
-  - `list_documents_date_hour(...) -> Dict[str, Any]`
-  - `list_documents_date_shard(...) -> Dict[str, Any]`
+See [the DynamoDB module README](dynamodb/README.md) for the full contract,
+including the document-run (version) records and the table's key structure.
 
 ## Error Handling
 
-The factory provides consistent error handling:
+`create_service()` no longer raises on an unrecognized mode — there is no mode to
+get wrong. Errors come from the DynamoDB service itself, as `DynamoDBError`:
 
 ```python
-from idp_common.docs_service import DocumentServiceFactory
+from idp_common.docs_service import create_document_service
+from idp_common.dynamodb import DynamoDBError
 
-try:
-    service = DocumentServiceFactory.create_service(mode='invalid')
-except ValueError as e:
-    print(f"Invalid mode: {e}")
+service = create_document_service()
 
-# Service-specific errors are handled by the individual services
 try:
     service.create_document(document)
-except Exception as e:
-    # Handle AppSync or DynamoDB specific errors
-    logger.error(f"Document creation failed: {e}")
+except DynamoDBError as e:
+    logger.error(f"Document creation failed: {e} (code={e.error_code})")
 ```
 
 ## Migration Guide
 
-### From Direct AppSync Usage
+### From direct DynamoDB usage
+
+Both forms are supported; the factory is preferred so construction stays in one
+place:
 
 ```python
-# Old code
-from idp_common.appsync import DocumentAppSyncService
-service = DocumentAppSyncService(api_url=appsync_url)
-
-# New code
-from idp_common.docs_service import create_document_service
-service = create_document_service()  # Mode controlled by environment
-```
-
-### From Direct DynamoDB Usage
-
-```python
-# Old code
+# Direct
 from idp_common.dynamodb import DocumentDynamoDBService
 service = DocumentDynamoDBService(table_name=table_name)
 
-# New code
+# Via the factory (equivalent)
 from idp_common.docs_service import create_document_service
-service = create_document_service()  # Mode controlled by environment
+service = create_document_service(table_name=table_name)
 ```
+
+### From code written before AppSync was removed
+
+Old call sites that imported `idp_common.appsync` will fail with an
+`ImportError` — that package is gone, along with `DocumentAppSyncService`.
+Replace them with the factory and drop the endpoint argument:
+
+```python
+# Before AppSync removal (no longer importable)
+from idp_common.appsync import DocumentAppSyncService
+service = DocumentAppSyncService(api_url=appsync_url)
+
+# Now
+from idp_common.docs_service import create_document_service
+service = create_document_service()
+```
+
+Call sites that merely pass `mode=` or `api_url=` into this factory do **not**
+need to change — those arguments are ignored (see the shim table above).
 
 ## Best Practices
 
-1. **Use Environment Variables**: Control service type through `DOCUMENT_TRACKING_MODE` rather than hardcoding
-2. **Consistent Interface**: Write code that works with both service types
-3. **Error Handling**: Handle service-specific errors appropriately
-4. **Testing**: Test with both service types to ensure compatibility
-5. **Configuration**: Use the factory for flexible service creation
-
-## Environment Variables
-
-The module recognizes these environment variables:
-
-- `DOCUMENT_TRACKING_MODE`: Service type ('appsync' or 'dynamodb')
-- `APPSYNC_API_URL`: AppSync GraphQL endpoint (for AppSync mode)
-- `TRACKING_TABLE`: DynamoDB table name (for DynamoDB mode)
-- `AWS_REGION`: AWS region for service operations
-
-## Supported Modes
-
-- `appsync` (default): Use AWS AppSync GraphQL API
-- `dynamodb`: Use direct DynamoDB operations
+1. **Use the factory** (`create_document_service()`) rather than constructing
+   `DocumentDynamoDBService` in each handler, so the construction point stays
+   single.
+2. **Do not pass `mode=` or `api_url=`** in new code; they are ignored.
+3. **Set `TRACKING_TABLE`** in the Lambda environment (the pattern templates do)
+   instead of hardcoding a table name.
+4. **Handle `DynamoDBError`** around writes, and let it propagate where a failed
+   status write should fail the step.
 
 ## Examples
 
-See `idp_common/dynamodb/example.py` for comprehensive usage examples including:
-- Basic service creation and usage
-- Factory pattern usage
-- Environment-based mode switching
-- Complex document operations with pages and sections
+See `idp_common/dynamodb/example.py` for runnable usage examples covering basic
+service creation, factory usage, and document operations with pages and
+sections.

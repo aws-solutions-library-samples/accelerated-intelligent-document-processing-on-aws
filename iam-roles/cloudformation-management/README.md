@@ -513,7 +513,7 @@ case.
 | Compute & Serverless | 3 | Lambda, Step Functions, CodeBuild |
 | AI/ML Services | 1 | Bedrock |
 | Storage Services | 3 | S3, DynamoDB, ECR |
-| API & Application | 2 | API Gateway, AppSync (vestigial — retained for upgrades only) |
+| API & Application | 2 | API Gateway, AppSync (vestigial — upgrade-only, see below) |
 | Security & Identity | 5 | Cognito User Pools, Cognito Identity, KMS, Secrets Manager, WAF v2 |
 | Messaging & Events | 4 | SNS, SQS, EventBridge, EventBridge Scheduler |
 | Monitoring & Management | 3 | CloudWatch, CloudWatch Logs, Systems Manager |
@@ -537,7 +537,8 @@ this role as least-privilege — it is not.
 | S3 | Full Access | Bucket and object management |
 | DynamoDB | Full Access | Table and data management |
 | ECR | Full Access | Container image registry |
-| API Gateway | Full Access | REST API management (web UI backend and hosting variants) |
+| API Gateway | Full Access | REST and HTTP API management — including the UI ⇄ backend REST API |
+| AppSync | Full Access | Retained for backward compatibility only: deleting the GraphQL API a pre-migration (v0.5.x) stack created, when such a stack is upgraded in place. No current template creates an AppSync resource |
 | Cognito User Pools | Full Access | User authentication and management |
 | Cognito Identity | Full Access | Federated identity and temporary credentials |
 | KMS | Full Access | Encryption key management |
@@ -937,7 +938,7 @@ apigateway:*
 </details>
 
 <details>
-<summary><strong>AWS AppSync</strong> (<code>appsync</code>) — vestigial, retained for upgrades only</summary>
+<summary><strong>AWS AppSync</strong> (<code>appsync</code>) — retained for backward compatibility</summary>
 
 **Permission Level**: Full (`*`) — the only grant here that is not backed by a
 currently-declared resource type.
@@ -978,6 +979,16 @@ pre-0.6.2 → 0.6.2+ upgrade under this role).
 ```
 appsync:*
 ```
+The wildcard covers the actions below. Only the `Delete*`/`Get*`/`List*` ones are
+reached today, and only while an upgrade removes a pre-migration stack's API:
+- `CreateGraphqlApi`, `DeleteGraphqlApi`, `UpdateGraphqlApi`, `GetGraphqlApi`, `ListGraphqlApis`
+- `CreateDataSource`, `DeleteDataSource`, `UpdateDataSource`, `GetDataSource`
+- `CreateResolver`, `DeleteResolver`, `UpdateResolver`, `GetResolver`, `ListResolvers`
+- `CreateType`, `DeleteType`, `UpdateType`, `GetType`, `ListTypes`
+- `CreateFunction`, `DeleteFunction`, `UpdateFunction`, `GetFunction`
+- `CreateApiKey`, `DeleteApiKey`, `UpdateApiKey`, `ListApiKeys`
+- `StartSchemaCreation`, `GetSchemaCreationStatus`, `GetIntrospectionSchema`
+- `TagResource`, `UntagResource`, `ListTagsForResource`
 
 **Why a wildcard rather than a deletion-only action list.** AWS's own
 CloudFormation resource-provider schemas declare the pre-migration delete path as

@@ -52,9 +52,30 @@ CI runs the same suites split across two targets — `make test-cicd -C
 lib/idp_common_pkg` and `make test-packages-cicd` — so a suite that exists but is
 wired into neither is invisible to CI even though `make test` runs it locally.
 
-There is **no standing failure set**: a correctly installed tree is green, so treat
-any failure as a real regression until proven otherwise. Nearly every surprising
-failure is a stale virtualenv missing the pinned `[test]` extras. The diagnosis
+There is **no standing failure set** — **Expected standing failures: 0** on a
+correctly installed tree, and the enumerated list of accepted failures in
+[`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)
+is empty. So treat any failure as a real regression until proven otherwise.
+`scripts/tests/test_standing_failure_baseline.py` holds that claim, this page and the
+two skills that repeat it to the same number, so they cannot drift apart again.
+
+Most surprising failures are still a stale virtualenv missing the pinned `[test]`
+extras — but **do not expect a broken install to announce itself as an
+`ImportError`.** Several Lambdas catch a missing `idp_common` on purpose and degrade
+(`feature-platform/main-stack-extensions/lambdas/apply_feature_config_preset/index.py`
+logs at ERROR and applies a config preset without recording a revision), so a
+suite that exercises the non-degraded path fails on a bare assertion instead. Two
+tests in `test_apply_feature_config_preset.py`
+(`test_remove_hands_the_pipeline_back_to_default_then_deletes` and
+`test_remove_keeps_an_active_profile_when_there_is_no_default_to_fall_back_to`) were
+misread as a standing failure of this repo for exactly that reason. With
+`idp_common` unimportable that file reports `2 failed, 18 passed`; with
+`PYTHONPATH=<checkout>/lib/idp_common_pkg` exported it reports `20 passed`, on the
+same interpreter and the same commit. Measured identically under Python 3.12 and
+3.13, so it is not a version incompatibility. Check that
+`python3 -c "import idp_common; print(idp_common.__file__)"` resolves inside your own
+checkout before reading anything else — an editable install can silently point at a
+different, or deleted, checkout. The diagnosis
 order, the per-suite expected totals, and how to prove a failure is inherited are in
 the [`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)
 procedure. Conventions for **writing** tests — pytest markers, `moto`, conftest
@@ -77,7 +98,7 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make validate-buildspec` | malformed CodeBuild buildspecs — otherwise a deploy-time failure |
 | `make codegen-check` | generated GraphQL types drifting from the schema |
 | `make typecheck` · `make typecheck-pr` | `basedpyright`; CI checks only files the PR changed |
-| `make api-test-static` | an API operation added without authorization — see [layer 6](#6-live-stack-tiers-manual) for the live half |
+| `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual) for the live half |
 | `python3 scripts/check_first_party_deps.py` | a first-party package installed by bare name, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
 | `python3 scripts/sdlc/validate_service_role_permissions.py` | the CloudFormation service role missing a permission the templates need |
 
@@ -87,6 +108,56 @@ other, or if `lint-cicd` becomes weaker than local `make lint`; and
 `scripts/tests/test_nested_stack_parameters.py` checks parent-to-nested stack
 parameter wiring that `cfn-lint`'s own rule cannot see. Both exist because every
 parity gap they cover was originally found by hand, months late.
+
+### Whether any of this actually blocks a merge
+
+Parity means both CIs *run* a gate. Whether a red gate can *stop* a merge is a
+repository setting, and today it does not: `develop` has no branch protection, so
+every gate in this table is advisory — a pull request can be merged with all checks
+red, and because the GitHub workflows are `pull_request`-only, a direct push to
+`develop` runs none of them.
+
+```bash
+make check-branch-protection    # reads the live setting via the GitHub API
+```
+
+The check derives the expected required-check list by parsing
+`.github/workflows/*.yml` for the job names GitHub turns into status-check contexts,
+rather than from a hardcoded list that would drift on the next rename. It then
+asserts protection is enabled, that every context a PR produces is required, that
+stale approvals are dismissed, that force-push and deletion are blocked, that an
+approving review is required, and that `enforce_admins` is on — without it an
+administrator can push straight past everything else. It also names the contexts
+that must **stay** advisory: the docs and dependency-manifest workflows are
+path-filtered, and `Test Results` is a check run an action creates behind an `if:`,
+so none of them reports on every PR and requiring one would leave a check pending
+forever and block every merge.
+
+Three details are worth knowing about what it reads. All eight shared gates are
+*steps* inside one job, so they collapse to a single requireable context and share
+a single red mark — a required-check failure does not say which of the eight
+failed. It reads **both** enforcement mechanisms, classic branch protection and
+rulesets, because a branch can be fully governed by a ruleset while the classic
+endpoint reports nothing. And it distinguishes "not protected" from "cannot see":
+the classic endpoint needs repository **admin** and answers 404 without it, so the
+tool cross-checks `GET /repos/{slug}/branches/{branch}`, which carries a
+`protected` boolean and is readable with plain `pull` access. `--json` therefore
+reports `protected: null` — not `false` — when the state genuinely could not be
+determined.
+
+It is opt-in and blocks nothing: it needs network access and a token (`pull` access
+is enough to reach a verified answer about whether the branch is protected *and* to
+compare the required-check list, because `GET /repos/{slug}/branches/{branch}`
+carries a nested `protection.required_status_checks` object at that scope;
+`administration:read` is what the other five assertions — approvals, stale-review
+dismissal, force-push and deletion blocks, `enforce_admins` — need, and a run
+without it reports those five as **unread**, not as satisfied), and it reports "not
+protected" until
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+is closed, since enabling protection needs repository **admin**. With no token or no
+network it exits 0 with an explanation. Once #933 closes it should become a required,
+blocking check, run with `--fail-on-skip`. Its own parsing and assertion logic is
+covered offline by `scripts/tests/test_check_branch_protection.py`.
 
 ## 3. Web UI unit tests
 

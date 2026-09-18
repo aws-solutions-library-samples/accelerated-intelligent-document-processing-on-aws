@@ -24,7 +24,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
 | **Amazon EventBridge** | Triggers document processing workflows when files are uploaded | ✓ | ✓ |
 | **Amazon CloudFront** | Delivers the web UI with global distribution (default hosting mode) | ✓ | ✓ |
-| **Amazon API Gateway** | Backs the web UI's data API, and can alternatively serve the web UI itself (S3 proxy) for VPC-based deployments (see [API Gateway Hosting](./apigateway-hosting.md)) | ✓ | ✓ |
+| **Amazon API Gateway** | Backs the web UI's data API — a REST API with a Cognito User Pools authorizer in front of a dispatcher Lambda, which is how every UI query and mutation reaches the backend (see [AppSync → REST API Migration](./migration-appsync-to-rest.md)). Can alternatively serve the web UI itself (S3 proxy) for VPC-based deployments (see [API Gateway Hosting](./apigateway-hosting.md)) | ✓ | ✓ |
 | **Amazon ECR** | Stores container images for the pattern processing Lambda functions (OCR, classification, extraction, etc., which are deployed as container images) | ✓ | ✓ |
 | **AWS CloudFormation** | Deploys and manages the solution infrastructure | ✓ | |
 | **AWS SAM** | Simplifies serverless application deployment | ✓ | |
@@ -47,9 +47,8 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
-| **Amazon Cognito** | Manages user authentication and authorization | ✓ | ✓ |
-| **AWS AppSync** | Provides GraphQL API for the web UI | ✓ | ✓ |
-| **AWS WAF** | Protects web applications from web exploits (optional) | ✓ | ✓ |
+| **Amazon Cognito** | Manages user authentication and authorization. The User Pool fronts the UI's REST API as a **User Pools authorizer** (authentication only — per-role authorization is enforced in each resolver, see [rbac.md](./rbac.md)), and the Identity Pool's authenticated role SigV4-signs the chat streaming Lambda Function URL | ✓ | ✓ |
+| **AWS WAF** | Protects the UI's REST API from unwanted sources (optional) — a REGIONAL WAFv2 WebACL associated with the REST API stage, enabled when `WAFAllowedIPv4Ranges` is set to anything other than the allow-all default | ✓ | ✓ |
 | **AWS Marketplace (Agreement / Catalog / Entitlement)** | Subscription checks for paid Feature Platform extensions. In the **host** stack, buyer-side `SearchAgreements`. In the optional **Seller Entitlement Service** (deployed separately, into a *seller* account), seller-side `SearchAgreements` + `ListEntities` | — | ✓ |
 
 ### Monitoring & Operations
@@ -228,10 +227,10 @@ The solution creates various IAM roles to run different components of the system
   * `logs:*`
 
 #### Web UI & API Roles
-* **AppSync Service Role**:
+* **API Dispatcher Role** (the single Lambda behind `POST /op/{field}`, which fans a request out to the per-field resolver Lambdas and serves the DynamoDB-direct fields in process):
   * `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:Scan`
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`
-  * `lambda:InvokeFunction`
+  * `lambda:InvokeFunction` (only the resolver functions in its field → function map)
 
 * **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
@@ -244,8 +243,8 @@ The solution creates various IAM roles to run different components of the system
   * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
   * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
 
-* **Cognito Authentication Role**:
-  * `appsync:GraphQL`
+* **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
+  * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.
   * `s3:GetObject` (for UI assets and buckets)
   * `ssm:GetParameter` (for settings)
 
@@ -281,9 +280,8 @@ The solution creates various IAM roles to run different components of the system
 * **Evaluation Function Role**:
   * `s3:GetObject` (from baseline bucket)
   * `s3:PutObject`, `s3:GetObject` (for output bucket)
-  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem` — evaluation results are written straight to the tracking table; backend workers do not call the UI API
   * `bedrock:InvokeModel` (for LLM-based evaluations)
-  * `appsync:GraphQL` (for updating evaluation results)
   * `cloudwatch:PutMetricData`
   * `logs:*`
 

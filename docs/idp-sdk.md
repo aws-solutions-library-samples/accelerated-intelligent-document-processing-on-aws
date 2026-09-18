@@ -1137,7 +1137,7 @@ for cause in analysis.root_causes:
 
 ### stack.cleanup_orphaned()
 
-Remove residual AWS resources left behind from deleted IDP stacks. Identifies orphaned CloudFront distributions, CloudWatch log groups, AppSync APIs, IAM policies, S3 buckets, DynamoDB tables, and more.
+Remove residual AWS resources left behind from deleted IDP stacks. Identifies orphaned CloudFront distributions, CloudWatch log groups, AppSync APIs (leftovers from stacks created before AppSync was removed — current stacks create none), IAM policies, S3 buckets, DynamoDB tables, and more.
 
 **Parameters:**
 - `dry_run` (bool, optional): Preview changes without making them (default: False)
@@ -1250,7 +1250,7 @@ result = client.publish.build(
 
 ### publish.transform_template_headless()
 
-Transform an existing (already-built) CloudFormation template into a **headless** variant by removing UI, AppSync, Cognito, WAF, agent, HITL, knowledge-base, and Test Studio resources. Useful when you already have an `idp-main.yaml` and want to produce the headless variant without rebuilding.
+Transform an existing (already-built) CloudFormation template into a **headless** variant by removing the Web UI, the UI REST API (the `APIRESOLVERSTACK` nested stack holding the API Gateway REST API, its dispatcher, and the UI-only resolver Lambdas), Cognito, WAF, agent, HITL, knowledge-base, and Test Studio resources. Useful when you already have an `idp-main.yaml` and want to produce the headless variant without rebuilding.
 
 **Parameters:**
 - `source_template` (str, required): Path to the source CloudFormation YAML template

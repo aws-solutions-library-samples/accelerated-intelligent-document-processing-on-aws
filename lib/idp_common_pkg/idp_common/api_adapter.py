@@ -131,8 +131,14 @@ def _parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
 def _field_from_event(event: Dict[str, Any]) -> str:
     """Resolve the GraphQL field name for an HTTP API event.
 
-    Routes are ``POST /op/{field}``; prefer the path parameter, then fall back
-    to the last path segment, then an explicit ``field`` in the body.
+    Routes are ``POST /op/{field}``, and the REST API declares
+    ``method.request.path.field: true``, so ``pathParameters`` is what this
+    resolves from in practice. The raw-path fallback only covers event shapes that
+    carry no path parameters (a payload-2.0 event, a hand-built local invoke).
+
+    The field name is deliberately NOT read from the request body: the body is
+    caller-controlled, and a second route into operation selection would be a
+    second thing every authorization check has to agree about.
     """
     path_params = event.get("pathParameters") or {}
     if path_params.get("field"):

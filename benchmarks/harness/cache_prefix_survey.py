@@ -9,7 +9,7 @@ model's **minimum cacheable prefix**, and that minimum is model-dependent and **
 monotonic across generations**: 512 on Opus 5 / Fable 5, 1,024 on Sonnet 5 / Sonnet
 4.6 / Opus 4.8, 2,048 on Opus 4.7, and **4,096 on Opus 4.6 / Opus 4.5 / Haiku 4.5**.
 Below it there is no error and no metric — the request is simply billed at full input
-price forever (see ``docs/benchmarking/prompt-caching.md``).
+price forever (see ``docs/benchmarking/studies/prompt-caching.md``).
 
 So "does my configuration benefit from prompt caching?" is a per-class **and**
 per-model question, and nothing in the product answers it. This does: it measures each

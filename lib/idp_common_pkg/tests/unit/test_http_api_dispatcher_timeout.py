@@ -158,8 +158,17 @@ def _service_error(status: int, code: str):
 
 
 def _http_event(field, arguments):
+    """An authorized request for ``field``.
+
+    The groups claim is required, not decoration: the dispatcher denies by
+    default (``authz.py``), so a caller in no group gets a 403 and never reaches
+    the resolver invoke these tests are about. ``Admin`` satisfies every op.
+    """
     return {
-        "requestContext": {"http": {"method": "POST"}},
+        "requestContext": {
+            "http": {"method": "POST"},
+            "authorizer": {"jwt": {"claims": {"cognito:groups": ["Admin"]}}},
+        },
         "pathParameters": {"field": field},
         "body": json.dumps({"arguments": arguments}),
         "headers": {},

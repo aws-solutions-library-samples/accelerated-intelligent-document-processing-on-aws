@@ -38,6 +38,15 @@ For the full breakdown of AWS services and the IAM permission scopes required fo
 
 > **Note**: When the stack is deploying for the first time, it will send an email with a temporary password to the address specified in the AdminEmail parameter. You will need to use this temporary password to log into the UI and set a permanent password.
 
+> **Also confirm the alerts subscription.** The stack subscribes the same
+> `AdminEmail` address to the CloudWatch alerts topic, so a **second** email
+> arrives titled *"AWS Notification - Subscription Confirmation"*. Until someone
+> clicks its confirmation link the subscription stays in `PendingConfirmation`
+> and **no alarm notification is delivered** — the alarms still fire, they just
+> reach nobody, and nothing about the deployment reports a problem. See
+> [Who receives the alerts](./monitoring.md#who-receives-the-alerts) for how to
+> check the status and how to alert a team or a pager rather than one mailbox.
+
 ---
 
 ### Option 2: CLI-Based Deployment (Recommended for Automation)
@@ -65,6 +74,9 @@ idp-cli deploy \
 - Creates all CloudFormation resources (~120 resources)
 - Waits for deployment to complete (10-15 minutes)
 - Sends email with temporary admin password
+- Subscribes the same address to the CloudWatch alerts topic — this needs a
+  confirmation click before any alarm notification is delivered, see
+  [Who receives the alerts](./monitoring.md#who-receives-the-alerts)
 - Returns stack outputs including Web UI URL and bucket names
 
 #### Deploy with Custom Configuration
@@ -339,6 +351,15 @@ To update an existing GenAIIDP deployment to a new version:
 13. Monitor the update process in the CloudFormation console
 
 > **Note**: Updating the stack may cause some resources to be replaced, which could lead to brief service interruptions. Consider updating during a maintenance window if the solution is being used in production.
+
+> **Note**: When you upgrade to a release that includes the alerts subscription,
+> the update subscribes the address already in your `AdminEmail` parameter to the
+> CloudWatch alerts topic, so an *"AWS Notification - Subscription Confirmation"*
+> email arrives at that address. The update succeeds either way, but **alarm
+> notifications are not delivered until someone clicks that confirmation link**.
+> See [Who receives the alerts](./monitoring.md#who-receives-the-alerts) for how
+> to check the subscription status and how to notify a team or a pager instead of
+> one mailbox.
 
 ## Testing the Solution
 

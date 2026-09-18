@@ -27,6 +27,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+  - [Machine-readable output](#machine-readable-output)
 - [Commands Reference](#commands-reference)
   - [deploy](#deploy)
   - [publish](#publish)
@@ -174,6 +175,49 @@ idp-cli deploy --profile production --stack-name my-stack ...
 idp-cli deploy --stack-name my-stack --profile production ...
 ```
 
+### Machine-readable output
+
+Every payload the CLI writes to stdout for a program to read is written verbatim:
+no colour, no syntax highlighting, and no wrapping to the terminal width. On the
+commands below, stdout carries **only** that payload — progress and status lines
+go to stderr — so piping and redirecting are safe:
+
+| Command | Payload on stdout |
+|---|---|
+| `config-revisions --json` | JSON revision history |
+| `status --format json` | JSON status document |
+| `config-download` without `--output` | configuration YAML |
+| `config-create` without `--output` | configuration-template YAML |
+| `bootstrap` without `--stack-name` | the authored JSON schema |
+
+```bash
+# Parse JSON directly
+idp-cli config-revisions --stack-name my-stack --config-profile lending --json \
+    | jq -r '.revisions[] | select(.published) | .revision'
+
+# Redirect YAML straight to a file
+idp-cli config-download --stack-name my-stack > config.yaml
+
+# Progress is on stderr, so discard it without touching the payload
+idp-cli status --stack-name my-stack --batch-id batch-123 --format json 2>/dev/null \
+    | jq '.exit_code'
+```
+
+`discover` and `discover-multidoc` are the exception. Their schemas are written
+unrendered too, but they print a `Discovered schemas:` heading and per-document
+progress to stdout alongside them, so **use `-o` / `--output`** to capture a
+schema from those two rather than redirecting stdout:
+
+```bash
+idp-cli discover-multidoc --dir ./samples/ -o ./schemas/
+```
+
+Human-facing output — tables, progress, status lines — is still styled when
+stdout is a terminal, and Rich disables the styling itself when it is not. Before
+v0.6.9 these payloads were rendered the same way as that human output, so
+`--json` carried ANSI escape codes and a long line of downloaded YAML was folded
+to the console width ([#905](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/905)).
+
 ### Deploy a stack and process documents in 3 commands:
 
 ```bash
@@ -238,7 +282,7 @@ idp-cli deploy [OPTIONS]
 - `--no-rollback`: Disable rollback on stack creation failure
 - `--region`: AWS region (optional, auto-detected)
 - `--role-arn`: CloudFormation service role ARN (optional)
-- `--headless`: Deploy a **headless (no-UI) stack** — removes CloudFront, AppSync, Cognito, WAF, agents, HITL, and Test Studio. Required for GovCloud; also valid in Commercial regions for API-only / pipeline integrations. See [Headless Deployment](./headless-deployment.md).
+- `--headless`: Deploy a **headless (no-UI) stack** — removes CloudFront, the UI REST API (the `APIRESOLVERSTACK` nested stack holding the API Gateway REST API, its dispatcher, and the UI-only resolver Lambdas), Cognito, WAF, agents, HITL, and Test Studio. Required for GovCloud; also valid in Commercial regions for API-only / pipeline integrations. See [Headless Deployment](./headless-deployment.md).
 - `--bucket-basename`: S3 bucket basename for build artifacts (used with `--from-code`; region is appended automatically)
 - `--prefix`: S3 key prefix for build artifacts (default: `idp-cli`, used with `--from-code`)
 - `--public`: Make published S3 artifacts publicly readable (used with `--from-code`)
@@ -517,7 +561,7 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
 1. **CloudFormation Deletion Phase**: Standard stack deletion
 2. **Additional Resource Cleanup Phase** (happens with `--wait` on all deletions and always with `--force-delete-all`): Removes stack-specific resources not tracked by CloudFormation:
    - CloudWatch Log Groups (Lambda functions, Glue crawlers)
-   - AppSync APIs and their log groups
+   - AppSync APIs and their log groups (only ever present in stacks created before AppSync was removed; current stacks create none)
    - CloudFront distributions (two-phase cleanup - initiates disable, takes 15-20 minutes to propagate globally)
    - CloudFront Response Headers Policies (from previously deleted stacks)
    - IAM custom policies and permissions boundaries
@@ -532,7 +576,7 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
 - IAM permissions boundary policies
 - CloudFront response header policies (custom)
 - CloudWatch Logs resource policies (stack-specific)
-- AppSync log groups
+- AppSync log groups (pre-migration stacks only)
 - Additional log groups containing stack name
 - Gracefully handles missing/already-deleted resources
 
@@ -2088,7 +2132,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 **Resources Cleaned:**
 - CloudFront distributions and response header policies
 - CloudWatch log groups  
-- AppSync APIs
+- AppSync APIs (leftovers from stacks created before AppSync was removed; current stacks create none)
 - IAM policies
 - CloudWatch Logs resource policy entries
 - S3 buckets (automatically emptied before deletion)

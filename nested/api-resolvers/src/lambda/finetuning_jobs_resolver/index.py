@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -56,7 +58,10 @@ class DecimalEncoder(json.JSONEncoder):
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Any:
     """Lambda handler for fine-tuning job resolver."""
-    logger.info(f"Received event: {json.dumps(event, cls=DecimalEncoder)}")
+    logger.info(
+        "Received event: %s",
+        json.dumps(sanitize_event_for_logging(event), cls=DecimalEncoder),
+    )
 
     # AppSync default Lambda resolver format uses info.fieldName
     # Also support direct fieldName for custom mapping templates

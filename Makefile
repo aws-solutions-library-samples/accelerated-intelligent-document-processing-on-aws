@@ -21,6 +21,12 @@ else
   PIP := $(CURDIR)/$(VENV_DIR)/bin/pip
 endif
 
+# Region handed to test suites that construct a boto3 client at import time.
+# Only a region — no credentials are needed or used, and no AWS call is made.
+# Overridable, but it must be set to SOMETHING: botocore raises NoRegionError
+# during collection otherwise. See the note in test-packages-cicd and #988.
+TEST_AWS_REGION ?= us-east-1
+
 # idp-cli invocation — uses `python -m idp_cli.cli` so it works whether or not
 # the virtualenv is activated (picks up $(PYTHON) which prefers .venv).
 IDP_CLI := $(PYTHON) -m idp_cli.cli
@@ -124,12 +130,21 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
-	@echo -e "$(YELLOW)   All 'make' targets will automatically use $(VENV_DIR)/bin/python.$(NC)"
-	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
+	@# This message used to say only that "all make targets will automatically use
+	@# .venv/bin/python", which is true of PYTHON/PIP but NOT of the lint and
+	@# type-check recipes: those invoke `ruff`, `cfn-lint` and `basedpyright` as
+	@# bare commands, and nothing here puts $(VENV_DIR)/bin on PATH. Reading the
+	@# old wording as "nothing further is needed" is how CONTRIBUTING.md came to
+	@# document a setup sequence that fails with `ruff: No such file or directory`.
+	@echo -e "$(YELLOW)   'make' targets that go through \$$(PYTHON)/\$$(PIP) will use $(VENV_DIR)/bin automatically.$(NC)"
+	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
+	@echo -e "$(YELLOW)   The lint gates call 'ruff' and 'cfn-lint' as bare commands, so they need$(NC)"
+	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
+	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -196,6 +211,18 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Retired-service documentation check"
+	@if ! make check-retired-services; then \
+		echo -e "$(RED)ERROR: Documentation presents a retired service as part of the current architecture (see issue #929)$(NC)"; \
+		exit 1; \
+	fi
+
+	@echo "Threat model currency check"
+	@if ! make check-threat-model-currency; then \
+		echo -e "$(RED)ERROR: Threat model currency check failed (see security/threat-modeling/README.md)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
@@ -205,6 +232,20 @@ check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all ma
 check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/reporting-sql-layer.md §10.3)
 	@$(PYTHON) scripts/check_data_plane_tags.py || \
 		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
+
+check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release behind VERSION, or its export is stale
+	@$(PYTHON) scripts/check_threat_model_currency.py || \
+		(echo -e "$(RED)ERROR: Threat model is overdue for re-review!$(NC)" && exit 1)
+	@# The Threat Composer export is generated from the Markdown corpus. It fell
+	@# silently out of sync before (an added threat with no STATUS entry made it
+	@# unbuildable), so the same target verifies it rebuilds byte-identical.
+	@$(PYTHON) security/threat-modeling/scripts/build_threat_model.py --check || \
+		(echo -e "$(RED)ERROR: threat-model.tc.json is stale — regenerate with$(NC)" && \
+		 echo -e "$(YELLOW)  python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && exit 1)
+
+check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
+	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
+		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
 
 validate-buildspec: ## Validate AWS CodeBuild buildspec files
 	@echo "Validating buildspec files..."
@@ -393,6 +434,19 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings c
 cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
 	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
+# Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
+# in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
+# with administration:read, and it reports "not protected" until issue #933 is
+# closed — enabling branch protection needs repository ADMIN, which no contributor
+# and no CI token here has. Wiring it into a blocking gate today would red-line
+# every branch for a condition nobody working in the tree can fix.
+#
+# TODO(#933): once protection is enabled, make this a required, blocking check —
+# add it to lint-cicd and pass --fail-on-skip so a missing token is an error
+# rather than a silent pass.
+check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
+	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
+
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
 	@echo "Running type checks..."
@@ -444,21 +498,53 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running feature platform tests..."
 	cd feature-platform/main-stack-extensions && $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd feature-platform/feature-template/feature-api && $(PYTHON) -m pytest -q -p no:cacheprovider
+	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
+	@# These three ran in NO CI gate until #974. `make test` picked them up via
+	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
+	@# order-dependent failure in the feature API sat unnoticed long enough to be
+	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
+	cd feature-platform/pii-anonymizer/feature-api && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/hook && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
 	cd feature-platform/seller-entitlement-service && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -q -p no:cacheprovider
-	@echo "Running circuit breaker + queue processor Lambda tests (slot ownership, counter reconcile, config pin, idempotent start #904)..."
+	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
 	$(PYTHON) -m pytest -q -p no:cacheprovider \
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor \
-	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py
+	    src/lambda/workflow_tracker
 	@echo "Running queue_sender Lambda tests (folder-skip + #719 re-upload cleanup)..."
 	@# Both suites import their own ``index`` module; run each in its
 	@# own directory to prevent the sys.path collision that fails a
 	@# combined pytest invocation.
 	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
+	@echo "Running the remaining src/lambda Lambda suites (157 tests that reached NEITHER CI)..."
+	@# Every src/lambda dir holding a test_*.py must appear in this recipe —
+	@# asserted by scripts/tests/test_src_lambda_tests_in_ci.py, which derives
+	@# both sides (filesystem walk vs this recipe) rather than listing them.
+	@# Each gets its own invocation for the same reason as queue_sender above:
+	@# they all define a module named ``index``, so a combined pytest run fails
+	@# collection on the basename collision.
+	@#
+	@# Three of them build a boto3 client at import time with no region, so they
+	@# need AWS_DEFAULT_REGION or botocore raises NoRegionError at COLLECTION.
+	@# The Lambda runtime always sets AWS_REGION in production, so this is a
+	@# test-harness assumption rather than a defect in the handlers -- but it
+	@# means those suites pass on a developer machine (which has an ambient
+	@# region) and fail on a CI runner, which is why the value is pinned here
+	@# rather than inherited. No credentials are needed or used. See #988.
+	cd src/lambda/api_handler && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/batch_pre_processor && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/complete_section_review && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/job_tracker && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/save_reporting_data && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/test_file_copier && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/user_management && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/version_check_resolver && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
 	cd nested/api-resolvers/src/lambda/test_runner && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
@@ -473,6 +559,12 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
+	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.
+	@# They were registered in scripts/run_all_tests.py but in NEITHER CI, so the
+	@# ASL invariants they pin (e.g. the HookFatalError catcher that must precede
+	@# States.ALL, #919) were unguarded on every PR.
+	$(PYTHON) -m pytest patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
@@ -493,6 +585,10 @@ test-cli: ## Run only IDP CLI tests
 test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTHON) -m pytest config_library/test_config_library.py -v
+
+test-hooks: ## Run only the Claude PreToolUse hook tests (commit/PR text guard)
+	@echo "Running Claude hook tests..."
+	$(PYTHON) -m pytest scripts/tests/test_check_commit_text.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
@@ -516,6 +612,8 @@ test-circuit-breaker: ## Run only circuit breaker tests
 api-test-static: ## Static RBAC/authorization scan of all API operations (no AWS; CI-safe)
 	@echo "Running static API RBAC scan..."
 	$(PYTHON) scripts/sdlc/scan_api_rbac.py $(if $(STRICT),--strict,)
+	@echo "Checking the dispatcher's required-groups manifest against the expectations file..."
+	$(PYTHON) scripts/sdlc/generate_api_rbac_manifest.py --check
 
 ##@ Stack tests (stacktest-*: run against / deploy a live stack, manual)
 # One family for every test that exercises a REAL deployed stack (as opposed to

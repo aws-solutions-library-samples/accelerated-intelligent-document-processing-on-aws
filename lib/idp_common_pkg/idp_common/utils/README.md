@@ -14,6 +14,8 @@ The Utils module provides common utility functions used across the IDP pipeline.
 | `merge_metering_data(existing, new)` | Merge token usage / metering dictionaries (sums numeric values) |
 | `get_bedrock_region()` | Get the AWS region for Bedrock API calls |
 | `extract_structured_data_from_text(text)` | Extract JSON or YAML structured data from LLM response text |
+| `sanitize_event_for_logging(event)` | Deep-copy an event with denylisted keys redacted and long content-field strings truncated, for safe `logger` output. ⚠️ **Has vendored copies — see below** |
+| `scrub_jwts_in_string(text)` | Replace anything JWT-shaped in free-form text with `***REDACTED***` (not applied by `sanitize_event_for_logging`) |
 
 ## Usage
 
@@ -92,3 +94,48 @@ data, format_type = extract_structured_data_from_text(llm_response_text)
 # data: parsed dict/list
 # format_type: "json" or "yaml"
 ```
+
+### Log redaction (`log_sanitizer`) — has vendored copies
+
+```python
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+
+logger.info("Invoked with: %s", json.dumps(sanitize_event_for_logging(event)))
+```
+
+Returns a deep copy — the caller's object is never mutated — in which any key
+whose name matches `_DEFAULT_DENY_KEY_SUBSTRINGS` (case-insensitive substring, at
+any nesting depth) becomes `"***REDACTED***"`, and a string held directly under a
+content-shaped key (`prompt`, `text`, `content`, `extracted_text`, …) is capped at
+500 characters. It never raises: a non-dict input is returned unchanged, and an
+object that cannot be deep-copied comes back as `"<uncopyable Foo>"`.
+
+It is a **denylist**, so a newly added sensitive API field is not protected until
+its name is added to `_DEFAULT_DENY_KEY_SUBSTRINGS` (or passed as
+`extra_deny_keys=`). That is a deliberate trade: an allowlist would redact the
+argument and field *names* operators need to read a log at all.
+
+⚠️ **`log_sanitizer.py` is the one file in this package with committed copies
+elsewhere in the repo, and editing it is not a one-file change.** Nine Lambda
+functions under `nested/api-resolvers/src/lambda/` carry no `idp-common` layer.
+SAM packages each function from its own `CodeUri` directory, so they can reach
+neither this library nor a sibling function's directory at runtime — and attaching
+the base layer (Pillow, pypdfium2, requests: tens of MB) to a handful of tiny
+resolvers to reach a stdlib-only module is the wrong trade. So each of those nine
+holds a **byte-identical** copy as `log_sanitizer.py` and imports it as a
+top-level sibling module.
+
+The contract:
+
+1. **Edit only this file.** Never edit a copy.
+2. Then run **`scripts/sync_resolver_log_sanitizer.sh`**, which rewrites all nine.
+3. `scripts/tests/test_resolver_log_sanitizer.py` is a **blocking** test. It fails
+   if any copy differs by one byte, if the sync script's target list stops matching
+   the set of layer-free resolvers that import it, if a resolver imports the
+   canonical module while its CloudFormation function declares no `IDPCommon*Layer`
+   (an ImportError at cold start), or if any resolver hand-rolls a local key list
+   again.
+
+Keep this file `ruff format`-clean and stdlib-only. Adding a third-party import
+would break the nine layer-free copies at cold start, and a formatting difference
+between this file and a copy breaks byte-identity.
