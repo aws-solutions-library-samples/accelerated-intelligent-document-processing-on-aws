@@ -463,8 +463,16 @@ a post-step point (`ocr.postHook`).
     (`patterns/unified/tests/test_workflow_hook_fatal_catch.py`) proves it in the
     source ASL
 
-**Test Document**: `samples/lending_package.pdf`
-**Duration**: ~5-7 minutes
+**Test Document**: `samples/lending_package.pdf` — **twice**: once for the
+happy-path phase and once, under a uniquely named copy, for the `onError: fail`
+phase.
+**Duration**: ~10-14 minutes typical, up to ~18 in the worst case. The
+happy-path phase is the ~5-7 minutes this step used to take on its own; the
+`onError: fail` phase adds a second `run-inference` on its own copy of the
+document plus a poll for the FAILED execution that gives up only at
+`_TARGET_WAIT_SECS = 600` seconds in `scripts/sdlc/codebuild_deployment.py`. The
+poll normally resolves in well under a minute — the abort happens right after
+OCR — so the 600-second ceiling is the timeout, not the expected cost.
 **Execution**: Runs in the parallel pool. It registers its hook in its **own**
 config version (`test-pipeline-hooks`) and never activates it, so the other steps
 sharing this stack are unaffected. The `onError: fail` phase likewise uses its own

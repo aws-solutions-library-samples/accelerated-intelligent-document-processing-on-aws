@@ -62,6 +62,19 @@ Failure policy (`onError`, per hook):
     ordering is the whole mechanism: `States.ALL` matches this error too, and
     when it was listed first the fail policy was silently swallowed and the
     document was processed as though the hook had succeeded (#919).
+  - anything else (a typo like `Fail`, or a policy name from a newer release):
+    degraded to `continue`, but logged as a warning AND recorded as
+    `onErrorInvalid` on that hook's result so it reaches the execution history.
+    See :func:`_normalize_on_error` for why the degrade is not to `fail`.
+
+NOTE this dispatcher is packaged boto3-only and reads the raw configuration
+record straight out of DynamoDB, so it does NOT re-run `IDPConfig` validation.
+The `Literal` on `PipelineHook.onError` stops a bad value being WRITTEN through
+`IDPConfig`; it cannot retro-validate a record already in the table.
+
+`onError: fail` also cannot gate at a hook point the active processing mode never
+reaches: in BDA mode the state machine has no postOcr/postClassification/
+postExtraction state, so the dispatcher is never invoked there at all (#982).
 
 Resolution rules:
   1. If the SFN input has `document.config_version`, use it.
@@ -331,6 +344,58 @@ def _resolve_active_version(table: Any, pinned: Optional[str]) -> Optional[str]:
     return _FALLBACK_VERSION
 
 
+_VALID_ON_ERROR = ("continue", "skip-remaining", "fail")
+
+
+def _normalize_on_error(raw: Any, feature_id: str) -> tuple[str, Optional[str]]:
+    """Map a stored `onError` value to one this dispatcher acts on.
+
+    Returns ``(policy, invalid_value_or_None)``. An unrecognised value degrades
+    to ``continue`` — but LOUDLY, and the offending value is returned so the
+    caller can surface it in the dispatcher's result and therefore in the Step
+    Functions execution history. Silently degrading is precisely the shape of
+    #919: the artifact says one thing, the decision point does another, and
+    nothing records the disagreement.
+
+    Why ``continue`` rather than the fail-closed ``fail``, which is normally the
+    right default for a security gate:
+
+    * An unrecognised value can only reach here from a record written BEFORE
+      `IDPConfig.PipelineHook.onError` became a `Literal`, or by a writer that
+      bypasses `IDPConfig`. In every such case the deployment is ALREADY running
+      with that value interpreted as ``continue``, so nobody can be depending on
+      ``fail`` semantics from it. Promoting it to ``fail`` on upgrade cannot
+      rescue a gate that ever worked, but it WOULD start failing every document
+      at that hook point — an availability regression the operator did not ask
+      for and did not change anything to trigger.
+    * It is also the forward-compatible reading. If a later release adds a policy
+      name, an older dispatcher reading a newer config record degrades to
+      "observe" rather than aborting every document.
+
+    The security hole that argument leaves — an operator typo like ``"Fail"``
+    meaning to gate, silently inert — is closed at the WRITE boundary instead
+    (`Literal` in `idp_common.config.models`, `enum` in `template.yaml`,
+    validation in `register_feature_hooks`) and made discoverable for
+    already-stored records by the warning below. That is a better place for it:
+    rejecting the typo when it is written tells the operator while they are
+    looking, rather than at 3am on an unrelated document.
+    """
+    if raw is None or raw == "":
+        return "continue", None
+    if isinstance(raw, str) and raw in _VALID_ON_ERROR:
+        return raw, None
+    logger.warning(
+        "Hook %s declares onError=%r, which is not one of %s — treating it as "
+        "'continue' (the hook will NOT gate the pipeline). If this hook is meant "
+        "to gate, fix the value to 'fail' in the configuration; a case or spelling "
+        "variant is not recognised.",
+        feature_id,
+        raw,
+        list(_VALID_ON_ERROR),
+    )
+    return "continue", str(raw)
+
+
 def _normalize_hook(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Validate + normalize one hook entry. Returns None if disabled or arn-less.
     Generic `args` is an optional list of {key, value} string pairs the hook
@@ -346,11 +411,17 @@ def _normalize_hook(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if isinstance(raw_args, list)
         else []
     )
+    feature_id = h.get("featureId") or "unknown"
+    on_error, on_error_invalid = _normalize_on_error(h.get("onError"), feature_id)
     return {
-        "featureId": h.get("featureId") or "unknown",
+        "featureId": feature_id,
         "arn": arn,
         "order": int(h.get("order", 100)) if h.get("order") is not None else 100,
-        "onError": h.get("onError") or "continue",
+        "onError": on_error,
+        # Non-None only when the stored value was unrecognised. Carried through so
+        # the per-hook result records it and an operator reading the execution
+        # history sees WHY a hook they expected to gate did not.
+        "onErrorInvalid": on_error_invalid,
         "args": args,
         # Admin kill-switch for document mutation on a per-hook basis. Defaults
         # to True (a registered hook is already admin-approved and IAM-gated,
@@ -779,6 +850,11 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
             "argsMap": args_map,
         }
         r = _invoke_hook(h, payload)
+        if h.get("onErrorInvalid") is not None:
+            # Visible in $.HookResults.<point> in the execution history, so the
+            # disagreement between what the config declares and what the
+            # dispatcher acted on is on the record and not only in CloudWatch.
+            r["onErrorInvalid"] = h["onErrorInvalid"]
         results.append(r)
 
         if r["ok"]:

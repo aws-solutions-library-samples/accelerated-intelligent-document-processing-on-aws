@@ -535,14 +535,182 @@ class TestOnErrorFailPhase:
     `onError: continue` deliberately (a hook fault must not make a coverage test
     flaky), which is exactly why nothing exercised the fail policy live.
 
-    These tests cannot run the phase (it needs a stack), so they pin the parts
-    that would make it pass for the wrong reason.
+    The phase as a whole needs a stack, but its DECISIONS do not. The config it
+    registers, the history it reads and the two verdicts it reaches are extracted
+    into `_onerror_fail_hook_config`, `_read_execution_history`,
+    `_judge_onerror_fail_abort` and `_judge_onerror_fail_no_failed_execution`, so
+    the tests below drive them directly with fake `sfn` responses and real
+    dictionaries. Mutating any of those four functions fails a test here.
+
+    Four tests remain source-level change-detectors, named `test_source_*` and
+    marked as such in their docstrings: they cover the AWS-shaped glue that has no
+    offline seam (which status filter the poll asks boto3 for, whether the phase
+    is wired into Step 14 at all, whether it copies the sample document, and
+    whether it passes `check=False` to `run_command`). Read them as "this line has
+    not silently changed", not as proof the behaviour is right.
     """
 
     def _src(self, cbd):
         import inspect
 
         return inspect.getsource(cbd._assert_onerror_fail_aborts)
+
+    # ---- behavioural: the config the phase registers -------------------
+
+    def test_registers_the_ci_hook_as_a_gate_at_a_post_step_point(self, cbd):
+        """Drive the extracted builder: a `<step>.postHook` entry with the fail
+        policy and the `fail=true` arg that makes the hook raise."""
+        base = {"ocr": {"model": "whatever"}, "classification": {}}
+        cfg = cbd._onerror_fail_hook_config(base, "arn:aws:lambda:::function:hook")
+        hooks = cfg["ocr"]["postHook"]
+        assert len(hooks) == 1
+        hook = hooks[0]
+        assert hook["onError"] == "fail", (
+            "the phase must register the GATING policy; with any other value the "
+            "execution SUCCEEDS and the phase proves nothing"
+        )
+        assert {"key": "fail", "value": "true"} in hook["args"], (
+            "without the fail=true arg the hook succeeds and no gate is exercised"
+        )
+        assert hook["arn"] == "arn:aws:lambda:::function:hook"
+        assert hook["featureId"] == cbd._HOOK_FEATURE_ID
+        assert hook["allowDocumentUpdate"] is False
+
+    def test_registration_is_at_a_post_step_point_not_a_flat_one(self, cbd):
+        """`preprocessing`/`postprocessing` were already fail-closed before the
+        fix, so registering there would exercise nothing."""
+        cfg = cbd._onerror_fail_hook_config({}, "arn:hook")
+        assert "postHook" in cfg.get("ocr", {})
+        for flat in ("preprocessing", "postprocessing"):
+            assert flat not in cfg, (
+                f"the fail phase registered at the flat point {flat!r}; "
+                f"PreprocessingHook routed States.ALL to a Fail state even before "
+                f"#919 was fixed, so this would pass on the broken graph too"
+            )
+
+    def test_registration_does_not_mutate_the_callers_config(self, cbd):
+        """Phase 1's config is still live on the stack and the caller reuses the
+        same dict; mutating it in place would corrupt the earlier assertions."""
+        base = {"ocr": {"model": "keepme"}}
+        snapshot = json.dumps(base, sort_keys=True)
+        cbd._onerror_fail_hook_config(base, "arn:hook")
+        assert json.dumps(base, sort_keys=True) == snapshot
+
+    # ---- behavioural: reading the execution history --------------------
+
+    @staticmethod
+    def _fake_sfn(pages):
+        """A minimal stepfunctions client returning canned history pages."""
+
+        class _Sfn:
+            def __init__(self):
+                self.calls = []
+
+            def get_execution_history(self, **kwargs):
+                self.calls.append(kwargs)
+                return pages[len(self.calls) - 1]
+
+        return _Sfn()
+
+    def test_history_reader_collects_states_and_the_failure(self, cbd):
+        sfn = self._fake_sfn(
+            [
+                {
+                    "events": [
+                        {"stateEnteredEventDetails": {"name": "OCRStep"}},
+                        {"stateEnteredEventDetails": {"name": "PostOcrHook"}},
+                        {
+                            "executionFailedEventDetails": {
+                                "error": "HookFatalError",
+                                "cause": "feature=x onError=fail",
+                            }
+                        },
+                    ]
+                }
+            ]
+        )
+        entered, error, cause = cbd._read_execution_history(sfn, "arn:exec")
+        assert entered == {"OCRStep", "PostOcrHook"}
+        assert error == "HookFatalError"
+        assert "onError=fail" in cause
+        assert sfn.calls == [{"executionArn": "arn:exec", "maxResults": 1000}]
+
+    def test_history_reader_follows_pagination(self, cbd):
+        """A gated document's history is short, but a long one must not truncate
+        before the ExecutionFailed event — which is always on the LAST page."""
+        sfn = self._fake_sfn(
+            [
+                {
+                    "events": [{"stateEnteredEventDetails": {"name": "OCRStep"}}],
+                    "nextToken": "t1",
+                },
+                {
+                    "events": [
+                        {"stateEnteredEventDetails": {"name": "ClassificationStep"}},
+                        {"executionFailedEventDetails": {"error": "Boom"}},
+                    ]
+                },
+            ]
+        )
+        entered, error, _cause = cbd._read_execution_history(sfn, "arn:exec")
+        assert entered == {"OCRStep", "ClassificationStep"}
+        assert error == "Boom"
+        assert sfn.calls[1].get("nextToken") == "t1"
+
+    def test_history_reader_stops_at_the_page_bound(self, cbd):
+        """The bound exists so a pathological history cannot hang the pipeline."""
+        endless = [{"events": [], "nextToken": "more"}] * 50
+        sfn = self._fake_sfn(endless)
+        cbd._read_execution_history(sfn, "arn:exec", max_pages=3)
+        assert len(sfn.calls) == 3
+
+    # ---- behavioural: the verdicts -------------------------------------
+
+    def test_verdict_passes_when_the_gate_held(self, cbd):
+        assert (
+            cbd._judge_onerror_fail_abort(
+                {"OCRStep", "PostOcrHook"}, cbd._HOOK_FATAL_ERROR, ""
+            )
+            is None
+        )
+
+    def test_verdict_rejects_a_document_that_went_forward(self, cbd):
+        """The class-closing assertion: a FAILED execution alone does not prove
+        the gate held, because States.ALL could have routed forward and the
+        execution failed later for another reason."""
+        verdict = cbd._judge_onerror_fail_abort(
+            {"OCRStep", "PostOcrHook", "ClassificationStep"},
+            cbd._HOOK_FATAL_ERROR,
+            "",
+        )
+        assert verdict and "ClassificationStep" in verdict
+
+    def test_verdict_rejects_a_different_error_name(self, cbd):
+        """A catcher on a name that never surfaces reproduces #919 one level up."""
+        verdict = cbd._judge_onerror_fail_abort(
+            {"OCRStep"}, "States.Timeout", "lambda timed out"
+        )
+        assert verdict and "States.Timeout" in verdict
+        assert cbd._HOOK_FATAL_ERROR in verdict
+
+    def test_verdict_truncates_a_long_cause(self, cbd):
+        verdict = cbd._judge_onerror_fail_abort({}, "Other", "x" * 5000)
+        assert verdict and len(verdict) < 1000
+
+    def test_missing_execution_verdict_distinguishes_fail_open(self, cbd):
+        """A SUCCEEDED execution pinned to the fail config version IS #919; no
+        execution at all means the policy was never exercised. Collapsing the two
+        sends the next reader to the wrong place."""
+        ignored = cbd._judge_onerror_fail_no_failed_execution(
+            "arn:aws:states:us-east-1:1:execution:sm:abc123"
+        )
+        assert "IGNORED" in ignored and "#919" in ignored
+        assert "abc123" in ignored, "the operator needs the execution name"
+
+        never_started = cbd._judge_onerror_fail_no_failed_execution(None)
+        assert "never have started" in never_started
+        assert "IGNORED" not in never_started
+        assert str(cbd._TARGET_WAIT_SECS) in never_started
 
     def test_fatal_error_name_matches_the_dispatcher_exception(self, cbd):
         """The name is load-bearing in three places: the exception class the
@@ -569,52 +737,54 @@ class TestOnErrorFailPhase:
         spec.loader.exec_module(module)
         assert cbd._HOOK_FATAL_ERROR == module.HookFatalError.__name__
 
-    def test_phase_registers_a_post_step_hook_with_the_fail_policy(self, cbd):
-        """A FLAT point (preprocessing/postprocessing) would not exercise the
-        bug: PreprocessingHook already routed States.ALL to a Fail state. The
-        phase must register at a `<step>.postHook` point."""
-        src = self._src(cbd)
-        assert 'cfg["ocr"]["postHook"]' in src
-        assert '"onError": "fail"' in src
-        assert '{"key": "fail", "value": "true"}' in src
+    # ---- source-level change-detectors: NOT proof of behaviour ---------
+    #
+    # Each of the four below reads `inspect.getsource`. They cannot fail for a
+    # behavioural reason, only because a line moved, and they cannot pass for a
+    # behavioural reason either. They exist because the code they cover is a
+    # boto3 argument or a call site with no offline seam. Treat a failure here as
+    # "check this deliberately", not "the gate broke".
 
-    def test_phase_requires_a_failed_execution(self, cbd):
+    def test_source_polls_for_a_failed_execution(self, cbd):
+        """CHANGE-DETECTOR, not proof. The status filter is an argument to
+        `list_executions` via `_find_target_execution`; driving it offline would
+        only re-test `_find_target_execution`, which
+        `TestExecutionTargeting::test_finder_passes_the_status_filter_through`
+        already covers. What is asserted here is that THIS phase asks for FAILED
+        first and then SUCCEEDED — the second query is what turns a miss into the
+        fail-open diagnosis proved by
+        `test_missing_execution_verdict_distinguishes_fail_open`."""
         src = self._src(cbd)
         assert 'status_filter="FAILED"' in src
-        # And it must distinguish fail-open from never-started, or the failure
-        # message sends the next reader to the wrong place.
         assert 'status_filter="SUCCEEDED"' in src
 
-    def test_phase_asserts_the_document_did_not_go_forward(self, cbd):
-        """The class-closing assertion: a FAILED execution alone does not prove
-        the gate held, because States.ALL could have routed forward and the
-        execution failed later for another reason."""
-        src = self._src(cbd)
-        assert "ClassificationStep" in src
-
-    def test_phase_asserts_the_error_name_that_surfaced(self, cbd):
-        src = self._src(cbd)
-        assert "exec_error != _HOOK_FATAL_ERROR" in src
-
-    def test_phase_is_called_by_step14(self, cbd):
+    def test_source_wires_the_phase_into_step14(self, cbd):
+        """CHANGE-DETECTOR, not proof. Step 14 needs a live stack, so the only
+        offline way to see that phase 2 runs at all — and that its verdict FAILS
+        the step rather than being logged and dropped — is to read the call
+        site."""
         import inspect
 
         src = inspect.getsource(cbd.test_step14_pipeline_hooks)
         assert "_assert_onerror_fail_aborts(" in src
         assert 'return {"success": False, "error": fail_err}' in src
 
-    def test_phase_uses_its_own_config_version_and_document(self, cbd):
-        """It must not perturb phase 1's assertions or the other parallel steps
-        sharing this stack — and its FAILED tracking row must be unmistakably
-        its own."""
+    def test_source_uses_its_own_config_version_and_document_copy(self, cbd):
+        """Partly a real assertion, partly a CHANGE-DETECTOR. The config-version
+        inequality is behavioural: sharing phase 1's version would overwrite the
+        live config the other parallel steps read. The `mkdtemp`/`hookfail-`
+        substrings are a change-detector for the uniquely named document copy,
+        which cannot be observed without a filesystem and a stack."""
+        assert cbd._HOOK_FAIL_CONFIG_VERSION != "test-pipeline-hooks"
         src = self._src(cbd)
         assert "_HOOK_FAIL_CONFIG_VERSION" in src
-        assert cbd._HOOK_FAIL_CONFIG_VERSION != "test-pipeline-hooks"
         assert "mkdtemp" in src and "hookfail-" in src
 
-    def test_run_inference_does_not_gate_on_its_exit_code(self, cbd):
-        """The document is MEANT to fail, so run-inference may exit non-zero;
-        check=True there would fail the step before any assertion ran."""
+    def test_source_does_not_gate_on_run_inference_exit_code(self, cbd):
+        """CHANGE-DETECTOR, not proof. The document is MEANT to fail, so
+        `run-inference --monitor` may exit non-zero; `check=True` there would
+        abort the step before any verdict ran. Proving that behaviourally means
+        faking `run_command`, which would test the fake."""
         src = self._src(cbd)
         run_at = src.index("run-inference")
         assert "check=False" in src[run_at:]

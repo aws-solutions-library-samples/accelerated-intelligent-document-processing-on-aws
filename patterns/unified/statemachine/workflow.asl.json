@@ -57,8 +57,9 @@
     },
     "PreprocessingHookFailed": {
       "Type": "Fail",
+      "Comment": "Deliberately a STATIC Cause, unlike PostStepHookFailed/PostExtractionHookFailed which interpolate the dispatcher message via CausePath. Two reasons. (1) This state is reached by a States.ALL catcher - the broadest in the file - so the caught error output is not necessarily a Lambda function error and a missing $.HookResults.preprocessing.error.Cause would surface as States.Runtime, masking the real failure with a JSONPath error. (2) preprocessing holds exactly ONE flat hook, so unlike the post-step lists there is no ambiguity about WHICH hook failed - the config names it. The dispatcher's own message is still in the execution history on the TaskFailed event immediately before this state.",
       "Error": "PreprocessingHookFailed",
-      "Cause": "A preprocessing hook failed (e.g. a PII-redaction hook with onError:fail). The execution is stopped rather than continuing to process the un-preprocessed original."
+      "Cause": "A preprocessing hook failed (e.g. a PII-redaction hook with onError:fail). The execution is stopped rather than continuing to process the un-preprocessed original. For the hook error itself, read the TaskFailed event for PreprocessingHook in this execution's history - this Fail state's Cause replaces the original error on the ExecutionFailed event."
     },
     "CheckPreprocessingHalt": {
       "Type": "Choice",
@@ -772,8 +773,9 @@
           },
           "PostExtractionHookFailed": {
             "Type": "Fail",
+            "Comment": "CausePath rather than a static Cause, for the reason spelled out on PostStepHookFailed: the static string replaced the dispatcher message that names the failing hook. Reached only by a HookFatalError catcher, so $.Cause is always present.",
             "Error": "HookFatalError",
-            "Cause": "A postExtraction hook failed and its policy is onError:fail, so the section is aborted rather than assessed and merged as though the hook had succeeded. This Map has no Catch, so the failure propagates out and fails the execution - which is what onError:fail asks for."
+            "CausePath": "States.Format('{} || onError:fail aborted the section rather than assessing and merging it as though the hook had succeeded. This Map has no Catch, so the failure propagates out and fails the execution - which is what onError:fail asks for.', $.Cause)"
           }
         }
       },
@@ -1318,8 +1320,9 @@
     },
     "PostStepHookFailed": {
       "Type": "Fail",
+      "Comment": "CausePath, not a static Cause: a Fail state's Error/Cause REPLACE the original error in executionFailedEventDetails, so a static string discards the dispatcher's own message - which is the only place the failing hook's featureId and hook point appear - exactly when an operator needs it (the tracking row and the UI show a bare FAILED). The dispatcher message is interpolated FIRST so a truncated read of the cause still names the hook. Safe here because the ONLY catchers routing to this state match HookFatalError, a Lambda function error, whose error output always carries Cause; a States.ALL catcher pointed here would widen that to errors whose shape is not guaranteed and a missing $.Cause would surface as States.Runtime, masking the real failure. patterns/unified/tests/test_workflow_hook_fatal_catch.py asserts that invariant.",
       "Error": "HookFatalError",
-      "Cause": "A pipeline hook failed and its policy is onError:fail, so the document is aborted rather than continuing as though the hook had succeeded. Every hook state lists HookFatalError BEFORE its States.ALL catcher: ASL takes the FIRST matching catcher, and States.ALL - which deliberately routes FORWARD so that a non-gating hook fault cannot discard an otherwise-good document - matches this error too. Reordering those two entries silently restores the fail-open behaviour of issue #919."
+      "CausePath": "States.Format('{} || onError:fail aborted the document rather than continuing as though the hook had succeeded. Every hook state lists HookFatalError BEFORE its States.ALL catcher: ASL takes the FIRST matching catcher, and States.ALL - which deliberately routes FORWARD so that a non-gating hook fault cannot discard an otherwise-good document - matches this error too. Reordering those two entries silently restores the fail-open behaviour of issue #919.', $.Cause)"
     },
     "FailState": {
       "Type": "Fail",

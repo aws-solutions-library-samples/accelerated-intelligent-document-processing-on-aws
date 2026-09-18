@@ -155,7 +155,9 @@ def test_hook_state_fails_closed_on_the_fail_policy(hook_state):
         None,
     )
 
-    if catch_all_index is not None and _is_fail_state(catchers[catch_all_index]["Next"]):
+    if catch_all_index is not None and _is_fail_state(
+        catchers[catch_all_index]["Next"]
+    ):
         return  # States.ALL already terminates the execution.
 
     assert fatal_index is not None, (
@@ -270,4 +272,248 @@ def test_post_step_hook_state_stays_open_on_a_transient_fault(hook_state):
         f"execution here discards a document that was already processed "
         f"successfully, over a fault the hook author never asked to gate on. "
         f"Only {FATAL_ERROR_NAME} (the declared onError: fail policy) may abort."
+    )
+
+
+# --------------------------------------------------------------------------
+# Which hook points each processing mode actually reaches.
+#
+# `onError: fail` can only abort a document at a hook point the active mode
+# EXECUTES. In BDA mode the OCR, classification and extraction steps do not
+# exist as separate states, so their hook points are never invoked and a `fail`
+# policy registered there is silently inert. That is documented in
+# docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode
+# and docs/feature-platform-developer-guide.md, and tracked as issue #982.
+#
+# The two tests below pin the table in those docs to the graph, so the docs
+# cannot drift from the ASL: if a future change gives the BDA branch its own
+# OCR-equivalent state with a postOcr hook, the doc table becomes wrong and
+# `test_bda_mode_reaches_no_step_specific_hook_point` fails.
+# --------------------------------------------------------------------------
+
+_ROUTER_VARIABLE = "$.document.use_bda"
+
+
+def _reachable(states: dict, start: str, scope: str = "") -> set[str]:
+    """Qualified names of every state reachable from `start` within `states`.
+
+    Follows `Next`, `Default`, `Choices[*].Next` and `Catch[*].Next`. A reached
+    Map or Parallel contributes its nested states too, since entering the parent
+    executes them.
+    """
+    seen: set[str] = set()
+    queue = [start]
+    while queue:
+        name = queue.pop()
+        if name in seen or name not in states:
+            continue
+        seen.add(name)
+        state = states[name]
+        for key in ("Next", "Default"):
+            if isinstance(state.get(key), str):
+                queue.append(state[key])
+        for choice in state.get("Choices") or []:
+            if isinstance(choice.get("Next"), str):
+                queue.append(choice["Next"])
+        for catcher in state.get("Catch") or []:
+            if isinstance(catcher.get("Next"), str):
+                queue.append(catcher["Next"])
+
+    reached = set()
+    for name in seen:
+        reached.add(f"{scope}{name}")
+        state = states[name]
+        for key in ("Iterator", "ItemProcessor"):
+            nested = state.get(key)
+            if isinstance(nested, dict) and isinstance(nested.get("States"), dict):
+                reached |= _reachable(
+                    nested["States"], nested["StartAt"], f"{scope}{name}."
+                )
+        for index, branch in enumerate(state.get("Branches") or []):
+            if isinstance(branch.get("States"), dict):
+                reached |= _reachable(
+                    branch["States"], branch["StartAt"], f"{scope}{name}[{index}]."
+                )
+    return reached
+
+
+def _hook_points_by_mode() -> tuple[str, set[str], set[str], set[str]]:
+    """(start_state, always_run, bda_reachable, pipeline_reachable) hook points.
+
+    The mode router is found by the variable it switches on, not by name.
+    `always_run` is the hook points executed before the router — `preprocessing`
+    is `StartAt`, so it runs in both modes regardless of the branches.
+    """
+    asl = _load_asl()
+    states = asl["States"]
+    router = next(
+        (
+            name
+            for name, state in states.items()
+            if state.get("Type") == "Choice"
+            and any(
+                choice.get("Variable") == _ROUTER_VARIABLE
+                for choice in state.get("Choices") or []
+            )
+        ),
+        None,
+    )
+    assert router, (
+        f"no Choice state switches on {_ROUTER_VARIABLE!r}; the processing-mode "
+        f"router moved or was renamed, and the mode assertions below would be "
+        f"meaningless"
+    )
+    bda_branch = next(
+        choice["Next"]
+        for choice in states[router]["Choices"]
+        if choice.get("Variable") == _ROUTER_VARIABLE
+    )
+    pipeline_branch = states[router]["Default"]
+
+    def points(names: set[str]) -> set[str]:
+        found = set()
+        for hook_state, (state, _siblings) in HOOK_STATES.items():
+            if hook_state not in names:
+                continue
+            point = ((state.get("Parameters") or {}).get("Payload") or {}).get(
+                "hookPoint"
+            )
+            assert isinstance(point, str), (
+                f"{hook_state} declares no literal hookPoint in its Payload; the "
+                f"mode table cannot be checked against the graph"
+            )
+            found.add(point)
+        return found
+
+    # Everything reachable from StartAt but NOT from either branch runs in both
+    # modes ahead of the split.
+    from_start = _reachable(states, asl["StartAt"])
+    from_bda = _reachable(states, bda_branch)
+    from_pipeline = _reachable(states, pipeline_branch)
+    pre_router = from_start - from_bda - from_pipeline
+    return router, points(pre_router), points(from_bda), points(from_pipeline)
+
+
+ROUTER_STATE, ALWAYS_RUN_POINTS, BDA_POINTS, PIPELINE_POINTS = _hook_points_by_mode()
+
+# The three points that exist only as separate pipeline steps. BDA performs OCR,
+# classification and extraction inside one InvokeDataAutomationAsync call, so
+# there is no state to hang them off.
+_STEP_SPECIFIC_POINTS = {"postOcr", "postClassification", "postExtraction"}
+
+
+@pytest.mark.unit
+def test_every_hook_point_is_classified_by_mode():
+    """Non-vacuity guard: the three sets must together cover all seven points."""
+    classified = ALWAYS_RUN_POINTS | BDA_POINTS | PIPELINE_POINTS
+    declared = {
+        ((state.get("Parameters") or {}).get("Payload") or {}).get("hookPoint")
+        for state, _siblings in HOOK_STATES.values()
+    }
+    assert classified == declared, (
+        f"the reachability walk from {ROUTER_STATE} classified {sorted(classified)} "
+        f"but the graph declares {sorted(declared)}. A hook point reachable from "
+        f"neither branch nor before the router is unreachable in BOTH modes, which "
+        f"is a worse bug than #982 — or the walk is broken and the mode assertions "
+        f"below prove nothing."
+    )
+    assert ALWAYS_RUN_POINTS == {"preprocessing"}, (
+        f"expected `preprocessing` to be the only hook point ahead of "
+        f"{ROUTER_STATE}, found {sorted(ALWAYS_RUN_POINTS)}. The docs tell "
+        f"extension authors to register at `preprocessing` precisely because it "
+        f"is the one point both modes always execute."
+    )
+
+
+@pytest.mark.unit
+def test_bda_mode_reaches_no_step_specific_hook_point():
+    """BDA mode must not reach postOcr / postClassification / postExtraction.
+
+    This is the reachability claim the docs make. It is asserted in BOTH
+    directions so the table cannot drift: the three points are absent from the
+    BDA branch and present in the pipeline branch. A `fail` policy registered at
+    one of them is therefore inert under BDA — see issue #982.
+    """
+    leaked = BDA_POINTS & _STEP_SPECIFIC_POINTS
+    assert not leaked, (
+        f"the BDA branch now reaches {sorted(leaked)}. That is not a regression "
+        f"in itself — it may be a fix for #982 — but the mode table in "
+        f"docs/feature-platform.md and docs/feature-platform-developer-guide.md "
+        f"now claims these points are never invoked under BDA, and must be updated."
+    )
+    missing = _STEP_SPECIFIC_POINTS - PIPELINE_POINTS
+    assert not missing, (
+        f"the pipeline branch does NOT reach {sorted(missing)}, so these hook "
+        f"points are dead in both modes. Either a hook state was removed or the "
+        f"walk is wrong; either way the docs are now wrong too."
+    )
+    shared = {"postRuleValidation", "postSummarization", "postprocessing"}
+    for point in sorted(shared):
+        assert point in BDA_POINTS and point in PIPELINE_POINTS, (
+            f"{point} is documented as reachable in BOTH processing modes but is "
+            f"reached from "
+            f"{'pipeline only' if point in PIPELINE_POINTS else 'BDA only'}. "
+            f"An `onError: fail` policy there is inert in the other mode."
+        )
+
+
+# --------------------------------------------------------------------------
+# `CausePath` may only be fed by a catcher whose error shape guarantees $.Cause.
+# --------------------------------------------------------------------------
+
+
+def _causepath_fail_states() -> dict[str, tuple[dict, dict]]:
+    """{qualified name: (state, sibling states)} for Fail states using CausePath."""
+    return {
+        qualified: (state, siblings)
+        for qualified, state, siblings in _walk(_load_asl()["States"])
+        if state.get("Type") == "Fail" and "CausePath" in state
+    }
+
+
+CAUSEPATH_FAIL_STATES = _causepath_fail_states()
+
+
+@pytest.mark.unit
+def test_causepath_fail_states_are_only_reached_by_named_error_catchers():
+    """A `CausePath` reading `$.Cause` needs a guaranteed Lambda error payload.
+
+    `PostStepHookFailed` and `PostExtractionHookFailed` interpolate the
+    dispatcher's own message — the only place the failing hook's `featureId` and
+    hook point appear — via `States.Format(..., $.Cause)`. Their catchers set no
+    `ResultPath`, so it defaults to `$` and the Lambda error output (which always
+    carries `Error`/`Cause`) becomes the whole input.
+
+    Pointing a `States.ALL` catcher at one of these states would widen the input
+    to error shapes that carry no `Cause`, and the missing reference would surface
+    as a `States.Runtime` failure that MASKS the real hook error — the operator
+    would be worse off than with the static string this replaced. So every
+    catcher targeting a CausePath-bearing Fail state must name a concrete error,
+    and must not set a `ResultPath` that moves the payload out from under `$`.
+    """
+    assert len(CAUSEPATH_FAIL_STATES) >= 2, (
+        f"expected at least the 2 CausePath-bearing Fail states, found "
+        f"{sorted(CAUSEPATH_FAIL_STATES)}. If they reverted to a static Cause the "
+        f"aborted document again reports nothing about WHICH hook failed."
+    )
+    offenders = []
+    for _qualified, state, siblings in _walk(_load_asl()["States"]):
+        for catcher in state.get("Catch") or []:
+            target = catcher.get("Next", "")
+            if siblings.get(target, {}).get("Type") != "Fail":
+                continue
+            if "CausePath" not in siblings[target]:
+                continue
+            errors = catcher.get("ErrorEquals") or []
+            if "States.ALL" in errors:
+                offenders.append(f"{_qualified} -> {target}: ErrorEquals={errors}")
+            elif catcher.get("ResultPath") not in (None, "$"):
+                offenders.append(
+                    f"{_qualified} -> {target}: ResultPath="
+                    f"{catcher['ResultPath']!r} moves the error payload off `$`"
+                )
+    assert not offenders, (
+        "a CausePath-bearing Fail state is fed by a catcher that does not "
+        f"guarantee `$.Cause`: {offenders}. Use a static Cause at that Fail "
+        "state instead, or give the catcher a concrete ErrorEquals."
     )

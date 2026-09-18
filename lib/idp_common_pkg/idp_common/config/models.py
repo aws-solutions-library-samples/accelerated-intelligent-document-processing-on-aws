@@ -660,13 +660,23 @@ class PipelineHook(BaseModel):
     )
     arn: str = Field(description="Lambda ARN the dispatcher invokes")
     order: int = Field(default=100, description="Lower runs first within a hook point")
-    # Literal, not bare str: the dispatcher normalizes an unrecognised value to
-    # "continue" (patterns/unified/src/pipeline_hooks_function/index.py), so a
-    # typo like "Fail" or "fail-fast" would silently STOP THE GATE FROM GATING.
-    # template.yaml constrains this with `enum` for the config editor and
-    # register_feature_hooks validates feature-registered hooks, but a
-    # hand-edited YAML pushed through `idp-cli config-upload` reaches here with
-    # no other check.
+    # Literal, not bare str: the dispatcher degrades an unrecognised value to
+    # "continue" (see _normalize_on_error in
+    # patterns/unified/src/pipeline_hooks_function/index.py, which explains why it
+    # degrades rather than failing closed), so a typo like "Fail" or "fail-fast"
+    # STOPS THE GATE FROM GATING. template.yaml constrains this with `enum` for
+    # the config editor and register_feature_hooks validates feature-registered
+    # hooks, but a hand-edited YAML pushed through `idp-cli config-upload` reaches
+    # here with no other check.
+    #
+    # This is the WRITE boundary, and it is the only place the typo can be
+    # rejected rather than merely reported: the dispatcher is packaged boto3-only
+    # and reads the raw DynamoDB record without re-running IDPConfig, so a record
+    # written before this constraint existed still reaches it (it logs a warning
+    # and records `onErrorInvalid` on the hook's result). Note this validation is
+    # also on the stack-deployment path — update_configuration's custom resource
+    # builds IDPConfig for every configuration it saves — so an out-of-enum value
+    # in a CustomConfigPath YAML fails the stack create/update, not just an upload.
     onError: Literal["continue", "skip-remaining", "fail"] = Field(  # noqa: N815
         default="continue",
         description="continue | skip-remaining | fail",
@@ -715,7 +725,7 @@ class FlatHookConfig(BaseModel):
         description="Lambda ARN the dispatcher invokes. Must be tagged "
         "idp:feature-id or named GENAIIDP-*.",
     )
-    # Literal for the same reason as HookConfig.onError above: the dispatcher
+    # Literal for the same reason as PipelineHook.onError above: the dispatcher
     # normalizes an unrecognised value to "continue", so an unconstrained typo
     # turns a declared gate into a no-op.
     onError: Literal["continue", "skip-remaining", "fail"] = Field(  # noqa: N815

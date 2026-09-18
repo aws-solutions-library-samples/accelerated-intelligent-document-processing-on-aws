@@ -1905,6 +1905,141 @@ def _build_hook_zip(path):
     return path
 
 
+def _onerror_fail_hook_config(base_cfg, hook_arn):
+    """Return a copy of `base_cfg` with the CI hook registered as a GATE.
+
+    Pure, and it must not mutate `base_cfg` — phase 1's config is still live on
+    the stack when this runs, and the caller reuses the same dict. Extracted so
+    the unit suite can assert the registration it produces rather than assert
+    that certain substrings appear in the caller's source.
+
+    The point must be a `<step>.postHook` one. A flat point (preprocessing /
+    postprocessing) would not exercise #919 at all: `PreprocessingHook` already
+    routed its `States.ALL` catcher to a Fail state, so it was fail-closed
+    before the fix.
+    """
+    import copy
+
+    cfg = copy.deepcopy(base_cfg)
+    cfg.setdefault("ocr", {})
+    cfg["ocr"]["postHook"] = [
+        {
+            "featureId": _HOOK_FEATURE_ID,
+            "arn": hook_arn,
+            "order": 1,
+            # The whole point of this phase.
+            "onError": "fail",
+            "args": [{"key": "fail", "value": "true"}],
+            # The hook never gets far enough to return a document, and an
+            # observe-only registration keeps the failure unambiguous.
+            "allowDocumentUpdate": False,
+        }
+    ]
+    return cfg
+
+
+def _read_execution_history(sfn, execution_arn, max_pages=12):
+    """Return `(states_entered, error, cause)` for one Step Functions execution.
+
+    Paginates `get_execution_history`, collecting every `stateEnteredEventDetails`
+    name and the last `executionFailedEventDetails`. `max_pages` bounds the walk
+    so a pathological history cannot hang the pipeline; at 1000 events per page
+    that is 12,000 events, far more than one document produces.
+
+    Split out of `_assert_onerror_fail_aborts` deliberately. The judgement it
+    feeds is the whole point of Step 14's second phase, and it used to be
+    unreachable offline — the only thing the unit suite could do was assert that
+    certain substrings appeared in the function's source, which proves nothing
+    about what the code decides. This signature takes `sfn` as a parameter, so
+    `scripts/sdlc/tests/test_pipeline_hook_step.py` drives it with a fake client
+    and real API-shaped responses, including the multi-page case.
+    """
+    entered = set()
+    exec_error = ""
+    exec_cause = ""
+    token = None
+    pages = 0
+    while pages < max_pages:
+        kwargs = {"executionArn": execution_arn, "maxResults": 1000}
+        if token:
+            kwargs["nextToken"] = token
+        history = sfn.get_execution_history(**kwargs)
+        for event in history.get("events", []):
+            name = (event.get("stateEnteredEventDetails") or {}).get("name")
+            if name:
+                entered.add(name)
+            failed = event.get("executionFailedEventDetails") or {}
+            if failed:
+                exec_error = failed.get("error") or ""
+                exec_cause = failed.get("cause") or ""
+        token = history.get("nextToken")
+        pages += 1
+        if not token:
+            break
+    return entered, exec_error, exec_cause
+
+
+def _judge_onerror_fail_abort(entered, exec_error, exec_cause):
+    """Verdict on a FAILED execution: did the `onError: fail` gate actually hold?
+
+    Pure — no AWS, no I/O — so the unit suite can drive every branch. Returns
+    `None` if the gate held, otherwise the operator-facing error string.
+
+    Two things must hold, and neither is implied by the other:
+
+      * the execution failed with `HookFatalError`, the name the ASL catcher
+        matches. Any other error means the dispatcher raised something else or
+        the catcher never matched, and a catcher on a name that never surfaces
+        reproduces #919 one level up.
+      * `ClassificationStep` was never entered. A FAILED execution alone does not
+        prove the gate held: pre-fix the `States.ALL` catcher routed the document
+        FORWARD, so it could have run every later step and failed for an
+        unrelated reason.
+    """
+    if exec_error != _HOOK_FATAL_ERROR:
+        return (
+            f"The execution failed with error={exec_error!r} rather than "
+            f"{_HOOK_FATAL_ERROR!r} (cause={exec_cause[:200]!r}). Either the "
+            f"dispatcher raised something else or the hook state's catcher did not "
+            f"match — a catcher on a name that never surfaces reproduces #919 one "
+            f"level up"
+        )
+    if "ClassificationStep" in entered:
+        return (
+            "onError:fail failed the execution but the document still went "
+            "FORWARD: ClassificationStep was entered after the gating postOcr "
+            "hook failed. The fatal catcher must precede States.ALL so the "
+            "document never reaches the next step."
+        )
+    return None
+
+
+def _judge_onerror_fail_no_failed_execution(succeeded_arn):
+    """Verdict when the poll found no FAILED execution. Always an error string.
+
+    Pure, for the same reason as `_judge_onerror_fail_abort`. The distinction it
+    draws is the diagnostically important one: a SUCCEEDED execution pinned to
+    the fail config version means the policy was IGNORED (#919, fail-open),
+    whereas no execution at all means the document never started and the policy
+    was never exercised. Collapsing the two would send the next reader to the
+    wrong place.
+    """
+    if succeeded_arn:
+        return (
+            f"onError:fail was IGNORED: the execution pinned to "
+            f"{_HOOK_FAIL_CONFIG_VERSION!r} SUCCEEDED even though its postOcr "
+            f"hook failed ({succeeded_arn.rsplit(':', 1)[-1]}). The hook state's "
+            f"States.ALL catcher swallowed the fail policy and routed the "
+            f"document forward — this is issue #919, fail-open."
+        )
+    return (
+        f"No FAILED execution pinned to config_version="
+        f"{_HOOK_FAIL_CONFIG_VERSION!r} within {_TARGET_WAIT_SECS}s, and no "
+        f"SUCCEEDED one either — the document may never have started, so the "
+        f"fail policy was not exercised"
+    )
+
+
 def _assert_onerror_fail_aborts(stack_name, sm_arn, hook_arn, base_cfg, suffix):
     """Prove that `onError: fail` at a POST-STEP hook point aborts the document.
 
@@ -1932,27 +2067,13 @@ def _assert_onerror_fail_aborts(stack_name, sm_arn, hook_arn, base_cfg, suffix):
     Uses a uniquely named copy of the sample so the deliberately FAILED document
     cannot be confused with (or overwrite) any other step's tracking row.
     """
-    import copy
-
     import yaml
 
-    print(f"  Phase 2: onError:fail must abort the document (#919, {_HOOK_FATAL_ERROR})")
+    print(
+        f"  Phase 2: onError:fail must abort the document (#919, {_HOOK_FATAL_ERROR})"
+    )
 
-    cfg = copy.deepcopy(base_cfg)
-    cfg.setdefault("ocr", {})
-    cfg["ocr"]["postHook"] = [
-        {
-            "featureId": _HOOK_FEATURE_ID,
-            "arn": hook_arn,
-            "order": 1,
-            # The whole point of this phase.
-            "onError": "fail",
-            "args": [{"key": "fail", "value": "true"}],
-            # The hook never gets far enough to return a document, and an
-            # observe-only registration keeps the failure unambiguous.
-            "allowDocumentUpdate": False,
-        }
-    ]
+    cfg = _onerror_fail_hook_config(base_cfg, hook_arn)
     fail_cfg_path = "/tmp/citest-hook-config-fail.yaml"  # nosec B108
     with open(fail_cfg_path, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
@@ -1997,60 +2118,13 @@ def _assert_onerror_fail_aborts(stack_name, sm_arn, hook_arn, base_cfg, suffix):
         succeeded_arn, _ = _find_target_execution(
             sfn, sm_arn, _HOOK_FAIL_CONFIG_VERSION, status_filter="SUCCEEDED"
         )
-        if succeeded_arn:
-            return (
-                f"onError:fail was IGNORED: the execution pinned to "
-                f"{_HOOK_FAIL_CONFIG_VERSION!r} SUCCEEDED even though its postOcr "
-                f"hook failed ({succeeded_arn.rsplit(':', 1)[-1]}). The hook state's "
-                f"States.ALL catcher swallowed the fail policy and routed the "
-                f"document forward — this is issue #919, fail-open."
-            )
-        return (
-            f"No FAILED execution pinned to config_version="
-            f"{_HOOK_FAIL_CONFIG_VERSION!r} within {_TARGET_WAIT_SECS}s, and no "
-            f"SUCCEEDED one either — the document may never have started, so the "
-            f"fail policy was not exercised"
-        )
+        return _judge_onerror_fail_no_failed_execution(succeeded_arn)
 
     # Read the history in full: the states entered, plus the execution's error.
-    entered = set()
-    exec_error = ""
-    exec_cause = ""
-    hist_token = None
-    pages = 0
-    while pages < 12:
-        hkw = {"executionArn": target_arn, "maxResults": 1000}
-        if hist_token:
-            hkw["nextToken"] = hist_token
-        hist = sfn.get_execution_history(**hkw)
-        for event in hist.get("events", []):
-            name = (event.get("stateEnteredEventDetails") or {}).get("name")
-            if name:
-                entered.add(name)
-            failed = event.get("executionFailedEventDetails") or {}
-            if failed:
-                exec_error = failed.get("error") or ""
-                exec_cause = failed.get("cause") or ""
-        hist_token = hist.get("nextToken")
-        pages += 1
-        if not hist_token:
-            break
-
-    if exec_error != _HOOK_FATAL_ERROR:
-        return (
-            f"The execution failed with error={exec_error!r} rather than "
-            f"{_HOOK_FATAL_ERROR!r} (cause={exec_cause[:200]!r}). Either the "
-            f"dispatcher raised something else or the hook state's catcher did not "
-            f"match — a catcher on a name that never surfaces reproduces #919 one "
-            f"level up"
-        )
-    if "ClassificationStep" in entered:
-        return (
-            "onError:fail failed the execution but the document still went "
-            "FORWARD: ClassificationStep was entered after the gating postOcr "
-            "hook failed. The fatal catcher must precede States.ALL so the "
-            "document never reaches the next step."
-        )
+    entered, exec_error, exec_cause = _read_execution_history(sfn, target_arn)
+    verdict = _judge_onerror_fail_abort(entered, exec_error, exec_cause)
+    if verdict:
+        return verdict
     print(
         f"  ✓ execution {target_arn.rsplit(':', 1)[-1]} FAILED with "
         f"{exec_error} and never entered ClassificationStep "

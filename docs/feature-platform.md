@@ -453,6 +453,37 @@ At each point the Step Functions workflow invokes
 `PipelineHooksDispatcherFunction`, which runs any hook Lambdas registered for
 that point.
 
+<a id="hook-points-by-processing-mode"></a>
+### Not every hook point exists in every processing mode
+
+Three of the seven points exist **only on the Pipeline branch** of the state
+machine. In BDA mode (`use_bda: true`) there is no state to invoke the
+dispatcher from, so a hook registered at one of them **never runs at all** —
+including a hook that declares `onError: fail`.
+
+| Hook point | Pipeline mode (`use_bda: false`) | BDA mode (`use_bda: true`) |
+|---|---|---|
+| `preprocessing` | ✅ runs (`StartAt`, before the routing decision) | ✅ runs |
+| `postOcr` | ✅ runs | ❌ **no such state — hook never invoked** |
+| `postClassification` | ✅ runs | ❌ **no such state — hook never invoked** |
+| `postExtraction` | ✅ runs (inside the `ProcessSections` Map) | ❌ **no such state — hook never invoked** |
+| `postRuleValidation` | ✅ runs | ✅ runs (shared tail) |
+| `postSummarization` | ✅ runs | ✅ runs (shared tail) |
+| `postprocessing` | ✅ runs | ✅ runs (shared tail) |
+
+BDA performs OCR, classification and extraction inside a single Bedrock Data
+Automation invocation, so the workflow has no separate OCR, classification or
+extraction step to hook after.
+
+**A registered hook at a point that does not exist in the active mode is
+silently inert — including its `onError: fail` policy.** Nothing warns at
+registration time and nothing appears in the execution history, because the
+dispatcher is never invoked. If you are relying on a hook to **gate** the
+pipeline (PII redaction, a compliance check), register it at `preprocessing`,
+which runs in both modes ahead of the routing decision, or verify that the
+mode you deploy actually reaches your chosen point. Tracked as
+[#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
+
 **Inert by default** — hooks are stored inline in the active configuration
 version. With none registered the dispatcher returns after a single DynamoDB
 read and the pipeline is unchanged.
@@ -527,14 +558,31 @@ rather than appearing to act on it. `onError` controls failure handling:
 `continue` (log and proceed), `skip-remaining` (stop later hooks at that
 point), or `fail`.
 
-**`onError: fail` aborts the document at every hook point** — the dispatcher
-raises a distinct `HookFatalError`, and each hook state in the state machine
-catches that error *before* its `States.ALL` catcher and routes to a terminal
-`Fail` state (`PreprocessingHookFailed`, `PostStepHookFailed`, or
+**`onError: fail` aborts the document at every hook point that the active
+processing mode actually reaches** — the dispatcher raises a distinct
+`HookFatalError`, and each hook state in the state machine catches that error
+*before* its `States.ALL` catcher and routes to a terminal `Fail` state
+(`PreprocessingHookFailed`, `PostStepHookFailed`, or
 `PostExtractionHookFailed`). The document ends FAILED and no later step runs. A
 dispatcher fault that is *not* the fail policy — a timeout, a throttle, a bug —
 still follows the `States.ALL` catcher, which for the post-step points routes
 forward so a non-gating hook fault cannot discard an otherwise-good document.
+
+⚠️ **"Every hook point" means every point that exists in the mode you are
+running.** In BDA mode (`use_bda: true`) the state machine has no `postOcr`,
+`postClassification` or `postExtraction` state, so the dispatcher is never
+invoked for those points and a `fail` policy registered there is **silently
+inert** — the document processes to completion as though the hook had succeeded.
+See [Not every hook point exists in every processing
+mode](#not-every-hook-point-exists-in-every-processing-mode) and
+[#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
+
+**When a `fail` policy does abort, the document shows only `FAILED`.** The
+tracking row and the UI carry the terminal status and nothing else — the hook's
+`featureId` and the underlying error are in the Step Functions **execution
+history**, on the `ExecutionFailed` event, whose `cause` names the failing hook
+and point. Open the execution for the document (Document detail → the Step
+Functions execution link) to find out *which* hook gated and why.
 
 ⚠️ **Before v0.6.9 this only worked at `preprocessing`.** At the other six
 points the `States.ALL` catcher matched the dispatcher's failure first and routed

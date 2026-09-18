@@ -30,6 +30,7 @@ change what the next workflow step consumes):
 import importlib
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -209,7 +210,25 @@ def test_fatal_error_class_name_is_the_string_the_state_machine_catches():
         os.path.dirname(LAMBDA_DIR), "..", "statemachine", "workflow.asl.json"
     )
     with open(os.path.abspath(asl), encoding="utf-8") as fh:
-        assert mod.HookFatalError.__name__ in fh.read()
+        raw = fh.read()
+    # Scope the lookup to `Catch[*].ErrorEquals`, not the whole file. The name
+    # also appears in the two Fail states' Cause/Comment prose, so a bare
+    # substring search would still pass after every ErrorEquals entry was
+    # deleted — i.e. after #919 was fully restored.
+    name = mod.HookFatalError.__name__
+    error_equals = re.findall(r'"ErrorEquals"\s*:\s*\[(.*?)\]', raw, flags=re.S)
+    assert error_equals, "no ErrorEquals arrays found — the regex or the ASL moved"
+    catching = [block for block in error_equals if f'"{name}"' in block]
+    # Six, not seven: the six POST-step hook states each carry a named
+    # HookFatalError catcher ahead of their States.ALL catcher, because their
+    # States.ALL catcher routes FORWARD and must not swallow a fail policy.
+    # PreprocessingHook needs no named catcher — its single States.ALL catcher
+    # already routes to a Fail state, so it is closed against every error shape.
+    assert len(catching) >= 6, (
+        f"{name} appears in only {len(catching)} ErrorEquals arrays; each of the "
+        f"six post-step hook states must catch it by name. Note the name also "
+        f"appears in Fail-state prose, which is NOT a catcher."
+    )
 
 
 def test_onerror_continue_does_not_raise(monkeypatch):
