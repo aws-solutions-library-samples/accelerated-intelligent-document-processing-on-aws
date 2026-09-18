@@ -24,6 +24,7 @@ This test compares source imports against the deployed template instead.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -47,9 +48,18 @@ TEMPLATES = (
 # one of them for `import idp_common` to resolve.
 LAYER_REFS = ("IDPCommon",)
 
-# Imports that do NOT require the layer: the two document-list resolvers vendor
-# `config_scope` verbatim as a sibling module (guarded by its own drift test), so
-# `from config_scope import ...` is satisfied from the function's own bundle.
+# Sibling modules the two deliberately layer-free document-list resolvers vendor
+# verbatim (each guarded by its own drift test), so `from config_scope import ...`
+# is satisfied from the function's own bundle rather than the layer. This is a
+# required-file manifest for those two functions, asserted by
+# `test_the_layer_free_resolvers_only_use_vendored_modules` — NOT a general
+# allowlist of import names, and nothing here filters `_imports_idp_common`.
+#
+# `log_sanitizer` is deliberately NOT listed. It is vendored the same way into
+# eight other layer-free resolvers, but not into these two (they do not log
+# events), so listing it here would assert a file that is correctly absent. It
+# also needs no exemption: the vendored copies are imported as
+# `from log_sanitizer import ...`, which never names `idp_common`.
 VENDORED_MODULES = ("config_scope",)
 
 
@@ -100,8 +110,42 @@ def _code_dir(template_path: Path, body: dict) -> Path | None:
     return (template_path.parent / code_uri).resolve()
 
 
+def _file_imports_idp_common(text: str, path: Path) -> bool:
+    """True if `text` contains a real `idp_common` import statement.
+
+    Parsed with `ast`, not matched as text, because a *mention* of the import is
+    not an import. The vendored `log_sanitizer.py` copies carry the canonical
+    module's ``Usage::`` docstring, one line of which reads
+    ``from idp_common.utils.log_sanitizer import sanitize_event_for_logging`` — the
+    old `^\\s*(from|import)\\s+idp_common\\b` regex matched that docstring line and
+    reported eight layer-free functions as importers of a library they never touch.
+    Rewording real documentation to appease the scanner would be the wrong repair.
+
+    `ast.walk` visits nested nodes, so a function-local or `try:`-guarded import is
+    still caught — exactly what the regex's leading `^\\s*` was there to tolerate.
+    On a file this Python cannot parse (a future syntax version, a template stub)
+    fall back to that regex rather than silently reporting "no imports".
+    """
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return bool(re.search(r"^\s*(from|import)\s+idp_common\b", text, re.M))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            # `from . import x` has module None; `from idp_common.utils import x`
+            # and `from idp_common import x` both start with the package name.
+            module = node.module or ""
+            if module == "idp_common" or module.startswith("idp_common."):
+                return True
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "idp_common" or alias.name.startswith("idp_common."):
+                    return True
+    return False
+
+
 def _imports_idp_common(code_dir: Path) -> list[str]:
-    """Python files under `code_dir` that import idp_common at module scope."""
+    """Python files under `code_dir` that import idp_common."""
     hits = []
     for path in code_dir.rglob("*.py"):
         if any(part in {"tests", "__pycache__", ".aws-sam"} for part in path.parts):
@@ -109,7 +153,7 @@ def _imports_idp_common(code_dir: Path) -> list[str]:
         if path.name.startswith("test_"):
             continue
         text = path.read_text(errors="ignore")
-        if re.search(r"^\s*(from|import)\s+idp_common\b", text, re.M):
+        if _file_imports_idp_common(text, path):
             hits.append(str(path.relative_to(REPO_ROOT)))
     return hits
 
@@ -142,6 +186,75 @@ def _cases():
             if code_dir is None or not code_dir.is_dir():
                 continue
             yield template_path, name, body, code_dir
+
+
+# The scanner's own two required properties. It has to see an import wherever it
+# really is — including indented inside a function or a try block, which is why the
+# regex it replaced led with `^\s*` — and it has to NOT see one in prose that merely
+# quotes an import line. Getting the second wrong red-lined eight correct functions.
+_SCANNER_SOURCES_WITH_AN_IMPORT = {
+    "module scope": "from idp_common.utils.log_sanitizer import sanitize_event_for_logging\n",
+    "indented in a function": (
+        "def handler(event, context):\n"
+        "    from idp_common.utils.log_sanitizer import sanitize_event_for_logging\n"
+        "    return sanitize_event_for_logging(event)\n"
+    ),
+    "indented in a try block": (
+        "try:\n"
+        "    import idp_common\n"
+        "except Exception:\n"
+        "    idp_common = None\n"
+    ),
+    "aliased submodule": "import idp_common.utils.log_sanitizer as s\n",
+    "plain import": "import idp_common\n",
+}
+_SCANNER_SOURCES_WITHOUT_AN_IMPORT = {
+    "usage docstring": (
+        '"""Redact logs.\n'
+        "\n"
+        "Usage::\n"
+        "\n"
+        "    from idp_common.utils.log_sanitizer import sanitize_event_for_logging\n"
+        '"""\n'
+        "from log_sanitizer import sanitize_event_for_logging\n"
+    ),
+    "comment": (
+        "# vendored byte-identical from idp_common.utils.log_sanitizer\n"
+        "from log_sanitizer import sanitize_event_for_logging\n"
+    ),
+    "similarly named package": "import idp_common_helpers\nfrom idp_commonish import x\n",
+    "string literal": 'DOC = "from idp_common import x"\n',
+    "vendored sibling": "from log_sanitizer import sanitize_event_for_logging\n",
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("label", sorted(_SCANNER_SOURCES_WITH_AN_IMPORT))
+def test_the_scanner_sees_an_import_wherever_it_is(label):
+    source = _SCANNER_SOURCES_WITH_AN_IMPORT[label]
+    assert _file_imports_idp_common(source, Path("probe.py")), (
+        f"the scanner missed a real idp_common import ({label}); a function that "
+        "imports the library without the layer would now pass this suite"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("label", sorted(_SCANNER_SOURCES_WITHOUT_AN_IMPORT))
+def test_the_scanner_ignores_a_mere_mention_of_an_import(label):
+    source = _SCANNER_SOURCES_WITHOUT_AN_IMPORT[label]
+    assert not _file_imports_idp_common(source, Path("probe.py")), (
+        f"the scanner treated prose as an import ({label}); that is the false "
+        "positive that red-lined the eight vendored-copy resolvers"
+    )
+
+
+@pytest.mark.unit
+def test_the_scanner_falls_back_to_regex_on_unparseable_source():
+    """A file `ast` cannot parse must not silently scan as import-free."""
+    unparseable = "def broken(:\n    from idp_common import thing\n"
+    with pytest.raises(SyntaxError):
+        ast.parse(unparseable)
+    assert _file_imports_idp_common(unparseable, Path("probe.py"))
 
 
 @pytest.mark.unit
