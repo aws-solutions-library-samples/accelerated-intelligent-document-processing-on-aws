@@ -444,6 +444,14 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running feature platform tests..."
 	cd feature-platform/main-stack-extensions && $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd feature-platform/feature-template/feature-api && $(PYTHON) -m pytest -q -p no:cacheprovider
+	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
+	@# These three ran in NO CI gate until #974. `make test` picked them up via
+	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
+	@# order-dependent failure in the feature API sat unnoticed long enough to be
+	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
+	cd feature-platform/pii-anonymizer/feature-api && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/hook && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
 	cd feature-platform/seller-entitlement-service && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
