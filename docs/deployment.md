@@ -18,7 +18,7 @@ The GenAI IDP Accelerator can be deployed using either the AWS CloudFormation co
 **Important**: Deploying the GenAI IDP Accelerator requires administrator access to your AWS account. However, for organizations that want to enable non-administrator users to deploy and manage IDP stacks, we provide an optional CloudFormation service role approach:
 
 - **For Administrators**: Use the deployment options below with your existing administrator privileges
-- **For Delegated Access**: See [iam-roles/cloudformation-management/README.md](../iam-roles/cloudformation-management/README.md) for instructions on provisioning a CloudFormation service role that allows non-administrator users to deploy and maintain IDP stacks without requiring administrator permissions
+- **For Delegated Access**: See [iam-roles/cloudformation-management/README.md](../iam-roles/cloudformation-management/README.md) for instructions on provisioning a CloudFormation service role that allows non-administrator users to deploy and maintain IDP stacks without requiring administrator permissions. That role requires an IAM **permissions boundary policy** (`PermissionsBoundaryArn`, no default) and a shared stack-name prefix (`ManagedStackNamePrefix`); the boundary is what stops a delegated deployer from creating a role more powerful than the boundary allows, so the same ARN must be passed to the IDP stack itself. It is a deployment role, not a least-privilege one — read the README's "Read This Before Granting the Role" section first.
 
 For the full breakdown of AWS services and the IAM permission scopes required for deployment and runtime, see [AWS Services and IAM Role Requirements](./aws-services-and-roles.md).
 

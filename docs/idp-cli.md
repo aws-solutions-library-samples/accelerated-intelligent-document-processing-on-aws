@@ -315,11 +315,15 @@ idp-cli deploy \
     --region eu-west-1 \
     --wait
 
-# Deploy with CloudFormation service role and permissions boundary
+# Deploy with CloudFormation service role and permissions boundary.
+# If you use the example service role from iam-roles/cloudformation-management/,
+# the stack name must start with its ManagedStackNamePrefix (default `idp`) and
+# PermissionsBoundaryArn must match the boundary that role requires — role
+# creation is denied otherwise. Both values are stack outputs of that role.
 idp-cli deploy \
-    --stack-name my-idp \
+    --stack-name idp-demo \
     --admin-email user@example.com \
-    --role-arn arn:aws:iam::123456789012:role/IDP-Cloudformation-Service-Role \
+    --role-arn arn:aws:iam::123456789012:role/idp-service-role-CFServiceRole \
     --parameters "PermissionsBoundaryArn=arn:aws:iam::123456789012:policy/MyPermissionsBoundary" \
     --wait
 

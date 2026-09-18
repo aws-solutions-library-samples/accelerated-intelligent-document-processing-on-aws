@@ -104,6 +104,45 @@ def _iter_policy_documents(resource):
         yield props.get('PolicyDocument')
 
 
+def _iter_resource_strings(statement):
+    """Yield the literal `Resource` strings of a statement.
+
+    Intrinsics (`!Sub`, `!GetAtt`, `!Ref`) are already None by the time we get
+    here, so a statement scoped to a constructed ARN yields nothing — which is
+    what we want, since the checks below only care about a literal `'*'`.
+    """
+    resources = statement.get('Resource')
+    if isinstance(resources, str):
+        resources = [resources]
+    if not isinstance(resources, list):
+        return
+    for resource in resources:
+        if isinstance(resource, str):
+            yield resource
+
+
+def _statement_is_on_all_resources(statement):
+    return any(resource == '*' for resource in _iter_resource_strings(statement))
+
+
+def _condition_keys(statement):
+    """Yield the lower-cased condition keys a statement tests, with operators.
+
+    Yields `(operator, key)` pairs. The operator matters: `Null` inverts the
+    meaning of a key (it asserts the key's *absence*), so a caller that wants a
+    real value comparison must exclude it.
+    """
+    condition = statement.get('Condition')
+    if not isinstance(condition, dict):
+        return
+    for operator, entries in condition.items():
+        if not isinstance(operator, str) or not isinstance(entries, dict):
+            continue
+        for key in entries:
+            if isinstance(key, str):
+                yield operator, key.lower()
+
+
 def iter_resources(template):
     """Yield the resource dicts of a parsed template."""
     resources = (template or {}).get('Resources')
@@ -142,6 +181,11 @@ def extract_permissions_from_role(role_template_path):
             continue
         for document in _iter_policy_documents(resource):
             for statement in _iter_statements(document):
+                # An action named only in a Deny is not granted. Without this,
+                # the guardrail Deny statements in the service role would be
+                # reported as permissions the role holds.
+                if statement.get('Effect') != 'Allow':
+                    continue
                 for action in _iter_actions(statement):
                     if '*' in action:
                         service = action.split(':')[0]
@@ -184,9 +228,163 @@ ROLE_LIFECYCLE_ACTIONS = {
 }
 INLINE_POLICY_ACTIONS = {'iam:PutRolePolicy', 'iam:DeleteRolePolicy', 'iam:GetRolePolicy'}
 MANAGED_POLICY_ATTACH_ACTIONS = {'iam:AttachRolePolicy', 'iam:DetachRolePolicy'}
-# Adding/removing a boundary on an EXISTING role (e.g. the operator changes the
-# PermissionsBoundaryArn parameter on a stack update). Also update-only.
-BOUNDARY_ACTIONS = {'iam:PutRolePermissionsBoundary', 'iam:DeleteRolePermissionsBoundary'}
+# Attaching or changing a boundary on an EXISTING role (e.g. the operator
+# changes the PermissionsBoundaryArn parameter on a stack update). Update-only.
+#
+# iam:DeleteRolePermissionsBoundary is deliberately NOT here. CloudFormation
+# needs it only to REMOVE a boundary from a role that already has one, which
+# means going from bounded to unbounded — and granting it to a role whose own
+# containment rests on iam:PermissionsBoundary hands that role a one-call
+# bypass. The cost is real but bounded: an operator who clears the
+# PermissionsBoundaryArn parameter on an existing stack has to make that
+# change with credentials of their own instead of via the service role. See
+# FORBIDDEN_SERVICE_ROLE_ACTIONS below, which turns this into a hard check.
+BOUNDARY_ACTIONS = {'iam:PutRolePermissionsBoundary'}
+# An AWS::IAM::InstanceProfile is a separate IAM resource type with its own
+# lifecycle actions, and none of them is implied by the role actions above. The
+# bastion host is the only feature that declares one, so without these the
+# service role deploys every stack except one with BastionHost enabled — a
+# failure that only appears for the operator who turns that feature on.
+INSTANCE_PROFILE_ACTIONS = {
+    'iam:CreateInstanceProfile',
+    'iam:DeleteInstanceProfile',
+    'iam:GetInstanceProfile',
+    'iam:AddRoleToInstanceProfile',
+    'iam:RemoveRoleFromInstanceProfile',
+}
+
+# --- Hardening checks on the service role itself ------------------------------
+# Everything above answers "is the service role strong enough to deploy?". The
+# checks below answer the opposite question — "is it stronger than it needs to
+# be?" — which is the half that was missing. The shipped role granted IAM write
+# actions on `Resource: "*"` with no permissions-boundary condition and
+# iam:PassRole on `*` with no condition at all, and this gate reported success
+# (issue #927). A gate that can only fail in the permissive direction is not a
+# security gate.
+
+# Verbs that read IAM state without changing it. Anything else in the iam:
+# namespace (including a bare `iam:*`) is treated as a write.
+IAM_READ_VERB_PREFIXES = (
+    'get', 'list', 'describe', 'simulate', 'generate',
+)
+
+# Actions a delegated deployment role must never hold, whatever the resource.
+FORBIDDEN_SERVICE_ROLE_ACTIONS = {
+    # Strips a permissions boundary, i.e. defeats the mechanism that contains
+    # every role this identity creates.
+    'iam:deleterolepermissionsboundary',
+    'iam:deleteuserpermissionsboundary',
+    # Long-lived credentials and federation trust are never part of deploying
+    # this solution, and both are standard persistence mechanisms.
+    'iam:createaccesskey',
+    'iam:createloginprofile',
+    'iam:createuser',
+}
+
+# Conditions that meaningfully constrain an IAM write. iam:PermissionsBoundary
+# is the only one that bounds what a CREATED role can do; the resource-tag and
+# path keys constrain which roles are touched but not their power.
+BOUNDARY_CONDITION_KEY = 'iam:permissionsboundary'
+PASSED_TO_SERVICE_CONDITION_KEY = 'iam:passedtoservice'
+
+
+def _is_iam_write_action(action):
+    """True if `action` is an iam: action that can change state."""
+    if not action.lower().startswith('iam:'):
+        return False
+    verb = action.split(':', 1)[1].lower()
+    if verb.startswith('*'):
+        return True
+    return not verb.startswith(IAM_READ_VERB_PREFIXES)
+
+
+def iter_role_statements(role_template_path):
+    """Yield `(logical_id, statement)` for every policy statement in a template.
+
+    Covers both the inline policies of AWS::IAM::Role and standalone
+    AWS::IAM::ManagedPolicy resources, because the PassRole grant this role
+    ships lives in the latter.
+    """
+    template = load_template(role_template_path) or {}
+    resources = template.get('Resources')
+    if not isinstance(resources, dict):
+        return
+    for logical_id, resource in resources.items():
+        if not isinstance(resource, dict):
+            continue
+        for document in _iter_policy_documents(resource):
+            for statement in _iter_statements(document):
+                yield logical_id, statement
+
+
+def _statement_label(logical_id, statement):
+    sid = statement.get('Sid')
+    return f'{logical_id}/{sid}' if isinstance(sid, str) and sid else logical_id
+
+
+def find_service_role_hardening_findings(role_template_path):
+    """Report over-broad grants in the service role template.
+
+    Returns a list of human-readable findings; empty means the role passes.
+    Only `Effect: Allow` statements are examined — an explicit Deny on
+    `Resource: "*"` is a guardrail, not a grant.
+    """
+    findings = []
+    for logical_id, statement in iter_role_statements(role_template_path):
+        if statement.get('Effect') != 'Allow':
+            continue
+        label = _statement_label(logical_id, statement)
+        actions = list(_iter_actions(statement))
+        on_all_resources = _statement_is_on_all_resources(statement)
+        condition_keys = list(_condition_keys(statement))
+        # A Null test asserts a key is ABSENT, so it does not constrain the
+        # value of that key and cannot stand in for a real comparison.
+        compared_keys = {
+            key for operator, key in condition_keys
+            if operator.lower() != 'null'
+        }
+        all_keys = {key for _, key in condition_keys}
+
+        forbidden = sorted(
+            action for action in actions
+            if action.lower() in FORBIDDEN_SERVICE_ROLE_ACTIONS
+        )
+        if forbidden:
+            findings.append(
+                f'{label}: grants {", ".join(forbidden)}, which must never be '
+                f'granted to a delegated deployment role'
+            )
+
+        iam_writes = sorted(
+            action for action in actions if _is_iam_write_action(action)
+        )
+        if iam_writes and on_all_resources:
+            if BOUNDARY_CONDITION_KEY not in compared_keys:
+                findings.append(
+                    f'{label}: IAM write actions on Resource: "*" with no '
+                    f'{BOUNDARY_CONDITION_KEY} condition '
+                    f'({", ".join(iam_writes)}). Scope the resource to the '
+                    f'principals this stack creates, or require a permissions '
+                    f'boundary.'
+                )
+
+        pass_role = [
+            action for action in actions
+            if action.lower() in ('iam:passrole', 'iam:*')
+        ]
+        if pass_role:
+            if on_all_resources:
+                findings.append(
+                    f'{label}: iam:PassRole on Resource: "*". Scope it to the '
+                    f'role name patterns this stack creates.'
+                )
+            if PASSED_TO_SERVICE_CONDITION_KEY not in all_keys:
+                findings.append(
+                    f'{label}: iam:PassRole with no '
+                    f'{PASSED_TO_SERVICE_CONDITION_KEY} condition. Restrict '
+                    f'which services the role may be handed to.'
+                )
+    return findings
 
 
 def extract_cfn_control_plane_iam_actions(template_path):
@@ -200,6 +398,9 @@ def extract_cfn_control_plane_iam_actions(template_path):
 
     required = set()
     for resource in iter_resources(template):
+        if resource.get('Type') == 'AWS::IAM::InstanceProfile':
+            required |= INSTANCE_PROFILE_ACTIONS
+            continue
         if resource.get('Type') != 'AWS::IAM::Role':
             continue
         props = resource.get('Properties')
@@ -270,6 +471,11 @@ def validate_permissions(role_permissions, required_wildcards, required_iam_acti
 
     return missing_wildcards, missing_iam
 
+SERVICE_ROLE_TEMPLATE = (
+    'iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml'
+)
+
+
 def main():
     # Templates to check
     templates = [
@@ -277,16 +483,16 @@ def main():
         'patterns/unified/template.yaml',
         'nested/bedrockkb/template.yaml'
     ]
-    
+
     # Extract required permissions from templates
     required_wildcards, required_iam_actions = extract_required_permissions_from_templates(templates)
     print(f'Required wildcard permissions: {sorted(required_wildcards)}')
     print(f'Required IAM actions: {sorted(required_iam_actions)}')
 
     # Extract permissions from service role
-    role_permissions = extract_permissions_from_role('iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml')
-    role_iam_permissions = extract_iam_permissions_from_role('iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml')
-    
+    role_permissions = extract_permissions_from_role(SERVICE_ROLE_TEMPLATE)
+    role_iam_permissions = extract_iam_permissions_from_role(SERVICE_ROLE_TEMPLATE)
+
     print(f'Service role has {len(role_permissions)} total permissions')
     print(f'Service role has {len(role_iam_permissions)} IAM permissions: {sorted(role_iam_permissions)}')
 
@@ -305,10 +511,19 @@ def main():
     if missing_iam:
         print(f'❌ Missing IAM permissions: {sorted(missing_iam)}')
         exit_code = 1
-    
+
+    # The other direction: is the role broader than it needs to be?
+    hardening_findings = find_service_role_hardening_findings(SERVICE_ROLE_TEMPLATE)
+    if hardening_findings:
+        print('❌ Service role grants are too broad:')
+        for finding in hardening_findings:
+            print(f'   - {finding}')
+        exit_code = 1
+
     if exit_code == 0:
         print('✅ Service role has sufficient permissions for deployment')
-    
+        print('✅ Service role IAM writes are bounded and PassRole is scoped')
+
     return exit_code
 
 if __name__ == '__main__':

@@ -69,9 +69,11 @@ make cfn-lint-warnings
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered — `make check-arn-partitions` still uses hardcoded globs and
-misses `nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/`. It runs
-from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
+without being covered. `make check-arn-partitions` now uses the same
+content-based discovery (`scripts/discover_templates.sh cfn`), so it too covers
+`nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/` — the hardcoded
+glob list it replaced did not. Both run from `lint`, `fastlint` **and**
+`lint-cicd`, so local and CI gate sets match.
 
 It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
 defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
