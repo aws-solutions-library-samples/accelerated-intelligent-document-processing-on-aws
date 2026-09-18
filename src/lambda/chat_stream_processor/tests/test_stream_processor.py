@@ -53,6 +53,16 @@ def test_sse_frame_has_single_blank_line_separator():
 
 @pytest.mark.unit
 def test_caller_sub_from_assumed_role_arn():
+    """The trailing ARN segment is returned verbatim, whatever it is.
+
+    The session name is deliberately the MEASURED one rather than a placeholder
+    like ``the-cognito-sub``: an earlier version of this fixture used that
+    placeholder, which reads as though the segment were a per-user Cognito
+    ``sub``. It is not — on a live deployment it is the pool-wide constant below
+    (499 CloudTrail ``AssumeRoleWithWebIdentity`` events, zero counter-examples).
+    A placeholder passes identically under either assumption, which is exactly
+    why the misconception survived.
+    """
     from sse import caller_sub_from_request_context
 
     ctx = {
@@ -60,12 +70,53 @@ def test_caller_sub_from_assumed_role_arn():
             "iam": {
                 "userArn": (
                     "arn:aws:sts::123456789012:assumed-role/"
-                    "MyAuthRole/the-cognito-sub"
+                    "MyAuthRole/CognitoIdentityCredentials"
                 ),
             }
         }
     }
-    assert caller_sub_from_request_context(json.dumps(ctx)) == "the-cognito-sub"
+    assert (
+        caller_sub_from_request_context(json.dumps(ctx))
+        == "CognitoIdentityCredentials"
+    )
+
+
+@pytest.mark.unit
+def test_caller_sub_userid_fallback_is_also_pool_wide():
+    """The ``userId`` fallback is no more per-user than the ARN is.
+
+    For an assumed role ``userId`` is ``<role-unique-id>:<session-name>``, so on
+    this transport it carries the same pool-wide constant with a role id glued to
+    the front. It is extracted (it is all there is) but must not be mistaken for
+    an identity to compare a client claim against.
+    """
+    from sse import caller_sub_from_request_context, is_user_specific_identity
+
+    ctx = {
+        "authorizer": {"iam": {"userId": "AROAEXAMPLEID:CognitoIdentityCredentials"}}
+    }
+    extracted = caller_sub_from_request_context(json.dumps(ctx))
+    assert extracted == "AROAEXAMPLEID:CognitoIdentityCredentials"
+    assert is_user_specific_identity(extracted) is False
+
+
+@pytest.mark.unit
+def test_caller_sub_ignores_cognito_identity_key_entirely():
+    """Function URLs may set ``cognitoIdentity`` to null OR omit it.
+
+    AWS documents both outcomes ("Lambda sets this to null or excludes this from
+    the JSON"), so a reader must not be able to assume one. Nothing here reads
+    the key, which is why the two cases cannot be distinguished incorrectly —
+    pinned so that a future change reading it has to face the question.
+    """
+    from sse import caller_sub_from_request_context
+
+    arn = "arn:aws:sts::123456789012:assumed-role/R/CognitoIdentityCredentials"
+    absent = {"authorizer": {"iam": {"userArn": arn}}}
+    explicit_null = {"authorizer": {"iam": {"userArn": arn, "cognitoIdentity": None}}}
+    assert caller_sub_from_request_context(
+        json.dumps(absent)
+    ) == caller_sub_from_request_context(json.dumps(explicit_null))
 
 
 @pytest.mark.unit
@@ -88,33 +139,59 @@ def test_caller_sub_missing_or_bad_context_is_empty():
 # the two processor modules; sse.py is the dependency-free half by design.
 
 
+# Realistic per-user values. A Cognito User Pool `sub` is a UUID and an Identity
+# Pool identity id is `<region>:<uuid>`; the predicate under test recognises those
+# shapes and only those, so placeholders like "verified-sub" would exercise the
+# wrong branch.
+_SUB_A = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
+_SUB_B = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
+_IDENTITY_ID = "us-west-2:d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
+
+
 @pytest.mark.unit
 def test_resolve_caller_sub_prefers_the_verified_identity():
     """A body value equal to nothing does not displace the verified identity."""
     from sse import resolve_caller_sub
 
-    assert resolve_caller_sub("verified-sub", "") == "verified-sub"
+    assert resolve_caller_sub(_SUB_A, "") == _SUB_A
 
 
 @pytest.mark.unit
-def test_resolve_caller_sub_rejects_a_contradicting_body_identity():
+@pytest.mark.parametrize("verified", [_SUB_A, _IDENTITY_ID])
+def test_resolve_caller_sub_rejects_a_contradicting_body_identity(verified):
     """A body identity that disagrees with the verified one is refused.
 
     Not "the verified one silently wins": a client asserting an identity that
     contradicts the one the transport proved is never legitimate, so the request
-    does not proceed at all.
+    does not proceed at all. Both per-user shapes are covered.
     """
     from sse import CallerIdentityConflict, resolve_caller_sub
 
     with pytest.raises(CallerIdentityConflict):
-        resolve_caller_sub("verified-sub", "someone-else")
+        resolve_caller_sub(verified, _SUB_B)
+
+
+@pytest.mark.unit
+def test_resolve_caller_sub_discards_a_body_value_of_another_kind():
+    """A claim that is not a Cognito identifier is discarded, not treated as conflict.
+
+    The web UI sends an email, which can never equal a session name or a `sub`.
+    If AWS ever made the transport principal per-user, comparing the two as
+    though they were the same kind of name would 403 every single agent-chat
+    turn — a fail-closed outage caused by an upstream change with no code change
+    here. The proven identity wins instead; the client value is dropped, so this
+    is strictly no more permissive than refusing.
+    """
+    from sse import resolve_caller_sub
+
+    assert resolve_caller_sub(_SUB_A, "user@example.com") == _SUB_A
 
 
 @pytest.mark.unit
 def test_resolve_caller_sub_accepts_an_agreeing_body_identity():
     from sse import resolve_caller_sub
 
-    assert resolve_caller_sub("verified-sub", "verified-sub") == "verified-sub"
+    assert resolve_caller_sub(_SUB_A, _SUB_A) == _SUB_A
 
 
 @pytest.mark.unit
@@ -161,17 +238,47 @@ def test_resolve_caller_sub_with_no_identity_at_all_is_empty():
 @pytest.mark.parametrize(
     ("caller_sub", "expected"),
     [
-        ("a-real-cognito-sub", True),
-        ("user@example.com", True),
+        # The two shapes Cognito uses for a per-user identifier.
+        (_SUB_A, True),
+        (_IDENTITY_ID, True),
+        ("D47CB94A-1C2E-4F3A-9B8D-0E1F2A3B4C5D", True),  # case-insensitive
+        # The measured value on the live commercial transport, and its
+        # unauthenticated sibling.
         ("CognitoIdentityCredentials", False),
         ("CognitoIdentityCredentialsUnauthenticated", False),
+        # The `userId` fallback shape — a role id plus the same constant.
+        ("AROAEXAMPLEID:CognitoIdentityCredentials", False),
         ("", False),
+        # Anything that is not one of the recognised per-user shapes is NOT
+        # treated as per-user. This is the deliberate direction: the session name
+        # is undocumented, so an unrecognised future value must fall through to
+        # the body-supplied fallback rather than 403 every request.
+        ("SomeFutureSessionName", False),
+        ("user@example.com", False),
+        ("d47cb94a-1c2e-4f3a-9b8d", False),  # truncated UUID
     ],
 )
 def test_is_user_specific_identity(caller_sub, expected):
     from sse import is_user_specific_identity
 
     assert is_user_specific_identity(caller_sub) is expected
+
+
+@pytest.mark.unit
+def test_an_unrecognised_transport_principal_does_not_deny_the_request():
+    """The whole point of the positive shape test, stated as behaviour.
+
+    If AWS substituted some other opaque string for the session name, the old
+    denylist-based predicate would have classed it as a per-user identity and
+    `resolve_caller_sub` would have raised on every turn, because the browser
+    sends an email. It must fall back instead.
+    """
+    from sse import resolve_caller_sub
+
+    assert (
+        resolve_caller_sub("SomeFutureOpaqueSessionName", "user@example.com")
+        == "user@example.com"
+    )
 
 
 @pytest.mark.unit
@@ -191,6 +298,36 @@ def test_both_routes_share_one_identity_resolution():
         assert "_resolve_caller_sub(request, body.callerSub)" in body, route
         # No route may reach for the body value on its own.
         assert body.count("body.callerSub") == 1, route
+
+
+@pytest.mark.unit
+def test_agent_route_denies_before_the_stream_opens():
+    """The group gate must run BEFORE StreamingResponse is constructed.
+
+    Once the response object exists the status is fixed at 200, and
+    ``_run_in_thread`` renders anything the producer raises as an
+    ``assistant_error`` frame in the body — so a denial applied only inside the
+    processor is downgraded from a 403 to a 200. Asserting on the source rather
+    than by calling the route because app.py imports FastAPI, which is not
+    installed in the unit environment.
+    """
+    app_src = open(os.path.join(_HERE, "app.py")).read()
+    start = app_src.index('@app.post("/chat/agent")')
+    body = app_src[start:]
+    gate_at = body.index("_enforce_groups_or_403(")
+    stream_at = body.index("StreamingResponse(")
+    assert gate_at < stream_at, "the group gate must precede StreamingResponse"
+    # And the gate must be what turns the processor's PermissionError into a 403,
+    # not a re-implementation of the group policy in this file.
+    gate_src = app_src[
+        app_src.index("def _enforce_groups_or_403(") : app_src.index(
+            'def _run_in_thread('
+        )
+    ]
+    assert "_enforce_agent_chat_groups(" in gate_src
+    assert "status_code=403" in gate_src
+    # The policy itself must not be duplicated here.
+    assert "Admin" not in gate_src
 
 
 @pytest.mark.unit

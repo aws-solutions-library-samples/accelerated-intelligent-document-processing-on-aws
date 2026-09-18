@@ -72,8 +72,24 @@ def _enforce_agent_chat_groups(event):
 
     The resolver in front of the dispatcher path already applies this check; this
     is the same gate applied where the work actually happens, so an invocation
-    that arrives by another route is subject to it too. Raising ``PermissionError``
-    matches the resolver, which the dispatcher maps to 403 / ``Unauthorized``.
+    that arrives by another route is subject to it too.
+
+    ``PermissionError`` is raised for consistency with the resolver, but note
+    where the HTTP 403 on the dispatcher path actually comes from: it is the
+    *resolver's own* ``PermissionError``. The dispatcher invokes the resolver
+    synchronously and reads ``errorType`` out of the invoke response
+    (``nested/api-resolvers/src/lambda/http_api_dispatcher/index.py``), so only
+    an exception from the resolver reaches that mapping. The resolver in turn
+    invokes THIS function with ``InvocationType="Event"``, and an async
+    invocation returns no payload to inspect — by the time this runs the client
+    already holds the resolver's 200. An exception raised here is therefore
+    logged, retried by Lambda, and never seen by the caller.
+
+    The same is true on the streaming path, for a different reason: see
+    ``_enforce_groups_or_403`` in src/lambda/chat_stream_processor/app.py, which
+    applies this gate synchronously in the route so a denial can still become a
+    real 403 before the response is committed. This copy of the check remains the
+    last line of defence for any invocation that reaches the function directly.
 
     Invocations with no ``identity`` are not group-checked: they are the backend
     paths (a direct ``lambda:InvokeFunction``, and the streaming Function URL,

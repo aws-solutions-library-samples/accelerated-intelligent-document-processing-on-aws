@@ -42,10 +42,18 @@ What this transport does and does not give us:
   group claim, so there is no verified ``cognito:groups`` to enforce against
   here. Group enforcement on the equivalent operation therefore lives on the
   dispatcher path, and the residual difference is tracked as GAP-07 in
-  ``scripts/api_rbac_expectations.yaml``. ``_caller_identity`` is the single
-  place a verified claims source plugs in.
+  ``scripts/api_rbac_expectations.yaml``. ``_caller_identity`` is where a
+  verified claims source plugs in; ``_enforce_groups_or_403`` is what turns the
+  claims it returns into a denial (see both docstrings).
 * A body-supplied ``callerSub`` is a fallback only, never an override — see
-  ``_resolve_caller_sub``. Both routes use it, so they cannot drift apart.
+  ``_resolve_caller_sub``. On this deployment the transport principal is NOT
+  per-user (measured — see ``_GENERIC_IDENTITY_POOL_SESSION_NAMES`` in
+  ``sse.py``), so the body value is in fact what attribution is keyed to today.
+  Both routes use the one helper, so they cannot drift apart.
+
+This transport exists in the **commercial partition only**. On GovCloud the UI
+falls back to the REST dispatcher plus polling (``ChatPanel.tsx``), so every
+statement above is scoped to commercial deployments.
 """
 
 from __future__ import annotations
@@ -97,9 +105,10 @@ def _caller_sub(request: Request) -> str:
 # lets Starlette reject a malformed body with a 422 before any processing starts
 # and bounds every string the processors go on to use.
 #
-# ``StrictBool`` (not ``bool``) for the opt-in flag: Pydantic's lax mode would
-# accept the STRING "false" and coerce it, and the flag gates a third-party MCP
-# data flow, so only a literal JSON boolean may turn it on.
+# ``StrictBool`` (not ``bool``) for the opt-in flag: Pydantic's lax mode coerces
+# ``1``, ``"yes"`` and ``"on"`` to True (measured), so a non-boolean body value
+# could turn the flag ON. The flag gates a third-party MCP data flow, so only a
+# literal JSON boolean may do that.
 #
 # Unknown keys are ignored rather than rejected (Pydantic's default), so adding
 # a field to a request in the web UI cannot 422 against an older deployment.
@@ -145,10 +154,40 @@ def _caller_identity() -> dict | None:
     Supplying real claims here needs the browser to present its Cognito ID token
     to this endpoint in addition to signing the request, which is a change to the
     transport's auth contract (UI + template + verification) and is tracked as
-    GAP-07 in scripts/api_rbac_expectations.yaml. This function is the single
-    place that change plugs into.
+    GAP-07 in scripts/api_rbac_expectations.yaml.
+
+    This is where the claims are OBTAINED, but it is not the only place that
+    change touches. The processor's own ``PermissionError`` cannot produce a 403
+    on this transport: ``StreamingResponse`` has already committed HTTP 200 by
+    the time ``_produce`` runs, and ``_run_in_thread`` converts anything the
+    producer raises into an ``assistant_error`` SSE frame on that 200 — the very
+    error-to-stream conversion the processor's gate was placed outside its own
+    ``try`` to avoid. So the denial is applied a second time, synchronously, in
+    ``_enforce_groups_or_403`` below, which is called from the route before the
+    response is returned.
     """
     return None
+
+
+def _enforce_groups_or_403(identity: dict | None) -> None:
+    """Apply the Agent Chat group gate BEFORE the SSE response is committed.
+
+    Delegates to the processor's own ``_enforce_agent_chat_groups`` so there is
+    one policy and one predicate, and translates its ``PermissionError`` into a
+    real HTTP 403 — which is only possible here, ahead of
+    ``StreamingResponse``. Once the stream is open the status is fixed at 200 and
+    a denial could only be rendered as an error frame in the body.
+
+    A no-op while ``_caller_identity`` returns ``None`` (GAP-07): an
+    identity-less invocation is IAM-gated, exactly as a backend
+    ``lambda:InvokeFunction`` is. It exists so that closing GAP-07 needs no
+    second change on this path.
+    """
+    try:
+        agent_proc._enforce_agent_chat_groups({"identity": identity})
+    except PermissionError as exc:
+        logger.warning("Rejecting agent chat: %s", exc)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _resolve_caller_sub(request: Request, claimed: str) -> str:
@@ -169,7 +208,16 @@ def _resolve_caller_sub(request: Request, claimed: str) -> str:
 
 
 def _run_in_thread(target, q: "queue.Queue") -> threading.Thread:
-    """Run ``target`` in a daemon thread; it pushes events onto ``q``."""
+    """Run ``target`` in a daemon thread; it pushes events onto ``q``.
+
+    Everything raised inside ``target`` becomes an ``assistant_error`` SSE frame
+    on an HTTP 200, because the response status was fixed the moment
+    ``StreamingResponse`` was returned. An **authorization** denial must
+    therefore never reach here: it has to be raised in the route, before the
+    response object is constructed, or it is silently downgraded from a 403 to a
+    200 carrying an error message. ``_enforce_groups_or_403`` is what keeps that
+    true for /chat/agent.
+    """
 
     def _wrapped() -> None:
         try:
@@ -273,6 +321,11 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
     # body value, which let the persisted attribution of an agent chat session be
     # chosen by the client.
     caller_sub = _resolve_caller_sub(request, body.callerSub)
+    # Group gate, applied here rather than only inside the processor: a 403 is
+    # only reachable before StreamingResponse is returned. No-op while
+    # _caller_identity() is None (GAP-07).
+    identity = _caller_identity()
+    _enforce_groups_or_403(identity)
 
     q: "queue.Queue" = queue.Queue()
 
@@ -311,12 +364,13 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
                     # rejected with a 422 before reaching here.
                     "enableCodeIntelligence": body.enableCodeIntelligence,
                     "callerSub": caller_sub,
-                    # Group membership the caller was authorized under. The
-                    # Function URL transport carries no Cognito group claim (see
-                    # the "Authorization" note in the module docstring), so this
-                    # is None here and the processor's group gate stands down for
-                    # this transport; the dispatcher path supplies real claims.
-                    "identity": _caller_identity(),
+                    # Group membership the caller was authorized under, already
+                    # checked by _enforce_groups_or_403 above. The Function URL
+                    # transport carries no Cognito group claim (see the "Auth
+                    # model" note in the module docstring), so this is None today
+                    # and the processor's group gate stands down for this
+                    # transport; the dispatcher path supplies real claims.
+                    "identity": identity,
                     "timestamp": now_iso(),
                 },
                 None,
