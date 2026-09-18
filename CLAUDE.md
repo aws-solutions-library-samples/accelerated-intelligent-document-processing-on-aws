@@ -190,11 +190,20 @@ should be run once #933 closes and it becomes a required, blocking gate.
 
 ### Testing
 
-**Every test method in this repo — what it proves, its `make` target, whether either
-CI runs it, and where its results are recorded — is mapped in
-[docs/testing.md](docs/testing.md)** (published; `scripts/tests/test_testing_doc.py`
-keeps it from drifting). The per-method procedures stay in `.claude/skills/`, listed
-in the skill table below; pipeline-internal detail stays in
+**Every test layer and tier in this repo — what it proves, its `make` entry point,
+whether either CI runs it, and where its results are recorded — is mapped in
+[docs/testing.md](docs/testing.md)** (published). That page is a map of tiers, not an
+index of test functions: there are thousands of those across hundreds of test modules,
+and a method added inside a suite that already runs correctly needs no page edit.
+`scripts/tests/test_testing_doc.py` enforces exactly what is claimed here — every
+live-tier target and layer entry point is described, every `make` target and link the
+page cites resolves, every directory holding a `test_*.py` is registered in
+`scripts/run_all_tests.py`, and every suite that registry excludes from `make test` is
+named on the page, in both directions. It also fails if this paragraph, or any other
+document pointing at the page, goes back to promising per-method coverage, because the
+previous wording did and nothing noticed ([#986](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/986)).
+The per-tier procedures stay in
+`.claude/skills/`, listed in the skill table below; pipeline-internal detail stays in
 `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
 ```bash
