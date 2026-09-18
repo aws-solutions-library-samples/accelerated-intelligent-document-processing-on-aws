@@ -7350,6 +7350,35 @@ Resources:
                   }
                 }
               }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 90,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["${StackName}", "AssessmentConfidenceUnavailable", {"stat": "Sum", "label": "Sections degraded to no confidence scores"}]
+                ],
+                "region": "${AWS::Region}",
+                "title": "Confidence Assessment Degraded (sections returned with no confidence scores)",
+                "view": "timeSeries",
+                "period": 900,
+                "yAxis": {
+                  "left": {
+                    "label": "Sections",
+                    "min": 0
+                  }
+                },
+                "annotations": {
+                  "horizontal": [{
+                    "value": 10,
+                    "label": "AssessmentConfidenceUnavailableAlarm threshold (per 15 min)",
+                    "color": "#d62728"
+                  }]
+                }
+              }
             }
           ]
         }

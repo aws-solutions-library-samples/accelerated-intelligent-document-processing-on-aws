@@ -8080,6 +8080,50 @@ Resources:
       AlarmActions:
         - !Ref AlertsTopic
 
+  # Issue #996. The Assessment Lambda degrades a section to "no confidence" when
+  # the confidence pass fails deterministically, rather than failing the document
+  # and discarding an extraction that already succeeded and was already paid for
+  # (issue #901). That is the right trade for ONE section -- but it means a
+  # SYSTEMIC assessment failure (a missing Bedrock grant, a confidence model every
+  # section's input exceeds, a bad config, a code bug on that path) no longer
+  # fails documents, and so no longer lights any failure alarm: it presents only
+  # as an error-severity processing issue in the Sections panel, one document at a
+  # time. This alarm is the signal that replaced the one degrading removed.
+  #
+  # The metric is published by patterns/unified's AssessmentFunction via
+  # idp_common.metrics.put_metric, whose namespace comes from that function's
+  # METRIC_NAMESPACE -- set to the nested stack's StackName parameter, which the
+  # parent passes as !Ref AWS::StackName. So the ROOT stack's namespace is the
+  # right one to read here, the same way StaleOutputPurgeFailedAlarm above reads a
+  # metric published by a nested resolver.
+  AssessmentConfidenceUnavailableAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} degraded many document sections to 'no confidence scores' in a short window, which indicates a SYSTEMIC confidence-assessment failure rather than a few awkward documents. Affected documents still COMPLETE and their extracted data is intact and correct - what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds) and their per-field scores are absent in the UI. Diagnose from the AssessmentFunction logs (/${AWS::StackName}/lambda/AssessmentFunction): the recorded processing issue's root_cause names the underlying exception. Common causes are a confidence model whose input limit every section exceeds (reduce extraction.confidence.list_batch_size or choose a model with a larger context window), a missing or revoked bedrock:InvokeModel grant for the configured confidence model, and a confidence model id that is not enabled in this region."
+      MetricName: AssessmentConfidenceUnavailable
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      # A 15-minute window, and a threshold well above one document's worth of
+      # sections. Alarming on the FIRST degrade would be wrong here and right for
+      # StaleOutputPurgeFailed above, because the two failures differ in kind: a
+      # stale-output failure leaves wrong data in S3 until someone removes it,
+      # whereas a single degraded section is an EXPECTED, self-limiting outcome of
+      # the #901 guard -- one unusually large section against a small-context
+      # confidence model produces it with nothing misconfigured. What is not
+      # expected is a steady stream of them, which is what a systemic cause
+      # produces (every section of every document). Ten in fifteen minutes
+      # separates the two without waiting long enough for a day's throughput to be
+      # degraded silently.
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # Published only when a section is degraded, so "no data" is the healthy
+      # state and must not hold the alarm in INSUFFICIENT_DATA.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
   ##########################################################################
   # Circuit Breaker Resources
   ##########################################################################

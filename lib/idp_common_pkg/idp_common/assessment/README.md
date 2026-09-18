@@ -497,6 +497,29 @@ soft, flagged, complete document. As defense in depth, the Step Functions
 via the per-shard S3 persistence and the Assessment step's "skip if
 `explainability_info` already present" short-circuit.
 
+### What to alarm on when the pass fails outright
+
+The rungs above degrade *within* a successful pass. When the pass fails
+**deterministically** — the confidence model rejecting the input outright, most
+often `ValidationException: Input is too long for requested model.` — the
+Assessment Lambda does not fail the document either: it keeps the extraction and
+records an error-severity `assessment_failed_confidence_unavailable` issue on the
+section (`degrade_section_to_no_confidence` in
+`patterns/unified/src/assessment_function/index.py`, issue #901).
+
+That has an observability consequence worth knowing when reading this module's
+behaviour operationally. Because such a document **completes**, a systemic
+confidence failure moves none of the failure alarms — no failed executions, no
+DLQ messages — and `ProcessingIssueCount` is a DynamoDB attribute rather than a
+metric, so nothing aggregates it. The Lambda therefore publishes
+`AssessmentConfidenceUnavailable` (value 1 per degraded section) into the parent
+stack's metric namespace on that path, and the parent template alarms on ten or
+more in fifteen minutes — deliberately on volume, because one degraded section is
+an expected outcome of the guard and a steady stream is not (issue #996). The
+metric put is wrapped in its own `try`: this path exists to avoid failing a
+document whose extraction succeeded, so a lost telemetry point is the cheaper
+failure. See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
+
 ## Prompt Template Placeholders
 
 The assessment service supports the following placeholders in prompt templates:

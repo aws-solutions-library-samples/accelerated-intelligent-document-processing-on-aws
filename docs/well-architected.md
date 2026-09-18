@@ -52,7 +52,7 @@ therefore leaves unmade.
 The clearest way to read this document is to know the split up front.
 
 **Provided by the accelerator, active on a default deployment.** Infrastructure as code
-for the whole stack; thirteen CloudWatch alarms (a fourteenth is declared but only
+for the whole stack; fourteen CloudWatch alarms (a fifteenth is declared but only
 created when you enable the Bedrock circuit breaker); two CloudWatch dashboards; AWS
 X-Ray tracing on the document-processing Lambda functions; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
@@ -72,8 +72,8 @@ parameter to set, so a default deployment does not do them at all:
 
 | Responsibility | Why it is yours |
 |---|---|
-| Confirming the alerts SNS subscription, and adding any further subscribers | Thirteen of the fourteen alarms publish to `AlertsTopic`, and the stack now subscribes the `AdminEmail` address to it — but an SNS email subscription is created in `PendingConfirmation` and delivers nothing at all until the recipient clicks the link in the confirmation email, so confirming it is yours. Read the topic's subscription list in the console or with `aws sns list-subscriptions-by-topic` rather than assuming, because a `PendingConfirmation` subscription looks like coverage and is not. The `--headless` variant has no `AdminEmail` parameter, so it creates no subscription at all and the whole topic is yours to wire up. Any additional operator address, chat webhook or existing operational topic is yours to attach either way |
-| Setting an AWS Budget and spend or token-volume alarms | There is no `AWS::Budgets` resource in any template and none of the fourteen alarms is a cost alarm. The metering ledger measures spend after the fact; it does not cap it |
+| Confirming the alerts SNS subscription, and adding any further subscribers | Fourteen of the fifteen alarms publish to `AlertsTopic`, and the stack now subscribes the `AdminEmail` address to it — but an SNS email subscription is created in `PendingConfirmation` and delivers nothing at all until the recipient clicks the link in the confirmation email, so confirming it is yours. Read the topic's subscription list in the console or with `aws sns list-subscriptions-by-topic` rather than assuming, because a `PendingConfirmation` subscription looks like coverage and is not. The `--headless` variant has no `AdminEmail` parameter, so it creates no subscription at all and the whole topic is yours to wire up. Any additional operator address, chat webhook or existing operational topic is yours to attach either way |
+| Setting an AWS Budget and spend or token-volume alarms | There is no `AWS::Budgets` resource in any template and none of the fifteen alarms is a cost alarm. The metering ledger measures spend after the fact; it does not cap it |
 | Enabling MFA on the Cognito user pool | The pool sets a password policy but no `MfaConfiguration`, so MFA is at the Cognito default of off |
 | Choosing and configuring WAF rules beyond IP allow-listing | The optional WebACL contains a single IP-allow rule; AWS Managed Rules, rate-based rules and bot control are not configured |
 | Choosing log group retention and reviewing what is logged | `LogRetentionDays` sets a default, but custom-resource Lambdas keep CloudWatch's auto-created groups with indefinite retention |
@@ -93,13 +93,13 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. Fourteen `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. Fifteen `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. Thirteen publish to the `AlertsTopic` SNS
-topic; the fourteenth, `BedrockServiceOutageAlarm`, publishes to `CircuitBreakerTopic`
+through them — the nested stacks declare none. Fourteen publish to the `AlertsTopic` SNS
+topic; the fifteenth, `BedrockServiceOutageAlarm`, publishes to `CircuitBreakerTopic`
 and is the only conditional one, so it exists only when you enable the circuit breaker.
-The other thirteen are unconditional, which is why a default deployment has exactly
-thirteen. They fall into four groups:
+The other fourteen are unconditional, which is why a default deployment has exactly
+fourteen. They fall into four groups:
 
 | Alarm | What it detects |
 |---|---|
@@ -107,6 +107,7 @@ thirteen. They fall into four groups:
 | `DocumentQueueDLQAlarm`, `WorkflowTrackerDLQAlarm`, `QueueSenderDLQAlarm`, `DataMartRollupDLQAlarm` | Any visible message on a dead-letter queue |
 | `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
 | `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means the same terminal execution was processed twice; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
+| `AssessmentConfidenceUnavailableAlarm` | Ten or more document sections degraded to "no confidence scores" in fifteen minutes. This is the one alarm here that watches a *successful* outcome: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
 ingestion, queue depth, the concurrency counter and workflow outcomes, and one in
@@ -340,7 +341,7 @@ other queues named `...DLQ` work the same way: `QueueSenderDLQ`, `JobTrackerDLQ`
 is an asynchronous-invocation `OnFailure` destination capped at
 `MaximumRetryAttempts: 2`. So when you plan a redrive procedure, check which of the two
 mechanisms parked the message: only the four queues above are governed by
-`maxReceiveCount`. Four of the fourteen alarms watch DLQs for any visible message.
+`maxReceiveCount`. Four of the fifteen alarms watch DLQs for any visible message.
 
 **Circuit breaker.** An opt-in circuit breaker for Bedrock outages is available via
 `CircuitBreakerEnabled` (default `"false"`). When enabled, `BedrockServiceOutageAlarm`
@@ -354,7 +355,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 313 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 314 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more
@@ -495,7 +496,7 @@ storage.
 
 **Be clear about the limit of all this.** The instrumentation is a ledger, not a control.
 It tells you what a document cost after it was processed. There is no `AWS::Budgets`
-resource in any template, no Cost Explorer anomaly monitor, and none of the fourteen alarms
+resource in any template, no Cost Explorer anomaly monitor, and none of the fifteen alarms
 is a spend or token-volume alarm. The only ex-ante levers are `MaxConcurrentWorkflows`,
 which limits rate rather than spend, and the circuit breaker, which trips on Bedrock
 availability rather than on cost. Combined with the composed retry ladders described under
