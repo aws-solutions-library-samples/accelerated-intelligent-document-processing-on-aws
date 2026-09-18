@@ -217,26 +217,29 @@ def _documented_make_invocations() -> set[tuple[str, str]]:
     for cd_dir, _, tail in (
         (m.group(2), m.group(1), m.group(3)) for m in _MAKE_INVOCATION_RE.finditer(text)
     ):
-        tokens = tail.split()
+        # Named `args`, not `tokens`: Bandit's B105 (hardcoded_password_string)
+        # fires on any `==` comparison against a literal where the identifier is
+        # called `token`, and `arg == "-C"` below tripped the SRT gate.
+        args = tail.split()
         directory = cd_dir or "."
         target: str | None = None
         i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            if ":" in token:
+        while i < len(args):
+            arg = args[i]
+            if ":" in arg:
                 break  # a colon means this is prose or a diagnostic, not a command
-            if token == "-C":
-                directory = tokens[i + 1] if i + 1 < len(tokens) else directory
+            if arg == "-C":
+                directory = args[i + 1] if i + 1 < len(args) else directory
                 i += 2
                 continue
-            if _MAKE_FLAG_RE.match(token) or _MAKE_ASSIGNMENT_RE.match(token):
+            if _MAKE_FLAG_RE.match(arg) or _MAKE_ASSIGNMENT_RE.match(arg):
                 i += 1
                 continue
             # Accept upper case too. Every real target here is lower case, but a
             # lower-case-only pattern silently *ignores* a mistyped target such as
             # `make lintCicd`, which is exactly the drift being guarded against.
-            if target is None and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", token):
-                target = token
+            if target is None and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", arg):
+                target = arg
             i += 1
         if target:
             found.add((directory, target))
