@@ -1450,6 +1450,18 @@ extraction:
 > confidence input so the pass *succeeds* rather than degrading is still open as
 > part of #901.
 >
+> **Operators: this is also a CloudWatch signal.** Because a degraded section no
+> longer fails its document, a *systemic* confidence failure — a confidence model
+> whose input limit every section exceeds, a revoked `bedrock:InvokeModel` grant, a
+> model id not enabled in the region — produces no failed executions and moves none
+> of the failure alarms. Each degrade therefore publishes
+> `AssessmentConfidenceUnavailable` to the stack's own metric namespace, and
+> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen minutes —
+> on volume, not on the first occurrence, since one degraded section is an expected
+> outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)).
+> See [Monitoring](./monitoring.md#confidence-assessment-degraded) for the metric,
+> the alarm and the three causes worth checking first.
+>
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
 > **retired and deleted**. Large-list batching is its full replacement: complete
