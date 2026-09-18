@@ -7,8 +7,8 @@
 # pattern wins, so the default-owner line comes first and specific paths after
 # it; every specific line also keeps the default owner as a co-reviewer.
 #
-# Paths without a specific rule below are reviewed by the default owner. See
-# MAINTAINERS.md for who reviews what and GOVERNANCE.md for how a change is
+# Paths without a specific rule below are reviewed by the default owner. This file
+# is the only record of who reviews what; see GOVERNANCE.md for how a change is
 # accepted.
 
 # Default owner: everything not matched by a more specific rule below.

@@ -6,18 +6,19 @@ SPDX-License-Identifier: MIT-0
 How the GenAI Intelligent Document Processing accelerator (GenAIIDP) is run: who
 decides, how a change gets accepted, and what the branch and release model is.
 
-Companion documents: [MAINTAINERS.md](./MAINTAINERS.md) for who reviews what,
-[ROADMAP.md](./ROADMAP.md) for direction and non-goals,
+Companion documents: [ROADMAP.md](./ROADMAP.md) for direction and non-goals,
 [SECURITY.md](./SECURITY.md) for vulnerability reporting, and
 [CONTRIBUTING.md](./CONTRIBUTING.md) for the mechanics of building and submitting a
 change.
 
 ## Decision making
 
-The project operates on a single-maintainer model with subsystem reviewers, listed
-in [MAINTAINERS.md](./MAINTAINERS.md) and encoded in
-[`.github/CODEOWNERS`](./.github/CODEOWNERS). Design disagreements are settled in
-the issue or pull request where they surface, in public, on the evidence presented.
+The project operates on a single-maintainer model with subsystem reviewers.
+[`.github/CODEOWNERS`](./.github/CODEOWNERS) records who reviews what and is what
+GitHub reads when it requests a review, so you do not need to tag anyone yourself;
+a reviewer named there is the person a change in their area is best discussed with,
+and the maintainer merges. Design disagreements are settled in the issue or pull
+request where they surface, in public, on the evidence presented.
 
 The project has a strong bias toward evidence over opinion: proposals that change
 extraction behaviour, cost or accuracy are expected to come with measurements, and
@@ -44,7 +45,9 @@ benchmark run against the previous release is an argument.
    [`docs/release-validation/`](./docs/release-validation/README.md).
 5. **Get a review.** CODEOWNERS routes the request to the subsystem reviewer where
    one exists, and to the maintainer otherwise. Expect review comments to ask for
-   evidence where behaviour changed.
+   evidence where behaviour changed. Maintenance is best-effort and the project
+   publishes no response-time commitment; if a change is time-sensitive, say so in
+   the pull request description.
 6. **The maintainer merges.** Contributors do not merge their own pull requests.
 
 ## Branch and release model

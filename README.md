@@ -247,12 +247,10 @@ How this project is run is written down, so you can predict what will happen to 
 issue or a pull request before you open one:
 
 - **[GOVERNANCE.md](./GOVERNANCE.md)** — who decides, how a change gets accepted,
-  the `develop`/`main` branch model, the release cadence, and this repository's
-  relationship to the CDK and Terraform ports.
-- **[MAINTAINERS.md](./MAINTAINERS.md)** — who maintains the project and who
-  reviews changes.
-- **[.github/CODEOWNERS](./.github/CODEOWNERS)** — the machine-readable form of
-  that, which is what routes review requests.
+  the `develop`/`main` branch and release model, and this repository's relationship
+  to the CDK and Terraform ports.
+- **[.github/CODEOWNERS](./.github/CODEOWNERS)** — who reviews what, and what
+  routes review requests.
 - **[ROADMAP.md](./ROADMAP.md)** — direction, priorities and explicit non-goals.
   Themes rather than dates, and worth reading before proposing a large feature.
 
