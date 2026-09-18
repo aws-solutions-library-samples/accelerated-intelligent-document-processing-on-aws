@@ -862,8 +862,10 @@ def _validate_agentic_openai(
         result["errors"].append(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
             "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
-            "Set agentic.enabled=false or choose a Converse model — Claude, Nova, "
-            "xAI Grok, or OpenAI GPT-6 Astra all support agentic extraction."
+            "Set agentic.enabled=false or choose a Converse model — Claude, Amazon "
+            "Nova Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
+            "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
+            "Astra support agentic extraction."
         )
 
     # Per-class extraction model overrides
@@ -878,8 +880,10 @@ def _validate_agentic_openai(
                 f"Class '{class_name}' overrides extraction with OpenAI Responses "
                 f"model '{override}', which is NOT compatible with agentic extraction "
                 "(extraction.agentic.enabled=true). Set agentic.enabled=false or "
-                "choose a Converse model for this class — Claude, Nova, xAI Grok, or "
-                "OpenAI GPT-6 Astra all support agentic extraction."
+                "choose a Converse model for this class — Claude, Amazon Nova "
+                "Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
+                "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
+                "Astra support agentic extraction."
             )
 
 

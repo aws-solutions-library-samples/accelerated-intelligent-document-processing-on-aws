@@ -1954,3 +1954,27 @@ make both loud without changing what is extracted:
   remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
   issue: a
   successful call proves the estimate wrong, and a failed section never reaches the record.
+- `ModelInvalidToolUseSequence` — the same shape for a model whose tool-use sequence
+  Bedrock rejects: raised `from` Bedrock's `EventStreamError` /
+  `modelStreamErrorException` when `is_model_tool_use_sequence_error` matches
+  `Model produced invalid sequence as part of ToolUse`, on the **first** attempt (the
+  `max_extraction_retries` loop is for a model that answers badly, not one whose answer
+  the protocol rejects). `_explain_invalid_tool_use_sequence` names the model id —
+  threaded down from `structured_output_async`, because Strands puts the model id in the
+  exception's `__notes__`, which is not part of `str(e)` — says the failure reproduces on
+  retry with the same request and so is treated as deterministic rather than transient,
+  and lists three remedies: emit less per call
+  (`extraction.agentic.shard_token_budget` / `max_pages_per_shard`), switch to a model
+  measured on this path (`_AGENTIC_CAPABLE_EXAMPLE_MODELS`, taken from
+  `docs/extraction-and-confidence.md` and `config_library/pricing.yaml`), or
+  `extraction.mode: simple`, which needs no tool use in its default configuration
+  (`extraction.forced_tool` is the exception, and is off by default). The wording stops
+  short of "model capability limit" on purpose: AWS's
+  [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
+  attributes this error largely to inference parameters and output budget, and the
+  agentic path sends no `top_k` (see `_get_inference_params`), so the observed failures
+  are consistent with configuration rather than proven incapacity. The class name is in
+  no retry list, and `transient_errors` independently classifies the underlying outcome
+  as deterministic, so neither the caller nor the state machine retries it. Before #895 a
+  Nova Lite grid logged 247 of these in three hours, each one surfaced as
+  `TransientError` and retried up to eight times per shard task.
