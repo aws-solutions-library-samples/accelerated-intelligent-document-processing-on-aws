@@ -5,10 +5,13 @@
 
 Background
 ----------
-``AlertsTopic`` is the single destination for all CloudWatch alarms the solution
-creates — ``patterns/unified/template.yaml`` and every ``nested/*`` stack declare
-zero alarms, so all alerting for the whole solution funnels through this one
-topic in the parent template. For many releases *nothing was subscribed to it*.
+``AlertsTopic`` is the destination for every CloudWatch alarm the solution
+creates but one — ``patterns/unified/template.yaml`` and every ``nested/*`` stack
+declare zero alarms, so alerting funnels through this one topic in the parent
+template. Eleven of the twelve alarms publish to it directly; the twelfth,
+``BedrockServiceOutageAlarm``, publishes to ``CircuitBreakerTopic`` and reaches
+``AlertsTopic`` via the circuit-breaker manager Lambda. For many releases
+*nothing was subscribed to* ``AlertsTopic``.
 The topic ARN was emitted as the ``SNSAlertsTopicARN`` stack output and an
 operator was tacitly expected to go and subscribe by hand; on a default
 deployment every alarm transitioned to ``ALARM`` and notified nobody (GitHub
@@ -33,6 +36,13 @@ perfectly valid template. So the checks here are structural and read the
 committed templates directly (no AWS, no deploy, no build artifacts), in the
 style of ``scripts/tests/test_nested_stack_parameters.py``.
 
+Two of those three prior instances were about *conditions*, not structure, so the
+repo-wide check below compares alarm and subscription conditions rather than only
+matching resources up; and it discovers templates by content rather than naming
+the parent, because a guard that counts in one file leaves the same defect open in
+the other 29. See ``_subscription_can_serve`` and ``_discover_templates`` for what
+each of those does and does not decide.
+
 What is deliberately *not* asserted: that alerting actually works end to end. An
 SNS email subscription is created in ``PendingConfirmation`` and delivers nothing
 until the recipient clicks the confirmation link, which no static test can
@@ -41,6 +51,7 @@ observe. See ``docs/monitoring.md``.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +59,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DISCOVERY_SCRIPT = REPO_ROOT / "scripts" / "discover_templates.sh"
 PARENT_TEMPLATE = "template.yaml"
 ALERTS_TOPIC = "AlertsTopic"
 ADMIN_EMAIL_PARAM = "AdminEmail"
@@ -57,6 +69,22 @@ ADMIN_EMAIL_PARAM = "AdminEmail"
 # restores #922 (see test_admin_email_is_subscribed_to_alerts).
 GUARD_CONDITION = "ShouldSubscribeAdminToAlerts"
 SENTINEL_CONDITION = "SuppressAdminInvite"
+
+# Subscription conditions accepted as compatible with an *unconditionally* created
+# alarm, beyond "no condition" and "the alarm's own condition". Each entry is a
+# deliberate operator opt-out: true on a default deployment, false only because the
+# deployer supplied an input that means "do not notify this address". Keep this to
+# conditions whose definition is separately pinned by a test in this file -- an
+# unpinned name here would be a hole exactly the size of the bug the file exists to
+# catch. Name -> why it is an opt-out rather than an accident.
+OPERATOR_OPT_OUT_GUARDS = {
+    GUARD_CONDITION: (
+        "true on a default deployment; false only when AdminEmail is empty or is "
+        "the citest@suppress.welcome.email CI sentinel, which can never confirm a "
+        "subscription. Its definition is pinned by "
+        "test_admin_email_is_subscribed_to_alerts."
+    ),
+}
 
 
 class _CfnLoader(yaml.SafeLoader):
@@ -76,6 +104,37 @@ _CfnLoader.add_multi_constructor("!", _tag_to_python)
 
 def _load(rel_path: str) -> dict:
     return yaml.load((REPO_ROOT / rel_path).read_text(), Loader=_CfnLoader) or {}
+
+
+def _discover_templates() -> list[str]:
+    """Every CloudFormation template in the repo, as repo-relative paths.
+
+    Discovered by *content*, not named. The first version of this file pinned
+    ``PARENT_TEMPLATE`` and nothing else, which closed #922 inside
+    ``template.yaml`` and left it open across the other 29 templates: injecting an
+    unsubscribed topic plus an alarm targeting it into
+    ``patterns/unified/template.yaml`` kept this suite at 4 passed and
+    ``lib/idp_sdk/tests/unit/test_cloudwatch_alarms.py`` at 68 passed. That is
+    latent rather than live today -- the unified pattern declares no alarms and no
+    topics -- but the whole premise of this file is that a topic with no
+    subscriber is invisible until something counts, so counting in one file only
+    reproduces the defect one directory over.
+
+    ``scripts/discover_templates.sh`` is the repository's content-based discovery,
+    already shared by ``make cfn-lint`` and ``make check-arn-partitions`` and
+    pinned by ``scripts/tests/test_discover_templates.py``; reusing it (as
+    ``test_discover_templates.py`` itself does, by subprocess) means these gates
+    cannot drift apart, and an alarm added to a template created after this test
+    is covered with no list to update.
+    """
+    out = subprocess.run(
+        [str(DISCOVERY_SCRIPT), "cfn"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return [line for line in out.splitlines() if line]
 
 
 def _resources(template: dict) -> dict[str, dict]:
@@ -119,15 +178,60 @@ def _referenced_names(node: Any) -> set[str]:
     return found
 
 
-def _subscriptions_by_topic(template: dict) -> dict[str, list[str]]:
-    """Topic logical name -> subscription resources whose TopicArn points at it."""
-    by_topic: dict[str, list[str]] = {}
+def _subscriptions_by_topic(template: dict) -> dict[str, dict[str, str | None]]:
+    """Topic logical name -> {subscription resource name: its ``Condition``}.
+
+    The condition is carried along because a subscription that is not created on
+    the deployments where the alarm *is* created notifies nobody, and matching
+    alarm to topic to subscription purely structurally cannot see that. See
+    ``_subscription_can_serve``.
+    """
+    by_topic: dict[str, dict[str, str | None]] = {}
     subscriptions = _of_type(template, "AWS::SNS::Subscription")
     for name, body in subscriptions.items():
         topic_arn = (body.get("Properties") or {}).get("TopicArn")
+        condition = body.get("Condition")
         for topic in _referenced_names(topic_arn):
-            by_topic.setdefault(topic, []).append(name)
+            by_topic.setdefault(topic, {})[name] = (
+                condition if isinstance(condition, str) else None
+            )
     return by_topic
+
+
+def _subscription_can_serve(
+    alarm_condition: str | None, subscription_condition: str | None
+) -> bool:
+    """Could this subscription exist on a deployment where the alarm exists?
+
+    WHAT THIS DECIDES. A subscription cannot serve an alarm when it carries a
+    ``Condition`` that is neither absent, nor the alarm's own ``Condition``, nor a
+    named operator opt-out (``OPERATOR_OPT_OUT_GUARDS``). That is the gap a
+    mutation exposed: re-pointing ``CircuitBreakerTopicSubscription`` at
+    ``SuppressAdminInvite`` -- false on every normal deployment -- leaves
+    ``BedrockServiceOutageAlarm`` and ``CircuitBreakerTopic`` both present and the
+    subscription absent, so the alarm publishes into a void. Before this rule the
+    suite reported 4 passed on that mutated template, which is the same
+    report-OK-by-silence shape as the ``CircuitBreakerEnabled``-gated KMS grant
+    named in this module's docstring.
+
+    WHAT THIS DOES NOT DECIDE. General CloudFormation condition satisfiability. It
+    does not evaluate ``Fn::And`` / ``Fn::Or`` / ``Fn::Equals``, does not know what
+    parameter values a deployer will pass, and cannot tell that two
+    differently-named conditions are logically equivalent or that one implies the
+    other. Such a pair is reported as incompatible, and the resolution is to name
+    the subscription's condition in ``OPERATOR_OPT_OUT_GUARDS`` with a
+    justification -- not to loosen this rule. That is deliberate: a satisfiability
+    solver here would be a second implementation of CloudFormation to keep correct,
+    and a check that over-claims is worse than a narrow one that says what it
+    covers.
+    """
+    if subscription_condition is None:
+        # Created on every deployment, so it exists wherever the alarm does.
+        return True
+    if subscription_condition == alarm_condition:
+        # Identical guard: the two resources appear and disappear together.
+        return True
+    return subscription_condition in OPERATOR_OPT_OUT_GUARDS
 
 
 def _intrinsic(node: Any, name: str) -> Any:
@@ -184,7 +288,7 @@ def test_alerts_topic_exists() -> None:
 def test_alerts_topic_has_a_subscription() -> None:
     """#922: a topic every alarm publishes to, and nobody receives."""
     template = _load(PARENT_TEMPLATE)
-    subscribers = _subscriptions_by_topic(template).get(ALERTS_TOPIC, [])
+    subscribers = _subscriptions_by_topic(template).get(ALERTS_TOPIC, {})
     assert subscribers, (
         f"{ALERTS_TOPIC} has no AWS::SNS::Subscription targeting it, so every "
         f"alarm in {PARENT_TEMPLATE} publishes into a topic with zero "
@@ -299,42 +403,108 @@ def test_every_alarm_notifies_a_subscribed_topic() -> None:
     """An alarm with no AlarmActions, or one aimed at a dead topic, is silence.
 
     Adding a subscriber to ``AlertsTopic`` while an alarm sits unwired only half
-    closes #922, so this walks every ``AWS::CloudWatch::Alarm`` in the parent
-    template. ``BedrockServiceOutageAlarm`` is the one that does not target
+    closes #922, so this walks every ``AWS::CloudWatch::Alarm`` in *every*
+    template the repository ships, not just the parent one. All 12 alarms live in
+    ``template.yaml`` today, which is precisely why the check must not name it: a
+    thirteenth added to a nested or feature-platform stack would otherwise be
+    covered by nothing (see ``_discover_templates``).
+
+    Three properties per alarm: it sets ``AlarmActions``; every target is an
+    ``AWS::SNS::Topic`` declared in the same template; and that topic has at least
+    one subscription, of any protocol, whose ``Condition`` is compatible with the
+    alarm's (``_subscription_can_serve``).
+
+    ``BedrockServiceOutageAlarm`` is the one alarm that does not target
     ``AlertsTopic``: it publishes to ``CircuitBreakerTopic``, which is subscribed
     by ``CircuitBreakerManagerFunction`` (protocol ``lambda``) — and that function
-    in turn publishes a human-readable message to ``AlertsTopic``. That still
-    satisfies the rule checked here, which is that no alarm points at a topic with
-    no subscriber of any protocol.
+    in turn publishes a human-readable message to ``AlertsTopic``. Both carry the
+    same ``CircuitBreakerEnabledCondition``, so they satisfy the rule here.
     """
-    template = _load(PARENT_TEMPLATE)
-    alarms = _of_type(template, "AWS::CloudWatch::Alarm")
-    assert len(alarms) >= 10, (
-        f"expected the parent template to declare at least 10 alarms, found "
-        f"{len(alarms)}: {sorted(alarms)}. A collapsed count means the "
-        f"discovery broke, not that the alarms went away."
+    templates = _discover_templates()
+    assert len(templates) >= 20, (
+        f"content-based discovery returned only {len(templates)} template(s): "
+        f"{templates}. The repository ships around 30, so a collapsed count means "
+        f"scripts/discover_templates.sh broke and this check has gone vacuous — "
+        f"not that the templates went away."
     )
 
-    subscribed_topics = set(_subscriptions_by_topic(template))
+    # A stale opt-out entry is a permanent hole, so require each to still name a
+    # real condition somewhere in the tree.
+    declared_conditions = {
+        name
+        for rel in templates
+        for name in (_load(rel).get("Conditions") or {})
+        if isinstance(name, str)
+    }
+    stale = sorted(set(OPERATOR_OPT_OUT_GUARDS) - declared_conditions)
+    assert not stale, (
+        f"OPERATOR_OPT_OUT_GUARDS names condition(s) no template declares: "
+        f"{stale}. A renamed or deleted condition left in that dict silently "
+        f"widens what counts as an acceptable subscription guard. Remove the "
+        f"entry, or point it at the condition's new name."
+    )
 
-    unwired: list[str] = []
-    unsubscribed: dict[str, list[str]] = {}
-    for name, body in alarms.items():
-        actions = (body.get("Properties") or {}).get("AlarmActions") or []
-        targets = _referenced_names(actions)
-        if not targets:
-            unwired.append(name)
+    total_alarms = 0
+    findings: list[str] = []
+    for rel in templates:
+        template = _load(rel)
+        alarms = _of_type(template, "AWS::CloudWatch::Alarm")
+        if not alarms:
             continue
-        dead = sorted(t for t in targets if t not in subscribed_topics)
-        if dead:
-            unsubscribed[name] = dead
+        total_alarms += len(alarms)
+        topics = _of_type(template, "AWS::SNS::Topic")
+        subscriptions = _subscriptions_by_topic(template)
 
-    assert not unwired, (
-        f"alarm(s) in {PARENT_TEMPLATE} have no AlarmActions, so they can only "
-        f"ever be noticed by someone already looking at the console: {unwired}."
+        for name, body in sorted(alarms.items()):
+            alarm_condition = body.get("Condition")
+            alarm_condition = (
+                alarm_condition if isinstance(alarm_condition, str) else None
+            )
+            actions = (body.get("Properties") or {}).get("AlarmActions") or []
+            targets = sorted(_referenced_names(actions))
+            if not targets:
+                findings.append(
+                    f"{rel}: {name} has no AlarmActions naming a resource, so it "
+                    f"can only ever be noticed by someone already looking at the "
+                    f"console."
+                )
+                continue
+            for target in targets:
+                if target not in topics:
+                    # Fail closed. Every alarm in the repo today points at a topic
+                    # declared beside it, so this cannot be reached without a new
+                    # wiring shape (a topic ARN passed in as a parameter, say)
+                    # whose subscriber this file has no way to see.
+                    findings.append(
+                        f"{rel}: {name} points AlarmActions at {target!r}, which "
+                        f"is not an AWS::SNS::Topic declared in that template "
+                        f"(topics there: {sorted(topics)}). This check can only "
+                        f"follow a topic it can see, so extend it to cover the new "
+                        f"wiring rather than assuming somebody is subscribed."
+                    )
+                    continue
+                candidates = subscriptions.get(target, {})
+                usable = sorted(
+                    sub
+                    for sub, cond in candidates.items()
+                    if _subscription_can_serve(alarm_condition, cond)
+                )
+                if usable:
+                    continue
+                findings.append(
+                    f"{rel}: {name} (Condition {alarm_condition!r}) publishes to "
+                    f"{target!r}, which has no AWS::SNS::Subscription that exists "
+                    f"on the deployments where the alarm does, so it notifies "
+                    f"nobody (#922). Subscriptions on that topic and their "
+                    f"conditions: {candidates or 'none'}. A subscription counts "
+                    f"only if it has no Condition, carries the alarm's own "
+                    f"Condition, or is one of the reviewed operator opt-outs "
+                    f"{sorted(OPERATOR_OPT_OUT_GUARDS)}."
+                )
+
+    assert total_alarms >= 10, (
+        f"expected the repository to declare at least 10 CloudWatch alarms, found "
+        f"{total_alarms} across {len(templates)} templates. A collapsed count "
+        f"means the discovery broke, not that the alarms went away."
     )
-    assert not unsubscribed, (
-        "alarm(s) publish to a topic with no AWS::SNS::Subscription, which "
-        f"notifies nobody: {unsubscribed}. Subscribed topics: "
-        f"{sorted(subscribed_topics)}."
-    )
+    assert not findings, "alarm(s) notify nobody:\n  " + "\n  ".join(findings)

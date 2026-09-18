@@ -306,8 +306,8 @@ raised alarms nobody saw ([issue #922](https://github.com/aws-solutions-library-
 > still publishes successfully and every notification is still dropped — which
 > looks exactly like the pre-0.6.9 behaviour. A pending confirmation does **not**
 > fail or delay the CloudFormation operation, so there is no deployment error to
-> notice; the confirmation link expires after three days, after which you have to
-> re-request one from the SNS console.
+> notice; the confirmation token is valid for about two days, after which you have
+> to re-request one from the SNS console.
 
 Check the status any time:
 
@@ -332,6 +332,17 @@ subscriptions and are independent of the stack, so adding them does not conflict
 with a stack update, and removing the stack removes only the subscription it
 created.
 
+There is a second reason beyond the rota. **Every SNS email carries a one-click
+unsubscribe link, so any recipient — or anyone the mail is forwarded to — can
+remove the subscription without telling you, and nothing in the stack notices.**
+Alarms then keep publishing successfully to a topic nobody receives, which is
+indistinguishable from having no subscription at all. This is inherent to
+`Protocol: email` rather than something this solution introduces, and it is the
+strongest argument for the options below: a chat or `https` subscription has no
+unsubscribe link in the payload, and a distribution list keeps the SNS endpoint
+constant no matter who leaves it. If you rely on email, re-run the
+`list-subscriptions-by-topic` check above periodically.
+
 - **A distribution list or ticket queue** — subscribe a group address rather than
   an individual, so the rota changes without a stack update:
 
@@ -354,14 +365,41 @@ created.
 - **An existing operational topic** — if you already centralise alarms, you do not
   have to use `AlertsTopic` as the fan-out point. Subscribe your own topic's
   ingest Lambda/queue to it, or point the alarms at your topic directly by
-  editing `AlarmActions` in a template you deploy yourself. Keep in mind that
-  `AlertsTopic` is encrypted with the stack's customer-managed KMS key, so a
-  cross-account subscriber needs `kms:Decrypt` on that key as well as
-  `sns:Subscribe`.
+  editing `AlarmActions` in a template you deploy yourself. A subscriber in
+  another account needs `sns:Subscribe` on the topic policy. It does **not** need
+  any permission on the stack's KMS key: SNS server-side encryption protects the
+  message at rest and SNS decrypts it itself before delivery, so the documented
+  key-policy grants are for *publishers* and for the `sns.amazonaws.com` service
+  principal, not for subscribers. The KMS requirement that does exist runs the
+  other way — if you subscribe an **encrypted SQS queue**, that queue's key
+  policy must allow `sns.amazonaws.com` to `kms:GenerateDataKey*` and
+  `kms:Decrypt`, otherwise delivery fails silently from SNS's side.
 
-In a `--headless` deployment there is no `AdminEmail` parameter (Cognito is
-stripped), so no subscription is created and the topic starts with no
-subscribers. Subscribe your own recipients to the `SNSAlertsTopicARN` output.
+  > ⚠️ Do not grant a foreign account `kms:Decrypt` on the stack's
+  > `CustomerManagedEncryptionKey` in order to receive alerts. That one key also
+  > encrypts the input, output, working and evaluation buckets, the DynamoDB
+  > tables and the queues, so the grant would reach the entire processed-document
+  > corpus — an enormous amount of access for an alarm email, and it is not
+  > required.
+
+#### `--headless` deployments still start with no subscribers
+
+> ⚠️ A `--headless` deployment strips the `AdminEmail` parameter along with
+> Cognito, so it collects no operator address and **creates no subscription at
+> all**. It keeps `AlertsTopic` and all 12 alarms, so a headless stack still has
+> the original defect: every alarm publishes successfully and nobody is notified.
+> Issue #922 is closed for the standard deployment and remains open for this one.
+
+Subscribing at least one recipient to the `SNSAlertsTopicARN` output is therefore
+a required post-deploy step for headless, not an optional improvement:
+
+```bash
+aws sns subscribe --topic-arn <alerts-topic-arn> \
+  --protocol email --endpoint idp-oncall@example.com
+```
+
+Whether the headless variant should gain its own optional alerts-email parameter
+is an open deployment-interface question rather than a defect in the transform.
 
 ### `WorkflowErrorsAlarm` — the primary failure signal
 
