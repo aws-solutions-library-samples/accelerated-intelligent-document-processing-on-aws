@@ -181,6 +181,363 @@ def test_s8_is_not_satisfied_by_an_unrelated_refusal_elsewhere():
     )
 
 
+# --- driving run_checks over a deliberately defective fixture tree -----------
+#
+# Everything above tests the PREDICATES in isolation, which is necessary but not
+# sufficient: the predicates were re-implemented here as `_prefers_body` and
+# `_refuses_conflict`, so deleting the S7 and S8 blocks from `run_checks`
+# altogether left this whole suite green (measured: 11 passed, and the full
+# 1007-test suite byte-identical). The tests below call `run_checks` itself
+# against a fixture repository that CONTAINS the defect, so the check has to be
+# wired up and reachable for them to pass.
+
+_GOOD_APP = '''
+@app.get("/health")
+async def health() -> dict:
+    return {"ok": True}
+
+
+@app.post("/chat/agent")
+async def chat_agent(request: Request, body: AgentChatRequest):
+    caller_sub = _resolve_caller_sub(request, body.callerSub)
+    return caller_sub
+'''
+
+_GOOD_SSE = '''
+def resolve_caller_sub(verified, claimed):
+    if claimed and claimed != verified:
+        raise CallerIdentityConflict("mismatch")
+    return verified or claimed
+'''
+
+_GROUP_GATE = '''
+_AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
+
+
+def _enforce_agent_chat_groups(event):
+    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups")
+    if groups is not None and not set(groups) & set(_AGENT_CHAT_GROUPS):
+        raise PermissionError("Unauthorized")
+'''
+
+
+def _make_fixture(
+    tmp_path: Path,
+    *,
+    app_src: str = _GOOD_APP,
+    sse_src: str = _GOOD_SSE,
+    gate_src: str = _GROUP_GATE,
+    target_line: str = "TargetFunctionArn: !Ref StreamFunction",
+    code_uri: str = "src/lambda/stream/",
+    route_policy: str = (
+        "        groups: [Admin, Author, Viewer]\n"
+        "        enforced_in: src/lambda/proc/index.py\n"
+    ),
+) -> Path:
+    """A minimal repository tree `run_checks` can be pointed at.
+
+    Only the files the checks actually open are created. `operations` is empty and
+    the dispatcher stubs are empty, so S1-S5 contribute nothing and the S6-S9
+    findings under test stand alone.
+    """
+    (tmp_path / "scripts").mkdir()
+    nested = tmp_path / "nested" / "api-resolvers"
+    disp = nested / "src" / "lambda" / "http_api_dispatcher"
+    disp.mkdir(parents=True)
+    (disp / "index.py").write_text("")
+    (disp / "ddb_direct.py").write_text("")
+    api = nested / "src" / "api"
+    api.mkdir(parents=True)
+    (api / "schema.graphql").write_text("type Query {\n  noop: String\n}\n")
+    (nested / "template.yaml").write_text("Resources: {}\n")
+
+    stream = tmp_path / "src" / "lambda" / "stream"
+    stream.mkdir(parents=True)
+    (stream / "app.py").write_text(app_src)
+    (stream / "sse.py").write_text(sse_src)
+    proc = tmp_path / "src" / "lambda" / "proc"
+    proc.mkdir(parents=True)
+    (proc / "index.py").write_text(gate_src)
+
+    (tmp_path / "template.yaml").write_text(
+        "Resources:\n"
+        "  StreamUrl:\n"
+        "    Type: AWS::Lambda::Url\n"
+        "    Properties:\n"
+        f"      {target_line}\n"
+        "      AuthType: AWS_IAM\n"
+        "      InvokeMode: RESPONSE_STREAM\n"
+        "  StreamFunction:\n"
+        "    Type: AWS::Serverless::Function\n"
+        "    Properties:\n"
+        f"      CodeUri: {code_uri}\n"
+    )
+    (tmp_path / "scripts" / "api_rbac_expectations.yaml").write_text(
+        "operations: {}\n"
+        "known_gaps:\n"
+        "  GAP-99:\n"
+        "    description: a residual transport limitation\n"
+        "function_url_endpoints:\n"
+        "  StreamUrl:\n"
+        "    auth_type: AWS_IAM\n"
+        "    handler: src/lambda/stream/app.py\n"
+        "    routes:\n"
+        # GET /health is deliberately NOT declared: it is in
+        # FUNCTION_URL_OPEN_ROUTES, so the live expectations do not declare it
+        # either, and declaring it would subject a liveness probe to S7.
+        "      POST /chat/agent:\n" + route_policy
+    )
+    return tmp_path
+
+
+def _fails(tmp_path: Path, check: str, strict: bool = False) -> list[str]:
+    return [
+        f.message
+        for f in scanner.run_checks(strict=strict, repo=tmp_path)
+        if f.check == check and f.level == "FAIL"
+    ]
+
+
+def _levels(tmp_path: Path, check: str, strict: bool = False) -> list[str]:
+    return [
+        f.level
+        for f in scanner.run_checks(strict=strict, repo=tmp_path)
+        if f.check == check
+    ]
+
+
+@pytest.mark.unit
+def test_fixture_baseline_is_clean(tmp_path):
+    """The fixture must pass before each mutation, or nothing below means anything."""
+    repo = _make_fixture(tmp_path)
+    for check in ("S6", "S7", "S8", "S9"):
+        assert not _fails(repo, check)
+
+
+@pytest.mark.unit
+def test_run_checks_reports_s7_on_a_body_first_route(tmp_path):
+    repo = _make_fixture(
+        tmp_path,
+        app_src=_GOOD_APP.replace(
+            "caller_sub = _resolve_caller_sub(request, body.callerSub)",
+            'caller_sub = body.callerSub or _caller_sub(request)',
+        ),
+    )
+    messages = _fails(repo, "S7")
+    assert any("prefers the request-body caller identity" in m for m in messages), (
+        messages
+    )
+
+
+@pytest.mark.unit
+def test_run_checks_reports_s7_when_no_verified_identity_is_resolved(tmp_path):
+    repo = _make_fixture(
+        tmp_path,
+        app_src=_GOOD_APP.replace(
+            "caller_sub = _resolve_caller_sub(request, body.callerSub)",
+            "caller_sub = body.callerSub",
+        ),
+    )
+    assert any(
+        "resolves no transport-verified caller identity" in m
+        for m in _fails(repo, "S7")
+    )
+
+
+@pytest.mark.unit
+def test_run_checks_reports_s8_when_nothing_refuses_a_conflict(tmp_path):
+    """The route reads a body identity but no function in the package refuses one."""
+    repo = _make_fixture(
+        tmp_path,
+        sse_src="def resolve_caller_sub(verified, claimed):\n"
+        "    return verified or claimed\n",
+    )
+    assert any("never refuses one that contradicts" in m for m in _fails(repo, "S8")), (
+        _fails(repo, "S8")
+    )
+
+
+@pytest.mark.unit
+def test_run_checks_reports_s9_when_the_handler_has_no_group_gate(tmp_path):
+    repo = _make_fixture(tmp_path, gate_src="def handler(event, ctx):\n    return {}\n")
+    assert any("no group-enforcement pattern found" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_run_checks_reports_s9_when_the_group_lists_disagree(tmp_path):
+    """Both directions: the code naming MORE groups than declared also fails.
+
+    Widening was the direction the original containment test missed.
+    """
+    repo = _make_fixture(
+        tmp_path,
+        gate_src=_GROUP_GATE.replace(
+            '("Admin", "Author", "Viewer")', '("Admin", "Author", "Viewer", "Reviewer")'
+        ),
+    )
+    assert any("but the route declares" in m for m in _fails(repo, "S9"))
+
+
+# --- Fix 4: the TargetFunctionArn must actually be resolved ------------------
+#
+# S6 resolves the URL's target function and checks the declared handler lives
+# under that function's CodeUri, so the scan cannot be pointed at a different
+# (still-clean) source file. Reading only `!Ref` made this fail OPEN: with
+# `!GetAtt` the target came back empty, `function_code_uri` returned empty, and
+# the containment check was skipped entirely. Measured on a decoy handler
+# package: `!Ref` gave 1 FAIL, `!GetAtt` gave 0 FAIL.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "target_line",
+    [
+        "TargetFunctionArn: !Ref StreamFunction",
+        "TargetFunctionArn: !GetAtt StreamFunction.Arn",
+        "TargetFunctionArn: !GetAtt StreamFunction",
+        "TargetFunctionArn:\n        Ref: StreamFunction",
+        "TargetFunctionArn:\n        Fn::GetAtt: [StreamFunction, Arn]",
+    ],
+)
+def test_s6_resolves_the_target_in_every_reference_form(tmp_path, target_line):
+    urls = scanner.lambda_url_resources(
+        "Resources:\n"
+        "  StreamUrl:\n"
+        "    Type: AWS::Lambda::Url\n"
+        "    Properties:\n"
+        f"      {target_line}\n"
+        "      AuthType: AWS_IAM\n"
+    )
+    assert urls["StreamUrl"]["target"] == "StreamFunction", urls
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "target_line",
+    [
+        "TargetFunctionArn: !Ref StreamFunction",
+        "TargetFunctionArn: !GetAtt StreamFunction.Arn",
+    ],
+)
+def test_s6_catches_a_handler_outside_the_targets_code_uri(tmp_path, target_line):
+    """A decoy: the URL targets one function, the expectations name another's file.
+
+    Under the old `!Ref`-only regex the `!GetAtt` case validated the decoy file
+    and never read the real one.
+    """
+    repo = _make_fixture(tmp_path, target_line=target_line)
+    (repo / "src" / "lambda" / "decoy").mkdir(parents=True)
+    (repo / "src" / "lambda" / "decoy" / "app.py").write_text(_GOOD_APP)
+    text = (repo / "scripts" / "api_rbac_expectations.yaml").read_text()
+    (repo / "scripts" / "api_rbac_expectations.yaml").write_text(
+        text.replace("src/lambda/stream/app.py", "src/lambda/decoy/app.py")
+    )
+    assert any("but expectations name handler" in m for m in _fails(repo, "S6")), (
+        _fails(repo, "S6")
+    )
+
+
+@pytest.mark.unit
+def test_s6_fails_when_the_target_cannot_be_resolved_at_all(tmp_path):
+    """A scanner that cannot find its subject must say so, not pass silently."""
+    repo = _make_fixture(
+        tmp_path,
+        target_line=(
+            'TargetFunctionArn: !Sub "arn:${AWS::Partition}:lambda:...:function:x"'
+        ),
+    )
+    assert any("could not resolve TargetFunctionArn" in m for m in _fails(repo, "S6"))
+
+
+@pytest.mark.unit
+def test_s6_fails_when_the_target_has_no_resolvable_code_uri(tmp_path):
+    repo = _make_fixture(tmp_path)
+    text = (repo / "template.yaml").read_text()
+    (repo / "template.yaml").write_text(
+        text.replace(
+            "      CodeUri: src/lambda/stream/\n", "      Runtime: python3.12\n"
+        )
+    )
+    assert any("has no resolvable CodeUri" in m for m in _fails(repo, "S6"))
+
+
+# --- Fix 2: residual_gap must not downgrade, and a typo must not be silent ---
+
+
+@pytest.mark.unit
+def test_residual_gap_does_not_downgrade_a_finding(tmp_path):
+    """`residual_gap:` records an accepted transport limitation for the register.
+
+    It must NOT soften the S6-S9 checks on the same route, unlike `known_gap:`.
+    The distinction is load-bearing and was unenforced: changing one word
+    (`residual_gap` -> `known_gap`) on the live expectations file turned the FAIL
+    into a WARN with the whole suite still green.
+    """
+    repo = _make_fixture(
+        tmp_path,
+        gate_src="def handler(event, ctx):\n    return {}\n",
+        route_policy=(
+            "        groups: [Admin, Author, Viewer]\n"
+            "        enforced_in: src/lambda/proc/index.py\n"
+            "        residual_gap: GAP-99\n"
+        ),
+    )
+    assert _levels(repo, "S9") == ["FAIL"], _levels(repo, "S9")
+
+
+@pytest.mark.unit
+def test_known_gap_does_downgrade_the_same_finding(tmp_path):
+    """The other half of the distinction, so the test above cannot pass vacuously."""
+    repo = _make_fixture(
+        tmp_path,
+        gate_src="def handler(event, ctx):\n    return {}\n",
+        route_policy=(
+            "        groups: [Admin, Author, Viewer]\n"
+            "        enforced_in: src/lambda/proc/index.py\n"
+            "        known_gap: GAP-99\n"
+        ),
+    )
+    assert _levels(repo, "S9") == ["WARN"]
+    # ...and --strict still fails on it, which is what the release gate uses.
+    assert _levels(repo, "S9", strict=True) == ["FAIL"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("typo", ["residual_gapp", "enforced_ni", "group"])
+def test_a_misspelled_route_key_is_a_failure_not_a_silent_no_op(tmp_path, typo):
+    """Every route key is read by name, so a typo makes the setting VANISH.
+
+    Measured before this check existed: writing `residual_gapp:` for
+    `residual_gap:` left the scan at 0 FAIL / 2 WARN and exit 0, while removing
+    GAP-07 from the accepted-risk register that `--strict` and the published
+    security snapshot read. The only symptom was an S0 WARN about an unreferenced
+    gap definition, which reads like housekeeping.
+    """
+    repo = _make_fixture(
+        tmp_path,
+        route_policy=(
+            "        groups: [Admin, Author, Viewer]\n"
+            "        enforced_in: src/lambda/proc/index.py\n"
+            f"        {typo}: GAP-99\n"
+        ),
+    )
+    assert any(
+        f"unknown key '{typo}'" in m for m in _fails(repo, "S6")
+    ), _fails(repo, "S6")
+
+
+@pytest.mark.unit
+def test_a_misspelled_endpoint_key_is_also_a_failure(tmp_path):
+    repo = _make_fixture(tmp_path)
+    text = (repo / "scripts" / "api_rbac_expectations.yaml").read_text()
+    (repo / "scripts" / "api_rbac_expectations.yaml").write_text(
+        text.replace(
+            "    auth_type: AWS_IAM\n", "    auth_type: AWS_IAM\n    notes: x\n"
+        )
+    )
+    assert any("unknown key 'notes'" in m for m in _fails(repo, "S6"))
+
+
 # --- S9 + live repo state ----------------------------------------------------
 
 

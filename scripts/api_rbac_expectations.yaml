@@ -894,6 +894,15 @@ operations:
 #                        route stay hard FAILs. Use this for a limitation of
 #                        the transport itself, so recording it cannot disarm
 #                        the checks on the code.
+#       note:            free text
+#
+# The key lists above are CLOSED, and the scanner enforces them (S6): an
+# unrecognised key is a hard FAIL rather than being ignored. Every key here is
+# read by name, so a misspelling makes the setting vanish silently — writing
+# `residual_gapp:` was measured to leave the scan at 0 FAIL while removing GAP-07
+# from this register. Adding a key means adding it to ENDPOINT_ENTRY_KEYS /
+# ROUTE_POLICY_KEYS in scripts/sdlc/scan_api_rbac.py, which is a code change a
+# reviewer sees.
 #
 # Routes needing no per-user authorization (health checks) are allowlisted in
 # FUNCTION_URL_OPEN_ROUTES in the scanner, not here.
@@ -925,8 +934,18 @@ function_url_endpoints:
 # ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization
 # posture and current enforcement. Each id must be referenced by at least one
-# operation above, and is mirrored in
-# security/threat-modeling/feature-threats/rbac-authentication.md (AUTH.T07/T08).
+# operation or route above (the scan enforces that in both directions).
+#
+# CORRECTION: this header previously claimed every id here "is mirrored in
+# security/threat-modeling/feature-threats/rbac-authentication.md
+# (AUTH.T07/T08)". That is not true and never was — `grep -rn GAP-02
+# security/threat-modeling/` returns nothing. What IS true: GAP-07 is recorded
+# under AUTH.T14 in that document, and the retired GAP-06 is referenced under
+# AUTH.T08. GAP-02 (queryKnowledgeBase) is recorded only here and in the
+# published scan snapshots under security/test-results/. Giving it a threat-model
+# entry is a documentation follow-up, deliberately not done on this branch
+# because rbac-authentication.md is being edited concurrently.
+#
 # A gap entry downgrades a scan/test mismatch from FAIL to WARN; remove the
 # gap (and its references) when the enforcement is fixed, and the harness
 # will then hold the line.
@@ -957,9 +976,49 @@ known_gaps:
       that token — a change to the transport's auth contract (UI, template and
       a JWKS verification dependency) that cannot be validated without a
       deployment. _caller_identity() in
-      src/lambda/chat_stream_processor/app.py is the single place that plugs in.
+      src/lambda/chat_stream_processor/app.py is where the claims are obtained;
+      _enforce_groups_or_403() beside it is what turns them into a 403, and it
+      already runs synchronously in the route so closing this gap needs no
+      second change on that path.
+
       Until then the practical exposure is limited to the Reviewer group, the
       only signed-in role excluded from agent chat.
+
+      SCOPE — what that last sentence does and does not cover. "Limited to the
+      Reviewer group" is true of the AGENT-CHAT GROUP CHECK on this transport
+      specifically: Admin, Author and Viewer are all allowed the operation, so
+      the only group whose denial is lost is Reviewer, and a Reviewer reaching
+      /chat/agent is still an authenticated user of this deployment. The residual
+      is wider than that one check, though: NEITHER streaming route obtains a
+      per-user identity from the transport. That also leaves the
+      allowedConfigVersions scope lookup in
+      src/lambda/chat_with_document_processor/index.py (the caller-scope
+      resolution around lines 239-291) without a verified per-user subject to
+      resolve, so it falls back rather than failing closed. Both halves close
+      together when the endpoint verifies an ID token.
+
+      RESIDUAL — the transport principal's session name is undocumented. The
+      identity resolution in src/lambda/chat_stream_processor/sse.py has to
+      recognise the assumed-role session name Cognito chooses, and AWS documents
+      no RoleSessionName for the Identity Pool enhanced flow. The value is
+      MEASURED, not documented: 499 CloudTrail AssumeRoleWithWebIdentity events
+      across three identity pools and three roles all carry
+      "CognitoIdentityCredentials", with zero counter-examples, and the call is
+      made by an AWS-internal principal so a client cannot influence it. There is
+      no compatibility commitment on that string. The code is written so an
+      unrecognised future value degrades safely — is_user_specific_identity() is
+      a POSITIVE shape test (Cognito sub, or <region>:<uuid> identity id), so an
+      unknown value falls through to the body-supplied fallback rather than
+      refusing every request — but a change to a genuinely per-user session name
+      would silently shift attribution from the body value to the transport one.
+      This is accepted rather than fixed because the only durable fix is the same
+      ID-token verification that closes the gap itself.
+
+      PARTITION — this transport exists in the commercial partition only. On
+      GovCloud the UI falls back to the REST dispatcher plus polling
+      (src/ui/src/components/chat-panel/ChatPanel.tsx), which is the dispatcher
+      path and
+      carries the group claim, so this gap does not apply there.
 # GAP-01, GAP-03, GAP-04, GAP-05 and GAP-06 were RESOLVED (no longer accepted
 # risks — a regression now hard-FAILS the gate):
 #   GAP-01 getStepFunctionExecution now requires the caller-supplied

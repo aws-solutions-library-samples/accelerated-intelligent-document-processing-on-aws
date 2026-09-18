@@ -74,17 +74,12 @@ import re
 import sys
 from pathlib import Path
 
+# Default source root. Every path the checks read is derived from the ``repo``
+# argument of ``run_checks`` (which defaults to this), so the whole scan can be
+# pointed at a fixture tree — see the docstring on ``run_checks``.
+# Note the Function URLs live in the parent template.yaml, not in the
+# api-resolvers nested stack.
 REPO = Path(__file__).resolve().parents[2]
-EXPECTATIONS = REPO / "scripts" / "api_rbac_expectations.yaml"
-TEMPLATE = REPO / "nested" / "api-resolvers" / "template.yaml"
-# The Function URLs live in the parent stack, not the api-resolvers nested stack.
-MAIN_TEMPLATE = REPO / "template.yaml"
-SCHEMA = REPO / "nested" / "api-resolvers" / "src" / "api" / "schema.graphql"
-DISPATCHER_DIR = (
-    REPO / "nested" / "api-resolvers" / "src" / "lambda" / "http_api_dispatcher"
-)
-DDB_DIRECT = DISPATCHER_DIR / "ddb_direct.py"
-DISPATCHER = DISPATCHER_DIR / "index.py"
 
 # Methods intentionally unauthenticated (CORS preflight + static SPA serving).
 ALLOWED_UNAUTH_METHODS = {
@@ -136,6 +131,29 @@ CLIENT_IDENTITY_TOKENS = (
 # verified identity, comparing it (`!=`) and refusing, inside one function. Any
 # of these tokens alone proves nothing.
 IDENTITY_REJECT_TOKENS = ("403", "PermissionError", "HTTPException", "raise ")
+
+# The COMPLETE key schema for a function_url_endpoints entry and for one of its
+# route policies, as documented in the header of that section in
+# scripts/api_rbac_expectations.yaml. An unrecognised key is a FAIL.
+#
+# This exists because a misspelling was silent and consequential. `residual_gapp:`
+# instead of `residual_gap:` produced no FAIL at all — just an S0 WARN saying
+# GAP-07 was defined but unreferenced — while quietly removing the gap from the
+# accepted-risk register that `--strict` and the published security snapshot both
+# read. The same is true of every other key here: a typo'd `enforced_in` silently
+# stops S9 checking the processor. Keys are data, so nothing else would catch it.
+ENDPOINT_ENTRY_KEYS = frozenset({"auth_type", "handler", "routes", "note"})
+ROUTE_POLICY_KEYS = frozenset(
+    {
+        "groups",
+        "ownership",
+        "equivalent_op",
+        "enforced_in",
+        "known_gap",
+        "residual_gap",
+        "note",
+    }
+)
 
 
 class Finding:
@@ -356,8 +374,27 @@ def _resource_block(template_text: str, logical_id: str) -> str:
     return template_text[m.start() : end]
 
 
+# Every spelling of "this Function URL points at that function" that CloudFormation
+# accepts. `!Ref Fn` and `!GetAtt Fn.Arn` are equally valid and equally idiomatic;
+# reading only `!Ref` made S6 fail OPEN, because an unresolved target left the
+# handler-containment check with nothing to compare and it was skipped silently.
+_TARGET_FUNCTION_RE = re.compile(
+    r"TargetFunctionArn:\s*(?:"
+    r"!Ref\s+(?P<ref>\w+)"
+    r"|!GetAtt\s+(?P<getatt>\w+)(?:\.\w+)*"
+    r"|Ref:\s*(?P<long_ref>\w+)"
+    r"|Fn::GetAtt:\s*\[?\s*[\"']?(?P<long_getatt>\w+)"
+    r")"
+)
+
+
 def lambda_url_resources(template_text: str) -> dict[str, dict[str, str]]:
-    """Return {LogicalId: {auth_type, target}} for each AWS::Lambda::Url."""
+    """Return {LogicalId: {auth_type, target}} for each AWS::Lambda::Url.
+
+    ``target`` is the logical id of the function the URL fronts, or ``""`` when
+    it could not be resolved — which callers must treat as a FAILURE, not as
+    "nothing to check". A scanner that cannot find its subject has to say so.
+    """
     out: dict[str, dict[str, str]] = {}
     for m in re.finditer(
         r"^  (\w+):\n(?:    .*\n|\n)*?    Type: AWS::Lambda::Url\b",
@@ -367,10 +404,13 @@ def lambda_url_resources(template_text: str) -> dict[str, dict[str, str]]:
         logical = m.group(1)
         block = _resource_block(template_text, logical)
         auth = re.search(r"AuthType:\s*(\S+)", block)
-        target = re.search(r"TargetFunctionArn:\s*!Ref\s+(\w+)", block)
+        target = _TARGET_FUNCTION_RE.search(block)
         out[logical] = {
             "auth_type": auth.group(1) if auth else "UNKNOWN",
-            "target": target.group(1) if target else "",
+            "target": next(
+                (v for v in (target.groupdict().values() if target else ()) if v),
+                "",
+            ),
         }
     return out
 
@@ -427,16 +467,61 @@ def module_functions(text: str) -> list[str]:
     return out
 
 
+# A module-level constant whose NAME says it holds a group list and whose value is
+# a tuple/list/set literal, e.g. `_AGENT_CHAT_GROUPS = ("Admin", "Author", ...)`.
+_GROUP_CONST_RE = re.compile(
+    r"^(_?[A-Z][A-Z0-9_]*GROUPS?[A-Z0-9_]*)\s*=\s*"
+    r"(?:frozenset\()?[\(\[\{]([^)\]}]*)[\)\]\}]",
+    re.M,
+)
+_GROUP_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def enforced_group_names(text: str) -> set[str] | None:
+    """The exact group list a handler enforces, read from its module constant.
+
+    Returns the set of string literals in the first (and only) module-level
+    ``*GROUP(S)*`` constant whose value is a tuple/list/set of plausible group
+    names, or ``None`` when there is no such constant or more than one — in which
+    case the caller falls back to the weaker containment check rather than
+    guessing which constant is the policy.
+
+    Only string literals inside the literal are read, so the prose comment above
+    the constant (which names the group deliberately EXCLUDED) cannot leak in and
+    turn a correct policy into a failure.
+    """
+    candidates: list[set[str]] = []
+    for m in _GROUP_CONST_RE.finditer(text):
+        names = set(re.findall(r"""["']([^"']+)["']""", m.group(2)))
+        if names and all(_GROUP_NAME_RE.match(n) for n in names):
+            candidates.append(names)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 # --- checks ------------------------------------------------------------------
 
 
-def run_checks(strict: bool) -> list[Finding]:
-    spec = _load_yaml(EXPECTATIONS)
+def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
+    """Run every check against ``repo`` (the real repository by default).
+
+    ``repo`` exists so the tests can drive these checks over a deliberately
+    DEFECTIVE fixture tree and assert the specific finding appears. Without it
+    the only thing a test could assert against the live sources is the absence of
+    failures, which passes just as happily when a check has been deleted — the
+    exact "a check that cannot fail" failure mode this scanner is meant to close.
+    See scripts/sdlc/tests/test_scan_api_rbac_function_urls.py.
+    """
+    repo = Path(repo) if repo is not None else REPO
+    expectations = repo / "scripts" / "api_rbac_expectations.yaml"
+    api_resolvers = repo / "nested" / "api-resolvers"
+    dispatcher_dir = api_resolvers / "src" / "lambda" / "http_api_dispatcher"
+
+    spec = _load_yaml(expectations)
     ops: dict[str, dict] = spec["operations"]
     known_gaps: dict[str, dict] = spec.get("known_gaps") or {}
-    template_text = _read(TEMPLATE)
-    schema_text = _read(SCHEMA)
-    ddb_text = _read(DDB_DIRECT)
+    template_text = _read(api_resolvers / "template.yaml")
+    schema_text = _read(api_resolvers / "src" / "api" / "schema.graphql")
+    ddb_text = _read(dispatcher_dir / "ddb_direct.py")
 
     findings: list[Finding] = []
 
@@ -447,7 +532,7 @@ def run_checks(strict: bool) -> list[Finding]:
         findings.append(Finding(check, level, message + suffix, op_name))
 
     # --- S1: manifest completeness -----------------------------------------
-    dispatcher_text = _read(DISPATCHER)
+    dispatcher_text = _read(dispatcher_dir / "index.py")
     routable = (
         field_function_map_ops(template_text)
         | ddb_direct_ops(ddb_text)
@@ -504,7 +589,7 @@ def run_checks(strict: bool) -> list[Finding]:
 
     # --- S3: resolver enforcement ------------------------------------------
     for op, o in ops.items():
-        src = REPO / o["enforced_in"]
+        src = repo / o["enforced_in"]
         if not src.exists():
             findings.append(
                 Finding("S3", "FAIL",
@@ -544,7 +629,7 @@ def run_checks(strict: bool) -> list[Finding]:
     for op, o in ops.items():
         if not (o.get("scope_checked") or o.get("scope_filtered")):
             continue
-        src = REPO / o["enforced_in"]
+        src = repo / o["enforced_in"]
         if not src.exists():
             continue  # already reported by S3
         text = src.read_text()
@@ -572,7 +657,7 @@ def run_checks(strict: bool) -> list[Finding]:
 
     # --- S6-S9: Lambda Function URL routes ----------------------------------
     endpoints: dict[str, dict] = spec.get("function_url_endpoints") or {}
-    main_text = _read(MAIN_TEMPLATE)
+    main_text = _read(repo / "template.yaml")
     url_resources = lambda_url_resources(main_text)
 
     def route_gap_or_fail(route_cfg: dict, route: str, check: str, message: str):
@@ -613,6 +698,26 @@ def run_checks(strict: bool) -> list[Finding]:
     for logical, ep in endpoints.items():
         res = url_resources.get(logical)
         declared_routes: dict[str, dict] = ep.get("routes") or {}
+
+        # --- S6: the declaration itself must be well-formed -----------------
+        # Every key below is read by name, so a misspelling makes the setting
+        # vanish rather than misfire. `residual_gapp:` for `residual_gap:` was
+        # measured to leave the scan at zero failures while removing GAP-07 from
+        # the accepted-risk register.
+        for bad in sorted(set(ep) - ENDPOINT_ENTRY_KEYS):
+            findings.append(
+                Finding("S6", "FAIL",
+                        f"{logical} declares unknown key '{bad}' — a misspelled "
+                        f"key is silently ignored (known: "
+                        f"{sorted(ENDPOINT_ENTRY_KEYS)})", logical))
+        for route, rc in declared_routes.items():
+            for bad in sorted(set(rc or {}) - ROUTE_POLICY_KEYS):
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"route '{route}' on {logical} declares unknown key "
+                            f"'{bad}' — a misspelled key is silently ignored "
+                            f"(known: {sorted(ROUTE_POLICY_KEYS)})", route))
+
         if res:
             if res["auth_type"] == "NONE":
                 findings.append(
@@ -626,8 +731,23 @@ def run_checks(strict: bool) -> list[Finding]:
                             f"expectations say {ep.get('auth_type')}", logical))
             # Resolve the handler from the template rather than trusting the
             # expectations file, so a retargeted URL cannot keep pointing the
-            # scan at the old (still-clean) source file.
+            # scan at the old (still-clean) source file. Both halves of that
+            # resolution must be reported when they fail, because an empty
+            # result would otherwise skip the containment check below and the
+            # scan would validate whatever file the expectations named.
             code_uri = function_code_uri(main_text, res["target"])
+            if not res["target"]:
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"{logical}: could not resolve TargetFunctionArn to a "
+                            "function logical id, so the declared handler cannot "
+                            "be checked against the target's CodeUri", logical))
+            elif not code_uri:
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"{logical} targets {res['target']}, which has no "
+                            "resolvable CodeUri in template.yaml, so the declared "
+                            "handler cannot be checked against it", logical))
             if code_uri and not ep["handler"].startswith(code_uri.rstrip("/")):
                 findings.append(
                     Finding("S6", "FAIL",
@@ -635,7 +755,7 @@ def run_checks(strict: bool) -> list[Finding]:
                             f"{code_uri}) but expectations name handler "
                             f"{ep['handler']}", logical))
 
-        handler_src = REPO / ep["handler"]
+        handler_src = repo / ep["handler"]
         if not handler_src.exists():
             findings.append(
                 Finding("S6", "FAIL",
@@ -706,7 +826,7 @@ def run_checks(strict: bool) -> list[Finding]:
             groups = rc.get("groups")
             enforced_in = rc.get("enforced_in")
             if isinstance(groups, list) and enforced_in:
-                src = REPO / enforced_in
+                src = repo / enforced_in
                 if not src.exists():
                     findings.append(
                         Finding("S9", "FAIL",
@@ -721,12 +841,39 @@ def run_checks(strict: bool) -> list[Finding]:
                             f"{enforced_in} — a Function URL route declared "
                             f"for {groups} reaches this handler directly")
                     else:
-                        missing = [g for g in groups if f'"{g}"' not in text]
-                        if missing:
-                            route_gap_or_fail(
-                                rc, route, "S9",
-                                f"{enforced_in} has a group check but does not "
-                                f"name {missing} — declared groups {groups}")
+                        # Compare the handler's group list with the declared one
+                        # in BOTH directions where possible. Reading the module
+                        # constant gives an exact set, so widening the code's
+                        # list (adding Reviewer to the agent-chat groups) fails
+                        # here and not only via `equivalent_op`.
+                        actual = enforced_group_names(text)
+                        if actual is not None:
+                            if actual != set(groups):
+                                route_gap_or_fail(
+                                    rc, route, "S9",
+                                    f"{enforced_in} enforces "
+                                    f"{sorted(actual)} but the route declares "
+                                    f"{sorted(groups)} — the code and the "
+                                    "expectations must name the same groups")
+                        else:
+                            # No group-list constant found, so fall back to
+                            # containment. NOTE this direction is ASYMMETRIC: it
+                            # catches NARROWING the declared list (a declared
+                            # group the code never names) but not WIDENING the
+                            # code's list. Widening is still caught by the
+                            # `equivalent_op` comparison below, which compares the
+                            # route's groups with the REST operation's, and by
+                            # test_processor_and_resolver_agree_on_the_group_list
+                            # in lib/idp_common_pkg/tests/unit/
+                            # test_agent_chat_rbac.py, which asserts the two
+                            # code-side tuples are equal.
+                            missing = [g for g in groups if f'"{g}"' not in text]
+                            if missing:
+                                route_gap_or_fail(
+                                    rc, route, "S9",
+                                    f"{enforced_in} has a group check but does "
+                                    f"not name {missing} — declared groups "
+                                    f"{groups}")
             # The two entry paths to one operation must agree on the policy.
             equivalent = rc.get("equivalent_op")
             if equivalent:
