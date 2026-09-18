@@ -55,7 +55,7 @@ def handler(event, context):
     logger.info(f"Full document content: {json.dumps(document.to_dict(), default=str)}")
 
     # X-Ray annotations
-    xray_recorder.put_annotation('document_id', {document.id})
+    xray_recorder.put_annotation('document_id', document.id)
     xray_recorder.put_annotation('processing_stage', 'classification')
     
     # A reviewer corrected this document's class and asked for it to be

@@ -6,55 +6,17 @@ Lambda function to get agent chat messages for a specific session.
 This function queries the ChatMessagesTable by sessionId and returns messages in chronological order.
 """
 
-import copy
 import json
 import logging
 import os
 
 import boto3
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
-
-
-# Minimal inline log-sanitizer. Kept here rather than importing from
-# idp_common to avoid adding a Lambda Layer dependency to this small
-# resolver. If this file grows further, promote it to use
-# idp_common.utils.log_sanitizer.sanitize_event_for_logging instead.
-_LOG_SENSITIVE_KEYS = (
-    "password",
-    "secret",
-    "token",
-    "authorization",
-    "apikey",
-    "api_key",
-    "cookie",
-    "credential",
-    "claims",
-    "identity",
-)
-
-
-def _sanitize_for_log(obj):
-    """Return a deep-copied version of obj with sensitive keys redacted.
-
-    Matches AppSync event shapes: event.identity.claims is the primary
-    leak vector (Cognito sub, email, groups, cognito:groups).
-    """
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            if isinstance(k, str) and any(s in k.lower() for s in _LOG_SENSITIVE_KEYS):
-                out[k] = "***REDACTED***" if v is not None else None
-            else:
-                out[k] = _sanitize_for_log(v)
-        return out
-    if isinstance(obj, list):
-        return [_sanitize_for_log(v) for v in obj]
-    return copy.copy(obj)
-
 
 # Initialize AWS clients
 dynamodb = boto3.resource("dynamodb")
@@ -158,7 +120,7 @@ def handler(event, context):
     # Log a redacted copy — event.identity.claims contains Cognito user info.
     logger.info(
         f"Received get agent chat messages event: "
-        f"{json.dumps(_sanitize_for_log(event))}"
+        f"{json.dumps(sanitize_event_for_logging(event))}"
     )
 
     try:

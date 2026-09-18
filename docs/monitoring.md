@@ -231,7 +231,7 @@ The solution creates centralized logging across all components:
 - `/aws/lambda/ClassificationFunction`: Classification processing logs
 - `/aws/lambda/ExtractionFunction`: Extraction processing logs
 - `/aws/lambda/TrackingFunction`: Document tracking and status logs
-- `/aws/appsync/GraphQLAPI`: Web UI API access logs
+- The REST API's access logs and the dispatcher Lambda's log group: Web UI API activity (the dispatcher is the single entry point for every UI query and mutation)
 
 All logs include correlation IDs for tracing individual document processing journeys.
 

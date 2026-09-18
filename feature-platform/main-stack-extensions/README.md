@@ -8,23 +8,28 @@ Nothing here modifies the existing main stack; this directory is self-contained 
 | Piece | Purpose |
 |-------|---------|
 | `InstalledFeatures` DDB table | One row per installed feature stack. pk = `featureId`. Holds stackName, version, uiBundlePath, featureApiEndpoint, installedBy, installedAt. |
-| 4 AppSync Lambdas + resolvers | `listInstalledFeatures`, `getFeatureLaunchUrl`, `registerFeature`, `checkFeatureEntitlement` |
+| 6 UI-facing resolver Lambdas | `listCatalogFeatures`, `listInstalledFeatures`, `checkFeatureEntitlement`, `getFeatureLaunchUrl`, `subscribeFeature`, `unsubscribeFeature`. Their ARNs are plain (un-exported) stack Outputs that the main `template.yaml` forwards into the host REST dispatcher's field→function map, so the UI reaches them at `POST /op/<field>` on the host's API Gateway REST API. |
+| 3 install-hook resolver Lambdas | `registerFeature`/`unregisterFeature`, `registerFeatureHooks`/`unregisterFeatureHooks`, `applyFeatureConfigPreset`/`removeFeatureConfigPreset` (one Lambda per pair). These are **not** reachable through the REST dispatcher — a feature stack's own `ui-deployer` custom resource invokes them directly with `lambda:InvokeFunction`. |
 | `WebUIBucket` prefix-scoped policy | Allow same-account principals with session tag `idp:feature-id=<id>` to write under `features/<id>/*`. Used by the feature-stack's UI-deployer custom resource. |
-| Extra stack Exports | `MainStackName`, `UserPoolId`, `AppSyncApiUrl`, `WebUIBucketName`, `WebUIDistributionId`, `RegisterFeatureLambdaArn` (needed by feature stacks). |
+| Extra stack Exports | The three install-hook function ARNs (`<MainStackName>-RegisterFeatureFunctionArn`, `-RegisterFeatureHooksFunctionArn`, `-ApplyFeatureConfigPresetFunctionArn`), plus re-exports of host resources feature stacks need: `-UserPoolId`, `-UserPoolClientId`, `-WebUIBucketName`/`-WebUIBucketArn`, `-InstalledFeaturesTableName`/`-InstalledFeaturesTableArn`, `-TrackingTableName`/`-TrackingTableArn`, `-ConfigurationTableName`/`-ConfigurationTableArn`, `-CustomerManagedEncryptionKeyArn`, and the Input/Output/Working/Discovery/Reporting/TestSet bucket and UsersTable names. |
 
 ## Files
 
 ```
 main-stack-extensions/
-├── cfn/
-│   └── feature-platform.yaml        Self-contained nested stack (parameters reference existing main-stack resources)
-├── appsync/
-│   └── feature-platform.graphql     Schema fragment (merged into main schema with marker comments)
+├── template.yaml                    Self-contained nested stack (parameters reference existing main-stack resources)
+├── appsync/                         Vestigial directory name — AppSync itself was removed
+│   └── feature-platform.graphql     Schema fragment (merged into the schema of record with marker comments)
 ├── lambdas/
+│   ├── list_catalog_features/
 │   ├── list_installed_features/
-│   ├── register_feature/
+│   ├── check_feature_entitlement/
 │   ├── get_feature_launch_url/
-│   └── check_feature_entitlement/
+│   ├── subscribe_feature/
+│   ├── unsubscribe_feature/
+│   ├── register_feature/
+│   ├── register_feature_hooks/
+│   └── apply_feature_config_preset/
 ├── tests/                           Pytest unit tests (moto-based)
 ├── apply-to-main-stack.md           Step-by-step instructions to wire these in
 └── README.md                        (this file)
@@ -38,14 +43,11 @@ flowchart TD
         FP[FeaturePage<br/>7-state renderer]
     end
 
-    subgraph MainAppSync[Main AppSync API]
-        R1[listInstalledFeatures]
-        R2[checkFeatureEntitlement]
-        R3[getFeatureLaunchUrl<br/>admin-only]
-        R4[registerFeature<br/>called by feature stack CR]
+    subgraph HostApi["Host API Gateway REST API<br/>POST /op/(field), Cognito authorizer"]
+        DISP[HttpApiDispatcherFunction<br/>field to function map]
     end
 
-    subgraph MainLambdas[Feature-platform Lambdas]
+    subgraph MainLambdas[Feature-platform resolver Lambdas]
         L1[list_installed_features]
         L2[check_feature_entitlement]
         L3[get_feature_launch_url]
@@ -56,16 +58,28 @@ flowchart TD
     MKT[AWS Marketplace<br/>or simulator<br/>GetEntitlements]
     SDK[idp-feature-cli<br/>publishes feature<br/>to feature bucket]
 
-    FP --> R1 --> L1 --> DDB
-    FP --> R2 --> L2 --> MKT
-    FP --> R3 --> L3
+    FP --> DISP
+    DISP -- listInstalledFeatures --> L1 --> DDB
+    DISP -- checkFeatureEntitlement --> L2 --> MKT
+    DISP -- "getFeatureLaunchUrl (admin-only)" --> L3
     L3 -. reads .-> DDB
     L3 -. reads feature bucket latest.json .-> SDK
-    CR[Feature-stack<br/>RegisterFeature CR] --> R4 --> L4 --> DDB
+    CR[Feature-stack<br/>RegisterFeature CR] -- "direct lambda:InvokeFunction" --> L4 --> DDB
 ```
+
+The UI-facing fields travel over the host's REST API: the browser `POST`s to
+`/op/<field>`, the Cognito User Pools authorizer authenticates the caller, and
+the dispatcher Lambda looks the field up in its field→function map and invokes
+the resolver Lambda with the resolver event shape
+`{info:{fieldName}, arguments, identity}`. Install-hook fields skip the API
+entirely — a feature stack's `ui-deployer` custom resource calls
+`lambda:InvokeFunction` on the exported resolver ARN with that same event shape.
+Each resolver enforces its own Cognito-group check, because the authorizer only
+authenticates. See [`docs/migration-appsync-to-rest.md`](../../docs/migration-appsync-to-rest.md)
+§5 for the full transport description.
 
 ## Why additive + flag-gated?
 
-The plan calls for an `EnableFeaturePlatform` toggle in the main `template.yaml`. Everything in this directory is designed to be deployed (or not) by a single nested-stack `AWS::CloudFormation::Stack` resource guarded by a CloudFormation `Condition`. The AppSync schema fragment is merged into the main schema but wrapped in clearly-marked `# === Feature Platform (optional) ===` block comments so it can be lifted back out if needed.
+The main `template.yaml` declares an `EnableFeaturePlatform` parameter (default `'true'`), and everything in this directory is deployed (or not) by a single nested-stack `AWS::CloudFormation::Stack` resource — `FeaturePlatformStack` — guarded by the `IsFeaturePlatformEnabled` condition. The GraphQL schema fragment in `appsync/feature-platform.graphql` — a vestigial directory name, kept only so existing references still resolve — is merged into `nested/api-resolvers/src/api/schema.graphql`, wrapped in clearly-marked `# === Feature Platform (optional) ===` block comments so it can be lifted back out if needed. That schema file is no longer served by AppSync — AppSync was removed — but it remains the authoritative baseline for field-level RBAC (`scripts/sdlc/scan_api_rbac.py`) and for the dispatcher's argument validation spec (`scripts/sdlc/generate_api_validation_spec.py`), so a new feature field still has to be declared there.
 
 See [`apply-to-main-stack.md`](apply-to-main-stack.md) for exact integration steps.
