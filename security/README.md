@@ -80,7 +80,7 @@ gate is not mistaken for full coverage:
 | Surface | Covered? | Threat |
 |---------|----------|--------|
 | UI API `POST /op/{field}` (118 ops × 5 groups) | **Yes** — RBAC static + dynamic | AUTH.T03, AUTH.T08 |
-| A field the dispatcher can route but nothing behind it authorizes | **Partly** — the manifest + static scan is what stands in for a default deny; the dispatcher itself does not refuse an unrecorded field | AUTH.T14 |
+| A field the dispatcher can route but nothing behind it authorizes | **Partly** — the manifest + static scan is what stands in for a default deny; the dispatcher itself does not refuse an unrecorded field | AUTH.T16 |
 | Hook failure containment across the seven pipeline hook points | **No** — no test asserts that `onError: fail` halts the workflow at each point | HOOK.T07 |
 | Breadth of the shipped CloudFormation deployment service role | **Partly** — `scripts/sdlc/validate_service_role_permissions.py` checks the role has what the stack needs, not that it has no more | SDK.T05 |
 | Chat streaming **Lambda Function URL** (`/chat/*`) | **No** — the harness drives `/op` only | CHAT.T03, CHAT.T06 |
