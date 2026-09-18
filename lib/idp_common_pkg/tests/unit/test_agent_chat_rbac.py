@@ -238,8 +238,20 @@ def test_processor_denies_caller_without_an_authorized_group(
 ):
     """A caller in no permitted group must not reach the agents.
 
-    PermissionError (not a returned error body) so the dispatcher maps it to
-    403/Unauthorized, matching the resolver.
+    What is asserted is that the denial happens BEFORE any agent or Bedrock call
+    and that it raises rather than returning an error body — so it cannot be
+    caught by the handler's convert-error-to-stream-frame path and reported as a
+    successful turn carrying an error message.
+
+    It is deliberately NOT asserted that this produces an HTTP 403, because on
+    neither live path does it. The dispatcher's errorType->403 mapping reads a
+    SYNCHRONOUS invoke response, and the resolver invokes this function with
+    InvocationType="Event"; the resolver's own PermissionError is what the
+    dispatcher maps, and it is raised before this function is ever invoked. On the
+    streaming path the 403 comes from _enforce_groups_or_403 in
+    src/lambda/chat_stream_processor/app.py, which applies this same predicate in
+    the route before StreamingResponse commits a 200. This copy of the check is
+    defence in depth for a caller that reaches the function directly.
     """
     monkeypatch.setattr(
         agent_chat_processor,
