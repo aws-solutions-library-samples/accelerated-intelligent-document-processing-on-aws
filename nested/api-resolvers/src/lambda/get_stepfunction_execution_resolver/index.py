@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 from boto3.dynamodb.conditions import Key as DDBKey
+
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Configure detailed logging

@@ -33,6 +33,7 @@ targets=(
   get_agent_chat_messages_resolver
   get_file_contents_resolver
   list_agent_chat_sessions_resolver
+  list_documents_range_resolver
   upload_resolver
 )
 

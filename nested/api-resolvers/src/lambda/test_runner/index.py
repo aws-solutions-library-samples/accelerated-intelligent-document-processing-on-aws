@@ -10,6 +10,7 @@ from decimal import Decimal
 
 import boto3
 from botocore.exceptions import ClientError
+
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -365,7 +366,14 @@ def _get_test_set(tracking_table, test_set_id):
 def _decompress_config_item(item):
     """
     Decompress a DynamoDB config item if it uses compressed storage format.
-    Inlined here to avoid dependency on idp_common (not available in this Lambda).
+
+    Kept inline rather than imported from idp_common. NOT because the library is
+    unavailable — this function carries IDPCommonBaseLayer and already imports
+    ``idp_common.config.configuration_manager`` below, plus
+    ``idp_common.utils.log_sanitizer`` at module scope — but because this is a
+    small, stable decode of a storage format the resolver only reads. The
+    stronger reason to reach for idp_common would be if the compressed format
+    changed; if that happens, import the library version instead of editing this.
     """
     if item.get("_config_storage") != "compressed":
         return item  # Legacy inline format — return as-is

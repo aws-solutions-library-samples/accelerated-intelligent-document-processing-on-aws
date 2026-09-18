@@ -30,6 +30,14 @@ This is the same guarded-vendoring shape as
 
 What each test below forbids:
 
+* **logging the invocation event without sanitizing it** — see
+  ``test_no_resolver_logs_the_raw_invocation_event``. This is the one that closes
+  the actual defect class of #921; every other test here proves the *copies* are
+  consistent, which is a different and weaker property. A resolver can pass all of
+  them while writing ``identity.claims`` to CloudWatch in full, because it simply
+  never mentions the sanitizer at all. Two resolvers did exactly that
+  (``finetuning_jobs_resolver``, ``list_documents_range_resolver``) and the first
+  round of these guards was green with both in the tree.
 * reintroducing a hand-rolled key list anywhere under the resolver tree, under any
   variable name (the original copies were all called ``_LOG_SENSITIVE_KEYS``, but
   renaming one must not buy an exemption);
@@ -257,6 +265,262 @@ def _string_literals(node: ast.AST, depth: int = 0) -> list[str] | None:
     return values
 
 
+# --- does the resolver actually sanitize what it logs? ---------------------------
+#
+# Everything above proves the copies are consistent with each other. None of it
+# proves any resolver *uses* one. This does.
+#
+# The check is on the DATAFLOW, not on the spelling. It would have been much
+# shorter to forbid the literal text `json.dumps(event)`, and that version is worse
+# than useless: it pins the exact shape of the line that happened to be wrong this
+# time, so the identical leak walks straight past as `f"...{event}..."`, as
+# `logger.info("%s", event)`, or as `str(event)`. A scanner that only recognises the
+# shape you already found is a scanner that can only catch the bug you already
+# fixed.
+#
+# So: find every log call, then ask of each argument "can the whole invocation event
+# object reach here?" — descending through f-strings, `%` formatting, nested calls,
+# and containers alike, and stopping at exactly two things: a narrowing operation
+# (`event["x"]`, `event.get("x")`, `event.foo`, which yield a leaf, not the event),
+# and `sanitize_event_for_logging(...)`, which is the point of the exercise.
+
+_LOG_METHODS = frozenset(
+    {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
+)
+SANITIZER_FUNC = "sanitize_event_for_logging"
+EVENT_PARAM = "event"
+
+
+def _callee_name(func: ast.expr) -> str | None:
+    """The bare name being called: ``f`` for ``f()``, ``g`` for ``mod.g()``."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _is_log_call(node: ast.expr) -> bool:
+    """A ``logger.info(...)``-shaped call, or a bare ``print(...)``.
+
+    ``print`` counts: in Lambda it lands in the same CloudWatch stream as the
+    logger, so it leaks identically.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "print":
+        return True
+    if not isinstance(func, ast.Attribute) or func.attr not in _LOG_METHODS:
+        return False
+    # Receiver must look like a logger, so `session.info(...)` or
+    # `response.get(...)`-adjacent calls are not dragged in.
+    receiver = func.value
+    if isinstance(receiver, ast.Name):
+        return "log" in receiver.id.lower()
+    if isinstance(receiver, ast.Attribute):
+        return "log" in receiver.attr.lower()
+    return False
+
+
+def _whole_event_reaches(node: ast.AST) -> bool:
+    """Can the *whole* object bound to the name ``event`` flow into ``node``?
+
+    True for the bare name and for anything that carries it along unchanged:
+    ``json.dumps(event)``, ``f"{event}"``, ``"%s" % event``, ``str(event)``,
+    ``[event]``, ``json.dumps(event, default=str)``.
+
+    False in exactly two situations, which is where all the judgement lives:
+
+    * **Narrowed.** ``event["arguments"]``, ``event.get("fieldName")``,
+      ``event.identity`` each evaluate to a piece of the event, not the event.
+      Resolvers log field names and operation names constantly and that is fine —
+      flagging it would make this test unusable and get it deleted.
+    * **Sanitized.** The name appears only inside a ``sanitize_event_for_logging``
+      call, which is the required form.
+    """
+    if isinstance(node, ast.Name):
+        return node.id == EVENT_PARAM
+    if isinstance(node, ast.Call):
+        if _callee_name(node.func) == SANITIZER_FUNC:
+            return False  # the whole point: redacted before it reaches the log
+        # Recurse into the arguments only. The callee expression itself
+        # (`json.dumps`) cannot be the event.
+        children: list[ast.AST] = list(node.args)
+        children += [kw.value for kw in node.keywords]
+        # `event.get(...)` — receiver is narrowed away, but a nested
+        # `foo(event).bar()` still has to be followed.
+        if isinstance(node.func, ast.Attribute) and not (
+            isinstance(node.func.value, ast.Name)
+            and node.func.value.id == EVENT_PARAM
+        ):
+            children.append(node.func.value)
+        return any(_whole_event_reaches(child) for child in children)
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name) and node.value.id == EVENT_PARAM:
+            return False  # `event.identity` — a piece of it
+        return _whole_event_reaches(node.value)
+    if isinstance(node, ast.Subscript):
+        if isinstance(node.value, ast.Name) and node.value.id == EVENT_PARAM:
+            return False  # `event["arguments"]` — a piece of it
+        return any(
+            _whole_event_reaches(child)
+            for child in (node.value, node.slice)
+        )
+    return any(_whole_event_reaches(child) for child in ast.iter_child_nodes(node))
+
+
+def _rebinds_event(node: ast.AST) -> bool:
+    """Does this statement bind the name ``event`` to something else?
+
+    Needed because ``get_stepfunction_execution_resolver`` does
+    ``for event in all_events:`` *inside* ``lambda_handler`` — from there on the
+    name refers to a Step Functions execution-history record, not the invocation
+    event, and treating those as leaks produced four false positives that would
+    have had to be suppressed one by one.
+    """
+    targets: list[ast.expr] = []
+    if isinstance(node, (ast.For, ast.AsyncFor)):
+        targets = [node.target]
+    elif isinstance(node, ast.Assign):
+        targets = list(node.targets)
+    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        targets = [node.target]
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        targets = [i.optional_vars for i in node.items if i.optional_vars is not None]
+    elif isinstance(node, ast.ExceptHandler):
+        return node.name == EVENT_PARAM
+    for target in targets:
+        for sub in ast.walk(target):
+            if isinstance(sub, ast.Name) and sub.id == EVENT_PARAM:
+                return True
+    return False
+
+
+def _event_log_violations_in_body(body: list[ast.stmt]) -> list[ast.expr]:
+    """Log calls in ``body`` that leak the event, honouring rebinding.
+
+    Walks statement lists in order so that a rebinding of ``event`` suppresses the
+    check for everything after it — Python leaks a ``for`` target into the enclosing
+    scope, so that is the real semantics, not a convenience.
+    """
+    found: list[ast.expr] = []
+    for statement in body:
+        if _rebinds_event(statement):
+            # From here on `event` is something else. Stop, rather than continue
+            # with a name that no longer means what this test is about.
+            return found
+        for node in ast.walk(statement):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue  # handled as its own scope by the caller
+            if _is_log_call(node):
+                assert isinstance(node, ast.Call)
+                args: list[ast.AST] = list(node.args)
+                args += [kw.value for kw in node.keywords]
+                if any(_whole_event_reaches(arg) for arg in args):
+                    found.append(node)
+    return found
+
+
+def _event_handling_functions(tree: ast.AST) -> list[ast.FunctionDef]:
+    """Functions whose FIRST positional parameter is named ``event``.
+
+    That is the Lambda handler convention, and it is what separates the real
+    handlers (and the helpers they hand the event to, e.g. ``_get_caller_info``)
+    from unrelated locals that happen to be called ``event``. Without it,
+    ``parse_execution_history(events)`` — which loops ``for event in events`` over
+    Step Functions history and logs freely — reads as three leaks.
+    """
+    handlers = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        positional = node.args.posonlyargs + node.args.args
+        if positional and positional[0].arg == EVENT_PARAM:
+            handlers.append(node)
+    return handlers
+
+
+def _raw_event_log_hits(path: Path) -> list[str]:
+    """``file:line`` for every log call in ``path`` that can reach the raw event."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    hits = []
+    for handler in _event_handling_functions(tree):
+        for call in _event_log_violations_in_body(handler.body):
+            hits.append(f"{path.name}:{call.lineno} in {handler.name}()")
+    return hits
+
+
+def test_no_resolver_logs_the_raw_invocation_event():
+    """A resolver that logs its event sanitizes it. This is the #921 defect itself.
+
+    The invocation event carries ``identity.claims`` — Cognito ``sub``, ``email``
+    and group membership — on every authenticated call, which is precisely what the
+    canonical denylist exists to redact. Writing it to CloudWatch in full is the
+    leak; having a tidy, consistent, byte-identical copy of the redactor sitting
+    unused in the same directory does not help.
+
+    No allowlist, deliberately. If a resolver genuinely must log a raw event, that
+    is a decision worth making in a review, not a name added to a list here.
+    """
+    offenders = []
+    for resolver in _resolver_dirs():
+        index = resolver / "index.py"
+        if not index.exists():
+            continue
+        for hit in _raw_event_log_hits(index):
+            offenders.append(f"{resolver.name}/{hit}")
+    assert not offenders, (
+        "These log calls can write the unredacted invocation event — including "
+        "identity.claims (Cognito sub, email, groups) — to CloudWatch. Wrap the "
+        f"logged value in {SANITIZER_FUNC}(...), imported from {CANONICAL_IMPORT} "
+        "if the function carries an idp-common layer or from the vendored "
+        "`log_sanitizer` module if it does not:\n  " + "\n  ".join(offenders)
+    )
+
+
+comprehension_types = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _denylist_positions(tree: ast.AST) -> dict[int, str]:
+    """Describe where each expression node sits, for the failure message.
+
+    Only cosmetic — the scan itself considers every position — but "default of
+    _my_sanitize()" is a far more useful report than a bare line number.
+    """
+    where: dict[int, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            where[id(node.value)] = f"{names[0] if names else '<unnamed>'} ="
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target = node.target
+            name = target.id if isinstance(target, ast.Name) else "<unnamed>"
+            where[id(node.value)] = f"{name} ="
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            label = f"default argument of {getattr(node, 'name', '<lambda>')}()"
+            for default in node.args.defaults:
+                where[id(default)] = label
+            for default in node.args.kw_defaults:
+                if default is not None:
+                    where[id(default)] = label
+        elif isinstance(node, ast.Call):
+            label = f"argument to {_callee_name(node.func) or '<call>'}()"
+            for arg in node.args:
+                where[id(arg)] = label
+            for kw in node.keywords:
+                where[id(kw.value)] = label
+        elif isinstance(node, ast.Compare):
+            for comparator in node.comparators:
+                where[id(comparator)] = "comparison operand (`k in (...)`)"
+        elif isinstance(node, ast.Return) and node.value is not None:
+            where[id(node.value)] = "returned literal"
+        elif isinstance(node, comprehension_types):
+            for generator in node.generators:
+                where[id(generator.iter)] = "iterated in a comprehension"
+    return where
+
+
 def test_no_resolver_defines_its_own_denylist():
     """No hand-rolled sensitive-key list anywhere under the resolver tree.
 
@@ -264,6 +528,16 @@ def test_no_resolver_defines_its_own_denylist():
     canonical denylist — so renaming ``_LOG_SENSITIVE_KEYS`` to something else does
     not slip past. Byte-identical vendored copies are the one allowed home for the
     list; ``test_vendored_copies_match_canonical`` proves they are identical.
+
+    Scanned in **every expression position**, not just on the right-hand side of an
+    assignment. The assignment-only version of this scan missed the two shapes a
+    person is most likely to actually write::
+
+        def _my_sanitize(obj, keys=("password", "secret", "token", "cookie")): ...
+        if any(k in ("password", "secret", "token") for k in obj): ...
+
+    Neither one ever binds the list to a name, and both were invisible: dropping
+    either into a resolver left this suite green.
     """
     canonical_keys = {k.lower() for k in _canonical_deny_keys()}
     offenders = []
@@ -271,25 +545,26 @@ def test_no_resolver_defines_its_own_denylist():
         if path.name == VENDORED_NAME:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        positions = _denylist_positions(tree)
+        # `ast.walk` is breadth-first, so a wrapper such as `frozenset({...})` is
+        # visited before the literal it wraps; keeping the first match per
+        # (line, key set) reports the outermost node once rather than twice.
+        seen: set[tuple[int, tuple[str, ...]]] = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                targets, value = node.targets, node.value
-            elif isinstance(node, ast.AnnAssign) and node.value is not None:
-                targets, value = [node.target], node.value
-            else:
-                continue
-            literals = _string_literals(value)
+            literals = _string_literals(node)
             if literals is None:
                 continue
             hits = {s.lower() for s in literals} & canonical_keys
-            if len(hits) >= _DENYLIST_MATCH_THRESHOLD:
-                names = [t.id for t in targets if isinstance(t, ast.Name)] or [
-                    "<unnamed>"
-                ]
-                offenders.append(
-                    f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
-                    f"{names[0]} = {sorted(hits)}"
-                )
+            if len(hits) < _DENYLIST_MATCH_THRESHOLD:
+                continue
+            key = (getattr(node, "lineno", -1), tuple(sorted(hits)))
+            if key in seen:
+                continue
+            seen.add(key)
+            offenders.append(
+                f"{path.relative_to(REPO_ROOT)}:{key[0]} "
+                f"{positions.get(id(node), '<expression>')} {sorted(hits)}"
+            )
     assert not offenders, (
         "These files define their own log-redaction denylist instead of using the "
         "canonical one. Import sanitize_event_for_logging — from "
@@ -419,10 +694,55 @@ def test_sync_script_targets_the_layerless_resolvers():
 
 # --- the scanners' own behaviour -------------------------------------------------
 #
-# Both scanners above are the kind of check that fails open: if `_string_literals`
-# does not recognise a shape, a reintroduced denylist simply is not reported, and if
-# `_imported_modules` reads prose as an import, correct code is rejected. Neither
-# failure is visible from the suite passing, so assert the behaviour directly.
+# All three scanners above are the kind of check that fails open: if
+# `_string_literals` does not recognise a shape, a reintroduced denylist simply is
+# not reported; if `_whole_event_reaches` does not follow a form of interpolation,
+# a raw-event log is not reported; and if `_imported_modules` reads prose as an
+# import, correct code is rejected. None of those failures is visible from the
+# suite passing, so assert the behaviour directly.
+
+# The whole value of the raw-event scan is that it is not a text match, so the
+# forms below are the test. Each is the SAME defect as `json.dumps(event)` written
+# differently, and a scanner that catches only the first is a scanner that catches
+# only the bug we already fixed.
+_RAW_EVENT_LOGS_THAT_MUST_BE_SEEN = {
+    "json.dumps in an f-string": 'logger.info(f"e: {json.dumps(event)}")',
+    "json.dumps as a lazy arg": 'logger.info("e: %s", json.dumps(event))',
+    "bare name in an f-string": 'logger.info(f"e: {event}")',
+    "bare name as a lazy arg": 'logger.info("e: %s", event)',
+    "bare name, sole argument": "logger.info(event)",
+    "str() coercion": "logger.info(str(event))",
+    "repr() coercion": 'logger.debug(f"{event!r}")',
+    "percent formatting": 'logger.info("e: %s" % event)',
+    "str.format": 'logger.info("e: {}".format(event))',
+    "concatenation": 'logger.info("e: " + str(event))',
+    "inside a container": 'logger.info("e: %s", {"event": event})',
+    "json.dumps with kwargs": 'logger.info(json.dumps(event, default=str))',
+    "pprint.pformat": "logger.info(pprint.pformat(event))",
+    "debug level": 'logger.debug(f"{json.dumps(event)}")',
+    "exception level": 'logger.exception(f"failed on {event}")',
+    "print instead of logger": "print(json.dumps(event))",
+    "logger.log with a level": 'logger.log(logging.INFO, f"{event}")',
+    "module-level logging alias": 'LOG.info("%s", event)',
+    "attribute logger": 'self.log.info("%s", event)',
+    "keyword argument": 'logger.info("x", extra={"raw": event})',
+}
+
+# Narrowing an event down to a field is normal and must stay usable: resolvers log
+# the operation name and argument keys on nearly every call. Flagging these would
+# make the test unusable, and an unusable test gets deleted rather than fixed.
+_RAW_EVENT_LOGS_THAT_MUST_NOT_TRIP = {
+    "sanitized, f-string": 'logger.info(f"e: {json.dumps(sanitize_event_for_logging(event))}")',
+    "sanitized, lazy arg": 'logger.info("e: %s", sanitize_event_for_logging(event))',
+    "sanitized with kwargs": 'logger.info(json.dumps(sanitize_event_for_logging(event), default=str))',
+    "subscript": 'logger.info(f"{event[\'fieldName\']}")',
+    "get() call": 'logger.info(f"{event.get(\'fieldName\')}")',
+    "chained get()": 'logger.info(f"{event.get(\'arguments\', {}).get(\'id\')}")',
+    "attribute access": 'logger.info(f"{event.foo}")',
+    "no event at all": 'logger.info("resolver invoked")',
+    "a different name": 'logger.info(f"{json.dumps(other)}")',
+    "len() of a field": 'logger.info("%s", len(event["arguments"]))',
+}
 
 _DENYLIST_SHAPES_THAT_MUST_BE_SEEN = {
     "set literal": '_K = {"password", "secret", "token"}\n',
@@ -435,20 +755,151 @@ _DENYLIST_SHAPES_THAT_MUST_BE_SEEN = {
     "tuple of a list": '_K = tuple(["password", "secret", "token"])\n',
     "dict keys": '_K = {"password": "x", "secret": "x", "token": "x"}\n',
     "frozenset of dict keys": '_K = frozenset({"password": 1, "secret": 1, "token": 1})\n',
+    # Never assigned to anything. These are the shapes an assignment-only scan
+    # could not see, and they are not exotic — a default argument on a helper is
+    # how a person actually writes this.
+    "default argument": (
+        'def _my_sanitize(obj, keys=("password", "secret", "token", "cookie")):\n'
+        "    return obj\n"
+    ),
+    "keyword-only default": (
+        'def _my_sanitize(obj, *, keys={"password", "secret", "token"}):\n'
+        "    return obj\n"
+    ),
+    "lambda default": '_f = lambda o, k=("password", "secret", "token"): o\n',
+    "inline membership test": (
+        'if any(k in ("password", "secret", "token") for k in obj):\n    pass\n'
+    ),
+    "comparison operand": 'if key in ("password", "secret", "token"):\n    pass\n',
+    "call argument": '_redact(obj, ["password", "secret", "token"])\n',
+    "call keyword argument": '_redact(obj, keys=["password", "secret", "token"])\n',
+    "bare expression statement": '("password", "secret", "token")\n',
+    "returned literal": (
+        'def _keys():\n    return ("password", "secret", "token")\n'
+    ),
 }
 
 _SHAPES_THAT_MUST_NOT_TRIP = {
     "two keys only": '_K = ("token", "cursor")\n',
     "unrelated strings": '_K = ("alpha", "beta", "gamma", "delta")\n',
     "non-literal": "_K = frozenset(some_other_module.KEYS)\n",
+    "two keys in a default arg": "def f(o, k=(\"token\", \"cursor\")):\n    return o\n",
 }
 
 # Known residual gaps, not asserted either way: a denylist spelled as keyword
 # arguments (`dict(password="x", ...)`), built by a comprehension, or assembled with
 # `|=`/`.add()` across statements still escapes this scan. Each is a stranger way to
-# write a constant than the ten shapes above, and closing them means evaluating
-# arbitrary expressions. `test_vendored_copies_match_canonical` remains the
-# load-bearing guarantee; this scan is defence in depth.
+# write a constant than the shapes above, and closing them means evaluating
+# arbitrary expressions.
+#
+# Which test is load-bearing for which failure, because it is easy to get this
+# backwards (an earlier version of this comment did):
+#
+# * A vendored copy silently drifting from the canonical module —
+#   `test_vendored_copies_match_canonical` is the guarantee.
+# * A resolver hand-rolling a NEW local denylist in its own `index.py` — byte
+#   identity of the copies says nothing whatsoever about that.
+#   `test_no_resolver_defines_its_own_denylist` is the only guard, so its gaps are
+#   real gaps and not merely defence in depth.
+# * A resolver logging the raw event while using no denylist at all —
+#   `test_no_resolver_logs_the_raw_invocation_event`. This is the one that maps to
+#   the original defect; the other two are about consistency.
+
+
+def _scan_snippet(log_call: str, *, param: str = EVENT_PARAM) -> list[str]:
+    """Run the raw-event scan over ``log_call`` placed in a handler body."""
+    source = f"def handler({param}, context):\n    {log_call}\n"
+    tree = ast.parse(source)
+    hits = []
+    for handler in _event_handling_functions(tree):
+        for call in _event_log_violations_in_body(handler.body):
+            hits.append(f"{handler.name}:{call.lineno}")
+    return hits
+
+
+@pytest.mark.parametrize("label", sorted(_RAW_EVENT_LOGS_THAT_MUST_BE_SEEN))
+def test_the_raw_event_scan_sees_every_way_of_logging_the_event(label):
+    """The same leak, spelled twenty ways, is still the same leak.
+
+    This is the test that makes the guard worth having. A check that forbade the
+    literal string ``json.dumps(event)`` would pass every one of the nineteen other
+    entries here while the event still lands in CloudWatch verbatim — the scanner
+    would be pinned to the shape of the line that happened to be wrong in #921.
+    """
+    hits = _scan_snippet(_RAW_EVENT_LOGS_THAT_MUST_BE_SEEN[label])
+    assert hits, (
+        f"the raw-event scan cannot see `{label}`: "
+        f"`{_RAW_EVENT_LOGS_THAT_MUST_BE_SEEN[label]}` would leak the unredacted "
+        "invocation event and this suite would stay green"
+    )
+
+
+@pytest.mark.parametrize("label", sorted(_RAW_EVENT_LOGS_THAT_MUST_NOT_TRIP))
+def test_the_raw_event_scan_allows_sanitized_and_narrowed_logging(label):
+    """Sanitized events, and single fields pulled out of an event, are fine.
+
+    False positives here are not harmless: resolvers log the operation name on
+    nearly every call, so a scan that flagged ``event.get("fieldName")`` would need
+    dozens of suppressions and would be deleted instead of fixed.
+    """
+    snippet = _RAW_EVENT_LOGS_THAT_MUST_NOT_TRIP[label]
+    assert not _scan_snippet(snippet), (
+        f"the raw-event scan wrongly flagged `{label}`: `{snippet}` does not log "
+        "the whole unredacted event"
+    )
+
+
+def test_the_raw_event_scan_ignores_an_unrelated_local_named_event():
+    """``for event in all_events`` rebinds the name; those are not the invocation event.
+
+    ``get_stepfunction_execution_resolver`` loops over Step Functions
+    execution-history records under the name ``event`` — once inside
+    ``lambda_handler`` itself, and again in two helpers. A scan that matched on the
+    name alone reported four leaks there, all false. Suppressing four lines by hand
+    is how a guard stops being trusted.
+    """
+    # Rebound by a for-loop inside the handler: not a hit.
+    rebound = (
+        "def lambda_handler(event, context):\n"
+        "    for event in event['history']:\n"
+        "        logger.warning(f'bad: {json.dumps(event)}')\n"
+    )
+    tree = ast.parse(rebound)
+    hits = [
+        call
+        for handler in _event_handling_functions(tree)
+        for call in _event_log_violations_in_body(handler.body)
+    ]
+    assert not hits, "a for-loop rebinding of `event` was treated as the event"
+
+    # A helper whose first parameter is NOT `event` is not an event handler.
+    helper = (
+        "def parse_history(events):\n"
+        "    for event in events:\n"
+        "        logger.warning(f'{json.dumps(event)}')\n"
+    )
+    assert not _event_handling_functions(ast.parse(helper))
+
+    # But a helper that IS handed the event is checked like the handler, because
+    # `_get_caller_info(event)` in the stepfunction resolver is exactly that.
+    assert _scan_snippet("logger.info(json.dumps(event))", param="event")
+    assert not _scan_snippet("logger.info(json.dumps(event))", param="record")
+
+
+def _denylist_key_hits(source: str) -> set[str]:
+    """Every canonical key the real scan would match in ``source``.
+
+    Uses exactly the same traversal as ``test_no_resolver_defines_its_own_denylist``
+    — every expression position, not just assignments — so these self-tests cannot
+    pass while the real scan is narrower.
+    """
+    canonical_keys = {k.lower() for k in _canonical_deny_keys()}
+    hits: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        literals = _string_literals(node)
+        if literals:
+            hits |= {s.lower() for s in literals} & canonical_keys
+    return hits
 
 
 @pytest.mark.parametrize("label", sorted(_DENYLIST_SHAPES_THAT_MUST_BE_SEEN))
@@ -458,21 +909,13 @@ def test_the_denylist_scan_sees_every_collection_shape(label):
     `frozenset({...})` and a dict literal both escaped the original scan, which
     required the assigned value to be a bare tuple/list/set literal. The irony was
     that PREVIOUSLY_MISSING_KEYS in this very file is a `frozenset({...})`.
+
+    The later entries here are never assigned at all — a default argument, a
+    membership test, a call argument. Those escaped the scan even after the
+    container shapes were fixed, because it still only inspected ``ast.Assign`` and
+    ``ast.AnnAssign``.
     """
-    source = _DENYLIST_SHAPES_THAT_MUST_BE_SEEN[label]
-    canonical_keys = {k.lower() for k in _canonical_deny_keys()}
-    tree = ast.parse(source)
-    hits: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            value = node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            value = node.value
-        else:
-            continue
-        literals = _string_literals(value)
-        if literals:
-            hits |= {s.lower() for s in literals} & canonical_keys
+    hits = _denylist_key_hits(_DENYLIST_SHAPES_THAT_MUST_BE_SEEN[label])
     assert len(hits) >= _DENYLIST_MATCH_THRESHOLD, (
         f"the denylist scan cannot see a {label}; a hand-copied denylist written "
         f"that way would be reintroduced silently (matched only {sorted(hits)})"
@@ -481,17 +924,10 @@ def test_the_denylist_scan_sees_every_collection_shape(label):
 
 @pytest.mark.parametrize("label", sorted(_SHAPES_THAT_MUST_NOT_TRIP))
 def test_the_denylist_scan_does_not_trip_on_ordinary_collections(label):
-    source = _SHAPES_THAT_MUST_NOT_TRIP[label]
-    canonical_keys = {k.lower() for k in _canonical_deny_keys()}
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Assign):
-            continue
-        literals = _string_literals(node.value) or []
-        hits = {s.lower() for s in literals} & canonical_keys
-        assert len(hits) < _DENYLIST_MATCH_THRESHOLD, (
-            f"the denylist scan flagged an ordinary collection ({label}): "
-            f"{sorted(hits)}"
-        )
+    hits = _denylist_key_hits(_SHAPES_THAT_MUST_NOT_TRIP[label])
+    assert len(hits) < _DENYLIST_MATCH_THRESHOLD, (
+        f"the denylist scan flagged an ordinary collection ({label}): {sorted(hits)}"
+    )
 
 
 def test_the_import_scan_ignores_prose_that_quotes_an_import(tmp_path):

@@ -13,13 +13,29 @@ Design goals:
 * Never raise. If the input is not a dict, we pass it through unchanged
   and return it so `logger.info(sanitize_event_for_logging(event))`
   is always safe.
-* Fail-closed. Any key whose name matches the denylist — regardless of
-  nesting depth — is replaced with the literal string `"***REDACTED***"`.
+* Fail-closed *for the keys it knows about*. Any key whose name matches
+  the denylist — regardless of nesting depth — is replaced with the
+  literal string `"***REDACTED***"`.
+
+  Note that this is a **denylist**, not an allowlist: a key nobody listed
+  is logged. That is deliberate — an allowlist would redact the argument
+  and field *names* operators need in order to read the log at all — but
+  it means **a new sensitive API field is only protected once its name is
+  added to ``_DEFAULT_DENY_KEY_SUBSTRINGS`` below** (or passed per-call
+  via ``extra_deny_keys``). ``identity`` is on the list as a whole
+  subtree rather than key-by-key, which hedges the commonest case.
 * Deep copy. We never mutate the caller's object.
 * Preserve structure. Keys and list lengths are preserved so operators
   can still see shapes (how many sections, how many args).
 * Truncate long strings. Document-content fields can be several megabytes;
   we cap string values at 500 characters in the sanitized copy.
+
+  Truncation is narrower than redaction, in two ways that are log-volume
+  concerns only and never leaks, since redaction is applied first and at
+  every depth: it fires only where a ``_DEFAULT_TRUNCATE_KEYS`` name holds
+  a ``str`` directly, so ``{"extracted_text": {"page1": <5000 chars>}}``
+  keeps the inner string in full; and a long value under a key nobody
+  listed is not truncated at all.
 
 Usage::
 
@@ -153,6 +169,13 @@ def _walk(
     truncate_keys: Set[str],
     max_chars: int,
 ) -> Any:
+    # Recurses into dicts and lists only. A tuple or set nested in the event is
+    # returned as-is, so a denylisted key *inside* one would not be redacted:
+    # `{"items": ({"password": "p"},)}` passes through untouched. Unreachable for
+    # every current caller — Lambda/AppSync events are `json.loads` output, which
+    # produces only dict/list/str/int/float/bool/None — so adding tuple and set
+    # arms would be dead code. Revisit if a caller ever hands this hand-built
+    # Python objects rather than a deserialized event.
     if isinstance(obj, dict):
         result = {}
         for key, value in obj.items():
