@@ -18,6 +18,7 @@ arrangement so that regression cannot come back unnoticed.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import zipfile
@@ -61,6 +62,23 @@ class TestSourceZipContents:
             n.startswith("src/lambda/multi_doc_discovery/") for n in publisher_zip_names
         )
         assert any(n.startswith("lib/idp_common_pkg/") for n in publisher_zip_names)
+
+    def test_zip_excludes_local_environments_and_build_leftovers(
+        self, publisher_zip_names
+    ):
+        """A developer checkout's venv must not ride along into the image.
+
+        ``lib/idp_common_pkg/.venv`` is ~900 MB of host-architecture wheels. Zipping
+        it made the archive 224 MB and put Darwin/arm64 binaries in the build
+        context of a linux image. The ``*.egg-info`` entry in the exclusion set was
+        a glob in a membership test, so it never matched either.
+        """
+        for name in publisher_zip_names:
+            parts = name.split("/")
+            assert ".venv" not in parts, f"virtualenv leaked into the zip: {name}"
+            assert not any(p.endswith(".egg-info") for p in parts), (
+                f"egg-info metadata leaked into the zip: {name}"
+            )
 
     def test_missing_build_input_fails_loudly(self, monkeypatch):
         """A missing build input must abort publish, not ship a broken image."""
@@ -264,14 +282,22 @@ def publisher_zip_names(monkeypatch):
     monkeypatch.chdir(_REPO_ROOT)
     publisher = _quiet_publisher(monkeypatch)
     zip_path = _REPO_ROOT / ".aws-sam" / "multi-doc-discovery-source.zip"
-    try:
-        publisher.package_multi_doc_discovery_source()
-    except (SystemExit, Exception):  # noqa: B014
-        # The upload stage needs S3 config we deliberately don't provide.
-        if not zip_path.exists():
-            raise
-    with zipfile.ZipFile(zip_path) as zf:
-        return zf.namelist()
+    # The zip path is fixed by the packaging step, so two pytest-xdist workers
+    # running the tests that use this fixture write the same file at the same
+    # time — one then reads a half-written archive and fails with BadZipFile.
+    # Serialize package-and-read across processes with an exclusive lock.
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = zip_path.with_suffix(".lock")
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            publisher.package_multi_doc_discovery_source()
+        except (SystemExit, Exception):  # noqa: B014
+            # The upload stage needs S3 config we deliberately don't provide.
+            if not zip_path.exists():
+                raise
+        with zipfile.ZipFile(zip_path) as zf:
+            return zf.namelist()
 
 
 def test_requirements_file_is_parseable_and_pins_pillow(monkeypatch):

@@ -271,6 +271,13 @@ test = [
   # them here makes the dependency explicit rather than accidental.
   "scikit-learn>=1.5.0",
   "scipy>=1.14.0",
+  # benchmarks/tests/test_typed_scoring.py exec's the corpus generators in
+  # benchmarks/corpus/generators/, which render their PDFs with reportlab. That
+  # root is registered in scripts/run_all_tests.py, so `make test` needs the
+  # dependency declared here — it was only mentioned in the run-benchmarks skill
+  # as a manual `pip install`, which made those tests fail on any environment
+  # that had not run the benchmark harness by hand.
+  "reportlab>=4.0.0",
 ]
 
 # Full package with all dependencies
