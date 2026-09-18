@@ -30,13 +30,20 @@ ASL_PATH = Path(__file__).resolve().parents[1] / "statemachine" / "workflow.asl.
 # (with `DefinitionUri` it sets `DefinitionS3Location`; CloudFormation performs
 # the substitution at deploy time), so this only affects reading it here.
 # Resolving them first means these tests inspect the shape that actually deploys.
-_UNQUOTED_PLACEHOLDER_RE = re.compile(r":\s*\$\{[A-Za-z0-9_]+\}")
+#
+# Anchored on the key's CLOSING QUOTE. Restricting the placeholder NAME to
+# ``[A-Za-z0-9_]+`` does NOT make a bare-colon anchor safe: ``Partition`` is itself
+# alphanumeric, so ``:\s*\$\{[A-Za-z0-9_]+\}`` still matches inside
+# ``"arn:${Partition}:states:::lambda:invoke"`` and rewrites all nine task resources to
+# ``"arn: 1:states:::lambda:invoke"`` — defeating the "shape that actually deploys" claim
+# above. See ``scripts/tests/test_asl_placeholder_substitution.py``.
+_UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 
 
 def load_asl() -> dict:
     """Parse the ASL with unquoted numeric substitutions resolved to a number."""
     raw = ASL_PATH.read_text()
-    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub(": 1", raw))
+    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub('": 1', raw))
 
 
 @pytest.fixture(scope="module")

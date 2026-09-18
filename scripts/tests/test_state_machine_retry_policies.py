@@ -78,7 +78,17 @@ ASL_PATH = REPO_ROOT / "patterns/unified/statemachine/workflow.asl.json"
 
 # CloudFormation substitutions. The quoted ones (``"${OCRFunctionArn}"``) are valid JSON
 # strings and are left alone — the Resource value is how a Lambda task is recognised.
-_UNQUOTED_PLACEHOLDER_RE = re.compile(r":\s*\$\{[^}]+\}")
+#
+# Anchored on the KEY'S CLOSING QUOTE, not on a bare colon. A bare ``:\s*\$\{…\}`` also
+# matches *inside* quoted values: the nine task resources are
+# ``"arn:${Partition}:states:::lambda:invoke"``, where a colon sits immediately before
+# ``${``, so the naive pattern rewrites all nine to ``"arn: 1:states:::lambda:invoke"``
+# and the parsed document stops being a faithful copy of what deploys. Nothing here
+# asserts on ``Resource`` text today, so the corruption was invisible — but the next
+# assertion about the resource, the partition, or the integration type would have been
+# made against mangled text. See ``test_asl_placeholder_substitution.py``, which proves
+# behaviourally that no substitution site in the tree damages these ARNs.
+_UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 
 # Every code that means "the work did not finish in the time available".
 TIMEOUT_ERRORS = frozenset({"Sandbox.Timedout", "States.Timeout", "Lambda.Unknown"})
@@ -98,7 +108,7 @@ TRANSIENT_ERRORS = frozenset(
 @pytest.fixture(scope="module")
 def definition() -> dict[str, Any]:
     raw = ASL_PATH.read_text(encoding="utf-8")
-    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub(": 1", raw))
+    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub('": 1', raw))
 
 
 def _walk(states: dict[str, Any], prefix: str = "") -> Iterator[tuple[str, dict]]:
@@ -132,7 +142,7 @@ def _task_names(definition: dict[str, Any]) -> list[str]:
 # Enumerated at collection time so each state is its own test case: pytest names the
 # offending state, and a state added later is picked up with no edit here.
 _DEFINITION = json.loads(
-    _UNQUOTED_PLACEHOLDER_RE.sub(": 1", ASL_PATH.read_text(encoding="utf-8"))
+    _UNQUOTED_PLACEHOLDER_RE.sub('": 1', ASL_PATH.read_text(encoding="utf-8"))
 )
 LAMBDA_TASKS = _task_names(_DEFINITION)
 
