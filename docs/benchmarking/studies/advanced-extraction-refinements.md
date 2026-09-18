@@ -480,20 +480,35 @@ explicitly (`date_format_fields`), names the transform to apply, and tells the a
 to re-map rather than re-emit. The unit suite pins all four behaviours, including
 that a structural failure does **not** claim a date remedy.
 
-One further asymmetry was found while fixing §4 and is **left unfixed on purpose**.
-When the pre-flight parse succeeds, the single-pass path appends a "PRE-PARSED TABLE
-DATA AVAILABLE" block to the agent's instructions: the table count, the total row
-count, the column list, and a four-step workflow ending in
+One further asymmetry was found while fixing §4 and was **left unfixed on purpose for
+the duration of this study**. When the pre-flight parse succeeds, the single-pass path
+appends a "PRE-PARSED TABLE DATA AVAILABLE" block to the agent's instructions: the
+table count, the total row count, the column list, and a four-step workflow ending in
 `finalize_table_extraction`. That block is written for shards — it explains the
 `--- PAGE N ---` markers and tells the agent to extract only its assigned page range
-— but `_build_agentic_shard_plan` never adds it, so the agents that need it are the
-ones that do not receive it. Adding it is a prompt change whose cost and accuracy
-effect would have to be measured on a fresh arm, and doing that mid-study would break
-comparability with every number on this page, so it is filed as
+— but `_build_agentic_shard_plan` never added it, so the agents that need it were the
+ones that did not receive it. Adding it is a prompt change whose cost and accuracy
+effect would have to be measured on a fresh arm, and doing that mid-study would have
+broken comparability with every number on this page, so it was filed as
 [issue #900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)
 rather than folded in. The pre-flight logging *was* moved into the shared
-`_preflight_table_parse` helper, so both paths now leave evidence that they ran; that
-is observability only, with no effect on what the model sees.
+`_preflight_table_parse` helper, so both paths already left evidence that they ran;
+that is observability only, with no effect on what the model sees.
+
+> **Resolved after this study closed (#900).** The block now lives in one shared
+> helper, `ExtractionService._append_preflight_table_guidance`, called from both the
+> single-pass path and `_build_agentic_shard_plan`, so shard agents receive it too.
+> The sharded copy carries one extra paragraph the single-pass copy does not: a scope
+> note telling the shard that its text already holds only its own pages (header block
+> included, so `parse_table` keeps the column headers) and that the block's table and
+> row totals are section-wide, so parsing fewer rows is correct for a shard.
+> The single-pass text is byte-identical to what produced the numbers on this page —
+> a unit test asserts the block against the pre-refactor literal — so those numbers
+> remain valid as the pre-change baseline. **The token saving on the sharded path is
+> unmeasured**: confirming it needs the `advscale` arm re-run before and after on a
+> live stack. The expected direction (fewer Extraction output tokens, recall
+> unchanged at 1.000) is inferred from the 1,512,506 → 681,222 output-token drop
+> measured below for the analogous single-pass fix, not observed for this change.
 
 ### What the two fixes are worth, measured
 
