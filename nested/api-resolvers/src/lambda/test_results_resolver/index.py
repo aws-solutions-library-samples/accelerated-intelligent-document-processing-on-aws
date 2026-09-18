@@ -38,19 +38,41 @@ s3_bounded = boto3.client(
     config=BotoConfig(connect_timeout=3, read_timeout=4, retries={"max_attempts": 1}),
 )
 
-# Same reasoning applied to the DynamoDB half of the compare fanout. The
-# module-level ``dynamodb`` resource's underlying client has botocore's
-# default 60s connect/read timeouts, so a single slow ``GetItem`` /
-# ``BatchGetItem`` on the tracking table could burn the whole dispatcher
-# budget from the DDB side even after ``s3_bounded`` capped the S3 side.
-# 3s connect / 5s read matches the S3 shape (DDB responses can be larger
-# than a single-object S3 read, so an extra second of read budget) with
-# ``max_attempts=2`` — throttling retries are cheap and worth one shot
-# rather than the client-shim's 0 retries.
+# Two bounded DynamoDB clients for the ``compareTestRuns`` /
+# ``getTestRuns`` critical paths. Both cap the DDB half of the request at
+# 3s connect / 5s read / 2 retries — the module-level ``dynamodb``
+# resource's default 60s timeouts could burn the whole 20s dispatcher
+# budget from the DDB side alone. Non-compare paths that don't share
+# that budget (``get_test_results``, cache-update writes, etc.) keep the
+# default-timeout module-level ``dynamodb`` resource.
+#
+# ``ddb_bounded`` is a DIRECT low-level client: no request marshalling,
+# no response unmarshalling. Callers must build typed AttributeValue
+# dicts (``{"PK": {"S": "..."}}``) and read typed responses. Used by
+# ``_iter_completed_doc_keys`` which is written for the typed shape.
+#
+# ``ddb_bounded_marshalling`` is a RESOURCE-attached client: identical
+# class, but the resource installs serializer/deserializer event
+# handlers on it so untyped Python-native values are marshalled on the
+# way out and typed responses are unmarshalled on the way in. Used by
+# ``_batch_get_test_run_items`` whose caller in
+# ``_query_test_runs_from_gsi`` passes untyped keys straight from
+# ``table.query()`` and whose downstream (``_build_test_run_list``)
+# reads unmarshalled fields (``item["TestRunId"]`` as a bare string).
+#
+# The two clients are NOT interchangeable: passing untyped keys to
+# ``ddb_bounded`` raises ``botocore.ParamValidationError``, and reading
+# ``.get("S")`` on ``ddb_bounded_marshalling``'s response returns
+# ``None`` because the field is already a bare string. That misuse is
+# how getTestRuns started returning empty in an earlier round.
 ddb_bounded = boto3.client(
     "dynamodb",
     config=BotoConfig(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2}),
 )
+ddb_bounded_marshalling = boto3.resource(
+    "dynamodb",
+    config=BotoConfig(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2}),
+).meta.client
 
 
 lambda_client = boto3.client("lambda")
@@ -668,7 +690,18 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
     # Sorted iteration gives deterministic candidate ordering — two runs of
     # the same test set otherwise probe documents in different orders and
     # the Comparator Changes panel could pick different-shape samples.
-    doc_keys = [f"{test_run_id}/{file_name}" for file_name in sorted(unique_files)]
+    # Cap the search at ``_ITER_SAMPLE_MAX_PROBE`` files so a large test
+    # set with sparse completion doesn't blow the compare dispatcher
+    # budget: a 5,000-file run with the first 4,900 files still processing
+    # would otherwise page through 50 BatchGetItem calls at ~1-8s each
+    # (throttling + retry backoff) just to find ``limit=5`` completed
+    # docs. 500 keys is 5 batches, well inside the fanout deadline; if
+    # that isn't enough completed docs, the panel gets fewer samples
+    # (or none) but the compare response still returns on time.
+    _ITER_SAMPLE_MAX_PROBE = 500
+    doc_keys = [
+        f"{test_run_id}/{file_name}" for file_name in sorted(unique_files)
+    ][:_ITER_SAMPLE_MAX_PROBE]
 
     # BatchGetItem in 100-key chunks. Small runs (~5-10 docs) resolve in a
     # single call. UnprocessedKeys are re-issued with capped exponential
@@ -1334,13 +1367,16 @@ def _batch_get_test_run_items(keys, table_name):
             f"DynamoDB BatchGetItem caps at 100 per call."
         )
 
-    # ``ddb_bounded`` (3s connect / 5s read / 2 retries) rather than
-    # ``dynamodb.meta.client`` — this is the ``getTestRuns`` critical
-    # path, same 20s dispatcher ceiling as the compare fanout. Default
-    # 60s DDB timeouts could burn the full budget on a single slow
-    # BatchGetItem chunk on a mature tracking table. Parity with
-    # ``_iter_completed_doc_keys`` which already uses the bounded client.
-    ddb_client = ddb_bounded
+    # ``ddb_bounded_marshalling`` (bounded 3s/5s) — the MARSHALLING
+    # variant, NOT the direct ``ddb_bounded``. Caller in
+    # ``_query_test_runs_from_gsi`` passes untyped keys straight from
+    # ``table.query()``, and ``_build_test_run_list`` downstream reads
+    # unmarshalled fields (``item["TestRunId"]`` as a bare string).
+    # The direct low-level client would raise ``ParamValidationError``
+    # on the untyped keys and (if that were bypassed) return typed
+    # AttributeValue responses that break every field access below.
+    # See the client construction comment for the two-clients story.
+    ddb_client = ddb_bounded_marshalling
     collected = []
     pending = {"Keys": keys}
     for attempt in range(6):
@@ -1440,7 +1476,11 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso, max_items):
 
         # If GSI returned results, fetch full records via BatchGetItem.
         # With the cap, this is guaranteed to fit in a single BatchGetItem
-        # call (100 keys max per call).
+        # call (100 keys max per call). ``table.query`` returned untyped
+        # Python values; ``_batch_get_test_run_items`` uses
+        # ``ddb_bounded_marshalling`` which auto-marshals on the way out
+        # and auto-unmarshals on the way in, so untyped keys are the
+        # right shape here — see the client construction comment.
         if gsi_items:
             keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi_items]
             table_name = table.table_name

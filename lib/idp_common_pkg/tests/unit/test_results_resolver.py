@@ -483,30 +483,38 @@ def test_batch_get_test_run_items_retries_unprocessed_keys():
     a throttled batch under load returns a shorter test-run list than the
     GSI actually contains.
     """
+    # Marshalling client returns unmarshalled responses (bare strings,
+    # not typed AttributeValue dicts) and its request keys are untyped
+    # too. Mock responses match that shape.
     responses = [
         {
-            "Responses": {"T": [{"PK": {"S": "testrun#a"}}]},
-            "UnprocessedKeys": {
-                "T": {"Keys": [{"PK": {"S": "testrun#b"}, "SK": {"S": "metadata"}}]}
-            },
+            "Responses": {"T": [{"PK": "testrun#a"}]},
+            "UnprocessedKeys": {"T": {"Keys": [{"PK": "testrun#b", "SK": "metadata"}]}},
         },
         {
-            "Responses": {"T": [{"PK": {"S": "testrun#b"}}]},
+            "Responses": {"T": [{"PK": "testrun#b"}]},
             "UnprocessedKeys": {},
         },
     ]
     fake_client = Mock()
     fake_client.batch_get_item.side_effect = responses
-    with patch.object(index, "ddb_bounded", fake_client):
+    # ``_batch_get_test_run_items`` uses the MARSHALLING variant of the
+    # bounded client so untyped keys from ``table.query()`` and
+    # unmarshalled response reads (``item["TestRunId"]`` as a bare string)
+    # both work. Patching the marshalling client — the direct
+    # ``ddb_bounded`` is used by the other DDB path.
+    with patch.object(index, "ddb_bounded_marshalling", fake_client):
+        # Untyped keys — exactly what the caller passes in prod (from
+        # ``table.query()`` in ``_query_test_runs_from_gsi``).
         keys = [
-            {"PK": {"S": "testrun#a"}, "SK": {"S": "metadata"}},
-            {"PK": {"S": "testrun#b"}, "SK": {"S": "metadata"}},
+            {"PK": "testrun#a", "SK": "metadata"},
+            {"PK": "testrun#b", "SK": "metadata"},
         ]
         items = index._batch_get_test_run_items(keys, "T")
     assert fake_client.batch_get_item.call_count == 2, (
         "UnprocessedKeys must be re-issued rather than silently dropped"
     )
-    assert {item["PK"]["S"] for item in items} == {"testrun#a", "testrun#b"}
+    assert {item["PK"] for item in items} == {"testrun#a", "testrun#b"}
 
 
 @pytest.mark.unit

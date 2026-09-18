@@ -862,9 +862,41 @@ class SticklerConfigMapper:
                     items_schema.setdefault(
                         "x-aws-stickler-match-threshold", match_threshold
                     )
-                logger.debug(
-                    f"Field '{field_path}': Set match_threshold={match_threshold} on items schema for Hungarian matching"
-                )
+                    logger.debug(
+                        f"Field '{field_path}': Set match_threshold={match_threshold} on items schema for Hungarian matching"
+                    )
+                else:
+                    # ``items_schema`` is not a dict — could be missing, a
+                    # string type reference, or a schema shape the mapper
+                    # doesn't recognise. Warn rather than silently
+                    # dropping the operator-configured threshold, so a
+                    # mis-authored schema surfaces at config time instead
+                    # of showing up as "why is my match_threshold being
+                    # ignored" in evaluation output.
+                    logger.warning(
+                        f"Field '{field_path}': evaluation-match-threshold="
+                        f"{match_threshold} configured, but items schema is "
+                        f"{type(items_schema).__name__ if items_schema is not None else 'missing'} "
+                        f"(expected dict). Threshold not applied. Fix the schema "
+                        f"or use evaluation-threshold if the array items are scalars."
+                    )
+
+        # A non-structured array (items is a scalar type, ``oneOf``/``anyOf``,
+        # or a Union type like ``[\"object\", \"null\"]``) that carries
+        # ``evaluation-match-threshold`` reaches here with the extension
+        # silently ignored — Stickler's Hungarian matching only applies to
+        # arrays of objects. Emit a warning so the operator sees why their
+        # configured threshold has no effect.
+        elif (
+            schema.get(SCHEMA_TYPE) == TYPE_ARRAY
+            and X_AWS_IDP_EVALUATION_MATCH_THRESHOLD in schema
+        ):
+            logger.warning(
+                f"Field '{field_path}': evaluation-match-threshold configured on a "
+                f"non-structured array (items type is not 'object'). Match threshold "
+                f"applies only to Hungarian matching of object items — for scalar-item "
+                f"arrays use evaluation-threshold on the items instead. Silently dropping."
+            )
 
         # For non-array fields: use threshold — unless NUMERIC_EXACT already
         # consumed evaluation-threshold as a comparator-config tolerance above.

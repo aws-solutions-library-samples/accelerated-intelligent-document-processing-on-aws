@@ -214,25 +214,51 @@ class TestTheRunItemStoresTheConfigurationCompressed:
         with pytest.raises(ValueError, match="non-finite Decimal"):
             runner._json_default(Decimal("-Infinity"))
 
-    def test_non_decimal_non_json_types_raise_typeerror_not_silent_str(
+    def test_common_python_types_get_explicit_converters_not_str_fallback(
         self, runner
     ):
-        """A ``datetime`` / ``bytes`` / ``UUID`` in a captured config used
-        to be silently coerced to ``str(value)``, corrupting the round-
-        trip and hiding a real config-validity problem. The default now
-        falls through to ``TypeError`` — the same behaviour ``json.dumps``
-        has without a custom default — so the failure is loud and names
-        the offending type.
+        """``datetime`` / ``UUID`` / ``bytes`` / ``set`` are common enough
+        that reasonable configs may carry them. Historically they went
+        through a blanket ``str(value)`` fallback that corrupted the
+        round-trip (``str(bytes)`` emits ``"b'...'"``, not decodable).
+        A prior round replaced that with ``raise TypeError`` for ALL
+        non-Decimal types, which broke previously-working configs at
+        ``startTestRun``. The right shape is EXPLICIT converters for
+        these four types with documented round-trip semantics.
         """
         import datetime as _dt
         import uuid as _uuid
 
+        # datetime → ISO-8601 string (round-trips as string, not datetime,
+        # but that's how DDB itself hands date-like fields back)
+        assert (
+            runner._json_default(_dt.datetime(2026, 9, 18, 12, 30, 45))
+            == "2026-09-18T12:30:45"
+        )
+        assert runner._json_default(_dt.date(2026, 9, 18)) == "2026-09-18"
+
+        # UUID → its string form (canonical round-trip via uuid.UUID(str))
+        u = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+        assert runner._json_default(u) == "12345678-1234-5678-1234-567812345678"
+
+        # bytes → base64 (preserves round-trip; ``str(b'...')`` would not)
+        assert runner._json_default(b"raw-bytes") == "cmF3LWJ5dGVz"
+
+        # set → sorted list of scalars, or list otherwise
+        assert runner._json_default({3, 1, 2}) == [1, 2, 3]
+
+    def test_genuinely_unknown_types_still_raise_loudly(self, runner):
+        """Any type that isn't Decimal + one of the common-native
+        converters above should still raise ``TypeError`` — the point
+        was to surface unexpected types, and that guarantee holds for
+        anything outside the explicit converter list.
+        """
+
+        class Weird:
+            pass
+
         with pytest.raises(TypeError, match="not JSON-serialisable"):
-            runner._json_default(_dt.datetime(2026, 9, 18))
-        with pytest.raises(TypeError, match="not JSON-serialisable"):
-            runner._json_default(b"raw-bytes")
-        with pytest.raises(TypeError, match="not JSON-serialisable"):
-            runner._json_default(_uuid.uuid4())
+            runner._json_default(Weird())
 
     def test_queryable_attributes_stay_top_level(self, runner):
         _store(runner, {"Config": _large_config(2)})

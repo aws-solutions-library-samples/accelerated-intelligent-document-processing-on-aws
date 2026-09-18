@@ -688,11 +688,11 @@ def _json_default(value):
     evaluated, failing ``startTestRun`` with a stack trace that hides
     the real problem.
 
-    Any other type falls through to ``TypeError`` (the default
-    ``json.dumps`` behaviour) rather than being silently coerced by
-    ``str(value)`` — silently str-ing ``datetime``/``bytes``/``UUID``
-    corrupted the round-trip and hid config-validity problems that
-    should surface loudly.
+    Common Python-native types (``datetime`` / ``date`` / ``time``,
+    ``UUID``, ``bytes``, ``set``) are handled by explicit converters
+    with documented round-trip semantics; genuinely-unknown types raise
+    ``TypeError`` so they surface loudly rather than being silently
+    coerced to a ``str()`` repr that corrupts the round-trip.
     """
     if isinstance(value, Decimal):
         if not value.is_finite():
@@ -730,13 +730,36 @@ def _json_default(value):
         if value == value.to_integral_value():
             return int(value)
         return result
-    # Non-Decimal, non-JSON-native types raise ``TypeError`` — the same
-    # behaviour ``json.dumps`` has without any ``default=``. Deliberate
-    # decision, NOT inherited: silently coercing ``datetime`` / ``bytes``
-    # / ``UUID`` to their ``str()`` repr (the previous behaviour) hid
-    # config-validity problems that should surface loudly, and corrupted
-    # the round-trip because ``json.loads(parse_float=Decimal)`` on the
-    # read-back gives the string form back rather than the original type.
+    # Explicit converters for common Python-native types that ``json.dumps``
+    # doesn't handle natively. Historically ``_json_default`` fell through
+    # to ``str(value)`` for anything unrecognized — which meant configs
+    # containing ``datetime``, ``bytes``, ``UUID`` or ``set`` values
+    # serialized cleanly via their ``str()`` repr. A prior round replaced
+    # that with a blanket ``raise TypeError`` to surface unexpected types
+    # loudly, but that broke previously-working configs at
+    # ``startTestRun`` with no fallback. The right shape is EXPLICIT
+    # converters for the types that actually appear (each with a
+    # documented round-trip semantic) and a loud ``TypeError`` for
+    # everything else — configs get their known types converted, and
+    # genuinely-surprising types still raise where they should.
+    import datetime as _dt
+    import uuid as _uuid
+    import base64 as _b64
+
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        # ISO-8601 — read-back is a string, not a datetime; that mirrors
+        # how DDB itself hands date-like fields back to callers.
+        return value.isoformat()
+    if isinstance(value, _uuid.UUID):
+        return str(value)
+    if isinstance(value, (bytes, bytearray)):
+        # base64 preserves round-trip fidelity; ``str(bytes)`` would emit
+        # ``"b'...'"`` which is neither valid data nor decodable.
+        return _b64.b64encode(bytes(value)).decode("ascii")
+    if isinstance(value, (set, frozenset)):
+        return sorted(value) if all(isinstance(v, (str, int, float)) for v in value) else list(value)
+    # Genuinely-surprising types raise so the failure is loud and named
+    # rather than silently coerced to a repr that corrupts the round-trip.
     # Pinned by ``test_non_decimal_non_json_types_raise_typeerror_not_silent_str``.
     raise TypeError(
         f"Config contains a value of type {type(value).__name__} that is "
