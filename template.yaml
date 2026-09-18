@@ -5697,6 +5697,14 @@ Resources:
             Condition:
               ArnEquals:
                 aws:SourceArn: !GetAtt DataMartRollupFunction.Arn
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt DataMartRollupDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
 
   DataMartRollupDLQAlarm:
     Type: AWS::CloudWatch::Alarm
