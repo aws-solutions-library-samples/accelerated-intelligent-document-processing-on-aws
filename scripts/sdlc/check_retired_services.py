@@ -578,8 +578,13 @@ def unexpected_resources(registry: dict, root: Path = REPO_ROOT) -> list[str]:
     for pattern in ("*.yaml", "*.yml", "*.json"):
         for path in root.rglob(pattern):
             rel = path.relative_to(root).as_posix()
-            if "/node_modules/" in rel or rel.startswith(
-                (".aws-sam/", ".git/", "node_modules/", "workshop/")
+            # `.aws-sam/` is matched at any depth, not just at the root: the
+            # feature-platform templates each build into their own, so a local SAM
+            # build otherwise puts gitignored copies of every template in scope.
+            if (
+                "/node_modules/" in rel
+                or "/.aws-sam/" in rel
+                or rel.startswith((".aws-sam/", ".git/", "node_modules/", "workshop/"))
             ):
                 continue
             try:

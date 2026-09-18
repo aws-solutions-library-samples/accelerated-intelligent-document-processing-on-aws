@@ -235,7 +235,12 @@ def test_retired_parameters_are_declared_by_no_template(registry: dict) -> None:
     for pattern in ("*.yaml", "*.yml"):
         for path in root.rglob(pattern):
             rel = path.relative_to(root).as_posix()
-            if rel.startswith((".aws-sam/", "workshop/")) or "/node_modules/" in rel:
+            if (
+                rel.startswith((".aws-sam/", "workshop/"))
+                or "/node_modules/" in rel
+                # Nested SAM build output, e.g. feature-platform/*/.aws-sam/build/.
+                or "/.aws-sam/" in rel
+            ):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

@@ -115,6 +115,14 @@
       "justification": "Third-party dependency sources, not this project's documentation."
     },
     {
+      "glob": "**/.aws-sam/**",
+      "justification": "SAM build output: gitignored copies of documentation that is scanned at its real path. Only the repository-root .aws-sam/ was skipped before, so anyone who had run a SAM build under feature-platform/ saw 174 findings locally that CI, building from a fresh clone, never sees -- and a gate that is red for a local-only reason teaches people to ignore it. Matched at any depth for the same reason the node_modules glob is."
+    },
+    {
+      "glob": "feature-platform/**/idp_common_pkg/**",
+      "justification": "A gitignored copy of lib/idp_common_pkg that the extension builds vendor into their Lambda source directories (feature-platform/idp-data-generator/bootstrap-processor/ is the one that exists today). The same README files are scanned at their real path under lib/, so the copies add only duplicate findings, and only for whoever happens to have built locally."
+    },
+    {
       "glob": "docs-site/**",
       "justification": "Starlight site scaffolding and generated output; the prose it publishes lives in docs/ and is scanned there."
     }
