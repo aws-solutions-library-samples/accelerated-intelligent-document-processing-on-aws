@@ -702,11 +702,11 @@ def _json_default(value):
             )
         # Convert to float FIRST — this catches magnitudes outside float64's
         # range (subnormals underflow to ``0.0``, huge values overflow to
-        # ``inf``) before ``value % 1`` is evaluated. Doing the modulo first
-        # would itself raise ``decimal.InvalidOperation`` on huge Decimals
-        # (``Decimal('1E500') % 1`` → ``DivisionImpossible``) and would
-        # succeed-but-truncate on subnormals — either way the ``float()``
-        # check is the right guard to run first.
+        # ``inf``). Doing the integer test first would itself raise
+        # ``decimal.InvalidOperation`` on very-large-but-float-finite
+        # Decimals like ``Decimal('1E30')`` (31 digits > default context
+        # prec of 28; the internal division-with-remainder overflows the
+        # context even though ``float(1E30)`` is a fine 1e+30).
         result = float(value)
         if not math.isfinite(result):
             raise ValueError(
@@ -720,9 +720,24 @@ def _json_default(value):
                 f"0.0 when converted to float; JSON cannot preserve the "
                 f"value. Fix the config source (avoid subnormal magnitudes)."
             )
-        if value % 1 == 0:
+        # ``value == value.to_integral_value()`` rather than ``value % 1
+        # == 0`` — the modulo path raises ``InvalidOperation`` /
+        # ``DivisionImpossible`` on Decimals whose coefficient exceeds
+        # the current context precision (default 28 digits), which
+        # includes float-representable values like ``Decimal('1E30')``.
+        # ``to_integral_value`` is a rounding op with no arithmetic
+        # precision requirement, so it never trips on that path.
+        if value == value.to_integral_value():
             return int(value)
         return result
+    # Non-Decimal, non-JSON-native types raise ``TypeError`` — the same
+    # behaviour ``json.dumps`` has without any ``default=``. Deliberate
+    # decision, NOT inherited: silently coercing ``datetime`` / ``bytes``
+    # / ``UUID`` to their ``str()`` repr (the previous behaviour) hid
+    # config-validity problems that should surface loudly, and corrupted
+    # the round-trip because ``json.loads(parse_float=Decimal)`` on the
+    # read-back gives the string form back rather than the original type.
+    # Pinned by ``test_non_decimal_non_json_types_raise_typeerror_not_silent_str``.
     raise TypeError(
         f"Config contains a value of type {type(value).__name__} that is "
         f"not JSON-serialisable and has no registered converter: {value!r}"

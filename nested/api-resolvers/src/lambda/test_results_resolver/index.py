@@ -934,7 +934,17 @@ def compare_test_runs(test_run_ids):
     # PENDING futures immediately; RUNNING futures keep executing on their
     # daemon-ish worker threads until Lambda reclaims them, but they no
     # longer block ``compare_test_runs`` from returning.
-    _OVERALL_FANOUT_DEADLINE_SECONDS = 15
+    #
+    # Total wall-clock budget for the whole ``compare_test_runs`` call is
+    # ~17s (leaves ~3s for the 20s dispatcher's response marshalling).
+    # The budget is deadline-based, not per-step: the sequential
+    # ``get_test_results`` + ``_get_test_run_config`` loop below can eat
+    # several seconds of it on a mature stack, and the futures — which
+    # are ALREADY RUNNING while that loop executes — need whatever
+    # remains. ``fanout_deadline_seconds = remaining`` at the
+    # ``futures_wait`` call keeps the total bounded even when prep is slow.
+    _OVERALL_BUDGET_SECONDS = 17.0
+    fanout_start = time.monotonic()
     pool = ThreadPoolExecutor(max_workers=max(1, min(4, len(test_run_ids))))
     try:
         methods_futures = {
@@ -953,24 +963,32 @@ def compare_test_runs(test_run_ids):
             else:
                 logger.warning(f"No results found for test run: {test_run_id}")
 
-        # Overall wall-clock deadline for all fanout futures combined. 15s
-        # is a hard bound below the 20s dispatcher ceiling — the underlying
-        # ``s3_bounded`` client caps each S3 fetch at 3s connect / 4s read
-        # so a well-behaved probe finishes in <7s. 15s leaves ~5s of
-        # dispatcher budget for ``_build_comparator_diff`` and response
-        # marshalling below. Anything not done by the deadline is treated
-        # as an empty methods dict for that run.
+        # Remaining budget after the sequential prep loop. Anything not
+        # done by the deadline is treated as an empty methods dict for
+        # that run. The underlying ``s3_bounded`` (3s/4s) and
+        # ``ddb_bounded`` (3s/5s) clients cap each probe at ~9s of
+        # network time, so any budget >= 10s here comfortably covers a
+        # well-behaved probe; the deadline exists to bound the
+        # pathological hung case, not the healthy one.
+        elapsed = time.monotonic() - fanout_start
+        fanout_deadline_seconds = max(0.0, _OVERALL_BUDGET_SECONDS - elapsed)
+        logger.info(
+            "compare_test_runs fanout: %.2fs elapsed in prep, %.2fs remaining budget",
+            elapsed,
+            fanout_deadline_seconds,
+        )
         done_futures, not_done = futures_wait(
             list(methods_futures.values()),
-            timeout=_OVERALL_FANOUT_DEADLINE_SECONDS,
+            timeout=fanout_deadline_seconds,
             return_when=ALL_COMPLETED,
         )
         for trid, fut in methods_futures.items():
             if fut in not_done:
                 logger.warning(
                     f"Sample-attribute-methods read for {trid} exceeded "
-                    f"the {_OVERALL_FANOUT_DEADLINE_SECONDS}s fanout "
-                    f"deadline; Comparator diff will be empty for this run."
+                    f"the {fanout_deadline_seconds:.2f}s fanout deadline "
+                    f"(overall {_OVERALL_BUDGET_SECONDS}s budget minus prep); "
+                    f"Comparator diff will be empty for this run."
                 )
                 runs_methods[trid] = {}
                 continue
@@ -1316,7 +1334,13 @@ def _batch_get_test_run_items(keys, table_name):
             f"DynamoDB BatchGetItem caps at 100 per call."
         )
 
-    ddb_client = dynamodb.meta.client
+    # ``ddb_bounded`` (3s connect / 5s read / 2 retries) rather than
+    # ``dynamodb.meta.client`` — this is the ``getTestRuns`` critical
+    # path, same 20s dispatcher ceiling as the compare fanout. Default
+    # 60s DDB timeouts could burn the full budget on a single slow
+    # BatchGetItem chunk on a mature tracking table. Parity with
+    # ``_iter_completed_doc_keys`` which already uses the bounded client.
+    ddb_client = ddb_bounded
     collected = []
     pending = {"Keys": keys}
     for attempt in range(6):

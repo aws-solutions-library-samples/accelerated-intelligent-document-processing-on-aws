@@ -497,7 +497,7 @@ def test_batch_get_test_run_items_retries_unprocessed_keys():
     ]
     fake_client = Mock()
     fake_client.batch_get_item.side_effect = responses
-    with patch.object(index.dynamodb.meta, "client", fake_client):
+    with patch.object(index, "ddb_bounded", fake_client):
         keys = [
             {"PK": {"S": "testrun#a"}, "SK": {"S": "metadata"}},
             {"PK": {"S": "testrun#b"}, "SK": {"S": "metadata"}},

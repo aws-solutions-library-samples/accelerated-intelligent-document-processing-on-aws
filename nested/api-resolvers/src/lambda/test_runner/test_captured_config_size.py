@@ -150,6 +150,38 @@ class TestTheRunItemStoresTheConfigurationCompressed:
         )
         assert not isinstance(body["Config"]["extraction"]["temperature"], str)
 
+    def test_large_but_float_finite_decimals_are_serialised_not_crashed(
+        self, runner
+    ):
+        """The integer-test branch used to be ``value % 1 == 0``, which
+        raises ``decimal.InvalidOperation`` (``DivisionImpossible``) on
+        Decimals whose coefficient exceeds the current context precision
+        (default 28 digits) — but ``Decimal('1E30')`` and similar are
+        finite floats (``1e+30`` is well inside float64's range) that
+        must NOT crash ``startTestRun``. The prior overflow-check fix
+        left this middle case unprotected: ``float()`` says "fine, that
+        fits", then ``value % 1`` raises anyway.
+
+        ``value == value.to_integral_value()`` is a rounding-only op
+        with no context-precision requirement, so it never trips on
+        this path. Verify:
+
+        * a large integer-valued Decimal (``1E30``) returns ``int`` and
+          does not crash — the regression-guard case;
+        * a small non-integer Decimal (``0.85``) still returns ``float``
+          — the pre-change happy path stayed intact.
+        """
+        # Regression case: previously raised DivisionImpossible on the
+        # modulo. Must return int(10**30) cleanly.
+        result = runner._json_default(Decimal("1E30"))
+        assert result == 10**30
+        assert isinstance(result, int)
+
+        # Happy path: non-integer Decimals still coerce to float.
+        result = runner._json_default(Decimal("0.85"))
+        assert result == 0.85
+        assert isinstance(result, float)
+
     def test_subnormal_decimal_raises_rather_than_silently_truncating_to_zero(
         self, runner
     ):
