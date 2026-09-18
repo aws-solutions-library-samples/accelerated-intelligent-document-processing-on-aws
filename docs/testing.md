@@ -52,6 +52,15 @@ CI runs the same suites split across two targets — `make test-cicd -C
 lib/idp_common_pkg` and `make test-packages-cicd` — so a suite that exists but is
 wired into neither is invisible to CI even though `make test` runs it locally.
 
+`make test-packages-cicd` runs every suite with the AWS environment **removed** —
+no region, no credentials, no profile, and the shared AWS config file neutralised —
+because that is what a CI runner supplies. A suite that needs a region, usually
+because a Lambda handler it imports builds a boto3 client at module scope, must
+therefore pin one in its own `conftest.py` rather than inherit one from the shell;
+otherwise it passes where it was written and fails where it is gated.
+`scripts/tests/test_offline_suites_are_hermetic.py` checks that, and checks that the
+stripping wrapper itself still works.
+
 There is **no standing failure set** — **Expected standing failures: 0** on a
 correctly installed tree, and the enumerated list of accepted failures in
 [`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)
