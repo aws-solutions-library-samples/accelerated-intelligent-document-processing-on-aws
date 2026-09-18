@@ -1055,41 +1055,156 @@ def test_cloudwatch_logs_key_grant_covers_every_log_group_name_shape() -> None:
         f"`Principal.Service: !Sub logs.${{AWS::URLSuffix}}`."
     )
 
-    for stmt in matching:
-        condition = stmt.get("Condition")
-        if condition is None:
-            continue
-        assert isinstance(condition, dict), (
-            f"the CloudWatch Logs grant {stmt.get('Sid')!r} has a non-mapping "
-            f"Condition: {condition!r}"
-        )
-        patterns = []
-        for operator in ("ArnLike", "StringLike"):
-            values = (condition.get(operator) or {}).get(_LOGS_ARN_CONTEXT)
-            if values is None:
-                continue
-            patterns.extend(values if isinstance(values, list) else [values])
+    problems = {
+        stmt.get("Sid") or "<no Sid>": problem
+        for stmt in matching
+        if (problem := _logs_grant_scope_problem(stmt)) is not None
+    }
+    assert not problems, f"the CloudWatch Logs key grant is too narrow: {problems}"
 
-        assert patterns, (
-            f"the CloudWatch Logs grant {stmt.get('Sid')!r} is now conditional on "
-            f"{sorted(condition)}, which this gate cannot evaluate. The only scope "
-            f"known to be safe here is an ArnLike or StringLike on "
+
+def _arn_pattern_text(value: Any) -> str:
+    """The literal text of an ARN pattern, resolving `Fn::Sub`.
+
+    Every ARN in these templates is written through `!Sub` so the partition,
+    region and account come from pseudo-parameters, so a bare `str(value)` sees
+    the *dict* and rejects the only spelling a correct scope can have. That was a
+    real defect in this test until a probe applied the scope this docstring calls
+    safe and watched it fail. The `${...}` placeholders are deliberately left in:
+    the check reads only the tail after `log-group:`, where none of them appear.
+    """
+    sub = _intrinsic(value, "Sub")
+    if sub is not None:
+        # Long form is [template, {vars}]; only the template can carry the tail.
+        return str(sub[0] if isinstance(sub, list) and sub else sub)
+    return str(value)
+
+
+def _logs_grant_scope_problem(stmt: dict) -> str | None:
+    """Why this grant is too narrow for the log groups rule 1 requires, else None.
+
+    Separate from the test so the accept path can be exercised on synthetic
+    statements. A scope this gate accepts and a scope it rejects are equally
+    important, and only the reject path had coverage before.
+    """
+    condition = stmt.get("Condition")
+    if condition is None:
+        return None
+    if not isinstance(condition, dict):
+        return f"non-mapping Condition: {condition!r}"
+
+    patterns = []
+    for operator in ("ArnLike", "StringLike"):
+        values = (condition.get(operator) or {}).get(_LOGS_ARN_CONTEXT)
+        if values is None:
+            continue
+        patterns.extend(values if isinstance(values, list) else [values])
+
+    if not patterns:
+        return (
+            f"conditional on {sorted(condition)}, which this gate cannot evaluate. "
+            f"The only scope known to be safe here is an ArnLike or StringLike on "
             f"{_LOGS_ARN_CONTEXT}. Any other condition risks producing log groups "
             f"CloudWatch cannot write to — check it covers all five log-group name "
-            f"shapes (see this test's docstring), then teach this gate about it."
+            f"shapes (see the docstring of the test that calls this), then teach "
+            f"this gate about it."
         )
 
-        for pattern in patterns:
-            text = str(pattern)
-            assert text == "*" or text.endswith(":log-group:*"), (
-                f"the CloudWatch Logs grant {stmt.get('Sid')!r} is scoped to "
-                f"{text!r}, which does not end in `:log-group:*`. 84 of the log "
-                f"groups in the enforced templates take CloudFormation's generated "
-                f"`<StackName>-<LogicalId>-<hash>` name, which no narrower pattern "
-                f"can match without enumerating hashes that do not exist until "
-                f"deploy time. Scoping the account and region is fine; scoping the "
-                f"group name is not."
+    for pattern in patterns:
+        text = _arn_pattern_text(pattern)
+        if text != "*" and not text.endswith(":log-group:*"):
+            return (
+                f"scoped to {text!r}, which does not end in `:log-group:*`. 84 of "
+                f"the log groups in the enforced templates take CloudFormation's "
+                f"generated `<StackName>-<LogicalId>-<hash>` name, which no "
+                f"narrower pattern can match without enumerating hashes that do "
+                f"not exist until deploy time. Scoping the account and region is "
+                f"fine; scoping the group name is not."
             )
+    return None
+
+
+_SCOPE_PREFIX = "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:"
+
+
+def _scope_arn(tail: str) -> str:
+    """An ARN pattern with `tail` after `log-group:`.
+
+    Concatenated rather than `str.format`ed: the pseudo-parameter braces in the
+    prefix are `${...}`, which `format` reads as replacement fields.
+    """
+    return _SCOPE_PREFIX + tail
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "case,condition,accepted",
+    [
+        ("no Condition at all", None, True),
+        (
+            "ArnLike scoped to account and region, group name left open",
+            {"ArnLike": {_LOGS_ARN_CONTEXT: {"!Sub": _scope_arn("*")}}},
+            True,
+        ),
+        (
+            "StringLike, same scope",
+            {"StringLike": {_LOGS_ARN_CONTEXT: {"!Sub": _scope_arn("*")}}},
+            True,
+        ),
+        (
+            "list of patterns, all open at the group name",
+            {
+                "ArnLike": {
+                    _LOGS_ARN_CONTEXT: [
+                        {"!Sub": _scope_arn("*")},
+                        "*",
+                    ]
+                }
+            },
+            True,
+        ),
+        (
+            "scoped to /aws/lambda/ only, missing the 84 generated names",
+            {"ArnLike": {_LOGS_ARN_CONTEXT: {"!Sub": _scope_arn("/aws/lambda/*")}}},
+            False,
+        ),
+        (
+            "one pattern of two too narrow",
+            {
+                "ArnLike": {
+                    _LOGS_ARN_CONTEXT: [
+                        {"!Sub": _scope_arn("*")},
+                        {"!Sub": _scope_arn("/${AWS::StackName}/*")},
+                    ]
+                }
+            },
+            False,
+        ),
+        (
+            "condition on something else entirely",
+            {"StringEquals": {"kms:ViaService": "logs.us-east-1.amazonaws.com"}},
+            False,
+        ),
+    ],
+)
+def test_the_key_grant_scope_check_accepts_and_rejects_the_right_scopes(
+    case: str, condition: dict | None, accepted: bool
+) -> None:
+    """Both directions, because a false failure here blocks a real improvement.
+
+    The reject cases are the point of the test that runs against `template.yaml`;
+    the accept cases exist because the first version of it compared `str(value)`
+    against the tail and so rejected `!Sub`, which is the only way this repo can
+    write an ARN.
+    """
+    stmt: dict[str, Any] = {"Sid": _LOGS_GRANT_SID}
+    if condition is not None:
+        stmt["Condition"] = condition
+    problem = _logs_grant_scope_problem(stmt)
+    if accepted:
+        assert problem is None, f"{case}: rejected a scope that is safe: {problem}"
+    else:
+        assert problem is not None, f"{case}: accepted a scope that is too narrow"
 
 
 def _is_cloudwatch_logs_grant(stmt: dict) -> bool:
