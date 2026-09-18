@@ -345,7 +345,22 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     # which is a payload-format-2.0 key that a REST API never sends anyway (1.0
     # uses requestContext.httpMethod), so it could not have matched even if
     # OPTIONS were routed here.
-    appsync_event = normalize_event(event)
+    # normalize_event is called OUTSIDE the try below (the field name it yields is
+    # what every log line and error body names), so its one authorization failure
+    # has to be mapped here: it raises CallerIdentityRefused — a PermissionError —
+    # for an invocation that asserts its own `identity` rather than presenting one
+    # the transport verified. Reachable only by a principal holding
+    # lambda:InvokeFunction on this function directly, since API Gateway builds the
+    # event itself and a request body cannot add top-level keys to it. Without this
+    # branch the refusal would leave the function on an unhandled exception, which
+    # API Gateway reports as a bodiless 502.
+    try:
+        appsync_event = normalize_event(event)
+    except PermissionError as e:
+        logger.warning("Rejecting invocation with an unverified identity: %s", e)
+        return _http_response(
+            403, {"errors": [{"message": str(e), "errorType": "Unauthorized"}]}
+        )
     field = appsync_event.get("info", {}).get("fieldName", "")
 
     if not field:

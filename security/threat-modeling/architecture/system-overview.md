@@ -21,14 +21,13 @@
 > **v3.2 refresh (v0.6.9).** The sections below were re-derived from
 > `template.yaml`, `nested/api-resolvers/template.yaml`,
 > `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor
-> source rather than edited in place. Corrections in this pass: the main user
-> pool has **five** groups, not four (an `Annotator` group was added, scoped by
-> `allowedTestSets`); **118** operations are routable through the dispatcher, not
-> 97, and the group distribution in §5 was wrong in every row; §5 now names what
-> each layer does *not* cover, including the absence of a default deny at the
-> dispatcher; §5.2 (the two non-REST authenticated entry points) and §5.3
-> (admission control) are new; §6 states encryption per bucket instead of
-> "SSE-S3 / SSE-KMS"; and §7.1 (deployment-time privilege) is new. Where a gap's
+> source rather than edited in place. The main user pool has **five** groups (an
+> `Annotator` group scoped by `allowedTestSets`); **118** operations are routable
+> through the dispatcher, with the group distribution in §5 taken from
+> `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover,
+> including the absence of a default deny at the dispatcher; §5.2 covers the two
+> non-REST authenticated entry points and §5.3 admission control; §6 states
+> encryption per bucket; §7.1 covers deployment-time privilege. Where a gap's
 > fix is in flight it is cited by issue number and marked **pending** — a pending
 > fix is not a control, and nothing below should be read as one.
 

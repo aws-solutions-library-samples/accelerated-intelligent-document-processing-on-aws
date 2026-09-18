@@ -174,7 +174,7 @@ features:
     # comes from real AWS Marketplace rather than a simulator.
     licenseMode: marketplace-live
     # Seed/fallback only — the live value comes from latest.json at runtime.
-    latestVersion: "v0.2.0"
+    latestVersion: "v0.1.0"
     # Same public buckets, regions and `artifacts/genai-idp-mp/` prefix as Auto
     # Optimizer, under this extension's own featureId. See the notes on the entry
     # above for why the keys are version-free and why the objects are public-read.

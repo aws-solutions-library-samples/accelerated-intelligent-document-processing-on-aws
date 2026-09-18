@@ -126,9 +126,8 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 > `scripts/api_rbac_expectations.yaml`, in each case next to the corresponding
 > coverage-gap id `GAP-07`. (Measured on that branch: those are the only three
 > occurrences outside this directory. Its *code* comments name `GAP-07` rather
-> than the threat id, so an earlier claim here that the identifier was
-> referenced from code comments was wrong and is withdrawn.) The threat that
-> this document
+> than the threat id, so do not expect to find the threat id there.) The threat
+> that this document
 > originally numbered `AUTH.T14` — authorization being opt-in per resolver — was
 > renumbered to `AUTH.T16` here so the two do not collide. A threat identifier is
 > this model's primary key; two threats sharing one is worse than a gap in the

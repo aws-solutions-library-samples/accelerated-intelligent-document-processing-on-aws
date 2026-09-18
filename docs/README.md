@@ -46,7 +46,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Evaluation & Testing
 
-- [Testing](./testing.md) - Every test method in this repo, what it proves, and whether CI runs it
+- [Testing](./testing.md) - Every test layer and tier in this repo, what it proves, and whether CI runs it
 - [Evaluation Framework](./evaluation.md) - Accuracy assessment system powered by Stickler
 - [Evaluation Enhanced Reporting](./evaluation-enhanced-reporting.md) - Advanced evaluation reports with field-level comparisons
 - [Test Studio](./test-studio.md) - Interactive testing with curated datasets

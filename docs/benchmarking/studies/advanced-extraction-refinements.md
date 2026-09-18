@@ -76,9 +76,9 @@ configuration — replicate B recovered every row on the same inputs.
 Sonnet 5 can be selected as `sonnet5_1m`, which the product turns into a request on
 the 1M-token context tier. The hope was that wider shards would remove the shard
 boundaries where rows go missing. The arm ran (run `run-20260914-214620`) and the
-harness priced it at **$125.42 against the baseline's $68.82, a 1.82× total** —
-which was the headline of an earlier draft of this section. That number does not
-survive being checked, and the reason is worth more than the original finding.
+harness priced it at **$125.42 against the baseline's $68.82, a 1.82× total** — a
+headline number that does not survive being checked, and the reason is worth more
+than the number itself.
 
 Start with what the two arms actually consumed. Summing the Extraction-phase metering
 records across all 12 runs of each arm:
@@ -667,11 +667,10 @@ from the measured token mix per cell):
 
 The sign follows the cache-read share: on a well-cached workload the 50% discount does
 not cover losing a 10× discount on 70–97% of input tokens, and the one cell where
-batch wins does so by less than the noise floor. An earlier draft of this section
-claimed batch was worse in 11 of 12 cells by up to +100%; measured per cell across all
+batch wins does so by less than the noise floor. Measured per cell across all
 available runs it is roughly a wash for Claude arms (+2% to +6%), clearly worse only
-for the highest-caching arm, and marginally better for one. Either way it is not the
-50% saving the price sheet suggests.
+for the highest-caching arm, and marginally better for one — not the 50% saving the
+price sheet suggests.
 
 ## 9. Deliberately not measured
 
