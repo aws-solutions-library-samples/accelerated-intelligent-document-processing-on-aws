@@ -184,7 +184,12 @@ CACHE_RATE_CASES = [
     ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 3.3e-6, 3.3e-7, 4.125e-6),
     ("us.anthropic.claude-sonnet-4-6", 3.3e-6, 3.3e-7, 4.125e-6),
     ("us.anthropic.claude-sonnet-5", 3.3e-6, 3.3e-7, 4.125e-6),
-    ("us.anthropic.claude-sonnet-4-6:1m", 6.6e-6, 6.6e-7, 8.25e-6),
+    # ":1m" selects the 1M-token context window, which carries no price premium
+    # on a 4.6-or-later model, so this row is deliberately identical to the
+    # base us.anthropic.claude-sonnet-4-6 row above. It used to transcribe a
+    # flat 2x input / 1.5x output premium that applied only to the earlier
+    # Sonnet 4 / 4.5 1M beta; see issue #899.
+    ("us.anthropic.claude-sonnet-4-6:1m", 3.3e-6, 3.3e-7, 4.125e-6),
     ("us.anthropic.claude-3-5-sonnet-20240620-v1:0", 3.0e-6, 3.0e-7, 3.75e-6),
     ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", 3.0e-6, 3.0e-7, 3.75e-6),
     ("us.anthropic.claude-3-7-sonnet-20250219-v1:0", 3.0e-6, 3.0e-7, 3.75e-6),

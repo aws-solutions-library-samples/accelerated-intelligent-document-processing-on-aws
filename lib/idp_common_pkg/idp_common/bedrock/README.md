@@ -57,6 +57,44 @@ output_text = client.extract_text_from_response(response)
 print(output_text)
 ```
 
+### What the metering key names
+
+Every invocation returns `{"response": ..., "metering": ...}`, where the metering
+key is `"{context}/bedrock/{model id}"` — for example
+`"Extraction/bedrock/us.anthropic.claude-sonnet-5"`. That model ID is the one
+**actually sent to Bedrock**, and it is what cost reporting prices, so which
+suffixes it keeps matters:
+
+| Suffix | In the key? | Why |
+|---|---|---|
+| `:flex`, `:priority` (service tier) | kept | The tier re-prices **every** request made in it (flex 0.5×, priority 1.75×) and each tier has its own `config_library/pricing.yaml` entry, so the key has to name it to pick the right rate. |
+| `:1m` (long context) | **stripped** | It names no separate rate: the 1M context window is priced at the model's standard per-token rates. It is also not part of the model ID — the client removes it and sends the `context-1m-2025-08-07` beta header instead — so a key carrying it names a profile that was never invoked. |
+
+Note that both suffixes are stripped before Bedrock is called (`parse_model_id`
+lifts a service tier out into `converse_params["serviceTier"]`), so the wire
+format is not what separates them — pricing is.
+
+`idp_common.bedrock.model_utils.metering_model_id` does the stripping for
+**metering keys**; use it at any new metering emission site (a unit test in
+`tests/unit/bedrock/test_long_context_metering_key.py` fails if a new site builds
+the key from a raw model ID). It is **not** the only place `:1m` is handled, and
+it is not meant to be. Six other sites strip the suffix by hand, none of them
+about pricing: `client.py` normalizes a model ID to its base family name in
+`is_claude_4_7_model` and `_strip_region_and_1m` (capability predicates — which
+inference parameters the model accepts); `extraction/agentic_idp.py` and the
+`chat_with_document_processor` Lambda plus its vendored copy under
+`chat_stream_processor/` strip it to build the ID they actually invoke with; and
+`calculate_capacity/index.py` falls back to the base ID for a Service Quotas
+lookup, since a `:1m` variant shares the base model's quota. Deciding what to
+*call*, or which quota to read, is a different question from what a metering key
+should name, so those sites deliberately do not route through
+`metering_model_id`.
+
+Until v0.6.9 the key carried `:1m`, and `pricing.yaml` gave those keys a premium
+rate card — a flat 2× input / 1.5× output that never applied to any model offered
+with the suffix — which overstated long-context model cost by up to 1.8× in every
+report; see `docs/cost-calculator.md` and issue #899.
+
 ## Working with Embeddings
 
 Generate text embeddings for semantic search or document comparison:
