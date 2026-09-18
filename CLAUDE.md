@@ -69,9 +69,22 @@ make cfn-lint-warnings
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered — `make check-arn-partitions` still uses hardcoded globs and
-misses `nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/`. It runs
-from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
+without being covered. `make check-arn-partitions` now uses the **same** discovery
+(`scripts/discover_templates.sh cfn`, `Makefile:234`) and both targets fail outright
+if it returns nothing, so the two gates see the same set — 30 templates today. The
+hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
+and `iam-roles/` is gone; that directory list survives only as the historical note in
+the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
+(`Makefile:226`) skips any discovered template whose path starts with
+`scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
+cross-account principal by construction — so the ARN gate's real coverage is
+"every template found by content, less that prefix" — 26 of the 30. `cfn-lint`
+exempts nothing at **path** scope: no template is skipped. It does exempt specific
+*rules*, which is a different axis — it runs with `--ignore-checks
+$(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
+suppressed at resource scope on three layer resources in `template.yaml`. Both
+targets run from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets
+match.
 
 It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
 defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
@@ -125,9 +138,55 @@ nothing checked.
 
 ⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
 push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
-to `develop` runs nothing on GitHub. And being visible is not being blocking —
-each check must also be a required status check on `develop` in branch-protection
-settings.
+to `develop` runs nothing on GitHub.
+
+### Visible is not blocking — `make check-branch-protection`
+
+Parity between the two CIs only means both *run* the gates. Whether a red gate can
+actually stop a merge is a **repository setting**, not anything in this tree, and
+today it does not: `develop` has no branch protection at all, so every gate above
+is advisory. A pull request can be merged with all checks red.
+
+That used to be a bolded prose warning in this file, which is how it sat unnoticed
+for months. It is now measured:
+
+```bash
+make check-branch-protection          # reads the live setting via the GitHub API
+```
+
+The command derives the expected required-check list by **parsing**
+`.github/workflows/*.yml` for job names (a hardcoded inventory would drift the
+moment a job is renamed), then asserts against the live API that protection is on,
+that every check a PR produces is required, that stale approvals are dismissed,
+that force-push and deletion are blocked, that an approving review is required,
+and that `enforce_admins` is on. It also reports which contexts must stay
+advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, and
+`Test Results` is an action-created check run behind an `if:`, so requiring any of
+them would leave a check pending forever and block every merge.
+
+Three things about what it reads. All eight shared gates are *steps* in one job
+(`developer_tests`), so they are **one** requireable context sharing one red mark,
+not three and not eight. It reads classic branch protection **and** rulesets,
+because a branch can be governed entirely by a ruleset while the classic endpoint
+reports nothing. And it separates "not protected" from "cannot see": the classic
+endpoint needs repository admin and answers 404 without it, so `GET
+.../branches/<branch>` (readable with `pull`) is cross-checked, and `--json`
+reports `protected: null` rather than `false` when the answer is genuinely
+unknown.
+
+It is **opt-in and non-blocking on purpose**: it needs network access and a token
+(`pull` suffices for a verified answer and for the required-check comparison, which
+comes from the nested `protection.required_status_checks` object on
+`GET .../branches/<branch>`; `administration:read` is what the other five
+assertions need, and without it those five are reported **unread** rather than
+satisfied), and it reports "not protected" until
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+is closed — enabling protection needs repository **admin**, which no contributor
+and no CI token here has. In `lint-cicd` it would red-line every branch for a
+condition nobody in the tree can fix, so it is in neither `lint-cicd` nor
+`test_ci_gate_parity.py`'s `SHARED_GATES`. With no token or no network it exits 0
+with an explanation; `--fail-on-skip` turns that into an error, which is how it
+should be run once #933 closes and it becomes a required, blocking gate.
 
 ### Testing
 
@@ -177,8 +236,9 @@ make srt-fix       # Interactive fix mode
 - SRT runs on every push and MR in GitLab CI (`srt_security_review`, `fast_checks`)
   **and** on every GitHub pull request (`.github/workflows/security-checks.yml`).
   A change merged on GitHub used to skip it entirely — see the note in that
-  workflow. ⚠️ Being visible is not being blocking: the check must also be a
-  required status check on `develop` in branch-protection settings.
+  workflow. ⚠️ Being visible is not being blocking: run
+  `make check-branch-protection` to see whether this check is actually required
+  on `develop` (it is not, yet — issue #933).
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -437,7 +497,10 @@ Ensure Docker is running and you have ECR permissions when building Pattern-2.
 The codebase maintains GovCloud compatibility:
 - Use `arn:${AWS::Partition}:` instead of hardcoded `arn:aws:`
 - Use `${AWS::URLSuffix}` instead of hardcoded `amazonaws.com`
-- Validation enforced via `make check-arn-partitions`
+- Validation enforced via `make check-arn-partitions`, which runs in `lint`,
+  `fastlint` and `lint-cicd` (so both CIs) over every template discovered by
+  content, except those under `scripts/sdlc/cfn/` — see the `ARN_PARTITION_EXEMPT`
+  note above
 
 ### Nested Stacks
 
@@ -472,6 +535,9 @@ Testing samples available in `samples/`:
 - `scripts/sdlc/validate_buildspec.py` - Validates CodeBuild buildspec files
 - `scripts/sdlc/validate_service_role_permissions.py` - Verifies IAM service role permissions
 - `scripts/sdlc/typecheck_pr_changes.py` - Type checks only changed files in PRs
+- `scripts/sdlc/check_branch_protection.py` - Checks that `develop`'s required
+  status checks match the jobs the workflows actually run (`make
+  check-branch-protection`; opt-in, read-only GitHub API, see issue #933)
 
 ## AWS Access for Live Troubleshooting
 
