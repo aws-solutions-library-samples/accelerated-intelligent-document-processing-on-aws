@@ -302,11 +302,14 @@ Each pattern includes additional monitoring tailored to its specific workflow:
 
 ## Alarms the Stack Creates
 
-Every alarm publishes to one SNS topic, `AlertsTopic`. The stack subscribes the
-`AdminEmail` address to it at deploy time — but **that subscription is not live
-until the address confirms it**, and one address is not an on-call rota. Read
+Every alarm publishes to one SNS topic, `AlertsTopic`. A standard deployment
+subscribes the `AdminEmail` address to it at deploy time — but **that subscription
+is not live until the address confirms it**, and one address is not an on-call
+rota. A `--headless` deployment subscribes **nothing**, because the transform
+removes the `AdminEmail` parameter along with the UI, so there setting up delivery
+is a required step you perform yourself. Read
 [Who receives the alerts](#who-receives-the-alerts) before assuming these alarms
-will reach anyone.
+will reach anyone, in either mode.
 
 > ⚠️ **On stacks deployed before release 0.6.7 with the circuit breaker disabled
 > (the default), no alarm notification was ever delivered.** `AlertsTopic` is
@@ -353,13 +356,59 @@ reaches the same recipients.
 
 ### Who receives the alerts
 
-The stack creates an **email** subscription on `AlertsTopic` for the address you
-passed as the `AdminEmail` parameter — the same address that receives the
-temporary Cognito password. Before release 0.6.9 there was no subscription to
+A standard deployment creates an **email** subscription on `AlertsTopic` for the
+address you passed as the `AdminEmail` parameter — the same address that receives
+the temporary Cognito password. Before release 0.6.9 there was no subscription to
 `AlertsTopic` — other topics in the solution had one, this one did not: the topic
 ARN was emitted as the `SNSAlertsTopicARN` stack output and an
 operator was tacitly expected to subscribe by hand, so a default deployment
 raised alarms nobody saw ([issue #922](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/922)).
+
+#### Headless deployments: you set up alert delivery
+
+> ⚠️ **A `--headless` deployment creates no subscription on `AlertsTopic`, so
+> alarm delivery is a required post-deployment step.** The headless transform
+> removes the `AdminEmail` parameter along with the Web UI and Cognito resources,
+> and a subscription cannot reference a parameter that does not exist, so the
+> subscription is removed with it. The topic and every alarm are still created, and
+> `SNSAlertsTopicARN` is still a stack output — what is missing is a recipient.
+
+This is a deliberate decision rather than an oversight, and the reasoning is worth
+stating because the alternative looks obviously better until you consider who
+deploys this way. Headless is the API-only path: operators using it are automating,
+and most of them attach a pager, a chat webhook or an existing operational topic
+through their own infrastructure-as-code. An optional `AlertsEmail` parameter on the
+variant whose design goal is fewer moving parts would be a parameter most of them
+never set, while the ones who do want email are equally well served by one
+`aws sns subscribe` call they already have to make for their other topics. What is
+**not** acceptable is finding out by missing an alarm, which is why this is called
+out here, in
+[Headless Deployment](./headless-deployment.md#monitoring--operations) and in
+[GovCloud Operations](./govcloud-operations.md#cloudwatch-alarms) rather than left
+to be inferred from the template. Tracked and decided in
+[issue #984](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/984).
+
+Do it immediately after the stack completes:
+
+```bash
+TOPIC_ARN="$(aws cloudformation describe-stacks --stack-name <stack-name> \
+    --query "Stacks[0].Outputs[?OutputKey=='SNSAlertsTopicARN'].OutputValue" \
+    --output text)"
+
+# Email or a distribution list — starts in PendingConfirmation, see below.
+aws sns subscribe --topic-arn "$TOPIC_ARN" \
+  --protocol email --notification-endpoint ops-alerts@example.com
+
+# Or an endpoint with no confirmation step and no unsubscribe link in the payload,
+# which is the better choice for an automated deployment.
+aws sns subscribe --topic-arn "$TOPIC_ARN" \
+  --protocol https --notification-endpoint https://example.com/hooks/idp-alerts
+```
+
+Then verify with the `list-subscriptions-by-topic` command below. Treat a topic
+with zero subscriptions as a failed deployment step: every alarm will publish
+successfully and notify nobody, and nothing in the stack, the console or the alarm
+history will tell you.
 
 #### You must confirm the subscription before anything is delivered
 
