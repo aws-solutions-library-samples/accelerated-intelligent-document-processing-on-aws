@@ -126,6 +126,15 @@ RUN_ROOTS = [
     "nested/bedrockkb/src/start_ingestion_job_custom_resource",
     "samples/lambda-hook-inference/GENAIIDP-cohere-parse-hook",
     "samples/lambda-hook-inference/GENAIIDP-mistral-ocr-hook",
+    # Registered rather than quarantined: it was excluded on the stated ground
+    # that "test_local.py is a manual local-run script; collects zero pytest
+    # tests", which is false -- it collects 6 and all 6 pass. The real
+    # obstruction is a module-scope `from index import lambda_handler`, which
+    # collides with the identically-named modules in its sibling hook
+    # directories, so it fails only when collected alongside them. This runner
+    # invokes each root in its own subprocess, so it runs clean here, and six
+    # green tests that were excluded from every gate are now gated.
+    "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency",
     "src/lambda/api_handler",
     "src/lambda/batch_pre_processor",
     "src/lambda/bda_ocr_project/tests",
@@ -184,8 +193,14 @@ QUARANTINE = {
     "samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook": (
         "test_local.py is a manual local-run script; collects zero pytest tests."
     ),
-    "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency": (
-        "test_local.py is a manual local-run script; collects zero pytest tests."
+    # nested/bedrockkb/src/s3_vectors_manager/tests is named explicitly now that
+    # nesting under a QUARANTINE entry no longer inherits the exclusion. It is
+    # not skipped in practice: `make test-packages-cicd` runs it directly, in
+    # both CI systems, so the asymmetry is in the safe direction -- CI runs more
+    # than `make test` does.
+    "nested/bedrockkb/src/s3_vectors_manager/tests": (
+        "Run directly by `make test-packages-cicd` in both CI systems instead; "
+        "the parent dir is quarantined for its cfnresponse dependency."
     ),
     # Vendored/internal helper trees that contain test_*.py but are not suites.
     "lib/idp_sdk/idp_sdk/_core": (
@@ -211,14 +226,28 @@ def discover_test_roots() -> set[str]:
 def classify(discovered: set[str]) -> tuple[list[str], list[str]]:
     """Split discovered roots against the registries; error on any unknown.
 
-    A discovered dir counts as "known" if it equals, or is nested under, a
-    registered RUN or QUARANTINE entry (some roots register a parent ``tests``
-    dir that owns nested subdirs).
+    A discovered dir counts as "known" if it equals a registered RUN or
+    QUARANTINE entry, or is nested under a **RUN** entry -- several roots
+    register a parent ``tests`` dir that owns nested subdirs, and those nested
+    dirs genuinely do run.
+
+    Nesting under a QUARANTINE entry deliberately does NOT count. It used to,
+    and that quietly inverted the guard's purpose: quarantining ``scripts``
+    accepted every future test directory anywhere beneath it, so a new suite
+    under ``scripts/`` satisfied this check while being run by nothing. A probe
+    confirmed it -- ``scripts/probe_area/test_probe.py`` containing
+    ``assert False`` left the whole suite green and never appeared in
+    ``--list``. An exclusion should cover what somebody decided to exclude, not
+    everything that later appears underneath it, so each excluded directory is
+    now named on its own.
     """
-    known_prefixes = [r.rstrip("/") for r in (*RUN_ROOTS, *QUARANTINE)]
+    run_prefixes = [r.rstrip("/") for r in RUN_ROOTS]
+    exact = {r.rstrip("/") for r in (*RUN_ROOTS, *QUARANTINE)}
 
     def is_known(d: str) -> bool:
-        return any(d == k or d.startswith(k + "/") for k in known_prefixes)
+        if d in exact:
+            return True
+        return any(d.startswith(k + "/") for k in run_prefixes)
 
     unknown = sorted(d for d in discovered if not is_known(d))
     if unknown:

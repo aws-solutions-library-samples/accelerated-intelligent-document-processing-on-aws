@@ -9,7 +9,7 @@ import time
 
 from aws_xray_sdk.core import patch_all, xray_recorder
 
-from idp_common import assessment, get_config, s3
+from idp_common import assessment, get_config, metrics, s3
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, ProcessingIssue, Status
 from idp_common.utils import (
@@ -142,6 +142,19 @@ def degrade_section_to_no_confidence(document, section_id, error):
     identically on every retry degrades — a retry cannot fix an input that is too
     long for the model.
 
+    **Why this also emits a metric (#996).** Degrading rather than failing is right
+    for one section, but it makes a *systemic* assessment failure — a missing
+    Bedrock grant, a confidence config every section's input exceeds, a code bug on
+    this path — present as a fleet-wide processing issue that no alarm sees, because
+    nothing else on this path publishes to CloudWatch and ``ProcessingIssueCount``
+    is a DynamoDB attribute, not a metric. Before this, the same failure would have
+    failed documents and lit the existing failure alarms. The
+    ``AssessmentConfidenceUnavailable`` count restores a signal at the *volume*
+    level, where the distinction lives: one degraded section is an expected outcome,
+    dozens in a quarter of an hour is a misconfiguration. Alarmed on in the parent
+    template (``AssessmentConfidenceUnavailableAlarm``), which can read this
+    namespace because the pattern's ``METRIC_NAMESPACE`` is the *parent* stack name.
+
     Returns the recorded ``ProcessingIssue``.
     """
     issue = ProcessingIssue(
@@ -171,6 +184,26 @@ def degrade_section_to_no_confidence(document, section_id, error):
                 if getattr(pi, "stage", None) != "assessment"
             ] + [issue]
             break
+
+    # Emitted AFTER the issue is recorded but before the caller persists it, so the
+    # count and the section record cannot disagree about whether a degrade happened.
+    #
+    # Wrapped even though ``put_metric`` already swallows errors around its own
+    # CloudWatch call: this runs on the deterministic-failure path, whose entire
+    # purpose is to NOT fail a document whose extraction succeeded. Anything raising
+    # here — a client that cannot be constructed, a credential refresh, a future
+    # change inside the helper — would defeat that, trading a paid-for extraction
+    # for a missing telemetry point. A lost count is the cheaper failure, and it is
+    # logged.
+    try:
+        metrics.put_metric("AssessmentConfidenceUnavailable", 1)
+    except Exception as metric_error:
+        logger.warning(
+            "Could not publish AssessmentConfidenceUnavailable for section %s: %s. "
+            "The section is still degraded and its processing issue still recorded.",
+            section_id,
+            metric_error,
+        )
     return issue
 
 

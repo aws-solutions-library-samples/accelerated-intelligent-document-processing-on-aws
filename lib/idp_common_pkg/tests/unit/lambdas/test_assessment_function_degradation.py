@@ -221,3 +221,80 @@ def test_throttling_failure_still_raises_for_step_functions(wired, monkeypatch):
     with pytest.raises(Exception) as excinfo:
         _invoke_with_failure(monkeypatch, error)
     assert "Throttling" in str(excinfo.value)
+
+
+def _oversized_input_error():
+    return botocore.exceptions.ClientError(
+        {
+            "Error": {
+                "Code": "ValidationException",
+                "Message": "Input is too long for requested model.",
+            }
+        },
+        "Converse",
+    )
+
+
+def test_degrading_emits_the_confidence_unavailable_metric(wired, monkeypatch):
+    """#996: a degrade must publish AssessmentConfidenceUnavailable.
+
+    Degrading is the right outcome for one section, but it removed the only signal
+    a SYSTEMIC confidence failure used to produce (failed documents lighting the
+    failure alarms). Without this metric such a failure is visible only as a
+    processing issue in the Sections panel, one document at a time, with nothing to
+    alarm on — ``ProcessingIssueCount`` is a DynamoDB attribute, not a metric.
+    """
+    calls = []
+    monkeypatch.setattr(
+        assessment_index.metrics,
+        "put_metric",
+        lambda name, value, *a, **kw: calls.append((name, value)),
+    )
+
+    _invoke_with_failure(monkeypatch, _oversized_input_error())
+
+    assert calls == [("AssessmentConfidenceUnavailable", 1)]
+
+
+def test_a_successful_assessment_emits_no_degrade_metric(wired, monkeypatch):
+    """The metric must count degrades only, or the alarm's threshold is meaningless:
+    a count emitted on every section would breach on throughput alone."""
+    calls = []
+    monkeypatch.setattr(
+        assessment_index.metrics,
+        "put_metric",
+        lambda name, value, *a, **kw: calls.append((name, value)),
+    )
+    service = MagicMock()
+    service.process_document_section.return_value = _document()
+    monkeypatch.setattr(
+        assessment_index,
+        "assessment",
+        SimpleNamespace(AssessmentService=lambda **kw: service),
+    )
+
+    assessment_index.handler(
+        {"document": _document().to_dict(), "section_id": "1"}, _Context()
+    )
+
+    assert not [c for c in calls if c[0] == "AssessmentConfidenceUnavailable"]
+
+
+def test_a_failed_metric_put_does_not_fail_the_document(wired, monkeypatch):
+    """The metric is best-effort. CloudWatch being unreachable must not turn the
+    path that exists to AVOID failing a document into one that fails it — the whole
+    point of #901's guard is that the extraction is kept."""
+    monkeypatch.setattr(
+        assessment_index.metrics,
+        "put_metric",
+        MagicMock(side_effect=RuntimeError("cloudwatch unreachable")),
+    )
+
+    result = _invoke_with_failure(monkeypatch, _oversized_input_error())
+
+    document = Document.from_dict(result["document"])
+    assert document.status != Status.FAILED
+    assert document.sections[0].extraction_result_uri == _EXTRACTION_URI
+    assert [i.code for i in document.sections[0].processing_issues] == [
+        "assessment_failed_confidence_unavailable"
+    ]
