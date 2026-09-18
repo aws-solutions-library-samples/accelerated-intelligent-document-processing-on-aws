@@ -1467,8 +1467,8 @@ extraction:
 > **retired and deleted**. Large-list batching is its full replacement: complete
 > per-cell confidence and geometry at **substantially lower Bedrock cost** on a
 > 120-row bank statement, with equal accuracy (granular actually produced 0%
-> geometry). The percentage this sentence used to quote was withdrawn rather than
-> re-measured — see "Why there is no percentage here" in the retirement note.
+> geometry). No cost percentage is quoted here deliberately — see "Why there is no
+> percentage here" in the retirement note.
 > Any legacy `granular.*` keys still validate but are ignored — no config edit is
 > required. See [Granular Assessment Retirement](migration-granular-retirement.md).
 

@@ -104,7 +104,7 @@ builds anything. It requires:
 | Node.js | **22.12.0** | `engines` in `package.json` and `src/ui/package.json` |
 | npm | **11.0.0** | `engines` in root `package.json` (the UI's own floor is lower, 10.0.0, so the root value is the one to meet) |
 
-Two clarifications that the older version of this guide got wrong:
+Two things the table above does not make obvious:
 
 - **Docker is not required on your workstation.** Lambda code is packaged as
   source and uploaded to S3; AWS CodeBuild builds the container images during

@@ -147,8 +147,7 @@ actually stop a merge is a **repository setting**, not anything in this tree, an
 today it does not: `develop` has no branch protection at all, so every gate above
 is advisory. A pull request can be merged with all checks red.
 
-That used to be a bolded prose warning in this file, which is how it sat unnoticed
-for months. It is now measured:
+Do not take that on trust from this file — measure it:
 
 ```bash
 make check-branch-protection          # reads the live setting via the GitHub API
@@ -717,6 +716,46 @@ Adding a selectable Bedrock model touches many files (template enums,
 `update_configuration`, UI dropdown, the bedrock client, IAM, **both doc
 tiers**, and `CHANGELOG.md`). Follow the checklist in
 `.claude/skills/documentation.md` so none are missed.
+
+### Documentation states what is true now, not what a previous draft said
+
+Every document in this repository is read as a statement of current fact. A reader
+needs to know what is true; they have no use for the editing history of the page
+they are reading, and git already records it. So **do not write doc-about-doc
+commentary**:
+
+- ❌ "Two clarifications that the older version of this guide got wrong:"
+- ❌ "This page previously quoted a −78% cost saving."
+- ❌ "**Correction.** This section previously claimed EC2 access was limited."
+- ❌ "An earlier draft of this document claimed it did. That claim was false."
+- ❌ "An earlier revision of this entry recommended exactly that; it is withdrawn."
+
+Write the true statement instead, and keep whatever substance the retraction
+carried by reframing it as guidance:
+
+- ✅ "Two things the table above does not make obvious:"
+- ✅ "**Why there is no percentage here.** A figure would have to come from the
+  cost report, which at the time of the run priced cache reads by substring
+  match …"
+- ✅ "`ec2:*` is the whole grant, and it is not narrowed to a VPC-only action list,
+  because …"
+- ✅ "**Detection numbers alone cannot establish data loss.** … is the conclusion
+  they invite, and it is wrong: counting the extracted rows gives 0 missing."
+- ✅ "⚠️ Do **not** prefer the SigV4-derived value: it is a pool-wide constant, so …"
+
+The distinction that matters is **whose** history it is:
+
+| Legitimate — keep | Not legitimate — rewrite |
+|---|---|
+| **Product/behaviour history** a reader acts on: "`--log-level INFO` is now honoured; it used to be silently treated as unset", "renamed from *Configuration Versions*", upgrade-visible changes, `CHANGELOG.md` entries | The document's own drafts, revisions and mistakes: "this page previously said", "an earlier draft claimed", "that was wrong and is withdrawn" |
+| A **measurement or instrument** caveat: "an earlier version of the sweep shared cache state between points, so re-measure with identical calls" | Self-narration about the writing or review process: "four corrections from review", "it took a fourth look to catch" |
+| A correction to an **external** artifact a reader will also read — an AWS doc, a GitHub issue, an upstream changelog | A correction to this repository's own prose, stated as a correction |
+
+Two exceptions, both deliberate ledgers rather than prose: the threat model's
+revision table in `security/threat-modeling/README.md` (an audit artifact for a
+versioned security deliverable) and the withdrawn-findings table in
+`.claude/skills/repo-quality-review.md` (whose whole purpose is to stop the next
+review re-reporting a non-defect). Keep those; do not add a third.
 
 ### Reviewing External PRs / MRs
 

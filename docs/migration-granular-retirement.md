@@ -25,14 +25,14 @@ In A/B testing on a 120-row bank statement, turning granular **off** was
 **substantially cheaper** at equal accuracy, with **full per-cell coverage plus
 geometry** — whereas granular actually produced **0% geometry**.
 
-> **Why there is no percentage here.** This page previously quoted a −78% cost
-> saving and a 4–5× cost ratio. Both came from the solution's own cost reporting,
-> which at the time resolved a pricing unit by substring match, so
-> `cacheReadInputTokens` bound to a row's `inputTokens` price on any model whose
-> pricing entry omitted a cache-read rate — billing cache reads at up to ten times
-> their real price. Granular was a cache-heavy arm with a measured ~1:1
-> cacheWrite:cacheRead ratio, which is exactly the shape that error acts on, so the
-> figures were stated to a precision the measurement could not support. The
+> **Why there is no percentage here.** A cost saving or cost ratio for this A/B
+> would have to come from the solution's own cost reporting, which at the time of
+> the run resolved a pricing unit by substring match, so `cacheReadInputTokens`
+> bound to a row's `inputTokens` price on any model whose pricing entry omitted a
+> cache-read rate — billing cache reads at up to ten times their real price.
+> Granular was a cache-heavy arm with a measured ~1:1 cacheWrite:cacheRead ratio,
+> which is exactly the shape that error acts on, so no figure from that run can be
+> quoted to a useful precision. The
 > direction is not in doubt: fresh-input and output tokens were always priced
 > correctly, so correcting the price can only shrink the ratio by a bounded factor
 > and cannot reverse it, and granular's 0% geometry result involves no pricing at

@@ -164,7 +164,7 @@ and mapped to the specific threats they address.
 Verified against `template.yaml`, `nested/api-resolvers/template.yaml` and
 `patterns/unified/template.yaml` at v0.6.9. The stack creates its own KMS
 customer-managed key (`CustomerManagedEncryptionKey`) and most data stores are
-bound to it, which is stronger than earlier revisions of this document described.
+bound to it.
 
 | Resource | Encryption |
 |----------|-----------|

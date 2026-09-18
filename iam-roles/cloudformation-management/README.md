@@ -26,9 +26,9 @@ Demo (5 minutes)
 
 ## <span style="color: blue;">Read This Before Granting the Role</span>
 
-This is a **deployment role, not a least-privilege role.** An earlier version of
-this document and of the template itself claimed it "follows the principle of
-least privilege". That was wrong, and the wording has been corrected
+This is a **deployment role, not a least-privilege role** — it does **not** follow
+the principle of least privilege, and neither this document nor the template
+claims it does
 ([issue #927](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/927)).
 Deciding whether to create this role means understanding both halves of what it
 does.
@@ -95,15 +95,14 @@ no single value could be correct for both.
 | `CreatedRolePermissionsBoundaryArn` | **Yes**, no default | Every IAM role this service role creates or re-permissions (the IDP stack's Lambda execution roles, state-machine roles and so on) | **Tight.** No more than the services those roles need at *runtime*. The whole containment argument rests on this being small |
 | `ServiceRolePermissionsBoundaryArn` | No, defaults to empty | The deployment role itself | **Wide.** It must admit everything in the role's own policy: `cloudformation:*`, the IAM actions, and all 25 service wildcards |
 
-The concrete failure that forced the split: this document used to tell you to
-size the boundary so that it "allow[s] no more than the services an IDP stack's
-Lambda functions actually need", and then to pass that one ARN as the service
-role's boundary as well. A boundary written to that instruction contains neither
-`cloudformation:` nor `iam:`, because no IDP Lambda function calls either.
-Effective permissions are the **intersection** of a principal's policy and its
-boundary, so attaching it to the deployment role leaves the role unable to call
-`cloudformation:CreateStack` or `iam:CreateRole` — it cannot deploy an IDP stack
-at all. That is a deterministic day-one failure, not an edge case.
+The concrete failure that forces the split — and the reason one ARN cannot serve
+both roles: a boundary sized to "no more than the services an IDP stack's Lambda
+functions actually need" contains neither `cloudformation:` nor `iam:`, because no
+IDP Lambda function calls either. Effective permissions are the **intersection**
+of a principal's policy and its boundary, so attaching that boundary to the
+deployment role leaves the role unable to call `cloudformation:CreateStack` or
+`iam:CreateRole` — it cannot deploy an IDP stack at all. That is a deterministic
+day-one failure, not an edge case.
 
 **The shipped default leaves the deployment role unbounded.**
 `ServiceRolePermissionsBoundaryArn` is empty by default, and when it is empty the
@@ -494,9 +493,10 @@ target or scaling policy is declared anywhere, and all 19 DynamoDB tables are
 `PAY_PER_REQUEST`). See the collapsed sections below for the evidence in each
 case.
 
-> **A wildcard that backs no current resource type is not automatically dead.**
-> `appsync:*` was removed in an earlier revision of this change on exactly that
-> reasoning, and that was wrong. A CloudFormation service role performs
+> **A wildcard that backs no current resource type is not automatically dead** —
+> which is why `appsync:*` is **retained for upgrades only**, with nothing in the
+> current templates declaring an `AWS::AppSync::*` resource. A CloudFormation
+> service role performs
 > **deletions** as well as creations, so it must be able to delete resource
 > types that only an **older** template declared. Deriving the required action
 > set from the current templates alone — which is what
@@ -554,7 +554,7 @@ this role as least-privilege — it is not.
 | Glue | Full Access | Data catalog and ETL jobs |
 | OpenSearch Serverless | Full Access | Vector search for embeddings |
 | CloudFront | Full Access | CDN for web hosting and API acceleration |
-| EC2 (VPC) | Full Access (`ec2:*`) | VPC, subnet, security group and interface-endpoint management for the private hosting variants. The `Utility` column previously said "Limited Access"; the grant is and was `ec2:*`. |
+| EC2 (VPC) | Full Access (`ec2:*`) | VPC, subnet, security group and interface-endpoint management for the private hosting variants, plus the optional bastion host. |
 | AppSync | Full Access — **vestigial, retained for upgrades only** | Nothing declares an `AWS::AppSync::*` resource today. The grant exists so an in-place update of a pre-0.6.0 stack can **delete** the GraphQL API, schema, data sources and resolvers that older template created. Droppable once no pre-0.6.0 stack remains |
 | ~~Textract~~ | Removed | Runtime-only; no CloudFormation resource type |
 | ~~SageMaker~~ | Removed | Runtime-only; MLflow server referenced by ARN, not created |
@@ -624,7 +624,7 @@ iam:UntagRole
 - **Resource**: same `<ManagedStackNamePrefix>*` role ARNs
 - **Condition**: none
 
-**Why these five are not conditioned on `iam:PermissionsBoundary`, and it is not because the key is unsupported.** An earlier version of this section said all five lack the key. That was wrong. Checked against the Service Authorization Reference, `iam:DeleteRole`, `iam:UpdateRole` and `iam:UpdateAssumeRolePolicy` **do** list `iam:PermissionsBoundary` among their action-level condition keys; only `iam:TagRole` and `iam:UntagRole` do not. The mistaken claim came from AWS's canonical delegation example, which is written for IAM **users**, where `iam:DeleteUser` genuinely has no action-level condition keys.
+**Why these five are not conditioned on `iam:PermissionsBoundary`, and it is not because the key is unsupported.** Checked against the Service Authorization Reference, `iam:DeleteRole`, `iam:UpdateRole` and `iam:UpdateAssumeRolePolicy` **do** list `iam:PermissionsBoundary` among their action-level condition keys; only `iam:TagRole` and `iam:UntagRole` do not. Do not conclude otherwise from AWS's canonical delegation example, which is written for IAM **users**, where `iam:DeleteUser` genuinely has no action-level condition keys.
 
 The real reason is rollback safety, and it is an admission of something unverified rather than a design argument. What is not documented is whether the key is *populated* when the target role carries **no** boundary. If it fails closed, then conditioning `iam:DeleteRole` would deny deleting any boundary-less role — and every role predating this template is boundary-less. That would fail the delete **and** the rollback of the delete, wedging the stack in `UPDATE_ROLLBACK_FAILED` (the failure mode of [issue #632](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/632)). We could not establish the populated-versus-absent behaviour without a live account, so these five stay bounded by the role-name prefix alone. Revisit it with a real experiment, not by reasoning about the reference tables.
 
@@ -1366,12 +1366,9 @@ variants, plus the optional bastion host (`AWS::EC2::Instance` and
 ec2:*
 ```
 
-> **Correction.** This section previously claimed EC2 access was "intentionally
-> limited to VPC-related resources only, excluding compute instances", and listed
-> 17 specific actions. The template has always granted `ec2:*`, and the solution
-> does declare `AWS::EC2::Instance` and `AWS::EC2::LaunchTemplate`. The list was
-> aspirational, not what was deployed. It has been corrected rather than
-> implemented, because narrowing `ec2:*` to a fixed action list is the same
+> **`ec2:*` is the whole grant, and it is not narrowed to a VPC-only action list.**
+> The solution declares `AWS::EC2::Instance` and `AWS::EC2::LaunchTemplate` as well
+> as VPC resources, and narrowing `ec2:*` to a fixed action list is the same
 > untested-narrowing risk described in
 > ["What Remains Broad, and Why"](#what-remains-broad-and-why) — an
 > `ec2:*Tags` or `ec2:*NetworkInterface*` call missing from the list would fail
@@ -1515,8 +1512,8 @@ the load-bearing controls are who holds `iam:PassRole` on it and, optionally, a
   condition uses `stack/*` across all regions, because a stack service role is
   commonly used in more than one. If you need a single-region role, add
   `aws:RequestedRegion` to the trust policy or to a `Deny` statement — this
-  template does not do it for you. An earlier version of this document claimed
-  role assumption was "restricted to deployment region"; it never was.
+  template does not do it for you, and role assumption is **not** restricted to
+  the deployment region.
 
 ### Session Security
 - **Account Isolation**: Only the CloudFormation service principal can assume the
