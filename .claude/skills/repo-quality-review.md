@@ -59,11 +59,12 @@ This review is fanned out. One subagent per dimension, each with the dimension's
 evidence list and the read-only constraint, all reporting `file:line` findings; then
 **you** consolidate.
 
-> **The Agent tool is not authorized by default in this project's assistant
-> configuration.** Tell the user at the start that this skill needs it, and ask them
-> to authorize subagents explicitly when they invoke the skill — e.g. *"run the
-> repo-quality-review skill; you may use subagents"*. If they decline, say plainly in
-> the report that the review ran single-agent and that the cross-dimension
+> **This skill fans out to subagents, so it needs the Agent tool — do not assume it is
+> available to you.** Tell the user at the start that the skill needs it and ask them
+> to authorize subagents explicitly when they invoke it — e.g. *"run the
+> repo-quality-review skill; you may use subagents"* — and do not spawn one before
+> they have. If they decline, or say nothing either way, run single-agent and say
+> plainly in the report that the review ran that way and that the cross-dimension
 > consolidation step (below) is therefore weaker.
 
 **The consolidation step is not a formatting step — it is where the real findings
@@ -115,10 +116,21 @@ ASSESSED with the reason**, never dropped.
 
 Run these yourself, before and independently of the fan-out, so every reviewer
 argues against the same numbers. All are **offline** — no AWS, no network except the
-two `gh` reads in G2 and I2. Every command below was executed in this repo; the
-"last measured" column is from `fac1c120b` / `VERSION 0.6.9.dev3` on **2026-09-18**.
-Re-measure rather than trusting those figures; the point of recording them is that a
-number that moved a lot is itself a finding.
+two `gh` reads in G2 and I2. Every command below was executed in this repo; every
+"last measured" figure was taken at `fac1c120b` / `VERSION 0.6.9.dev3` on
+**2026-09-18** — the commit this skill's own branch was cut from, so the whole column
+is reproducible by checking out that one commit. Re-measure rather than trusting those figures; the point
+of recording them is that a number that moved a lot is itself a finding. When you
+re-record, replace the commit label too, and check every figure was actually taken at
+the commit you name — a column that mixes states under one label is worthless, because
+a reader can no longer treat a difference as signal.
+
+The measurements assume an **existing** dev environment with `ruff` on `PATH`
+(measurement B is the only one that needs a binary the shell does not already have —
+it resolves from the project `.venv` that `make setup`/`make dev` creates, which the
+read-only constraint forbids you from running). If `ruff` is missing, ask the user to
+activate their environment; do not create one. Everything else the skill uses
+(`python3`, `gh`, `jq`, `comm`, `awk`, `find`, `sed`, `git`) is ambient.
 
 Template and state-machine discovery is **shared with the gates** — always go through
 `scripts/discover_templates.sh` rather than a glob, for the reason its header comment
@@ -301,9 +313,14 @@ comm -23 /tmp/skills.txt /tmp/tabled.txt      # skill files with no CLAUDE.md ro
 find .cline/skills -maxdepth 1 -type f -name '*.md'   # any output = a COPY, not a symlink
 ```
 
-Last measured: **27 skill files, 26 rows**; `sync-pii-anonymizer.md` has no row. All
-`.cline/skills` entries are symlinks (the `find -type f` returns nothing), which is
-the required state per `.claude/skills/documentation.md`.
+Last measured at `fac1c120b`: **26 skill files, 25 rows** — `sync-pii-anonymizer.md`
+had no row. All `.cline/skills` entries are symlinks (the `find -type f` returns
+nothing), which is the required state per `.claude/skills/documentation.md`. That gap
+is now closed and guarded: the PR that added this skill also added the missing row, so
+the counts are equal from here on and `comm -23` returning **nothing** is the expected
+state. `scripts/tests/test_repo_quality_review_skill.py` asserts it for every skill
+file rather than for one, so this particular drift cannot recur silently — which makes
+this measurement a check on the *test*, not a hunt for a known gap.
 
 ### G. Gate inventory — exists / GitHub / GitLab / blocking
 
@@ -340,17 +357,51 @@ are explicitly `continue-on-error: false`.
 "the gate runs" into "the gate blocks", and it is the one the parity test cannot
 cover:
 
+Read it from the two endpoints that answer at ordinary permission levels, and do
+**not** infer protection state from the protection endpoint alone:
+
 ```bash
 R=aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
-gh api "repos/$R/branches/develop/protection"    # 404 = the branch is not protected
-gh api "repos/$R/rulesets"                       # look for target=branch on develop
+
+# 1. Classic branch protection — take it from the BRANCH object. The `protected`
+#    field is returned at `pull` level and settles the question either way.
+gh api "repos/$R/branches/develop" -q '.protected'
+
+# 2. Rulesets, which is the other way a check can be required. Includes
+#    org- and enterprise-INHERITED rulesets, and also needs no admin.
+gh api "repos/$R/rulesets" -q '.[] | "\(.target)  \(.source_type)  \(.name)"'
+
+# 3. The dedicated protection endpoint is the trap. It requires **admin** and
+#    returns 404 — not 403 — when admin is absent, deliberately, so that it does
+#    not disclose whether protection exists. A 404 is therefore equally consistent
+#    with "not protected" and with "protected, invisible to this token".
+gh api "repos/$R/branches/develop/protection"
+gh api "repos/$R" -q '.permissions'   # admin:false => that 404 told you nothing
 ```
 
-Last measured: the protection endpoint returns **404**, and all five rulesets are
-enterprise-inherited repository/tag rules (visibility, deletion, transfer,
-`block-untagged`) — **none targets `develop` and none requires a status check**. So
-every gate in G is visible and none is blocking: a red PR can be merged (issue
-**#933**). This is the flagship Class 1 instance; lead with it.
+Last measured, with `{"admin":false,"maintain":true,"pull":true,"push":true,"triage":true}`:
+`branches/develop` reports **`protected: false`**, and all five rulesets are
+enterprise-inherited with **no branch target** — four `target=repository` (block
+internal visibility, block private visibility, block repository deletion, only
+enterprise owners can transfer) and one `target=tag` (`block-untagged`). Both of those
+are **measured** at this permission level. The protection endpoint did return 404, but
+that reading was discarded as uninformative: it is the branch object and the ruleset
+list that establish the result. So no required status check exists on `develop` — every
+gate in G is visible and none is blocking, and a red PR can be merged (issue **#933**).
+This is the flagship Class 1 instance; lead with it.
+
+Two rules for re-running this, because the conclusion is security-relevant and the
+skill is meant to be re-run:
+
+- **Never label "nothing blocks" `measured` on the strength of a 404.** If step 1 is
+  available you do not need to: it is dispositive. If even step 1 is unavailable to
+  you, you cannot establish protection state at all — report the conclusion as
+  **`unverified`** per the output contract's rule 3, and say which read you were denied.
+  The rulesets half stays `measured` regardless, since it needs no admin.
+- **Re-read it every run rather than carrying the finding forward.** A maintainer
+  enabling protection is the single most likely consequence of this finding, so a
+  stale "nothing blocks" is precisely the Class 1 error this skill exists to catch:
+  a decision made as though a control's state had been consulted when it never was.
 
 ### H. Frontend test ratio
 
@@ -366,14 +417,35 @@ score.
 ### I. Ownership and bus factor
 
 ```bash
-git shortlog -sn HEAD -200          # commit share by author over the last 200 commits
-git shortlog -sn HEAD -50 -- src/ui # and per subsystem: swap the path
+git shortlog -sn --since="6 months ago" HEAD            # commit share by author
+git shortlog -sn --since="6 months ago" HEAD -- src/ui   # per subsystem: swap the path
+git rev-list --count --since="6 months ago" HEAD         # the denominator
+git log --since="6 months ago" --format=%ad --date=short HEAD | tail -1   # window opens
 ```
 
-Last measured over the last 200 commits: **176 Bob Strahan, 12 Jeremy Feldman, 6
-Artemio Padilla, 6 dependabot** — an **88% single-author share**. `src/ui` over the
-last 50 commits touching it: 33 / 14 / 2 / 1. Report it as a risk statement with the
-number, not as a criticism; then name the subsystems where the count is exactly one.
+The explicit `HEAD` is load-bearing, not decorative. Given **no revision argument**
+`git shortlog` reads its commit list from **stdin**, and in a non-interactive shell
+stdin is empty — so it prints nothing and exits **0**, which reads exactly like "no
+commits in this window". Do not respond to that by swapping in a commit-count window
+such as `-200`, which is a different measurement wearing the same label: at this commit
+those 200 commits span **nine days** (2026-09-09 to 2026-09-18), so the window's width
+varies silently with commit rate, and it distorts the answer in both directions —
+`-200` reports an **88%** single-author share against the six-month **69%**, and it drops
+Taniya Mathur (212 commits in six months) from the list entirely, so a bus-factor
+measurement silently loses its third-largest contributor. Keep `-sn` and not
+`-sne`: `-e` splits one author here across three email addresses and re-fragments the
+number being measured. `-sn` groups by author *name*, which has the mirror-image
+problem — one contributor under two spellings is undercounted — so scan the list for
+near-duplicate names before quoting a share.
+
+Last measured over **six months to 2026-09-18** (window opens 2026-03-18; **2,534
+commits** by **31** distinct author names): **1,752 Bob Strahan, 293 Jeremy Feldman,
+212 Taniya Mathur, 99 dependabot** — a **69% single-author share**. `src/ui` over the
+same window: 256 / 192 / 41 / 34. Two of those names are the same person
+("Taniya Mathur" 212 and "Taniya [C] Mathur" 20). Always record the window alongside
+the numbers, so the next run compares like with like. Report it as a risk statement
+with the number, not as a criticism; then name the subsystems where the count is
+exactly one.
 
 **I2 — issue hygiene and contribution surface:**
 
@@ -411,10 +483,14 @@ if every hit is a definition, a doc, or a test of the definition, and none is a
 consumer, you have one.
 
 **Worked examples, all verified in this tree.** These are the shapes to recognize:
+**illustrative and dated (2026-09), not a to-do list** — re-derive each one before
+citing it, and when an instance gets fixed move it to a "closed" list with the fixing
+PR rather than deleting it, so the class keeps its evidence without implying the
+instance is still open.
 
 | Control | Decision point that should read it | What is actually there |
 |---|---|---|
-| CI gates on GitHub and GitLab (#933) | branch protection / rulesets on `develop` | Nothing requires any check — measurement G2 returns 404 and no branch-targeted ruleset. Every gate is visible; none blocks a merge |
+| CI gates on GitHub and GitLab (#933) | branch protection / rulesets on `develop` | Nothing requires any check — measurement G2 reads `protected: false` on the branch object and finds no branch-targeted ruleset. Every gate is visible; none blocks a merge |
 | Pipeline hook `onError: fail` (#919) | the state machine's error routing | `patterns/unified/src/pipeline_hooks_function/index.py:799` raises when `onError == "fail"` — and the ASL `Catch` on `States.ALL` routes **forward** to the next step (`patterns/unified/statemachine/workflow.asl.json:343` `Next: ClassificationStep`, `:432` `ProcessSections`, `:697` `AssessmentStep`, `:997` `SummarizationStep`, `:1104` `EvaluationStep`). `onError: fail` cannot fail the workflow |
 | DynamoDB `SubIndex`, granted in IAM | `src/lambda/chat_with_document_processor/index.py:275` queries it to resolve the caller's config-version scope | No template declares it. Every query raises `ValidationException`, the `except` at L286 logs and returns `None` — fail-**open**. Config-version scoping on the chat path has therefore never restricted anything. The gap is documented in the docstring at L258-265, which is honest and still a finding |
 | 12 CloudWatch alarms (#922) | an SNS subscriber | 11 of 12 publish to `AlertsTopic`, which has zero subscriptions (measurement D) |
@@ -466,7 +542,9 @@ exactly the kind of change that should have to touch this file". That is a defen
 position. Report a hardcoded inventory as a finding only when you can say what it
 currently misses — measure, do not assume.
 
-**Worked examples, all verified in this tree:**
+**Worked examples, all verified in this tree** — as in Class 1, illustrative and dated
+(2026-09) rather than an open work list: re-derive before citing, and move a fixed
+instance to a "closed" list with its PR instead of deleting it.
 
 | Fix that was applied | The class it left open |
 |---|---|
@@ -510,21 +588,30 @@ entries and the PR numbers in them), do the same by hand: take the shape of that
 and grep for it tree-wide. This is the highest-yield twenty minutes in the whole
 review.
 
-## Known non-defects — do not re-report
+## Known non-defects — do not re-report (delete a row when it stops being true)
 
 A withdrawal is a finding too: recording *why* something is not a defect is what
-stops the next run spending a reviewer on it. Both entries below were reported by the
-2026-09 pass and then withdrawn after investigation.
+stops the next run spending a reviewer on it. The entries below were each reported by
+the pass in the date column and then withdrawn after investigation.
 
-| Suspected finding | Why it is not a defect |
-|---|---|
-| Byte-identical vendored module copies under `src/lambda/chat_stream_processor/vendored/` | A deliberate SAM packaging workaround: the two Lambdas cannot share a directory at build time. It is **guarded** — a vendored-in-sync test fails if the copy drifts from the original — and the sync is asserted in CI. Copying without a guard would be a Class 2 finding; this one has the guard |
-| `reportUnsupportedDunderAll` warnings against `lib/idp_common_pkg/idp_common/__init__.py` | The module is a deliberate **PEP 562 lazy loader** (`__getattr__`), which is the documented pattern for keeping Lambda package size down — `__all__` names attributes that exist only on access. The warning is the type checker not modelling the pattern, not a defect |
-| `nested/bedrockkb/` declaring 5 Lambda functions and 0 `AWS::Logs::LogGroup` resources | Deliberate: those are custom-resource-only Lambdas that run during a stack operation and keep Lambda's auto-created log group, an accepted retention cost. `scripts/tests/test_lambda_log_groups.py` asserts exactly this shape |
+| Withdrawn | Suspected finding | Why it is not a defect |
+|---|---|---|
+| 2026-09 | Byte-identical vendored module copies under `src/lambda/chat_stream_processor/vendored/` | A deliberate SAM packaging workaround: the two Lambdas cannot share a directory at build time. It is **guarded** — a vendored-in-sync test fails if the copy drifts from the original — and the sync is asserted in CI. Copying without a guard would be a Class 2 finding; this one has the guard |
+| 2026-09 | `reportUnsupportedDunderAll` warnings against `lib/idp_common_pkg/idp_common/__init__.py` | The module is a deliberate **PEP 562 lazy loader** (`__getattr__`), which is the documented pattern for keeping Lambda package size down — `__all__` names attributes that exist only on access. The warning is the type checker not modelling the pattern, not a defect |
+| 2026-09 | `nested/bedrockkb/` declaring 5 Lambda functions and 0 `AWS::Logs::LogGroup` resources | Deliberate: those are custom-resource-only Lambdas that run during a stack operation and keep Lambda's auto-created log group, an accepted retention cost. `scripts/tests/test_lambda_log_groups.py` asserts exactly this shape |
 
-When you withdraw a finding, **add a row here in the same PR as the report**, with
-the reason in one sentence. When you keep a finding that looks like one of these,
+When you withdraw a finding, **add a row here in the same PR as the report**, dated,
+with the reason in one sentence. When you keep a finding that looks like one of these,
 say explicitly why this instance differs.
+
+**This register expires.** At the start of each run, re-check every row and **delete
+the ones whose justification no longer holds** — the vendoring guard removed, the lazy
+loader rewritten, the log-group assertion dropped. A row is a licence to skip a check,
+so a stale row suppresses a real finding, which is worse than having no register at
+all. `full-test-battery.md` retired its entire 26-entry list on exactly that argument;
+this table should stay short for the same reason. If a row survives several runs
+unchanged, prefer moving its justification into a test that fails when it stops being
+true, and delete the row.
 
 ## Output contract
 

@@ -5,9 +5,13 @@
 
 The skill this file guards is itself about two defect classes: a control that
 exists but is never consulted, and a fix applied to the instance rather than the
-class. It would be poor form to ship it guarded by a per-skill assertion, which is
-the shape it warns about — so the symlink check below enumerates **every**
-``.cline/skills`` entry from the directory rather than naming one.
+class. It would be poor form to ship it guarded by per-skill assertions, which is
+the shape it warns about — so both structural checks below enumerate from the
+**directory** rather than naming one file: every ``.cline/skills`` entry must be a
+symlink, and every ``.claude/skills/*.md`` must have a row in the ``CLAUDE.md`` skill
+table. Writing the second one required first fixing the gap it exposed
+(``sync-pii-anonymizer.md`` had no row), which is the intended order: close the class,
+do not narrow the assertion to dodge it.
 
 Why the symlink matters: ``.claude/skills/`` is canonical and each
 ``.cline/skills/*.md`` is a symlink to its counterpart (see the "Two skill systems,
@@ -42,6 +46,27 @@ def test_the_skill_is_registered_in_claude_md() -> None:
     """An unregistered skill is one nobody finds."""
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     assert ".claude/skills/repo-quality-review.md" in claude_md
+
+
+@pytest.mark.unit
+def test_every_claude_skill_is_registered_in_claude_md() -> None:
+    """The class, not just this instance: enumerated from the directory.
+
+    The skill table in ``CLAUDE.md`` is the only index of ``.claude/skills/``, so a
+    file with no row is one no assistant is told to consult. Guarding only the skill
+    this PR adds would be a Class 2 defect — the instance fixed, the class left open —
+    inside the very file that teaches Class 2. This closes it.
+    """
+    claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    unregistered = sorted(
+        p.name
+        for p in CLAUDE_SKILLS.glob("*.md")
+        if f".claude/skills/{p.name}" not in claude_md
+    )
+    assert not unregistered, (
+        "every .claude/skills/*.md needs a row in the CLAUDE.md skill table; "
+        f"missing: {unregistered}"
+    )
 
 
 @pytest.mark.unit
