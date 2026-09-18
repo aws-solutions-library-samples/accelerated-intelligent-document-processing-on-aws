@@ -15,6 +15,7 @@ These cover the parts that are independent of FastAPI/Bedrock:
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -25,6 +26,114 @@ import pytest
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+
+# --- structural helpers ------------------------------------------------------
+# The two tests below assert on app.py's *structure*, not on the order of
+# substrings in its text. A textual index comparison cannot tell
+# `_enforce_groups_or_403(identity)` apart from the same call wrapped in
+# `try: ... except HTTPException: pass`, nor a single assignment to the caller
+# identity apart from a second one that overwrites it -- both mutations keep every
+# token in place and at the same offset. app.py imports FastAPI, which is not
+# installed in this environment, so it is parsed rather than imported.
+
+# How the handler can name the identity the TRANSPORT verified. Mirrors
+# VERIFIED_IDENTITY_TOKENS in scripts/sdlc/scan_api_rbac.py.
+_RESOLVER_NAMES = (
+    "_resolve_caller_sub",
+    "resolve_caller_sub",
+    "_caller_sub",
+    "caller_sub_from_request_context",
+)
+
+
+def _app_ast():
+    with open(os.path.join(_HERE, "app.py")) as fh:
+        return ast.parse(fh.read())
+
+
+def _route_functions(tree) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Map ``"<METHOD> <path>"`` -> the route's function node."""
+    routes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if (
+                isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and isinstance(dec.func.value, ast.Name)
+                and dec.func.value.id == "app"
+                and dec.args
+                and isinstance(dec.args[0], ast.Constant)
+            ):
+                routes[f"{dec.func.attr.upper()} {dec.args[0].value}"] = node
+    return routes
+
+
+def _calls_named(node, name: str) -> list[ast.Call]:
+    """Every ``ast.Call`` in ``node``'s subtree whose callee is ``name``."""
+    out = []
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        func = sub.func
+        called = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr
+            if isinstance(func, ast.Attribute)
+            else None
+        )
+        if called == name:
+            out.append(sub)
+    return out
+
+
+def _own_scope_statements(fn):
+    """Statements in ``fn``'s own scope, not descending into nested functions.
+
+    A nested ``def`` gets its own scope, so an assignment there shadows rather
+    than rebinds -- counting it would be a false positive.
+    """
+    out = []
+    stack = list(fn.body)
+    while stack:
+        st = stack.pop()
+        if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        out.append(st)
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(getattr(st, field, []) or [])
+    return out
+
+
+def _bindings_of(fn, name: str) -> list[ast.stmt]:
+    """Statements in ``fn``'s own scope that bind ``name``."""
+    found = []
+    for st in _own_scope_statements(fn):
+        targets = []
+        if isinstance(st, ast.Assign):
+            targets = list(st.targets)
+        elif isinstance(st, (ast.AugAssign, ast.AnnAssign)):
+            targets = [st.target]
+        elif isinstance(st, (ast.For, ast.AsyncFor)):
+            targets = [st.target]
+        elif isinstance(st, (ast.With, ast.AsyncWith)):
+            targets = [i.optional_vars for i in st.items if i.optional_vars]
+        for tgt in targets:
+            for sub in ast.walk(tgt):
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                    if sub.id == name:
+                        found.append(st)
+        # A walrus anywhere in the statement also binds.
+        for sub in ast.walk(st):
+            if (
+                isinstance(sub, ast.NamedExpr)
+                and isinstance(sub.target, ast.Name)
+                and sub.target.id == name
+            ):
+                found.append(st)
+    return found
 
 
 @pytest.mark.unit
@@ -301,6 +410,55 @@ def test_both_routes_share_one_identity_resolution():
 
 
 @pytest.mark.unit
+def test_neither_route_rebinds_the_caller_identity_after_resolving_it():
+    """The resolved caller identity must be assigned exactly once per route.
+
+    ``test_both_routes_share_one_identity_resolution`` above counts the literal
+    ``body.callerSub``, so it cannot see a body value re-admitted under another
+    spelling. This mutation defeats it while restoring the original defect from
+    issue #920 -- the client's claimed identity wins unconditionally::
+
+        _claimed = body.model_dump().get('callerSub') or ''
+        if _claimed:
+            caller_sub = _claimed
+
+    Every token the textual check looks for is still present and still in the
+    same order. What actually changed is that the name holding the verified
+    identity is bound twice. So assert the single binding, which is the property
+    that matters and is independent of how the second value is spelled.
+    """
+    routes = _route_functions(_app_ast())
+    for route in ("POST /chat/document", "POST /chat/agent"):
+        fn = routes.get(route)
+        assert fn is not None, f"{route} not found in app.py"
+
+        # The name(s) that receive a transport-verified identity resolution.
+        resolved: set[str] = set()
+        for st in _own_scope_statements(fn):
+            if not isinstance(st, ast.Assign):
+                continue
+            if not any(_calls_named(st.value, n) for n in _RESOLVER_NAMES):
+                continue
+            for tgt in st.targets:
+                if isinstance(tgt, ast.Name):
+                    resolved.add(tgt.id)
+
+        assert len(resolved) == 1, (
+            f"{route}: expected exactly one variable to receive the "
+            f"transport-verified caller identity, found {sorted(resolved)}"
+        )
+        name = resolved.pop()
+        bindings = _bindings_of(fn, name)
+        lines = sorted(st.lineno for st in bindings)
+        assert len(bindings) == 1, (
+            f"{route}: '{name}' holds the transport-verified caller identity but "
+            f"is bound {len(bindings)} times (app.py lines {lines}). A second "
+            f"binding lets a client-supplied value overwrite the verified one "
+            f"regardless of how it is spelled."
+        )
+
+
+@pytest.mark.unit
 def test_agent_route_denies_before_the_stream_opens():
     """The group gate must run BEFORE StreamingResponse is constructed.
 
@@ -328,6 +486,89 @@ def test_agent_route_denies_before_the_stream_opens():
     assert "status_code=403" in gate_src
     # The policy itself must not be duplicated here.
     assert "Admin" not in gate_src
+
+
+@pytest.mark.unit
+def test_agent_route_gate_is_an_unguarded_top_level_statement():
+    """The group gate's denial must be able to escape the route function.
+
+    ``test_agent_route_denies_before_the_stream_opens`` above compares the string
+    offset of ``_enforce_groups_or_403(`` against ``StreamingResponse(``. That
+    check passes unchanged against a mutation which keeps the call, and its
+    position, but swallows the denial::
+
+        identity = _caller_identity()
+        try:
+            _enforce_groups_or_403(identity)
+        except HTTPException:
+            pass
+
+    The gate is then present, first, and completely inert. Measured: with that
+    mutation applied, the whole suite was byte-identical to the clean baseline.
+    So assert the structure instead -- the call must be a bare expression
+    statement directly in the route function's body, with no ``try``/``if``/loop
+    between it and the function, and it must come before the response is built.
+    """
+    routes = _route_functions(_app_ast())
+    fn = routes.get("POST /chat/agent")
+    assert fn is not None, "POST /chat/agent not found in app.py"
+
+    gate_calls = _calls_named(fn, "_enforce_groups_or_403")
+    assert len(gate_calls) == 1, (
+        f"expected exactly one _enforce_groups_or_403 call in the agent route, "
+        f"found {len(gate_calls)}"
+    )
+
+    # It must be a bare `ast.Expr` statement directly in fn.body -- not nested in
+    # a Try (which could swallow the HTTPException), an If (which could skip it),
+    # or any other compound statement.
+    gate_idx = None
+    for i, st in enumerate(fn.body):
+        if isinstance(st, ast.Expr) and st.value is gate_calls[0]:
+            gate_idx = i
+            break
+    assert gate_idx is not None, (
+        "_enforce_groups_or_403 must be called as a bare statement at the top "
+        "level of the agent route, so its HTTPException propagates. It is "
+        f"currently nested inside a {type(_enclosing(fn, gate_calls[0])).__name__} "
+        "at app.py line "
+        f"{gate_calls[0].lineno}, where the denial can be skipped or swallowed."
+    )
+
+    # And it must precede every StreamingResponse construction: once the response
+    # is returned the status is pinned to 200 and a 403 is no longer expressible.
+    stream_idxs = [
+        i for i, st in enumerate(fn.body) if _calls_named(st, "StreamingResponse")
+    ]
+    assert stream_idxs, "the agent route must construct a StreamingResponse"
+    assert gate_idx < min(stream_idxs), (
+        f"the group gate (statement {gate_idx}) must precede the "
+        f"StreamingResponse (statement {min(stream_idxs)})"
+    )
+
+
+def _enclosing(fn, target):
+    """The innermost compound statement guarding ``target``, for the message.
+
+    Names the ``Try``/``If``/loop/``With`` that makes the gate skippable, which is
+    the useful diagnostic -- not the ``Expr`` immediately wrapping the call.
+    """
+    guards = (
+        ast.Try,
+        ast.If,
+        ast.For,
+        ast.AsyncFor,
+        ast.While,
+        ast.With,
+        ast.AsyncWith,
+    )
+    best = fn
+    for sub in ast.walk(fn):
+        if not isinstance(sub, guards):
+            continue
+        if any(child is target for child in ast.walk(sub)):
+            best = sub
+    return best
 
 
 @pytest.mark.unit
