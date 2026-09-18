@@ -431,7 +431,7 @@ Tests use pytest markers `unit` and `integration`, registered in the repo-root
 @pytest.mark.integration   # requires real AWS resources
 ```
 
-The repository's Python tests live in **59 separate roots** — one per package
+The repository's Python tests live in **60 separate roots** — one per package
 and per Lambda directory, each with its own `conftest.py` — so a bare `pytest`
 from the repository root fails on colliding conftest files. `scripts/run_all_tests.py`
 discovers every root and runs each as an isolated pytest invocation, which is
