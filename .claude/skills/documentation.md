@@ -194,7 +194,10 @@ requires every `.claude/skills/*.md` to either have a `.cline` symlink or a row 
 file's `CLINE_EXEMPT` table giving the reason in one line. Add the row, not the symlink,
 when the skill genuinely should not be visible to Cline — and never add a symlink merely
 to make the test pass, because whether Cline should see a skill is a judgement about
-that assistant's capabilities.
+that assistant's capabilities. The converse also holds: do not keep a row whose stated
+reason does not actually apply to the skill. If the exemption you are relying on is
+"drives a live stack" and the skill does not, that is not a reason, and the choice is a
+different reason or a symlink.
 
 > **Portability caveat:** Git stores these as symlinks (mode 120000). On clones
 > with `core.symlinks=false` (notably some Windows setups) they materialize as

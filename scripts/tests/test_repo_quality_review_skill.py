@@ -76,13 +76,6 @@ CLINE_EXEMPT = {
     "run-stack-tests.md": "live tier: deploy-variant stack tests against a live stack",
     "test-upgrade.md": "live tier: deploys and upgrades real CloudFormation stacks",
     "transform-deploy-test.md": "live tier: deploys a transformed template",
-    "sync-pii-anonymizer.md": (
-        "UNRESOLVED, not a considered exemption: unlike the five above this is an "
-        "offline vendored-code resync with no live-stack step, so the Claude-only "
-        "rationale does not obviously apply. Recorded here rather than silently "
-        "fixed because adding the symlink is the owner's call. Either add it or "
-        "replace this entry with a real reason."
-    ),
 }
 
 

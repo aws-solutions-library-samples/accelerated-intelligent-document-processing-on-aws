@@ -381,15 +381,24 @@ The third `comm` is the one worth actually reading, because it is the direction 
 first version of that test left open. Skill visibility is a **triangle** — a `.claude`
 file, a `CLAUDE.md` row, a `.cline` symlink — and closing two sides can leave the third
 wide: registering `sync-pii-anonymizer.md` in the table did nothing to make Cline able
-to read it. Last measured at this PR's head: **27 `.claude` skills, 21 `.cline`
-entries**, the six absences being `full-test-battery.md`, `run-benchmarks.md`,
-`run-stack-tests.md`, `sync-pii-anonymizer.md`, `test-upgrade.md` and
-`transform-deploy-test.md`. Five are deliberately Claude-only live-stack tiers, which is
-a legitimate reason to have no symlink; that is now recorded per entry in the test's
-`CLINE_EXEMPT` table, so an absence has to be stated rather than merely observed. Do not
-close a gap in this direction by creating symlinks — whether a live-stack skill should be
-visible to Cline is a judgement about that assistant, and a symlink added to satisfy a
-test inverts the decision. Report the unexplained ones and let the owner choose.
+to read it. When this measurement was first taken at this PR's head it found **27
+`.claude` skills and 21 `.cline` entries** — six absences. Five were the deliberately
+Claude-only live-stack tiers (`full-test-battery.md`, `run-benchmarks.md`,
+`run-stack-tests.md`, `test-upgrade.md`, `transform-deploy-test.md`), which is a
+legitimate reason to have no symlink. The sixth, `sync-pii-anonymizer.md`, was not: it is
+an offline vendored-code resync with no live-stack step, so the live-tier rationale did
+not cover it, and the owner resolved it by adding the symlink. **Now 27 and 22, with five
+absences, all of them explained.** The five reasons are recorded per entry in the test's
+`CLINE_EXEMPT` table, so an absence has to be stated rather than merely observed.
+
+Note what that sequence does and does not license. The rule is still: do not close a gap
+in this direction by creating symlinks to make the test green. Whether a live-stack skill
+should be visible to Cline is a judgement about that assistant's capabilities, and a
+symlink added to satisfy a test inverts the decision. The `sync-pii-anonymizer.md` case
+went the other way for a reason that had nothing to do with the test — the *stated
+rationale for the exemption class did not apply to it*, so the honest options were a
+different reason or a symlink, and the owner chose the symlink. Report the unexplained
+ones with the reason each one fails to fit, and let the owner choose.
 
 ### G. Gate inventory — exists / GitHub / GitLab / blocking
 
