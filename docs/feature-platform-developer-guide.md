@@ -392,7 +392,11 @@ Create (and clears them on Delete) — the same custom-resource pattern as
 `registerFeature`. The host writes them into the active config version's
 `<step>.postHook` lists. Each entry is
 `{ featureId, arn, order (default 100), onError (default continue), enabled, args }`;
-`onError` is `continue` | `skip-remaining` | `fail`.
+`onError` is `continue` | `skip-remaining` | `fail`. `fail` aborts the document
+at **every hook point the active processing mode reaches** (see "Gating with
+`onError: fail`" below); before v0.6.9 it aborted only at `preprocessing`. Note
+that `postOcr`, `postClassification` and `postExtraction` do not exist in BDA
+mode, so a hook registered there — `fail` policy included — never runs at all.
 
 **`preprocessing` / `postprocessing` shape.** Unlike the post-step lists, these
 two are standalone top-level config sections each holding ONE flat hook (its
@@ -417,10 +421,64 @@ postprocessing:
     - { key: endpoint, value: "https://erp.example/ingest" }
 ```
 
-For `preprocessing`, `onError: fail` is terminal: a failed hook ends the
-execution in a `PreprocessingHookFailed` Fail state and **never** falls through
-to processing the un-preprocessed original (essential when the hook gates
-processing, e.g. PII redaction). Use `fail` whenever the hook must gate.
+**Gating with `onError: fail`.** Declare `fail` whenever the hook must gate
+processing rather than merely observe it — PII redaction is the canonical case.
+When a hook with that policy fails, the dispatcher raises a distinct
+`HookFatalError` (defined in
+`patterns/unified/src/pipeline_hooks_function/hook_errors.py`, a sibling module
+because the dispatcher is deliberately packaged boto3-only and cannot import
+`idp_common`). Every hook state in `patterns/unified/statemachine/workflow.asl.json`
+catches that error name **before** its `States.ALL` catcher and routes to a
+terminal Fail state — `PreprocessingHookFailed`, `PostStepHookFailed`, or, inside
+the `ProcessSections` Map, `PostExtractionHookFailed`. The execution ends FAILED
+and no later step runs. Any other dispatcher fault (timeout, throttle, bug) still
+falls to `States.ALL`, which at the post-step points routes forward on purpose so
+a non-gating hook fault cannot discard an otherwise-good document.
+
+Two consequences for hook authors. First, the caught name is the exception
+class's `__name__` as the Lambda runtime reports it in the function-error
+payload's `errorType`; renaming `HookFatalError` without also renaming it in the
+ASL would silently restore the bug, which is why
+`patterns/unified/tests/test_workflow_hook_fatal_catch.py` reads the name from
+the module and asserts the ordering for every hook state it discovers in the
+file. Second, catcher order is the whole mechanism: `States.ALL` matches
+`HookFatalError` too, and ASL takes the first matching catcher, so a fatal-error
+entry placed after `States.ALL` is dead configuration.
+
+⚠️ **Before v0.6.9, `fail` was only honoured at `preprocessing`.** At the six
+post-step points the `States.ALL` catcher matched the dispatcher's failure first
+and routed the document forward, so a gating hook could fail and the document was
+processed as though it had succeeded, with no signal
+([#919](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/919)).
+
+⚠️ **Three of the seven hook points do not exist in BDA mode, and a `fail`
+policy there is silently inert.** Walking the ASL graph from `StartAt` down each
+side of the `RouteByProcessingMode` Choice: `PreprocessingHook` precedes the
+Choice, so it runs in both modes; the BDA branch (`BDA_CheckExistingData`)
+reaches only `PostRuleValidationHook`, `PostSummarizationHook` and
+`PostprocessingHook`; the Pipeline branch (`OCRStep`) additionally reaches
+`PostOcrHook`, `PostClassificationHook` and — inside the `ProcessSections` Map —
+`PostExtractionHook`. In BDA mode there is no state to invoke the dispatcher for
+those three points, so nothing raises `HookFatalError` and no catcher fires: the
+document completes as though the gate had passed, with nothing in the execution
+history to say otherwise. `patterns/unified/tests/test_workflow_hook_fatal_catch.py`
+pins this reachability so the table cannot drift from the graph. Tracked as
+[#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982);
+the mode-by-point table is in
+[Feature Platform → hook points by processing mode](feature-platform.md#not-every-hook-point-exists-in-every-processing-mode).
+
+**Diagnosing an aborted document.** The tracking row and UI show only `FAILED`.
+The failing hook's `featureId` and the underlying error are on the
+`ExecutionFailed` event in the Step Functions execution history. At the six
+post-step points, `PostStepHookFailed` and `PostExtractionHookFailed` build their
+`cause` with `CausePath`/`States.Format` from the dispatcher's own message, which
+is `Pipeline hook <featureId> at <point> failed and onError=fail: <error>`, so
+the `ExecutionFailed` event names the hook directly. `PreprocessingHookFailed`
+keeps a static `cause`: it is reached by a `States.ALL` catcher, whose error
+output is not guaranteed to carry a `Cause` to interpolate, and `preprocessing`
+holds exactly one hook so the identity is never ambiguous. For that point, read
+the `TaskFailed` event for `PreprocessingHook` — a Fail state's `cause`
+*replaces* the original error on the `ExecutionFailed` event.
 
 For `postprocessing`, keep the `continue` default unless the hook truly gates
 delivery — `fail` marks a document FAILED after every processing step already

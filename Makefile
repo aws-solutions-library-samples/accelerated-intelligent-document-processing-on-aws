@@ -543,6 +543,12 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
+	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.
+	@# They were registered in scripts/run_all_tests.py but in NEITHER CI, so the
+	@# ASL invariants they pin (e.g. the HookFatalError catcher that must precede
+	@# States.ALL, #919) were unguarded on every PR.
+	$(PYTHON) -m pytest patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
