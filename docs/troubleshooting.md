@@ -82,8 +82,17 @@ Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**
 it. The cause of that timeout has not been established: the same-model retry rung
 already stopped on no progress before this change, and the ladder's wall-clock
 deadline guard was already in place in the release where the timeouts were observed.
-Attach your Assessment Lambda log (the per-call timings and `stopReason` lines) to
-#894. Until #894 is fixed, either point that class at a large-output-cap confidence model
+The one gap in that guard has since been closed (#958): every recovery call now
+checks the remaining Lambda time before it is made, not just further bisections and
+whole escalation rounds, so a run that would previously have spent its entire budget
+on partially-successful retries now stops at the last call that fits and keeps
+everything it recovered. When that happens with rows still unscored the section
+reports `assessment_incomplete` (error) with the time budget named in its message —
+**not** `assessment_deadline_reached`, which is reserved for the case where recovery
+was cut short and every row ended up scored anyway; `deadline_reached` is also set in
+`metadata.assessment_batch_split_stats`. Whether any of this was the cause of the
+reported timeouts is still unknown. Attach your Assessment Lambda log (the per-call timings
+and `stopReason` lines) to #894. Until #894 is fixed, either point that class at a large-output-cap confidence model
 (`extraction.confidence.escalation_model`, or the per-class
 `x-aws-idp-confidence-escalation-model`), or restructure so the long list is its own
 class rather than a field inside a multi-instance instance.

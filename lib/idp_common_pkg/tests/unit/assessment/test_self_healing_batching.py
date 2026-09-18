@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from idp_common.assessment import batching as mod
 from idp_common.assessment.batching import (
     assess_results_batched,
     compute_token_aware_batch_size,
@@ -420,6 +421,297 @@ def test_no_deadline_allows_escalation():
     assert svc.escalation_calls  # escalation fired
     assert result["split_stats"]["deadline_reached"] is False
     assert result["split_stats"]["unrecoverable_rows"] == 0
+
+
+class PartialProgressService:
+    """Confidence model stand-in that makes PROGRESS on every call and never
+    truncates — the one shape the wall-clock guard used to miss (#958).
+
+    Each call scores the first ``scored_per_call`` rows of whatever slice it is
+    handed and returns ``confidence: None`` for the rest, with
+    ``truncated=False``. Nothing here trips the other two stopping conditions: the
+    adaptive splitter never bisects (no truncation, so no recursion and no
+    oversized-row flag), and every retry round recovers at least one row, so the
+    "a round that recovered nothing stops the rung" break never fires either.
+    Before #958 the only bound left was ``max_retries``, and each round was a real
+    model call — which is how a series of partially-successful calls could run a
+    900 s Lambda into its wall.
+    """
+
+    def __init__(
+        self,
+        list_field: str,
+        scored_per_call: int = 1,
+        clock: dict | None = None,
+        seconds_per_call: float = 0.0,
+    ):
+        self.list_field = list_field
+        self.scored_per_call = scored_per_call
+        # Optional driven clock: a {"now": float} dict the test also patches
+        # `mod.time.time` to read, so a call costs time deterministically.
+        self.clock = clock
+        self.seconds_per_call = seconds_per_call
+        self.primary_calls: list[int] = []
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        self.primary_calls.append(len(rows))
+        if self.clock is not None and self.seconds_per_call:
+            self.clock["now"] += self.seconds_per_call
+        scored = [
+            {"amount": {"confidence": 0.9 if i < self.scored_per_call else None}}
+            for i in range(len(rows))
+        ]
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: scored,
+                "account_holder": {"confidence": 0.95},
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=1.0,
+            metering={"Assessment/bedrock/model": {"outputTokens": 100}},
+        )
+
+
+def _partial_progress_run(deadline_epoch, *, max_retries=4, rows=12):
+    svc = PartialProgressService("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(rows), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=max_retries,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,  # isolate rung 1: only its own guard can stop it
+        deadline_epoch=deadline_epoch,
+    )
+    return svc, result
+
+
+def test_deadline_stops_a_retry_round_that_is_still_making_progress():
+    """#958: the same-model retry rung consults the wall-clock deadline too.
+
+    The stand-in recovers a row on every call and never truncates, so neither of
+    the rung's pre-existing stopping conditions applies — before this change the
+    rung ran all ``max_retries`` rounds however little time the Lambda had left.
+    With a near-now deadline it must now stop at the round boundary, flag
+    ``deadline_reached`` and return cleanly.
+    """
+    import time as _time
+
+    svc, result = _partial_progress_run(_time.time() + 1.0)  # below the 90s reserve
+
+    assert result["split_stats"]["deadline_reached"] is True
+    # Only the first pass ran: 12 rows at batch 4 → 3 batches. No retry round.
+    assert len(svc.primary_calls) == 3
+    # Rows stay unscored and are REPORTED as such, rather than the call raising.
+    assert result["split_stats"]["unrecoverable_rows"] > 0
+
+
+def test_generous_deadline_still_runs_the_retry_rounds():
+    """The guard must bound the rung, not disable it.
+
+    Same stand-in and same round budget as the test above, with a deadline far
+    enough out that every round fits: the retry rounds run, more calls are made
+    than the first pass alone, and ``deadline_reached`` stays False. Without this
+    assertion the guard above would also pass if rung 1 had simply been removed.
+    """
+    import time as _time
+
+    svc, result = _partial_progress_run(_time.time() + 3600.0)
+
+    assert result["split_stats"]["deadline_reached"] is False
+    assert len(svc.primary_calls) > 3  # first pass (3) plus at least one retry round
+    assert result["split_stats"]["rows_recovered_by_retry"] > 0
+
+
+def test_no_deadline_leaves_the_retry_rung_running():
+    """No deadline threaded in (local / non-Lambda) is a no-op for the new guard,
+    exactly as it is for the escalation and bisection guards."""
+    svc, result = _partial_progress_run(None)
+
+    assert result["split_stats"]["deadline_reached"] is False
+    assert len(svc.primary_calls) > 3
+
+
+def test_a_large_list_with_ample_time_recovers_exactly_as_with_no_deadline():
+    """The guard must bound the rung by TIME, not cap its chunk count.
+
+    This is the case an earlier round-level version of the guard got wrong, and it
+    is the shape the ladder exists for. A round-level check has to price the whole
+    round before making any call, and the only safe price is a worst case
+    (chunks × 60s); at 200 rows and the token-aware batch size of 4 that priced a
+    round at 2,280s and refused it outright with 800s in hand — throwing away
+    recovery that measurably took under a second, and reporting an error-severity
+    ``assessment_incomplete`` where the unguarded code returned clean. Pricing ONE
+    call at a time makes the guard a real time bound: with ample budget the outcome
+    must be byte-identical to having no deadline at all.
+    """
+    import time as _time
+
+    rows = 200
+    guarded = _partial_progress_run(_time.time() + 800.0, rows=rows)
+    unguarded = _partial_progress_run(None, rows=rows)
+
+    assert guarded[1]["split_stats"]["deadline_reached"] is False
+    for key in ("rows_recovered_by_retry", "unrecoverable_rows"):
+        assert guarded[1]["split_stats"][key] == unguarded[1]["split_stats"][key], key
+    assert len(guarded[0].primary_calls) == len(unguarded[0].primary_calls)
+
+
+def test_a_mid_pass_stop_keeps_the_rows_it_already_recovered(monkeypatch):
+    """Stopping is per chunk, so the rows already spliced back are kept.
+
+    The clock is DRIVEN rather than slept on: ``_deadline_allows`` reads
+    ``time.time`` from this module, so a fake counter that advances one call-time per
+    model call makes the budget expire at an exact, reproducible chunk. An earlier
+    version of this test slept instead, and failed 20 runs out of 20 under CPU load
+    when executed alone — the initial pass consumed the whole budget before the retry
+    rung ran.
+    """
+    monkeypatch.setattr(mod, "_ESTIMATED_MODEL_CALL_SECONDS", 1.0)
+    monkeypatch.setattr(mod, "_DEADLINE_SAFETY_RESERVE_SECONDS", 0.0)
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+
+    # 40 rows at batch 4 → 10 chunks in the initial pass, then retry rounds. Advance
+    # the fake clock one call-time per call, and allow 14 calls' worth of budget: the
+    # initial pass spends 10, so the retry pass gets 4 chunks and is stopped on its
+    # fifth — mid-pass, with rows both recovered and outstanding.
+    svc = PartialProgressService("transactions", clock=clock, seconds_per_call=1.0)
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(40), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=4,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        deadline_epoch=clock["now"] + 14.0,
+    )
+
+    stats = result["split_stats"]
+    assert stats["deadline_reached"] is True
+    # Stopped mid-pass rather than refusing the pass: some rows were recovered and
+    # some were not, and the recovered ones are still scored.
+    assert stats["rows_recovered_by_retry"] > 0
+    assert stats["unrecoverable_rows"] > 0
+    scored = [
+        r
+        for r in result["assessment"]["transactions"]
+        if r.get("amount", {}).get("confidence") is not None
+    ]
+    assert len(scored) == 40 - stats["unrecoverable_rows"]
+
+
+class TruncatesOnceThenPartial:
+    """Truncates the FIRST call with a long duration, then makes partial progress.
+
+    The long first call trips the bisection guard, which sets ``deadline_reached`` on
+    the shared stats accumulator. Every later call is fast and fits comfortably. So
+    the flag is already True when the retry rung starts, while the per-chunk guard is
+    permitting every call it makes.
+    """
+
+    def __init__(self, list_field: str, first_call_seconds: float = 750.0):
+        self.list_field = list_field
+        self.first_call_seconds = first_call_seconds
+        self.calls = 0
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        self.calls += 1
+        if self.calls == 1:
+            return AssessmentCoreResult(
+                enhanced_assessment={
+                    k: {"confidence": 0.5} for k in kw["extraction_results"]
+                },
+                parsing_succeeded=False,
+                truncated=True,
+                duration_seconds=self.first_call_seconds,
+                metering={"Assessment/bedrock/model": {"outputTokens": 9999}},
+            )
+        scored = [
+            {"amount": {"confidence": 0.9 if i < 1 else None}} for i in range(len(rows))
+        ]
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: scored,
+                "account_holder": {"confidence": 0.95},
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=0.01,
+            metering={"Assessment/bedrock/model": {"outputTokens": 100}},
+        )
+
+
+def test_an_earlier_deadline_flag_does_not_end_the_retry_rung():
+    """``deadline_reached`` is sticky and shared, so the rung must not read it.
+
+    The bisection guard sets that flag, and it is OR-merged out of concurrent workers
+    before ``_retry_missing_rows`` is called. A rung that stopped on the flag would
+    therefore run exactly one round whenever anything earlier had tripped it — even
+    while its own per-chunk guard was permitting every call — which is the same
+    "refuse work the budget allows" defect the per-chunk check was introduced to fix.
+    The rung must key off whether THIS pass stopped early.
+    """
+    import time as _time
+
+    svc = TruncatesOnceThenPartial("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(12), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=4,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        deadline_epoch=_time.time() + 800.0,
+    )
+
+    stats = result["split_stats"]
+    # The long first call tripped the bisection guard...
+    assert stats["deadline_reached"] is True
+    # ...but the retry rung still ran its rounds and recovered more than the single
+    # round a sticky-flag break would have allowed.
+    assert stats["rows_recovered_by_retry"] > 3
+
+
+def test_a_deadline_stop_with_rows_outstanding_names_the_budget_in_the_issue():
+    """The cause must reach the issue an operator actually sees.
+
+    ``build_assessment_issues`` emits the FIRST matching rung, and
+    ``unrecoverable_rows > 0`` outranks ``deadline_reached``. Since the guard can
+    only fire while rows are still missing, the ``assessment_deadline_reached``
+    warning is unreachable from this path — so the ``assessment_incomplete`` error
+    has to carry the time-budget cause and its remedy itself, or an operator is
+    told rows are unscorable when they were simply never attempted.
+    """
+    import time as _time
+
+    _svc, result = _partial_progress_run(_time.time() + 1.0)
+    issues = build_assessment_issues(result["split_stats"], section_id="1")
+
+    assert [(i.code, i.severity) for i in issues] == [
+        ("assessment_incomplete", "error")
+    ]
+    message = issues[0].message
+    assert "Lambda time budget" in message
+    assert "not re-attempted" in message
+    # The remedy must be time/work, not "use a different model".
+    assert "list_batch_size" in message
 
 
 # --------------------------------------------------------------------------- #
