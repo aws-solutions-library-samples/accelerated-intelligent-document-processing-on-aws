@@ -192,8 +192,9 @@ Two residual gaps this does not close:
   `existing_data_model` or a `checkpoint_buffer`, so the whole section goes to one
   agent even with `max_concurrent_batches > 1`. The load-time estimate cannot see
   that, so a resumed run can carry more images than it predicted.
-  `max_images_per_agent` still caps the attached count at 20, and the failure is a
-  named `ExtractionImageRejected` rather than a wrong result.
+  `max_images_per_agent` still caps the attached count (at its default of 20; `0`
+  means unlimited and removes that backstop), and the failure is a named
+  `ExtractionImageRejected` rather than a wrong result.
 - **No total-payload guard.** The sweep bounds each image (5 MiB base64) and each
   side (2,000 px), but nothing bounds the request's total bytes. #994 measured 29
   pages at 27.7 MB rejected on payload alone, with the `Input is too long for

@@ -294,6 +294,74 @@ def test_the_page_ceiling_being_disabled_does_not_lose_the_clamp():
     )
 
 
+def test_the_bound_holds_where_the_token_budget_changes_the_plan():
+    """The regime that broke the previous two attempts.
+
+    ``plan_shards`` has two regimes and the token budget decides WHICH one runs:
+    a smaller budget produces more first-pass ranges, and once that count exceeds
+    ``max_concurrent_batches`` the ranges are discarded and ``_rebalance_to_cap``
+    repacks by token weight, at which point ``max_pages_per_shard`` no longer
+    holds at all. Measured on the shipped default with a 50-page section holding
+    one dense page: an unbounded budget plans ten 5-page shards, Sonnet 4.6's own
+    derived budget of 18,400 tokens plans ``[1, 41, 1, ...]``. An estimate taken
+    from a single (large) budget said 5 and missed a clamp the request needs.
+
+    So the bound is the WORSE of the two regimes, which needs no budget. This test
+    lives in the divergence regime deliberately — every other test here uses page
+    text light enough that the page cap closes the shards, where the budget cannot
+    matter, which is exactly why they all passed while the estimate was unsound.
+    """
+    svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=5)
+    texts = ["x" * 80_000] + ["x" * 200] * 49
+
+    under_huge_budget = plan_shards(
+        texts, token_budget=1 << 40, max_shards=10, max_pages_per_shard=5
+    )
+    under_real_budget = plan_shards(
+        texts, token_budget=18_400, max_shards=10, max_pages_per_shard=5
+    )
+    assert max(s.page_count for s in under_huge_budget) == 5
+    assert max(s.page_count for s in under_real_budget) == 41, (
+        "fixture no longer reaches the repack regime"
+    )
+
+    # The bound must cover the real plan, not the unbounded-budget one.
+    est = svc._agentic_images_per_request(50, texts)
+    assert est == 20  # 41 pages, truncated by max_images_per_agent
+    images = _load(svc, 50, texts)
+    assert all(
+        max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
+    )
+
+
+def test_the_bound_covers_every_budget_the_service_can_derive():
+    """Cross-check rather than a fixed expectation: for a spread of page-text
+    distributions and every shard budget the sizing code can produce for a shipped
+    model, the estimate must be at least what the largest shard would attach."""
+    svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=5)
+    dists = {
+        "uniform": lambda n: ["x" * 4000] * n,
+        "compact": lambda n: ["x" * 50] * n,
+        "one dense": lambda n: ["x" * 80_000] + ["x" * 200] * (n - 1),
+        "two dense": lambda n: ["x" * 80_000, "x" * 80_000] + ["x" * 200] * (n - 2),
+    }
+    # 18,400 = Sonnet 4.6, 63,200 = Haiku 4.5, 171,000 = Nova Lite.
+    budgets = (4_000, 8_000, 18_400, 63_200, 171_000)
+    for name, make in dists.items():
+        for pages in (12, 30, 50, 60, 101):
+            texts = make(pages)
+            est = svc._agentic_images_per_request(pages, texts)
+            for budget in budgets:
+                planned = plan_shards(
+                    texts, token_budget=budget, max_shards=10, max_pages_per_shard=5
+                )
+                attached = min(max(s.page_count for s in planned), 20)
+                assert est >= attached, (
+                    f"{name} n={pages} budget={budget}: estimate {est} < "
+                    f"attached {attached}"
+                )
+
+
 def test_without_page_texts_the_whole_section_is_assumed():
     """A caller that does not supply the texts cannot be sharded-for, so the
     conservative answer is the whole section (capped by max_images_per_agent)."""

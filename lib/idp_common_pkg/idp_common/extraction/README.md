@@ -716,8 +716,8 @@ only **one** extra copy per page. Two gaps remain, both recorded in
 shard past 20 blocks, and a **resume** run (`existing_data_model`, or a
 `checkpoint_buffer`), where sharding is skipped entirely and the whole section goes
 to one agent even with `max_concurrent_batches > 1` — something the load-time
-estimate cannot see. `max_images_per_agent` still bounds the attached count at 20
-there, and the failure mode is a named `ExtractionImageRejected`.
+estimate cannot see. `max_images_per_agent` still bounds the attached count there (at its default of
+20; `0` means unlimited and removes that backstop), and the failure mode is a named `ExtractionImageRejected`.
 `BedrockClient.invoke_model` sweeps every request with
 `image.fit_images_in_request` as the authoritative backstop (it is the only place
 that sees the whole request, tool results included); the loader exists so the

@@ -1577,15 +1577,33 @@ class ExtractionService:
           a whole shard and leave 20 sparse ones in another, so no closed form
           over page counts bounds it.
 
-        So it is not estimated — ``plan_shards`` is asked. Its inputs are all in
-        hand: ``page_texts`` is loaded immediately before the images
-        (``_prepare_section_context``) precisely so this can run first. The token
-        budget passed is deliberately enormous rather than the real derived one,
-        which is the SAFE direction and avoids duplicating that derivation: a
-        smaller budget can only close shards *earlier*, producing more and smaller
-        shards, and once the rebalance fires the budget stops mattering at all
-        because it repacks from scratch. ``table_boundary_pages`` is likewise
-        omitted — it too only closes shards earlier.
+        So it is not estimated. ``plan_shards`` has exactly two regimes, and the
+        bound is the worse of them — which needs no token budget at all:
+
+        * **A, the page cap holds** (the first pass produced no more ranges than
+          ``max_concurrent_batches``): the largest shard is
+          ``max_pages_per_shard``, or the whole section when that is ``0``
+          ("page cap off").
+        * **B, the repack fired**: the largest range ``_rebalance_to_cap`` returns.
+          It takes no budget argument — it repacks from page 0 by token weight —
+          so this is computable exactly.
+
+        Taking ``max(A, B)`` rather than planning under one budget is deliberate,
+        and an earlier version of this method got it wrong in a way worth
+        recording. It called ``plan_shards`` with a deliberately enormous budget,
+        on the argument that a smaller budget only closes shards *earlier* and so
+        cannot under-estimate. That is false: the budget also decides **whether the
+        repack fires at all**, and the repack discards the page cap. Measured on
+        the shipped default (``max_concurrent_batches: 10``,
+        ``max_pages_per_shard: 5``) with a 50-page section holding one dense page,
+        at Sonnet 4.6's own derived budget of 18,400 tokens: an unbounded budget
+        plans ten 5-page shards, while the real budget plans
+        ``[1, 41, 1, 1, ...]``. Estimating 5 there misses a clamp the request
+        needs. Regime B catches it because it does not depend on the budget.
+
+        ``table_boundary_pages`` is not consulted: it only ever closes a first-pass
+        shard earlier, which can move the plan from regime A into regime B, and B
+        is already covered.
 
         Without ``page_texts`` (the only other caller shape) the sound answer is
         the whole section, since a single agent may then receive all of it.
@@ -1603,21 +1621,26 @@ class ExtractionService:
         bound = pages_to_attach
         if agentic.max_concurrent_batches > 1 and page_texts and pages_to_attach > 1:
             try:
-                from idp_common.extraction.sharding import plan_shards
+                from idp_common.extraction.sharding import _rebalance_to_cap
 
-                shards = plan_shards(
-                    page_texts,
-                    # Effectively unbounded: see the docstring for why erring
-                    # large here cannot under-estimate the largest shard.
-                    token_budget=1 << 40,
-                    max_shards=agentic.max_concurrent_batches,
-                    max_pages_per_shard=agentic.max_pages_per_shard,
+                n = len(page_texts)
+                # Regime A: the page cap holds. 0 means "page cap off", i.e. the
+                # token budget alone bounds shards, which can leave all of them
+                # in one.
+                page_cap_bound = (
+                    agentic.max_pages_per_shard
+                    if agentic.max_pages_per_shard > 0
+                    else n
                 )
-                if shards:
-                    bound = min(bound, max(s.page_count for s in shards))
+                # Regime B: the repack fired. Budget-free by construction.
+                repacked = _rebalance_to_cap(
+                    page_texts, n, min(agentic.max_concurrent_batches, n)
+                )
+                repack_bound = max((e - s) for s, e in repacked) if repacked else n
+                bound = min(bound, max(page_cap_bound, repack_bound))
             except Exception as e:  # noqa: BLE001 - fall back to the sound answer
                 logger.warning(
-                    "Could not plan shards to size the many-image cap (%s); "
+                    "Could not size the many-image cap from the shard plan (%s); "
                     "assuming one request carries the whole section.",
                     e,
                 )

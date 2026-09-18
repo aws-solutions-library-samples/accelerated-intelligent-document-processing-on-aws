@@ -98,35 +98,72 @@ def test_a_raw_client_error_image_rejection_is_still_not_retried():
 
 
 def test_a_coded_transient_error_mentioning_an_image_is_still_retried():
-    """``is_image_request_rejection`` judges the error CODE first, so a throttle
-    that carries a code stays retryable however its message is worded. Note the
-    qualifier: a code-less wrapped exception has no code to judge, which is why
-    ``_IMAGE_REJECTION_MARKERS`` is kept to phrases that name an image limit
-    explicitly — see the next test.
+    """A throttle that carries an error code stays retryable however its message
+    is worded, because ``is_image_request_rejection`` judges the code first.
 
-    The message deliberately contains a marker that is still in the list;
-    otherwise this passes without exercising the code guard at all, which is how
-    its previous fixture ("...image size") went vacuous when that marker was
-    dropped."""
-    from idp_common.utils.bedrock_utils import _IMAGE_REJECTION_MARKERS
+    Note which branch this actually reaches. A raw ``botocore`` ``ClientError``
+    is handled by the decorator's ``except ClientError`` branch, which decides
+    from ``error_code`` alone and never consults the image matcher — so the retry
+    count below would hold even with the code guard deleted. The guard itself is
+    asserted directly here, and the branch that *does* consult it (the generic
+    one, for Strands wrappers) is covered by the next test. Two earlier versions
+    of this test claimed to pin the guard while reaching neither."""
+    from idp_common.utils.bedrock_utils import (
+        _IMAGE_REJECTION_MARKERS,
+        is_image_request_rejection,
+    )
 
     message = "Rate exceeded: too many images in flight for this account"
     assert any(m in message.lower() for m in _IMAGE_REJECTION_MARKERS), (
         "fixture no longer exercises the code guard"
     )
+    throttle = botocore.exceptions.ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": message}}, "Converse"
+    )
+    # The guard, asserted where it is actually read.
+    assert is_image_request_rejection(throttle) is False
+    rejection = botocore.exceptions.ClientError(
+        {"Error": {"Code": "ValidationException", "Message": message}}, "Converse"
+    )
+    assert is_image_request_rejection(rejection) is True
+
     calls = 0
 
     @async_exponential_backoff_retry(max_retries=3, initial_delay=0.01)
     async def failing():
         nonlocal calls
         calls += 1
-        raise botocore.exceptions.ClientError(
-            {"Error": {"Code": "ThrottlingException", "Message": message}},
-            "Converse",
-        )
+        raise throttle
 
     with patch("asyncio.sleep", new=AsyncMock()):
         with pytest.raises(botocore.exceptions.ClientError):
+            _run(failing())
+    assert calls == 3
+
+
+def test_the_code_guard_is_read_on_the_generic_branch_too():
+    """The generic ``except Exception`` branch is where the image short-circuit
+    lives, so a wrapped error carrying a non-ValidationException code must reach
+    the guard and stay retryable. Deleting the code guard makes this fail."""
+    message = "too many images in flight; slow down"
+
+    class WrappedThrottle(Exception):
+        # Not a ClientError, so the generic branch handles it — but it carries a
+        # response, so the code guard has something to judge.
+        response = {"Error": {"Code": "ThrottlingException", "Message": message}}
+
+    calls = 0
+
+    @async_exponential_backoff_retry(
+        max_retries=3, initial_delay=0.01, retryable_errors={"ThrottlingException"}
+    )
+    async def failing():
+        nonlocal calls
+        calls += 1
+        raise WrappedThrottle(f"ThrottlingException: {message}")
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        with pytest.raises(WrappedThrottle):
             _run(failing())
     assert calls == 3
 
