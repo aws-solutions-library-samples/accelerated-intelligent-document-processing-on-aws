@@ -1360,9 +1360,14 @@ extraction:
 >    extraction) is **not explained by this loop**, so treat it as still open: the
 >    same-model retry rung already stopped on no progress before this change, and the
 >    ladder's wall-clock deadline guard was already in place in the release where
->    those timeouts were observed. Until #894 is fixed, score such a class with a
->    large-output-cap confidence model (`escalation_model`), or split the inner list
->    into its own class.
+>    those timeouts were observed. The single gap in that guard has since been closed
+>    (#958): all three rungs — retry, escalation and bisection — now check the
+>    Lambda's remaining time before starting work, so a run that would have spent its
+>    whole budget on partially-successful retry rounds stops and reports
+>    `assessment_deadline_reached`. That was the most concrete lead on the timeout,
+>    but it is not confirmed as its cause. Until #894 is fixed, score such a class
+>    with a large-output-cap confidence model (`escalation_model`), or split the inner
+>    list into its own class.
 >
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,

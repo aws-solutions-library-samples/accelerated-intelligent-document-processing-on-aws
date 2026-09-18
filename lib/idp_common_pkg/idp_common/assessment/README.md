@@ -401,11 +401,16 @@ failure was an Assessment Lambda hitting its 900s wall three times
 resolution: `_retry_missing_rows` already broke on no progress (both the retry and
 escalation rungs), and the wall-clock deadline guard plus its threading from
 `context.get_remaining_time_in_millis()` in the Assessment Lambda were already
-present in the release where those timeouts were observed. One ladder path is still
-uncovered by the wall-clock guard and is the most concrete lead: the same-model retry
-**round** loop has no round-level deadline check (only the escalation loop and
-further bisection do), so a series of single-row calls that never bisect is
-unbounded in wall-clock terms.
+present in the release where those timeouts were observed.
+
+The one ladder path that the wall-clock guard did **not** cover — the most concrete
+lead on that timeout — has since been closed (#958): the same-model retry **round**
+loop had no round-level deadline check, only the escalation loop and further
+bisection did, so a sequence of rounds that each recovered *something* while never
+bisecting was bounded only by `max_retries`, at a real model call per round. All
+three rungs now consult the deadline before starting work. Whether that was the
+cause of the observed 900s timeouts is still **not established** — no reproduction
+exists — so #894 remains open for it, and for the batch sizer.
 
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the
@@ -487,11 +492,16 @@ and rendered in the extraction processing report.
 The escalation ladder adds sequential model calls inside the 900s
 Extraction/Assessment Lambdas. To avoid a hard timeout, both handlers thread the
 Lambda's `context.get_remaining_time_in_millis()` down as an absolute
-`deadline_epoch`; before starting a **new escalation round** the ladder checks
-the estimated round cost fits in the remaining time minus a 90s safety reserve.
-If not, it stops, keeps what was recovered, and flags `deadline_reached` (→
-`assessment_deadline_reached` warning) — converting a would-be timeout into a
-soft, flagged, complete document. As defense in depth, the Step Functions
+`deadline_epoch`; before starting **any new recovery round — a same-model retry
+round (#958) or an escalation round — and before each further bisection**, the
+ladder checks that the estimated cost (chunks × `_ESTIMATED_MODEL_CALL_SECONDS`,
+60s, floored at that value even when a measured duration is available) fits in the
+remaining time minus a 90s safety reserve. If not, it stops, keeps what was
+recovered, and flags `deadline_reached` (→ `assessment_deadline_reached` warning) —
+converting a would-be timeout into a soft, flagged, complete document. The retry
+rung was the last one to get this check: until #958 it stopped only after
+`max_retries` rounds or on a round that recovered nothing, so rounds that each made
+partial progress were unbounded in wall-clock terms. As defense in depth, the Step Functions
 `ExtractionStep`/`AssessmentStep`/`ShardExtractionStep` retry sets include
 `States.Timeout` / `Lambda.Unknown`, so a genuine timeout is retried and resumes
 via the per-shard S3 persistence and the Assessment step's "skip if

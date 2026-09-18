@@ -59,12 +59,22 @@ _BBOX_GEOMETRY_MULTIPLIER_FALLBACK = 3.0
 # from row 0 to the first N rows (an 800-row statement whose first 25 rows are
 # narrow would still be sized as if the whole list were narrow).
 
-# Wall-clock safety reserve (seconds). Before starting a NEW escalation round —
-# the slow, big-model call — the ladder checks that an estimated round fits in
-# the Lambda's remaining time minus this reserve. If not, it stops and flags
-# ``deadline_reached`` rather than risk a hard task timeout (which the ASL now
-# retries, but we still prefer to avoid). See plan "Lambda timeout & resume".
+# Wall-clock safety reserve (seconds). Before starting a NEW recovery round —
+# a same-model retry round or the slow, big-model escalation round — the ladder
+# checks that an estimated round fits in the Lambda's remaining time minus this
+# reserve. If not, it stops and flags ``deadline_reached`` rather than risk a hard
+# task timeout (which the ASL now retries, but we still prefer to avoid). See plan
+# "Lambda timeout & resume".
 _DEADLINE_SAFETY_RESERVE_SECONDS = 90.0
+
+# Assumed cost of one confidence model call when estimating whether the next round
+# fits before the deadline. Every wall-clock guard in this module floors its
+# estimate at this value even when it has a measured duration to hand: a call that
+# has just been made is the best evidence available, but the call that matters is
+# the NEXT one, and the shapes this guard exists for (a single oversized row
+# against a small output cap) are the slow ones. #894 recorded ~60 s per call on
+# Nova Lite.
+_ESTIMATED_MODEL_CALL_SECONDS = 60.0
 
 # --- Confidence-coverage shortfall thresholds (#901 item 3) -------------------
 # ``audit_explainability`` knows exactly how many extracted list rows carry a real
@@ -1559,11 +1569,12 @@ def _assess_slice_adaptive(
 
     # Wall-clock guard: a split doubles the number of sequential calls, so stop
     # recursing when the two halves (each ~ one model call) wouldn't fit before the
-    # deadline. Estimate from the call we just made (its real duration), falling
-    # back to a conservative 60s when unknown.
+    # deadline. Estimate from the call we just made (its real duration), floored at
+    # _ESTIMATED_MODEL_CALL_SECONDS.
     if should_split and deadline_epoch is not None:
         est_call_seconds = max(
-            float(getattr(core, "duration_seconds", 0.0) or 0.0), 60.0
+            float(getattr(core, "duration_seconds", 0.0) or 0.0),
+            _ESTIMATED_MODEL_CALL_SECONDS,
         )
         if not _deadline_allows(deadline_epoch, est_call_seconds):
             stats["deadline_reached"] = True
@@ -2196,12 +2207,19 @@ def _retry_missing_rows(
        truncation). Bounded by ``max_escalation_rounds``; a round that recovers
        nothing stops.
 
-    **Wall-clock guard (1.5):** ``deadline_epoch`` (absolute epoch seconds, from
-    the Lambda ``context.get_remaining_time_in_millis()``) bounds the slow
-    escalation rung — before each escalation round the ladder checks the round's
-    estimated cost fits in remaining time minus a safety reserve; if not it stops,
-    sets ``deadline_reached`` in stats, and keeps what was recovered rather than
-    risk a hard Lambda timeout. No-op when ``deadline_epoch`` is None.
+    **Wall-clock guard (1.5, extended by #958):** ``deadline_epoch`` (absolute epoch
+    seconds, from the Lambda ``context.get_remaining_time_in_millis()``) bounds
+    **both** rungs — before each round, retry or escalation, the ladder checks that
+    the round's estimated cost (chunks × ``_ESTIMATED_MODEL_CALL_SECONDS``) fits in
+    remaining time minus a safety reserve; if not it stops, sets
+    ``deadline_reached`` in stats, and keeps what was recovered rather than risk a
+    hard Lambda timeout. No-op when ``deadline_epoch`` is None.
+
+    The retry rung was unguarded until #958: it stopped only after
+    ``max_retries`` rounds or on a round that recovered nothing, so a sequence of
+    rounds that each recovered *something* while never bisecting was unbounded in
+    wall-clock terms. That was the one ladder path the guard did not cover, and the
+    most concrete lead on the 900-second Assessment Lambda timeouts in #894.
 
     Sequential (no fan-out); best-effort (a failed call keeps the placeholder).
     Returns updated ``(assessment, alerts, metering, added_duration)``."""
@@ -2263,9 +2281,37 @@ def _retry_missing_rows(
         )
 
     # Rung 1: same-model retry rounds.
+    # Measured seconds per chunk from the round just run, used to estimate the next
+    # one. None until a round has completed, and only ever RAISES the estimate —
+    # see _ESTIMATED_MODEL_CALL_SECONDS.
+    measured_chunk_seconds: float | None = None
     for _round in range(retry_rounds):
         missing = _missing_row_indices(merged_assessment.get(big_field), rows)
         if not missing:
+            break
+        # Wall-clock guard (#958): estimate this retry round's cost the same way the
+        # escalation rung below does — chunks × per-call seconds — and stop if it
+        # will not fit in the Lambda's remaining time minus the safety reserve.
+        # Without this the rung was bounded only by `retry_rounds` and by "a round
+        # that recovered nothing", so a series of calls that each make partial
+        # progress and never bisect was unbounded in wall-clock terms: the only
+        # ladder path the guard did not cover, and the most concrete lead on the
+        # 900 s Assessment timeouts reported in #894.
+        n_chunks = math.ceil(len(missing) / max(1, batch_size))
+        est_round_seconds = n_chunks * max(
+            measured_chunk_seconds or 0.0, _ESTIMATED_MODEL_CALL_SECONDS
+        )
+        if not _deadline_allows(deadline_epoch, est_round_seconds):
+            stats["deadline_reached"] = True
+            logger.warning(
+                "assess_results_batched: skipping retry of %d unscored '%s' rows "
+                "— estimated %.0fs (%d chunk(s)) would exceed the Lambda time "
+                "budget; stopping self-healing and flagging deadline_reached.",
+                len(missing),
+                big_field,
+                est_round_seconds,
+                n_chunks,
+            )
             break
         logger.info(
             "assess_results_batched: retrying %d unscored '%s' rows (round %d)",
@@ -2289,6 +2335,8 @@ def _retry_missing_rows(
             model_id=model_id,
         )
         added_duration += dur
+        if n_chunks:
+            measured_chunk_seconds = dur / n_chunks
         # #894: the retry itself can be the first place a slice bisects down to one
         # row and still truncates. Stop this rung as soon as that is known instead
         # of spending the remaining rounds on the same impossible call.
@@ -2319,11 +2367,12 @@ def _retry_missing_rows(
             if not missing:
                 break
             # Wall-clock guard: estimate this escalation round's cost (number of
-            # chunks × observed avg call duration, floor 60s/chunk when nothing
-            # measured yet — big models are slow) and stop if it won't fit in the
-            # Lambda's remaining time minus the safety reserve.
+            # chunks × _ESTIMATED_MODEL_CALL_SECONDS — no measurement is used here,
+            # because the escalation model is a different, slower model than the one
+            # whose durations were observed on the rungs above) and stop if it won't
+            # fit in the Lambda's remaining time minus the safety reserve.
             n_chunks = math.ceil(len(missing) / max(1, esc_batch))
-            est_round_seconds = n_chunks * 60.0
+            est_round_seconds = n_chunks * _ESTIMATED_MODEL_CALL_SECONDS
             if not _deadline_allows(deadline_epoch, est_round_seconds):
                 stats["deadline_reached"] = True
                 logger.warning(

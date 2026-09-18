@@ -422,6 +422,109 @@ def test_no_deadline_allows_escalation():
     assert result["split_stats"]["unrecoverable_rows"] == 0
 
 
+class PartialProgressService:
+    """Confidence model stand-in that makes PROGRESS on every call and never
+    truncates — the one shape the wall-clock guard used to miss (#958).
+
+    Each call scores the first ``scored_per_call`` rows of whatever slice it is
+    handed and returns ``confidence: None`` for the rest, with
+    ``truncated=False``. Nothing here trips the other two stopping conditions: the
+    adaptive splitter never bisects (no truncation, so no recursion and no
+    oversized-row flag), and every retry round recovers at least one row, so the
+    "a round that recovered nothing stops the rung" break never fires either.
+    Before #958 the only bound left was ``max_retries``, and each round was a real
+    model call — which is how a series of partially-successful calls could run a
+    900 s Lambda into its wall.
+    """
+
+    def __init__(self, list_field: str, scored_per_call: int = 1):
+        self.list_field = list_field
+        self.scored_per_call = scored_per_call
+        self.primary_calls: list[int] = []
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        self.primary_calls.append(len(rows))
+        scored = [
+            {"amount": {"confidence": 0.9 if i < self.scored_per_call else None}}
+            for i in range(len(rows))
+        ]
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: scored,
+                "account_holder": {"confidence": 0.95},
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=1.0,
+            metering={"Assessment/bedrock/model": {"outputTokens": 100}},
+        )
+
+
+def _partial_progress_run(deadline_epoch, *, max_retries=4):
+    svc = PartialProgressService("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(12), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=max_retries,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,  # isolate rung 1: only its own guard can stop it
+        deadline_epoch=deadline_epoch,
+    )
+    return svc, result
+
+
+def test_deadline_stops_a_retry_round_that_is_still_making_progress():
+    """#958: the same-model retry rung consults the wall-clock deadline too.
+
+    The stand-in recovers a row on every call and never truncates, so neither of
+    the rung's pre-existing stopping conditions applies — before this change the
+    rung ran all ``max_retries`` rounds however little time the Lambda had left.
+    With a near-now deadline it must now stop at the round boundary, flag
+    ``deadline_reached`` and return cleanly.
+    """
+    import time as _time
+
+    svc, result = _partial_progress_run(_time.time() + 1.0)  # below the 90s reserve
+
+    assert result["split_stats"]["deadline_reached"] is True
+    # Only the first pass ran: 12 rows at batch 4 → 3 batches. No retry round.
+    assert len(svc.primary_calls) == 3
+    # Rows stay unscored and are REPORTED as such, rather than the call raising.
+    assert result["split_stats"]["unrecoverable_rows"] > 0
+
+
+def test_generous_deadline_still_runs_the_retry_rounds():
+    """The guard must bound the rung, not disable it.
+
+    Same stand-in and same round budget as the test above, with a deadline far
+    enough out that every round fits: the retry rounds run, more calls are made
+    than the first pass alone, and ``deadline_reached`` stays False. Without this
+    assertion the guard above would also pass if rung 1 had simply been removed.
+    """
+    import time as _time
+
+    svc, result = _partial_progress_run(_time.time() + 3600.0)
+
+    assert result["split_stats"]["deadline_reached"] is False
+    assert len(svc.primary_calls) > 3  # first pass (3) plus at least one retry round
+    assert result["split_stats"]["rows_recovered_by_retry"] > 0
+
+
+def test_no_deadline_leaves_the_retry_rung_running():
+    """No deadline threaded in (local / non-Lambda) is a no-op for the new guard,
+    exactly as it is for the escalation and bisection guards."""
+    svc, result = _partial_progress_run(None)
+
+    assert result["split_stats"]["deadline_reached"] is False
+    assert len(svc.primary_calls) > 3
+
+
 # --------------------------------------------------------------------------- #
 # Wrapper signature regression (the standalone AssessmentStep path)
 # --------------------------------------------------------------------------- #
