@@ -43,6 +43,7 @@ from idp_common.extraction.page_type_resolver import (
 from idp_common.extraction.sharding import (
     DEFAULT_MAX_PAGES_PER_SHARD,
     DEFAULT_SHARD_TOKEN_BUDGET,
+    _rebalance_to_cap,  # noqa: PLC2701 - see _agentic_images_per_request (#994)
     estimate_tokens,
     plan_shards,
 )
@@ -95,6 +96,18 @@ class ExtractionInputTooLarge(Exception):
     and the document's errors carry an explanation and a remedy instead of the
     bare "Input is too long for requested model". Deterministic — the class name
     is deliberately NOT in any retry list (#787).
+    """
+
+
+class ExtractionImageRejected(Exception):
+    """Bedrock rejected a section's request because of the IMAGES it carried.
+
+    A different failure from :class:`ExtractionInputTooLarge` even though both
+    surface as a ``ValidationException``: the remedy is smaller page images, not
+    fewer tokens or smaller shards. Reducing pages per shard or switching to
+    Advanced mode does not help, and #994 shows what happens when the two are
+    conflated — users tune budgets that cannot fix it. Deterministic, so like
+    ``ExtractionInputTooLarge`` the class name is NOT in any retry list.
     """
 
 
@@ -1545,8 +1558,141 @@ class ExtractionService:
                     )
         return confidence_data
 
+    @staticmethod
+    def _repack_is_reachable(
+        page_texts: list[str], max_shards: int, page_cap: int | None
+    ) -> bool:
+        """Can ``plan_shards``' repack pass fire for ANY token budget? (#994)
+
+        It fires only when the first pass produces more than ``max_shards``
+        ranges. The first pass closes a shard on the page cap or on the budget, so
+        the fewest ranges any budget can yield is ``ceil(n / page_cap)`` — what an
+        unbounded budget gives, since only the page cap then applies. If even that
+        exceeds ``max_shards`` the repack fires whatever the budget is. Otherwise
+        it fires only for a budget small enough to split further, which requires
+        some page to carry a nonzero token estimate.
+
+        The case this exists for: a section whose pages have NO OCR text at all
+        (image-only pages, or pages under ``_CHARS_PER_TOKEN`` characters, which
+        ``estimate_tokens`` floors to 0). Every page then costs 0, so no budget can
+        split anything and the repack is unreachable — yet asking
+        ``_rebalance_to_cap`` anyway returns a degenerate split, because its
+        ``target`` of ``total / max_shards`` is 0 and every shard closes on the
+        first page: nine 1-page ranges and a tail holding the rest. Taking that as
+        the bound clamps a 20-page image-only section that the real planner would
+        have sent as 5-page shards. That is the one place the clamp costs most —
+        with no text, the page images are the model's only signal — so the
+        reachability test is worth the few lines.
+        """
+        if (page_cap or 0) > 0:
+            min_first_pass_ranges = -(-len(page_texts) // page_cap)  # type: ignore[operator]
+        else:
+            min_first_pass_ranges = 1
+        if min_first_pass_ranges > max_shards:
+            return True
+        return any(estimate_tokens(text) > 0 for text in page_texts)
+
+    def _agentic_images_per_request(
+        self, pages_to_attach: int, page_texts: list[str] | None = None
+    ) -> int:
+        """Upper bound on the page images ONE agentic request will carry (#994).
+
+        Needed because Bedrock's 2,000px many-image cap binds on a single
+        request's image count, and on the agentic path a section is not one
+        request. Two things bound it, and only one is a ceiling on page COUNT:
+
+        * ``max_images_per_agent`` is — ``_cap_agent_images`` truncates the
+          attached list to it before every invocation.
+        * ``max_pages_per_shard`` is not, and nor is any arithmetic on it.
+          ``plan_shards`` closes a shard at that many pages, but when that would
+          produce more shards than ``max_concurrent_batches``,
+          ``_rebalance_to_cap`` discards those ranges and repacks the pages into
+          exactly ``max_concurrent_batches`` **token-balanced** groups, ignoring
+          the page cap. Token-balanced, not page-balanced: one dense page can take
+          a whole shard and leave 20 sparse ones in another, so no closed form
+          over page counts bounds it.
+
+        So it is not estimated. ``plan_shards`` has exactly two regimes, and the
+        bound is the worse of them — which needs no token budget at all:
+
+        * **A, the page cap holds** (the first pass produced no more ranges than
+          ``max_concurrent_batches``): the largest shard is
+          ``max_pages_per_shard``, or the whole section when that is ``0``
+          ("page cap off").
+        * **B, the repack fired**: the largest range ``_rebalance_to_cap`` returns.
+          It takes no budget argument — it repacks from page 0 by token weight —
+          so this is computable exactly. Included only when the repack can actually
+          fire for some budget (see ``_repack_is_reachable``); asking for it
+          unconditionally over-clamps a section with no OCR text at all.
+
+        ``_rebalance_to_cap`` is private but imported at module scope deliberately:
+        the soundness argument below rests on it, so a rename should fail at import
+        rather than be swallowed by the fallback here and silently degrade the
+        bound to "the whole section".
+
+        Taking ``max(A, B)`` rather than planning under one budget is deliberate,
+        and an earlier version of this method got it wrong in a way worth
+        recording. It called ``plan_shards`` with a deliberately enormous budget,
+        on the argument that a smaller budget only closes shards *earlier* and so
+        cannot under-estimate. That is false: the budget also decides **whether the
+        repack fires at all**, and the repack discards the page cap. Measured on
+        the shipped default (``max_concurrent_batches: 10``,
+        ``max_pages_per_shard: 5``) with a 50-page section holding one dense page,
+        at Sonnet 4.6's own derived budget of 18,400 tokens: an unbounded budget
+        plans ten 5-page shards, while the real budget plans
+        ``[1, 41, 1, 1, ...]``. Estimating 5 there misses a clamp the request
+        needs. Regime B catches it because it does not depend on the budget.
+
+        ``table_boundary_pages`` is not consulted: it only ever closes a first-pass
+        shard earlier, which can move the plan from regime A into regime B, and B
+        is already covered.
+
+        Without ``page_texts`` (the only other caller shape) the sound answer is
+        the whole section, since a single agent may then receive all of it.
+
+        ⚠️ Known gap: sharding is skipped altogether — whole section to one agent
+        — when the run is a resume (``existing_data_model``) or carries a
+        ``checkpoint_buffer``, even with ``max_concurrent_batches > 1``. The
+        estimate cannot see that from here, so a resumed run of a sharded config
+        can carry more images than this predicts. ``max_images_per_agent`` still
+        bounds the attached count (at its default of 20; ``0`` means unlimited and
+        removes that backstop), and the failure mode is a clear
+        ``ExtractionImageRejected`` rather than a wrong result.
+        """
+        agentic = self.config.extraction.agentic
+        bound = pages_to_attach
+        if agentic.max_concurrent_batches > 1 and page_texts and pages_to_attach > 1:
+            try:
+                n = len(page_texts)
+                max_shards = min(agentic.max_concurrent_batches, n)
+                page_cap = self._max_pages_per_shard()
+                # Regime A: the page cap holds. 0 / None means "page cap off", so
+                # the token budget alone bounds shards and all of them can land in
+                # one.
+                page_cap_bound = page_cap if (page_cap or 0) > 0 else n
+                bound = min(bound, page_cap_bound)
+                if self._repack_is_reachable(page_texts, max_shards, page_cap):
+                    # Regime B: exact, and budget-free by construction — the repack
+                    # ignores the budget and repacks from page 0 by token weight.
+                    repacked = _rebalance_to_cap(page_texts, n, max_shards)
+                    repack_bound = max((e - s) for s, e in repacked) if repacked else n
+                    bound = min(pages_to_attach, max(page_cap_bound, repack_bound))
+            except Exception as e:  # noqa: BLE001 - fall back to the sound answer
+                logger.warning(
+                    "Could not size the many-image cap from the shard plan (%s); "
+                    "assuming one request carries the whole section.",
+                    e,
+                )
+                bound = pages_to_attach
+        if agentic.max_images_per_agent > 0:
+            bound = min(bound, agentic.max_images_per_agent)
+        return max(0, bound)
+
     def _load_document_images(
-        self, document: Document, sorted_page_ids: list[str]
+        self,
+        document: Document,
+        sorted_page_ids: list[str],
+        page_texts: list[str] | None = None,
     ) -> list[Any]:
         """
         Load images from all pages.
@@ -1554,6 +1700,12 @@ class ExtractionService:
         Args:
             document: Document containing pages
             sorted_page_ids: Sorted list of page IDs
+            page_texts: Per-page OCR text in section page order, when the caller
+                has it. Used only to size Bedrock's many-image dimension cap
+                (#994): on the agentic path the pages are sharded by TEXT volume,
+                so how many images one request carries cannot be known without it.
+                Omitted means "assume one request takes the whole section", which
+                is the conservative answer.
 
         Returns:
             List of prepared images
@@ -1561,6 +1713,31 @@ class ExtractionService:
         t0 = time.time()
         target_width = self.config.extraction.image.target_width
         target_height = self.config.extraction.image.target_height
+
+        # Bedrock drops the per-image dimension cap from 8,000px to 2,000px per side
+        # once a request carries MORE than 20 image blocks (#994). Which cap applies
+        # therefore depends on how many pages this section is about to attach, so it
+        # is decided here, once, from the page count rather than per image.
+        #
+        # What matters is the count ONE REQUEST will carry, not the section's page
+        # count, and on the agentic (Strands) path those differ: the section's pages
+        # are sliced into shards and capped again per agent invocation, so a long
+        # section can be sent as several small requests. Counting the section would
+        # clamp pages that no request ever over-fills. ``_agentic_images_per_request``
+        # bounds it from the shard planner's two regimes; it is then DOUBLED, because the
+        # agent re-sends its attached images on every turn and a ``view_image`` tool
+        # result adds a further copy of a page to the same request. Doubling is
+        # pessimistic on purpose — clamping to 2,000px costs far less than a hard
+        # request rejection. See extraction/README.md for the thresholds this
+        # produces per mode.
+        pages_to_attach = sum(1 for pid in sorted_page_ids if pid in document.pages)
+        if self.config.extraction.agentic.enabled:
+            effective_image_count = (
+                self._agentic_images_per_request(pages_to_attach, page_texts) * 2
+            )
+        else:
+            effective_image_count = pages_to_attach
+        max_dimension = image.max_dimension_for_image_count(effective_image_count)
 
         page_images = []
         for page_id in sorted_page_ids:
@@ -1574,7 +1751,10 @@ class ExtractionService:
             # a stored page image over 3.75 MiB fails the whole request (#778).
             # Fit it here — where the reduction can be recorded per page — rather
             # than at the attach choke point, whose fit is then a pass-through.
-            image_content, fit = image.fit_image_to_bedrock_limit(image_content)
+            # ``max_dimension`` additionally applies the many-image pixel cap.
+            image_content, fit = image.fit_image_to_bedrock_limit(
+                image_content, max_dimension=max_dimension
+            )
             if fit is not None:
                 if self._pending_image_fit_metadata is None:
                     self._pending_image_fit_metadata = []
@@ -2060,18 +2240,23 @@ class ExtractionService:
 
         Simple mode sends ONE request per section — that is the difference from
         Advanced mode, which shards. Text is chars/4; an image is priced from its
-        pixels the way Bedrock does (width x height / 750), falling back to the
-        sizing module's reserve figure when the bytes cannot be read. The
-        estimate is not recorded as a processing issue: if the call then
-        succeeds the estimate was wrong, and if it fails the section never
-        reaches the record — the failure itself carries the explanation (see
-        ``_explain_input_overflow``). Returns the estimate.
+        pixel dimensions using the model's own visual-token math (see
+        ``_image_token_estimate``), falling back to the sizing module's reserve
+        figure when the bytes cannot be read. The estimate is not recorded as a
+        processing issue: if the call then succeeds the estimate was wrong, and if
+        it fails the section never reaches the record — the failure itself carries
+        the explanation (see ``_explain_input_overflow``). Returns the estimate.
+
+        The image COUNT and the largest image dimension are recorded alongside the
+        token figures because a request can be rejected for either reason, and the
+        failure message has to be able to tell them apart (#994).
         """
         from idp_common.bedrock.sizing import _TOKENS_PER_IMAGE
 
         text_tokens = estimate_tokens(system_prompt or "")
         images = 0
         image_tokens = 0
+        max_image_dimension = 0
         for block in content or []:
             if not isinstance(block, dict):
                 continue
@@ -2080,8 +2265,11 @@ class ExtractionService:
             if "image" in block:
                 images += 1
                 image_tokens += self._image_token_estimate(
-                    block["image"], _TOKENS_PER_IMAGE
+                    block["image"], _TOKENS_PER_IMAGE, model_id
                 )
+                size = self._image_dimensions(block["image"])
+                if size:
+                    max_image_dimension = max(max_image_dimension, size[0], size[1])
         estimate = text_tokens + image_tokens
         max_input = 0
         try:
@@ -2094,6 +2282,7 @@ class ExtractionService:
             "max_input_tokens": max_input,
             "pages": pages,
             "images": images,
+            "max_image_dimension": max_image_dimension,
         }
         if max_input and estimate > max_input:
             logger.warning(
@@ -2111,9 +2300,8 @@ class ExtractionService:
         return estimate
 
     @staticmethod
-    def _image_token_estimate(image_block: Any, fallback: int) -> int:
-        """Bedrock's image pricing is ~(width x height) / 750 tokens; read the
-        dimensions from the bytes when possible, else use ``fallback``."""
+    def _image_dimensions(image_block: Any) -> tuple[int, int] | None:
+        """``(width, height)`` of a Converse image block, or None if unreadable."""
         try:
             import io
 
@@ -2125,11 +2313,29 @@ class ExtractionService:
                 data = src.get("bytes") if isinstance(src, dict) else None
             if isinstance(data, (bytes, bytearray)) and data:
                 with Image.open(io.BytesIO(bytes(data))) as im:
-                    w, h = im.size
-                return max(1, int(w * h / 750))
+                    return im.size
         except Exception:  # noqa: BLE001 - estimate only
             pass
-        return int(fallback)
+        return None
+
+    @classmethod
+    def _image_token_estimate(
+        cls, image_block: Any, fallback: int, model_id: str | None = None
+    ) -> int:
+        """Tokens one image block costs, from its pixel dimensions.
+
+        Delegates to ``bedrock.model_utils.estimate_image_tokens``, which applies
+        Claude's 28px-patch math and the per-model visual-token CAP. The older
+        uncapped (w*h)/750 figure over-stated a full-page scan by ~2.4x, which is
+        what made a per-image dimension rejection look like a context-window
+        overflow (#994). Falls back to ``fallback`` when the bytes are unreadable.
+        """
+        from idp_common.bedrock.model_utils import estimate_image_tokens
+
+        size = cls._image_dimensions(image_block)
+        if size is None:
+            return int(fallback)
+        return estimate_image_tokens(size[0], size[1], model_id)
 
     async def _run_shard_or_explain_overflow(self, fn: Any, **kwargs: Any) -> Any:
         """Await one shard coroutine; re-raise a Bedrock input overflow as
@@ -2137,11 +2343,20 @@ class ExtractionService:
         Functions shard path fails with the same actionable cause as the in-process
         path. ``fn`` is ``async`` (``extract_one_shard``): the try must wrap the
         await, not the call that merely creates the coroutine."""
-        from idp_common.utils.bedrock_utils import is_input_token_overflow
+        from idp_common.utils.bedrock_utils import (
+            is_image_request_rejection,
+            is_input_token_overflow,
+        )
 
         try:
             return await fn(**kwargs)
         except Exception as e:
+            if is_image_request_rejection(e):
+                msg = self._explain_image_rejection(
+                    e, str(kwargs.get("section_id") or "?")
+                )
+                logger.error(msg)
+                raise ExtractionImageRejected(msg) from e
             if is_input_token_overflow(e):
                 msg = self._explain_input_overflow(
                     e, str(kwargs.get("section_id") or "?"), is_agentic=True
@@ -2168,6 +2383,24 @@ class ExtractionService:
             if est.get("estimated_input_tokens") and est.get("max_input_tokens")
             else (f" ({pages} page(s))" if pages else "")
         )
+        if (
+            est.get("images", 0) > image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD
+            or est.get("max_image_dimension", 0)
+            > image.BEDROCK_MANY_IMAGE_MAX_DIMENSION
+        ):
+            # This request's SHAPE can also fail on the images themselves, and
+            # Bedrock reports a payload that is simply too large with the same
+            # "Input is too long" wording it uses for a context overflow (#994).
+            # Say so, so the reader does not spend the next hour lowering a page
+            # budget that is not the binding limit.
+            size += (
+                f" — note this request carried {est.get('images', 0)} image(s), "
+                f"largest {est.get('max_image_dimension', 0)}px per side; Bedrock "
+                f"also caps images at {image.BEDROCK_MANY_IMAGE_MAX_DIMENSION}px "
+                f"per side once a request carries more than "
+                f"{image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD} images, and caps the "
+                f"total request payload independently of the token count."
+            )
         if is_agentic and "remedies:" in str(exc).lower():
             advice = ""  # agentic_idp already translated it with its own remedies
         elif is_agentic:
@@ -2183,6 +2416,41 @@ class ExtractionService:
                 "which shards a section across requests, or split the document."
             )
         return f"Error processing section {section_id}: {exc}{size}{advice}"
+
+    def _explain_image_rejection(self, exc: BaseException, section_id: str) -> str:
+        """The message for a Bedrock IMAGE rejection on a section (#994).
+
+        Names the request's image count and largest dimension, then the remedy
+        that actually applies — smaller ``extraction.image.target_width`` /
+        ``target_height`` — rather than the token/shard advice that belongs to a
+        context-window overflow.
+        """
+        est = getattr(self, "_last_simple_input_estimate", None) or {}
+        largest = est.get("max_image_dimension") or 0
+        if est.get("images"):
+            # Simple mode: the pre-flight measured the request that actually went
+            # out, so the count and the largest dimension are that request's.
+            shape = f" (request carried {est['images']} image(s)"
+            if largest:
+                shape += f", largest {largest}px per side"
+            shape += ")"
+        else:
+            # Advanced/shard mode has no pre-flight estimate, and a shard carries
+            # only its own page range — so the only number available here is the
+            # SECTION's page count. Label it as such rather than claiming it is
+            # what the failing request held.
+            shape = f" (section has {len(self._page_images or [])} page image(s))"
+        return (
+            f"Error processing section {section_id}: {exc}{shape}. Bedrock rejected "
+            "the IMAGES in this request, not its token count: images are capped at "
+            f"{image.BEDROCK_IMAGE_MAX_DIMENSION}px per side, dropping to "
+            f"{image.BEDROCK_MANY_IMAGE_MAX_DIMENSION}px once a request carries more "
+            f"than {image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD} images, and each image "
+            "must be under 5 MB base64-encoded. Lower "
+            "extraction.image.target_width / target_height so pages are rendered "
+            "smaller; reducing pages per shard or switching extraction mode does "
+            "not address this."
+        )
 
     def _analyze_ocr_for_tables(self, ocr_text: str) -> dict[str, Any]:
         """
@@ -6702,8 +6970,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._save_results(document, section, result, section_info, section_id, t0)
 
         except Exception as e:
-            from idp_common.utils.bedrock_utils import is_input_token_overflow
+            from idp_common.utils.bedrock_utils import (
+                is_image_request_rejection,
+                is_input_token_overflow,
+            )
 
+            if is_image_request_rejection(e):
+                # Checked FIRST so the image case can never be absorbed by the
+                # overflow branch as Bedrock's wording evolves: the two families
+                # share vocabulary ("exceeds", "too large"), and overflow advice
+                # — fewer pages per shard, switch extraction mode — cannot fix an
+                # image that is too many pixels per side (#994). Measured against
+                # today's wording the overflow matcher does NOT claim
+                # "image exceed max allowed size for many-image requests", so this
+                # branch is what gives that error an explanation at all rather
+                # than a correction of a misrouting.
+                error_msg = self._explain_image_rejection(e, section_id)
+                logger.error(error_msg)
+                document.errors.append(error_msg)
+                raise ExtractionImageRejected(error_msg) from e
             if is_input_token_overflow(e):
                 # The failure itself is the signal: the section never reaches the
                 # record, so the explanation travels in the exception (Step
@@ -6763,13 +7048,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             page_id_to_text,
             section_info.page_type_presence,
         )
-        page_images = self._load_document_images(document, section_info.sorted_page_ids)
         # Stash the per-page OCR text (in section page order) so the agentic
         # path can shard the input by page range when concurrent batches are
         # configured. Pages missing from page_id_to_text contribute "".
+        # Built BEFORE the images are loaded because the many-image dimension cap
+        # (#994) depends on how the pages will be sharded, and that is decided by
+        # the page TEXT — see _agentic_images_per_request.
         self._page_texts = [
             page_id_to_text.get(pid, "") for pid in section_info.sorted_page_ids
         ]
+        page_images = self._load_document_images(
+            document, section_info.sorted_page_ids, page_texts=self._page_texts
+        )
 
         # Initialize extraction context
         class_schema, attribute_descriptions = self._initialize_extraction_context(

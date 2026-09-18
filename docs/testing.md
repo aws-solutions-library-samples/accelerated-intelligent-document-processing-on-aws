@@ -246,7 +246,7 @@ click drawn on the frame that was on screen when it happened. Output — `review
 `review.srt`, `segments.json`, `review.md` — lands under gitignored
 `scratch/ux-recordings/`. **A recording of a live stack shows real documents and
 nothing is redacted: never commit one or attach it to a pull request.** Details:
-[`scripts/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-recorder-ux_recorderpy).
+[`scripts/README.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-and-demo-recorder-ux_recorderpy).
 
 ## 7. Benchmarks
 

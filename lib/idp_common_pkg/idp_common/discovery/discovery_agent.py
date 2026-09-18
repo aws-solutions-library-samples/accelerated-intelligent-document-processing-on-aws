@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel, Field
 
+from idp_common import image
 from idp_common.bedrock.client import BedrockClient
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
 
@@ -169,8 +170,12 @@ class DocumentVisualTool:
             ],
         }
 
-    # Max pixel dimension for Claude Converse API images
-    MAX_IMAGE_DIMENSION = 2048
+    # Max pixel dimension for Claude Converse API images. 2,000 rather than the
+    # old 2,048: 2,000 is the documented cap that applies once a request carries
+    # more than 20 images, and discovery attaches every page of a sample document,
+    # so it routinely crosses that threshold. 2,048 was 48px over and would be
+    # rejected outright (#994). Sourced from idp_common.image so the two agree.
+    MAX_IMAGE_DIMENSION = image.BEDROCK_MANY_IMAGE_MAX_DIMENSION
 
     def _compress_image(
         self,

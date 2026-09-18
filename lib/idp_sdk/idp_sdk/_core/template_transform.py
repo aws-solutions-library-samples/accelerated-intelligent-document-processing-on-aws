@@ -130,9 +130,22 @@ class HeadlessTemplateTransformer:
             # the headless cfn-lint test. Naming the resource explicitly keeps the
             # removal correct if the guard is ever changed or dropped.
             #
-            # The topic and all 12 alarms stay; a headless deployment has no
-            # operator address to subscribe, so it subscribes its own recipients
-            # to the SNSAlertsTopicARN output.
+            # The topic and EVERY alarm stay -- no count is stated here on
+            # purpose, because the earlier version of this comment said "all 12
+            # alarms" and template.yaml has since grown more; a number restated
+            # in a comment nothing derives is a number that goes stale silently.
+            #
+            # So a headless deployment ships alarms wired to a topic with no
+            # subscriber. That is a DECIDED accepted gap, not an oversight: an
+            # optional AlertsEmail parameter was considered and rejected (issue
+            # #984) because headless operators are automating and mostly attach a
+            # pager, chat webhook or existing operational topic through their own
+            # IaC. The obligation that replaces it is documentation -- subscribing
+            # to the SNSAlertsTopicARN output is called out as a REQUIRED
+            # post-deploy step in docs/headless-deployment.md,
+            # docs/monitoring.md and docs/govcloud-operations.md, and
+            # test_headless_alert_delivery_is_documented asserts all three still
+            # say so, because "we documented it" is the whole mitigation here.
             "AlertsTopicAdminEmailSubscription",
         }
 

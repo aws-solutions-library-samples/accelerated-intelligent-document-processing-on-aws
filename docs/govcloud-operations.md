@@ -20,11 +20,26 @@ Key metrics to monitor:
 
 ### CloudWatch Alarms
 
-Out of the box, the stack creates alarms for two step-function conditions:
-- Step Functions execution failures
-- Step Function slow executions
+The stack creates alarms across the queue, the workflow, the concurrency counter
+and the dead-letter queues — not just the two Step Functions conditions this page
+used to list. The current set, with each alarm's threshold and what it means, is in
+[Monitoring — Alarms the Stack Creates](./monitoring.md#alarms-the-stack-creates);
+it is documented in one place because the count changes with the template and a
+second copy of it goes stale silently.
 
-Alarms publish to an SNS topic — subscribe your team's email or pager to receive notifications.
+Every alarm publishes to one SNS topic, `AlertsTopic`, emitted as the
+`SNSAlertsTopicARN` stack output.
+
+> ⚠️ **Whether anything is subscribed to that topic depends on which variant you
+> deployed.** A `--govcloud` deployment keeps the `AdminEmail` parameter and
+> subscribes it, so alarms reach that address once it confirms. A `--headless`
+> deployment has no `AdminEmail` parameter — the transform removes it with the
+> Cognito resources — so **it creates no subscription at all and you must add one
+> yourself before the alarms are worth anything**. An unsubscribed topic accepts
+> every publish successfully, so nothing in the stack, the console or the alarm
+> history distinguishes "nobody is listening" from "nothing has gone wrong". See
+> [Who receives the alerts](./monitoring.md#who-receives-the-alerts) for the
+> command and for why an email subscription alone is a floor rather than a design.
 
 ### Log Groups
 
@@ -91,7 +106,11 @@ If documents are queuing up and not processing:
 
 ## Operational Best Practices
 
-- **Set up SNS subscriptions** for the alarm topic before processing production workloads
+- **Set up SNS subscriptions** for the alarm topic before processing production
+  workloads. On `--headless` this is not optional housekeeping: the stack creates
+  no subscription, so until you add one every alarm fires into a topic with no
+  recipients. Verify with `aws sns list-subscriptions-by-topic` rather than
+  assuming — see [Who receives the alerts](./monitoring.md#who-receives-the-alerts)
 - **Enable S3 access logging** on the input and output buckets for audit trails
 - **Review CloudWatch dashboards on a regular cadence** to catch trends before they become incidents
 - **Test failover** by processing sample documents after any infrastructure changes

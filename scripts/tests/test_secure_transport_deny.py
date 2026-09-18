@@ -1456,3 +1456,342 @@ def test_an_unparseable_template_fails_rather_than_skipping(tmp_path: Path) -> N
     broken.write_text("Resources:\n  Q: [unclosed\n")
     with pytest.raises(yaml.YAMLError):
         _policies([broken])
+
+
+# ===========================================================================
+# Closing the class: "every resource that can carry a transport control does"
+# ===========================================================================
+# Everything above enumerates SQS queues and S3 buckets. That closes the class
+# "every queue and bucket refuses non-TLS calls" completely, and closes nothing
+# else: the enumeration starts from two resource types rather than from the
+# question, so a third policy-bearing type inherits no coverage at all and nothing
+# says so. Measured on this tree, that is not hypothetical — nine policy-capable
+# resource types are present and two are covered (GitHub #987).
+#
+# The gate cannot decide for itself whether a plaintext path exists for a given
+# service; that is a judgement, and inventing one here would be worse than saying
+# nothing. What it can do is make the judgement explicit for every type, and then
+# enforce the two conditions under which a recorded judgement stops being true:
+#
+#   * a type exempted because it declares NO resource policy suddenly declaring
+#     one -- which is exactly the hole #987 names, since the TLS deny would then
+#     have to be remembered by hand; and
+#   * a type exempted because its policies only ever face this account's own
+#     principals granting a wildcard or foreign-account principal.
+#
+# Both are checkable offline, so both are checked rather than trusted.
+
+#: Types whose resource policy is a SEPARATE CloudFormation resource.
+SEPARATE_POLICY_TYPE = {
+    "AWS::SQS::Queue": "AWS::SQS::QueuePolicy",
+    "AWS::S3::Bucket": "AWS::S3::BucketPolicy",
+    "AWS::SNS::Topic": "AWS::SNS::TopicPolicy",
+}
+
+#: Types whose resource policy is an INLINE property of the resource itself.
+INLINE_POLICY_PROPERTY = {
+    "AWS::KMS::Key": "KeyPolicy",
+    "AWS::ECR::Repository": "RepositoryPolicyText",
+    "AWS::SecretsManager::Secret": "ResourcePolicy",
+    "AWS::ApiGateway::RestApi": "Policy",
+}
+
+#: Types with no per-resource policy mechanism at all — the policy, where one
+#: exists, is attached to the catalog or the collection rather than to this
+#: resource, so there is no document on it to carry a deny.
+NO_PER_RESOURCE_POLICY = {
+    "AWS::Glue::Database",
+    "AWS::OpenSearchServerless::Collection",
+}
+
+#: Every policy-capable type this gate knows about. ``POLICY_FOR_RESOURCE`` is the
+#: enforced subset; everything else must appear in ``TRANSPORT_CONTROL_EXEMPT``.
+TRANSPORT_CONTROL_CANDIDATES = (
+    set(SEPARATE_POLICY_TYPE) | set(INLINE_POLICY_PROPERTY) | NO_PER_RESOURCE_POLICY
+)
+
+#: The recorded judgement for each candidate type the gate does NOT enforce. Every
+#: reason states a fact about THIS tree, because a reason that restates AWS
+#: behaviour from memory cannot be checked and would rot silently.
+TRANSPORT_CONTROL_EXEMPT = {
+    "AWS::SNS::Topic": (
+        "Three topics, and this tree declares no AWS::SNS::TopicPolicy for any of "
+        "them. A topic with no policy permits only the owning account, so adding "
+        "one is not free: an explicit policy REPLACES that default, and getting it "
+        "wrong breaks publishing at runtime rather than at deploy time. That needs "
+        "a live check against a deployed stack, which is why the deny is not added "
+        "blind here (#987). The enforceable half is below: "
+        "test_exempt_types_declaring_no_resource_policy_still_declare_none fails "
+        "the moment a TopicPolicy appears, so whoever adds one — the alerts work in "
+        "#984 is the likely occasion — has to decide about the deny then, rather "
+        "than having no gate ask."
+    ),
+    "AWS::SecretsManager::Secret": (
+        "One secret, no ResourcePolicy declared. Same shape as SNS above, and the "
+        "same guard covers it."
+    ),
+    "AWS::Glue::Database": (
+        "No per-resource policy mechanism: a Glue resource policy is attached to "
+        "the Data Catalog, not to a database, so there is no document on this "
+        "resource that could carry a deny."
+    ),
+    "AWS::OpenSearchServerless::Collection": (
+        "No per-resource policy mechanism. Access is governed by the separate "
+        "AWS::OpenSearchServerless::AccessPolicy and SecurityPolicy resources, "
+        "which are not IAM resource policies and take no Condition block of this "
+        "shape."
+    ),
+    "AWS::KMS::Key": (
+        "Six keys, all six declaring an inline KeyPolicy — so unlike SNS there ARE "
+        "documents here. Every statement in all six grants either this account's "
+        "own root or an AWS service principal; none grants a wildcard or a foreign "
+        "account, so the only callers are in-account principals and AWS services. "
+        "test_exempt_types_with_policies_grant_no_outside_principal fails if that "
+        "stops being true, at which point the deny becomes load-bearing and this "
+        "exemption has to be revisited."
+    ),
+    "AWS::ECR::Repository": (
+        "Three repositories, one declaring RepositoryPolicyText, whose single "
+        "statement grants the Lambda service principal. Same guard as KMS above."
+    ),
+    "AWS::ApiGateway::RestApi": (
+        "Two REST APIs. One declares a Policy, and only on its PRIVATE branch: it "
+        "grants execute-api:Invoke to any principal, BOUNDED by a StringEquals on "
+        "aws:SourceVpce naming the supplied interface endpoint, which is the "
+        "documented idiom for a private API. So the grant is confined to callers "
+        "arriving through that one endpoint inside the VPC rather than being open. "
+        "The guard below treats an unbounded wildcard as the finding rather than a "
+        "wildcard as such, so removing that Condition fails this suite. Note this "
+        "is the resource policy, not the Cognito authorizer — API authorization is "
+        "covered by make api-test-static, not here."
+    ),
+}
+
+#: An AWS service principal: dot-separated labels, allowing ``${...}`` segments
+#: because this tree writes them partition- and region-agnostically
+#: (``logs.${AWS::Region}.${AWS::URLSuffix}``). Deliberately does not match an ARN,
+#: which is how a foreign-account grant would be written.
+_SERVICE_PRINCIPAL = re.compile(r"^(?:[a-z0-9-]+|\$\{[^}]+\})(?:\.(?:[a-z0-9-]+|\$\{[^}]+\}))+$")
+
+#: Properties holding a policy document that is a TRUST policy rather than a
+#: resource policy. Both carry a ``Principal``, which is otherwise the thing that
+#: distinguishes a resource policy from an identity policy, so they have to be
+#: named to be excluded.
+TRUST_POLICY_PROPERTIES = {"AssumeRolePolicyDocument"}
+
+#: Floors for the census, so a discovery break is loud rather than silently
+#: turning every assertion below into a pass. Re-derive with
+#: ``_resource_policy_documents(_repo_templates())``.
+MINIMUM_POLICY_CAPABLE_PRESENT = 8
+
+
+def _policy_documents(node: Any, _property: str | None = None) -> Iterator[tuple[str, Any]]:
+    """Yield ``(property name, document)`` for every nested policy document.
+
+    A policy document is recognised structurally, by carrying a ``Statement``, so a
+    document under a property this file has never heard of is still found. That is
+    the whole point: a hardcoded property list is what left SNS outside the gate.
+    """
+    if isinstance(node, dict):
+        if "Statement" in node and _property is not None:
+            yield _property, node
+        for key, value in node.items():
+            yield from _policy_documents(value, str(key))
+    elif isinstance(node, list):
+        for item in node:
+            yield from _policy_documents(item, _property)
+
+
+def _resource_policy_documents(
+    paths: Iterable[Path],
+) -> dict[str, list[tuple[str, str, Any]]]:
+    """``{resource type: [(template, logical id, document)]}`` for RESOURCE policies.
+
+    The discriminator is a ``Principal`` on at least one statement: an identity
+    policy attached to a role or user never carries one, a resource policy always
+    does. Trust policies also carry one and are excluded by property name.
+    """
+    found: dict[str, list[tuple[str, str, Any]]] = {}
+    for path in paths:
+        document = _load(path)
+        resources = document.get("Resources")
+        if not isinstance(resources, dict):
+            continue
+        try:
+            template = str(path.relative_to(REPO_ROOT))
+        except ValueError:
+            template = str(path)
+        for name, body in resources.items():
+            if not isinstance(body, dict) or not isinstance(body.get("Type"), str):
+                continue
+            for prop, policy in _policy_documents(body.get("Properties")):
+                if prop in TRUST_POLICY_PROPERTIES:
+                    continue
+                statements = _as_list(policy.get("Statement"))
+                if not any(
+                    isinstance(s, dict) and s.get("Principal") is not None
+                    for s in statements
+                ):
+                    continue
+                found.setdefault(body["Type"], []).append((template, str(name), policy))
+    return found
+
+
+@pytest.mark.unit
+def test_every_resource_policy_bearing_type_is_classified() -> None:
+    """No resource type may carry a resource policy without a recorded judgement.
+
+    This is the assertion that makes the gate close a class rather than two
+    resource types. It does not start from a list of types someone remembered to
+    write down — it finds every policy document in every discovered template that
+    carries a ``Principal``, which is what makes a policy a *resource* policy, and
+    requires the type it sits on to be either enforced or exempted with a reason.
+
+    A fourth SNS topic therefore inherits the recorded exemption, and a resource
+    type nobody has considered — an EFS file system, an Events event bus, a
+    CodeArtifact repository — fails this test on the day it lands, when the person
+    adding it is the cheapest person to ask.
+    """
+    by_type = _resource_policy_documents(_repo_templates())
+
+    unclassified = sorted(
+        set(by_type)
+        - set(POLICY_TYPES)
+        - set(POLICY_FOR_RESOURCE)
+        - set(TRANSPORT_CONTROL_EXEMPT)
+    )
+    assert not unclassified, (
+        f"resource type(s) carry a resource policy with no recorded transport-control "
+        f"judgement: {unclassified}. Locations: "
+        f"{ {t: [(f, n) for f, n, _ in by_type[t]] for t in unclassified} }. "
+        f"Either require the aws:SecureTransport deny for that type (add it to "
+        f"POLICY_FOR_RESOURCE and give it a TARGET_PROPERTY), or record why it does "
+        f"not apply in TRANSPORT_CONTROL_EXEMPT with a reason that states a fact "
+        f"about this tree. Do not leave it unlisted: an unlisted type is the shape "
+        f"SNS was in when #987 was filed."
+    )
+
+
+@pytest.mark.unit
+def test_the_policy_capable_census_is_not_vacuous() -> None:
+    """Guard the guard: if discovery breaks, every assertion above passes."""
+    present = {
+        resource_type
+        for resource_type in TRANSPORT_CONTROL_CANDIDATES
+        if _resources_of_type(_repo_templates(), resource_type)
+    }
+    assert len(present) >= MINIMUM_POLICY_CAPABLE_PRESENT, (
+        f"only {len(present)} of the {len(TRANSPORT_CONTROL_CANDIDATES)} "
+        f"policy-capable resource types are found in the tree ({sorted(present)}), "
+        f"below the floor of {MINIMUM_POLICY_CAPABLE_PRESENT}. Template discovery "
+        f"has probably broken, which would make the classification test pass "
+        f"vacuously."
+    )
+    assert set(TRANSPORT_CONTROL_EXEMPT).isdisjoint(POLICY_FOR_RESOURCE), (
+        "a resource type is both enforced and exempted, which is a contradiction: "
+        f"{sorted(set(TRANSPORT_CONTROL_EXEMPT) & set(POLICY_FOR_RESOURCE))}"
+    )
+    for resource_type, reason in TRANSPORT_CONTROL_EXEMPT.items():
+        assert len(reason) > 60, (
+            f"the exemption for {resource_type} has no substantive reason. An "
+            f"exemption without one is indistinguishable from an oversight."
+        )
+
+
+@pytest.mark.unit
+def test_exempt_types_declaring_no_resource_policy_still_declare_none() -> None:
+    """The hole #987 names: a policy appearing where the exemption assumed none.
+
+    ``AWS::SNS::Topic`` and ``AWS::SecretsManager::Secret`` are exempt *because*
+    this tree declares no resource policy for them, which is also why their attack
+    surface is small — only the owning account can act on a resource with no policy.
+    The moment a policy is added to grant a service or cross-account principal, the
+    absent TLS deny stops being a boundary of the gate and becomes a gap in it, and
+    with nothing checking, it would have to be remembered by hand.
+    """
+    paths = _repo_templates()
+    offenders = []
+
+    for resource_type in ("AWS::SNS::Topic", "AWS::SecretsManager::Secret"):
+        separate = SEPARATE_POLICY_TYPE.get(resource_type)
+        if separate:
+            for template, name in _resources_of_type(paths, separate):
+                offenders.append(f"{template}: {name} ({separate})")
+        inline = INLINE_POLICY_PROPERTY.get(resource_type)
+        if inline:
+            for path in paths:
+                for name, body in (_load(path).get("Resources") or {}).items():
+                    if not isinstance(body, dict) or body.get("Type") != resource_type:
+                        continue
+                    if inline in (body.get("Properties") or {}):
+                        offenders.append(f"{path.name}: {name} (inline {inline})")
+
+    assert not offenders, (
+        "a resource policy now exists on a type exempted in "
+        "TRANSPORT_CONTROL_EXEMPT precisely because it had none:\n  "
+        + "\n  ".join(offenders)
+        + "\nDecide about the aws:SecureTransport deny now. If the policy should "
+        "carry it, add the deny and move the type into POLICY_FOR_RESOURCE with a "
+        "TARGET_PROPERTY so every future one is checked. If it should not, rewrite "
+        "the exemption reason — the current one says this tree declares no such "
+        "policy, and that is no longer true."
+    )
+
+
+@pytest.mark.unit
+def test_exempt_types_with_policies_grant_no_outside_principal() -> None:
+    """The other condition an exemption rests on: who the policy faces.
+
+    ``AWS::KMS::Key``, ``AWS::ECR::Repository`` and ``AWS::ApiGateway::RestApi`` DO
+    declare policy documents, and are exempt on the narrower ground that every
+    statement faces this account's own root or an AWS service principal. A wildcard
+    or foreign-account principal changes that: the policy would then be the boundary
+    for a caller outside the account, and a transport condition on it would be
+    load-bearing rather than belt-and-braces.
+    """
+    by_type = _resource_policy_documents(_repo_templates())
+    findings = []
+
+    for resource_type in (
+        "AWS::KMS::Key",
+        "AWS::ECR::Repository",
+        "AWS::ApiGateway::RestApi",
+    ):
+        for template, name, policy in by_type.get(resource_type, []):
+            for statement in _as_list(policy.get("Statement")):
+                if not isinstance(statement, dict):
+                    continue
+                principal = statement.get("Principal")
+                if principal is None:
+                    continue
+                if _principal_is_everyone(principal):
+                    # A wildcard principal BOUNDED by a Condition is not an open
+                    # grant, and refusing it outright would be wrong: it is the
+                    # documented idiom for a PRIVATE REST API, where the policy
+                    # grants any principal and the Condition confines the request
+                    # to one interface endpoint. An UNBOUNDED wildcard is the
+                    # finding, so the Condition is what is checked.
+                    if not statement.get("Condition"):
+                        findings.append(
+                            f"{template}: {name} ({resource_type}) grants a wildcard "
+                            f"Principal with no Condition bounding it"
+                        )
+                    continue
+                for value in _strings(principal):
+                    if "${AWS::AccountId}" in value:
+                        continue  # this account's own root, via Fn::Sub
+                    if _SERVICE_PRINCIPAL.match(value):
+                        continue  # an AWS service principal
+                    findings.append(
+                        f"{template}: {name} ({resource_type}) grants principal "
+                        f"{value!r}, which is neither this account's root nor an AWS "
+                        f"service principal"
+                    )
+
+    assert not findings, (
+        "an exemption in TRANSPORT_CONTROL_EXEMPT rests on these policies facing "
+        "only in-account and AWS service principals, and that is no longer true:\n  "
+        + "\n  ".join(findings)
+        + "\nAdd the aws:SecureTransport deny to the policy and move the type into "
+        "POLICY_FOR_RESOURCE, or narrow the grant back."
+    )
