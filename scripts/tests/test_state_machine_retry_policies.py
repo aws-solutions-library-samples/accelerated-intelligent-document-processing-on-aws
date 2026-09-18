@@ -28,6 +28,14 @@ the timeout codes are lifted out by collapsing the *throttle* ladder instead, an
 separate retriers so neither budget can be changed by accident. Throttles and service
 faults DO succeed on retry and must keep their ladders.
 
+⚠️ ``test_transient_ladder_is_not_weakened`` therefore establishes a **new repo-wide
+requirement**, and says so rather than smuggling it in: every Lambda task state in
+``workflow.asl.json`` must retry a throttling / service error at least 3 times, so a
+state added later with no ``Retry`` block fails. All 24 current states already comply.
+The reasoning for keeping it repo-wide instead of narrowing it to the states #917
+touched is in that test's own docstring, and the requirement is written up for authors
+under "Step Functions Retry Configuration" in ``docs/configuration.md``.
+
 **#918 — a Catch that discards the envelope.** ``RecordEvaluationFailure`` caught with
 ``ResultPath: null`` and routed to ``PostprocessingHook``, whose ``Parameters`` read
 ``$.document``. ``ResultPath: null`` means "output is the input unchanged", and the input
@@ -130,15 +138,34 @@ LAMBDA_TASKS = _task_names(_DEFINITION)
 
 
 def test_enumeration_is_not_vacuous(definition):
-    """A parsing bug must not turn the gates below into no-ops."""
+    """A parsing bug must not turn the gates below into no-ops.
+
+    The floor is 22 against 24 actually found today (52 states in the definition:
+    24 Task, 16 Pass, 7 Choice, 3 Map, 2 Fail, no Parallel). Two states of
+    headroom, deliberately: retiring a genuinely obsolete task should not require
+    editing this number, and a floor pinned exactly at the current count turns
+    every legitimate deletion into a spurious failure. It is still far above what
+    the failure this guards would leave — losing a nesting level drops the count
+    to 16, losing only ``ProcessSections`` drops it to 17 — so 22 catches every
+    way the walk can silently stop descending.
+
+    The named states pin the three depths independently, because a count alone
+    cannot: ``ExtractionShardMap/ShardExtractionStep`` is the only task two Map
+    levels deep, so a walk that recurses exactly once would still find 23 of 24
+    and clear the floor while quietly exempting it.
+    """
     tasks = _lambda_tasks(definition)
-    assert len(tasks) >= 12, f"only found {len(tasks)} Lambda tasks: {sorted(tasks)}"
+    assert len(tasks) >= 22, f"only found {len(tasks)} Lambda tasks: {sorted(tasks)}"
     assert "EvaluationStep" in tasks, (
         "EvaluationStep is the reference implementation of the single-attempt "
         "timeout policy; not finding it means the walk is broken"
     )
     assert "ProcessSections/ExtractionPlanStep" in tasks, (
-        "tasks nested in a Map scope are not being enumerated"
+        "tasks nested one Map scope deep are not being enumerated"
+    )
+    assert "ProcessSections/ExtractionShardMap/ShardExtractionStep" in tasks, (
+        "tasks nested TWO Map scopes deep are not being enumerated. This is the "
+        "only such state, so nothing else in this file would notice its absence"
     )
 
 
@@ -197,6 +224,36 @@ def test_transient_ladder_is_not_weakened(definition, task):
     expensive" and takes the throttle ladders down with the timeout ones. A throttled
     Bedrock or Textract call DOES succeed on retry, and shortening these is how a
     healthy stack starts dropping documents under load.
+
+    **This imposes a repo-wide requirement, stated here because it is new.** The
+    first assertion below is not only "do not shorten an existing ladder" — it
+    fails a Lambda task state that lists *no* transient retrier at all, so from
+    this PR onward **every** Lambda task state in ``workflow.asl.json`` must retry
+    at least one of ``ThrottlingException``, ``Lambda.TooManyRequestsException``,
+    ``Lambda.ServiceException`` or ``ServiceUnavailableException``, at least 3
+    times. All 24 states satisfy it today; a 25th added tomorrow with no ``Retry``
+    block fails this test.
+
+    That is deliberate rather than incidental, and it was kept repo-wide rather
+    than softened to the states #917 touched. Softening it to a name list is the
+    exact defect this file exists to prevent: #917 shipped as a list of states,
+    which is why eleven of the twelve then-existing tasks kept the wrong ladder
+    for a release. A new Lambda task with no transient retrier is also a real
+    defect in its own right — one Bedrock throttle and the document is lost — so
+    there is no state for which the requirement is wrong.
+
+    The requirement is documented for authors in ``docs/configuration.md``, under
+    "Step Functions Retry Configuration", so it is discoverable from the docs and
+    not only from a test failure. If a future state genuinely cannot retry (an
+    idempotency hazard, say), the honest change is to add it to a named,
+    commented exemption set here — not to delete the assertion.
+
+    Non-Lambda states are out of scope by construction: this test is parametrized
+    over ``LAMBDA_TASKS``, which only holds ``Type: Task`` states whose
+    ``Resource`` is a Lambda invoke. ``Fail``, ``Choice``, ``Wait``, ``Succeed``,
+    ``Pass`` and ``Map`` states can never be reported by it, so the two ``Fail``
+    states in the definition — and any added later, for instance by a pipeline
+    hook's ``onError: fail`` policy — are unaffected.
     """
     state = _lambda_tasks(definition)[task]
     ladders = [
@@ -204,7 +261,14 @@ def test_transient_ladder_is_not_weakened(definition, task):
         for r in state.get("Retry", [])
         if frozenset(r["ErrorEquals"]) & TRANSIENT_ERRORS
     ]
-    assert ladders, f"{task} does not retry any transient service error"
+    assert ladders, (
+        f"{task} does not retry any transient service error. Every Lambda task "
+        "state in this definition must carry a transient retrier naming at least "
+        f"one of {sorted(TRANSIENT_ERRORS)} with MaxAttempts >= 3 — a single "
+        "Bedrock or Textract throttle would otherwise lose the document. This is "
+        "a repo-wide requirement; see this test's docstring and the "
+        '"Step Functions Retry Configuration" section of docs/configuration.md.'
+    )
     for retrier in ladders:
         assert retrier.get("MaxAttempts", 3) >= 3, (
             f"{task} retries {sorted(frozenset(retrier['ErrorEquals']) & TRANSIENT_ERRORS)} "

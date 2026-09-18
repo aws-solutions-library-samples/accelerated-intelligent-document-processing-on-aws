@@ -570,6 +570,34 @@ single-attempt timeout retrier, one generous transient retrier, and no
 Lambda task states out of `workflow.asl.json` and asserts both halves, so a state
 added later is covered without editing the test.
 
+#### Adding a Lambda task state to the workflow
+
+Because that test enumerates the definition rather than naming states, a new Lambda
+task state inherits three requirements the moment it is added. All 24 existing states
+comply; a new one that does not will fail `make test-packages-cicd` in both CIs,
+naming the state:
+
+1. **It must carry a transient retrier** — at least one of `ThrottlingException`,
+   `Lambda.TooManyRequestsException`, `Lambda.ServiceException` or
+   `ServiceUnavailableException`, with `MaxAttempts` of 3 or more. A state with no
+   `Retry` block at all fails: one Bedrock or Textract throttle would otherwise lose
+   the document. This is a repo-wide rule rather than a property of the states
+   [#917](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/917)
+   happened to touch, deliberately — #917 was originally fixed as a list of state
+   names, which is exactly why eleven of the twelve task states then in the file kept
+   the wrong ladder for a release.
+2. **Timeout codes, if listed, go in their own retrier with `MaxAttempts: 1`.**
+   Mixing them into the transient retrier fails a separate assertion, because the two
+   budgets are different numbers and sharing one retrier means changing either changes
+   both.
+3. **No wildcard retrier.** `States.ALL` and `States.TaskFailed` in a `Retry` block put
+   timeouts, unparseable documents and bad schemas on whatever ladder they carry, which
+   would bypass both rules above without naming a timeout code.
+
+If a future state genuinely must not retry — an idempotency hazard, for instance — add
+it to a named, commented exemption set in that test file rather than deleting the
+assertion.
+
 ### Concurrency Control
 
 - **Workflow Limits**: Maximum concurrent Step Function executions, controlled by `MaxConcurrentWorkflows` parameter
