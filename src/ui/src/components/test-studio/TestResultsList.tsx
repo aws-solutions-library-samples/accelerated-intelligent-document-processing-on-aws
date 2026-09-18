@@ -475,7 +475,17 @@ const TestResultsList = ({
         />
       )}
       <TableHeader
-        title={`Test Results (${testRuns.length})`}
+        // ``Test Results (K of N)`` when any row is selected — matches
+        // Cloudscape's counter convention and makes the "why is this row
+        // already checked?" state legible after tab switches. The parent
+        // ``TestStudioLayout`` holds ``selectedTestItems`` in React state,
+        // so selections persist across the Sets / Executions / Results /
+        // Comparison tabs of Test Studio until the user clears them or
+        // the whole Test Studio unmounts. The "Clear selection" button
+        // below is the easy escape.
+        title={
+          selectedItems.length > 0 ? `Test Results (${selectedItems.length} of ${testRuns.length})` : `Test Results (${testRuns.length})`
+        }
         actionButtons={
           <SpaceBetween direction="horizontal" size="xs">
             <ButtonDropdown loading={loading} onItemClick={handleTimePeriodChange} items={TIME_PERIOD_OPTIONS}>
@@ -498,6 +508,18 @@ const TestResultsList = ({
               disabled={selectedItems.length === 0}
               loading={deleteLoading}
             />
+            {selectedItems.length > 0 && (
+              // Selections live in the parent ``TestStudioLayout``'s React
+              // state, so they survive tab changes within Test Studio (a
+              // deliberate UX choice — the user often selects on Executions
+              // then clicks through to Comparison). Give the user an easy
+              // escape hatch when the persisted selection is no longer
+              // wanted; without this the only ways to clear were the
+              // per-row checkboxes or reloading the page.
+              <Button variant="normal" onClick={() => setSelectedItems([])}>
+                Clear selection
+              </Button>
+            )}
             {selectedItems.length > 1 && (
               <Button iconName={'compare' as unknown as IconProps.Name} variant="normal" onClick={handleCompare}>
                 Test Comparison ({selectedItems.length})
