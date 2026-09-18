@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""Lambda Function URL streaming endpoint for chat (GovCloud / FedRAMP path).
+"""Lambda Function URL streaming endpoint for chat (commercial partition only).
 
 This replaces the AppSync mutation -> subscription fan-out used to deliver chat
 token deltas. Instead of publishing each delta as an AppSync mutation, the two
@@ -34,8 +34,16 @@ session-ownership + RBAC scope checks.
 
 What this transport does and does not give us:
 
-* It **authenticates**. Only a principal holding ``lambda:InvokeFunction`` on
-  this function can reach any route.
+* It **authenticates**. Only a principal granted both halves of the
+  ``AuthType=AWS_IAM`` check can reach any route: the resource permission on the
+  function (``ChatStreamProcessorUrlPermission``, which uses
+  ``lambda:InvokeFunctionUrl``) and an identity policy on the caller's role
+  (``CognitoAuthorizedRole``'s ``ChatStreamInvoke``, which grants
+  ``lambda:InvokeFunction`` **and** ``lambda:InvokeFunctionUrl``).
+  Counter-intuitively it is ``lambda:InvokeFunction`` that actually gates the
+  identity side — granting only ``lambda:InvokeFunctionUrl`` there returns 403
+  AccessDeniedException at invoke time. That is measured, not inferred; see the
+  note on the ``ChatStreamInvoke`` policy in ``template.yaml``.
 * It does **not** carry Cognito group claims.
   ``requestContext.authorizer.iam.cognitoIdentity`` is documented as unused by
   Function URLs (always ``null`` or absent), and an assumed-role ARN has no

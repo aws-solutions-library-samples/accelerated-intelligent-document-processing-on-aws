@@ -45,9 +45,12 @@ _CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 _CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
 _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
-# Agent Chat is available to Admin/Author/Viewer; Reviewer is excluded. Must stay
-# equal to _AGENT_CHAT_GROUPS in the agent_chat_resolver — the two enforce the
-# same operation on two different entry paths.
+# Agent Chat is available to Admin/Author/Viewer. This deployment declares FIVE
+# Cognito groups (Admin, Annotator, Author, Reviewer, Viewer — see the
+# AWS::Cognito::UserPoolGroup resources in template.yaml), so the excluded set is
+# Reviewer AND Annotator. Must stay equal to _AGENT_CHAT_GROUPS in the
+# agent_chat_resolver — the two enforce the same operation on two different entry
+# paths.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 
 

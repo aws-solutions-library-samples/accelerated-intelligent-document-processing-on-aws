@@ -30,7 +30,10 @@ CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
 AGENT_CHAT_PROCESSOR_FUNCTION = os.environ.get("AGENT_CHAT_PROCESSOR_FUNCTION")
 DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
-# Agent Chat is available to Admin/Author/Viewer; Reviewer is excluded.
+# Agent Chat is available to Admin/Author/Viewer. This deployment declares FIVE
+# Cognito groups (Admin, Annotator, Author, Reviewer, Viewer — see the
+# AWS::Cognito::UserPoolGroup resources in template.yaml), so the excluded set is
+# Reviewer AND Annotator.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 
 
@@ -126,9 +129,10 @@ def handler(event, context):
     """
     logger.info(f"Received agent chat event: {json.dumps(_sanitize_for_log(event))}")
 
-    # Defense-in-depth RBAC: Reviewer is excluded from Agent Chat. Raise so the
-    # dispatcher maps it to 403/Unauthorized (not an opaque 500 or a 200 error
-    # dict). Backend publish-path invocations have no identity and skip this.
+    # Defense-in-depth RBAC: Reviewer and Annotator are both excluded from Agent
+    # Chat. Raise so the dispatcher maps it to 403/Unauthorized (not an opaque 500
+    # or a 200 error dict). Backend publish-path invocations have no identity and
+    # skip this.
     if event.get("identity") is not None and not _caller_in_groups(
         event, _AGENT_CHAT_GROUPS
     ):
