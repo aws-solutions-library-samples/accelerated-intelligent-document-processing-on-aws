@@ -7911,7 +7911,7 @@ Resources:
   ConcurrencyCounterNegativeAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow-concurrency counter is NEGATIVE. Admission control is `active_count < MaxConcurrentWorkflows`, so a counter at -N admits N workflows above the configured ceiling until it is corrected. The queue processor repairs a negative counter on its next refused increment (raising it to the number of executions actually running), so this should self-clear; if it does not, inspect the ConcurrencyTable's workflow_counter item directly. Covers a value that reached the table by any route, including a manual edit."
+      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow-concurrency counter is NEGATIVE. Admission control is `active_count < MaxConcurrentWorkflows`, so a counter at -N admits N workflows above the configured ceiling until it is corrected. The queue processor repairs it on the NEXT ADMITTED DOCUMENT (the increment returns the new value, and a post-increment value of 0 or below means it was negative), raising it to the executions actually running plus the slot just claimed, so this should self-clear within one document; if it does not, inspect the ConcurrencyTable's workflow_counter item directly. Note the counter also converges on its own even without the repair, because each admission increments it and the floored decrements absorb the excess once it reaches the ceiling — so the over-admission is bounded to roughly one generation of documents rather than being permanent. Covers a value that reached the table by any route, including a manual edit."
       MetricName: ConcurrencyCounterActive
       Namespace: !Ref AWS::StackName
       Statistic: Minimum
@@ -8557,6 +8557,14 @@ Resources:
                       {
                         "stat": "Sum",
                         "label": "Underflows refused (a slot released that was not held)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyDecrementSuppressed",
+                      {
+                        "stat": "Sum",
+                        "label": "Duplicate releases suppressed (EventBridge redelivered a terminal event)"
                       }
                     ]
                   ],

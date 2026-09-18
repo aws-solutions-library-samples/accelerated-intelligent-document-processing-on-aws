@@ -512,13 +512,37 @@ def _apply_decrement(marker_id: Optional[str]) -> str:
         # idempotent per EXECUTION rather than per invocation: the rule sets
         # MaximumRetryAttempts: 3, and a redelivery can no longer subtract a
         # second slot no matter where in the handler the previous attempt died.
+        #
+        # KNOWN RESIDUAL, accepted deliberately: all-or-nothing also means an
+        # UNDERFLOWED decrement leaves NO marker, so that execution is not
+        # deduplicated afterwards. If the same execution's event comes back while
+        # the counter is above zero, it subtracts a slot that belongs to a
+        # different, live workflow. It is narrow — the happy-path underflow returns
+        # 200, so EventBridge does not redeliver; reaching it needs the handler's
+        # error path to underflow AND something else in the handler to fail — and
+        # bounded to one spurious subtraction, with the floor still preventing a
+        # negative counter. Writing the marker outside the transaction to close it
+        # would trade this for the strictly worse failure the transaction exists to
+        # prevent: a marker that lands while the decrement does not, permanently
+        # losing that execution's slot.
         dynamodb_client.transact_write_items(
             TransactItems=[{"Put": marker_put}, {"Update": counter_update}]
         )
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "TransactionCanceledException":
             raise
-        # Reason order matches TransactItems: 0 = marker, 1 = counter.
+        # Reason order matches TransactItems: 0 = marker, 1 = counter. Getting this
+        # ordering wrong swaps "duplicate" and "underflow" — two outcomes with
+        # different metrics and different alarms. A wholesale swap of the two
+        # indices is caught indirectly by three tests in
+        # TestFloorAtZero/TestIdempotentPerExecution (measured), but the PRECEDENCE
+        # when BOTH conditions fail was not covered by anything: checking the
+        # counter first there reports a correctly-suppressed redelivery as an
+        # underflow and raises ConcurrencyCounterUnderflowAlarm on it. The marker is
+        # therefore checked FIRST — if this execution's slot was already released,
+        # the counter sitting at 0 afterwards is some other execution's business —
+        # and TestCancellationReasonDisambiguation pins both the mapping and that
+        # precedence.
         reasons = [r.get("Code") for r in (e.response.get("CancellationReasons") or [])]
         if len(reasons) > 0 and reasons[0] == "ConditionalCheckFailed":
             return "duplicate"

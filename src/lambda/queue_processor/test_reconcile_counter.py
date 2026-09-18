@@ -17,11 +17,20 @@ period apart, never raising the counter, and a conditional write.
 A NEGATIVE counter is the mirror-image failure and needs the opposite treatment.
 It over-admits by construction — admission is gated on
 ``active_count < MAX_CONCURRENT``, so a counter at -N runs N workflows above the
-ceiling for as long as it stays there. Correcting it UPWARD only tightens
-admission, so it does not need the two-sample caution; the ``active <= 0`` early
-return used to decline to act on exactly that state (issue #915), and
+ceiling while it stays there. Correcting it UPWARD only tightens admission, so it
+does not need the two-sample caution; the ``active <= 0`` early return used to
+decline to act on exactly that state (issue #915), and
 ``TestNegativeCounterRepair`` / ``TestNegativeRepairAgainstDynamoDB`` cover the
 repair that replaced it.
+
+Those two classes call ``reconcile_counter()`` directly, which is why they cannot
+show whether the repair is REACHED. It is not, from there: reconciliation runs
+only when an increment is refused, and a negative counter always satisfies
+``active_count < :max``, so the increment succeeds and the reconciler is never
+consulted. ``TestNegativeCounterIsReachedThroughAdmission`` covers the shipped
+behaviour instead — detection on the *successful* increment, driven through
+``update_counter`` and through ``process_message`` — and would have caught the
+repair (and ``ConcurrencyCounterNegativeAlarm`` with it) being dead code.
 """
 
 import importlib.util
@@ -81,6 +90,8 @@ def index_module(monkeypatch):
         module.sfn = MagicMock()
         # Metric emission is telemetry; silence it unless a test asserts on it.
         module._emit_drift_metric = MagicMock()
+        # Don't actually sleep through the TransactionConflictException backoff.
+        monkeypatch.setattr(module.time, "sleep", lambda *_: None)
         yield module
         sys.modules.pop(_MODULE_NAME, None)
 
@@ -135,6 +146,9 @@ def moto_index_module(monkeypatch):
 
         module.sfn = MagicMock()
         module._emit_drift_metric = MagicMock()
+        # Keep the real emitter reachable for the test that asserts the metric
+        # NAME and VALUE that reach CloudWatch, not just that it was called.
+        module.real_emit_counter_active_metric = module._emit_counter_active_metric
         module._emit_counter_active_metric = MagicMock()
         yield module
         sys.modules.pop(name, None)
@@ -255,8 +269,10 @@ class TestNegativeCounterRepair:
         self, index_module
     ):
         """A repair that left no trace would hide the fact that the ceiling was
-        breached. ConcurrencyCounterUnderflowAlarm watches this metric going
-        below zero."""
+        breached. ConcurrencyCounterNegativeAlarm watches this metric
+        (``ConcurrencyCounterActive``, Minimum) going below zero;
+        ConcurrencyCounterUnderflowAlarm watches a different one
+        (``ConcurrencyCounterUnderflow``, from the tracker's refused decrement)."""
         index_module.concurrency_table.get_item.return_value = _counter(-3)
         index_module.sfn.list_executions.return_value = _running(7)
         cw = MagicMock()
@@ -715,3 +731,288 @@ class TestNegativeRepairAgainstDynamoDB:
         )["Item"]
         assert "drift_observed_at" not in item
         assert "drift_running" not in item
+
+
+class TestNegativeCounterIsReachedThroughAdmission:
+    """The repair has to run on the path the Lambda actually takes.
+
+    ``TestNegativeCounterRepair`` and ``TestNegativeRepairAgainstDynamoDB`` above
+    call ``reconcile_counter()`` directly with a seeded negative counter, so they
+    pass whether or not anything in production ever calls it. Nothing did:
+    ``reconcile_counter`` has one call site, inside
+    ``if not update_counter(increment=True)``, and that branch is entered only when
+    the increment's ``ConditionExpression="active_count < :max"`` FAILS. A negative
+    counter satisfies that condition, so the increment succeeded, the reconciler was
+    never consulted, and the repair — plus ``ConcurrencyCounterNegativeAlarm``,
+    whose only remaining publisher was the repair — could not run at all.
+
+    Detection now hangs off the SUCCESSFUL increment, which already asks DynamoDB
+    for the updated value: ``active_count`` after adding 1 is ``<= 0`` exactly when
+    it was negative before. These tests drive it through ``update_counter`` and
+    through ``process_message`` against a real (moto) table, so they fail if that
+    wiring is removed.
+    """
+
+    def test_a_negative_counter_is_repaired_on_the_next_admitted_document(
+        self, moto_index_module
+    ):
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -3}
+        )
+        module.sfn.list_executions.return_value = _running(7)
+
+        # Admission must still succeed: a negative counter is under the ceiling.
+        assert module.update_counter(increment=True) is True
+
+        item = module.concurrency_table.get_item(
+            Key={"counter_id": module.COUNTER_ID}, ConsistentRead=True
+        )["Item"]
+        # 7 running + the 1 slot this increment just claimed, whose execution does
+        # not exist yet and so is invisible to ListExecutions. Pre-change this read
+        # -2 and stayed negative.
+        assert int(item["active_count"]) == 8
+
+    def test_the_repair_accounts_for_the_slot_the_increment_just_claimed(
+        self, moto_index_module
+    ):
+        """Repairing to ``running`` alone would silently drop this invocation's own
+        claim, so the workflow it is about to start would hold no slot."""
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -1}
+        )
+        module.sfn.list_executions.return_value = _running(0)
+
+        assert module.update_counter(increment=True) is True
+
+        item = module.concurrency_table.get_item(
+            Key={"counter_id": module.COUNTER_ID}, ConsistentRead=True
+        )["Item"]
+        assert int(item["active_count"]) == 1
+
+    def test_the_negative_value_published_is_the_one_the_counter_held(
+        self, moto_index_module
+    ):
+        """The value that must reach CloudWatch is the PRE-increment one.
+
+        ``ConcurrencyCounterNegativeAlarm`` is
+        ``Minimum(ConcurrencyCounterActive) < 0``. A counter at -1 reads 0 by the
+        time the increment returns, so publishing the value as read would leave the
+        alarm unable to fire on exactly the case it exists for.
+        """
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -1}
+        )
+        module.sfn.list_executions.return_value = _running(4)
+
+        module.update_counter(increment=True)
+
+        module._emit_counter_active_metric.assert_called_once_with(-1)
+
+    def test_the_metric_reaching_cloudwatch_is_negative_and_correctly_named(
+        self, moto_index_module
+    ):
+        module = moto_index_module
+        module._emit_counter_active_metric = module.real_emit_counter_active_metric
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -2}
+        )
+        module.sfn.list_executions.return_value = _running(4)
+        cw = MagicMock()
+
+        with patch("boto3.client", return_value=cw):
+            module.update_counter(increment=True)
+
+        published = [
+            (m["MetricName"], m["Value"])
+            for call in cw.put_metric_data.call_args_list
+            for m in call.kwargs["MetricData"]
+        ]
+        assert ("ConcurrencyCounterActive", -2) in published
+
+    def test_a_healthy_counter_costs_nothing(self, moto_index_module):
+        """Detection must not add a ListExecutions sweep to the normal path — it
+        runs on every admitted document."""
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": 5}
+        )
+
+        assert module.update_counter(increment=True) is True
+
+        module.sfn.list_executions.assert_not_called()
+        module._emit_counter_active_metric.assert_not_called()
+
+    def test_a_counter_that_was_exactly_zero_is_not_treated_as_negative(
+        self, moto_index_module
+    ):
+        """The boundary: 0 -> 1 is a perfectly healthy first admission."""
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": 0}
+        )
+
+        assert module.update_counter(increment=True) is True
+
+        module.sfn.list_executions.assert_not_called()
+        item = module.concurrency_table.get_item(
+            Key={"counter_id": module.COUNTER_ID}, ConsistentRead=True
+        )["Item"]
+        assert int(item["active_count"]) == 1
+
+    def test_a_response_without_the_attribute_is_not_treated_as_negative(
+        self, moto_index_module
+    ):
+        """Defensive: an ``Attributes`` payload that does not carry
+        ``active_count`` must be left alone rather than read as 0 (which would look
+        like a pre-increment -1 and trigger a spurious repair).
+
+        In the deployed stack the item always exists — the ``initialize_counter``
+        custom resource seeds it at 0 on stack create — and DynamoDB refuses
+        ``active_count < :max`` outright when the attribute is absent, so this shape
+        is not expected. It costs one comparison to be safe about it.
+        """
+        module = moto_index_module
+
+        module._repair_if_counter_was_negative({"Attributes": {}})
+        module._repair_if_counter_was_negative({})
+
+        module.sfn.list_executions.assert_not_called()
+        module._emit_counter_active_metric.assert_not_called()
+
+    def test_a_failed_repair_never_blocks_admission(self, moto_index_module):
+        """The increment has already landed and the caller is about to start a
+        workflow. A repair that throws must not turn that into a refusal."""
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -3}
+        )
+        module._repair_negative_counter = MagicMock(side_effect=RuntimeError("boom"))
+
+        assert module.update_counter(increment=True) is True
+
+    def test_process_message_repairs_the_counter_end_to_end(self, moto_index_module):
+        """The real entry point. ``update_counter`` is what ``process_message``
+        calls, but only this proves the admission path as a whole reaches the
+        repair: the increment is not bypassed, and its result is inspected where
+        the document is actually admitted."""
+        module = moto_index_module
+        module.concurrency_table.put_item(
+            Item={"counter_id": module.COUNTER_ID, "active_count": -2}
+        )
+        module.sfn.list_executions.return_value = _running(3)
+
+        doc = MagicMock()
+        doc.input_key = "input/test.pdf"
+        doc.id = "doc-1"
+        module.Document.load_document = MagicMock(return_value=doc)
+        module.document_service.get_document = MagicMock(return_value=None)
+        module.document_service.update_document = MagicMock(return_value=doc)
+        module.start_workflow = MagicMock(
+            return_value={
+                "executionArn": SM_ARN.replace("stateMachine", "execution") + ":e1"
+            }
+        )
+
+        ok, message_id = module.process_message(
+            {
+                "body": '{"input_key": "input/test.pdf"}',
+                "messageId": "m-1",
+                "receiptHandle": "rh-1",
+            }
+        )
+
+        assert (ok, message_id) == (True, "m-1")
+        module.start_workflow.assert_called_once()
+
+        item = module.concurrency_table.get_item(
+            Key={"counter_id": module.COUNTER_ID}, ConsistentRead=True
+        )["Item"]
+        # 3 running + this document's own slot. Pre-change: -1, still negative,
+        # still admitting one workflow above MaxConcurrentWorkflows.
+        assert int(item["active_count"]) == 4
+        module._emit_counter_active_metric.assert_called_once_with(-2)
+
+
+class TestTransactionConflictIsRetried:
+    """The tracker's decrement is a ``TransactWriteItems`` on the SAME
+    ``workflow_counter`` item, so a plain ``UpdateItem`` here can lose the race:
+    DynamoDB fails it with ``TransactionConflictException``, and botocore's DynamoDB
+    retry policy does not cover that code (it covers
+    ``ReplicatedWriteConflictException``, ``TransactionInProgressException`` and
+    crc32 only). On the increment path a raise is merely an SQS redelivery, but
+    ``process_message``'s two COMPENSATING-DECREMENT paths catch and log it, which
+    leaks the slot — the exact failure class this change exists to prevent.
+    """
+
+    @staticmethod
+    def _conflict():
+        return ClientError(
+            {"Error": {"Code": "TransactionConflictException"}}, "UpdateItem"
+        )
+
+    def test_a_conflicting_increment_is_retried_then_succeeds(self, index_module):
+        index_module.concurrency_table.update_item.side_effect = [
+            self._conflict(),
+            self._conflict(),
+            {"Attributes": {"active_count": 4}},
+        ]
+
+        assert index_module.update_counter(increment=True) is True
+        assert index_module.concurrency_table.update_item.call_count == 3
+
+    def test_a_conflicting_decrement_is_retried_then_succeeds(self, index_module):
+        """The path that matters: this is a COMPENSATING decrement, and its callers
+        in ``process_message`` only log a failure here."""
+        index_module.concurrency_table.update_item.side_effect = [
+            self._conflict(),
+            {"Attributes": {"active_count": 2}},
+        ]
+
+        assert index_module.update_counter(increment=False) is True
+        assert index_module.concurrency_table.update_item.call_count == 2
+
+    def test_a_persistent_conflict_raises_rather_than_reporting_success(
+        self, index_module
+    ):
+        """Returning True on a write that never landed is worse than raising: the
+        increment path would start a workflow against a slot it does not hold, and
+        the decrement path would report a slot released that is not."""
+        index_module.concurrency_table.update_item.side_effect = self._conflict()
+
+        with pytest.raises(ClientError):
+            index_module.update_counter(increment=False)
+        assert index_module.concurrency_table.update_item.call_count == 4
+
+    def test_the_backoff_is_bounded(self, index_module, monkeypatch):
+        """The conflict rate is unmeasured and this Lambda has a 60s timeout, so
+        the ladder must stay short (0.2 + 0.4 + 0.8 = 1.4s worst case)."""
+        slept = []
+        monkeypatch.setattr(index_module.time, "sleep", slept.append)
+        index_module.concurrency_table.update_item.side_effect = self._conflict()
+
+        with pytest.raises(ClientError):
+            index_module.update_counter(increment=True)
+
+        assert slept == [0.2, 0.4, 0.8]
+
+    def test_hitting_the_concurrency_limit_is_still_not_a_retry(self, index_module):
+        """``ConditionalCheckFailedException`` on the increment is the normal
+        at-capacity answer and must return False immediately, not four times."""
+        index_module.concurrency_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+
+        assert index_module.update_counter(increment=True) is False
+        assert index_module.concurrency_table.update_item.call_count == 1
+
+    def test_an_unrelated_error_still_raises_immediately(self, index_module):
+        index_module.concurrency_table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException"}}, "UpdateItem"
+        )
+
+        with pytest.raises(ClientError):
+            index_module.update_counter(increment=True)
+        assert index_module.concurrency_table.update_item.call_count == 1

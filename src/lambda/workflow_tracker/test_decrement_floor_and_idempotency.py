@@ -232,3 +232,116 @@ class TestWithoutAnExecutionArn:
         _seed(tracker, 2)
 
         assert tracker.decrement_counter(None) == 1
+
+
+class TestCancellationReasonDisambiguation:
+    """``CancellationReasons`` ordering is the subtle part of the transaction.
+
+    ``TransactWriteItems`` reports one reason per item, positionally, and
+    ``_apply_decrement`` sends ``[{"Put": marker}, {"Update": counter}]`` — so
+    index 0 is the marker's ``attribute_not_exists`` and index 1 is the counter's
+    ``active_count > 0``. Reading them the other way round swaps "duplicate" for
+    "underflow": two outcomes with different log lines, different metrics and
+    different alarms.
+
+    Measured, so the value of these tests is not overstated: a WHOLESALE swap of
+    the two indices is already caught indirectly by three tests in
+    ``TestFloorAtZero`` / ``TestIdempotentPerExecution``. What nothing covered is
+    the PRECEDENCE when both conditions fail at once — keep each index's meaning
+    correct but test the counter first, and every one of those 28 tests still
+    passes while a correctly-suppressed redelivery is reported as an underflow and
+    raises ``ConcurrencyCounterUnderflowAlarm``. Only
+    ``test_both_conditions_failing_reports_a_duplicate_not_an_underflow`` and
+    ``test_the_metric_follows_the_disambiguation`` fail on it.
+
+    These pin the mapping through real DynamoDB (moto), which is the only thing
+    that produces the reason list in the first place.
+    """
+
+    def test_a_new_execution_against_a_held_slot_is_applied(self, tracker):
+        """The control case: neither condition fails, no CancellationReasons."""
+        _seed(tracker, 2)
+
+        marker = f"{tracker.DECREMENT_MARKER_PREFIX}{EXEC_ARN}"
+        assert tracker._apply_decrement(marker) == "applied"
+
+    def test_an_existing_marker_reports_a_duplicate(self, tracker):
+        """Reason 0 (the marker) failed, reason 1 (the counter) did not."""
+        _seed(tracker, 2)
+        marker = f"{tracker.DECREMENT_MARKER_PREFIX}{EXEC_ARN}"
+        assert tracker._apply_decrement(marker) == "applied"
+
+        assert tracker._apply_decrement(marker) == "duplicate"
+        # The slot was NOT subtracted a second time.
+        assert _counter(tracker) == 1
+
+    def test_a_fresh_marker_against_a_zero_counter_reports_an_underflow(self, tracker):
+        """Reason 1 (the counter's floor) failed, reason 0 (the marker) did not.
+
+        Read in the wrong order this returns "duplicate", which would suppress
+        ``ConcurrencyCounterUnderflow`` — the only signal that a slot was released
+        twice — and emit ``ConcurrencyDecrementSuppressed`` in its place.
+        """
+        _seed(tracker, 0)
+
+        assert (
+            tracker._apply_decrement(f"{tracker.DECREMENT_MARKER_PREFIX}{EXEC_ARN}")
+            == "underflow"
+        )
+
+    def test_both_conditions_failing_reports_a_duplicate_not_an_underflow(
+        self, tracker
+    ):
+        """The ambiguous case, and the reason the marker is checked FIRST: if this
+        execution's slot was already released, the counter reaching 0 afterwards is
+        someone else's business. Calling it an underflow would raise
+        ``ConcurrencyCounterUnderflowAlarm`` on a correctly-suppressed redelivery.
+        """
+        _seed(tracker, 1)
+        marker = f"{tracker.DECREMENT_MARKER_PREFIX}{EXEC_ARN}"
+        assert tracker._apply_decrement(marker) == "applied"
+        assert _counter(tracker) == 0
+
+        # Marker exists AND the counter is at its floor: both conditions fail.
+        assert tracker._apply_decrement(marker) == "duplicate"
+
+    def test_the_metric_follows_the_disambiguation(self, tracker):
+        """End to end through ``decrement_counter``: the both-failed case must
+        publish ``ConcurrencyDecrementSuppressed`` and NOT
+        ``ConcurrencyCounterUnderflow``."""
+        _seed(tracker, 1)
+        tracker.decrement_counter(EXEC_ARN)
+        tracker.cloudwatch.put_metric_data.reset_mock()
+
+        tracker.decrement_counter(EXEC_ARN)
+
+        published = _metrics(tracker)
+        assert "ConcurrencyDecrementSuppressed" in published
+        assert "ConcurrencyCounterUnderflow" not in published
+
+    def test_an_underflow_leaves_no_marker(self, tracker):
+        """Records the accepted residual, so a change that alters it is deliberate.
+
+        The transaction is all-or-nothing, so a refused decrement also refuses the
+        marker: the execution is NOT deduplicated afterwards, and a later
+        redelivery against a non-zero counter subtracts a slot belonging to a
+        different, live workflow. It is narrow (the underflow path returns 200, so
+        EventBridge does not redeliver) and bounded to one spurious subtraction
+        with the floor still holding. Writing the marker outside the transaction to
+        close it would trade this for the strictly worse failure the transaction
+        prevents — a marker that lands while the decrement does not, losing that
+        execution's slot permanently.
+        """
+        _seed(tracker, 0)
+        assert tracker.decrement_counter(EXEC_ARN) == 0
+
+        assert (
+            "Item"
+            not in tracker.concurrency_table.get_item(
+                Key={"counter_id": f"{tracker.DECREMENT_MARKER_PREFIX}{EXEC_ARN}"}
+            )
+        )
+
+        # The residual, demonstrated: the same execution's event now subtracts.
+        _seed(tracker, 3)
+        assert tracker.decrement_counter(EXEC_ARN) == 2

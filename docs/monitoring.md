@@ -77,16 +77,23 @@ is a person noticing that nothing has processed for hours.
 
 The counter can also drift the other way. Admission is gated on
 `active_count < MaxConcurrentWorkflows`, so a counter driven **below zero** raises
-the effective ceiling by exactly that much, indefinitely, and nothing errors:
-documents process, queues drain, every graph looks healthy, and the stack simply
-spends more on Bedrock and Textract than it was configured to. Two guards in the
-tracker prevent it: the decrement is refused when the counter is already at zero,
-and it carries a `dec#<executionArn>` marker written in the same DynamoDB
-transaction, so a redelivered terminal event cannot release a second slot. The
-markers expire via the `ConcurrencyTable` TTL attribute (`ExpiresAfter`, seven
-days) rather than accumulating one item per document forever.
+the effective ceiling by exactly that much and nothing errors: documents process,
+queues drain, every graph looks healthy, and the stack simply spends more on
+Bedrock and Textract than it was configured to. Two guards in the tracker prevent
+it: the decrement is refused when the counter is already at zero, and it carries a
+`dec#<executionArn>` marker written in the same DynamoDB transaction, so a
+redelivered terminal event cannot release a second slot. The markers expire via
+the `ConcurrencyTable` TTL attribute (`ExpiresAfter`, seven days) rather than
+accumulating one item per document forever.
 
-Three metrics in the stack's own namespace (`<StackName>`) make all of this
+Unlike the upward leak, a negative counter is **not** permanent even without
+intervention: every admitted document increments it, and once it climbs to the
+ceiling the floored decrements absorb the excess, so it converges back on its own.
+The over-admission is therefore bounded to roughly one generation of documents
+rather than lasting forever — which is why the guards and the repair below matter
+for cost and for predictable capacity rather than for recoverability.
+
+Four metrics in the stack's own namespace (`<StackName>`) make all of this
 visible, all on the **Workflow Concurrency Counter** widget:
 
 - **`ConcurrencyCounterActive`** — the counter value, published on every document
@@ -100,6 +107,15 @@ visible, all on the **Workflow Concurrency Counter** widget:
   counter was already at zero. Nothing else reports this: the counter and the
   document both end up correct, so without this metric a duplicate release is
   invisible.
+- **`ConcurrencyDecrementSuppressed`** — a terminal event whose slot had already
+  been released, recognised by its `dec#<executionArn>` marker and skipped. This
+  is the guard working, not a fault, so it has **no alarm**: EventBridge
+  redelivery is expected (the rule allows three retries, and a tracker invocation
+  that fails after the decrement lands is redelivered by design), and alarming on
+  correct behaviour would be noise. It is worth watching as a series, because it
+  is the only signal that terminal events are being redelivered at all — a rising
+  count alongside `WorkflowTrackerDLQAlarm` or tracker errors says the tracker is
+  failing *after* it releases the slot.
 
 Four alarms publish to `AlertsTopic`:
 
@@ -116,21 +132,36 @@ Four alarms publish to `AlertsTopic`:
   should be unreachable now that the decrement is floored; if it fires, the
   counter is being written by something that bypasses the floor.
 
-The queue processor also **self-heals**: on a refused increment it reconciles the
-counter against `ListExecutions`, writing conditionally on the value it sampled.
-Correcting **downward** requires the same discrepancy in two samples at least
-five minutes apart, because lowering the counter wrongly over-admits work. A
-**negative** counter is repaired on first observation instead — raising the
-counter only tightens admission, so the caution is unnecessary and leaving it
-negative is the more expensive option. The repair never writes a value below
-zero, and publishes the pre-repair (negative) value so the alarm above still
-fires on a counter that self-healed.
+The queue processor also **self-heals**, in two different places for the two
+different directions:
+
+- **Downward correction** (the counter is too high) runs on a *refused* increment,
+  reconciling against `ListExecutions` and writing conditionally on the value it
+  sampled. It requires the same discrepancy in two samples at least five minutes
+  apart, because lowering the counter wrongly over-admits work.
+- **Upward repair** (the counter is negative) runs on the next *successful*
+  increment — which is where it has to be, because a negative counter always
+  satisfies `active_count < MaxConcurrentWorkflows` and so is never refused. The
+  increment asks DynamoDB for the updated value, and a post-increment value of
+  zero or below means it was negative before. The counter is then raised to the
+  executions actually running plus the slot that increment just claimed (that
+  execution does not exist yet, so `ListExecutions` cannot see it), conditionally
+  on the value observed, and never to a value below zero. So a negative counter is
+  corrected within one admitted document rather than needing the queue to be at
+  its ceiling first.
+
+The repair publishes the pre-repair **negative** value — not the value the counter
+reads after the increment — before it writes, so `ConcurrencyCounterNegativeAlarm`
+still fires on a counter that healed itself. Without that a self-healed underflow
+would leave no trace at all.
 
 **Reading the widget:** the counter tracking a busy queue is normal. The counter
 sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
 in flight and the Step Functions widget shows nothing starting is the upward
 leak. The counter minimum below the zero annotation, or any
-`ConcurrencyCounterUnderflow` bar, is the downward one.
+`ConcurrencyCounterUnderflow` bar, is the downward one. A
+`ConcurrencyDecrementSuppressed` bar on its own is the idempotency guard doing its
+job.
 
 ### Stale Output Purge on Re-upload
 
