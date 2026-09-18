@@ -8,9 +8,9 @@ title: "Role-Based Access Control (RBAC)"
 
 The GenAI IDP Accelerator implements a comprehensive Role-Based Access Control system with **server-side enforcement** at the API layer, supplemented by UI-level navigation and action controls for a clean user experience. It also supports **configuration-profile scoping** to restrict non-admin users to specific [Configuration Profiles](configuration-profiles.md) (use cases).
 
-> **Terminology.** What this document used to call a "config version" is now a
-> **Configuration Profile**; a **revision** is an immutable snapshot of one
-> profile's configuration. The stored field is still named
+> **Terminology.** A **Configuration Profile** is what earlier releases called a
+> "config version"; a **revision** is an immutable snapshot of one profile's
+> configuration. The stored field is still named
 > `allowedConfigVersions` for compatibility, and it scopes **profiles**.
 
 

@@ -88,6 +88,28 @@ Update for ALL user-facing changes. Format:
 - Bug fix description
 ```
 
+## State what is true now — never what a previous draft said
+
+A document is read as current fact. Its own editing history is in git and is of no
+use to a reader, so **never write doc-about-doc commentary**: "an earlier version of
+this guide got this wrong", "this page previously quoted −78%", "**Correction.** This
+section previously claimed…", "that claim was false and is withdrawn", "four
+corrections from review". When you fix a page, fix it — do not annotate it.
+
+Keep the substance, drop the retraction framing. "This page previously quoted a −78%
+saving; the figure was withdrawn" becomes "**Why there is no percentage here.** A
+figure would have to come from the cost report, which at the time of the run priced
+cache reads by substring match…". A withdrawn recommendation becomes a plain
+"⚠️ Do **not** do X, because …".
+
+What *is* legitimate is **product** history a reader acts on — "`--log-level INFO`
+is now honoured; it used to be silently treated as unset", a rename, an
+upgrade-visible behaviour change, and `CHANGELOG.md` entries generally — plus
+caveats about a **measurement instrument** and corrections to an **external**
+artifact (an AWS doc, a GitHub issue) the reader will also read. The test is whose
+history it is: the product's, or this file's. See the fuller rule with examples in
+`CLAUDE.md` ("Documentation states what is true now").
+
 ## Cross-Referencing
 Link between docs using relative paths:
 ```markdown

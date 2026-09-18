@@ -376,9 +376,8 @@ classifications:
    > Sonnet 5 **reject** `temperature`/`top_p`/`top_k` (HTTP 400), so
    > `idp_common` strips them before the request (`_CLAUDE_4_7_BASE_NAMES` in
    > `idp_common/bedrock/client.py`). On those models classification **samples**,
-   > and identical inputs can return different answers run to run. This
-   > documentation previously stated the parameter applied everywhere, and that
-   > assumption is what made [#653](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/653)
+   > and identical inputs can return different answers run to run. Assuming the
+   > parameter applies everywhere is what makes [#653](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/653)
    > — intermittent page-boundary misdetection — look like a model defect rather
    > than a prompt one.
 3. The retry repeats up to `maxValidationRetries` times.
