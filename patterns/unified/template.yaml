@@ -55,6 +55,10 @@ Parameters:
       - CRITICAL
     Description: Default logging level for all Lambda functions
 
+  ConfidenceUnavailableThreshold:
+    Type: Number
+    Default: 10
+
   ExecutionTimeThresholdMs:
     Type: Number
     Default: 30000
@@ -7373,8 +7377,8 @@ Resources:
                 },
                 "annotations": {
                   "horizontal": [{
-                    "value": 10,
-                    "label": "AssessmentConfidenceUnavailableAlarm threshold (per 15 min)",
+                    "value": ${ConfidenceUnavailableThreshold},
+                    "label": "AssessmentConfidenceUnavailableAlarm threshold (${ConfidenceUnavailableThreshold} per 15 min)",
                     "color": "#d62728"
                   }]
                 }

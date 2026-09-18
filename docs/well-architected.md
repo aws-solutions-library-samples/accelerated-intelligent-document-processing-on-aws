@@ -99,7 +99,7 @@ through them — the nested stacks declare none. Fourteen publish to the `Alerts
 topic; the fifteenth, `BedrockServiceOutageAlarm`, publishes to `CircuitBreakerTopic`
 and is the only conditional one, so it exists only when you enable the circuit breaker.
 The other fourteen are unconditional, which is why a default deployment has exactly
-fourteen. They fall into four groups:
+fourteen. They fall into five groups:
 
 | Alarm | What it detects |
 |---|---|
@@ -107,7 +107,7 @@ fourteen. They fall into four groups:
 | `DocumentQueueDLQAlarm`, `WorkflowTrackerDLQAlarm`, `QueueSenderDLQAlarm`, `DataMartRollupDLQAlarm` | Any visible message on a dead-letter queue |
 | `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
 | `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means the same terminal execution was processed twice; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
-| `AssessmentConfidenceUnavailableAlarm` | Ten or more document sections degraded to "no confidence scores" in fifteen minutes. This is the one alarm here that watches a *successful* outcome: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` (default ten) or more document sections degraded to "no confidence scores" in fifteen minutes. This is the one alarm here that watches a *successful* outcome: a deterministic confidence-model failure keeps the extraction and degrades the section rather than failing the document, so a systemic confidence failure produces no failed executions and nothing else on this list moves. It alarms on volume rather than on the first occurrence because one degraded section is an expected, self-limiting outcome |
 
 Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
 ingestion, queue depth, the concurrency counter and workflow outcomes, and one in

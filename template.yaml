@@ -463,6 +463,19 @@ Parameters:
     Description: Maximum acceptable execution time in milliseconds before alerting (default 300000 = 300 seconds)
     MinValue: 1000
 
+  ConfidenceUnavailableThreshold:
+    Type: Number
+    Default: 10
+    Description: >-
+      Number of document sections degraded to "no confidence scores" within a
+      15-minute window before AssessmentConfidenceUnavailableAlarm fires. A single
+      degraded section is an expected, self-limiting outcome (one unusually large
+      section against a small-context confidence model), so the alarm watches
+      volume rather than the first occurrence. Raise this if one large
+      multi-section document can legitimately produce that many degrades in your
+      corpus; lower it to be told sooner.
+    MinValue: 1
+
   QueueStalledAgeThresholdSeconds:
     Type: Number
     Default: 1800
@@ -1534,6 +1547,7 @@ Metadata:
           - DataRetentionInDays
           - ErrorThreshold
           - ExecutionTimeThresholdMs
+          - ConfidenceUnavailableThreshold
           - QueueStalledAgeThresholdSeconds
           - WorkflowExecutionTimeoutSeconds
           - BDACallbackTimeoutSeconds
@@ -1600,6 +1614,8 @@ Metadata:
         default: "Error Alert Threshold"
       ExecutionTimeThresholdMs:
         default: "Execution Time Threshold (ms)"
+      ConfidenceUnavailableThreshold:
+        default: "Confidence-Unavailable Alert Threshold (sections / 15 min)"
       QueueStalledAgeThresholdSeconds:
         default: "Queue Stalled Threshold (seconds)"
       LogLevel:
@@ -2806,6 +2822,7 @@ Resources:
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
+        ConfidenceUnavailableThreshold: !Ref ConfidenceUnavailableThreshold
         BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
         WorkflowExecutionTimeoutSeconds: !Ref WorkflowExecutionTimeoutSeconds
         BedrockGuardrailId: !Ref BedrockGuardrailId
@@ -8099,7 +8116,7 @@ Resources:
   AssessmentConfidenceUnavailableAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when ${AWS::StackName} degraded many document sections to 'no confidence scores' in a short window, which indicates a SYSTEMIC confidence-assessment failure rather than a few awkward documents. Affected documents still COMPLETE and their extracted data is intact and correct - what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds) and their per-field scores are absent in the UI. Diagnose from the AssessmentFunction logs (/${AWS::StackName}/lambda/AssessmentFunction): the recorded processing issue's root_cause names the underlying exception. Common causes are a confidence model whose input limit every section exceeds (reduce extraction.confidence.list_batch_size or choose a model with a larger context window), a missing or revoked bedrock:InvokeModel grant for the configured confidence model, and a confidence model id that is not enabled in this region."
+      AlarmDescription: !Sub "Many sections in ${AWS::StackName} were degraded to 'no confidence scores' in 15 minutes, which indicates a SYSTEMIC confidence-assessment failure rather than a few awkward documents. Those documents still COMPLETE with their extracted data intact; what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds). Diagnose from the AssessmentFunction logs - list on the /${AWS::StackName}-PATTERNSTACK log-group prefix, as the group carries the NESTED stack's generated name - where the recorded issue's root_cause names the exception. Usual causes: a confidence model whose input limit the sections exceed (lower extraction.confidence.list_batch_size or pick a larger-context model), a missing bedrock:InvokeModel grant, or a model id not enabled in this region. See docs/monitoring.md#confidence-assessment-degraded."
       MetricName: AssessmentConfidenceUnavailable
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -8116,7 +8133,7 @@ Resources:
       # degraded silently.
       Period: 900
       EvaluationPeriods: 1
-      Threshold: 10
+      Threshold: !Ref ConfidenceUnavailableThreshold
       ComparisonOperator: GreaterThanOrEqualToThreshold
       # Published only when a section is degraded, so "no data" is the healthy
       # state and must not hold the alarm in INSUFFICIENT_DATA.

@@ -253,15 +253,25 @@ One metric in the stack's own namespace (`<StackName>`):
 
 One alarm publishes to `AlertsTopic`:
 
-- **`AssessmentConfidenceUnavailableAlarm`** — 10 or more degrades within 15
-  minutes. Unlike `StaleOutputPurgeFailedAlarm` this deliberately does **not**
-  alarm on the first occurrence: a single degraded section is an expected,
-  self-limiting outcome — one unusually large section against a small-context
-  confidence model produces it with nothing misconfigured. A steady stream is what
-  a systemic cause produces, because it degrades every section of every document.
+- **`AssessmentConfidenceUnavailableAlarm`** — `ConfidenceUnavailableThreshold`
+  (default `10`) or more degrades within 15 minutes. Unlike
+  `StaleOutputPurgeFailedAlarm` this deliberately does **not** alarm on the first
+  occurrence: a single degraded section is an expected, self-limiting outcome — one
+  unusually large section against a small-context confidence model produces it with
+  nothing misconfigured. A steady stream is what a systemic cause produces, because
+  it degrades every section of every document. The default assumes no single
+  document legitimately produces ten degrades; **raise the parameter if your
+  documents split into many sections** that a small-context confidence model cannot
+  fit, since one such document would otherwise fire it on its own. The
+  unified-pattern dashboard draws the configured value as its annotation, so the
+  graph and the trigger stay in step when you tune it.
 
 **Diagnosing.** The recorded issue's `root_cause` names the underlying exception,
-and the same failure is logged at ERROR in `/<StackName>/lambda/AssessmentFunction`
+and the same failure is logged at ERROR in the AssessmentFunction log group. Note
+that group is `/<StackName>-PATTERNSTACK-<id>/lambda/AssessmentFunction`: the name
+comes from `AWS::StackName` **inside the nested pattern template**, which is the
+nested stack's CloudFormation-generated name, not the root stack's — so list on the
+`/<StackName>-PATTERNSTACK` prefix rather than typing the path
 ("Deterministic (non-retryable) assessment failure"). The three causes worth
 checking first:
 
@@ -400,7 +410,7 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `QueueProcessorErrorsAlarm` | Any `QueueProcessor` invocation error in 5 min — for this function, a timeout or out-of-memory before its SQS batch finished | `AlertsTopic` | — |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
-| `AssessmentConfidenceUnavailableAlarm` | 10 or more sections degraded to "no confidence scores" within 15 min — a systemic confidence-assessment failure, not a few awkward documents | `AlertsTopic` | — |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections degraded to "no confidence scores" within 15 min — a systemic confidence-assessment failure, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
@@ -510,7 +520,7 @@ constant no matter who leaves it. If you rely on email, re-run the
 
 > ⚠️ A `--headless` deployment strips the `AdminEmail` parameter along with
 > Cognito, so it collects no operator address and **creates no subscription at
-> all**. It keeps `AlertsTopic` and all fourteen alarms, so a headless stack still has
+> all**. It keeps `AlertsTopic` and all fifteen alarms, so a headless stack still has
 > the original defect: every alarm publishes successfully and nobody is notified.
 > Issue #922 is closed for the standard deployment and remains open for this one.
 
