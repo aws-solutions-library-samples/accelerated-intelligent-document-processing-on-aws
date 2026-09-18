@@ -20,7 +20,7 @@ not:
 | Cognito-auth HTTP API            |     ✅ (1 GET)   |  ✅ (multi-route) |
 | Config preset applied at install |        —         |       ✅        |
 | `postRuleValidation` pipeline hook |      —         |       ✅        |
-| Host-GraphQL calls from the UI   |        —         |   ✅ (Rules Discovery) |
+| Host-API calls from the feature UI |       —         |   ✅ (Rules Discovery) |
 
 ## What it does
 
@@ -42,10 +42,21 @@ flowchart LR
       DDB[(ClaimsStatus table)]
     end
     UI -- GET /claims --> API --> DDB
-    UI -- uploadDiscoveryDocument /<br/>getConfigVersion --> HostGQL[(Host AppSync)]
+    UI -- uploadDiscoveryDocument /<br/>getConfigVersion --> HostApi[(Host REST API<br/>POST /op/field)]
     Host[Host pipeline<br/>after rule validation] -- dispatch --> Hook --> DDB
     Hook -. reads consolidated summary .-> OutBkt[(Output bucket)]
 ```
+
+The Rules Discovery tab does not talk to its own API for those two operations —
+it calls the **host's** API. It does so through the host's GraphQL-shaped REST
+client, which the host UI publishes as `window.IdpFeatureHost.generateClient`
+(see `feature-ui/src/hostGraphql.ts`), so the feature reuses the host's
+transport and the signed-in user's Cognito token and group memberships. The
+operation names and the `client.graphql({ query, variables })` call shape are
+carried over from the AppSync era; under the hood each call is a
+`POST /op/<field>` to the host's API Gateway REST API. Using
+`aws-amplify/api`'s own `generateClient()` here fails, because the host no
+longer configures a GraphQL endpoint in Amplify.
 
 ## Claim status (deterministic, no LLM)
 

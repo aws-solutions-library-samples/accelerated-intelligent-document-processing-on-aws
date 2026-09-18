@@ -137,8 +137,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -205,6 +205,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Retired-service documentation check"
+	@if ! make check-retired-services; then \
+		echo -e "$(RED)ERROR: Documentation presents a retired service as part of the current architecture (see issue #929)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
@@ -214,6 +220,10 @@ check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all ma
 check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/reporting-sql-layer.md §10.3)
 	@$(PYTHON) scripts/check_data_plane_tags.py || \
 		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
+
+check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
+	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
+		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
 
 validate-buildspec: ## Validate AWS CodeBuild buildspec files
 	@echo "Validating buildspec files..."

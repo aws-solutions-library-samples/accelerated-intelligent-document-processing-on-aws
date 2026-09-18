@@ -122,7 +122,7 @@ harness — verify they still hold when the schema evolves:
   disables summarization (unscored; its default model hits the temperature bug).
 - **`compat/native_upload.py`** writes configs verbatim (bypasses idp-cli migration).
 - **`run_matrix.launch()`** invokes the TestRunner Lambda directly (finds it whether it's
-  under `APPSYNCSTACK` (v0.5.x) or `APIRESOLVERSTACK` (v0.6)).
+  under the pre-migration `APPSYNCSTACK` (v0.5.x) or `APIRESOLVERSTACK` (v0.6)).
 - **Validate against the OLD model** before running: `git worktree add -f --detach <wt>
   v<PREV>` then `IDPConfig.model_validate(cfg)` from `<wt>/lib/idp_common_pkg`.
 - **Honesty:** report any cell that can't complete on a version (e.g. old-release

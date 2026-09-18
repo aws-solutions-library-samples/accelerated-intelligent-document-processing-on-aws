@@ -265,7 +265,7 @@ The solution uses a modular architecture with the main template (`template.yaml`
 - CloudWatch Alarms and Dashboard
 - Web UI Infrastructure (CloudFront, S3 for static assets, CodeBuild)
 - Authentication (Cognito User Pool, Identity Pool)
-- AppSync GraphQL API (for UI-backend communication)
+- API Gateway REST API + dispatcher Lambda (for UI-backend communication)
 
 **Unified Pattern Stack** (`patterns/unified/template.yaml`) - Processing resources:
 - Step Functions State Machine (BDA branch + Pipeline branch + shared tail)
@@ -354,7 +354,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
   - `pip install -e "lib/idp_common_pkg[extraction]"` - Extraction support (includes optional agentic mode with deterministic table parsing tool)
   - `pip install -e "lib/idp_common_pkg[evaluation]"` - Evaluation support
   - `pip install -e "lib/idp_common_pkg[all]"` - everything
-- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, AppSync integration, Reporting, BDA integration
+- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, API adapter (`idp_common.api_adapter`, the REST dispatcher's resolver-event adapter), Reporting, BDA integration
 - Configuration management via DynamoDB
 - Document models and data structures
 - Extraction features:
@@ -378,7 +378,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
 - Vite build system
 - Node.js 22.12+ and npm required
 - Authentication via AWS Amplify v6 and Cognito
-- Real-time document status via AppSync GraphQL subscriptions
+- Document status via REST polling of the tracking table (`src/ui/src/hooks/use-polling.ts`); chat tokens stream from a Lambda Function URL
 - Location: `src/ui/`
 
 ## Configuration System
@@ -522,7 +522,7 @@ Request access to these models in Amazon Bedrock before deployment:
 - Amazon SQS
 - Amazon DynamoDB
 - Amazon CloudWatch
-- AWS AppSync
+- Amazon API Gateway (UI ⇄ backend REST API; optionally the UI's S3-proxy host)
 - Amazon Cognito
 - Amazon CloudFront
 - Amazon EventBridge

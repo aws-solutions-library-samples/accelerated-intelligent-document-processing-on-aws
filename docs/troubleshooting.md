@@ -57,7 +57,7 @@ For issues not covered by the Error Analyzer, use the manual troubleshooting ste
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | **Cannot login to Web UI**           | Verify Cognito user status and permissions in AWS Console. Check email for temporary credentials if first-time login. |
 | **Web UI loads but shows errors**    | Check browser console for specific error messages. Verify API endpoints are accessible.                               |
-| **Cannot see document history**      | Verify AWS AppSync API permissions. Check CloudWatch Logs for API errors.                                             |
+| **Cannot see document history**      | Check the dispatcher Lambda's CloudWatch Logs for the failing operation. A 403 means a resolver group check rejected your role (see [rbac.md](./rbac.md)); a 401 means the Cognito token was rejected.  |
 | **Configuration changes not saving** | Check browser console for validation errors. Verify that the configuration Lambda function has correct permissions.   |
 
 ### Model and Service Issues
