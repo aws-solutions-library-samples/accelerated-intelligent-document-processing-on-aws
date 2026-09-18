@@ -134,9 +134,10 @@ Cognito User Pool (`Fn::ImportValue: <MainStackName>-UserPoolId`); the UI gets a
 fresh token via `context.getAuthToken()`.
 
 **Registration** — `template.yaml` must include the `RegisterFeature` custom
-resource (provided by the scaffold's `ui-deployer/`) that calls the host AppSync
-`registerFeature` mutation on Create/Update and unregisters on Delete. Without
-it the feature never appears in the nav.
+resource (provided by the scaffold's `ui-deployer/`) that invokes the host's
+`registerFeature` Lambda directly (`lambda:InvokeFunction` on the ARN the host
+exports as `<MainStackName>-RegisterFeatureFunctionArn`) on Create/Update and
+unregisters on Delete. Without it the feature never appears in the nav.
 
 Validate the manifest against the schema any time:
 

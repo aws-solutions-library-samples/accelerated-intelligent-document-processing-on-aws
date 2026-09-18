@@ -46,7 +46,7 @@ The primary cost drivers for the GenAI IDP Accelerator solution include:
 
 - **Amazon CloudWatch**: Costs for logs and metrics.
 - **Amazon Cognito**: Costs based on monthly active users.
-- **AWS AppSync**: Costs based on GraphQL API queries.
+- **Amazon API Gateway**: Costs based on REST API requests. The UI polls for document and job status, so request volume scales with the number of open browser tabs as well as document throughput; polling pauses on hidden tabs.
 - **Bedrock Knowledge Base**: Costs for queries and storage if this optional feature is used.
 
 ## Cost Optimization Strategies

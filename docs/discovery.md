@@ -132,7 +132,8 @@ This analysis produces structured configuration templates that can be used to co
 
 **Discovery Panel UI (`src/ui/src/components/discovery/DiscoveryPanel.jsx`):**
 - Unified web interface for all discovery operations
-- Real-time job status tracking via GraphQL subscriptions
+- Job status tracking by polling `getDiscoveryJob` every 10 seconds while a job is
+  active (`DiscoveryJobDetails.tsx`); GraphQL subscriptions are not used
 - PDF page thumbnail rendering with color-coded range highlighting
 - Configuration export and integration
 
@@ -190,9 +191,9 @@ graph TD
 - Configurable model selection
 - Prompt-based structure extraction
 
-**GraphQL/AppSync Integration:**
-- Real-time job status updates
-- UI synchronization and notifications
+**Web UI API Integration:**
+- Job status written to DynamoDB and read by the UI, which polls `listDiscoveryJobs` through the REST API while a job is in flight
+- Operations routed by the shared dispatcher at `POST /op/{field}` (`nested/api-resolvers/`)
 - Configuration management APIs
 
 ## Discovery Methods
@@ -800,7 +801,7 @@ discovery:
 > Discovery clears its `policy_classes` list.
 
 **Monitoring Progress:**
-- Real-time progress messages via GraphQL subscriptions (e.g., "Analyzing document structure with AI...", "Saving to configuration...")
+- Progress messages refreshed by 10-second polling (e.g., "Analyzing document structure with AI...", "Saving to configuration..."); GraphQL subscriptions are not used
 - Live elapsed time counter for active jobs
 - Discovered document class name shown as a green badge on success (e.g., `W4-Form`)
 - Failure root cause displayed in expandable error details with user-friendly messages
@@ -1256,7 +1257,7 @@ The Result column shows additional context:
 #### Components
 
 - **`BlueprintOptimizer`** (`lib/idp_common_pkg/idp_common/bda/blueprint_optimizer.py`): Core orchestrator — manages the full optimization lifecycle including blueprint lookup/creation, API invocation, polling, evaluation, and schema application.
-- **`blueprint_optimization` Lambda** (`src/lambda/blueprint_optimization/index.py`): Async Lambda handler invoked by the discovery processor. Manages AppSync status updates and error reporting.
+- **`blueprint_optimization` Lambda** (`src/lambda/blueprint_optimization/index.py`): Async Lambda handler invoked by the discovery processor. Writes job status to the tracking table (which the UI polls) and reports errors.
 - **`OptimizationResult`**: Dataclass returned by the optimizer with status, metrics, blueprint ARN, and optionally the optimized schema.
 
 #### Configuration

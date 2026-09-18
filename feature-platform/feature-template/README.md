@@ -35,9 +35,9 @@ feature-template/
 │   └── index.html            # Needed by Vite dev server; not published
 ├── ui-deployer/              # Custom-resource Lambda that copies the UMD
 │                             # bundle from the feature bucket into the main
-│                             # stack's WebUIBucket. Registers the feature
-│                             # via the main stack's AppSync API on stack
-│                             # Create/Delete.
+│                             # stack's WebUIBucket. Registers the feature by
+│                             # invoking the host's registerFeature resolver
+│                             # Lambda directly on stack Create/Delete.
 │   └── handler.py
 └── publish.py                # Thin wrapper that calls idp-feature-cli publish
 ```
@@ -98,9 +98,19 @@ User Pool (import `<MainStackName>-UserPoolId`).
 
 ### Main-stack registration
 Your `template.yaml` must include a `RegisterFeature` custom resource
-(see `ui-deployer/handler.py`) that calls the main stack's AppSync
-`registerFeature` mutation on Create/Update and `unregisterFeature` on
-Delete. Without this, your feature never shows up in the UI's nav.
+(see `ui-deployer/handler.py`) that invokes the host's `registerFeature`
+resolver Lambda on Create/Update and its `unregisterFeature` field on Delete.
+Without this, your feature never shows up in the UI's nav.
+
+The call is a plain `lambda:Invoke` on the function ARN the host exports as
+`<MainStackName>-RegisterFeatureFunctionArn`, with the payload
+`{"info": {"fieldName": "registerFeature"}, "arguments": {...}, "identity": {...}}`.
+Import that ARN both as the `Resource` of a `lambda:InvokeFunction` statement on
+your custom-resource role and as the handler's
+`REGISTER_FEATURE_FUNCTION_ARN` environment variable, as this template's
+`template.yaml` does. (This replaced a SigV4-signed AppSync mutation; AppSync has
+been removed from the solution, but the resolver event shape is unchanged, which
+is why the payload still looks like a GraphQL resolver event.)
 
 ## Add to the catalog & publish
 
