@@ -185,12 +185,11 @@
       "justification": "Two contrastive notes explaining why the private REST API needs no custom-header workaround and only one private hosted zone, where AppSync needed both. The contrast is the point and is stated in the past tense."
     },
     {
-      "path": "docs/well-architected.md",
-      "linePattern": "Web Application Firewall protection for the AppSync GraphQL API|across all Lambda functions, AppSync APIs, and other components",
-      "bucket": "a",
-      "justification": "KNOWN STALE, owned by a different change. GitHub issue #937 covers the stale AppSync/WAF claim in this file and is fixing it separately; editing it here would collide. This is the one allowlist entry that is NOT a legitimate historical or vestigial mention -- remove it once #937 lands. The pattern is pinned to the two literal stale sentences (docs/well-architected.md:43 and :49) rather than the bare word 'appsync' so that it CANNOT outlive them: PR #951 deletes both lines and adds three new ones at :183-:185 that also contain 'AppSync', and under the old bare pattern this exemption would have silently transferred to those three unreviewed lines with the gate's output byte-identical. Pinned, it goes dead the moment the two sentences go, and stale_allowlist_entries then fails the gate until somebody deletes it.",
-      "issue": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/937",
-      "expiresAfterVersion": "0.6.9"
+      "path": ".claude/skills/repo-quality-review.md",
+      "linePattern": "AppSync is the worked example|grep -rl \"AWS::AppSync\"|grep -rl \"AppSync\" docs/\\*\\.md|AppSync resource\\*\\*, and when this review was first run|described AppSync as the UI-to-backend API while",
+      "bucket": "b",
+      "justification": "The whole-repository review skill teaches how to find a service the documentation still presents as current after it was removed, and it uses AppSync as its worked example -- the one case in this repository where that drift actually happened and was measured. Every mention here asserts AppSync's ABSENCE: two shell lines that grep for it and print 'no template declares AppSync', a comment saying the UI moved to API Gateway while the docs did not, and a past-tense sentence recording the 28-file backlog that issue #929 has since closed. Pinned to those five literal fragments rather than the bare word so it cannot silently transfer to a future edit of this file that presents AppSync as current -- the same discipline the now-deleted docs/well-architected.md entry used, and for the same reason.",
+      "issue": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/939"
     },
     {
       "path": "CLAUDE.md",

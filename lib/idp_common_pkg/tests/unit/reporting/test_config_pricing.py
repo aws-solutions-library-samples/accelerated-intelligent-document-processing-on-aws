@@ -61,43 +61,46 @@ def test_pricing_from_config_with_valid_configuration():
 
 
 @pytest.mark.unit
-def test_pricing_returns_zero_when_config_fails():
-    """Test that pricing returns 0.0 when configuration processing fails"""
+def test_pricing_returns_unpriced_when_config_fails():
+    """A config with no pricing section makes every service explicitly unpriced.
+
+    Previously this returned 0.0, which reported a confident $0.00 for an entire
+    deployment whose pricing table failed to load. None (-> NULL cost columns)
+    says "we do not know" instead. See GitHub issue #926.
+    """
 
     # Create SaveReportingData instance with config that has no pricing
     invalid_config = {}  # Empty config, no pricing data
     idp_config = IDPConfig.model_validate(invalid_config)
     reporter = SaveReportingData("test-bucket", config=idp_config)
 
-    # Test that pricing returns 0.0 when configuration is invalid
     textract_cost = reporter._get_unit_cost("textract/detect_document_text", "pages")
     nova_input_cost = reporter._get_unit_cost(
         "bedrock/us.amazon.nova-lite-v1:0", "inputTokens"
     )
 
-    # Verify the costs return 0.0 when configuration is not valid
-    assert textract_cost == 0.0, f"Expected 0.0 (no valid config), got {textract_cost}"
-    assert nova_input_cost == 0.0, (
-        f"Expected 0.0 (no valid config), got {nova_input_cost}"
+    assert textract_cost is None, (
+        f"Expected None (no valid config), got {textract_cost}"
+    )
+    assert nova_input_cost is None, (
+        f"Expected None (no valid config), got {nova_input_cost}"
     )
 
 
 @pytest.mark.unit
-def test_pricing_without_config_returns_zero():
-    """Test that pricing returns 0.0 when no config is provided"""
+def test_pricing_without_config_returns_unpriced():
+    """Same, for a reporter constructed with no config at all."""
 
     # Create SaveReportingData instance without config
     reporter = SaveReportingData("test-bucket")
 
-    # Test that pricing returns 0.0 when no config is available
     textract_cost = reporter._get_unit_cost("textract/detect_document_text", "pages")
     nova_input_cost = reporter._get_unit_cost(
         "bedrock/us.amazon.nova-lite-v1:0", "inputTokens"
     )
 
-    # Verify the costs return 0.0 when no configuration is available
-    assert textract_cost == 0.0, f"Expected 0.0 (no config), got {textract_cost}"
-    assert nova_input_cost == 0.0, f"Expected 0.0 (no config), got {nova_input_cost}"
+    assert textract_cost is None, f"Expected None (no config), got {textract_cost}"
+    assert nova_input_cost is None, f"Expected None (no config), got {nova_input_cost}"
 
 
 @pytest.mark.unit

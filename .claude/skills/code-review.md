@@ -117,3 +117,26 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] Branch from `develop` using prefix: `feature/`, `fix/`, `docs/`
 - [ ] Focused, single-issue changes
 - [ ] Version bump if needed: `make version V=x.y.z` (PEP 440 compliant)
+
+### Commit messages and PR descriptions are public and permanent
+
+This repository is public, and a commit message cannot be edited once merged. A
+force-push does not remove it either: GitHub keeps a merged PR's own commits and
+diff view independently of any branch, so the only remedy is a support request.
+Treat both as published text.
+
+- [ ] No internal-only references: corporate email addresses, hostnames that
+      resolve only on the internal network, internal review or ticket ids. A
+      `PreToolUse` hook (`scripts/hooks/check_commit_text.py`) blocks the common
+      cases; if it fires, fix the text rather than working around it.
+- [ ] Written at summary altitude: what the change accomplishes and why, not an
+      inventory of the individual strings it touched. "Trim the governance docs to
+      community-facing guidance" is the right altitude; the line-by-line detail
+      belongs in the diff, where it stays accurate.
+- [ ] No third-party or personal information published on someone else's behalf:
+      contributor names, contribution metrics or rankings, individual repository
+      permissions.
+- [ ] Exploitable security findings go through the private channel in
+      `SECURITY.md`, not into a commit message, roadmap entry or changelog line.
+- [ ] Facts that rot are dated or omitted: live permission tables, "as of today"
+      counts and in-flight PR states are stale within a week.

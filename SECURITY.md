@@ -14,27 +14,19 @@ either route:
 
 Full details, including what to include in a report and how AWS handles it, are on
 the [AWS Vulnerability Reporting page](https://aws.amazon.com/security/vulnerability-reporting/).
-
-This is the same channel stated by the
+These are the same channels stated by the
 [organization-wide security policy](https://github.com/aws-solutions-library-samples/.github/blob/HEAD/SECURITY.md)
 for `aws-solutions-library-samples` and by this repository's
-[`CONTRIBUTING.md`](./CONTRIBUTING.md). This file restates the same channels and
-adds repo-specific scope: it repeats the two addresses so that a reporter who
-lands on this repository does not have to go looking, and adds the detail below.
-The one place it deliberately differs is that the section below narrows the org
-policy's general "do not open a public issue" instruction, by carving out
-non-exploitable hardening findings as welcome in public. The reporting channels
-themselves are identical, so nothing here sends an exploitable report anywhere
-other than AWS Security.
-
-There is no "Report a vulnerability" button on this repository, and there should
-not be: that affordance appears only when GitHub private vulnerability reporting
-is enabled, and enabling it would open a second private intake that bypasses AWS
-Security. The two channels above are the whole list.
+[`CONTRIBUTING.md`](./CONTRIBUTING.md); they are repeated here so that a reporter
+who lands on this repository does not have to go looking.
 
 Please report privately even if you are not sure the finding is exploitable. It is
 straightforward for AWS Security to tell you it is not, and irreversible to
 disclose a working exploit in a public issue.
+
+Reports sent to AWS Security are handled under the AWS Vulnerability Disclosure
+Program's own process, described on the pages linked above; that process, not this
+repository, governs the timeline for an exploitable finding.
 
 ## What belongs in a public GitHub issue instead
 
@@ -55,8 +47,7 @@ using the bug report template. That includes:
 
 The dividing line is that last point. If a public description of the finding would
 hand someone the means to compromise a deployed stack, or to read data they should
-not be able to read, use the private channel. If in doubt, use the private
-channel.
+not be able to read, use the private channel. If in doubt, use the private channel.
 
 ## Supported versions
 
@@ -66,58 +57,49 @@ channel.
 | Any earlier tagged release | No |
 | `develop` | Fixes land here first; not a supported deployment target |
 
-The project maintains one line of development. Security fixes land on `develop`
-and ship in the next release, which is published roughly every one to two weeks;
-they are not backported to earlier tags and there is no long-term-support branch
-(see [GOVERNANCE.md](./GOVERNANCE.md#branch-and-release-model)). Older releases
-remain deployable — each `CHANGELOG.md` entry keeps its version-pinned template
-URLs — but they do not receive fixes. If you are running an older release, the
-remediation for any security issue is to update to the current one; the
-[Deployment Guide](./docs/deployment.md#updating-an-existing-stack) covers
-in-place stack updates, and each release's
+The project maintains one line of development. Security fixes land on `develop` and
+ship in the next release; they are not backported to earlier tags and there is no
+long-term-support branch (see
+[GOVERNANCE.md](./GOVERNANCE.md#branch-and-release-model)). Older releases remain
+deployable — each `CHANGELOG.md` entry keeps its version-pinned template URLs — but
+they do not receive fixes. If you are running an older release, the remediation for
+any security issue is to update to the current one; the
+[Deployment Guide](./docs/deployment.md#updating-an-existing-stack) covers in-place
+stack updates, and each release's
 [validation record](./docs/release-validation/README.md) states what was exercised
 before it was published.
-
-## Response expectations
-
-This repository publishes no acknowledgement or remediation time commitment, and
-will not state one it cannot honour. Reports sent to AWS Security are handled
-under the AWS Vulnerability Disclosure Program's own process, which is described
-on the pages linked above; that process, not this repository, is what governs the
-timeline for an exploitable finding. Public issues are triaged on a best-effort
-basis by a small maintainer group — see [MAINTAINERS.md](./MAINTAINERS.md).
 
 ## What this project does about security, and where to look
 
 The [`security/`](./security/README.md) directory is the auditable home for this
-solution's security artifacts, and is the right starting point if you are
-assessing the accelerator rather than reporting a specific bug:
+solution's security artifacts, and is the right starting point if you are assessing
+the accelerator rather than reporting a specific bug:
 
 - [`security/threat-modeling/`](./security/threat-modeling/) — the STRIDE threat
   model, the mitigation reports, and per-feature threat analyses with stable threat
   IDs that the test suites reference.
 - [`security/test-results/`](./security/test-results/) — curated, public-safe
   snapshots of four security tests, one folder per release: the Sample Security
-  Review Tool static and dependency scan, an OWASP ZAP dynamic scan of the
-  deployed API, and the static and live role-based access control suites.
+  Review Tool static and dependency scan, an OWASP ZAP dynamic scan of the deployed
+  API, and the static and live role-based access control suites.
 - [`security/README.md`](./security/README.md) — what each test covers, its pass
   criterion, and how to run it yourself.
 
-Two of those gates run on every pull request, in both CI systems: the security
-scan (which fails the build on any open high-severity finding) and a dependency
-audit against the OSV database (which fails on high or above, with triaged
-exceptions justified in an allowlist file). The role-based access control and
-dynamic scans need a deployed stack and are run per release.
+Two of those checks run on every pull request: the static security scan (which fails
+the build on any open high-severity finding) and a dependency audit against the OSV
+database (which fails on high or above, with triaged exceptions justified in an
+allowlist file). The role-based access control and dynamic scans need a deployed
+stack and are run per release.
 
 ## Shared responsibility for your deployment
 
-This is sample code, licensed MIT-0, that you deploy into your own AWS account.
-The security of a running deployment depends on choices made at and after deploy
-time — which models and regions you enable, who is in which Cognito group, whether
-the web UI is public or private, your log retention and log level, your data
-retention, and your account-level controls. A finding that is a consequence of a
-deployment choice is a documentation or defaults question rather than a
-vulnerability in the code, and is best raised as a public issue.
+This is sample code, licensed MIT-0, that you deploy into your own AWS account. The
+security of a running deployment depends on choices made at and after deploy time —
+which models and regions you enable, who is in which Cognito group, whether the web
+UI is public or private, your log retention and log level, your data retention, and
+your account-level controls. A finding that is a consequence of a deployment choice
+is a documentation or defaults question rather than a vulnerability in the code, and
+is best raised as a public issue.
 
 The guidance for hardening a deployment lives in
 [Well-Architected Framework Review](./docs/well-architected.md), with related
@@ -125,6 +107,6 @@ material in [private-network deployment](./docs/deployment-private-network.md),
 [GovCloud deployment](./docs/govcloud-deployment.md),
 [role-based access control](./docs/rbac.md) and
 [Monitoring](./docs/monitoring.md). One default worth knowing without reading
-further: raising `LogLevel` above the shipped default can put document contents,
-presigned URLs and personally identifiable information into CloudWatch Logs, which
-is why the default was lowered to `WARN`.
+further: raising `LogLevel` above the shipped default of `WARN` can put document
+contents, presigned URLs and personally identifiable information into CloudWatch
+Logs.

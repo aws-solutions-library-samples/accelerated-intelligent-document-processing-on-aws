@@ -137,10 +137,24 @@ reporter = SaveReportingData(
 ### Cost Calculation Process
 
 1. **Configuration Loading**: Pricing data is loaded from the config dictionary and cached for performance
-2. **Service/Unit Matching**: System attempts exact match for service_api/unit combinations
-3. **Fuzzy Matching**: If exact match fails, uses partial matching for common patterns
+2. **Service Matching**: The pricing key is resolved by **exact** match on `service_api`, then on progressively shorter `/`-delimited suffixes of it (longest wins). This is the same rule the benchmark harness uses (`benchmarks/harness/lib.py::price_metering`), so a benchmark cost and a reported cost for the same metering map agree.
+3. **Unit Matching**: The unit name is matched **exactly** within the resolved entry
 4. **Cost Calculation**: `estimated_cost = value × unit_cost` for each metering record
-5. **Fallback Handling**: Missing pricing defaults to $0.0 with warning logs
+5. **Miss Handling**: Two different misses, two different outcomes:
+   - *Unit absent from an entry that exists* → `$0.00`. The unit is not chargeable for that service. `pricing.yaml` omits units that do not apply, and every Bedrock call meters `totalTokens` and `requests`, which Bedrock does not charge for.
+   - *No entry for `service_api` at all* → **unpriced**: `_get_unit_cost` returns `None` and both `unit_cost` and `estimated_cost` are written as SQL `NULL`, with a `WARNING` naming the service. `SUM()` ignores NULLs exactly as it would zeros, so totals are unchanged, but the gap is queryable (`WHERE unit_cost IS NULL`) instead of masquerading as something free.
+
+> **There is no fuzzy/substring matching.** It was removed in GitHub issue #926.
+> It had accepted a pricing key that was merely a substring of the requested
+> model id (or the reverse) and a unit name that was merely a substring of the
+> requested unit — and because `inputTokens` is the first unit in every pricing
+> row, `cacheReadInputTokens` bound to it, pricing cache reads at the **fresh
+> input** rate: up to 10x their real cost, always in the expensive direction.
+> The fallback ran only when the exact lookup found nothing, so a model with a
+> complete pricing entry was never mispriced; a model with no entry, or an entry
+> missing `cacheReadInputTokens`, was.
+> `tests/unit/reporting/test_pricing_lookup.py` pins the rates by hand and
+> asserts every selectable model has an exact pricing entry.
 
 ### One rate per unit: pricing sees sums, never single requests
 
@@ -232,7 +246,9 @@ Retrieves the unit cost for a specific service API and unit combination.
 - `service_api`: The service identifier (e.g., "bedrock/us.anthropic.claude-3-sonnet-20240229-v1:0")
 - `unit`: The unit of measurement (e.g., "inputTokens", "pages")
 
-**Returns**: Unit cost in USD, or 0.0 if not found
+**Returns**: Unit cost in USD; `0.0` if the entry exists but does not list that
+unit (not chargeable); `None` if there is no entry for `service_api` at all
+(**unpriced** — the caller records NULL). Never returns a related model's price.
 
 **Example**:
 ```python

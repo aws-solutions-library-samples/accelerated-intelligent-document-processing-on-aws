@@ -4,37 +4,37 @@
 """Offline gate on ``.github/CODEOWNERS`` and the governance documents.
 
 Nothing in ``scripts/``, the ``Makefile`` or ``.github/workflows/`` referenced
-``CODEOWNERS``, ``MAINTAINERS.md``, ``GOVERNANCE.md``, ``ROADMAP.md`` or
-``SECURITY.md`` before this file existed, so three things could rot silently:
+``CODEOWNERS``, ``GOVERNANCE.md``, ``ROADMAP.md`` or ``SECURITY.md`` before this
+file existed, so two things could rot silently:
 
 1. **A CODEOWNERS pattern that matches nothing.** This repository has already
    deleted ``patterns/pattern-1/`` through ``patterns/pattern-3/``; a rule naming
    a path that no longer exists keeps sitting in the file, matches nothing, and
    routes nothing, with no warning from GitHub (its own validator checks *owners*,
    not whether a *pattern* still resolves).
-2. **CODEOWNERS and MAINTAINERS.md drifting apart.** Both files state that they
-   must agree and that CODEOWNERS is the one with effect — which makes a silent
-   divergence a page that lies about who reviews your change.
-3. **A broken relative link in the governance documents.** The docs-site build
+2. **A broken relative link in the governance documents.** The docs-site build
    cannot cover these: ``docs-site/setup.sh`` symlinks content only from ``docs/``
    and ``images/``, so the root-level governance files are not in the Starlight
    content collection at all and ``make docs-build`` never reads them.
 
-All three were verified by hand when the files were added, and a one-off manual
+Both were verified by hand when the files were added, and a one-off manual
 verification is exactly what this file exists to replace.
+
+A third check lived here until ``MAINTAINERS.md`` was removed: it asserted that
+the handles in CODEOWNERS and that page named the same people. Deleting the prose
+roster removed the divergence it policed — CODEOWNERS is now the only record of
+who reviews what, so there is no second copy to disagree with it.
 
 **Everything is derived, not enumerated.** The rules, their count, the handles and
 the document set are all read out of the files, so a rule, a handle or a new
 governance page added later is covered without touching this test.
 
-Deliberately *not* covered here: whether each named owner actually holds **write
-access**, which is the failure mode that is currently live (three of five named
-owners hold read access only). That needs an authenticated token, and GitHub's own
-``GET /repos/{owner}/{repo}/codeowners/errors`` is the authoritative answer —
-which today reports 8 findings, so wiring it into a blocking gate would red-line
-every pull request, forks included, for a condition no pull request can fix. It
-is documented as a maintainer-run command in the "CODEOWNERS routing depends on
-write access" section of ``MAINTAINERS.md`` instead.
+Deliberately *not* covered here: whether each named owner holds **write access**,
+without which GitHub silently ignores their CODEOWNERS entry. That needs an
+authenticated token, and GitHub's own
+``GET /repos/{owner}/{repo}/codeowners/errors`` is the authoritative answer, so it
+belongs in a maintainer-run check rather than in a gate that would red-line pull
+requests from forks for a condition no pull request can fix.
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CODEOWNERS = Path(".github/CODEOWNERS")
-COMPANION = Path("MAINTAINERS.md")
 
 # Root-level Markdown files reached by the closure below but deliberately left
 # out of the link check, each with the reason. Both are asserted to still exist
@@ -66,15 +65,11 @@ LINK_CHECK_EXCLUDED = {
     ),
 }
 
-# Owner forms this gate can compare against MAINTAINERS.md. A team (@org/team) or
-# a bare email address is valid CODEOWNERS syntax but would need different
-# handling, so encountering one is a failure rather than a silent skip.
+# Owner forms this gate understands. A team (@org/team) or a bare email address is
+# valid CODEOWNERS syntax but would need different handling, so encountering one is
+# a failure rather than a silent skip.
 _HANDLE = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
 OWNER_TOKEN = re.compile(rf"^@{_HANDLE}$")
-
-# A bare @mention in prose. The lookbehind keeps it off `@@A@@` (which appears in
-# the reproduction command both files document) and off email local parts.
-MENTION = re.compile(rf"(?<![\w@/.])@({_HANDLE})")
 
 MD_LINK = re.compile(r"\[[^\]]*\]\(\s*(<[^>]+>|[^)\s]+)")
 EXTERNAL = re.compile(r"^(?:[a-z][a-z0-9+.\-]*:|//)", re.IGNORECASE)
@@ -263,48 +258,40 @@ def test_every_codeowners_pattern_matches_a_tracked_path() -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# 2. CODEOWNERS and MAINTAINERS.md name the same people
-# --------------------------------------------------------------------------- #
 @pytest.mark.unit
-def test_codeowners_and_maintainers_name_the_same_handles() -> None:
-    """Both files say they must agree; nothing checked that they do."""
-    in_codeowners: set[str] = set()
+def test_every_codeowners_rule_names_a_routable_owner() -> None:
+    """An owner GitHub cannot resolve routes nothing, exactly like a dead pattern."""
+    handles: set[str] = set()
     for lineno, pattern, owners in _codeowners_rules():
         assert owners, f"{CODEOWNERS} line {lineno}: {pattern!r} names no owner"
         for owner in owners:
             assert OWNER_TOKEN.match(owner), (
                 f"{CODEOWNERS} line {lineno}: owner {owner!r} is a team or email "
-                "rather than a user handle. Valid CODEOWNERS, but this gate "
-                "cannot map it to MAINTAINERS.md — extend the gate."
+                "rather than a user handle. Valid CODEOWNERS, but this gate does "
+                "not handle that form — extend the gate."
             )
-            in_codeowners.add(owner[1:].casefold())
-
-    in_companion = {m.casefold() for m in MENTION.findall(_strip_code(_read(COMPANION)))}
-
-    assert in_codeowners, "extracted no handles from CODEOWNERS; parser is broken"
-    assert in_companion, f"extracted no handles from {COMPANION}; parser is broken"
-    assert in_codeowners == in_companion, (
-        f"{CODEOWNERS} and {COMPANION} name different people.\n"
-        f"  only in {CODEOWNERS}: {sorted(in_codeowners - in_companion) or 'none'}\n"
-        f"  only in {COMPANION}: {sorted(in_companion - in_codeowners) or 'none'}\n"
-        f"Both files state they must be changed together, and that {CODEOWNERS} "
-        "is the one with effect."
-    )
+            handles.add(owner[1:].casefold())
+    assert handles, "extracted no handles from CODEOWNERS; parser is broken"
 
 
 # --------------------------------------------------------------------------- #
-# 3. every relative link in the governance documents resolves
+# 2. every relative link in the governance documents resolves
 # --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_governance_document_set_is_derived_not_empty() -> None:
-    """A broken derivation would make the link test below pass vacuously."""
+    """A broken derivation would make the link test below pass vacuously.
+
+    The floor is a vacuity guard, not an inventory: it catches a closure that
+    returns nothing or only its own seed. Removing a governance page legitimately
+    lowers the count, so lower the floor with it rather than reading a drop as a
+    parser failure.
+    """
     docs = _governance_docs()
-    assert len(docs) >= 5, (
+    assert len(docs) >= 4, (
         f"derived only {len(docs)} governance documents ({docs}); the closure in "
         "_governance_docs() is broken, so the link check covers almost nothing"
     )
-    assert CODEOWNERS in docs and COMPANION in docs
+    assert CODEOWNERS in docs and Path("GOVERNANCE.md") in docs
 
 
 @pytest.mark.unit
@@ -359,7 +346,7 @@ def test_every_relative_link_in_the_governance_docs_resolves() -> None:
 
     assert checked >= 20, (
         f"only {checked} relative links found across {_governance_docs()}; the "
-        "link extractor is broken (38 at the time of writing; most links in these "
+        "link extractor is broken (40 at the time of writing; most links in these "
         "files are external URLs, which are deliberately not fetched)"
     )
     assert not broken, "broken relative links:\n  " + "\n  ".join(broken)
