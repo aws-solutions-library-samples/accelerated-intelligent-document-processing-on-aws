@@ -55,8 +55,8 @@ The clearest way to read this document is to know the split up front.
 for the whole stack; twelve CloudWatch alarms; two CloudWatch dashboards; AWS X-Ray
 tracing on the document-processing Lambda functions; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
-encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; TLS-only resource
-policies on 22 buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
+encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 23 TLS-only
+resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
 Cognito authentication with a REST API authorizer; concurrency admission control; and
 per-invocation token and cost metering written to a queryable ledger.
 
@@ -71,7 +71,7 @@ parameter to set, so a default deployment does not do them at all:
 
 | Responsibility | Why it is yours |
 |---|---|
-| Confirming a subscription to the alerts SNS topic, and adding any further subscribers | The alarms publish to `AlertsTopic`. Even where the stack creates an email subscription for `AdminEmail`, SNS does not deliver until that address confirms it, and any additional operator, chat webhook or existing operational topic is yours to attach. Check the topic's subscription list rather than assuming |
+| Confirming what is subscribed to the alerts SNS topic, and adding any further subscribers | Eleven of the twelve alarms publish to `AlertsTopic`, and the stack creates the topic — but a topic with no confirmed subscriber notifies nobody, so read the topic's subscription list in the console or with `aws sns list-subscriptions-by-topic` rather than assuming. An email subscription is not delivered to at all until the address owner confirms it, whoever created it. Any additional operator address, chat webhook or existing operational topic is yours to attach |
 | Setting an AWS Budget and spend or token-volume alarms | There is no `AWS::Budgets` resource in any template and none of the twelve alarms is a cost alarm. The metering ledger measures spend after the fact; it does not cap it |
 | Enabling MFA on the Cognito user pool | The pool sets a password policy but no `MfaConfiguration`, so MFA is at the Cognito default of off |
 | Choosing and configuring WAF rules beyond IP allow-listing | The optional WebACL contains a single IP-allow rule; AWS Managed Rules, rate-based rules and bot control are not configured |
@@ -136,7 +136,7 @@ to 30 days.
 Automated testing exists at several tiers and is described in full in
 [Testing](./testing.md). An end-to-end integration suite lives in
 `lib/idp_common_pkg/tests/integration/` behind the `@pytest.mark.integration` marker and
-runs via `make test-integration`; because it deploys real AWS resources it runs in the
+runs via `make -C lib/idp_common_pkg test-integration`; because it deploys real AWS resources it runs in the
 GitLab `integration_tests` stage rather than on GitHub pull requests. Repeatable accuracy,
 latency, token and cost measurement across a matrix of document sizes and configurations
 is in `benchmarks/`, with sample documents in `samples/`.
@@ -172,14 +172,53 @@ nine of the ten SQS queue policies, plus one further queue policy in
 `PublicAccessBlockConfiguration`, and twelve send server access logs to the logging
 bucket.
 
+**Who can get an account.** One parameter decides this, and it is easy to miss.
+`AllowedSignUpEmailDomain` defaults to the empty string, which leaves the pool's
+`AdminCreateUserConfig.AllowAdminCreateUserOnly` at `true`: self-registration through the
+web UI is closed and an administrator has to create every user. Setting the parameter to a
+domain — or a comma-separated list of them — flips that flag to `false` and turns on public
+self-registration for anyone holding an address at those domains. The five
+`AWS::Cognito::UserPoolGroup` resources are not assigned automatically, so a user who
+registers that way starts in no group at all; read that together with the authorization
+paragraph below, because a user in zero groups still reaches every operation declared
+`groups: ANY`. Leave the default unless you intend open sign-up, and if you do set it, make
+sure the domain is one you control.
+
 **Authentication and authorization.** The web UI signs in against a Cognito user pool
 whose password policy requires a minimum length of 8 with lowercase, uppercase, numeric
 and symbol characters. The UI calls an API Gateway REST API — `HttpApi` in
-`nested/api-resolvers/template.yaml` — whose single `POST /op/{operation}` route is
-guarded by a `COGNITO_USER_POOLS` authorizer (`HttpApiAuthorizer`) validating the same
-JWT the browser holds, and dispatched to per-operation resolver Lambdas. Authorization is
-enforced per operation on Cognito group membership and configuration-version scope, and
-that mapping is scanned statically by `make api-test-static`; see [RBAC](./rbac.md).
+`nested/api-resolvers/template.yaml`. All application traffic goes through one route,
+`POST /op/{field}` (`HttpApiMethod`), which is guarded by a `COGNITO_USER_POOLS`
+authorizer (`HttpApiAuthorizer`) validating the same JWT the browser holds and is then
+dispatched to per-operation resolver Lambdas. That is not the only method on the API,
+though. `HttpApiOptionsMethod` is an ordinary unauthenticated CORS preflight, and in
+API Gateway hosting mode two further `AuthorizationType: NONE` methods —
+`WebUIRootMethod` (`GET /`) and `WebUIProxyMethod` (`GET /{proxy+}`), both conditional on
+`ServeWebUI` — serve the React bundle's `index.html` and hashed assets from the Web UI
+bucket over the same stage, deliberately and with no JWT, because the browser has no
+token until the app has loaded. Those routes serve static files only; see
+[API Gateway Hosting](./apigateway-hosting.md).
+
+Authorization on the `/op` route is not uniform, and the difference matters when you
+classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
+for it and `make api-test-static` fails if the code and that file drift apart. It covers
+118 operations. 90 of them are restricted to named Cognito groups and 2
+(`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
+principals, rejecting every Cognito caller. The remaining 26 are declared `groups: ANY`,
+which that file defines as any authenticated Cognito user. Nine of those 26 are narrowed
+further, by record ownership or by the caller's allowed configuration versions; the other
+17 are not, so a valid session is the whole check. That set is read-oriented but it is not
+trivial — it includes `getDocument`, `getFileContents`, `getFilePresignedUrl`,
+`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
+`queryKnowledgeBase` and `getMyProfile`. Some carry other controls that are real but are
+not group or per-document controls: `getFilePresignedUrl` and `getFileContents` resolve
+through `_validate_bucket()` in
+`nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py`, which allow-lists
+the stack's own buckets and so prevents reading arbitrary S3, not reading another user's
+document. This is the designed posture rather than a defect, but it means every
+authenticated user of your pool can read processed document content. Decide whether that
+is acceptable for your data classification, and see [RBAC](./rbac.md).
+
 The API Gateway REST transport replaced AWS AppSync entirely — there are no
 `AWS::AppSync` resources in any template — see
 [AppSync to REST migration](./migration-appsync-to-rest.md).
@@ -199,12 +238,25 @@ feature-platform templates, so an organization whose SCPs mandate a boundary on 
 can supply one at deploy time. `scripts/tests/test_iam_privilege_escalation.py` guards the
 runtime role surface against privilege-escalation regressions.
 
+Resource scoping is a separate question from boundaries, and it is the weaker of the two
+here. Counting across the eleven templates that make up the solution and its optional
+extensions, 123 IAM policy statements are written against `Resource: "*"` — 51 in
+`template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
+`nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
+`iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
+API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 28
+of the 123, and the X-Ray read actions, `textract:DetectDocumentText` and
+`textract:AnalyzeDocument` are account-scoped in the same way. The rest have not been
+audited statement by statement, so treat the number as a surface to review rather than as a
+count of findings. A permissions boundary is the practical lever for narrowing whatever you
+find without editing every policy, which is why the two belong in the same review.
+
 **Content safety.** Bedrock Guardrails are supported but bring-your-own and off by
 default: supply the id and version of a guardrail you created via `BedrockGuardrailId`
 and `BedrockGuardrailVersion` (`BedrockGuardrailId` defaults to empty, which is what keeps
 Guardrails off; `BedrockGuardrailVersion` defaults to `DRAFT`) and every Bedrock and
 Knowledge Base call routes through it, including
-[Automated Reasoning Checks](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning.html)
+[Automated Reasoning Checks](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning-checks.html)
 if your guardrail enables them.
 
 **Network isolation.** Setting `DeployInVPC=true` places the document-processing Lambdas
@@ -225,9 +277,12 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 
 | Review item | Your comment | Owner | Date |
 |---|---|---|---|
+| Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed and accept that a self-registered user in no group can still read document content? | | | |
 | Is MFA enabled on the Cognito user pool? The pool sets no `MfaConfiguration`, so a default deployment has it off | | | |
+| Do you accept that every authenticated user of your pool can read processed document content through the 17 `groups: ANY` operations that carry no ownership or scope check, or do you need a group check added for your data classification? | | | |
 | Have you restricted `WAFAllowedIPv4Ranges`, and if the API is reachable from the internet, have you added AWS Managed Rules and a rate-based rule beyond the IP allow-list? | | | |
 | Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
+| Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |
 | Have you created a Bedrock Guardrail and set `BedrockGuardrailId` / `BedrockGuardrailVersion`, or accepted running without content policy enforcement? | | | |
 | Have you reviewed the `CustomerManagedEncryptionKey` key policy, and do you need a key you manage outside the stack instead? | | | |
 | Is CloudTrail enabled in this account and region, and where does the trail go? No template creates one | | | |
@@ -256,11 +311,31 @@ throttling and service errors. The two ladders compose, so a single document can
 many model invocations before it fails; that is what makes the cost review item in the
 Cost Optimization pillar a real question rather than a formality.
 
-**Dead-letter queues.** Every SQS consumer has a DLQ, and each has its own
-`maxReceiveCount` chosen for the work it holds: 1000 on `DocumentQueue` against a
-30-second visibility timeout, 500 on the workflow tracker against a 60-second visibility
-timeout (roughly eight hours of retrying before a message is parked), and 3 on the test
-file-copy queues. Four of the twelve alarms watch these DLQs for any visible message.
+**Dead-letter queues.** Almost every SQS consumer has a DLQ — the exception is
+`TestResultCacheUpdateQueue`, which carries no `RedrivePolicy` — and the queues that do
+have one set a `maxReceiveCount` chosen for the work they hold. Exactly four queues declare
+a redrive policy:
+
+| Queue | `VisibilityTimeout` | `maxReceiveCount` | Retry window before a message is parked |
+|---|---|---|---|
+| `DiscoveryQueue` | 900s | 1000 | roughly 250 hours |
+| `DocumentQueue` | 60s | 500 | roughly 8 hours |
+| `TestFileCopyQueue` | 900s | 3 | roughly 45 minutes |
+| `TestSetFileCopyQueue` | 900s | 3 | roughly 45 minutes |
+
+The retry window is the product of the two columns and is an upper bound: it is how long a
+message can keep being redelivered, not how long processing actually takes. Note what is
+*not* in that table. The workflow tracker has no SQS redrive policy at all —
+`WorkflowTrackerDLQ` is the Lambda `DeadLetterQueue` target of the `WorkflowTracker`
+function, so it receives an asynchronous invocation that Lambda has already retried twice,
+which is a different and far shorter mechanism than five hundred queue redeliveries. The
+other queues named `...DLQ` work the same way: `QueueSenderDLQ`, `JobTrackerDLQ` and
+`PostProcessingDecompressorDLQ`, plus `BDACompletionFunctionDLQ` in
+`patterns/unified/template.yaml`, are Lambda dead-letter targets, and `DataMartRollupDLQ`
+is an asynchronous-invocation `OnFailure` destination capped at
+`MaximumRetryAttempts: 2`. So when you plan a redrive procedure, check which of the two
+mechanisms parked the message: only the four queues above are governed by
+`maxReceiveCount`. Four of the twelve alarms watch DLQs for any visible message.
 
 **Circuit breaker.** An opt-in circuit breaker for Bedrock outages is available via
 `CircuitBreakerEnabled` (default `"false"`). When enabled, `BedrockServiceOutageAlarm`
@@ -274,7 +349,11 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources.
+UI resources. It is also what buys room to grow: `template.yaml` declares 304 top-level
+resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
+the solution through the `feature-platform/` mechanism, that remaining budget is the number
+to watch, and a new extension is better added as its own nested stack than as more
+resources in the parent.
 
 **Durable state.** All thirteen S3 buckets have versioning enabled. Ten of the twelve
 DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
@@ -307,8 +386,12 @@ constitute one, because nothing in the stack replicates data across regions.
 
 - **Durable, versioned storage**: all S3 buckets have versioning enabled, so objects
   survive accidental overwrite or deletion and prior versions can be recovered.
-- **Point-in-Time Recovery**: nine of ten DynamoDB tables can be restored to any second
-  within the retention window.
+- **Point-in-Time Recovery**: ten of the twelve DynamoDB tables a default deployment
+  creates can be restored to any second within the retention window. The two without it are
+  `ConcurrencyTable`, whose admission counter is reconciled from the true
+  running-execution count rather than restored, and `ChatDocumentSessionsTable`, whose
+  per-session chat-ownership records sit under a short TTL. Neither holds document data, so
+  neither is on the recovery path for the documents you process.
 - **Infrastructure as Code**: the whole stack can be re-provisioned in another account or
   region from source.
 - **Stateless compute**: Lambda and Step Functions hold no durable state, so recovery is
@@ -325,7 +408,7 @@ the checklist above:
   PITR within a region. For cross-region protection, enable
   [S3 Cross-Region Replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)
   on the document and configuration buckets and use
-  [DynamoDB backups](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BackupRestore.html)
+  [DynamoDB backups](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Backup-and-Restore.html)
   (optionally via [AWS Backup](https://docs.aws.amazon.com/aws-backup/latest/devguide/whatisbackup.html))
   copied to a DR region, then redeploy the stack there when needed.
 - **Pilot light or warm standby** (lower RTO, higher cost): pre-deploy the stack in a
@@ -450,7 +533,7 @@ region must offer the Bedrock models, Textract features and Bedrock Data Automat
 projects your configuration uses.
 
 We do not ship a carbon metric. The
-[Customer Carbon Footprint Tool](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/ccft-overview.html)
+[Customer Carbon Footprint Tool](https://docs.aws.amazon.com/help-panel/awsaccountbilling/latest/console/hp-ccft.html)
 reports at the account level, so attributing emissions to this workload specifically
 requires that you separate it by account or cost allocation tag.
 
