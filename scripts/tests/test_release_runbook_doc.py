@@ -18,8 +18,19 @@ the script and the Makefile rather than against a copy of the facts:
   fourth region cannot land undocumented;
 * every ``make <target>`` the page cites still exists;
 * the artifact keys it names are the keys the publisher writes;
+* the number of files ``make version`` stamps is the number the page claims;
 * linked skills and docs resolve, and the page is reachable from the sidebar and
   the docs index.
+
+One assertion looks at the page's own structure rather than at a source file: the eight
+``### Step N`` headings must be present and in numeric order, and the five top-level
+numbered sections must all be there. That catches a step deleted, renumbered or moved —
+a runbook that tells you to tag before you publish is worse than none.
+
+None of this covers the prose, and a green run should not be read as if it did. Sentences
+inside a section can be edited, and whole paragraphs dropped, without failing anything
+here. Guarding 600 lines of prose against itself is not worth the machinery; guarding it
+against the code it describes, which is what the rest of this file does, is.
 
 Modelled on ``test_testing_doc.py``, which guards ``docs/testing.md`` the same way.
 """
@@ -44,10 +55,14 @@ VALIDATION_INDEX = REPO_ROOT / "docs" / "release-validation" / "README.md"
 TARGET_RE = re.compile(r"^([a-zA-Z0-9_.-]+):", re.MULTILINE)
 # Only count deliberate invocations: inline code (`make foo`) or a command at the
 # start of a line inside a fenced block. Prose like "make the release" is not a
-# target reference and must not be treated as one.
-MAKE_CALL_RE = re.compile(r"(?:`|^)make ([a-z][a-z0-9-]*)", re.MULTILINE)
+# target reference and must not be treated as one. The name character class matches
+# TARGET_RE's, so a cited target with an underscore, a dot or a capital is seen too.
+MAKE_CALL_RE = re.compile(r"(?:`|^)make ([a-zA-Z0-9_.-]+)", re.MULTILINE)
 SKILL_PATH_RE = re.compile(r"\.claude/skills/([a-z0-9-]+\.md)")
 DOC_LINK_RE = re.compile(r"\]\((\.[^)#]+)")
+# The page's own spine: `### Step 1 — …` (em dash) and `## 1. …`.
+STEP_HEADING_RE = re.compile(r"^### Step (\d+) — ", re.MULTILINE)
+SECTION_HEADING_RE = re.compile(r"^## (\d+)\. ", re.MULTILINE)
 
 
 def _doc_text() -> str:
@@ -70,6 +85,31 @@ def test_the_page_exists_with_frontmatter_and_licence() -> None:
         "docs/*.md needs YAML frontmatter with a title; the docs site keys off it"
     )
     assert "SPDX-License-Identifier: MIT-0" in text.split("# Release Runbook")[0]
+
+
+@pytest.mark.unit
+def test_the_ordered_procedure_keeps_its_shape() -> None:
+    """The eight steps are all present and in order, and so are the five sections.
+
+    Reordering is the mutation with the worst consequences and the smallest diff:
+    swapping "Publish the artifacts" and "Tag and push" produces a runbook that reads
+    perfectly well and tags a release that was never published.
+    """
+    text = _doc_text()
+
+    steps = [int(n) for n in STEP_HEADING_RE.findall(text)]
+    assert steps == list(range(1, 9)), (
+        f"the runbook's `### Step N` headings read {steps}; expected 1 through 8 in "
+        "numeric order. A step was deleted, renumbered, or moved relative to its "
+        "neighbours — if deliberate, change this expectation in the same commit"
+    )
+
+    sections = [int(n) for n in SECTION_HEADING_RE.findall(text)]
+    assert sections == list(range(1, 6)), (
+        f"the top-level numbered sections read {sections}; expected 1 through "
+        "5 (Preconditions, Ordered steps, Failure and recovery, What is not automated, "
+        "Post-release verification checklist)"
+    )
 
 
 @pytest.mark.unit
@@ -113,7 +153,9 @@ def test_bucket_basename_and_prefix_match_the_script() -> None:
     body = _script_body()
     basename = re.search(r"--bucket-basename\s+(\S+)", body)
     prefix = re.search(r"--prefix\s+(\S+)", body)
-    assert basename and prefix, "release script must pass --bucket-basename and --prefix"
+    assert basename and prefix, (
+        "release script must pass --bucket-basename and --prefix"
+    )
 
     text = _doc_text()
     assert basename.group(1) in text, (
@@ -135,12 +177,14 @@ def test_bucket_basename_and_prefix_match_the_script() -> None:
     ],
 )
 def test_mutable_keys_the_publisher_writes_are_documented(key: str) -> None:
-    """These two keys are the only ones a release overwrites, so the only rollback lever."""
+    """These are the only two keys a release overwrites — the only rollback lever."""
     assert key in PUBLISHER.read_text(encoding="utf-8"), (
         f"{key!r} no longer appears in {PUBLISHER.relative_to(REPO_ROOT)}; "
         f"the runbook's rollback section describes a key that may no longer exist"
     )
-    assert key in _doc_text(), f"{key!r} must be documented in {DOC.relative_to(REPO_ROOT)}"
+    assert key in _doc_text(), (
+        f"{key!r} must be documented in {DOC.relative_to(REPO_ROOT)}"
+    )
 
 
 @pytest.mark.unit
@@ -161,7 +205,9 @@ def test_the_cli_is_documented_as_a_consumer_of_the_floating_key() -> None:
     )
 
     # https://<host>/<bucket>/<key> — capture only the object key.
-    keys = set(re.findall(r"https://[^/\s\"']+/[^/\s\"']+/([\w./-]+\.yaml)", block.group(1)))
+    keys = set(
+        re.findall(r"https://[^/\s\"']+/[^/\s\"']+/([\w./-]+\.yaml)", block.group(1))
+    )
     assert keys, f"no template object keys parsed out of TEMPLATE_URLS in {CLI.name}"
     assert keys == {"artifacts/genai-idp/idp-main.yaml"}, (
         f"TEMPLATE_URLS now points at {sorted(keys)} rather than the floating "
@@ -173,12 +219,12 @@ def test_the_cli_is_documented_as_a_consumer_of_the_floating_key() -> None:
     cli_rel = str(CLI.relative_to(REPO_ROOT))
     assert cli_rel in text, (
         f"{cli_rel} must be named in {DOC.relative_to(REPO_ROOT)} as a consumer of "
-        f"artifacts/genai-idp/idp-main.yaml — an operator moving that key needs to know "
-        f"`idp-cli deploy` is affected"
+        f"artifacts/genai-idp/idp-main.yaml — an operator moving that key needs "
+        f"to know `idp-cli deploy` is affected"
     )
     assert "TEMPLATE_URLS" in text, (
-        f"{DOC.relative_to(REPO_ROOT)} should name TEMPLATE_URLS so the reader can find "
-        f"the hardcoded URLs in {cli_rel}"
+        f"{DOC.relative_to(REPO_ROOT)} should name TEMPLATE_URLS so the reader can "
+        f"find the hardcoded URLs in {cli_rel}"
     )
 
 
@@ -188,6 +234,35 @@ def test_every_make_target_the_page_cites_exists() -> None:
     missing = sorted(set(MAKE_CALL_RE.findall(_doc_text())) - targets)
     assert not missing, (
         f"{DOC.relative_to(REPO_ROOT)} cites unknown make targets: {missing}"
+    )
+
+
+@pytest.mark.unit
+def test_the_version_stamp_counts_match_the_makefile() -> None:
+    """Step 1's success criterion counts files, so the count must come from the target.
+
+    `make version` stamps the version into a set of files that has grown twice. A wrong
+    count on a ✅-badged line is the kind of small untruth that makes a reader stop
+    trusting the badges.
+    """
+    text = MAKEFILE.read_text(encoding="utf-8")
+    start = text.index("\nversion:")
+    recipe = text[start : text.index("\n##@ ", start)]
+
+    package_files = recipe.count("sed -i.bak")
+    printed_paths = len(re.findall(r'^\t@echo "  - ', recipe, re.MULTILINE))
+    assert package_files and printed_paths, (
+        "could not parse the `version` target's file list out of the Makefile"
+    )
+
+    doc = _doc_text()
+    assert f"{package_files} package version files" in doc, (
+        f"`make version` rewrites {package_files} package version files; "
+        f"{DOC.relative_to(REPO_ROOT)} §1.1 and Step 1 must say so"
+    )
+    assert f"{printed_paths} paths" in doc, (
+        f"the `version` target reports {printed_paths} stamped paths; "
+        f"{DOC.relative_to(REPO_ROOT)} must say so"
     )
 
 

@@ -113,8 +113,11 @@ two-thirds-working release; it gives you one region of customers who cannot depl
   changelog skill, which refuses to cut a section over a non-final `VERSION`
   (📄 `.claude/skills/cut-release-changelog.md`). **Check `cat VERSION` by hand.**
 - ✅ `VERSION` is set by `make version V=x.y.z`, which validates PEP 440 and rewrites
-  `VERSION` plus five package version files and the seller-entitlement-service template's
-  `ServiceVersion` output (`Makefile`, `##@ Version Management`). Never hand-edit `VERSION`.
+  `VERSION`, 9 package version files (five `pyproject.toml` files under `lib/`, the
+  `__version__` of `idp_sdk`, `idp_mcp_connector` and `idp_feature_sdk`, and `idp_cli`'s
+  `click.version_option`) and the seller-entitlement-service template's `ServiceVersion`
+  output — 11 paths in all, which the target lists when it finishes (`Makefile`,
+  `##@ Version Management`). Never hand-edit `VERSION`.
 - 📄 `CHANGELOG.md` must have the `[Unreleased]` section already **pruned** to
   net-since-release content in three subsections (`.claude/skills/prepare-changelog.md`),
   and then **cut** to `## [<VERSION>]` with the three-region `## Templates` block appended
@@ -229,8 +232,10 @@ cat VERSION                      # must print exactly <x.y.z>
 git describe --tags --abbrev=0   # must print the PREVIOUS release tag
 ```
 
-**Success:** `VERSION` and the five package version files all read `<x.y.z>`; the Makefile
-prints the list of files it touched. ✅ Verified from the `version` target.
+**Success:** `VERSION` and the 9 package version files all read `<x.y.z>`; the Makefile
+prints the 11 paths it touched. ✅ Verified from the `version` target. That printed list is
+the authority — read it rather than trusting the count here, and
+`scripts/tests/test_release_runbook_doc.py` fails if the two disagree.
 
 ### Step 2 — Cut the CHANGELOG
 
@@ -254,6 +259,7 @@ clean tree.
 
 ```bash
 cd <repo root>            # required: publish reads ./VERSION relative to cwd
+mkdir -p scratch          # gitignored, and absent in a fresh clone; tee will not create it
 bash scripts/aws-release.sh 2>&1 | tee scratch/release-<x.y.z>.log
 ```
 
@@ -275,7 +281,21 @@ Notes on how this behaves, all ✅ verified from code:
 
 **Success looks like**, per region: `✅ All builds completed successfully`, then
 `✅ Public ACLs set successfully`, then a Deployment Outputs block with the 1-Click Launch
-URL and the template URL, then `✅ Done!`. Three of those, then the shell exits 0.
+URL and the template URL, then `✅ Done!`. Three of those, one per region.
+
+Judge the outcome from those three blocks and from the log, not from the shell's exit
+status, because with the script piped to `tee` the status the shell reports is `tee`'s and
+not the script's. Two consequences, both measured with a throwaway script in place of
+`scripts/aws-release.sh` — no release was run to establish them. First, that is why the
+`mkdir -p scratch` above is there: `scratch/` is gitignored and absent in a fresh clone,
+`tee` does not create the directory, and without it you get a `No such file or directory`
+error from `tee`, a publish that nonetheless runs to completion because `tee` keeps copying
+its input, no log file at all, and a non-zero exit status from a release that succeeded.
+Second, in the other direction, a script that exits 1 under `set -e` gave a pipeline status
+of 0 while `${PIPESTATUS[0]}` held the real 1 — so a failed publish reads as success if you
+only look at `$?`. If you want the status to be meaningful, read `${PIPESTATUS[0]}` on the
+next line (in zsh, `${pipestatus[1]}`), or enable `pipefail` in the shell you run this in,
+which returned 1 for the same failing pipeline.
 
 ### Step 4 — Verify the artifacts are public and correct
 
@@ -577,11 +597,17 @@ done
       grep -oE "https://s3[^\`]*idp-main_$(cat VERSION)\.yaml" CHANGELOG.md \
         | xargs -n1 -I{} curl -sI {} -o /dev/null -w '%{http_code} {}\n'
       ```
-- [ ] A versioned sub-artifact is public — spot-check one layer zip, whose exact name you
-      can read out of the published template:
+- [ ] A versioned sub-artifact is public — spot-check one layer zip per region, whose exact
+      name is read out of that region's published template. This snippet repeats the loop
+      rather than reusing `$B` from the block above, because `$B` is set inside that loop
+      and afterwards holds only the last region:
       ```bash
-      curl -s "$B/idp-main_$V.yaml" | grep -om1 'idp-common-base-[0-9a-f]*\.zip'
-      curl -sI "$B/$V/layers/<that name>" -o /dev/null -w '%{http_code}\n'
+      V=$(cat VERSION)
+      for R in us-west-2 us-east-1 eu-central-1; do
+        B="https://s3.$R.amazonaws.com/aws-ml-blog-$R/artifacts/genai-idp"
+        Z=$(curl -s "$B/idp-main_$V.yaml" | grep -om1 'idp-common-base-[0-9a-f]*\.zip')
+        curl -sI "$B/$V/layers/$Z" -o /dev/null -w "  $R  %{http_code}  $Z\n"
+      done
       ```
       ⚠️ This is *intended* as the check that would catch a publish that died before
       `set_public_acls` — but whether it can actually catch that depends on the
