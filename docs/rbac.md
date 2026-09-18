@@ -286,10 +286,19 @@ reachable by any authenticated caller — `getFileContents`, for example, bounds
 itself with a bucket allowlist rather than a group check. Deciding which of the 26
 should be narrowed is tracked as issue
 [#979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979).
-Separately, the self-asserted-identity passthrough in `idp_common.api_adapter`
-(where an event carrying its own `arguments` + `identity` bypasses this
-normalization entirely) is **not** addressed by this layer and is tracked as
-[#978](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/978).
+**An `identity` carried on the event is no longer authoritative for this check.**
+`idp_common.api_adapter` used to pass an event carrying its own `arguments` +
+`identity` through untouched, so an invocation of that shape chose the groups this
+check was made against
+([#978](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/978)).
+The adapter now builds `identity` from the API Gateway authorizer's verified claims,
+refuses an asserted identity that contradicts them, and refuses one presented with
+no verified claims at all — a `403`, like any other authorization denial. The one
+shape still passed through is an explicitly null `identity`, which is how a
+service-to-service invocation gated by IAM on the function ARN identifies itself.
+The group-scoped operations deny it, since it carries no groups; the operations
+declared `ANY` and several resolver-level checks deliberately skip the Cognito
+check for it rather than failing it, IAM being the control on that path.
 
 The manifest
 (`http_api_dispatcher/api_rbac_manifest.json`) is **generated** from
