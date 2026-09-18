@@ -17,6 +17,11 @@ cannot infer (see **Inputs**), and only if they are not already in the request.
 > `idp-main_<VERSION>.yaml`, not a local build — every stack is created from that
 > object except the two transform tiers, which must publish from source to apply the
 > transform. Check the template's `Description` says `(v<VERSION>)` before you start.
+>
+> **This skill validates a release; it does not publish one.** The publish procedure —
+> `scripts/aws-release.sh`, the three public buckets, the mutable vs version-pinned keys,
+> and the failure/recovery paths — is in `docs/release-runbook.md`. If the artifact under
+> test does not exist yet, that runbook is what produces it.
 
 ## Inputs
 

@@ -212,7 +212,7 @@ When `EnableMLflow` is `true`, the following resources are created in the unifie
 
 The Lambda function is built as a Docker container image using `Dockerfile.optimized` with the `sagemaker-mlflow` Python package and `git` installed (required by MLflow for artifact logging).
 
-Additionally, the `TestResultsResolverFunction` in the AppSync stack receives:
+Additionally, the `TestResultsResolverFunction` in the API-resolvers nested stack (`nested/api-resolvers/`, logical id `APIRESOLVERSTACK`) receives:
 - `MLFLOW_LOGGER_FUNCTION_ARN` environment variable (conditional)
 - `lambda:InvokeFunction` IAM permission for the MLflow Logger Lambda (conditional)
 

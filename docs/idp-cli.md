@@ -238,7 +238,7 @@ idp-cli deploy [OPTIONS]
 - `--no-rollback`: Disable rollback on stack creation failure
 - `--region`: AWS region (optional, auto-detected)
 - `--role-arn`: CloudFormation service role ARN (optional)
-- `--headless`: Deploy a **headless (no-UI) stack** — removes CloudFront, AppSync, Cognito, WAF, agents, HITL, and Test Studio. Required for GovCloud; also valid in Commercial regions for API-only / pipeline integrations. See [Headless Deployment](./headless-deployment.md).
+- `--headless`: Deploy a **headless (no-UI) stack** — removes CloudFront, the UI REST API (the `APIRESOLVERSTACK` nested stack holding the API Gateway REST API, its dispatcher, and the UI-only resolver Lambdas), Cognito, WAF, agents, HITL, and Test Studio. Required for GovCloud; also valid in Commercial regions for API-only / pipeline integrations. See [Headless Deployment](./headless-deployment.md).
 - `--bucket-basename`: S3 bucket basename for build artifacts (used with `--from-code`; region is appended automatically)
 - `--prefix`: S3 key prefix for build artifacts (default: `idp-cli`, used with `--from-code`)
 - `--public`: Make published S3 artifacts publicly readable (used with `--from-code`)
@@ -513,7 +513,7 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
 1. **CloudFormation Deletion Phase**: Standard stack deletion
 2. **Additional Resource Cleanup Phase** (happens with `--wait` on all deletions and always with `--force-delete-all`): Removes stack-specific resources not tracked by CloudFormation:
    - CloudWatch Log Groups (Lambda functions, Glue crawlers)
-   - AppSync APIs and their log groups
+   - AppSync APIs and their log groups (only ever present in stacks created before AppSync was removed; current stacks create none)
    - CloudFront distributions (two-phase cleanup - initiates disable, takes 15-20 minutes to propagate globally)
    - CloudFront Response Headers Policies (from previously deleted stacks)
    - IAM custom policies and permissions boundaries
@@ -528,7 +528,7 @@ The `--force-delete-all` flag performs a comprehensive cleanup AFTER CloudFormat
 - IAM permissions boundary policies
 - CloudFront response header policies (custom)
 - CloudWatch Logs resource policies (stack-specific)
-- AppSync log groups
+- AppSync log groups (pre-migration stacks only)
 - Additional log groups containing stack name
 - Gracefully handles missing/already-deleted resources
 
@@ -2084,7 +2084,7 @@ This command safely identifies and removes ONLY resources belonging to IDP stack
 **Resources Cleaned:**
 - CloudFront distributions and response header policies
 - CloudWatch log groups  
-- AppSync APIs
+- AppSync APIs (leftovers from stacks created before AppSync was removed; current stacks create none)
 - IAM policies
 - CloudWatch Logs resource policy entries
 - S3 buckets (automatically emptied before deletion)
