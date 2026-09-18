@@ -4,7 +4,21 @@
 **Status:** PROPOSAL → implement in sequenced PRs (do NOT reorder).
 **Reproducibility:** planning documents written before September 2026 predate the
 project's [reproducibility rules](../benchmarking/index.md#reproducibility--honesty-rules)
-— treat their numbers as unaudited unless they cite committed benchmark data.
+— treat their numbers as unaudited. **Cost** figures have a second, independent
+problem: `_get_unit_cost` in
+`lib/idp_common_pkg/idp_common/reporting/save_reporting_data.py` falls back to a
+substring match when a model's pricing entry does not name the metered unit, and
+`"inputTokens" in "cacheReadInputTokens"` is true — so cache reads, priced at ~10%
+of fresh input, are charged the fresh rate (cache writes, at ~115%, are
+undercharged by ~20%). The overstatement is bounded: `1/(0.1 + 1.15f)` for a
+cache-write share `f` of cache tokens, i.e. ~1.5× at `f=0.5`, rising toward 10× as
+`f` approaches zero. It is exactly zero for the 73 of 96 `config_library/pricing.yaml`
+entries that price `cacheReadInputTokens` explicitly, because the exact match wins
+and the fallback never runs — so the error is model-dependent, not universal. A cost
+figure in this document is therefore citable only if the model it was measured on
+prices `cacheReadInputTokens`, or if it was measured after that fallback is fixed.
+Citing committed benchmark data is **not** sufficient on its own: committed data
+measured on an affected model sits on the mispriced path too.
 **Owner note:** this is a *major* update. The hard constraint: **no silent quality
 regression for customers on non-agentic (simple) + separate confidence + granular
 who process long documents / large lists.**
@@ -49,7 +63,11 @@ of the single `assess_results` call:
 - Non-agentic + separate + large doc now works WITHOUT granular.
 - **Validate:** e2e on a genuinely large-list doc (bank-statement-multipage.pdf,
   ~120 rows) in simple+separate with granular OFF → all rows get confidence +
-  geometry, row coverage matches extracted count, cost in the ~$0.09/doc range.
+  geometry, row coverage matches extracted count, and cost per document no higher
+  than the SAME document processed with granular ON. Measure both arms in that run
+  and record both absolute figures as the baseline: there is no committed baseline
+  to validate against, so a relative comparison measured in one run is the only
+  cost claim this validation can support.
 - Tests: unit test that the standalone path batches a >list_batch_size list and
   reconciles to full per-cell coverage.
 
