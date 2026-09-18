@@ -28,7 +28,13 @@
 #   * File revisions, not commits. A plain `git log --format='%an' | uniq -c`
 #     commit count reproduces none of the figures below, because the authors
 #     differ sharply in commit size — see /lib/idp_sdk/, where @webarch-ai's
-#     share reads 39% by file revisions and 14% by commits.
+#     share reads 39% by file revisions and 14% by commits. Where a COMMIT count
+#     is quoted below it is measured with the same command plus
+#     `--full-history --no-merges` and the same sed: --full-history for the
+#     reason above, and --no-merges because a merge is one commit but no file
+#     revisions, so counting merges would compare two different populations.
+#     Without those flags the /lib/idp_sdk/ split reads 64%/10% of 221 rather
+#     than 63%/14% of 196.
 #   * The `sed`, which merges the corporate-alias git identity
 #     `Mansoor [C] Malik` into `Mansoor Malik`. Both carry the same commit
 #     email (malmansx@amazon.com), so leaving them split understates that
@@ -112,8 +118,15 @@
 /lib/idp_sdk/                                     @rstrahan @webarch-ai
 
 # ---------------------------------------------------------------------------
-# Workshop content, authored in full by @tomron-aws (100% of its history —
-# all 53 file revisions).
+# Workshop content, authored in full by @tomron-aws — 100% of its history, all
+# 53 file revisions. Read that figure with the caveat, though: all 53 arrived in
+# ONE commit (c2e3c8017, 2026-05-28, "docs: add Amazon Quick + IDP MCP
+# integration workshop (#333)"), which is also his only commit anywhere in the
+# repository — 1 of 8,966, nothing since. Unlike the rules above, the percentage
+# here identifies the author of a single content drop rather than sustained
+# involvement. The line is kept because he is still the only person who has
+# written any of it, but read it as a pointer to the original author. See
+# MAINTAINERS.md.
 # ---------------------------------------------------------------------------
 /workshop/                                        @tomron-aws @rstrahan
 

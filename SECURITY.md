@@ -21,13 +21,16 @@ for `aws-solutions-library-samples` and by this repository's
 [`CONTRIBUTING.md`](./CONTRIBUTING.md). This file restates the same channels and
 adds repo-specific scope: it repeats the two addresses so that a reporter who
 lands on this repository does not have to go looking, and adds the detail below.
-Note that a repository-local `SECURITY.md` takes precedence over the
-organization default in GitHub's Security tab and its "Report a vulnerability"
-affordance, and that the section below deliberately narrows the org policy's
-general "do not open a public issue" instruction by carving out non-exploitable
-hardening findings as welcome in public. The reporting channels themselves are
-identical, so nothing here sends an exploitable report anywhere other than AWS
-Security.
+The one place it deliberately differs is that the section below narrows the org
+policy's general "do not open a public issue" instruction, by carving out
+non-exploitable hardening findings as welcome in public. The reporting channels
+themselves are identical, so nothing here sends an exploitable report anywhere
+other than AWS Security.
+
+There is no "Report a vulnerability" button on this repository, and there should
+not be: that affordance appears only when GitHub private vulnerability reporting
+is enabled, and enabling it would open a second private intake that bypasses AWS
+Security. The two channels above are the whole list.
 
 Please report privately even if you are not sure the finding is exploitable. It is
 straightforward for AWS Security to tell you it is not, and irreversible to

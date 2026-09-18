@@ -152,13 +152,23 @@ inventory, the CI gate parity or the docs sidebar goes stale, and the two-tier
 rule (feature docs under `docs/`, module docs in `lib/idp_common_pkg/**/README.md`)
 is enforced by review. There is a real backlog: documentation still asserting
 AppSync exists after its removal
-([#929](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/929)),
+([#929](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/929),
+fix in review as
+[#959](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/959)),
 a `CONTRIBUTING.md` describing directories that no longer exist
-([#930](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/930)),
+([#930](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/930),
+rewrite in review as
+[#942](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/942)),
 a stale Well-Architected review
-([#937](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/937)),
+([#937](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/937),
+refresh in review as
+[#951](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/951)),
 and figures in planning documents that can no longer be reproduced
 ([#938](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/938)).
+Those three pull requests were open when this was written; the "in review" notes
+follow the same convention as the ", now fixed" notes elsewhere on this page, and
+like every issue cited here they are evidence of where effort is going rather
+than a promise about a date.
 Removing an unreproducible number is as welcome a contribution as adding a
 feature.
 

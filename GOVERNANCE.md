@@ -66,17 +66,34 @@ routine work.
    `lib/idp_common_pkg/**/README.md`. User-visible changes also need a
    `CHANGELOG.md` entry under `[Unreleased]`.
 4. **Pass the automated gates.** They run on every pull request and are the
-   floor, not the review. On GitHub, the `Lint, Type Check, and Test` workflow
-   runs `make lint-cicd` (ruff lint and format checks, UI lint and build,
-   `cfn-lint` at a pinned version, buildspec validation, ARN-partition and
-   data-plane-tag checks), `make typecheck-pr`, the Python and package test
-   suites, the UI unit tests, the static API RBAC scan, the first-party dependency
-   resolution check and the CloudFormation service-role permission validation. The
-   `Security Checks` workflow runs the Sample Security Review Tool scan and the
-   dependency (SCA) audit; both fail the build on high-severity findings.
+   floor, not the review. On GitHub the `Developer Tests` workflow
+   (`.github/workflows/developer-tests.yml`) has one job, whose display name is
+   `Lint, Type Check, and Test`; it runs `make lint-cicd` (ruff lint and format
+   checks, UI lint and build, `cfn-lint` at a pinned version, buildspec
+   validation, ARN-partition and data-plane-tag checks), `make typecheck-pr`, the
+   Python and package test suites, the UI unit tests, the static API RBAC scan,
+   the first-party dependency resolution check and the CloudFormation service-role
+   permission validation. The `Security Checks` workflow
+   (`.github/workflows/security-checks.yml`) has two jobs, `SRT Security Review`
+   for the Sample Security Review Tool scan and `Dependency Audit (SCA)` for the
+   dependency audit; both fail the build on high-severity findings.
+
+   The distinction between the two names matters, because it is the **job**
+   display name — not the workflow name — that appears as a check run on a pull
+   request and that has to be typed into GitHub's required-status-checks box.
+   Anyone enabling branch protection (see the note below) needs
+   `Lint, Type Check, and Test`, `SRT Security Review` and
+   `Dependency Audit (SCA)`, and would find nothing by searching for
+   `Developer Tests`. A pull request shows a fourth check run, `Test Results`;
+   that one is published by a reporter action *inside* the first job rather than
+   being a gate of its own, which is why it can lag the other three by a few
+   minutes.
 5. **Get a review.** CODEOWNERS routes the request to the subsystem owner where
    one exists, and to the primary maintainer otherwise. Expect review comments to
-   be specific and to ask for evidence where behaviour changed.
+   be specific and to ask for evidence where behaviour changed. Routing a request
+   is not the same as an approval being required — see the note on branch
+   protection below, and `MAINTAINERS.md` on the write-access dependency that
+   currently makes six of the nine subsystem rules route to the maintainer alone.
 6. **The maintainer merges.** Contributors do not merge their own pull requests.
 
 A note on where the tests run. The public GitHub repository is one of two homes:
@@ -92,8 +109,23 @@ Two known asymmetries are worth stating plainly because they affect what "green"
 means. GitLab runs its fast checks on every push as well as on merge requests,
 while the GitHub workflows are pull-request-only, so a direct push to `develop`
 runs nothing on GitHub. And a check being visible is not the same as it being
-blocking: required-status-check enforcement on `develop` is a repository setting,
-and enabling it is tracked as an open issue rather than already done.
+blocking: `develop` has no branch protection rule and no branch-scoped ruleset
+today, so nothing is enforced as a required status check. Enabling that is tracked
+as
+[#933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+rather than already done.
+
+The same setting is what would require a review, so the consequence goes further
+than unenforced checks: **no approval is required to merge either.** Step 5 above
+describes where a review request is *sent*, not a guarantee that one is given —
+CODEOWNERS routes the request and nothing blocks the merge button if it goes
+unanswered. There is a sharper corner. @rstrahan wrote 5,819 of the repository's
+8,966 commits and is the sole owner of `patterns/unified/`, the pipeline itself,
+under the default CODEOWNERS rule — and GitHub does not request a review from a
+pull request's own author. So for a change to `patterns/unified/` authored by
+@rstrahan, no reviewer is requested at all and no approval is required. What makes
+review happen on this project is the maintainer's practice, not a repository
+setting; #933 is the setting.
 
 ## Branch and release model
 
