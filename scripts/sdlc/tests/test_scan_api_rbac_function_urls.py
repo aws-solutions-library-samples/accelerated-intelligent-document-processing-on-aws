@@ -454,7 +454,13 @@ def test_run_checks_reports_s9_when_the_group_lists_disagree(tmp_path):
         "TargetFunctionArn:\n        Fn::GetAtt: [StreamFunction, Arn]",
     ],
 )
-def test_s6_resolves_the_target_in_every_reference_form(tmp_path, target_line):
+def test_s6_resolves_the_target_in_every_reference_form(target_line):
+    # No `tmp_path`: this is the isolated-predicate half of the S6 pair. It reads
+    # `lambda_url_resources` directly against an inline template string. The
+    # fixture-tree half that drives `run_checks` over a defective repo is the next
+    # test (`test_s6_catches_a_handler_outside_the_targets_code_uri`). An unused
+    # `tmp_path` in a signature here advertises a fixture tree that is not built,
+    # which is precisely the confusion the section comment above warns about.
     urls = scanner.lambda_url_resources(
         "Resources:\n"
         "  StreamUrl:\n"
