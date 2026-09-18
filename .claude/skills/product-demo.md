@@ -176,8 +176,16 @@ Do this before `start`, every time:
    you know the element you will click and what the page does next. This is where
    you find the flash message that shifts the table, the modal that needs a
    scroll, the button that is disabled until something loads.
-3. **Clear the state you disturbed.** Reload so no toast from the rehearsal is on
-   screen when the recording starts.
+3. **Clear the state you disturbed.** Do a real page reload, not a hash
+   navigation: the app's flash messages ("Successfully deleted 1 test set")
+   survive route changes and will otherwise sit in your first chapter. Then
+   take a screenshot, not a DOM query, to confirm what is on screen before
+   `start` — the side navigation's open state, in particular, is easy to
+   misread from the DOM.
+4. **Keep the context small.** `take_snapshot` of a long table costs thousands
+   of tokens each time. Save it to a file and grep for the uid you need:
+   `take_snapshot --filePath scratch/…/snap.txt` then
+   `grep 'button "Create"' snap.txt`.
 
 If a step **does not work** during rehearsal, the demo stops here. Report it as
 functional breakage in the format `.claude/skills/ux-test.md` uses, offer a UX
@@ -227,7 +235,11 @@ card read from `demo.md`, and `demo.mp4` / `demo.srt` as the outputs. The sessio
 directory is `scratch/ux-recordings/demo-<title>-<timestamp>/`.
 
 `mark` goes **before** the action: the renderer holds the frame until the narrator
-has started, then the click lands. Keep the pace of a person watching, not of the
+has started, then the click lands. Use the MCP `click` for anything the viewer
+should see happen — a programmatic `element.click()` from `evaluate_script` fires
+no mousedown, so the cursor overlay draws nothing and Cloudscape popovers ignore
+it. Scrolling a wide table with `scrollTo({behavior: 'smooth'})` from a script is
+fine and reads well on camera. Keep the pace of a person watching, not of the
 model driving — one idea per chapter, five to eight chapters, and `take_snapshot`
 (not screenshots) between actions so nothing flashes on screen that the viewer
 should not see.
@@ -256,7 +268,10 @@ track.
 2. Optionally edit `<session>/narration.md`; only changed lines are re-synthesised.
 3. `AWS_PROFILE=default ./scripts/ux_recorder.py render --voice Ruth --dry-run`
    first. A chapter silent for more than a few seconds, or sitting at the 3× speed
-   ceiling, wants a longer narration line or a `pause` next time.
+   ceiling, wants a longer narration line or a `pause` next time. The narration
+   can still be lengthened now: edit that chapter's line in `narration.md` to
+   describe what the footage shows (the video is paced to the voice, so a longer
+   line means less speed-up), then re-run the dry run.
 4. `AWS_PROFILE=default ./scripts/ux_recorder.py render --voice Ruth`, then watch
    the mp4 length against the target and check the click table.
 5. Write `<session>/docs-entry.md` — a ready-to-paste section for

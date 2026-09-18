@@ -115,4 +115,6 @@ storyboards:
         test-set editing demo)
     docs: docs/creating-custom-test-sets.md
     category: Evaluation & Testing
-    last_recorded: null
+    last_recorded:
+      date: '2026-09-18'
+      version: 0.6.9.dev2
