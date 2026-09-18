@@ -59,9 +59,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL = REPO_ROOT / "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py"
 RESOLVER_ROOT = REPO_ROOT / "nested/api-resolvers/src/lambda"
 TEMPLATE = REPO_ROOT / "nested/api-resolvers/template.yaml"
+# Most resolver functions are declared in the nested stack, but not all of them:
+# FinetuningJobsResolverFunction lives in the PARENT template and points its
+# CodeUri back into nested/api-resolvers/src/lambda. Scanning only the nested
+# template left it looking layer-free when it in fact carries IDPCommonBaseLayer,
+# so adding the canonical import there — the correct thing to do — would have
+# failed this suite and told the author to vendor a copy instead.
+TEMPLATES = (TEMPLATE, REPO_ROOT / "template.yaml")
 SYNC_SCRIPT = REPO_ROOT / "scripts/sync_resolver_log_sanitizer.sh"
 
 VENDORED_NAME = "log_sanitizer.py"
+VENDORED_MODULE = "log_sanitizer"
 CANONICAL_IMPORT = "idp_common.utils.log_sanitizer"
 
 # The keys the hand-copies were missing. Asserted by name so the specific
@@ -110,34 +118,139 @@ def _index_source(resolver: Path) -> str:
 
 
 def _layers_by_code_uri() -> dict[str, list[str]]:
-    """Map ``src/lambda/<dir>`` to the IDPCommon layer refs its function declares.
+    """Map resolver directory name to the IDPCommon layer refs its function declares.
 
-    Parsed with regex rather than a YAML loader: the template is full of short-form
+    Parsed with regex rather than a YAML loader: the templates are full of short-form
     intrinsics (``!Ref``, ``!Sub``, ``!If``) that a plain ``yaml.safe_load`` refuses,
     and all this needs is which resource block names which layer. Resource blocks
     start at exactly two spaces of indentation.
+
+    Three things this deliberately does NOT assume, each of which used to drop a
+    resolver silently — and a resolver missing from this map reads as "carries no
+    layer", the direction that produces wrong advice:
+
+    * a leading ``./`` on the CodeUri (``ListDocumentsGSIResolverFunction`` omits it);
+    * that the function is declared in the nested template (see ``TEMPLATES``);
+    * that the layer parameter name ends in ``Arn`` — the nested stack receives
+      ``IDPCommonBaseLayerArn`` as a parameter, while the parent declares the layer
+      resource itself and refers to it as ``IDPCommonBaseLayer``.
+
+    CodeUri is resolved to a real path and kept only when it lands directly inside
+    ``RESOLVER_ROOT``, so the parent template's own ``src/lambda/<name>`` functions
+    (relative to the repo root, a different tree) cannot collide with a resolver of
+    the same name.
     """
-    lines = TEMPLATE.read_text(encoding="utf-8").splitlines()
-    starts = [
-        i for i, line in enumerate(lines) if re.match(r"^  [A-Za-z0-9]+:\s*$", line)
-    ]
-    starts.append(len(lines))
     layers: dict[str, list[str]] = {}
-    for start, end in zip(starts, starts[1:]):
-        block = "\n".join(lines[start:end])
-        match = re.search(r"CodeUri:\s*\./src/lambda/([A-Za-z0-9_]+)/?", block)
-        if not match:
-            continue
-        layers[match.group(1)] = re.findall(r"!Ref (IDPCommon\w*LayerArn)", block)
+    for template in TEMPLATES:
+        lines = template.read_text(encoding="utf-8").splitlines()
+        starts = [
+            i for i, line in enumerate(lines) if re.match(r"^  [A-Za-z0-9]+:\s*$", line)
+        ]
+        starts.append(len(lines))
+        for start, end in zip(starts, starts[1:]):
+            block = "\n".join(lines[start:end])
+            match = re.search(r"CodeUri:\s*(\S+)", block)
+            if not match:
+                continue
+            code_dir = (template.parent / match.group(1)).resolve()
+            if code_dir.parent != RESOLVER_ROOT:
+                continue
+            layers[code_dir.name] = re.findall(
+                r"!Ref (IDPCommon\w*Layer(?:Arn)?)\b", block
+            )
     return layers
 
 
-def _string_literals(node: ast.AST) -> list[str] | None:
-    """Return the string members of a tuple/list/set literal, else None."""
-    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+def _imported_modules(resolver: Path) -> dict[str, set[str]]:
+    """Map module -> names imported from it, for REAL imports in ``index.py``.
+
+    AST-parsed, not substring-matched. A comment or docstring that quotes an import
+    line is not an import, and the resolvers are full of exactly such prose: every
+    vendored ``log_sanitizer.py`` carries the canonical module's ``Usage::`` block,
+    whose body line reads ``from idp_common.utils.log_sanitizer import ...``. The
+    substring form of this check passed only because this change happened to delete
+    the old comment blocks that quoted the same path; re-adding one such comment to
+    a layer-free resolver would have failed the suite for no real reason.
+
+    On an ``index.py`` Python cannot parse, fall back to a line-anchored text match
+    so an unreadable file cannot silently read as importing nothing.
+    """
+    source = _index_source(resolver)
+    if not source:
+        return {}
+    try:
+        tree = ast.parse(source, filename=str(resolver / "index.py"))
+    except SyntaxError:
+        found: dict[str, set[str]] = {}
+        for module in (CANONICAL_IMPORT, VENDORED_MODULE):
+            pattern = rf"^\s*(?:from {re.escape(module)} import|import {re.escape(module)}\b)"
+            if re.search(pattern, source, re.M):
+                found[module] = {"sanitize_event_for_logging"}
+        return found
+    imports: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:
+                continue  # explicit relative import; neither of the two routes
+            imports.setdefault(node.module or "", set()).update(
+                alias.name for alias in node.names
+            )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.setdefault(alias.name, set())
+    return imports
+
+
+def _imports_canonical_sanitizer(resolver: Path) -> bool:
+    """The resolver imports the sanitizer from ``idp_common`` — so it needs a layer."""
+    for module, names in _imported_modules(resolver).items():
+        if module == CANONICAL_IMPORT or module.startswith(f"{CANONICAL_IMPORT}."):
+            return True
+        if module == "idp_common.utils" and VENDORED_MODULE in names:
+            return True
+    return False
+
+
+def _imports_vendored_sanitizer(resolver: Path) -> bool:
+    """The resolver imports its own committed copy as a top-level sibling module."""
+    return VENDORED_MODULE in _imported_modules(resolver)
+
+
+def _imports_the_sanitizer(resolver: Path) -> bool:
+    return _imports_canonical_sanitizer(resolver) or _imports_vendored_sanitizer(
+        resolver
+    )
+
+
+# Collection constructors that wrap a literal: `frozenset({...})`, `set([...])`,
+# `tuple([...])`, `list((...))`. A denylist written this way is still a denylist,
+# and the previous scan — which required the assigned value to be a bare literal —
+# could not see one. `PREVIOUSLY_MISSING_KEYS` above is itself a `frozenset({...})`,
+# so the scan was blind to precisely the shape its own module uses.
+_LITERAL_WRAPPERS = frozenset({"frozenset", "set", "tuple", "list"})
+_MAX_WRAPPER_DEPTH = 3
+
+
+def _string_literals(node: ast.AST, depth: int = 0) -> list[str] | None:
+    """Return the string members of a collection literal, else None.
+
+    Recognises a tuple/list/set literal, the keys of a dict literal, and any of
+    those wrapped in a single-argument collection constructor.
+    """
+    if isinstance(node, ast.Call) and depth < _MAX_WRAPPER_DEPTH:
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if name in _LITERAL_WRAPPERS and len(node.args) == 1 and not node.keywords:
+            return _string_literals(node.args[0], depth + 1)
+        return None
+    if isinstance(node, ast.Dict):
+        elements: list[ast.expr] = [k for k in node.keys if k is not None]
+    elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        elements = list(node.elts)
+    else:
         return None
     values = []
-    for element in node.elts:
+    for element in elements:
         if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
             return None
         values.append(element.value)
@@ -228,7 +341,7 @@ def test_vendored_importers_have_a_copy_and_vice_versa():
     """
     importers, holders = set(), set()
     for resolver in _resolver_dirs():
-        if re.search(r"^from log_sanitizer import ", _index_source(resolver), re.M):
+        if _imports_vendored_sanitizer(resolver):
             importers.add(resolver.name)
         if (resolver / VENDORED_NAME).exists():
             holders.add(resolver.name)
@@ -250,15 +363,37 @@ def test_canonical_importers_carry_an_idp_common_layer():
     layers = _layers_by_code_uri()
     broken = []
     for resolver in _resolver_dirs():
-        if CANONICAL_IMPORT not in _index_source(resolver):
+        if not _imports_canonical_sanitizer(resolver):
             continue
         if not layers.get(resolver.name):
             broken.append(resolver.name)
     assert not broken, (
         f"These resolvers import {CANONICAL_IMPORT} but their function in "
-        f"{TEMPLATE.relative_to(REPO_ROOT)} declares no IDPCommon layer, so the "
-        "import fails at cold start. Either attach the layer or vendor the module "
-        f"with scripts/sync_resolver_log_sanitizer.sh: {sorted(broken)}"
+        f"{' or '.join(str(t.relative_to(REPO_ROOT)) for t in TEMPLATES)} declares "
+        "no IDPCommon layer, so the import fails at cold start. Either attach the "
+        "layer or vendor the module with scripts/sync_resolver_log_sanitizer.sh: "
+        f"{sorted(broken)}"
+    )
+
+
+def test_every_resolver_directory_is_found_in_a_template():
+    """Every resolver directory maps to a declared function, in either template.
+
+    This is the guard on the guard. A resolver the template scan cannot find reads
+    as "declares no IDPCommon layer", which is the unsafe direction: the layer test
+    above would reject a correct canonical import and steer the author into
+    vendoring a module the function could have imported from the layer it already
+    carries. That is exactly what happened to finetuning_jobs_resolver (declared in
+    the parent template) and list_documents_gsi_resolver (CodeUri without a
+    leading `./`).
+    """
+    found = _layers_by_code_uri()
+    missing = [r.name for r in _resolver_dirs() if r.name not in found]
+    assert not missing, (
+        "These directories under nested/api-resolvers/src/lambda have no matching "
+        f"CodeUri in {' or '.join(str(t.relative_to(REPO_ROOT)) for t in TEMPLATES)}, "
+        "so the layer scan cannot tell whether they carry an IDPCommon layer and "
+        f"will assume they do not: {sorted(missing)}"
     )
 
 
@@ -273,11 +408,125 @@ def test_sync_script_targets_the_layerless_resolvers():
     expected = {
         resolver.name
         for resolver in _resolver_dirs()
-        if "sanitize_event_for_logging" in _index_source(resolver)
-        and not layers.get(resolver.name)
+        if _imports_the_sanitizer(resolver) and not layers.get(resolver.name)
     }
     assert listed == expected, (
         "scripts/sync_resolver_log_sanitizer.sh does not target the right "
         f"resolvers. Missing from the script: {sorted(expected - listed)}; listed "
         f"but no longer layerless: {sorted(listed - expected)}."
     )
+
+
+# --- the scanners' own behaviour -------------------------------------------------
+#
+# Both scanners above are the kind of check that fails open: if `_string_literals`
+# does not recognise a shape, a reintroduced denylist simply is not reported, and if
+# `_imported_modules` reads prose as an import, correct code is rejected. Neither
+# failure is visible from the suite passing, so assert the behaviour directly.
+
+_DENYLIST_SHAPES_THAT_MUST_BE_SEEN = {
+    "set literal": '_K = {"password", "secret", "token"}\n',
+    "tuple literal": '_K = ("password", "secret", "token")\n',
+    "list literal": '_K = ["password", "secret", "token"]\n',
+    "annotated assign": '_K: set = {"password", "secret", "token"}\n',
+    "frozenset of a set": '_K = frozenset({"password", "secret", "token"})\n',
+    "frozenset of a list": '_K = frozenset(["password", "secret", "token"])\n',
+    "set of a list": '_K = set(["password", "secret", "token"])\n',
+    "tuple of a list": '_K = tuple(["password", "secret", "token"])\n',
+    "dict keys": '_K = {"password": "x", "secret": "x", "token": "x"}\n',
+    "frozenset of dict keys": '_K = frozenset({"password": 1, "secret": 1, "token": 1})\n',
+}
+
+_SHAPES_THAT_MUST_NOT_TRIP = {
+    "two keys only": '_K = ("token", "cursor")\n',
+    "unrelated strings": '_K = ("alpha", "beta", "gamma", "delta")\n',
+    "non-literal": "_K = frozenset(some_other_module.KEYS)\n",
+}
+
+# Known residual gaps, not asserted either way: a denylist spelled as keyword
+# arguments (`dict(password="x", ...)`), built by a comprehension, or assembled with
+# `|=`/`.add()` across statements still escapes this scan. Each is a stranger way to
+# write a constant than the ten shapes above, and closing them means evaluating
+# arbitrary expressions. `test_vendored_copies_match_canonical` remains the
+# load-bearing guarantee; this scan is defence in depth.
+
+
+@pytest.mark.parametrize("label", sorted(_DENYLIST_SHAPES_THAT_MUST_BE_SEEN))
+def test_the_denylist_scan_sees_every_collection_shape(label):
+    """A denylist is a denylist in whatever container it is written in.
+
+    `frozenset({...})` and a dict literal both escaped the original scan, which
+    required the assigned value to be a bare tuple/list/set literal. The irony was
+    that PREVIOUSLY_MISSING_KEYS in this very file is a `frozenset({...})`.
+    """
+    source = _DENYLIST_SHAPES_THAT_MUST_BE_SEEN[label]
+    canonical_keys = {k.lower() for k in _canonical_deny_keys()}
+    tree = ast.parse(source)
+    hits: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value = node.value
+        else:
+            continue
+        literals = _string_literals(value)
+        if literals:
+            hits |= {s.lower() for s in literals} & canonical_keys
+    assert len(hits) >= _DENYLIST_MATCH_THRESHOLD, (
+        f"the denylist scan cannot see a {label}; a hand-copied denylist written "
+        f"that way would be reintroduced silently (matched only {sorted(hits)})"
+    )
+
+
+@pytest.mark.parametrize("label", sorted(_SHAPES_THAT_MUST_NOT_TRIP))
+def test_the_denylist_scan_does_not_trip_on_ordinary_collections(label):
+    source = _SHAPES_THAT_MUST_NOT_TRIP[label]
+    canonical_keys = {k.lower() for k in _canonical_deny_keys()}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Assign):
+            continue
+        literals = _string_literals(node.value) or []
+        hits = {s.lower() for s in literals} & canonical_keys
+        assert len(hits) < _DENYLIST_MATCH_THRESHOLD, (
+            f"the denylist scan flagged an ordinary collection ({label}): "
+            f"{sorted(hits)}"
+        )
+
+
+def test_the_import_scan_ignores_prose_that_quotes_an_import(tmp_path):
+    """A docstring or comment naming the canonical module is not an import of it.
+
+    Every vendored copy carries the canonical ``Usage::`` docstring, one line of
+    which is a real-looking ``from idp_common.utils.log_sanitizer import ...``.
+    """
+    resolver = tmp_path / "prose_resolver"
+    resolver.mkdir()
+    (resolver / "index.py").write_text(
+        '"""Handler.\n'
+        "\n"
+        "Usage::\n"
+        "\n"
+        f"    from {CANONICAL_IMPORT} import sanitize_event_for_logging\n"
+        '"""\n'
+        f"# byte-identical vendored copy of {CANONICAL_IMPORT}\n"
+        f"from {VENDORED_MODULE} import sanitize_event_for_logging\n",
+        encoding="utf-8",
+    )
+    assert not _imports_canonical_sanitizer(resolver)
+    assert _imports_vendored_sanitizer(resolver)
+    assert _imports_the_sanitizer(resolver)
+
+
+def test_the_import_scan_sees_a_real_import_wherever_it_sits(tmp_path):
+    """Including indented inside a function or a try block."""
+    resolver = tmp_path / "indented_resolver"
+    resolver.mkdir()
+    (resolver / "index.py").write_text(
+        "def handler(event, context):\n"
+        f"    from {CANONICAL_IMPORT} import sanitize_event_for_logging\n"
+        "    return sanitize_event_for_logging(event)\n",
+        encoding="utf-8",
+    )
+    assert _imports_canonical_sanitizer(resolver)
+    assert not _imports_vendored_sanitizer(resolver)
