@@ -11,7 +11,9 @@ summarization:
   # (100+ pages / thousands of extracted rows) don't overflow the summarization
   # input window. Combined with extraction-JSON elision + a fit-or-truncate
   # guard (see summarization/service.py), this keeps large docs from failing at
-  # the summarization step. Note the higher per-token cost of the :1m variant.
+  # the summarization step. The :1m variant costs the same per token as the base
+  # model — the 1M window carries no price premium — so the only cost effect is
+  # that a larger prompt fits, and you pay for the tokens you actually send.
   model: us.anthropic.claude-sonnet-5:1m
   top_p: "0.0"
   # Empty => use the selected model's maximum output limit (model_config_limits.yaml).

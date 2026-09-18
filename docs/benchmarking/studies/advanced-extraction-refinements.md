@@ -101,10 +101,13 @@ The rate card is where the problem is. `config_library/pricing.yaml` carries a
 separate entry, `bedrock/us.anthropic.claude-sonnet-5:1m`, at exactly 2× input and
 1.5× output of the plain entry (`6.6E-6` vs `3.3E-6` per input token, `2.475E-5` vs
 `1.65E-5` per output token, and the same 2× on cache read and cache write). It is
-applied to **every** token metered under that key, unconditionally. But the long
-context premium is a **per-request tier** — it applies to a request whose input
-exceeds 200K tokens, not to every request made by a model that *can* accept 200K+.
-Two facts make that tier unreachable here:
+applied to **every** token metered under that key, unconditionally. It was taken
+here to be a **per-request tier** — applying to a request whose input exceeds 200K
+tokens, not to every request made by a model that *can* accept 200K+. (That was
+wrong in the model's favour: as the correction below records, there is no
+long-context premium on these models at any request size. The reasoning that
+follows is preserved as it was written, because it is what led to the fix.) Two
+facts make that tier unreachable here:
 
 - The product **strips the `:1m` suffix before invoking anything.** Both
   `bedrock/client.py` (`_strip_region_and_1m`) and `extraction/agentic_idp.py` map
@@ -140,6 +143,63 @@ second is much simpler and matches what is actually invoked; it would also mean 
 long-context premium is never charged, which is correct only as long as requests stay
 under 200K. Filed as
 [issue #899](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/899).
+
+**Correction, fixed in v0.6.9 — and the premium above does not exist.** The
+analysis above assumed the `:1m` rates in `pricing.yaml` were a real tier that
+merely applied at the wrong times. They were not a real tier for these models at
+all.
+
+The AWS Price List bulk offer file settles it, and it is the right source here
+because Bedrock is partner-operated and sets its own prices. In
+`AmazonBedrockFoundationModels` (version 20260911124410, published 2026-09-11,
+retrieved 2026-09-17) all six models offered here with a `:1m` suffix appear under
+`serviceName` "Claude *model* (Amazon Bedrock Edition)", and each carries exactly
+one input-token rate per routing mode and service tier — Sonnet 5 at $2.20/MTok
+regional and $2.00/MTok global, Opus 4.7/4.8/5 at $5.50 and $5.00. Across that
+file and the `AmazonBedrock` offer file together, every price dimension spans
+`StartingRange` 0 to `EndingRange` Inf: there is not a single token-volume band on
+any model, so there is no threshold at which any rate changes. No Anthropic SKU
+mentions a long context. This is not an artifact of the price list being unable to
+express one — a long-context band appears there as a distinct `-long-ctx` usage
+type, and exactly two models have one today (`openai.gpt-5.6-luna-mantle` and
+`openai.gpt-5.6-terra-mantle`).
+
+Anthropic says the same first-hand for the models themselves: "Claude 4.6 and
+later models … include the full 1M token context window at standard pricing. (A
+900k-token request is billed at the same per-token rate as a 9k-token request.)"
+([pricing docs](https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing),
+retrieved 2026-09-17). Every model offered with a `:1m` suffix here — Sonnet 4.6,
+Sonnet 5, Opus 4.6/4.7/4.8, Opus 5 — is 4.6 or later. The 2× input / 1.5× output
+structure was Anthropic's pricing for the earlier Sonnet 4 / Sonnet 4.5 1M-context
+beta.
+
+That resolves the open question above in the direction the token counts already
+pointed: there was no 200K threshold to stay under, so **the 1.82× was never real
+at any request size**, and the $65.84-vs-$62.32 repricing (1.06×) is the arm's
+cost. The reconciliation against an actual AWS bill or CUR line item still has not
+been done, so that figure remains a rate-card calculation rather than a verified
+invoice — but the specific risk flagged above, that Bedrock might charge a premium
+for any request carrying the `anthropic_beta` header, is contradicted by Bedrock's
+own published rate card.
+
+The fix was the second option. `pricing.yaml`'s 18 `:1m` entries were re-rated to
+their base model's rates (they are kept, not deleted: the file doubles as the
+model-ID allowlist for configuration validation, and `:1m` still reaches a price
+lookup from older metering and from the Athena rollups), and metering keys no
+longer carry the suffix at all, so they name the inference profile actually
+invoked. The first option was not "unimplementable" in general, and the earlier
+draft of this correction overstated that — it is unimplementable *downstream of
+`merge_metering_data()`*, where every consumer prices a sum over a document's
+calls and a threshold would charge a premium on ten 30K-token calls, and on the
+Strands agentic path this study measured, where only `accumulated_usage` is
+available. At the emission site in `bedrock/client.py` one request's `usage` is in
+hand and band selection would be exact. It is simply not needed for `:1m`, since
+there is no band; the model that does have one is GPT-6 Astra above 272K tokens
+(see [cost-calculator.md](../../cost-calculator.md)).
+
+Cost figures already written to the reporting tables, including this study's, are
+not retroactively rewritten; the numbers in the table above stay as they were
+measured.
 
 **Verdict on the refinement itself: still not a default,** for the completeness
 reason rather than the price. The `:1m` arm returned every row in 12 of 12 runs — but
