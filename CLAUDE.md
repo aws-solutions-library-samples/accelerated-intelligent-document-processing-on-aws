@@ -78,9 +78,13 @@ the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
 (`Makefile:226`) skips any discovered template whose path starts with
 `scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
 cross-account principal by construction — so the ARN gate's real coverage is
-"every template found by content, less that prefix". `cfn-lint` itself exempts
-nothing. Both run from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate
-sets match.
+"every template found by content, less that prefix" — 26 of the 30. `cfn-lint`
+exempts nothing at **path** scope: no template is skipped. It does exempt specific
+*rules*, which is a different axis — it runs with `--ignore-checks
+$(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
+suppressed at resource scope on three layer resources in `template.yaml`. Both
+targets run from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets
+match.
 
 It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
 defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
@@ -171,8 +175,11 @@ reports `protected: null` rather than `false` when the answer is genuinely
 unknown.
 
 It is **opt-in and non-blocking on purpose**: it needs network access and a token
-(`pull` suffices for a verified answer; `administration:read` only adds classic
-setting detail), and it reports "not protected" until
+(`pull` suffices for a verified answer and for the required-check comparison, which
+comes from the nested `protection.required_status_checks` object on
+`GET .../branches/<branch>`; `administration:read` is what the other five
+assertions need, and without it those five are reported **unread** rather than
+satisfied), and it reports "not protected" until
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
 is closed — enabling protection needs repository **admin**, which no contributor
 and no CI token here has. In `lint-cicd` it would red-line every branch for a

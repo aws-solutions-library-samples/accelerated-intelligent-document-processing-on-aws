@@ -125,8 +125,13 @@ reports `protected: null` — not `false` — when the state genuinely could not
 determined.
 
 It is opt-in and blocks nothing: it needs network access and a token (`pull` access
-is enough to reach a verified answer; `administration:read` only adds the detail of
-the classic settings), and it reports "not protected" until
+is enough to reach a verified answer about whether the branch is protected *and* to
+compare the required-check list, because `GET /repos/{slug}/branches/{branch}`
+carries a nested `protection.required_status_checks` object at that scope;
+`administration:read` is what the other five assertions — approvals, stale-review
+dismissal, force-push and deletion blocks, `enforce_admins` — need, and a run
+without it reports those five as **unread**, not as satisfied), and it reports "not
+protected" until
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
 is closed, since enabling protection needs repository **admin**. With no token or no
 network it exits 0 with an explanation. Once #933 closes it should become a required,

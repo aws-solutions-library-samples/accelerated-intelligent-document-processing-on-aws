@@ -290,6 +290,208 @@ def test_matrix_job_is_excluded_because_context_is_suffixed(tmp_path: Path) -> N
     assert "matrix" in contexts[0].reason
 
 
+# --------------------------------------------------------------------------- #
+# Conditional shapes that must NOT become required, tested in the direction
+# MUST_BE_REQUIRED cannot test
+#
+# MUST_BE_REQUIRED asserts that three named contexts ARE eligible. That is the
+# same direction as the bug these tests exist for: a derivation that wrongly
+# calls a *conditional* context eligible keeps every MUST_BE_REQUIRED assertion
+# green while advising an administrator to require a check that never reports on
+# the branch. Only an assertion that a conditional shape comes out advisory
+# catches it, so each shape below is constructed explicitly.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("filter_block", "checked_branch"),
+    [
+        # The concrete regression: narrowing security-checks.yml to `main` to save
+        # CI minutes. `SRT Security Review` keeps its name and its `make srt-scan`
+        # step, so MUST_BE_REQUIRED still passes, but the job no longer runs on a
+        # PR targeting `develop`.
+        ("branches: [main]", "develop"),
+        ("branches: [main, 'release/*']", "develop"),
+        ("branches-ignore: [develop]", "develop"),
+        ("branches-ignore: ['dev*']", "develop"),
+        # `release/*` must not match `release/a/b`: `*` stops at `/` in GitHub's
+        # filter-pattern syntax, so this branch is genuinely not selected.
+        ("branches: ['release/*']", "release/a/b"),
+        # A negation that revokes an earlier match, in GitHub's documented
+        # in-order precedence.
+        ("branches: ['**', '!develop']", "develop"),
+    ],
+)
+def test_branch_filter_that_excludes_the_checked_branch_is_advisory(
+    tmp_path: Path, filter_block: str, checked_branch: str
+) -> None:
+    """A `branches:` filter that does not select the branch is the same hazard as `paths:`.
+
+    GitHub leaves the check of a branch-filtered workflow **pending**, so
+    requiring it blocks every merge into that branch permanently.
+    """
+    _write_workflow(
+        tmp_path,
+        "w.yml",
+        f"""
+        name: W
+        on:
+          pull_request:
+            {filter_block}
+        jobs:
+          j:
+            name: SRT Security Review
+            runs-on: ubuntu-latest
+            steps: [{{run: "make srt-scan"}}]
+        """,
+    )
+    contexts = mod.discover_check_contexts(tmp_path, checked_branch)
+    assert mod.expected_contexts(contexts) == [], (
+        f"a pull_request filter that does not select {checked_branch!r} must not "
+        f"yield a required-eligible context — requiring it would leave a check "
+        f"pending forever and block every merge into that branch"
+    )
+    assert checked_branch in contexts[0].reason
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("filter_block", "checked_branch"),
+    [
+        ("branches: ['**']", "develop"),
+        ("branches: [develop]", "develop"),
+        ("branches: ['dev*']", "develop"),
+        ("branches: ['**']", "release/a/b"),
+        ("branches-ignore: [main]", "develop"),
+        ("branches: ['!main', '**']", "develop"),
+    ],
+)
+def test_branch_filter_that_selects_the_checked_branch_stays_eligible(
+    tmp_path: Path, filter_block: str, checked_branch: str
+) -> None:
+    """The guard must not be so blunt that it makes every filtered workflow advisory.
+
+    A `branches:` list that *does* select the branch is benign — treating it as a
+    hazard would drop the two real required contexts out of the expected list and
+    make `missing_required_checks` silently unable to fire.
+    """
+    _write_workflow(
+        tmp_path,
+        "w.yml",
+        f"""
+        name: W
+        on:
+          pull_request:
+            {filter_block}
+        jobs:
+          j:
+            name: J
+            runs-on: ubuntu-latest
+            steps: [{{run: "true"}}]
+        """,
+    )
+    contexts = mod.discover_check_contexts(tmp_path, checked_branch)
+    assert mod.expected_contexts(contexts) == ["J"]
+
+
+@pytest.mark.unit
+def test_block_sequence_branch_filter_is_read_the_same_as_flow_style() -> None:
+    """The real workflows write `branches:` as a block sequence, not a flow list.
+
+    Asserted against the live tree so the guard is exercised in exactly the YAML
+    shape this repository uses — `branches:` as a block sequence containing `"**"`
+    in both requireable workflows — rather than only in the flow-style fixtures
+    above.
+
+    The assertion is on the *reason* rather than on eligibility, so that it keeps
+    testing what it says it tests. `**` must select every branch, so no context
+    may ever be held back for a `branches` reason; if the block-sequence form were
+    misread, every required context would silently drop out of the expected list
+    and `missing_required_checks` could no longer fire. Checking the reason string
+    keeps this test from also firing when a context becomes advisory for an
+    unrelated reason, such as a job-level `if:`.
+    """
+    for branch in ("develop", "main", "release/1.2"):
+        for ctx in mod.discover_check_contexts(mod.WORKFLOWS_DIR, branch):
+            assert "branches" not in ctx.reason, (
+                f"{ctx.context!r} was held back from the required list for "
+                f"{branch!r} with reason {ctx.reason!r}, but every requireable "
+                f"workflow here filters on `**`, which selects all branches"
+            )
+
+
+@pytest.mark.unit
+def test_untranslatable_branch_pattern_is_advisory_not_assumed_benign() -> None:
+    """Filter-pattern syntax this tool cannot translate must fail towards advisory.
+
+    `+` and character ranges are part of GitHub's syntax. Guessing that an
+    untranslated pattern matches would advise requiring a check that may never
+    report; guessing it does not is harmless.
+    """
+    assert mod._branch_pattern_to_regex("rel[0-9]") is None
+    assert mod._branch_pattern_to_regex("dev+") is None
+    assert mod._branch_filter_admits(["dev+"], "develop", exclude=False) is None
+    assert mod._branch_filter_admits(["dev+"], "develop", exclude=True) is None
+
+
+@pytest.mark.unit
+def test_job_level_if_condition_is_advisory(tmp_path: Path) -> None:
+    """A job behind an `if:` does not run on every PR, so it must not be required.
+
+    The failure mode is quieter than a pending check and no less serious: GitHub
+    reports a conditionally skipped job as *successful*, so a required context on
+    a draft-excluded job passes on every draft PR without the gate having run.
+    """
+    _write_workflow(
+        tmp_path,
+        "w.yml",
+        """
+        name: W
+        on:
+          pull_request:
+            branches: ["**"]
+        jobs:
+          developer_tests:
+            name: Lint, Type Check, and Test
+            if: github.event.pull_request.draft == false
+            runs-on: ubuntu-latest
+            steps: [{run: "make lint-cicd"}]
+        """,
+    )
+    contexts = mod.discover_check_contexts(tmp_path, "develop")
+    assert mod.expected_contexts(contexts) == [], (
+        "a job behind an `if:` must not be required-eligible: it keeps its name "
+        "and its gate command, so a name-and-gate assertion cannot catch this"
+    )
+    assert "`if:`" in contexts[0].reason
+
+
+@pytest.mark.unit
+def test_no_workflow_in_this_repo_has_a_conditional_shape_we_would_miss() -> None:
+    """The live tree must stay inside the shapes the derivation reasons about.
+
+    Recorded so that adding one of these to a real workflow is a deliberate act
+    with a test to update, rather than a silent change in what gets required.
+    """
+    for path in sorted(mod.WORKFLOWS_DIR.glob("*.y*ml")):
+        data = mod.yaml.safe_load(path.read_text(encoding="utf-8"))
+        triggers = mod._normalize_triggers(data.get(True, data.get("on")))
+        pr = triggers.get("pull_request")
+        if isinstance(pr, dict):
+            assert "types" not in pr, (
+                f"{path.name} narrows `types:`, which this tool does not evaluate; "
+                f"decide explicitly whether its context may still be required"
+            )
+        for job_id, job in (data.get("jobs") or {}).items():
+            if isinstance(job, dict) and job.get("if") is not None:
+                assert not job.get("name"), (
+                    f"{path.name}::{job_id} gained a job-level `if:` — it is now "
+                    f"advisory, which is correct, but confirm nothing expects it "
+                    f"in the required list"
+                )
+
+
 @pytest.mark.unit
 def test_gate_attribution_ignores_prose_that_looks_like_a_target(
     tmp_path: Path,
@@ -421,7 +623,9 @@ def test_every_context_that_must_be_required_is_in_the_derived_required_set() ->
     This is the assertion that fails when a `paths:` filter is added to
     `security-checks.yml`, which is what previously slipped through green.
     """
-    expected = set(mod.expected_contexts(mod.discover_check_contexts(mod.WORKFLOWS_DIR)))
+    expected = set(
+        mod.expected_contexts(mod.discover_check_contexts(mod.WORKFLOWS_DIR))
+    )
     missing = sorted(set(MUST_BE_REQUIRED) - expected)
     assert not missing, (
         f"these contexts dropped out of the derived required set: {missing}. "
@@ -443,7 +647,9 @@ def test_context_that_must_be_required_is_eligible_and_runs_its_gate(
     job fails the first; keeping the name while removing the work fails the second.
     """
     matches = [
-        c for c in mod.discover_check_contexts(mod.WORKFLOWS_DIR) if c.context == context
+        c
+        for c in mod.discover_check_contexts(mod.WORKFLOWS_DIR)
+        if c.context == context
     ]
     assert matches, f"no workflow job produces the context {context!r}"
     for match in matches:
@@ -475,7 +681,9 @@ def test_context_that_must_stay_advisory_is_not_required_eligible(
 ) -> None:
     """A required check that does not always report blocks every merge forever."""
     matches = [
-        c for c in mod.discover_check_contexts(mod.WORKFLOWS_DIR) if c.context == context
+        c
+        for c in mod.discover_check_contexts(mod.WORKFLOWS_DIR)
+        if c.context == context
     ]
     assert matches, f"the context {context!r} is no longer derived at all"
     for match in matches:
@@ -615,34 +823,92 @@ def test_verified_absent_is_distinguished_from_unverifiable() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("classic_status", "protected_flag", "rules", "expected_state"),
+    ("classic_status", "protected_flag", "summary", "rules", "expected_state"),
     [
-        (404, False, [], "verified_absent"),
-        (404, None, [], "unverifiable"),
-        (404, True, [], "unverifiable"),
-        (404, True, [{"type": "pull_request"}], "protected_by_ruleset"),
-        (200, True, [], "protected_classic"),
+        (404, False, None, [], "verified_absent"),
+        (404, None, None, [], "unverifiable"),
+        # Protected but with nothing readable to compare against: still ambiguous.
+        (404, True, None, [], "unverifiable"),
+        # `protected: true` with an `enabled: false` protection block is the
+        # ruleset-only shape, which must not be read as classic protection.
+        (404, True, {"enabled": False}, [], "unverifiable"),
+        # The post-#933 non-admin path: the nested `protection` object carries the
+        # required-check list, so the state is protected-and-partly-checkable.
+        (
+            404,
+            True,
+            {"enabled": True, "required_status_checks": {"contexts": ["x"]}},
+            [],
+            "protected_branch_summary",
+        ),
+        (404, True, None, [{"type": "pull_request"}], "protected_by_ruleset"),
+        # A ruleset governs the branch, so that classification wins even when the
+        # summary would also have been usable.
+        (
+            404,
+            True,
+            {"enabled": True, "required_status_checks": {"contexts": ["x"]}},
+            [{"type": "pull_request"}],
+            "protected_by_ruleset",
+        ),
+        (200, True, None, [], "protected_classic"),
     ],
 )
 def test_protection_state_classification(
     monkeypatch: pytest.MonkeyPatch,
     classic_status: int,
     protected_flag: bool | None,
+    summary: object,
     rules: list[dict],
     expected_state: str,
 ) -> None:
-    """All four states, from the three reads that produce them."""
+    """Every state, from the three reads that produce them."""
     classic = _fully_protected() if classic_status == 200 else None
     monkeypatch.setattr(
         mod, "fetch_protection", lambda *_a, **_k: (classic, classic_status)
     )
     monkeypatch.setattr(mod, "fetch_admin_permission", lambda *_a, **_k: False)
-    monkeypatch.setattr(mod, "fetch_branch_summary", lambda *_a, **_k: protected_flag)
     monkeypatch.setattr(
-        mod, "fetch_branch_rules", lambda *_a, **_k: (REAL_BRANCH_RULES_RESPONSE + rules, 200)
+        mod, "fetch_branch_summary", lambda *_a, **_k: (protected_flag, summary)
+    )
+    monkeypatch.setattr(
+        mod,
+        "fetch_branch_rules",
+        lambda *_a, **_k: (REAL_BRANCH_RULES_RESPONSE + rules, 200),
     )
     state = mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
     assert state.state == expected_state
+
+
+def _good_ruleset() -> list[dict]:
+    """A ruleset that genuinely answers all six questions.
+
+    Parameter shape recorded from the live
+    ``GET /repos/home-assistant/core/rules/branches/dev`` response: the review
+    settings sit in the ``pull_request`` rule's ``parameters``, and
+    ``strict_required_status_checks_policy`` sits in the ``required_status_checks``
+    rule's ``parameters`` alongside the context list.
+    """
+    return [
+        {
+            "type": "pull_request",
+            "parameters": {
+                "required_approving_review_count": 1,
+                "dismiss_stale_reviews_on_push": True,
+            },
+        },
+        {"type": "non_fast_forward"},
+        {"type": "deletion"},
+        {
+            "type": "required_status_checks",
+            "parameters": {
+                "strict_required_status_checks_policy": True,
+                "required_status_checks": [
+                    {"context": name, "integration_id": 15368} for name in EXPECTED
+                ],
+            },
+        },
+    ]
 
 
 @pytest.mark.unit
@@ -664,19 +930,14 @@ def test_ruleset_protection_is_evaluated_not_just_reported() -> None:
 
 @pytest.mark.unit
 def test_fully_configured_ruleset_has_no_findings() -> None:
-    rules = [
-        {"type": "pull_request"},
-        {"type": "non_fast_forward"},
-        {"type": "deletion"},
-        {
-            "type": "required_status_checks",
-            "parameters": {
-                "required_status_checks": [
-                    {"context": name, "integration_id": 15368} for name in EXPECTED
-                ]
-            },
-        },
-    ]
+    """The clean case must be clean only when the rule *parameters* are also good.
+
+    This fixture previously carried a bare ``{"type": "pull_request"}``, which is a
+    rule that requires no approval and keeps stale approvals — so the test was
+    asserting that a toothless ruleset is fine. The parameters below are the live
+    shape of a correctly configured ruleset.
+    """
+    rules = _good_ruleset()
     state = mod.ProtectionState(
         state=mod.PROTECTION_RULESET,
         classic_status=404,
@@ -685,6 +946,181 @@ def test_fully_configured_ruleset_has_no_findings() -> None:
     )
     assert mod.evaluate(None, EXPECTED, "develop", 404, state=state) == []
     assert state.protected is True
+
+
+# --------------------------------------------------------------------------- #
+# A ruleset rule can be present and toothless
+#
+# These three assert in the *opposite* direction from the test above: the rule
+# type is present, so the "does the rule exist" question passes, and the finding
+# has to come from reading the rule's parameters. Before this round the tool
+# looked only at rule types, so every one of these configurations — no approval
+# required, stale approvals carried forward, no strict policy — was reported as
+# fully protected.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("mutate", "expected_key"),
+    [
+        pytest.param(
+            lambda rules: rules[0]["parameters"].update(
+                {"required_approving_review_count": 0}
+            ),
+            "ruleset_no_approving_review",
+            id="zero-approvals",
+        ),
+        pytest.param(
+            lambda rules: rules[0].pop("parameters"),
+            "ruleset_no_approving_review",
+            id="no-parameters-object-at-all",
+        ),
+        pytest.param(
+            lambda rules: rules[0]["parameters"].update(
+                {"dismiss_stale_reviews_on_push": False}
+            ),
+            "ruleset_stale_reviews_kept",
+            id="stale-approvals-kept",
+        ),
+        pytest.param(
+            lambda rules: rules[3]["parameters"].pop(
+                "strict_required_status_checks_policy"
+            ),
+            "ruleset_not_strict",
+            id="not-strict",
+        ),
+    ],
+)
+def test_present_but_toothless_ruleset_rule_is_a_finding(
+    mutate: Any, expected_key: str
+) -> None:
+    rules = _good_ruleset()
+    mutate(rules)
+    state = mod.ProtectionState(
+        state=mod.PROTECTION_RULESET,
+        classic_status=404,
+        branch_rules=rules,
+        ruleset_required_checks=mod.ruleset_required_check_names(rules),
+    )
+    findings = mod.evaluate(None, EXPECTED, "develop", 404, state=state)
+    keys = [f.key for f in findings]
+    assert expected_key in keys, (
+        f"a ruleset whose rule is present but toothless produced {keys or 'no'} "
+        f"findings; the type check passes and only the parameters reveal it"
+    )
+    assert all(f.remedy for f in findings), "every finding must say how to fix it"
+
+
+@pytest.mark.unit
+def test_ruleset_bypass_actors_are_not_asserted_vacuously() -> None:
+    """The rules endpoint cannot see bypass actors, so nothing claims to check them.
+
+    A finding keyed on bypass actors would have to be derived from data this read
+    does not return. This pins the deliberate omission so that a later reader does
+    not "fix" it by inventing one.
+    """
+    rules = _good_ruleset()
+    state = mod.ProtectionState(
+        state=mod.PROTECTION_RULESET,
+        classic_status=404,
+        branch_rules=rules,
+        ruleset_required_checks=mod.ruleset_required_check_names(rules),
+    )
+    keys = {f.key for f in mod.evaluate(None, EXPECTED, "develop", 404, state=state)}
+    assert not {k for k in keys if "bypass" in k}
+
+
+# --------------------------------------------------------------------------- #
+# The branch-summary path: protected, non-admin, and still checkable
+# --------------------------------------------------------------------------- #
+
+
+def _summary_state(contexts: list[str]) -> Any:
+    return mod.ProtectionState(
+        state=mod.PROTECTION_SUMMARY,
+        classic_status=404,
+        admin_permission=False,
+        protected_flag=True,
+        summary_protection={
+            "enabled": True,
+            "required_status_checks": {"contexts": list(contexts)},
+        },
+    )
+
+
+@pytest.mark.unit
+def test_branch_summary_required_checks_are_compared_not_reported_unverifiable() -> (
+    None
+):
+    """The whole point of finding 2: do not discard data already fetched.
+
+    ``GET .../branches/{branch}`` is readable with plain ``pull`` access and its
+    nested ``protection`` object carries the required-check list. Before this
+    round only the ``protected`` boolean was kept, so a non-admin run against a
+    protected branch classified ``unverifiable`` and exited 1 while holding the
+    exact list it needed to compare.
+    """
+    state = _summary_state(EXPECTED)
+    assert state.protected is True
+    assert state.summary_required_checks == sorted(EXPECTED)
+    assert state.live_required_checks() == sorted(EXPECTED)
+
+    keys = [f.key for f in mod.evaluate(None, EXPECTED, "develop", 404, state=state)]
+    assert "protection_unverifiable" not in keys
+    assert "missing_required_checks" not in keys
+    assert keys == ["protection_detail_unreadable"]
+
+
+@pytest.mark.unit
+def test_branch_summary_path_reports_a_missing_required_check() -> None:
+    """The comparison must be real: drop one context and the finding appears."""
+    state = _summary_state(EXPECTED[1:])
+    findings = mod.evaluate(None, EXPECTED, "develop", 404, state=state)
+    keys = [f.key for f in findings]
+    assert "missing_required_checks" in keys
+    missing = next(f for f in findings if f.key == "missing_required_checks")
+    assert EXPECTED[0] in missing.message
+
+
+@pytest.mark.unit
+def test_branch_summary_path_never_prints_a_clean_bill_of_health() -> None:
+    """Five of the six questions are unreadable here and must be reported as such.
+
+    The failure mode this guards is the opposite of a false alarm: a run that
+    cannot read ``enforce_admins`` must not exit 0, because ``enforce_admins:
+    false`` exempts exactly the people doing the merging. So the summary path
+    always carries ``protection_detail_unreadable`` and the gate always fails
+    until an admin-scoped token confirms the rest.
+    """
+    state = _summary_state(EXPECTED)
+    findings = mod.evaluate(None, EXPECTED, "develop", 404, state=state)
+    assert findings, "an unread setting is not a verified-good setting"
+    detail = next(f for f in findings if f.key == "protection_detail_unreadable")
+    assert "unverified, not verified-good" in detail.message
+    assert "administration:read" in detail.remedy
+
+
+@pytest.mark.unit
+def test_branch_summary_state_is_labelled_in_the_report(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = _summary_state(EXPECTED)
+    mod.print_report(
+        mod.DEFAULT_REPO,
+        "develop",
+        [],
+        mod.evaluate(None, EXPECTED, "develop", 404, state=state),
+        state,
+    )
+    out = capsys.readouterr().out
+    assert "branch summary" in out.lower(), (
+        "the state label must name the mechanism the conclusion came from"
+    )
+    assert "nested protection.required_status_checks" in out, (
+        "the list that was actually compared must be visible in the report, not "
+        "only in --json"
+    )
 
 
 @pytest.mark.unit
@@ -865,18 +1301,28 @@ def test_every_api_call_is_a_get_with_no_body(monkeypatch: pytest.MonkeyPatch) -
         def __exit__(self, *_exc: object) -> None:
             return None
 
-    def _urlopen(request: Any, timeout: int = 0) -> _FakeResponse:
-        seen.append(request)
+    # `timeout` defaults to None so that a production call which stopped passing
+    # one is recorded as None and caught below, rather than silently satisfying a
+    # stub default. A GET with no timeout in a CI gate hangs instead of failing,
+    # and a required check that hangs blocks every pull request with no error to
+    # read — so the value the production code passes is asserted, not ignored.
+    def _urlopen(request: Any, timeout: float | None = None) -> _FakeResponse:
+        seen.append((request, timeout))
         return _FakeResponse()
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", _urlopen)
     mod.resolve_protection_state(mod.DEFAULT_REPO, "develop", "t")  # noqa: S106
 
     assert len(seen) == 4, "expected the four documented reads"
-    for request in seen:
+    for request, timeout in seen:
         assert request.get_method() == "GET"
         assert request.data is None
         assert request.full_url.startswith("https://api.github.com/")
+        assert timeout == mod.REQUEST_TIMEOUT, (
+            f"every request must carry an explicit timeout; got {timeout!r} for "
+            f"{request.full_url}"
+        )
+        assert isinstance(timeout, (int, float)) and timeout > 0
 
 
 @pytest.mark.unit
@@ -985,7 +1431,7 @@ def test_empty_expectation_refuses_to_report_a_pass(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """An empty derived list means the parser broke, not that all is well."""
-    monkeypatch.setattr(mod, "discover_check_contexts", lambda _dir: [])
+    monkeypatch.setattr(mod, "discover_check_contexts", lambda *_a, **_k: [])
     assert mod.main([]) == 3
     assert "refusing to report a pass" in capsys.readouterr().out
 

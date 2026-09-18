@@ -69,6 +69,21 @@ and a required check that is never reported sits **pending forever**, blocking
 every merge. Requiring one of those would wedge the repository. They are listed
 as advisory-only, with that reason.
 
+Four shapes make a context conditional, and all four are checked
+-----------------------------------------------------------------
+``paths:``/``paths-ignore:`` is only one of them. A ``pull_request: branches:``
+list that does not select the branch being checked has exactly the same effect,
+which is why the branch is an input to the derivation rather than the workflow
+being judged on its own — the same ``security-checks.yml`` is safely requireable
+on ``develop`` and not on ``main`` if it is narrowed to ``branches: [main]``. A
+``strategy.matrix`` makes the context name non-static, because GitHub suffixes it
+per leg. And a **job-level** ``if:`` means the job does not run on every pull
+request; GitHub reports a conditionally skipped job as *successful* rather than
+leaving it pending, so requiring that context fails quietly in the other
+direction — the gate passes without its work having run. None of these four
+shapes other than ``paths:`` exists in this repository today, and the point of
+checking them is that #933 is when somebody acts on this tool's output.
+
 Two mechanisms, and telling "cannot see" from "not protected"
 ------------------------------------------------------------
 GitHub enforces branch rules through two independent mechanisms, and a branch can
@@ -84,7 +99,14 @@ nothing at all. So three reads are made, not one:
   right after somebody enables protection.
 * ``GET /repos/{slug}/branches/{branch}`` — carries a ``protected`` boolean and
   is readable with plain ``pull`` access. This is what settles the question at
-  the permission level this tool actually runs at.
+  the permission level this tool actually runs at. It also nests a ``protection``
+  object carrying ``required_status_checks``, which is read too: once #933 closes
+  with classic protection, a non-admin run can compare the required-check list
+  from this response instead of reporting ``unverifiable`` while holding the
+  comparison data. That is a partial answer — the object says nothing about
+  reviews, force-pushes, deletion or ``enforce_admins`` — so the other five
+  questions are reported as **unread**, never as satisfied, and such a run still
+  exits non-zero.
 * ``GET /repos/{slug}/rules/branches/{branch}`` — the rules from every ruleset
   that applies to the branch, **including inherited organization and enterprise
   rulesets**, and also readable without admin. That makes it strictly more
@@ -247,6 +269,13 @@ _REPOSITORY_SCOPED_RULE_PREFIX = "repository_"
 # turns protection on.
 PROTECTION_CLASSIC = "protected_classic"
 PROTECTION_RULESET = "protected_by_ruleset"
+# Protected, and the required-check list is readable from the branch *summary*
+# even though the classic endpoint 404s for want of admin. This is the state a
+# non-admin run lands in once issue #933 is closed with classic protection, and
+# it exists so that such a run reports a verified answer to the question it can
+# answer instead of collapsing to `unverifiable` — the comparison data is in a
+# response the tool already made.
+PROTECTION_SUMMARY = "protected_branch_summary"
 PROTECTION_VERIFIED_ABSENT = "verified_absent"
 PROTECTION_UNVERIFIABLE = "unverifiable"
 
@@ -263,11 +292,33 @@ class ProtectionState:
     branch_rules: List[Dict[str, Any]] = field(default_factory=list)
     branch_rules_status: int = 0
     ruleset_required_checks: List[str] = field(default_factory=list)
+    # The `protection` object nested in GET .../branches/{branch}, kept only when
+    # informative — see _summary_protection.
+    summary_protection: Optional[Dict[str, Any]] = None
+
+    @property
+    def summary_required_checks(self) -> List[str]:
+        """Required contexts the branch summary declares, if any."""
+        if not self.summary_protection:
+            return []
+        return _summary_required_check_names(self.summary_protection)
+
+    def live_required_checks(self) -> List[str]:
+        """Every required context, from all three readable sources.
+
+        Classic protection, rulesets and the branch summary all gate at once, so
+        the union is what actually blocks a merge. Reading fewer than all three
+        would report a check as missing when it is in fact required.
+        """
+        names = set(self.ruleset_required_checks) | set(self.summary_required_checks)
+        if self.classic:
+            names |= set(_required_check_names(self.classic))
+        return sorted(names)
 
     @property
     def protected(self) -> Optional[bool]:
         """True/False when known, None when it could not be determined."""
-        if self.state in (PROTECTION_CLASSIC, PROTECTION_RULESET):
+        if self.state in (PROTECTION_CLASSIC, PROTECTION_RULESET, PROTECTION_SUMMARY):
             return True
         if self.state == PROTECTION_VERIFIED_ABSENT:
             return False
@@ -327,6 +378,127 @@ def _action_check_names(job: Dict[str, Any]) -> List[Tuple[str, bool]]:
     return found
 
 
+def _branch_pattern_to_regex(pattern: str) -> Optional[re.Pattern]:
+    """One GitHub filter pattern as a regex, or None if it cannot be translated.
+
+    In GitHub's filter-pattern syntax ``*`` and ``?`` stop at ``/`` while ``**``
+    crosses it. ``+`` (one-or-more of the preceding character) and character
+    ranges (``[...]``) are also part of the syntax and are deliberately **not**
+    translated: returning ``None`` makes the caller give up and classify the
+    context advisory, which is the safe direction. Guessing wrong in the other
+    direction would advise requiring a check that never reports.
+    """
+    out = ["^"]
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if pattern[i : i + 2] == "**":
+            out.append(".*")
+            i += 2
+            continue
+        if char == "*":
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        elif char in "+[]":
+            return None
+        else:
+            out.append(re.escape(char))
+        i += 1
+    out.append("$")
+    return re.compile("".join(out))
+
+
+def _branch_filter_admits(raw: Any, branch: str, *, exclude: bool) -> Optional[bool]:
+    """Whether ``branch`` passes a ``branches:``/``branches-ignore:`` list.
+
+    Returns True when the workflow does run on a pull request targeting
+    ``branch``, False when it does not, and **None** when that could not be
+    decided — an unsupported filter pattern, or a shape that is not a list of
+    strings. The caller treats None like False, because an advisory check is
+    harmless and a wrongly-required one wedges every merge.
+
+    For ``branches:`` the patterns are evaluated in order and a leading ``!``
+    negates, which is GitHub's documented precedence: a later matching pattern
+    overrides an earlier one. ``branches-ignore:`` admits anything it does not
+    match, and GitHub does not allow ``!`` there.
+    """
+    patterns = [raw] if isinstance(raw, str) else raw
+    if not isinstance(patterns, list) or not patterns:
+        return None
+
+    if exclude:
+        for item in patterns:
+            regex = _branch_pattern_to_regex(str(item))
+            if regex is None:
+                return None
+            if regex.match(branch):
+                return False
+        return True
+
+    admitted = False
+    for item in patterns:
+        text = str(item)
+        negated = text.startswith("!")
+        regex = _branch_pattern_to_regex(text[1:] if negated else text)
+        if regex is None:
+            return None
+        if regex.match(branch):
+            admitted = not negated
+    return admitted
+
+
+def _pull_request_eligibility(pr: Any, branch: str) -> Tuple[bool, str]:
+    """Whether a ``pull_request:`` trigger reports on every PR targeting ``branch``.
+
+    Three ways it does not, each of which makes requiring the resulting context
+    unsafe:
+
+    * ``paths:``/``paths-ignore:`` — the workflow does not run at all on a PR
+      touching no matching path, so the check is never reported;
+    * ``branches:`` that does not select the branch being checked — likewise, and
+      note that for ``pull_request`` these filter on the PR's **base** branch,
+      which is exactly the branch whose protection is under examination;
+    * ``branches-ignore:`` that excludes it.
+
+    GitHub is explicit that a check belonging to a workflow skipped by path or
+    branch filtering stays **pending**, and a pull request requiring it can never
+    be merged. So each of these is reported advisory, with the reason.
+    """
+    if not isinstance(pr, dict):
+        return True, ""
+
+    if "paths" in pr or "paths-ignore" in pr:
+        return False, (
+            "pull_request trigger is path-filtered: on a PR touching no "
+            "matching path the workflow never runs, so a required check "
+            "would stay pending forever and block every merge"
+        )
+
+    for key, exclude in (("branches", False), ("branches-ignore", True)):
+        if key not in pr:
+            continue
+        admits = _branch_filter_admits(pr[key], branch, exclude=exclude)
+        if admits is True:
+            continue
+        if admits is False:
+            return False, (
+                f"pull_request trigger's {key}: filter does not select "
+                f"{branch!r}, so the workflow never runs on a pull request "
+                f"targeting it and a required check would stay pending forever "
+                f"and block every merge"
+            )
+        return False, (
+            f"pull_request trigger's {key}: filter could not be evaluated "
+            f"against {branch!r} (filter-pattern syntax this tool does not "
+            f"translate), so whether the workflow runs on a PR targeting it is "
+            f"unknown; treated as advisory because a required check that never "
+            f"reports blocks every merge"
+        )
+
+    return True, ""
+
+
 def _job_gates(job: Dict[str, Any], targets: Optional[frozenset] = None) -> List[str]:
     """Gate commands this job's steps run, in order, deduplicated."""
     if targets is None:
@@ -344,12 +516,20 @@ def _job_gates(job: Dict[str, Any], targets: Optional[frozenset] = None) -> List
     return gates
 
 
-def discover_check_contexts(workflows_dir: Path) -> List[CheckContext]:
+def discover_check_contexts(
+    workflows_dir: Path, branch: str = DEFAULT_BRANCH
+) -> List[CheckContext]:
     """Parse workflow YAML into the check contexts a pull request produces.
 
     A context is the job's ``name:`` when set, else its job id — that is how
     GitHub names the status check, and therefore the string branch protection
     has to match.
+
+    ``branch`` is the branch whose protection is being checked. It is needed
+    because eligibility is **not** a property of the workflow alone: a
+    ``pull_request: branches:`` filter that does not select this branch means the
+    workflow never runs on a PR targeting it, so its context must not be
+    required here even though it is perfectly requireable on another branch.
     """
     if not workflows_dir.is_dir():
         raise FileNotFoundError(f"no workflows directory at {workflows_dir}")
@@ -376,17 +556,9 @@ def discover_check_contexts(workflows_dir: Path) -> List[CheckContext]:
         if "pull_request" not in triggers:
             eligible, reason = False, "not triggered by pull_request"
         else:
-            pr = triggers["pull_request"]
-            filtered = isinstance(pr, dict) and ("paths" in pr or "paths-ignore" in pr)
-            if filtered:
-                eligible = False
-                reason = (
-                    "pull_request trigger is path-filtered: on a PR touching no "
-                    "matching path the workflow never runs, so a required check "
-                    "would stay pending forever and block every merge"
-                )
-            else:
-                eligible, reason = True, ""
+            eligible, reason = _pull_request_eligibility(
+                triggers["pull_request"], branch
+            )
 
         for job_id, job in jobs.items():
             if not isinstance(job, dict):
@@ -399,6 +571,23 @@ def discover_check_contexts(workflows_dir: Path) -> List[CheckContext]:
                         "matrix job: GitHub suffixes the context per matrix leg, "
                         "so the required name cannot be derived statically"
                     )
+            # A job-level `if:` means the job does not run on every pull request.
+            # Its failure mode differs from a filtered *workflow* and is worth
+            # stating precisely: GitHub reports a job skipped by a conditional as
+            # succeeding rather than leaving it pending, so requiring such a
+            # context does not wedge the branch — it does something quieter and
+            # arguably worse, passing the gate on every PR that skips the job
+            # without any of its work having run. Either way the context does not
+            # mean what requiring it implies, so it is advisory.
+            if job_eligible and job.get("if") is not None:
+                job_eligible = False
+                job_reason = (
+                    "job-level `if:` condition, so the job does not run on every "
+                    "pull request: requiring its context would either leave a "
+                    "check pending or — because GitHub reports a conditionally "
+                    "skipped job as successful — let the gate pass without having "
+                    "run at all"
+                )
             contexts.append(
                 CheckContext(
                     context=str(job.get("name") or job_id),
@@ -538,18 +727,74 @@ def fetch_admin_permission(repo: str, token: str) -> Optional[bool]:
     return bool(permissions.get("admin"))
 
 
-def fetch_branch_summary(repo: str, branch: str, token: str) -> Optional[bool]:
-    """The branch's ``protected`` boolean, or None if the branch is unreadable.
+def fetch_branch_summary(
+    repo: str, branch: str, token: str
+) -> Tuple[Optional[bool], Optional[Dict[str, Any]]]:
+    """The branch's ``protected`` flag **and** its nested ``protection`` object.
 
     Readable with plain ``pull`` access, unlike the classic-protection endpoint,
     so this is what lets the tool reach a *verified* conclusion at the permission
     level it normally runs with.
+
+    Both halves are returned because the same response carries both, and throwing
+    the second away is what would make this tool fail the moment protection is
+    actually enabled: without admin the classic read 404s, so if the only thing
+    kept from here were the boolean, a protected branch would be classified
+    ``unverifiable`` while the required-check list needed to check it sat in a
+    response already in hand. The nested object looks like::
+
+        "protection": {
+            "enabled": true,
+            "required_status_checks": {
+                "enforcement_level": "non_admins",
+                "contexts": ["Lint, Type Check, and Test"],
+                "checks": [{"context": "...", "app_id": 15368}]
+            }
+        }
+
+    Note that it is **partial**: it carries the required-check list and nothing
+    about reviews, ``enforce_admins``, force-pushes or deletions, so it can settle
+    question 2 of the six and none of the others. Note also that ``protected`` is
+    true for a branch governed only by a *ruleset*, in which case this nested
+    object reports ``"enabled": false`` — the two fields answer different
+    questions and ``_summary_protection`` only accepts the object when it is
+    actually informative.
     """
     _validate(repo, branch)
     payload, _status = _api_get(f"repos/{repo}/branches/{branch}", token)
     if not isinstance(payload, dict) or "protected" not in payload:
+        return None, None
+    protection = payload.get("protection")
+    return bool(payload.get("protected")), (
+        protection if isinstance(protection, dict) else None
+    )
+
+
+def _summary_protection(summary: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The summary's ``protection`` object, but only when it says something.
+
+    ``{"enabled": false, "required_status_checks": {"contexts": [], ...}}`` is
+    what a branch governed solely by a ruleset returns, and reading that as
+    "classic protection with no required checks" would invent a finding. So the
+    object counts only when it is enabled or names at least one context.
+    """
+    if not isinstance(summary, dict):
         return None
-    return bool(payload.get("protected"))
+    if summary.get("enabled"):
+        return summary
+    return summary if _summary_required_check_names(summary) else None
+
+
+def _summary_required_check_names(summary: Dict[str, Any]) -> List[str]:
+    """Required contexts declared by the branch summary's ``protection`` object."""
+    block = summary.get("required_status_checks")
+    if not isinstance(block, dict):
+        return []
+    names = {str(name) for name in block.get("contexts") or []}
+    for check in block.get("checks") or []:
+        if isinstance(check, dict) and check.get("context"):
+            names.add(str(check["context"]))
+    return sorted(names)
 
 
 def fetch_branch_rules(
@@ -607,7 +852,8 @@ def resolve_protection_state(repo: str, branch: str, token: str) -> ProtectionSt
     _validate(repo, branch)
     classic, classic_status = fetch_protection(repo, branch, token)
     admin = fetch_admin_permission(repo, token)
-    protected_flag = fetch_branch_summary(repo, branch, token)
+    protected_flag, summary = fetch_branch_summary(repo, branch, token)
+    summary_protection = _summary_protection(summary)
     rules, rules_status = fetch_branch_rules(repo, branch, token)
     branch_rules = branch_scoped_rules(rules or [])
 
@@ -615,14 +861,18 @@ def resolve_protection_state(repo: str, branch: str, token: str) -> ProtectionSt
         state = PROTECTION_CLASSIC
     elif branch_rules:
         state = PROTECTION_RULESET
+    elif protected_flag is True and summary_protection is not None:
+        # Protected, and the branch summary carries enough to check the
+        # required-check list even though the classic endpoint 404s. Reporting
+        # `unverifiable` here would be giving up on data already fetched.
+        state = PROTECTION_SUMMARY
     elif protected_flag is False:
         # Verified absent: `branches/{branch}` is readable with pull access and
         # says the branch is not protected, and no ruleset rule governs it.
         state = PROTECTION_VERIFIED_ABSENT
-    elif protected_flag is True:
-        # Protected, but the detail is behind an endpoint this token cannot read.
-        state = PROTECTION_UNVERIFIABLE
     else:
+        # Either the summary read failed outright, or it says protected while
+        # carrying no usable detail and no ruleset rule explains it.
         state = PROTECTION_UNVERIFIABLE
 
     return ProtectionState(
@@ -634,6 +884,7 @@ def resolve_protection_state(repo: str, branch: str, token: str) -> ProtectionSt
         branch_rules=branch_rules,
         branch_rules_status=rules_status,
         ruleset_required_checks=ruleset_required_check_names(branch_rules),
+        summary_protection=summary_protection,
     )
 
 
@@ -661,14 +912,48 @@ def _expected_list(expected: List[str]) -> str:
     return ", ".join(expected) if expected else "(none derived!)"
 
 
+def _rule_params(rules: List[Dict[str, Any]], rule_type: str) -> Dict[str, Any]:
+    """The ``parameters`` object of the first rule of ``rule_type``, or ``{}``."""
+    for rule in rules:
+        if rule.get("type") != rule_type:
+            continue
+        params = rule.get("parameters")
+        return params if isinstance(params, dict) else {}
+    return {}
+
+
 def _evaluate_ruleset(
     state: ProtectionState, expected: List[str], branch: str
 ) -> List[Finding]:
     """Assert against ruleset rules when classic protection is not visible.
 
-    Deliberately the same five questions the classic path asks, keyed distinctly
-    so a report says which mechanism it read. Without this, a repository governed
+    Asks the same six questions the classic path asks, keyed distinctly so a
+    report says which mechanism it read. Without this, a repository governed
     entirely by a ruleset would be reported as "protected" and never checked.
+
+    Asking only whether each *rule type* is present is not enough, and used to be
+    all this did. A ``pull_request`` rule with
+    ``required_approving_review_count: 0`` and
+    ``dismiss_stale_reviews_on_push: false`` is a rule that requires no review and
+    carries stale approvals forward, and it produced no finding at all — so a
+    repository migrating from classic protection to a ruleset and setting
+    approvals to zero got a clean bill of health from a tool whose whole purpose
+    is to catch that. The rule *parameters* are therefore read too, and each maps
+    to the classic finding it mirrors:
+
+    ================================  =========================
+    ruleset parameter                 classic equivalent
+    ================================  =========================
+    required_approving_review_count   no_approving_review
+    dismiss_stale_reviews_on_push     stale_reviews_kept
+    strict_required_status_checks_..  not_strict
+    ================================  =========================
+
+    One classic assertion has no ruleset counterpart here: bypass actors are a
+    property of the *ruleset*, not of the rules that
+    ``GET /repos/{slug}/rules/branches/{branch}`` returns, so a bypass list
+    equivalent to ``bypass_pull_request_allowances`` cannot be seen from this
+    read. Nothing is asserted about it rather than asserting it vacuously.
     """
     findings: List[Finding] = []
     types = {str(rule.get("type")) for rule in state.branch_rules}
@@ -686,7 +971,11 @@ def _evaluate_ruleset(
             )
         )
     else:
-        live = state.ruleset_required_checks
+        # `missing` is computed against every mechanism that gates, so a check
+        # required elsewhere is not falsely reported as unrequired. `stale` stays
+        # scoped to the ruleset's own list, because its message names the ruleset
+        # as the thing to edit and must not blame it for somebody else's entry.
+        live = state.live_required_checks()
         missing = [name for name in expected if name not in live]
         if missing:
             findings.append(
@@ -699,7 +988,7 @@ def _evaluate_ruleset(
                     remedy="add them to the ruleset's required status checks",
                 )
             )
-        stale = [name for name in live if name not in expected]
+        stale = [name for name in state.ruleset_required_checks if name not in expected]
         if stale:
             findings.append(
                 Finding(
@@ -715,6 +1004,26 @@ def _evaluate_ruleset(
                     ),
                 )
             )
+        # The ruleset spelling of classic protection's `strict` flag. Live shape,
+        # recorded from home-assistant/core's `dev` branch: the flag sits in the
+        # `required_status_checks` rule's parameters alongside the context list.
+        checks_params = _rule_params(state.branch_rules, "required_status_checks")
+        if not checks_params.get("strict_required_status_checks_policy"):
+            findings.append(
+                Finding(
+                    key="ruleset_not_strict",
+                    message=(
+                        f"the ruleset on {branch!r} does not set "
+                        f"strict_required_status_checks_policy, so a pull request "
+                        f"can pass against a stale base and merge a combination "
+                        f"neither side tested"
+                    ),
+                    remedy=(
+                        "enable 'require branches to be up to date before merging' "
+                        "on the ruleset's required status checks"
+                    ),
+                )
+            )
 
     if "pull_request" not in types:
         findings.append(
@@ -727,6 +1036,41 @@ def _evaluate_ruleset(
                 remedy="add a pull_request rule requiring at least 1 approval",
             )
         )
+    else:
+        # Present-but-toothless is the case that used to slip through: the rule
+        # exists, so the type check above passes, while its parameters say no
+        # approval is needed and stale approvals carry over.
+        review_params = _rule_params(state.branch_rules, "pull_request")
+        count = review_params.get("required_approving_review_count") or 0
+        if count < 1:
+            findings.append(
+                Finding(
+                    key="ruleset_no_approving_review",
+                    message=(
+                        f"the ruleset on {branch!r} has a pull_request rule but its "
+                        f"required_approving_review_count is {count}, so a pull "
+                        f"request can be merged with no approval at all"
+                    ),
+                    remedy=(
+                        "set the ruleset's required_approving_review_count to 1 or more"
+                    ),
+                )
+            )
+        if not review_params.get("dismiss_stale_reviews_on_push"):
+            findings.append(
+                Finding(
+                    key="ruleset_stale_reviews_kept",
+                    message=(
+                        f"the ruleset on {branch!r} does not set "
+                        f"dismiss_stale_reviews_on_push, so an approval of reviewed "
+                        f"code carries over to code nobody reviewed"
+                    ),
+                    remedy=(
+                        "enable dismiss_stale_reviews_on_push on the ruleset's "
+                        "pull_request rule"
+                    ),
+                )
+            )
     if "non_fast_forward" not in types:
         findings.append(
             Finding(
@@ -744,6 +1088,112 @@ def _evaluate_ruleset(
                 key="ruleset_deletions_allowed",
                 message=f"the ruleset on {branch!r} has no deletion rule",
                 remedy="add a deletion rule to block branch deletion",
+            )
+        )
+    return findings
+
+
+def _evaluate_branch_summary(
+    state: ProtectionState, expected: List[str], branch: str, derived: List[str]
+) -> List[Finding]:
+    """Assert what the branch *summary* can settle, and say what it cannot.
+
+    This is the post-#933 non-admin path. The summary's nested ``protection``
+    object carries the required-check list and nothing else, so exactly one of the
+    six questions is answerable here — and answering it is the point, because the
+    alternative this replaces was reporting ``protection_unverifiable`` while
+    holding the comparison data.
+
+    The remaining five settings are reported as unread rather than as satisfied.
+    That keeps the exit code honest: a run that cannot see ``enforce_admins``
+    must not print a clean bill of health, because ``enforce_admins: false``
+    exempts exactly the people most likely to be merging.
+    """
+    findings = _compare_required_checks(state.live_required_checks(), expected, derived)
+    findings.append(
+        Finding(
+            key="protection_detail_unreadable",
+            message=(
+                f"{branch!r} IS protected and its required-check list was read "
+                f"from GET .../branches/{branch} (classic endpoint returned "
+                f"{state.classic_status}; this token has admin="
+                f"{state.admin_permission}), but that response carries only the "
+                f"required-check list. Whether an approving review is required, "
+                f"whether stale approvals are dismissed, whether force-pushes and "
+                f"deletion are blocked, and whether enforce_admins is on could NOT "
+                f"be read at this permission level — they are unverified, not "
+                f"verified-good"
+            ),
+            remedy=(
+                "re-run with a token that has administration:read to check the "
+                "remaining five settings"
+            ),
+        )
+    )
+    return findings
+
+
+def _compare_required_checks(
+    live: List[str], expected: List[str], derived: Optional[List[str]] = None
+) -> List[Finding]:
+    """The required-check list comparison, shared by the classic and summary paths.
+
+    ``live`` is the union of every mechanism that gates, so a check required by
+    one of them is never reported as unrequired. ``_evaluate_ruleset`` keeps its
+    own copy of this comparison because its messages name the ruleset as the thing
+    to edit and its `stale` list is deliberately scoped to the ruleset's own
+    entries.
+    """
+    findings: List[Finding] = []
+    missing = [name for name in expected if name not in live]
+    if missing:
+        findings.append(
+            Finding(
+                key="missing_required_checks",
+                message=(
+                    "these check contexts run on every pull request but are "
+                    f"NOT required: {', '.join(missing)}"
+                ),
+                remedy="add them to the branch-protection required checks",
+            )
+        )
+    stale = [name for name in live if name not in expected]
+    # A required name this repo *does* produce, but only conditionally, is a
+    # different defect from a name nothing produces at all — and advising an
+    # administrator to "remove" it would be wrong. Split them.
+    known = set(derived if derived is not None else expected)
+    conditional = [name for name in stale if name in known]
+    unknown = [name for name in stale if name not in known]
+    if conditional:
+        findings.append(
+            Finding(
+                key="required_but_not_always_reported",
+                message=(
+                    "these checks are required, and this repo does produce them, "
+                    "but not on every pull request (path- or branch-filtered "
+                    "workflow, matrix leg, a job behind an `if:`, or a conditional "
+                    "action-created check run), so they can sit pending and block "
+                    f"a merge indefinitely: {', '.join(conditional)}"
+                ),
+                remedy=(
+                    "un-require them, or make them unconditional — do NOT remove "
+                    "the job, the check itself is wanted"
+                ),
+            )
+        )
+    if unknown:
+        findings.append(
+            Finding(
+                key="unknown_required_checks",
+                message=(
+                    "these checks are required but nothing in .github/workflows/ "
+                    "produces them, so they may never report and could block "
+                    f"merges indefinitely: {', '.join(unknown)}"
+                ),
+                remedy=(
+                    "remove them, or rename the workflow job back to match "
+                    "(a renamed job silently stops being gated)"
+                ),
             )
         )
     return findings
@@ -823,6 +1273,11 @@ def evaluate(
             )
         ]
 
+    if state.state == PROTECTION_SUMMARY:
+        return _evaluate_branch_summary(
+            state, expected, branch, derived if derived is not None else expected
+        )
+
     if state.state == PROTECTION_RULESET or protection is None:
         return _evaluate_ruleset(state, expected, branch)
 
@@ -841,64 +1296,18 @@ def evaluate(
             )
         )
     else:
-        # A ruleset can require checks in addition to classic protection, and both
-        # mechanisms gate simultaneously, so the union is what actually blocks.
+        # All three mechanisms gate simultaneously, so the union of what each one
+        # requires is what actually blocks a merge. `state.live_required_checks()`
+        # folds in the branch summary too, which is the source a non-admin run has
+        # when the classic read 404s.
+        # Unioned with this payload explicitly rather than relying on `state`
+        # carrying it: `evaluate` accepts `protection` and `state` as separate
+        # arguments, so a caller can pass a payload the state does not hold, and
+        # falling back to one *or* the other would then drop the other's names.
         live = sorted(
-            set(_required_check_names(protection)) | set(state.ruleset_required_checks)
+            set(state.live_required_checks()) | set(_required_check_names(protection))
         )
-        missing = [name for name in expected if name not in live]
-        if missing:
-            findings.append(
-                Finding(
-                    key="missing_required_checks",
-                    message=(
-                        "these check contexts run on every pull request but are "
-                        f"NOT required: {', '.join(missing)}"
-                    ),
-                    remedy="add them to the branch-protection required checks",
-                )
-            )
-        stale = [name for name in live if name not in expected]
-        # A required name this repo *does* produce, but only conditionally (a
-        # path-filtered workflow, a matrix leg, an action-created check behind an
-        # `if:`), is a different defect from a name nothing produces at all — and
-        # advising an administrator to "remove" it would be wrong. Split them.
-        known = set(derived or expected)
-        conditional = [name for name in stale if name in known]
-        unknown = [name for name in stale if name not in known]
-        if conditional:
-            findings.append(
-                Finding(
-                    key="required_but_not_always_reported",
-                    message=(
-                        "these checks are required, and this repo does produce "
-                        "them, but not on every pull request (path-filtered "
-                        "workflow, matrix leg, or a conditional action-created "
-                        "check run), so they can sit pending and block a merge "
-                        f"indefinitely: {', '.join(conditional)}"
-                    ),
-                    remedy=(
-                        "un-require them, or make them unconditional — do NOT "
-                        "remove the job, the check itself is wanted"
-                    ),
-                )
-            )
-        if unknown:
-            findings.append(
-                Finding(
-                    key="unknown_required_checks",
-                    message=(
-                        "these checks are required but nothing in "
-                        ".github/workflows/ produces them, so they may never "
-                        "report and could block merges indefinitely: "
-                        f"{', '.join(unknown)}"
-                    ),
-                    remedy=(
-                        "remove them, or rename the workflow job back to match "
-                        "(a renamed job silently stops being gated)"
-                    ),
-                )
-            )
+        findings.extend(_compare_required_checks(live, expected, derived))
         if not block.get("strict"):
             findings.append(
                 Finding(
@@ -1020,6 +1429,9 @@ def evaluate(
 _STATE_LABEL = {
     PROTECTION_CLASSIC: "PROTECTED (classic branch protection)",
     PROTECTION_RULESET: "PROTECTED (by a ruleset; classic protection not visible)",
+    PROTECTION_SUMMARY: (
+        "PROTECTED (per the branch summary; classic settings need administration:read)"
+    ),
     PROTECTION_VERIFIED_ABSENT: "NOT PROTECTED (verified)",
     PROTECTION_UNVERIFIABLE: "UNVERIFIABLE at this permission level",
 }
@@ -1067,6 +1479,12 @@ def print_report(
         print(
             f"  GET .../branches/{branch}            -> "
             f"protected={state.protected_flag}"
+            + (
+                ", nested protection.required_status_checks: "
+                + (", ".join(state.summary_required_checks) or "(none)")
+                if state.summary_protection
+                else ""
+            )
         )
         rule_types = sorted({str(r.get("type")) for r in state.branch_rules})
         print(
@@ -1080,9 +1498,22 @@ def print_report(
         )
         if state.ruleset_required_checks:
             print(
-                "  ruleset required checks: "
-                + ", ".join(state.ruleset_required_checks)
+                "  ruleset required checks: " + ", ".join(state.ruleset_required_checks)
             )
+
+    # Stated in the report, not just in a source comment: a reader who sees a
+    # clean result on a protected branch would otherwise reasonably conclude the
+    # push allowlist had been checked and found adequate. It is deliberately not
+    # asserted on, because an empty one is correct for a repository taking outside
+    # contributions, so its absence is not a finding — but "not asserted" and
+    # "asserted and fine" must not look the same.
+    print(
+        "\nNot asserted: `restrictions` (the push allowlist). An empty one is the\n"
+        "normal, correct configuration for an open-source repo taking outside\n"
+        "contributions — requiring a pull request already covers it — so reporting\n"
+        "its absence would be a false finding. Raw value is in --json under\n"
+        "`classic_protection.restrictions`."
+    )
 
     print("\n" + "-" * 78)
     if not findings:
@@ -1108,8 +1539,11 @@ def _skip(reason: str, detail: str, fail_on_skip: bool) -> int:
     print(f"  {detail}")
     print(
         "\n  This check needs network access and a GitHub token. `pull` access is\n"
-        "  enough to reach a verified answer; administration:read additionally\n"
-        "  reveals the detail of classic protection settings.\n"
+        "  enough to reach a verified answer, and enough to compare the required-\n"
+        "  check list once protection exists (GET .../branches/<branch> carries a\n"
+        "  nested protection.required_status_checks object at that scope).\n"
+        "  administration:read is what the other five assertions need; without it\n"
+        "  they are reported as unread, not as satisfied.\n"
         "  It is opt-in by design and gates nothing, so a skip is not a failure.\n"
         "  Pass --fail-on-skip to make an unrunnable check an error instead "
         "(do that\n  once issue #933 is closed and this becomes a blocking gate)."
@@ -1141,7 +1575,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        contexts = discover_check_contexts(WORKFLOWS_DIR)
+        contexts = discover_check_contexts(WORKFLOWS_DIR, args.branch)
     except (FileNotFoundError, ValueError) as exc:
         print(f"❌ could not derive the expected check list: {exc}")
         return 3
@@ -1184,9 +1618,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     if args.json:
-        live = set(state.ruleset_required_checks)
-        if state.classic:
-            live |= set(_required_check_names(state.classic))
         print(
             json.dumps(
                 {
@@ -1203,12 +1634,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "branch_rules_status": state.branch_rules_status,
                         "token_has_admin": state.admin_permission,
                     },
+                    # The `protection` object nested in GET .../branches/{branch}.
+                    # Partial by design — it carries the required-check list and
+                    # nothing about reviews, enforce_admins, force-push or
+                    # deletion, which is why the summary path still reports those
+                    # five as unread rather than as satisfied.
+                    "branch_summary_protection": state.summary_protection,
                     "classic_protection": state.classic,
                     "branch_scoped_ruleset_rule_types": sorted(
                         {str(r.get("type")) for r in state.branch_rules}
                     ),
                     "expected_required_checks": expected,
-                    "live_required_checks": sorted(live),
+                    "live_required_checks": state.live_required_checks(),
                     "advisory_only": [
                         {"context": c.context, "reason": c.reason}
                         for c in contexts

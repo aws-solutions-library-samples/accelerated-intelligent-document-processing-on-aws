@@ -166,8 +166,14 @@ enterprise: four `target=repository`, one `target=tag`), so the tool reaches a
 The command is opt-in and is in neither `lint-cicd` nor `SHARED_GATES`, because
 enabling protection needs repository **admin** — tracked by
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
-A `pull`-scoped token is enough to run it; `administration:read` only adds the
-detail of the classic settings.
+A `pull`-scoped token is enough to run it, and enough to check one of the six
+assertions after protection is enabled: `.../branches/develop` carries a nested
+`protection.required_status_checks` object at that scope, so the required-check
+comparison is made from it rather than being abandoned as unverifiable.
+`administration:read` is what the other five need — required approvals, stale-review
+dismissal, the force-push and deletion blocks, and `enforce_admins` — and a run
+without it emits a `protection_detail_unreadable` finding saying those five are
+unverified rather than verified-good, so such a run still exits non-zero.
 Once that is closed it should become a required, blocking check, run with
 `--fail-on-skip`.
 
