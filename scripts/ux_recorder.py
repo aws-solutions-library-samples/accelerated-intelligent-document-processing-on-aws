@@ -4,17 +4,21 @@
 """
 ux_recorder.py
 
-Record a browser UX review as a narrated, captioned video.
+Record a browser session as a narrated, captioned video: a UX review
+(``.claude/skills/ux-test.md``) or a product demo (``.claude/skills/product-demo.md``).
 
-The review itself is still done by the agent following ``.claude/skills/ux-test.md``:
-it drives the debug Chrome through the chrome-devtools MCP server and forms the
-usability judgement. This script sits beside that as a sidecar. It attaches a second
+The review or demo itself is still done by the agent following its skill: it
+drives the debug Chrome through the chrome-devtools MCP server and decides what to
+show and say. This script sits beside that as a sidecar. It attaches a second
 DevTools session to the same tab, captures screencast frames while the agent works,
 and takes short commands from the agent between steps — ``mark`` with a narration
 line before each group of actions, ``note`` for something noticed, ``pause`` and
 ``resume`` around a long wait, ``stop`` at the end. ``render`` then turns the frames,
-the marks and the narration into ``review.mp4`` with Amazon Polly speech and a
-subtitle track.
+the marks and the narration into ``review.mp4`` (or ``demo.mp4`` for
+``--kind demo``) with Amazon Polly speech and a subtitle track. The kind decides
+the cards: a review's title card names the stack and persona and its end card
+lists the report's Findings; a demo's title card carries ``--title`` and
+``--subtitle`` lines and its end card lists the Key takeaways from ``demo.md``.
 
 Why a sidecar and not a change to the skill's browser tooling
 -------------------------------------------------------------
@@ -49,7 +53,13 @@ Usage (from the repo root; the debug Chrome from the skill must be running):
   ./scripts/ux_recorder.py stop --say "That ends the review."
   AWS_PROFILE=default ./scripts/ux_recorder.py render --voice Ruth
 
-Everything lands under ``scratch/ux-recordings/<stack>-<timestamp>/`` (gitignored).
+  # a product demo: no persona, a title instead of a stack on the title card
+  ./scripts/ux_recorder.py start --kind demo --stack <STACK> \\
+      --title "Editing test sets in place" --subtitle "Version 0.6.9" \\
+      --url-contains cloudfront --say "..."
+
+Everything lands under ``scratch/ux-recordings/<stack>-<timestamp>/`` (gitignored;
+demos under ``demo-<title>-<timestamp>/``).
 Recordings of a live stack show real data; nothing is redacted. Polly receives
 only the narration text.
 """
@@ -98,6 +108,22 @@ def session_dir_name(stack: str, now: datetime) -> str:
         or "stack"
     )
     return f"{safe}-{now.strftime('%Y%m%d-%H%M%S')}"
+
+
+def demo_session_seed(title: str) -> str:
+    return f"demo-{title[:40]}"
+
+
+def session_meta_fields(meta: dict[str, Any]) -> dict[str, Any]:
+    """The identity fields every timeline carries, whichever kind it is."""
+    return {
+        "kind": render.session_kind(meta),
+        "stack": meta.get("stack"),
+        "persona": meta.get("persona"),
+        "flows": meta.get("flows") or [],
+        "title": meta.get("title"),
+        "subtitle": list(meta.get("subtitle") or []),
+    }
 
 
 def socket_path_for(now: datetime, pid: int) -> str:
@@ -362,9 +388,7 @@ class Recorder:
         frames = self.screencast.count if self.screencast else 0
         frame_bytes = self.screencast.bytes if self.screencast else 0
         session = {
-            "stack": self.meta.get("stack"),
-            "persona": self.meta.get("persona"),
-            "flows": self.meta.get("flows") or [],
+            **session_meta_fields(self.meta),
             "started": self.started,
             "ended": self.clock(),
             "page_url": self.meta.get("page_url"),
@@ -419,18 +443,23 @@ def write_session_outputs(
     narration_path = session_dir / "narration.md"
     if not narration_path.exists():
         narration_path.write_text(render.write_narration_md(events), encoding="utf-8")
-    review_path = session_dir / "review.md"
-    if not review_path.exists():
+    kind = render.session_kind(meta)
+    report_path = session_dir / render.report_file(kind)
+    if not report_path.exists():
         started = float(timeline["session"].get("started") or time.time())
-        review_path.write_text(
-            render.review_skeleton(
+        date = datetime.fromtimestamp(started).strftime("%Y-%m-%d")
+        if kind == "demo":
+            skeleton = render.demo_skeleton(
+                str(meta.get("title") or "Demo"), date, list(meta.get("subtitle") or [])
+            )
+        else:
+            skeleton = render.review_skeleton(
                 str(meta.get("stack", "?")),
                 str(meta.get("persona", "?")),
-                datetime.fromtimestamp(started).strftime("%Y-%m-%d"),
+                date,
                 list(meta.get("flows") or []),
-            ),
-            encoding="utf-8",
-        )
+            )
+        report_path.write_text(skeleton, encoding="utf-8")
 
 
 def finalize_from_disk(
@@ -471,9 +500,7 @@ def finalize_from_disk(
     timeline = {
         "version": 1,
         "session": {
-            "stack": meta.get("stack"),
-            "persona": meta.get("persona"),
-            "flows": meta.get("flows") or [],
+            **session_meta_fields(meta),
             "started": meta.get("started"),
             "ended": last_t,
             "page_url": meta.get("page_url"),
@@ -614,6 +641,12 @@ def cmd_targets(args: argparse.Namespace) -> int:
 
 
 def cmd_start(args: argparse.Namespace) -> int:
+    if args.kind == "demo" and not args.title:
+        print("--kind demo needs --title (shown on the title card).", file=sys.stderr)
+        return 2
+    if args.kind == "review" and not args.persona:
+        print("--persona is required for a review recording.", file=sys.stderr)
+        return 2
     out_dir = Path(args.out).resolve() if args.out else default_out_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     current = read_current(out_dir)
@@ -648,12 +681,16 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 2
 
     now = datetime.now()
-    session_dir = out_dir / session_dir_name(args.stack, now)
+    seed = demo_session_seed(args.title) if args.kind == "demo" else args.stack
+    session_dir = out_dir / session_dir_name(seed, now)
     session_dir.mkdir(parents=True, exist_ok=False)
     meta = {
+        "kind": args.kind,
         "stack": args.stack,
         "persona": args.persona,
         "flows": args.flow or [],
+        "title": args.title,
+        "subtitle": args.subtitle or [],
         "target_id": target.get("id"),
         "page_url": target.get("url"),
         "page_title": target.get("title"),
@@ -852,8 +889,9 @@ def cmd_stop(args: argparse.Namespace) -> int:
         except (OSError, RuntimeError):
             reply = None
         if reply and reply.get("ok"):
+            report = render.report_file(render.session_kind(_session_meta(session_dir)))
             reply["next"] = (
-                f"fill {session_dir / 'review.md'}, then: ux_recorder.py render {session_dir}"
+                f"fill {session_dir / report}, then: ux_recorder.py render {session_dir}"
             )
             return _print_reply(reply)
     if not (session_dir / SESSION_FILE).exists():
@@ -871,6 +909,16 @@ def cmd_stop(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _session_meta(session_dir: Path) -> dict[str, Any]:
+    path = session_dir / SESSION_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _latest_session(out_dir: Path) -> Path | None:
@@ -970,10 +1018,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_targets)
 
     p = sub.add_parser("start", help="attach to a tab and begin recording")
+    p.add_argument(
+        "--kind",
+        choices=list(render.KINDS),
+        default="review",
+        help="review (default): UX review with Findings end card, review.mp4; "
+        "demo: product demo with Key takeaways end card, demo.mp4",
+    )
     p.add_argument("--stack", required=True)
-    p.add_argument("--persona", required=True)
+    p.add_argument("--persona", help="required for --kind review")
     p.add_argument(
         "--flow", action="append", help="flow id from scripts/ux_flows.yaml; repeatable"
+    )
+    p.add_argument("--title", help="demo title for the title card (required for demo)")
+    p.add_argument(
+        "--subtitle",
+        action="append",
+        help="extra title-card line, e.g. 'Version 0.6.9'; repeatable",
     )
     p.add_argument("--url-contains", help="pick the tab whose URL contains this")
     p.add_argument("--target", help="pick the tab by DevTools target id (see targets)")
@@ -1023,7 +1084,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_session(p)
     p.set_defaults(func=cmd_stop)
 
-    p = sub.add_parser("render", help="synthesize narration and encode review.mp4")
+    p = sub.add_parser(
+        "render", help="synthesize narration and encode review.mp4 or demo.mp4"
+    )
     p.add_argument(
         "session_dir", nargs="?", help="default: the most recent finished session"
     )
@@ -1039,7 +1102,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-captions",
         action="store_true",
-        help="do not embed the subtitle track (review.srt is still written)",
+        help="do not embed the subtitle track (the .srt is still written)",
     )
     p.add_argument(
         "--plain-text",

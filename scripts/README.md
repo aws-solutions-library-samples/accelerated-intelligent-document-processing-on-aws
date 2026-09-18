@@ -42,14 +42,16 @@ See [sdlc/cfn/README.md](sdlc/cfn/README.md) for CloudFormation templates.
 | `discover_model_limits.py` | Empirically test Bedrock model max_tokens limits | `python scripts/discover_model_limits.py` |
 | `test_api_rbac.py` | Live RBAC/auth/arg-mapping test of the REST API across all Cognito roles | `python scripts/test_api_rbac.py --stack-name <stack> --region <region>` |
 | `ux_test_session.py` | Web URL and throwaway Cognito user for a browser UX review (see `.claude/skills/ux-test.md`) | `python scripts/ux_test_session.py url <stack> --region <region>` |
-| `ux_recorder.py` | Record a UX review as a narrated, captioned mp4 (sidecar to the ux-test skill; see below) | `python scripts/ux_recorder.py start --stack <stack> --persona Admin --url-contains cloudfront` |
+| `ux_recorder.py` | Record a UX review or a product demo as a narrated, captioned mp4 (sidecar to the ux-test and product-demo skills; see below) | `python scripts/ux_recorder.py start --stack <stack> --persona Admin --url-contains cloudfront` |
+| `demo_storyboards.yaml` | Confirmed product-demo storyboards, so a demo can be re-recorded on a later release (see `.claude/skills/product-demo.md`) | — |
 | `generate_govcloud_template.py` | Generate GovCloud-compatible template (**deprecated** — use `idp-cli publish --headless`) | `idp-cli publish --source-dir . --region <region> --headless` |
 
-### UX review recorder (`ux_recorder.py`)
+### UX review and demo recorder (`ux_recorder.py`)
 
-Turns a browser UX review (the agent driving the debug Chrome per
-`.claude/skills/ux-test.md`) into `review.mp4` with spoken narration and an
-embedded subtitle track, so a review can be shown to the team instead of re-run.
+Turns a browser session (the agent driving the debug Chrome per
+`.claude/skills/ux-test.md` or `.claude/skills/product-demo.md`) into an mp4 with
+spoken narration and an embedded subtitle track, so a review can be shown to the
+team instead of re-run, and a feature can be demonstrated without a live walkthrough.
 
 **How it works:** `start` attaches a second DevTools session to the tab being
 reviewed (same Chrome on `:9222` the MCP server uses) and captures screencast
@@ -73,9 +75,20 @@ make ux-record-deps                                   # ffmpeg, ffprobe, boto3, 
 ./scripts/ux_recorder.py mark "Open the annotation queue" --say "We open the queue from the set's page."
 ./scripts/ux_recorder.py stop --say "That ends the review."
 AWS_PROFILE=default ./scripts/ux_recorder.py render --voice Ruth        # --dry-run prints the pacing table
+
+# a product demo: title card from --title/--subtitle, Key-takeaways end card from demo.md, demo.mp4
+./scripts/ux_recorder.py start --kind demo --stack <STACK> --title "Editing test sets in place" \
+    --subtitle "Version 0.6.9" --url-contains cloudfront --say "..."
 ```
 
-Output lives under `scratch/ux-recordings/<stack>-<timestamp>/` (gitignored):
+`--kind` (default `review`) decides the cards, the report skeleton and the output
+names: a review's title card names the stack and persona and its end card lists the
+Findings from `review.md`; a demo's carries the `--title` and `--subtitle` lines and
+its end card lists the Key takeaways from `demo.md` (`demo.mp4`, `demo.srt`).
+Everything else — marks, pauses, click markers, pacing, captions — is shared.
+
+Output lives under `scratch/ux-recordings/<stack>-<timestamp>/` (demos:
+`demo-<title>-<timestamp>/`; gitignored):
 recordings of a live stack show real documents and are never committed. Polly
 receives only the narration text. Stdlib plus boto3/Pillow at render time; the
 WebSocket client is vendored in `ux_recorder_cdp.py` rather than adding a

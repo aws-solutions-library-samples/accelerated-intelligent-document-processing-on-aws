@@ -19,11 +19,31 @@ confidence tasks across a thread pool with DynamoDB caching. It was the
 historical mechanism for scoring large lists on the non-agentic path, but:
 
 - its `<<CACHEPOINT>>` caching was ineffective (a concurrent cacheWrite storm), and
-- it cost roughly **4–5× more** than a consolidated pass for equal accuracy.
+- it cost **substantially more** than a consolidated pass for equal accuracy.
 
-In A/B testing on a 120-row bank statement, turning granular **off** yielded
-**−78% Bedrock cost** at equal accuracy, with **full per-cell coverage plus
+In A/B testing on a 120-row bank statement, turning granular **off** was
+**substantially cheaper** at equal accuracy, with **full per-cell coverage plus
 geometry** — whereas granular actually produced **0% geometry**.
+
+> **Why there is no percentage here.** This page previously quoted a −78% cost
+> saving and a 4–5× cost ratio. Both came from the solution's own cost reporting,
+> which at the time resolved a pricing unit by substring match, so
+> `cacheReadInputTokens` bound to a row's `inputTokens` price on any model whose
+> pricing entry omitted a cache-read rate — billing cache reads at up to ten times
+> their real price. Granular was a cache-heavy arm with a measured ~1:1
+> cacheWrite:cacheRead ratio, which is exactly the shape that error acts on, so the
+> figures were stated to a precision the measurement could not support. The
+> direction is not in doubt: fresh-input and output tokens were always priced
+> correctly, so correcting the price can only shrink the ratio by a bounded factor
+> and cannot reverse it, and granular's 0% geometry result involves no pricing at
+> all. The lookup was fixed in
+> [#926](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/926);
+> the A/B output was never committed, so it cannot be re-priced after the fact and
+> would have to be re-run. Tracked in
+> [#966](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/966).
+> A re-measured figure, if one is published, will come with a committed results
+> directory under `benchmarks/results/` per the
+> [reproducibility rules](benchmarking/index.md#reproducibility--honesty-rules).
 
 Its capability is now fully covered by **standalone large-list batching** (see
 below).
