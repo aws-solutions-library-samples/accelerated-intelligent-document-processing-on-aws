@@ -73,6 +73,7 @@ def test_gate_runs_in_both_cis(gate: str) -> None:
         "check-arn-partitions",
         "check-filtered-scans",
         "check-data-plane-tags",
+        "check-retired-services",
         "check-threat-model-currency",
     ],
 )

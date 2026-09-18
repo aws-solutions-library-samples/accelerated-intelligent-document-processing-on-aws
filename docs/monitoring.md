@@ -75,16 +75,49 @@ That failure is quiet. Every other signal looks *idle* rather than broken: no
 errors, no failed executions, latency graphs simply stop. The usual first symptom
 is a person noticing that nothing has processed for hours.
 
-Two metrics in the stack's own namespace (`<StackName>`) make it visible, both on
-the **Workflow Concurrency Counter** widget:
+The counter can also drift the other way. Admission is gated on
+`active_count < MaxConcurrentWorkflows`, so a counter driven **below zero** raises
+the effective ceiling by exactly that much and nothing errors: documents process,
+queues drain, every graph looks healthy, and the stack simply spends more on
+Bedrock and Textract than it was configured to. Two guards in the tracker prevent
+it: the decrement is refused when the counter is already at zero, and it carries a
+`dec#<executionArn>` marker written in the same DynamoDB transaction, so a
+redelivered terminal event cannot release a second slot. The markers expire via
+the `ConcurrencyTable` TTL attribute (`ExpiresAfter`, seven days) rather than
+accumulating one item per document forever.
+
+Unlike the upward leak, a negative counter is **not** permanent even without
+intervention: every admitted document increments it, and once it climbs to the
+ceiling the floored decrements absorb the excess, so it converges back on its own.
+The over-admission is therefore bounded to roughly one generation of documents
+rather than lasting forever — which is why the guards and the repair below matter
+for cost and for predictable capacity rather than for recoverability.
+
+Four metrics in the stack's own namespace (`<StackName>`) make all of this
+visible, all on the **Workflow Concurrency Counter** widget:
 
 - **`ConcurrencyCounterActive`** — the counter value, published on every document
-  completion. Continuous, so there is a history to inspect after the fact.
+  completion. Continuous, so there is a history to inspect after the fact. Its
+  **Minimum** is plotted as well as its Average, because a single dip below zero
+  is what matters and an average hides it.
 - **`ConcurrencyCounterDrift`** — claimed slots minus executions actually
   running. Sampled only when an increment is *refused*, i.e. when drift is
   actually blocking work.
+- **`ConcurrencyCounterUnderflow`** — a decrement that was refused because the
+  counter was already at zero. Nothing else reports this: the counter and the
+  document both end up correct, so without this metric a duplicate release is
+  invisible.
+- **`ConcurrencyDecrementSuppressed`** — a terminal event whose slot had already
+  been released, recognised by its `dec#<executionArn>` marker and skipped. This
+  is the guard working, not a fault, so it has **no alarm**: EventBridge
+  redelivery is expected (the rule allows three retries, and a tracker invocation
+  that fails after the decrement lands is redelivered by design), and alarming on
+  correct behaviour would be noise. It is worth watching as a series, because it
+  is the only signal that terminal events are being redelivered at all — a rising
+  count alongside `WorkflowTrackerDLQAlarm` or tracker errors says the tracker is
+  failing *after* it releases the slot.
 
-Two alarms publish to `AlertsTopic`:
+Four alarms publish to `AlertsTopic`:
 
 - **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
   fires on the *symptom*, once slots are already being held wrongly.
@@ -92,15 +125,43 @@ Two alarms publish to `AlertsTopic`:
   dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
   so an event it could not process is a slot that was never released, and it
   alarms on the first message rather than waiting for drift to accumulate.
+- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement. The floor
+  already prevented the damage, so this is a *correctness* signal: something
+  released a slot twice, and the reason is worth finding.
+- **`ConcurrencyCounterNegativeAlarm`** — the counter observed below zero. This
+  should be unreachable now that the decrement is floored; if it fires, the
+  counter is being written by something that bypasses the floor.
 
-The queue processor also **self-heals**: on a refused increment it
-reconciles the counter against `ListExecutions`, requiring the same discrepancy
-in two samples at least five minutes apart, only ever lowering it, and writing
-conditionally on the value it sampled.
+The queue processor also **self-heals**, in two different places for the two
+different directions:
+
+- **Downward correction** (the counter is too high) runs on a *refused* increment,
+  reconciling against `ListExecutions` and writing conditionally on the value it
+  sampled. It requires the same discrepancy in two samples at least five minutes
+  apart, because lowering the counter wrongly over-admits work.
+- **Upward repair** (the counter is negative) runs on the next *successful*
+  increment — which is where it has to be, because a negative counter always
+  satisfies `active_count < MaxConcurrentWorkflows` and so is never refused. The
+  increment asks DynamoDB for the updated value, and a post-increment value of
+  zero or below means it was negative before. The counter is then raised to the
+  executions actually running plus the slot that increment just claimed (that
+  execution does not exist yet, so `ListExecutions` cannot see it), conditionally
+  on the value observed, and never to a value below zero. So a negative counter is
+  corrected within one admitted document rather than needing the queue to be at
+  its ceiling first.
+
+The repair publishes the pre-repair **negative** value — not the value the counter
+reads after the increment — before it writes, so `ConcurrencyCounterNegativeAlarm`
+still fires on a counter that healed itself. Without that a self-healed underflow
+would leave no trace at all.
 
 **Reading the widget:** the counter tracking a busy queue is normal. The counter
 sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
-in flight and the Step Functions widget shows nothing starting is the leak.
+in flight and the Step Functions widget shows nothing starting is the upward
+leak. The counter minimum below the zero annotation, or any
+`ConcurrencyCounterUnderflow` bar, is the downward one. A
+`ConcurrencyDecrementSuppressed` bar on its own is the idempotency guard doing its
+job.
 
 ### Stale Output Purge on Re-upload
 
@@ -170,7 +231,7 @@ The solution creates centralized logging across all components:
 - `/aws/lambda/ClassificationFunction`: Classification processing logs
 - `/aws/lambda/ExtractionFunction`: Extraction processing logs
 - `/aws/lambda/TrackingFunction`: Document tracking and status logs
-- `/aws/appsync/GraphQLAPI`: Web UI API access logs
+- The REST API's access logs and the dispatcher Lambda's log group: Web UI API activity (the dispatcher is the single entry point for every UI query and mutation)
 
 All logs include correlation IDs for tracing individual document processing journeys.
 
@@ -270,6 +331,8 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
 | `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | Threshold is fixed (≥ 1); the bound itself is `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
+| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was already 0 — a slot released twice | `AlertsTopic` | — |
+| `ConcurrencyCounterNegativeAlarm` | Concurrency counter observed below 0 in 5 min — the ceiling is being exceeded | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
 | `DocumentQueueStalledAlarm` | Oldest queued document older than the threshold **and** nothing left the queue, for 30 min | `AlertsTopic` | `QueueStalledAgeThresholdSeconds` (default `1800`, i.e. 30 min) |
@@ -480,14 +543,23 @@ was a `FAILED` run of 306–308 minutes: a single state's Lambda `Sandbox.Timedo
 900 seconds retried eight times at 2.5× backoff. A benchmark stack's longest success
 was 2.6 minutes. Six hours is therefore about ten times the longest observed success.
 
+That particular storm can no longer happen: every Lambda task state now retries the
+timeout codes at most once, so a deterministic timeout fails in about 30 minutes
+rather than 5.1 hours (see
+[Step Functions Retry Configuration](./configuration.md)). The measurement is kept
+here because it is what sized the bound, and because the *transient* ladder is
+unchanged — a state throttled through all eight attempts still spends about 2.8
+hours in backoff alone.
+
 Be precise about what the default does and does not bound. It does **not** shorten
-that measured storm: one state exhausting its `Retry` policy takes about 5.1 hours and
-then fails on its own, inside the 6-hour bound, and shortening it would need a bound
-of 3 hours or less (`10800`), which is a defensible choice for a stack whose largest
-documents finish well under an hour. What the default does bound is everything the
+a state that is still inside its own `Retry` budget: a full transient ladder fails
+on its own inside the 6-hour bound, and cutting the bound to 3 hours or less
+(`10800`) is a defensible choice for a stack whose largest documents finish well
+under an hour. What the default does bound is everything the
 per-state guards cannot: a `.waitForTaskToken` callback that never arrives once the
 BDA bound is exceeded (see below), a state that hangs without erroring, and a storm
-that compounds across two or more states (two consecutive storms are about 10 hours).
+that compounds across two or more states (two consecutive transient ladders are
+about 5.6 hours).
 Not measured: multi-hundred-page packets under agentic table extraction, which are
 the case most likely to approach the bound — if your `ExecutionTime` p99 for
 *successful* runs is within a factor of two of the bound, raise it (up to one year,

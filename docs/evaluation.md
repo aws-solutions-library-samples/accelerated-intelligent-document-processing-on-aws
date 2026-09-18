@@ -1615,11 +1615,21 @@ Two things changed to make that true:
   transient-error retry policy (8 attempts at 2.5× backoff), which meant one such
   document held a workflow-concurrency slot for **~5.2 hours** before failing.
   Genuinely transient faults (throttling, Lambda service errors) still get the
-  full retry budget.
+  full retry budget. This policy now applies to **every** Lambda task state in the
+  workflow, not just evaluation — see
+  [Step Functions Retry Configuration](./configuration.md).
 - **Failures are recorded, not silently swallowed.** The caught error routes
   through a step that stamps the evaluation status, so a document whose
   evaluation timed out shows `TIMED_OUT` instead of sitting at `RUNNING`
   indefinitely.
+- **A failure inside the failure recorder is survivable too.** If that
+  status-stamping step itself fails, its error is captured under
+  `$.RecordFailureError` and a `Pass` state rebuilds the `{ document: ... }`
+  envelope the remaining states read. Discarding the state's output instead
+  (`ResultPath: null`) left the bare document at `$`, so the next state's
+  `$.document` could not resolve and raised `States.Runtime` — which no `Catch`
+  intercepts, failing the execution and throwing away the fully processed
+  document at the very last step.
 
 If you see `TIMED_OUT`, the document's extraction results are intact — only its
 score is missing. Re-run evaluation for that document after reducing the

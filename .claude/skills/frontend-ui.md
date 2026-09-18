@@ -5,7 +5,7 @@
 - **UI Library**: Cloudscape Design System v3 (`@cloudscape-design/components`)
 - **Bundler**: Vite 7.3 with `@vitejs/plugin-react` (automatic JSX)
 - **Auth**: AWS Amplify v6 + Cognito (`@aws-amplify/ui-react`)
-- **API**: AppSync GraphQL with generated types (via `codegen.config.mjs`)
+- **API**: API Gateway REST API — `POST /op/<field>` behind a Cognito User Pools authorizer — reached through a GraphQL-shaped client shim (`src/api/client-shim.ts` → `src/api/rest-client.ts`). Operation documents and TypeScript types are still generated from `schema.graphql` via `codegen.config.mjs`. AppSync has been removed.
 - **Router**: react-router-dom v6 (HashRouter)
 - **State**: React Context + `immer` (NO Redux)
 - **Node**: `>=22.12.0`, npm `>=10.0.0`
@@ -76,9 +76,12 @@ src/ui/src/
 │   ├── analytics.tsx
 │   ├── documents.ts
 │   └── settings.ts
-├── hooks/               # 17 custom hooks (use-kebab-case.ts for new ones)
+├── api/                 # Transport: rest-client.ts, client-shim.ts (GraphQL-shaped
+│                        # facade), stream-client.ts (chat SSE), auth-session.ts
+├── hooks/               # 35 custom hooks (use-kebab-case.ts for new ones)
 ├── routes/              # Route definitions (AuthRoutes, UnauthRoutes, etc.)
-├── graphql/             # Generated GraphQL types — DO NOT EDIT manually
+├── graphql/             # Operation documents + generated types — DO NOT EDIT
+│                        # generated/ manually; run `make codegen`
 ├── types/               # TypeScript type definitions
 ├── utils/               # Utility functions
 ├── constants/           # App constants
@@ -121,11 +124,45 @@ logger.debug('message');
 logger.error('error', error);
 ```
 
-## GraphQL / AppSync
-- Types are auto-generated via `make codegen` (uses `codegen.config.mjs`)
-- Generated files live in `src/graphql/generated/` — NEVER edit manually
-- Use `useGraphqlApi` hook for AppSync operations
-- Real-time updates via AppSync GraphQL subscriptions
+## API transport (GraphQL-shaped, REST underneath)
+
+AWS AppSync has been removed; **zero `AWS::AppSync` resources exist in any
+template**. The UI calls a single route — `POST /op/{field}` on an API Gateway
+REST API (logical id `HttpApi` in `nested/api-resolvers/template.yaml`) behind
+the `HttpApiAuthorizer` Cognito User Pools authorizer — which is served by the
+dispatcher Lambda `HttpApiDispatcherFunction`. The dispatcher looks the field up
+in a field→function map and either invokes the resolver Lambda or answers
+in-process from DynamoDB. See `docs/migration-appsync-to-rest.md`.
+
+- The call shape is carried over from the Amplify/AppSync client and deliberately
+  left unchanged:
+  `import { generateClient } from '@/api/client-shim'`, then
+  `await client.graphql({ query, variables })`. The shim parses the field name
+  out of the query document and POSTs to `${VITE_API_BASE_URL}/op/<field>`.
+  Do **not** import `generateClient` from `aws-amplify/api` — no GraphQL
+  endpoint is configured in Amplify, so it throws. Amplify is used for Cognito
+  token retrieval only.
+- Types and operation documents are auto-generated via `make codegen` (uses
+  `codegen.config.mjs`) from `nested/api-resolvers/src/api/schema.graphql`.
+  Generated files live in `src/graphql/generated/` — NEVER edit manually.
+  `make codegen-check` gates drift and runs from `make lint`.
+- Use the `useGraphqlApi` hook (`hooks/use-graphql-api.ts`) for document
+  queries/mutations. The name and the GraphQL-shaped operations are retained for
+  continuity; the transport is REST.
+- **There are no subscriptions.** Status updates come from polling: the
+  `usePolling` hook (`hooks/use-polling.ts`) runs a callback on an interval and
+  **pauses while the browser tab is hidden**, firing immediately when it becomes
+  visible again. Document list ~5 s, open document ~4 s until terminal status,
+  circuit breaker ~15 s. When you add a live-updating view, add a poll — do not
+  look for a subscription to hook into.
+- **Chat tokens do stream**, but not through the REST API: the browser reads a
+  Lambda Function URL (`ChatStreamProcessorUrl`, `InvokeMode=RESPONSE_STREAM`,
+  `AuthType=AWS_IAM`) directly, SigV4-signing with the Cognito Identity Pool
+  credentials. See `src/api/stream-client.ts`.
+- Authorization is **not** enforced at the API edge. The Cognito authorizer only
+  authenticates; each resolver re-checks the caller's Cognito groups. A UI change
+  that exposes a new operation still needs the server-side group check and an
+  entry in the RBAC baseline — see `.claude/skills/api-rbac-test.md`.
 
 ## Key Dependencies
 | Package | Purpose |

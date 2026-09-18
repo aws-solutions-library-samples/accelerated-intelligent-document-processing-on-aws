@@ -51,8 +51,14 @@ def get_metering_table_description() -> str:
 - `unit` (string): Unit of measurement (pages, inputTokens, outputTokens, totalTokens)
 - `value` (double): Quantity of the unit consumed
 - `number_of_pages` (int): Number of pages in the document (replicated across all rows for same document)
-- `unit_cost` (double): Cost per unit in USD
-- `estimated_cost` (double): Calculated total cost (value × unit_cost)
+- `unit_cost` (double, NULLABLE): Cost per unit in USD. **NULL means the service has
+  no entry in the pricing configuration at all, so its cost is unknown — it does NOT
+  mean free.** A unit that is metered but deliberately not chargeable (e.g.
+  `totalTokens`, `requests`) is 0.0, not NULL. Use `WHERE unit_cost IS NULL` to find
+  pricing gaps, and remember that `SUM(estimated_cost)` silently skips NULL rows, so
+  a total over data containing them is an understatement.
+- `estimated_cost` (double, NULLABLE): Calculated total cost (value × unit_cost).
+  NULL exactly when `unit_cost` is NULL, for the same reason.
 - `timestamp` (timestamp): Document COMPLETION time — i.e., when the workflow ended and
   the row was written to metering. Not queue time.
 - `initial_event_time` (timestamp): Original queue time — when the document was first
@@ -180,6 +186,13 @@ number of (service, unit) rows a doc touched.
 - **Grain**: (hour, config_version, service_api, unit)
 - **Columns**: `hour_ts` (TIMESTAMP), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition keys `date` (VARCHAR YYYY-MM-DD) and `hour` (VARCHAR HH)
 - **Meaning**: `sum_value` is a **quantity** (tokens/pages/seconds — read `unit` for the denominator). `sum_cost` is USD. ⚠️ Do NOT sum `sum_value` as dollars.
+- **`sum_cost` is NULLABLE.** The rollup's grain is exactly the key that pricing is
+  resolved by, so a `(service_api, unit)` with no pricing entry yields `sum_cost =
+  NULL` for the whole group rather than a partial total. NULL means unknown, not
+  free. When you aggregate ACROSS groups, `SUM(sum_cost)` skips those groups
+  entirely and understates the total — write `SUM(COALESCE(sum_cost, 0))` and
+  report `COUNT_IF(sum_cost IS NULL)` alongside it so the reader knows whether the
+  figure is exact or a lower bound.
 - **Partitioned by**: `date`, `hour`. **Always add a `date` (or `date` + `hour`) filter** so Athena partition-projects instead of listing every partition.
 - **Freshness**: sealed hour N is written at N+1:05 UTC. **The most recent complete clock-hour is NOT yet sealed** — safe cut-off is `hour_ts < date_trunc('hour', current_timestamp) - interval '1' hour` (skip current + previous).
 
@@ -187,6 +200,8 @@ number of (service, unit) rows a doc touched.
 - **Grain**: (day, config_version, service_api, unit)
 - **Columns**: `day` (DATE), `config_version`, `service_api`, `unit`, `sum_value`, `sum_cost`, plus partition key `date` (VARCHAR YYYY-MM-DD; equals `CAST(day AS VARCHAR)`)
 - ⚠️ `hour_ts` does NOT exist on this table. Query `day` instead.
+- **`sum_cost` is NULLABLE**, inherited from `metering_hourly` for the same reason —
+  see the note on that table above, including the `COALESCE` guidance.
 - **Partitioned by**: `date`. Filter on `date` (VARCHAR) for partition pruning, NOT on `day` alone.
 - **Freshness**: sealed day D is written at D+1 00:15 UTC.
 
@@ -263,7 +278,13 @@ ORDER BY doc_hours DESC
 -- clock hour it isn't yet in the table) and the current partial hour N.
 -- Copying the template WITHOUT this cut-off silently returns partial
 -- data during the HH:00-HH:04 window.
-SELECT hour("hour_ts") AS hod, SUM("sum_cost") AS cost
+-- This aggregates across service_api, so it COALESCEs the nullable
+-- sum_cost and reports unpriced_groups: a service with no pricing entry
+-- has sum_cost = NULL, and a bare SUM would drop it from the hour's
+-- total, making an unpriced hour look cheaper rather than uncertain.
+SELECT hour("hour_ts") AS hod,
+       SUM(COALESCE("sum_cost", 0)) AS cost,
+       COUNT_IF("sum_cost" IS NULL) AS unpriced_groups
 FROM metering_hourly
 WHERE "date" IN (
     date_format(current_date, '%Y-%m-%d'),

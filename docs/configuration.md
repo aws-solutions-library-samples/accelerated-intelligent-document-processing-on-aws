@@ -504,8 +504,8 @@ The solution tracks metrics for throttling events and successful retries, viewab
 
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
-so each task lists the Lambda service errors, the Lambda timeout
-(`Sandbox.Timedout`) and the Bedrock throttling / availability codes. The five
+so each task lists the Lambda service errors and the Bedrock throttling /
+availability codes. The five
 extraction and assessment task states (in-process extraction, shard plan, shard,
 shard merge, assessment) additionally list `TransientError` — the one name their
 handlers re-raise a transient cause under when it arrives as an ordinary Python
@@ -523,12 +523,32 @@ violation, an unparseable document, missing input — keep their own names and a
 same way every time succeed, they only multiply its cost and delay. No task retries
 `States.TaskFailed` or `States.ALL` for that reason.
 
+**A Lambda timeout is deterministic, so it gets its own retrier with
+`MaxAttempts: 1`.** `Sandbox.Timedout` is Step Functions' name for a function that
+hit its configured timeout, `States.Timeout` for a task that hit the state's own
+bound, and `Lambda.Unknown` for an unhandled Lambda fault — a timeout is one cause
+of it and an out-of-memory kill the other. In all three cases the document needs
+more work than the function has room for, so each further attempt burns another
+full timeout and fails identically. While these codes shared the transient ladder,
+one such document held a workflow-concurrency slot for about 5.2 hours (8 attempts
+of 900 s at 2.5× backoff) before failing anyway. Every Lambda task state now
+carries the single-attempt timeout retrier, which previously only `EvaluationStep`
+had. Throttling and Lambda service errors keep the full ladder — the split narrows
+what is retried, it does not weaken retrying for genuinely transient faults.
+
 ```json
 {
   "Retry": [
     {
       "ErrorEquals": [
-        "States.Timeout", "Lambda.Unknown", "Sandbox.Timedout",
+        "States.Timeout", "Lambda.Unknown", "Sandbox.Timedout"
+      ],
+      "IntervalSeconds": 5,
+      "MaxAttempts": 1,
+      "BackoffRate": 1.0
+    },
+    {
+      "ErrorEquals": [
         "Lambda.ServiceException", "Lambda.AWSLambdaException",
         "Lambda.SdkClientException", "Lambda.TooManyRequestsException",
         "ThrottlingException", "ServiceUnavailableException",
@@ -541,6 +561,42 @@ same way every time succeed, they only multiply its cost and delay. No task retr
   ]
 }
 ```
+
+Per-state values differ (the shard and rule-validation states use shorter
+intervals and 6 attempts on the transient ladder, and `Lambda.Unknown` appears only
+where a state already listed it), but the shape above holds everywhere: one
+single-attempt timeout retrier, one generous transient retrier, and no
+`States.ALL`. `scripts/tests/test_state_machine_retry_policies.py` enumerates the
+Lambda task states out of `workflow.asl.json` and asserts both halves, so a state
+added later is covered without editing the test.
+
+#### Adding a Lambda task state to the workflow
+
+Because that test enumerates the definition rather than naming states, a new Lambda
+task state inherits three requirements the moment it is added. All 24 existing states
+comply; a new one that does not will fail `make test-packages-cicd` in both CIs,
+naming the state:
+
+1. **It must carry a transient retrier** — at least one of `ThrottlingException`,
+   `Lambda.TooManyRequestsException`, `Lambda.ServiceException` or
+   `ServiceUnavailableException`, with `MaxAttempts` of 3 or more. A state with no
+   `Retry` block at all fails: one Bedrock or Textract throttle would otherwise lose
+   the document. This is a repo-wide rule rather than a property of the states
+   [#917](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/917)
+   happened to touch, deliberately — #917 was originally fixed as a list of state
+   names, which is exactly why eleven of the twelve task states then in the file kept
+   the wrong ladder for a release.
+2. **Timeout codes, if listed, go in their own retrier with `MaxAttempts: 1`.**
+   Mixing them into the transient retrier fails a separate assertion, because the two
+   budgets are different numbers and sharing one retrier means changing either changes
+   both.
+3. **No wildcard retrier.** `States.ALL` and `States.TaskFailed` in a `Retry` block put
+   timeouts, unparseable documents and bad schemas on whatever ladder they carry, which
+   would bypass both rules above without naming a timeout code.
+
+If a future state genuinely must not retry — an idempotency hazard, for instance — add
+it to a named, commented exemption set in that test file rather than deleting the
+assertion.
 
 ### Concurrency Control
 

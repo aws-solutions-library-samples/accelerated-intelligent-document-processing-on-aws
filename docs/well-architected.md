@@ -1,188 +1,590 @@
 ---
-title: "AWS Well-Architected Framework Assessment"
+title: "AWS Well-Architected Framework Review"
 ---
 
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
 
-# AWS Well-Architected Framework Assessment
+# AWS Well-Architected Framework Review
 
-This document assesses the GenAI Intelligent Document Processing (GenAIIDP) Accelerator against the six pillars of the AWS Well-Architected Framework.
+This document is a working template for reviewing **your** deployment of the GenAI
+Intelligent Document Processing (GenAIIDP) Accelerator against the six pillars of the
+[AWS Well-Architected Framework](https://docs.aws.amazon.com/wellarchitected/latest/framework/welcome.html).
 
-## Executive Summary
+It is organized in two halves per pillar. The first half describes what the solution
+implements today, naming the template, resource, parameter or script that implements it
+so you can go and look at it in your own stack. The second half is a checklist of
+questions that the solution deliberately leaves for you to answer, with empty columns
+for your comment, the owner you assign, and the date you reviewed it.
 
-The GenAI Intelligent Document Processing (GenAIIDP) Accelerator demonstrates strong alignment with AWS Well-Architected principles, particularly in operational excellence, security, and reliability. The solution leverages serverless architecture to provide a scalable, resilient document processing platform with built-in monitoring, error handling, and security controls. Areas for potential enhancement include cost optimization through more granular controls and sustainability considerations through resource efficiency improvements.
+The checklist ships empty on purpose. The answers are properties of your account, your
+data classification, your recovery objectives and your budget — they are not properties
+of the accelerator, and we cannot fill them in for you.
+
+## How to use this document
+
+Copy this page into your own review record — a wiki page, a spreadsheet, or the notes
+field of a [Well-Architected Tool](https://docs.aws.amazon.com/wellarchitected/latest/userguide/intro.html)
+workload — before you fill anything in. Do not edit it in place in a checkout of this
+repository, because a later upgrade will overwrite it.
+
+Then work pillar by pillar:
+
+1. Read the "What the solution implements" section and confirm each statement against
+   your deployed stack. Parameter defaults can be overridden at deploy time, so a
+   statement that is true of a default deployment may not be true of yours.
+2. Answer every row of the pillar's checklist. Record the answer even when it is "we
+   accept this risk" — an explicit accepted risk with an owner and a date is a review
+   outcome; a blank row is not.
+3. Assign an owner and a date to each row. The date is when the item was last reviewed,
+   not when it is due, so that a future reviewer can tell how stale an answer is.
+4. Re-run the checklist when you upgrade the accelerator, change processing
+   configuration in a way that alters cost or model choice, or change the account's
+   guardrails.
+
+The rows are intentionally specific to this solution. Generic Well-Architected questions
+are better taken from the framework itself; what this document adds is the set of
+decisions that *this* accelerator exposes as a choice and that a default deployment
+therefore leaves unmade.
+
+## What the solution provides, and what remains yours
+
+The clearest way to read this document is to know the split up front.
+
+**Provided by the accelerator, active on a default deployment.** Infrastructure as code
+for the whole stack; thirteen CloudWatch alarms (a fourteenth is declared but only
+created when you enable the Bedrock circuit breaker); two CloudWatch dashboards; AWS
+X-Ray tracing on the document-processing Lambda functions; Step Functions retry and catch
+blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
+encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 32 TLS-only
+resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
+Cognito authentication with a REST API authorizer; concurrency admission control; and
+per-invocation token and cost metering written to a queryable ledger.
+
+**Provided but off by default, so you must choose.** The IAM permissions boundary
+(`PermissionsBoundaryArn`); the WAFv2 IP allow-list (`WAFAllowedIPv4Ranges`); the Bedrock
+service-outage circuit breaker (`CircuitBreakerEnabled`); Bedrock Guardrails
+(`BedrockGuardrailId`); VPC deployment (`DeployInVPC`) and private API visibility
+(`ApiGatewayVisibility`).
+
+**Yours entirely, in your account.** These have no resource in any template and no
+parameter to set, so a default deployment does not do them at all:
+
+| Responsibility | Why it is yours |
+|---|---|
+| Confirming what is subscribed to the alerts SNS topic, and adding any further subscribers | Thirteen of the fourteen alarms publish to `AlertsTopic`, and the stack creates the topic — but a topic with no confirmed subscriber notifies nobody, so read the topic's subscription list in the console or with `aws sns list-subscriptions-by-topic` rather than assuming. An email subscription is not delivered to at all until the address owner confirms it, whoever created it. Any additional operator address, chat webhook or existing operational topic is yours to attach |
+| Setting an AWS Budget and spend or token-volume alarms | There is no `AWS::Budgets` resource in any template and none of the fourteen alarms is a cost alarm. The metering ledger measures spend after the fact; it does not cap it |
+| Enabling MFA on the Cognito user pool | The pool sets a password policy but no `MfaConfiguration`, so MFA is at the Cognito default of off |
+| Choosing and configuring WAF rules beyond IP allow-listing | The optional WebACL contains a single IP-allow rule; AWS Managed Rules, rate-based rules and bot control are not configured |
+| Choosing log group retention and reviewing what is logged | `LogRetentionDays` sets a default, but custom-resource Lambdas keep CloudWatch's auto-created groups with indefinite retention |
+| Enabling CloudTrail and deciding where its trail is stored | No template creates a trail. CloudWatch Logs record application behavior, not the AWS API activity an audit needs |
+| Reviewing the optional CloudFormation deployment service role before delegating it | `iam-roles/cloudformation-management/` is a convenience for non-administrative deployers and grants broad IAM permissions; it is not part of the runtime data plane |
+| Data classification, residency, and retention obligations for the documents you process | Only you know what the documents contain |
+| Defining and testing recovery objectives | See [Disaster Recovery](#disaster-recovery) |
 
 ## 1. Operational Excellence
 
-### Strengths
+### What the solution implements
 
-- **Infrastructure as Code**: The entire solution is deployed using AWS SAM and CloudFormation templates, enabling consistent, repeatable deployments.
-- **Comprehensive Monitoring**: Integrated CloudWatch dashboards provide visibility into document processing workflows, latency metrics, throughput, and error rates.
-- **Automated Workflows**: Step Functions state machines orchestrate document processing with built-in error handling and retry mechanisms.
-- **Observability**: Detailed logging across all components with configurable retention periods.
-- **Operational Tooling**: Includes scripts for workflow management, document status lookup, and load testing.
+The entire solution is defined as code in AWS SAM and CloudFormation: a parent
+`template.yaml` plus nested stacks for the processing pipeline
+(`patterns/unified/template.yaml`), the UI API (`nested/api-resolvers/template.yaml`),
+the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
+(`nested/multi-doc-discovery/`). Deployment is reproducible from source through
+`publish.py` or the `idp-cli deploy` command.
 
-### Recommendations
+Monitoring is concrete rather than aspirational. Fourteen `AWS::CloudWatch::Alarm`
+resources are declared in `template.yaml`, and all alerting for the whole solution runs
+through them — the nested stacks declare none. Thirteen publish to the `AlertsTopic` SNS
+topic; the fourteenth, `BedrockServiceOutageAlarm`, publishes to `CircuitBreakerTopic`
+and is the only conditional one, so it exists only when you enable the circuit breaker.
+The other thirteen are unconditional, which is why a default deployment has exactly
+thirteen. They fall into four groups:
 
-- Consider implementing canary deployments for safer updates to production environments.
-- Add automated integration tests to validate end-to-end workflows before deployment.
-- Implement distributed tracing across components to better understand cross-service dependencies and latencies.
+| Alarm | What it detects |
+|---|---|
+| `WorkflowErrorsAlarm`, `WorkflowTimeoutsAlarm`, `SlowExecutionsAlarm` | Step Functions `ExecutionsFailed` above `ErrorThreshold` (default 1), any `ExecutionsTimedOut`, and `ExecutionTime` above `ExecutionTimeThresholdMs` (default 300000) |
+| `DocumentQueueDLQAlarm`, `WorkflowTrackerDLQAlarm`, `QueueSenderDLQAlarm`, `DataMartRollupDLQAlarm` | Any visible message on a dead-letter queue |
+| `DocumentQueueStalledAlarm` | A metric-math expression that fires only when the oldest message exceeds `QueueStalledAgeThresholdSeconds` (default 1800) *and* zero messages left the queue over six consecutive five-minute periods — a queue that is not draining, as distinct from one that is merely deep |
+| `QueueProcessorErrorsAlarm`, `ConcurrencyCounterDriftAlarm`, `ConcurrencyCounterUnderflowAlarm`, `ConcurrencyCounterNegativeAlarm`, `StaleOutputPurgeFailedAlarm` | Lambda errors on the queue processor; a concurrency counter that has drifted from the true running-execution count across three periods; the counter being asked to release a slot it did not hold, which means the same terminal execution was processed twice; the counter actually going negative, which raises the effective concurrency ceiling by that much and costs money silently; and a failed stale-output purge, after which a document can carry text from a previous document of the same name |
+
+Two `AWS::CloudWatch::Dashboard` resources are created: one in `template.yaml` covering
+ingestion, queue depth, the concurrency counter and workflow outcomes, and one in
+`patterns/unified/template.yaml` covering the per-service processing steps. See
+[Monitoring](./monitoring.md).
+
+Distributed tracing is instrumented, not merely recommended: `Tracing: Active` is set on
+nineteen Lambda functions across the two main templates — seven in `template.yaml` and
+twelve in `patterns/unified/template.yaml` — plus seven of the eight optional
+`feature-platform/` extension templates (`seller-entitlement-service` is the
+exception). Note the boundary: the Step Functions state machine declares no `TracingConfiguration` and the
+REST API stage does not enable X-Ray, so a trace covers Lambda-to-service calls rather
+than the whole orchestration.
+
+Logging verbosity is a single deploy-time parameter. `LogLevel` defaults to `WARN` and
+applies across the Lambda functions and the API stage;
+`scripts/tests/test_log_level_default.py` pins that default so it cannot silently regress
+to `INFO`, because at `INFO` the accelerator can write presigned URLs, document contents
+and PII into CloudWatch Logs.
+
+Be aware of what that safe default costs you in observability. The REST API stage's
+structured JSON access log — which carries the authorizer status, WAF response code and
+integration latency, and is the only thing that diagnoses a request rejected before it
+reaches a resolver — is gated on `LogLevel` being `INFO` or `DEBUG`, so on a default
+deployment it is **off**, as are the gateway's ERROR-level execution logs and the
+per-stage progress lines. See
+[Monitoring](./monitoring.md#loglevel--what-warn-turns-off). `LogRetentionDays` defaults
+to 30 days.
+
+Automated testing exists at several tiers and is described in full in
+[Testing](./testing.md). An end-to-end integration suite lives in
+`lib/idp_common_pkg/tests/integration/` behind the `@pytest.mark.integration` marker and
+runs via `make -C lib/idp_common_pkg test-integration`; because it deploys real AWS resources it runs in the
+GitLab `integration_tests` stage rather than on GitHub pull requests. Repeatable accuracy,
+latency, token and cost measurement across a matrix of document sizes and configurations
+is in `benchmarks/`, with sample documents in `samples/`.
+
+### Review checklist
+
+| Review item | Your comment | Owner | Date |
+|---|---|---|---|
+| Is an operator address subscribed to `AlertsTopic`, and has the subscription been confirmed? Who receives it out of hours? | | | |
+| Have you tuned `ErrorThreshold`, `ExecutionTimeThresholdMs` and `QueueStalledAgeThresholdSeconds` to your document mix, or are you running the defaults? | | | |
+| Is `LogLevel` still `WARN` or `ERROR` in this deployment? If it was raised to `INFO` or `DEBUG` for troubleshooting, was it lowered again? | | | |
+| Does `LogRetentionDays` meet your retention obligation, and have you set retention on the custom-resource log groups that keep CloudWatch's indefinite default? | | | |
+| Do you accept that the state machine and the REST API stage are not X-Ray traced, or do you need to add `TracingConfiguration` and stage tracing? | | | |
+| At the default `LogLevel=WARN` the API access log is off. Do you accept that, or do you need request-level API telemetry enough to raise the level and accept the PII exposure that comes with it? | | | |
+| Who owns the runbook for a stalled queue, and has `DocumentQueueStalledAlarm` been exercised at least once? | | | |
+| How do you validate a configuration change before it reaches production — the integration suite, the `benchmarks/` harness against your own corpus, or a separate stack? | | | |
+| Do you deploy through a pipeline, and does an upgrade go to a non-production stack first? | | | |
 
 ## 2. Security
 
-### Strengths
+### What the solution implements
 
-- **Defense in Depth**: Multiple security layers including IAM roles with least privilege, encryption at rest, and secure API access.
-- **Enterprise IAM Governance**: Comprehensive support for IAM permissions boundaries to comply with organizational Service Control Policies (SCPs) that mandate permissions boundaries on all IAM roles.
-- **Content Safety**: Integration with Amazon Bedrock Guardrails to enforce content policies, block sensitive information, prevent model misuse, and enable [Automated Reasoning Checks](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning.html) for formal verification of model outputs.
-- **Authentication**: Cognito user pools with configurable password policies and MFA support.
-- **Authorization**: Fine-grained access controls for different components and resources.
-- **Data Protection**: S3 bucket encryption, DynamoDB encryption, and secure transmission of data.
-- **Audit Capabilities**: CloudWatch logs capture detailed activity for auditing purposes.
-- **WAF Integration**: Web Application Firewall protection for the AppSync GraphQL API.
+**Data protection at rest.** A single customer-managed KMS key,
+`CustomerManagedEncryptionKey`, with `EnableKeyRotation: true`, encrypts the DynamoDB
+tables, the S3 buckets via SSE-KMS, the SNS topics and the CloudWatch log groups. It is
+referenced from the parent template and passed into the nested stacks, so there is one
+key to audit and one key policy to review.
 
-### Recommendations
+**Data protection in transit.** 32 resource policies deny requests where
+`aws:SecureTransport` is false, and there is now no exception: in `template.yaml`, all
+thirteen S3 bucket policies and all sixteen SQS queue policies carry the deny, plus one
+further queue policy in `patterns/unified/template.yaml` and two in the optional
+`feature-platform/idp-data-generator/` extension. If you deploy without that extension
+the count you should see is 30. All thirteen buckets also set
+`PublicAccessBlockConfiguration`, and twelve send server access logs to the logging
+bucket.
 
-- **Production Logging Security**: 
-  - **Set the `LogLevel` parameter to WARN or ERROR (not INFO) for production deployments** to prevent sensitive information from being logged
-  - The `LogLevel` parameter in template.yaml automatically configures logging levels across all Lambda functions, AppSync APIs, and other components
-  - INFO level logging can inadvertently capture sensitive document contents, PII data (SSN, addresses, names), and S3 presigned URLs
-  - For production environments, use `LogLevel: WARN` or `LogLevel: ERROR` in your CloudFormation deployment parameters
-  - Implement log filtering and masking for any essential INFO-level logs that must be retained
-  - Regularly audit CloudWatch log groups to ensure no sensitive information is being captured
-- **CloudFront Security Enhancement** (CloudFront hosting mode): 
-  - Create a custom domain with a custom ACM certificate for the CloudFront distribution
-  - Enforce TLS 1.2 or greater protocol in the CloudFront security policy
-  - Configure secure response headers (X-Content-Type-Options, X-Frame-Options, Content-Security-Policy)
-  - Restrict viewer access using signed URLs or cookies for sensitive content
-- **API Gateway Hosting Security** (API Gateway hosting mode — see [API Gateway Hosting](./apigateway-hosting.md)):
-  - Set `ApiGatewayVisibility=PRIVATE` (with `DeployInVPC=true`) to restrict access to VPC-connected users via an execute-api interface endpoint
-  - Configure `WAFAllowedIPv4Ranges` to limit ingress to specific network ranges (stage-level WAFv2)
-  - No ACM certificate is required — the execute-api endpoint uses AWS-managed TLS
-  - Enable VPC Flow Logs to monitor traffic to the execute-api interface endpoint
-- **Additional WAF Protection**: 
-  - Deploy a WAF WebACL with GLOBAL scope in the us-east-1 region (CloudFront) or REGIONAL scope (API Gateway)
-  - Associate this WAF with the CloudFront distribution or the API Gateway stage to protect the UI
-  - Enable core rule sets (AWS Managed Rules) including protections against XSS and SQL injection
-  - Create custom rules for specific application threats
-- **Sensitive Data Discovery**: Consider enabling [Amazon Macie](https://docs.aws.amazon.com/macie/latest/user/what-is-macie.html) on document S3 buckets to automatically discover and classify sensitive data (PII, financial data, credentials) in processed documents. Macie operates as a decoupled service requiring no changes to the accelerator.
-- Consider implementing VPC endpoints for enhanced network isolation of sensitive services.
-- Add automated security scanning in the CI/CD pipeline.
-- Implement more granular data access controls based on document classification.
-- Consider adding CloudTrail integration for comprehensive API activity monitoring.
+**Who can get an account.** One parameter decides this, and it is easy to miss.
+`AllowedSignUpEmailDomain` defaults to the empty string, which leaves the pool's
+`AdminCreateUserConfig.AllowAdminCreateUserOnly` at `true`: self-registration through the
+web UI is closed and an administrator has to create every user. Setting the parameter to a
+domain — or a comma-separated list of them — flips that flag to `false` and turns on public
+self-registration for anyone holding an address at those domains. The five
+`AWS::Cognito::UserPoolGroup` resources are not assigned automatically, so a user who
+registers that way starts in no group at all; read that together with the authorization
+paragraph below, because a user in zero groups still reaches every operation declared
+`groups: ANY`. Leave the default unless you intend open sign-up, and if you do set it, make
+sure the domain is one you control.
+
+**Authentication and authorization.** The web UI signs in against a Cognito user pool
+whose password policy requires a minimum length of 8 with lowercase, uppercase, numeric
+and symbol characters. The UI calls an API Gateway REST API — `HttpApi` in
+`nested/api-resolvers/template.yaml`. All application traffic goes through one route,
+`POST /op/{field}` (`HttpApiMethod`), which is guarded by a `COGNITO_USER_POOLS`
+authorizer (`HttpApiAuthorizer`) validating the same JWT the browser holds and is then
+dispatched to per-operation resolver Lambdas. That is not the only method on the API,
+though. `HttpApiOptionsMethod` is an ordinary unauthenticated CORS preflight, and in
+API Gateway hosting mode two further `AuthorizationType: NONE` methods —
+`WebUIRootMethod` (`GET /`) and `WebUIProxyMethod` (`GET /{proxy+}`), both conditional on
+`ServeWebUI` — serve the React bundle's `index.html` and hashed assets from the Web UI
+bucket over the same stage, deliberately and with no JWT, because the browser has no
+token until the app has loaded. Those routes serve static files only; see
+[API Gateway Hosting](./apigateway-hosting.md).
+
+Authorization on the `/op` route is not uniform, and the difference matters when you
+classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
+for it and `make api-test-static` fails if the code and that file drift apart. It covers
+118 operations. 90 of them are restricted to named Cognito groups and 2
+(`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
+principals, rejecting every Cognito caller. The remaining 26 are declared `groups: ANY`,
+which that file defines as any authenticated Cognito user. Nine of those 26 are narrowed
+further, by record ownership or by the caller's allowed configuration versions; the other
+17 are not, so a valid session is the whole check. That set is read-oriented but it is not
+trivial — it includes `getDocument`, `getFileContents`, `getFilePresignedUrl`,
+`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
+`queryKnowledgeBase` and `getMyProfile`. Some carry other controls that are real but are
+not group or per-document controls: `getFilePresignedUrl` and `getFileContents` resolve
+through `_validate_bucket()` in
+`nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py`, which allow-lists
+the stack's own buckets and so prevents reading arbitrary S3, not reading another user's
+document. This is the designed posture rather than a defect, but it means every
+authenticated user of your pool can read processed document content. Decide whether that
+is acceptable for your data classification, and see [RBAC](./rbac.md).
+
+The API Gateway REST transport replaced AWS AppSync entirely — there are no
+`AWS::AppSync` resources in any template — see
+[AppSync to REST migration](./migration-appsync-to-rest.md).
+
+**Web application firewall.** The optional `ApiWafWebACL` is a REGIONAL WAFv2 WebACL
+associated with the REST API stage. It is created only when `WAFAllowedIPv4Ranges` is
+changed from its `0.0.0.0/0` default; its default action is `Block` and its single rule
+allows the IPv4 ranges you supply. It is an IP allow-list, not a managed rule set: no AWS
+Managed Rules, rate-based rules or bot control are configured. In CloudFront hosting mode
+the distribution has no WebACL of its own. See
+[API Gateway Hosting](./apigateway-hosting.md).
+
+**IAM governance.** `PermissionsBoundaryArn` is an optional parameter (default empty)
+threaded into every IAM role in the parent template, `patterns/unified/`,
+`nested/api-resolvers/`, `nested/bedrockkb/`, `nested/multi-doc-discovery/` and the
+feature-platform templates, so an organization whose SCPs mandate a boundary on all roles
+can supply one at deploy time. `scripts/tests/test_iam_privilege_escalation.py` guards the
+runtime role surface against privilege-escalation regressions.
+
+Resource scoping is a separate question from boundaries, and it is the weaker of the two
+here. Counting across the eleven templates that make up the solution and its optional
+extensions, 123 IAM policy statements are written against `Resource: "*"` — 51 in
+`template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
+`nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
+`iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
+API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 28
+of the 123, and the X-Ray read actions, `textract:DetectDocumentText` and
+`textract:AnalyzeDocument` are account-scoped in the same way. The rest have not been
+audited statement by statement, so treat the number as a surface to review rather than as a
+count of findings. A permissions boundary is the practical lever for narrowing whatever you
+find without editing every policy, which is why the two belong in the same review.
+
+**Content safety.** Bedrock Guardrails are supported but bring-your-own and off by
+default: supply the id and version of a guardrail you created via `BedrockGuardrailId`
+and `BedrockGuardrailVersion` (`BedrockGuardrailId` defaults to empty, which is what keeps
+Guardrails off; `BedrockGuardrailVersion` defaults to `DRAFT`) and every Bedrock and
+Knowledge Base call routes through it, including
+[Automated Reasoning Checks](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning-checks.html)
+if your guardrail enables them.
+
+**Network isolation.** Setting `DeployInVPC=true` places the document-processing Lambdas
+in a VPC you supply, which is a prerequisite for `ApiGatewayVisibility=PRIVATE`. A
+reference interface-endpoint stack is provided in `scripts/vpc-endpoints.yaml`. See
+[Private Network Deployment](./deployment-private-network.md).
+
+**Security in the build.** Two independent gates run on every GitHub pull request via
+`.github/workflows/security-checks.yml` and on every GitLab push and merge request in
+`fast_checks`. `make srt-scan` runs the Sample Security Review Tool for code and
+infrastructure findings and fails on high-priority findings. `make dep-audit` matches
+every pinned Python and Node dependency against the OSV database and fails on HIGH or
+above — SRT's SBOM stage inventories dependencies but does no vulnerability matching, so
+the two are not redundant. Triaged, unreachable advisories are recorded with a
+justification in `scripts/security/dep_audit_allowlist.json`.
+
+### Review checklist
+
+| Review item | Your comment | Owner | Date |
+|---|---|---|---|
+| Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed and accept that a self-registered user in no group can still read document content? | | | |
+| Is MFA enabled on the Cognito user pool? The pool sets no `MfaConfiguration`, so a default deployment has it off | | | |
+| Do you accept that every authenticated user of your pool can read processed document content through the 17 `groups: ANY` operations that carry no ownership or scope check, or do you need a group check added for your data classification? | | | |
+| Have you restricted `WAFAllowedIPv4Ranges`, and if the API is reachable from the internet, have you added AWS Managed Rules and a rate-based rule beyond the IP allow-list? | | | |
+| Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
+| Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |
+| Have you created a Bedrock Guardrail and set `BedrockGuardrailId` / `BedrockGuardrailVersion`, or accepted running without content policy enforcement? | | | |
+| Have you reviewed the `CustomerManagedEncryptionKey` key policy, and do you need a key you manage outside the stack instead? | | | |
+| Is CloudTrail enabled in this account and region, and where does the trail go? No template creates one | | | |
+| Is the deployment path a delegated CloudFormation service role from `iam-roles/cloudformation-management/`? If so, who has reviewed its permissions and who can assume it? | | | |
+| Does your document data classification require `DeployInVPC=true` and `ApiGatewayVisibility=PRIVATE`, or VPC endpoints for Bedrock, Textract and S3? | | | |
+| In CloudFront hosting mode, have you attached a custom domain with an ACM certificate, enforced TLS 1.2 or greater, set security response headers, and considered a GLOBAL-scope WebACL in us-east-1? | | | |
+| Have you reviewed what appears in the log groups at your chosen `LogLevel`, given that the documents processed may contain PII? | | | |
+| Do you need [Amazon Macie](https://docs.aws.amazon.com/macie/latest/user/what-is-macie.html) on the input and output buckets to discover and classify sensitive data? Macie is decoupled and needs no change to the accelerator | | | |
+| Who reviews the SRT and dependency-audit findings on your fork, and is each check a required status check on your default branch? | | | |
 
 ## 3. Reliability
 
-### Strengths
+### What the solution implements
 
-- **Fault Isolation**: Modular architecture with clear separation of concerns limits blast radius of failures.
-- **Automatic Recovery**: Comprehensive retry mechanisms in Step Functions workflows and Lambda functions.
-- **Throttling Management**: Built-in handling of service throttling with exponential backoff.
-- **Scalability**: Serverless architecture automatically scales with demand.
-- **Distributed System Design**: SQS queues decouple components and provide buffering during peak loads.
-- **Testing**: Includes load testing scripts and sample documents for validation.
+**Retry posture.** The state machine definition in
+`patterns/unified/statemachine/workflow.asl.json` contains 24 `Retry` blocks and 10
+`Catch` blocks. Retries target the transient Lambda error classes
+(`Lambda.ServiceException`, `Lambda.TooManyRequestsException`, `Lambda.SdkClientException`,
+`Lambda.AWSLambdaException`, `Lambda.Unknown`) plus `States.Timeout`, with `MaxAttempts`
+as low as 1 where a timeout is deterministic rather than transient and up to 8 for a
+transient service error, initial intervals of 2 to 10 seconds and `BackoffRate`
+between 2 and 2.5. Independently of Step Functions, the Bedrock client in
+`lib/idp_common_pkg/idp_common/bedrock/client.py` applies its own ladder —
+`DEFAULT_MAX_RETRIES = 7`, an initial backoff of 2 seconds and a cap of 300 seconds — for
+throttling and service errors. The two ladders compose, so a single document can absorb
+many model invocations before it fails; that is what makes the cost review item in the
+Cost Optimization pillar a real question rather than a formality.
 
-### Recommendations
+**Dead-letter queues.** Almost every SQS consumer has a DLQ — the exception is
+`TestResultCacheUpdateQueue`, which carries no `RedrivePolicy` — and the queues that do
+have one set a `maxReceiveCount` chosen for the work they hold. Exactly four queues declare
+a redrive policy:
 
-- Implement circuit breakers for external service dependencies.
-- Add chaos engineering practices to test resilience under various failure scenarios.
-- Implement more comprehensive health checks for all components.
+| Queue | `VisibilityTimeout` | `maxReceiveCount` | Retry window before a message is parked |
+|---|---|---|---|
+| `DiscoveryQueue` | 900s | 1000 | roughly 250 hours |
+| `DocumentQueue` | 60s | 500 | roughly 8 hours |
+| `TestFileCopyQueue` | 900s | 3 | roughly 45 minutes |
+| `TestSetFileCopyQueue` | 900s | 3 | roughly 45 minutes |
+
+The retry window is the product of the two columns and is an upper bound: it is how long a
+message can keep being redelivered, not how long processing actually takes. Note what is
+*not* in that table. The workflow tracker has no SQS redrive policy at all —
+`WorkflowTrackerDLQ` is the Lambda `DeadLetterQueue` target of the `WorkflowTracker`
+function, so it receives an asynchronous invocation that Lambda has already retried twice,
+which is a different and far shorter mechanism than five hundred queue redeliveries. The
+other queues named `...DLQ` work the same way: `QueueSenderDLQ`, `JobTrackerDLQ` and
+`PostProcessingDecompressorDLQ`, plus `BDACompletionFunctionDLQ` in
+`patterns/unified/template.yaml`, are Lambda dead-letter targets, and `DataMartRollupDLQ`
+is an asynchronous-invocation `OnFailure` destination capped at
+`MaximumRetryAttempts: 2`. So when you plan a redrive procedure, check which of the two
+mechanisms parked the message: only the four queues above are governed by
+`maxReceiveCount`. Four of the fourteen alarms watch DLQs for any visible message.
+
+**Circuit breaker.** An opt-in circuit breaker for Bedrock outages is available via
+`CircuitBreakerEnabled` (default `"false"`). When enabled, `BedrockServiceOutageAlarm`
+notifies `CircuitBreakerTopic`, which invokes `CircuitBreakerManagerFunction` to pause
+admission of new workflows; an EventBridge rule runs the manager every five minutes so
+recovery timeouts always converge rather than requiring a manual reset. While the breaker
+holds messages without deleting them, `DocumentQueueStalledAlarm` also fires and then
+clears on its own — expected behavior, not a second fault. See
+[Circuit Breaker](./circuit-breaker.md).
+
+**Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
+downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
+The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
+UI resources. It is also what buys room to grow: `template.yaml` declares 312 top-level
+resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
+the solution through the `feature-platform/` mechanism, that remaining budget is the number
+to watch, and a new extension is better added as its own nested stack than as more
+resources in the parent.
+
+**Durable state.** All thirteen S3 buckets have versioning enabled. Ten of the twelve
+DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
+twelve are ten in `template.yaml`, one in `patterns/unified/template.yaml` and one in
+`nested/api-resolvers/template.yaml`. Both exceptions are deliberate and both hold
+ephemeral state: `ConcurrencyTable` holds a single admission counter that is reconciled
+from the true running-execution count rather than restored, and
+`ChatDocumentSessionsTable` holds per-session chat-ownership records under a short TTL, so
+losing it only forces users to start a new chat session. Counting the optional
+`feature-platform/` extensions raises the total to nineteen tables; all seven extension
+tables have point-in-time recovery enabled.
+
+### Review checklist
+
+| Review item | Your comment | Owner | Date |
+|---|---|---|---|
+| Have you defined an explicit RTO and RPO for document processing, and does one of the strategies below meet them? | | | |
+| Have you enabled `CircuitBreakerEnabled`, or accepted that a Bedrock outage will drive the retry ladders to exhaustion? | | | |
+| Who monitors the dead-letter queues, and what is the procedure for redriving a parked document? | | | |
+| Have you tested restoring a document from S3 version history and a table from point-in-time recovery, rather than assuming both work? | | | |
+| Do you accept no point-in-time recovery on `ConcurrencyTable` and `ChatDocumentSessionsTable`, given that both hold ephemeral state that is reconciled or re-created rather than restored? | | | |
+| Are the composed retry ladders — up to 8 Step Functions attempts over up to 7 Bedrock client retries — acceptable for your latency budget and your spend ceiling? | | | |
+| Have you confirmed your chosen Bedrock models, Textract, and any Bedrock Data Automation projects are available in every region you intend to fail over to? | | | |
+| Have you rehearsed the recovery procedure end to end, and when? | | | |
 
 ### Disaster Recovery
 
-The solution includes several built-in capabilities that form the foundation of a disaster recovery (DR) strategy:
+The capabilities above form the foundation of a DR strategy but do not by themselves
+constitute one, because nothing in the stack replicates data across regions.
 
-- **Durable, versioned storage**: All S3 buckets (Input, Output, Working, Configuration, Evaluation Baseline, and supporting buckets) have versioning enabled, so objects are protected against accidental overwrite or deletion and prior versions can be recovered.
-- **Point-in-Time Recovery (PITR)**: All DynamoDB tables (tracking, concurrency, configuration, and related tables) have PITR enabled, allowing restoration to any second within the retention window.
-- **Infrastructure as Code**: Because the entire stack is defined in SAM/CloudFormation, the environment can be reliably re-provisioned in another account or region from source.
-- **Stateless compute**: Lambda and Step Functions hold no durable state; recovery depends on restoring S3 and DynamoDB data plus re-deploying the templates.
+- **Durable, versioned storage**: all S3 buckets have versioning enabled, so objects
+  survive accidental overwrite or deletion and prior versions can be recovered.
+- **Point-in-Time Recovery**: ten of the twelve DynamoDB tables a default deployment
+  creates can be restored to any second within the retention window. The two without it are
+  `ConcurrencyTable`, whose admission counter is reconciled from the true
+  running-execution count rather than restored, and `ChatDocumentSessionsTable`, whose
+  per-session chat-ownership records sit under a short TTL. Neither holds document data, so
+  neither is on the recovery path for the documents you process.
+- **Infrastructure as Code**: the whole stack can be re-provisioned in another account or
+  region from source.
+- **Stateless compute**: Lambda and Step Functions hold no durable state, so recovery is
+  restoring S3 and DynamoDB plus redeploying the templates.
+- **Lifecycle rules**: eleven of thirteen buckets carry lifecycle rules, most keyed to
+  `DataRetentionInDays` (default 365), with the MCP temp bucket at 7 days and the logging
+  bucket at 180. Objects deleted by a lifecycle rule are gone from the DR picture too, so
+  align retention with your RPO.
 
-**Choosing a DR strategy.** The appropriate approach depends on your Recovery Time Objective (RTO) and Recovery Point Objective (RPO):
+**Choosing a strategy.** The right approach depends on the RTO and RPO you recorded in
+the checklist above:
 
-- **Backup & Restore (lowest cost, higher RTO)**: Rely on S3 versioning and DynamoDB PITR within a region. For cross-region protection, enable [S3 Cross-Region Replication (CRR)](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html) on document and configuration buckets, and use [DynamoDB scheduled/on-demand backups](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/BackupRestore.html) (optionally via [AWS Backup](https://docs.aws.amazon.com/aws-backup/latest/devguide/whatisbackup.html)) copied to a DR region. Re-deploy the CloudFormation stack in the DR region when needed.
-- **Pilot Light / Warm Standby (lower RTO, higher cost)**: Pre-deploy the stack in a second region and continuously replicate data using S3 CRR and [DynamoDB global tables](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GlobalTables.html). Fail over by redirecting document ingestion to the standby region's Input bucket.
-- **Multi-region active/active**: Run independent stacks in multiple regions behind a routing layer. This offers the lowest RTO/RPO but adds the most operational and cost complexity, and requires that the chosen Bedrock models and any Bedrock Data Automation projects are available in all target regions.
-
-**Recommendations**:
-
-- Define explicit RTO and RPO targets for your workload, then select the DR strategy above that meets them at acceptable cost.
-- Enable S3 Cross-Region Replication on the Input, Output, and Configuration buckets for cross-region durability.
-- Use DynamoDB global tables (or AWS Backup with cross-region copy) to protect tracking and configuration state beyond single-region PITR.
-- Verify regional availability of required Bedrock models, Textract, and Bedrock Data Automation in your DR region before committing to a strategy — see [EU Region Model Support](./eu-region-model-support.md) for an example of region-specific model considerations.
-- Regularly test the recovery procedure (restore + redeploy) to validate that RTO/RPO targets are actually achievable and that runbooks stay current.
+- **Backup and restore** (lowest cost, higher RTO): rely on S3 versioning and DynamoDB
+  PITR within a region. For cross-region protection, enable
+  [S3 Cross-Region Replication](https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html)
+  on the document and configuration buckets and use
+  [DynamoDB backups](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Backup-and-Restore.html)
+  (optionally via [AWS Backup](https://docs.aws.amazon.com/aws-backup/latest/devguide/whatisbackup.html))
+  copied to a DR region, then redeploy the stack there when needed.
+- **Pilot light or warm standby** (lower RTO, higher cost): pre-deploy the stack in a
+  second region and replicate continuously with S3 CRR and
+  [DynamoDB global tables](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/GlobalTables.html).
+  Fail over by redirecting ingestion to the standby region's input bucket.
+- **Multi-region active/active**: independent stacks behind a routing layer. Lowest
+  RTO/RPO, most operational and cost complexity, and it requires that your models and any
+  Bedrock Data Automation projects exist in every target region — see
+  [EU Region Model Support](./eu-region-model-support.md) for how region-specific model
+  availability actually behaves.
 
 ## 4. Performance Efficiency
 
-### Strengths
+### What the solution implements
 
-- **Serverless Architecture**: Pay-per-use model with automatic scaling eliminates the need for capacity planning.
-- **Concurrency Management**: Configurable concurrency limits prevent overwhelming downstream services.
-- **Asynchronous Processing**: SQS queues and Step Functions enable efficient parallel processing.
-- **Resource Optimization**: Lambda functions configured with appropriate memory settings.
-- **Performance Monitoring**: Detailed metrics for latency, throughput, and resource utilization.
+**Admission control.** Throughput is bounded deliberately rather than left to Lambda's
+account concurrency. `MaxConcurrentWorkflows` (default 100, `MinValue: 1`, no maximum)
+caps concurrent Step Functions executions. The queue processor in
+`src/lambda/queue_processor/index.py` increments a counter row in `ConcurrencyTable` under
+a DynamoDB `ConditionExpression` of `active_count < :max`, so the cap is enforced
+atomically rather than by an approximate read. Because a counter that leaks would pin the
+system at zero admission permanently, the processor also reconciles the counter against
+the true running-execution count and `ConcurrencyCounterDriftAlarm` fires when a suspected
+leak persists across three periods. See [Capacity Planning](./capacity-planning.md).
 
-### Recommendations
+**Asynchronous, buffered processing.** SQS decouples ingestion from processing so that a
+burst of uploads becomes queue depth rather than throttling, and Step Functions map states
+parallelize per-page and per-section work within a document.
 
-- Implement adaptive concurrency based on service health and throttling metrics.
-- Consider caching mechanisms for frequently accessed documents or extraction results.
-- Optimize image preprocessing to reduce processing time and model token usage.
-- Evaluate performance across different AWS regions to optimize for global deployments.
+**Model-aware sizing.** Shard and batch sizes for classification, extraction and
+confidence scoring are derived from the selected model's context and output limits in
+`config_library/model_config_limits.yaml` rather than being fixed, so changing the model
+changes the work partitioning without a separate tuning pass.
+
+**Measurement.** The two dashboards and the latency alarms above give the operational
+view. For deliberate comparison of configurations, the `benchmarks/` harness measures
+completeness, accuracy, confidence calibration, latency, token use and cost across a
+document-size and configuration matrix, which is the mechanism for answering "is this
+change faster or cheaper" with numbers instead of impressions.
+
+### Review checklist
+
+| Review item | Your comment | Owner | Date |
+|---|---|---|---|
+| Is `MaxConcurrentWorkflows` sized to your Bedrock and Textract quotas rather than left at 100? An admission cap above your model quota converts a queue into throttling | | | |
+| Have you requested Bedrock and Textract quota increases for your expected peak, and do you know the current limits? | | | |
+| What is your target end-to-end latency per document, and have you measured it on your own documents rather than the bundled samples? | | | |
+| Have you chosen models per document class deliberately, or is every class using the default? | | | |
+| For documents with large tables, have you evaluated agentic extraction with table parsing against your accuracy and latency targets? | | | |
+| Do you have a baseline `benchmarks/` run against your own corpus to compare future upgrades to? | | | |
+| Is your deployment region chosen for model availability and latency to your users, and have you confirmed the models you want exist there? | | | |
+| Does queue depth ever reach the point where `DocumentQueueStalledAlarm` fires from capacity shortfall rather than a wedge, and if so is the answer more concurrency or a higher threshold? | | | |
 
 ## 5. Cost Optimization
 
-### Strengths
+### What the solution implements
 
-- **Serverless Pay-per-Use**: Only pay for actual document processing with no idle resources.
-- **Cost Monitoring**: CloudWatch metrics can be used to track usage and costs.
-- **Right-Sizing**: Configurable parameters allow tuning resource allocation.
-- **Resource Lifecycle Management**: Configurable log retention periods.
+**Pay-per-use.** All compute is serverless — Lambda, Step Functions, Textract and Bedrock
+on-demand — so an idle deployment costs storage and log retention rather than capacity.
 
-### Recommendations
+**Per-invocation metering.** Every model and OCR call records a metering row with token
+counts, and the reporting path computes an `estimated_cost` per row from
+`config_library/pricing.yaml` — cache-aware, so prompt-cache reads and writes are priced
+separately from fresh input tokens — and writes it to Parquet for Athena. That makes cost
+queryable per document, per document class and per processing step rather than only as a
+monthly bill line. See [Cost Calculator](./cost-calculator.md) and
+[Reporting Database](./reporting-database.md). Prices in `pricing.yaml` are estimates and
+editable, including from the UI, so a private pricing agreement can be reflected.
 
-- Implement more granular cost allocation tags to track expenses by document type, workflow, or customer. Bedrock [Application Inference Profiles](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html) can be used to tag model invocations for cost attribution — see [Cost Attribution with Application Inference Profiles](./cost-calculator.md#cost-attribution-with-bedrock-application-inference-profiles).
-- Add cost anomaly detection to identify unexpected usage patterns.
-- Consider implementing tiered storage strategies for processed documents based on access patterns.
-- Evaluate model selection based on cost-performance tradeoffs for different document types.
-- Add budget alerts and cost controls to prevent unexpected costs during high-volume processing.
-- Leverage Bedrock Guardrails to constrain model behavior and reduce the risk of costly token overuse.
+**Cost attribution.** Bedrock
+[Application Inference Profiles](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles-create.html)
+can tag model invocations for attribution in Cost Explorer; see
+[Cost Attribution](./cost-calculator.md#cost-attribution-with-bedrock-application-inference-profiles).
+
+**Storage lifecycle.** Eleven of thirteen buckets carry lifecycle rules keyed to
+`DataRetentionInDays` (default 365), and `LogRetentionDays` (default 30) bounds log
+storage.
+
+**Be clear about the limit of all this.** The instrumentation is a ledger, not a control.
+It tells you what a document cost after it was processed. There is no `AWS::Budgets`
+resource in any template, no Cost Explorer anomaly monitor, and none of the fourteen alarms
+is a spend or token-volume alarm. The only ex-ante levers are `MaxConcurrentWorkflows`,
+which limits rate rather than spend, and the circuit breaker, which trips on Bedrock
+availability rather than on cost. Combined with the composed retry ladders described under
+Reliability, a misconfigured document class can generate substantially more spend than
+expected before anyone notices, which is why the first two checklist rows below are the
+most important in this document.
+
+### Review checklist
+
+| Review item | Your comment | Owner | Date |
+|---|---|---|---|
+| Have you set an AWS Budget with alerts for this stack's account or cost allocation tag? Nothing in the templates creates one | | | |
+| Have you created a CloudWatch alarm on token volume or on the metered cost metric, so that runaway spend is detected in hours rather than at month end? | | | |
+| Have you enabled Cost Anomaly Detection for Bedrock and Textract in this account? | | | |
+| Have you validated `config_library/pricing.yaml` against your actual rates, including any private pricing agreement? Otherwise every reported cost is off by a constant factor | | | |
+| Do you know the cost per document for each of your document classes, and does it match your business case? | | | |
+| Have you evaluated cheaper models for the classes where accuracy allows it, rather than using one model everywhere? | | | |
+| Is prompt caching effective for your prompts, and have you checked rather than assumed? A prefix below the model's caching minimum is never cached | | | |
+| Does `DataRetentionInDays` (default 365) match what you actually need to keep, and have you considered a storage-class transition for older output? | | | |
+| Have you applied cost allocation tags so that this workload is separable in Cost Explorer? | | | |
 
 ## 6. Sustainability
 
-### Strengths
+### What the solution implements
 
-- **Serverless Architecture**: Resources only consume energy when actively processing documents.
-- **Regional Deployment**: Solution can be deployed in regions with lower carbon footprints.
-- **Efficient Resource Utilization**: Parallel processing and concurrency management optimize resource usage.
+Serverless compute consumes resources only while documents are being processed, so
+utilization tracks demand without idle capacity. The concurrency cap and queue buffering
+mean work is smoothed rather than run against over-provisioned headroom. Lifecycle rules
+on eleven of thirteen buckets and the `LogRetentionDays` default keep stored data from
+growing without bound.
 
-### Recommendations
+Some Lambda functions already run on arm64 — four in `patterns/unified/template.yaml` and
+three in `template.yaml`, plus the feature-platform functions — while the remainder take
+the x86_64 default. Migrating a function is not always free, because container-image
+functions must be built for the target architecture and some Python wheels are not
+published for arm64.
 
-- Implement document archiving strategies to reduce storage footprint over time.
-- Consider optimizing image preprocessing to reduce computational requirements.
-- Add sustainability metrics to track carbon footprint of document processing workflows.
-- Evaluate AWS Graviton-based Lambda functions for improved energy efficiency.
-- Consider implementing regional routing to process documents in regions with lower carbon intensity.
+Region choice is the largest single lever available to you, and it is constrained: the
+region must offer the Bedrock models, Textract features and Bedrock Data Automation
+projects your configuration uses.
 
-## Processing-Mode-Specific Assessments
+We do not ship a carbon metric. The
+[Customer Carbon Footprint Tool](https://docs.aws.amazon.com/help-panel/awsaccountbilling/latest/console/hp-ccft.html)
+reports at the account level, so attributing emissions to this workload specifically
+requires that you separate it by account or cost allocation tag.
 
-Since v0.5.0, the solution is deployed as a single **Unified Pattern** that combines both processing modes into one stack. The `use_bda` configuration flag (set via the UI) selects the processing path at runtime — there is no longer a pattern selector at deployment time. See the [Architecture Overview](./architecture.md) and [Upgrading to the Unified Pattern](./migration-v04-to-v05.md) for details.
+### Review checklist
 
-### BDA Mode (`use_bda: true`) — Bedrock Data Automation
+| Review item | Your comment | Owner | Date |
+|---|---|---|---|
+| Is your region choice compatible with a lower-carbon region, given the Bedrock and Textract features your configuration requires? | | | |
+| Have you archived or expired processed documents you no longer need, rather than relying on the 365-day default? | | | |
+| Have you evaluated arm64 for the functions still on x86_64 in your deployment, accounting for the container-image and wheel-availability constraints? | | | |
+| Are you re-processing documents unnecessarily — for example re-running OCR when only the extraction prompt changed? | | | |
+| Have you right-sized image preprocessing resolution, which drives both token count and compute? | | | |
+| Can you attribute this workload's footprint in the Customer Carbon Footprint Tool, or does it need its own account or tag to be separable? | | | |
 
-- **Strengths**: Leverages the managed Amazon Bedrock Data Automation service for end-to-end processing, reducing operational overhead.
-- **Considerations**: Monitor BDA service quotas and implement appropriate throttling controls.
+## Processing-mode considerations
 
-### Pipeline Mode (`use_bda: false`, default) — Textract and Bedrock
+Since v0.5.0 the solution deploys as a single unified stack containing both processing
+modes. The `use_bda` configuration flag, set in the UI, selects the path at runtime;
+there is no deployment-time pattern selector. See the
+[Architecture Overview](./architecture.md) and
+[Upgrading to the Unified Pattern](./migration-v04-to-v05.md).
 
-- **Strengths**: Well-structured workflow with clear separation between OCR (Amazon Textract) and AI processing (Amazon Bedrock).
-- **Considerations**: Optimize token usage in Bedrock models to balance cost and performance.
+**BDA mode (`use_bda: true`)** delegates OCR, classification and extraction to the managed
+Amazon Bedrock Data Automation service, which reduces the operational surface you own but
+moves your throughput ceiling to BDA's service quotas and your cost model to BDA's pricing
+rather than per-token pricing. Review both quotas before committing.
 
-> **Note**: The previously separate Pattern-3 (Textract + SageMaker UDOP + Bedrock) configuration was deprecated and removed in v0.5.0. Custom classification models such as UDOP can be integrated into the unified pattern via [Lambda Inference Hooks](./lambda-hook-inference.md).
+**Pipeline mode (`use_bda: false`, the default)** separates OCR on Amazon Textract from
+classification and extraction on Amazon Bedrock. You own more configuration — model per
+step, prompts, shard sizes, whether agentic extraction is enabled — and correspondingly
+more of the cost and accuracy outcome.
 
-## Conclusion
+> **Note**: the separate Pattern-3 configuration (Textract, a SageMaker UDOP endpoint, and
+> Bedrock) was removed in v0.5.0. Custom classification models such as UDOP can be
+> integrated through [Lambda Inference Hooks](./lambda-hook-inference.md).
 
-The GenAI Intelligent Document Processing Accelerator demonstrates strong alignment with AWS Well-Architected principles, providing a robust foundation for document processing workloads. The modular architecture, comprehensive monitoring, and built-in security controls create a solution that can be deployed with confidence in production environments.
+## Recording the outcome
 
-Key strengths include the serverless architecture, which provides automatic scaling and resilience, and the comprehensive monitoring capabilities that enable operational visibility. The solution's modular design allows for customization and extension to meet specific business requirements.
+A completed review is a set of filled rows with owners and dates, plus a short list of
+the items you decided not to act on and why. The rows that most often turn out to matter
+in practice are the ones where a default deployment does nothing at all: nobody
+subscribed to the alerts topic, no budget, and MFA off on the user pool. Those three are
+worth confirming before the first production document is processed, not at the next
+review.
 
-Areas for potential enhancement include more granular cost controls, extending the built-in data-protection capabilities into a full cross-region disaster recovery strategy (see [Disaster Recovery](#disaster-recovery)), and sustainability optimizations. By addressing these recommendations, the solution can further improve its alignment with Well-Architected best practices.
+Re-run the checklist on each upgrade of the accelerator. Parameter defaults and the
+resources described in this document can change between releases, so an answer recorded
+against an earlier version may no longer describe your stack — which is what the date
+column is for.

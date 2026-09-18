@@ -71,6 +71,18 @@ if RECONCILE_SAMPLE_MAX_AGE_SECONDS < RECONCILE_GRACE_SECONDS * 2:
     )
     RECONCILE_SAMPLE_MAX_AGE_SECONDS = _clamped
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
+# The workflow tracker's decrement is a TransactWriteItems on this same
+# `workflow_counter` item, so a plain UpdateItem here can lose the race with
+# TransactionConflictException — a code botocore's DynamoDB retry policy does not
+# cover. Bounded retry, same shape as the tracker's DECREMENT_MAX_ATTEMPTS /
+# 0.2s-doubling backoff (worst case 0.2 + 0.4 + 0.8 = 1.4s of sleep), because the
+# real conflict rate is unmeasured. See update_counter.
+COUNTER_CONFLICT_MAX_ATTEMPTS = int(
+    os.environ.get("COUNTER_CONFLICT_MAX_ATTEMPTS", "4")
+)
+COUNTER_CONFLICT_BASE_DELAY_SECONDS = float(
+    os.environ.get("COUNTER_CONFLICT_BASE_DELAY_SECONDS", "0.2")
+)
 
 # Step Functions execution names: 1-80 chars, no whitespace, brackets, wildcards
 # or the characters " # % \ ^ | ~ ` $ & , ; : /. The name also becomes the last
@@ -162,6 +174,21 @@ def update_counter(increment: bool = True) -> bool:
     """
     Update the concurrency counter
 
+    Retries ``TransactionConflictException`` with bounded backoff. The workflow
+    tracker's decrement is now a ``TransactWriteItems`` (so it can carry its
+    per-execution marker atomically), which makes ``workflow_counter`` a
+    transactional target: DynamoDB fails a plain ``UpdateItem`` that collides
+    with an in-flight transaction on the same item with
+    ``TransactionConflictException``, and botocore's DynamoDB retry policy does
+    NOT cover that code (it covers ``ReplicatedWriteConflictException``,
+    ``TransactionInProgressException`` and crc32 only). On the increment path a
+    raise is harmless — the outer handler returns False without touching the
+    counter, so SQS redelivers — but the two COMPENSATING-DECREMENT paths in
+    ``process_message`` catch and log it, which would LEAK a slot: exactly the
+    failure class the floor and the marker exist to prevent. Retried here with
+    the same shape the tracker's decrement uses, and deliberately conservative:
+    the real conflict rate is unmeasured (this change is not deploy-validated).
+
     Args:
         increment: Whether to increment (True) or decrement (False) the counter
 
@@ -172,31 +199,101 @@ def update_counter(increment: bool = True) -> bool:
         ClientError: If DynamoDB operation fails
     """
     logger.info(f"Updating counter: increment={increment}, max={MAX_CONCURRENT}")
+    update_args = {
+        "Key": {"counter_id": COUNTER_ID},
+        "UpdateExpression": "ADD active_count :inc",
+        "ExpressionAttributeValues": {
+            ":inc": 1 if increment else -1,
+            ":max": MAX_CONCURRENT,
+        },
+        "ReturnValues": "UPDATED_NEW",
+    }
+
+    if increment:
+        update_args["ConditionExpression"] = "active_count < :max"
+
+    last_conflict: Optional[ClientError] = None
+    for attempt in range(1, COUNTER_CONFLICT_MAX_ATTEMPTS + 1):
+        try:
+            logger.info(f"Counter update args: {update_args}")
+            response = concurrency_table.update_item(**update_args)
+            logger.info(f"Counter update response: {response}")
+            if increment:
+                # The ONLY place a negative counter is observable in production —
+                # see _repair_if_counter_was_negative. Never raises.
+                _repair_if_counter_was_negative(response)
+            return True
+
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code == "ConditionalCheckFailedException":
+                logger.warning("Concurrency limit reached")
+                return False
+            if code == "TransactionConflictException":
+                last_conflict = e
+                logger.warning(
+                    f"Counter update collided with an in-flight transaction on "
+                    f"the counter item (attempt {attempt}/"
+                    f"{COUNTER_CONFLICT_MAX_ATTEMPTS}): {e}"
+                )
+                if attempt < COUNTER_CONFLICT_MAX_ATTEMPTS:
+                    time.sleep(
+                        COUNTER_CONFLICT_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                    )
+                continue
+            logger.error(f"Error updating counter: {e}")
+            raise
+
+    logger.error(
+        f"Counter {'increment' if increment else 'decrement'} still conflicting "
+        f"after {COUNTER_CONFLICT_MAX_ATTEMPTS} attempts: {last_conflict}. "
+        f"Raising rather than reporting a write that never landed as done.",
+        exc_info=True,
+    )
+    raise last_conflict if last_conflict else RuntimeError("counter update failed")
+
+
+def _repair_if_counter_was_negative(response: Dict[str, Any]) -> None:
+    """Detect, from the increment just applied, that the counter was NEGATIVE.
+
+    **This is the only path in the deployed system that can observe a negative
+    counter.** ``reconcile_counter`` — and with it ``_repair_negative_counter``
+    and ``ConcurrencyCounterNegativeAlarm`` — is reached from exactly one place:
+    the ``if not update_counter(increment=True)`` branch, i.e. only when the
+    increment's ``active_count < :max`` condition FAILED. A negative counter
+    satisfies that condition, so the increment always succeeds and the reconciler
+    is never consulted. Without this hook the repair is unreachable and the alarm
+    cannot fire, and the repair's own tests cannot show that because they call
+    ``reconcile_counter()`` directly rather than going through admission.
+
+    Detection is free: the increment already asks for ``ReturnValues``, and
+    ``active_count`` after adding 1 is ``<= 0`` exactly when it was negative
+    before. We hold one slot whose execution does not exist yet — ListExecutions
+    cannot see it — hence ``claimed=1``, so the repair does not write a value that
+    excludes our own claim.
+
+    Never allowed to change the admission decision: the increment has landed and
+    the caller is about to start a workflow, so every failure here is swallowed.
+    """
     try:
-        update_args = {
-            "Key": {"counter_id": COUNTER_ID},
-            "UpdateExpression": "ADD active_count :inc",
-            "ExpressionAttributeValues": {
-                ":inc": 1 if increment else -1,
-                ":max": MAX_CONCURRENT,
-            },
-            "ReturnValues": "UPDATED_NEW",
-        }
-
-        if increment:
-            update_args["ConditionExpression"] = "active_count < :max"
-
-        logger.info(f"Counter update args: {update_args}")
-        response = concurrency_table.update_item(**update_args)
-        logger.info(f"Counter update response: {response}")
-        return True
-
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            logger.warning("Concurrency limit reached")
-            return False
-        logger.error(f"Error updating counter: {e}")
-        raise
+        raw = (response.get("Attributes") or {}).get("active_count")
+        if raw is None:
+            return
+        post = int(raw)
+        if post > 0:
+            return
+        logger.error(
+            f"Concurrency counter was NEGATIVE ({post - 1}) before this "
+            f"increment. Admission is `active_count < MaxConcurrentWorkflows`, so "
+            f"the stack has been admitting up to {1 - post} workflow(s) above the "
+            f"configured ceiling, with nothing erroring. Repairing."
+        )
+        _repair_negative_counter(post, claimed=1)
+    except Exception as e:
+        logger.warning(
+            f"Could not check the concurrency counter for an underflow: {e}",
+            exc_info=True,
+        )
 
 
 def _count_running_executions() -> Optional[int]:
@@ -279,6 +376,19 @@ def reconcile_counter() -> Optional[int]:
     3. **Conditional write** on the exact value we sampled, so a concurrent
        increment or decrement makes this a no-op instead of clobbering it.
 
+    A NEGATIVE counter is the one case that gets none of that caution, because it
+    is the opposite failure: see ``_repair_negative_counter``. It used to get no
+    treatment at all — an ``active <= 0`` early return here declined to act on
+    exactly the state that needed correcting (issue #915).
+
+    Note that the negative branch below is **defensive depth, not the live path**.
+    This function only runs when the increment's ``active_count < :max`` condition
+    failed, and a negative counter satisfies that condition, so in a normally
+    configured stack a negative counter is detected on the *successful* increment
+    instead (``_repair_if_counter_was_negative``). The branch here still covers
+    the residue: a MaxConcurrentWorkflows of 0 or below, where a negative counter
+    can also fail the admission condition.
+
     Returns the corrected value, or None if no correction was made.
     """
     now = int(time.time())
@@ -295,7 +405,13 @@ def reconcile_counter() -> Optional[int]:
         return None
 
     active = int(item.get("active_count", 0))
-    if active <= 0:
+    if active < 0:
+        # An underflowed counter raises the effective ceiling instead of lowering
+        # it, so it is repaired on sight rather than sampled twice.
+        return _repair_negative_counter(active)
+    if active == 0:
+        # No slots claimed, so there is nothing to reconcile and no reason to pay
+        # for a ListExecutions sweep.
         return None
 
     running = _count_running_executions()
@@ -362,7 +478,9 @@ def reconcile_counter() -> Optional[int]:
         return None
 
     # Two independent samples, GRACE apart, both saw the counter too high.
-    target = max(running, int(prev_running or 0))
+    # max(..., 0) is belt-and-braces: both inputs are counts, so the corrected
+    # value can never be the negative counter this function now also repairs.
+    target = max(running, int(prev_running or 0), 0)
     if target >= active:
         return None
 
@@ -388,6 +506,76 @@ def reconcile_counter() -> Optional[int]:
         f"RECONCILED leaked concurrency counter: {active} -> {target} "
         f"(running executions: {running}, previous sample: {prev_running}). "
         f"{active - target} slot(s) had been held by workflows that already ended."
+    )
+    return target
+
+
+def _repair_negative_counter(active: int, claimed: int = 0) -> Optional[int]:
+    """Raise a NEGATIVE counter back to what is actually running.
+
+    A negative ``active_count`` is not drift, it is arithmetic that ran past its
+    floor, and it fails in the opposite and worse direction: the admission gate is
+    ``active_count < MAX_CONCURRENT``, so every unit below zero is one more
+    workflow admitted above MaxConcurrentWorkflows, with no error anywhere
+    (issue #915). The workflow tracker's decrement is now floored and deduplicated
+    so it cannot get here, but a counter that already went negative — or one edited
+    by hand — still needs a way back.
+
+    The two-sample caution in ``reconcile_counter`` exists because *lowering* the
+    counter over-admits work. Raising it out of a negative value only ever
+    tightens admission, so this acts on the first observation. It still writes
+    conditionally on the exact value read, and can never write below zero.
+
+    Args:
+        active: The counter value as currently written — what the conditional
+            write below must still find, so a concurrent change makes this a
+            no-op rather than a clobber.
+        claimed: Slots this caller has ALREADY added to ``active`` for executions
+            that do not exist yet, and which ListExecutions therefore cannot see.
+            The admission path (``_repair_if_counter_was_negative``) passes 1, so
+            the repair neither drops its own claim nor misreports the negative
+            value for the alarm. ``reconcile_counter`` runs only on a *refused*
+            increment — nothing was claimed — so it passes 0.
+    """
+    running = _count_running_executions()
+    # None means the probe failed, or that it stopped counting past the ceiling.
+    # Either way zero is a safe floor: it is much closer to the truth than a
+    # negative counter, and it cannot admit MORE work than we already are.
+    target = (max(running, 0) if running is not None else 0) + claimed
+
+    # Publish the value the counter actually HELD, before the write below and even
+    # if that write no-ops. Two reasons it is `active - claimed` rather than
+    # `active`: ConcurrencyCounterNegativeAlarm is Minimum < 0, and on the
+    # admission path our own increment has already moved the counter (a counter of
+    # -1 reads 0 by the time we detect it), so publishing `active` would leave the
+    # alarm unable to fire on the very case it exists for. And nothing else records
+    # an underflow that was silently cleaned up — an operator needs to know the
+    # ceiling was breached, not just that it is fixed.
+    _emit_counter_active_metric(active - claimed)
+
+    try:
+        concurrency_table.update_item(
+            Key={"counter_id": COUNTER_ID},
+            UpdateExpression=(
+                "SET active_count = :new REMOVE drift_observed_at, drift_running"
+            ),
+            ConditionExpression="active_count = :expected",
+            ExpressionAttributeValues={":new": target, ":expected": active},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # The counter moved under us; re-read it on a later invocation.
+            logger.info("Counter changed during underflow repair; skipping")
+            return None
+        logger.error(f"Failed to repair negative concurrency counter: {e}")
+        return None
+
+    held = active - claimed
+    logger.warning(
+        f"REPAIRED a NEGATIVE concurrency counter: it held {held}, now {target} "
+        f"(running executions: {running}; slots claimed but not yet started: "
+        f"{claimed}). While it was negative the stack could admit up to {-held} "
+        f"workflows ABOVE MaxConcurrentWorkflows."
     )
     return target
 
@@ -541,6 +729,29 @@ def _emit_drift_metric(drift: int, active: int, running: int) -> None:
         )
     except Exception as e:  # never let telemetry break message processing
         logger.warning(f"Could not emit concurrency drift metric: {e}")
+
+
+def _emit_counter_active_metric(active: int) -> None:
+    """Publish the counter value on its own, without a drift sample.
+
+    Used by the underflow-repair path: there is no meaningful drift to report
+    there, but the negative value itself has to reach CloudWatch so
+    ConcurrencyCounterNegativeAlarm can fire on it.
+    """
+    try:
+        cloudwatch = boto3.client("cloudwatch")
+        cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": "ConcurrencyCounterActive",
+                    "Value": active,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit concurrency counter metric: {e}")
 
 
 def check_circuit_breaker() -> tuple[bool, str]:

@@ -48,7 +48,7 @@ def test_skip_branch_preserves_extraction_metering():
             "outputTokens": 200,
             "totalTokens": 1200,
         },
-        "Extraction/lambda/requests": {"invocations": 1},
+        "Extraction/lambda/requests": {"requests": 1},
         "Extraction/lambda/duration": {"gb_seconds": 12.0},
     }
     section = Section(section_id="1", classification="doc", page_ids=["1"])
@@ -61,8 +61,8 @@ def test_skip_branch_preserves_extraction_metering():
     )
     assert sd.metering["Extraction/lambda/duration"]["gb_seconds"] == 12.0
     # And it must be a COPY (mutating the section doc must not corrupt the source).
-    sd.metering["Extraction/lambda/requests"]["invocations"] = 99
-    assert doc.metering["Extraction/lambda/requests"]["invocations"] == 1
+    sd.metering["Extraction/lambda/requests"]["requests"] = 99
+    assert doc.metering["Extraction/lambda/requests"]["requests"] == 1
 
 
 def test_skip_branch_handles_empty_incoming_metering():
