@@ -1,32 +1,46 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Assert every source directory of every first-party library is packaged.
+"""Every package directory of every first-party library carries an explicit
+`__init__.py`.
 
-`lib/idp_common_pkg/idp_common/agents/utils/` shipped two modules and no
-`__init__.py`. `lib/idp_common_pkg/pyproject.toml` discovers packages with
-setuptools `[tool.setuptools.packages.find]`, which — unlike `find-namespace` —
-skips any directory lacking `__init__.py`. So `idp_common.agents.utils` was
-absent from the built wheel, while `agents/factory/agent_factory.py` imported
-`..utils.conversation_manager` and `..utils.memory_provider` with no guard.
+This is a **policy** gate, deliberately stricter than setuptools. It is not a
+model of what setuptools would or would not ship, and it must not be read as one.
 
-That combination cannot fail locally: an editable install resolves imports
-against the source tree, where the directory plainly exists. It fails only in a
-Lambda built from the wheel, only on the conversational-agent path, and only at
-the moment a user reaches that path — the worst possible place to discover it.
+What prompted it: `lib/idp_common_pkg/idp_common/agents/utils/` shipped two
+modules and no `__init__.py`, while `agents/factory/agent_factory.py` imports
+`..utils.conversation_manager` and `..utils.memory_provider` with no guard. That
+looked like a packaging hole, and issue #924 was filed on the theory that the
+subpackage was missing from the built wheel and would raise
+`ModuleNotFoundError` for anyone on a non-editable install.
 
-This test reproduces setuptools' own discovery from the declared configuration
-and asserts that every directory holding a `.py` file resolves to a discovered
-package. It is deliberately not a wheel build: no network, no build isolation,
-no minutes of CI time, and the answer is identical because it applies the same
-finder to the same config. It also covers all five first-party distributions
-rather than only the one that was broken, including `lib/idp_cli_pkg`, whose
-`packages = ["idp_cli"]` is an explicit list that would omit any subpackage
-added under it.
+**It was not, and it would not.** For a `pyproject.toml`
+`[tool.setuptools.packages.find]` table, `namespaces` defaults to **true**:
+`setuptools/config/expand.py::find_packages` takes `namespaces=True` and
+dispatches to `PEP420PackageFinder`, not `PackageFinder`, so a directory with no
+`__init__.py` is discovered anyway. Measured on the pre-fix tree,
+`read_configuration("pyproject.toml", expand=True)` returned 82 packages
+including `idp_common.agents.utils`; a wheel built from pre-fix source with
+`setuptools.build_meta.build_wheel` contained both `conversation_manager.py` and
+`memory_provider.py`, and installing it `--no-deps` into a clean virtual
+environment resolved the import. No user ever hit the failure this file was
+originally written to describe.
 
-Adding a new module directory is now a gate failure until it has an
-`__init__.py` (or the config switches to `find-namespace`), instead of a
-deployment failure later.
+The `__init__.py` is still worth having, and this gate is still worth having,
+for a different and narrower reason: an implicit PEP 420 namespace package is an
+accident waiting to be relied on. An explicit marker states the package boundary
+outright, keeps behaviour identical under a `packages` list, under `setup.cfg`
+(where `find` really is strict), and under any tool that walks the tree itself,
+and removes the need for a reader to know the `namespaces` default in order to
+predict what ships.
+
+So this file applies setuptools' STRICT finder (`find_packages`, which does
+require `__init__.py`) as the mechanism for checking the policy, and reports a
+missing marker as a policy violation rather than as a predicted import failure.
+It covers all five first-party distributions, including `lib/idp_cli_pkg`, whose
+`packages = ["idp_cli"]` is an explicit list that would omit any subpackage added
+under it — a case where the omission IS real, because an explicit list is not
+subject to any finder.
 """
 
 from __future__ import annotations
@@ -36,7 +50,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
-from setuptools import find_namespace_packages, find_packages
+from setuptools import find_packages
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIB_ROOT = REPO_ROOT / "lib"
@@ -65,11 +79,19 @@ def _discovered_packages(pyproject: Path) -> tuple[set[str], list[str]]:
     if not isinstance(packages, dict):
         pytest.skip(f"{pyproject} declares no [tool.setuptools.packages] table")
 
-    # `find` requires __init__.py; `find-namespace` does not.
-    if "find-namespace" in packages:
-        finder, spec = find_namespace_packages, packages["find-namespace"]
-    elif "find" in packages:
-        finder, spec = find_packages, packages["find"]
+    # `find_packages` is the STRICT finder: it requires __init__.py. That is the
+    # point — it is the mechanism for checking the explicit-marker policy, NOT a
+    # model of what setuptools will ship. setuptools' own pyproject path passes
+    # `namespaces=True` and so uses `find_namespace_packages` (PEP 420), which
+    # would discover an unmarked directory and make this gate vacuous.
+    #
+    # There is deliberately no `find-namespace` branch. `find-namespace` is the
+    # setup.cfg spelling (`[options.packages.find-namespace]`) and can never
+    # appear in a pyproject.toml table: setuptools' pyproject validator allows
+    # exactly one key, `find`, with `additional keys: False`, and rejects
+    # `find-namespace` with a ValueError. A branch for it would be unreachable.
+    if "find" in packages:
+        spec = packages["find"]
     else:
         pytest.skip(f"{pyproject} uses an unrecognised packages table")
 
@@ -80,7 +102,7 @@ def _discovered_packages(pyproject: Path) -> tuple[set[str], list[str]]:
     found: set[str] = set()
     for root in where:
         found.update(
-            finder(where=str(pkg_dir / root), include=include, exclude=exclude)
+            find_packages(where=str(pkg_dir / root), include=include, exclude=exclude)
         )
     return found, list(exclude)
 
@@ -132,27 +154,42 @@ def test_every_source_dir_is_a_discovered_package(pyproject: Path) -> None:
         missing.append(dotted)
 
     assert not missing, (
-        f"{pyproject.relative_to(REPO_ROOT)} would not package these directories, "
-        f"even though each contains .py files: {sorted(missing)}. setuptools "
-        "`packages.find` skips any directory without an __init__.py, so these "
-        "modules are absent from the built wheel and raise ModuleNotFoundError on "
-        "a non-editable install. Add an __init__.py (preferred — it makes the "
-        "package boundary explicit), or switch the config to `find-namespace`."
+        f"{pyproject.relative_to(REPO_ROOT)}: these directories contain .py files "
+        f"but carry no __init__.py: {sorted(missing)}. Add one to each.\n\n"
+        "This is a repository POLICY — every package directory declares itself "
+        "explicitly — not a prediction that the modules will be missing from the "
+        "wheel. With a pyproject.toml `packages.find` table setuptools defaults "
+        "to `namespaces=True` and would discover them anyway, as an implicit PEP "
+        "420 namespace package. The policy exists because relying on that is "
+        "fragile: the same tree behaves differently under an explicit `packages` "
+        "list, under setup.cfg's strict `find`, and under any tool that walks the "
+        "directories itself, and a reader has to know the `namespaces` default to "
+        "predict what ships. An `__init__.py` makes the package boundary true "
+        "everywhere.\n\n"
+        "If a directory genuinely should NOT be a package, add it to "
+        "`exclude` in the pyproject table (respected here) or to "
+        "IGNORED_DIR_NAMES in this file."
     )
 
 
 def test_agents_utils_specifically_is_packaged() -> None:
-    """Pin the exact regression from issue #924 by name.
+    """Pin the directory from issue #924 by name.
 
     The generic test above is the real guard, but it derives its expectations
-    from the tree. If `agents/utils` were deleted rather than fixed, that test
-    would pass; this one says out loud which subpackage must ship.
+    from the tree. If `agents/utils` were deleted rather than marked, that test
+    would pass; this one says out loud which subpackage must carry a marker.
     """
     pyproject = LIB_ROOT / "idp_common_pkg" / "pyproject.toml"
     discovered, _ = _discovered_packages(pyproject)
     assert "idp_common.agents.utils" in discovered, (
-        "idp_common.agents.utils is not in the discovered package set. "
-        "agent_factory.create_conversational_agent() imports "
-        "..utils.conversation_manager and ..utils.memory_provider unguarded, so "
-        "omitting it breaks the agent chat path on any wheel-based install."
+        "idp_common.agents.utils has no __init__.py, so the strict finder does "
+        "not see it. `agent_factory.create_conversational_agent()` imports "
+        "..utils.conversation_manager and ..utils.memory_provider unguarded, "
+        "which is why this directory in particular is named here.\n\n"
+        "To be accurate about the consequence: an unmarked directory here does "
+        "NOT break a wheel install. setuptools' pyproject `packages.find` "
+        "defaults to `namespaces=True`, and a wheel built from the unmarked tree "
+        "was measured to contain both modules and to import cleanly from a "
+        "non-editable install. The requirement is the explicit-marker policy "
+        "described in this module's docstring, not an averted ModuleNotFoundError."
     )

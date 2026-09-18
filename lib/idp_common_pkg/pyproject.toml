@@ -216,6 +216,13 @@ test = [
   "genson==1.3.0",
   "numpy>=1.26,<3",
   "build==1.3.0",
+  # scripts/tests/test_package_discovery.py imports setuptools directly (its
+  # package finders and read_configuration) to check the packaging policy. No
+  # first-party pyproject declared it outside build-system.requires, which pip
+  # provisions only for the build backend, so the suite silently depended on an
+  # ambient install. Floor is the security floor (CVE-2025-47273 path traversal
+  # is fixed in 78.1.1); the APIs used are much older than that.
+  "setuptools>=78.1.1",
   "z3-solver==4.15.4.0",                  # Required for Z3 engine validation tests (pinned - newer versions require building from source)
 ]
 

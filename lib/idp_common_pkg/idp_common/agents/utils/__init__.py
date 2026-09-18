@@ -18,11 +18,20 @@ directly, as their own docstrings show:
     )
     from idp_common.agents.utils.memory_provider import DynamoDBMemoryHookProvider
 
-The file itself is not optional: ``lib/idp_common_pkg/pyproject.toml`` discovers
-packages with setuptools ``packages.find``, which skips any directory without an
-``__init__.py``. Without it this subpackage was omitted from the built wheel and
-the lazy imports above raised ``ModuleNotFoundError`` on any non-editable
-install. See ``scripts/tests/test_package_discovery.py``, which fails if a
-directory under ``idp_common/`` holding ``.py`` files is ever again left
-undiscoverable.
+Why this file exists at all, stated accurately: it makes the package boundary
+explicit. It does **not** fix a broken wheel. Before it was added this directory
+was an implicit PEP 420 namespace package, and
+``lib/idp_common_pkg/pyproject.toml``'s ``[tool.setuptools.packages.find]`` table
+defaults to ``namespaces=True``, so setuptools discovered it regardless — a wheel
+built from the unmarked tree was measured to contain both submodules and to
+import cleanly from a non-editable install. No release shipped without them, and
+no user saw a ``ModuleNotFoundError`` from this.
+
+The marker is still worth having, because depending on the ``namespaces`` default
+is fragile: the same tree behaves differently under an explicit ``packages`` list,
+under ``setup.cfg``'s strict ``find``, and under any tool that walks the
+directories itself. ``scripts/tests/test_package_discovery.py`` enforces that as a
+repository policy — every package directory under a first-party distribution
+declares itself — and is documented there as a policy gate rather than as a model
+of setuptools behaviour.
 """
