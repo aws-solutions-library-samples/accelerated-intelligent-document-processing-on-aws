@@ -17,6 +17,11 @@ cannot infer (see **Inputs**), and only if they are not already in the request.
 > `idp-main_<VERSION>.yaml`, not a local build — every stack is created from that
 > object except the two transform tiers, which must publish from source to apply the
 > transform. Check the template's `Description` says `(v<VERSION>)` before you start.
+>
+> **This skill validates a release; it does not publish one.** The publish procedure —
+> `scripts/aws-release.sh`, the three public buckets, the mutable vs version-pinned keys,
+> and the failure/recovery paths — is in `docs/release-runbook.md`. If the artifact under
+> test does not exist yet, that runbook is what produces it.
 
 ## Inputs
 
@@ -81,7 +86,7 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Tier | Command | Pass | Per-tier skill |
 |---|---|---|---|
 | SRT | `make srt-scan` (BEFORE publish) | 0 open/reopened HIGH in tracked source | `srt-security-scan.md` |
-| Unit + integration suites | `make test` | all test roots green — there is **no** standing failure set | `full-test-battery.md` |
+| Unit + integration suites | `make test` | all test roots green — **Expected standing failures: 0**, and the accepted-failure table in `full-test-battery.md` is empty. That table is authoritative; `scripts/tests/test_standing_failure_baseline.py` fails if this number disagrees with it | `full-test-battery.md` |
 | Lint | `make lint-cicd` | exit 0 | — |
 | Dependency audit | `make dep-audit` | nothing at or above HIGH | — |
 | Type check | `make typecheck` | compare **totals** against develop's baseline (4 errors / 51 warnings on 2026-09-11); file placement shifts with the installed deps. Report the delta, not the raw count | `full-test-battery.md` |

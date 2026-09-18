@@ -701,11 +701,27 @@ class TestTokenOverrideShape:
 # ============================================================
 
 class TestGroupMapping:
-    """Tests for GROUP_MAPPING initialization from environment variables."""
+    """Tests for GROUP_MAPPING initialization from environment variables.
+
+    Each test here reloads ``index``, which re-executes its module-level
+    ``boto3.client("cognito-idp")``. Because ``clear=True`` wipes the whole
+    environment, that client construction has no region unless one is put back,
+    and botocore then raises ``NoRegionError`` — so these three tests passed only
+    on a machine whose region comes from ``~/.aws/config`` (which ``clear=True``
+    cannot remove) and failed on any CI runner, where the region is an
+    environment variable or absent. AWS_DEFAULT_REGION is therefore restored
+    below. It cannot affect what is asserted: the mapping is built from the
+    ``*_GROUP_NAME`` variables only. Making this suite import-safe so that no
+    caller has to know about the region at all is tracked in #988.
+    """
 
     def test_partial_env_vars(self):
         """Only configured env vars should appear in GROUP_MAPPING."""
-        partial_env = {"ADMIN_GROUP_NAME": "MyAdmins", "LOG_LEVEL": "INFO"}
+        partial_env = {
+            "ADMIN_GROUP_NAME": "MyAdmins",
+            "LOG_LEVEL": "INFO",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        }
         with patch.dict(os.environ, partial_env, clear=True):
             import importlib
             import index as mod
@@ -715,7 +731,8 @@ class TestGroupMapping:
 
     def test_empty_env_vars(self):
         """No group env vars → empty mapping."""
-        with patch.dict(os.environ, {"LOG_LEVEL": "INFO"}, clear=True):
+        cleared = {"LOG_LEVEL": "INFO", "AWS_DEFAULT_REGION": "us-east-1"}
+        with patch.dict(os.environ, cleared, clear=True):
             import importlib
             import index as mod
             importlib.reload(mod)
@@ -724,7 +741,12 @@ class TestGroupMapping:
 
     def test_whitespace_env_vars_ignored(self):
         """Env vars with only whitespace should be ignored."""
-        env = {"ADMIN_GROUP_NAME": "  ", "AUTHOR_GROUP_NAME": "Authors", "LOG_LEVEL": "INFO"}
+        env = {
+            "ADMIN_GROUP_NAME": "  ",
+            "AUTHOR_GROUP_NAME": "Authors",
+            "LOG_LEVEL": "INFO",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        }
         with patch.dict(os.environ, env, clear=True):
             import importlib
             import index as mod

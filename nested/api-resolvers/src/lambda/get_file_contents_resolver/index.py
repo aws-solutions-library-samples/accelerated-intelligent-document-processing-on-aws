@@ -10,6 +10,7 @@ import os
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 # Set up logging
 logger = logging.getLogger()
@@ -65,31 +66,6 @@ ALLOWED_BUCKETS = {
     if os.environ.get(name)
 }
 
-
-# --- inline log sanitizer ---------------------------------------------------
-# Minimal inline redactor. Kept here rather than importing from idp_common to
-# avoid adding a Lambda Layer dependency to this resolver. If this file grows
-# to need idp_common anyway, promote to
-# `from idp_common.utils.log_sanitizer import sanitize_event_for_logging`.
-_LOG_SENSITIVE_KEYS = (
-    "password", "secret", "token", "authorization", "apikey", "api_key",
-    "cookie", "credential", "claims", "identity",
-)
-
-
-def _sanitize_for_log(obj):
-    """Deep-copy `obj` redacting values whose keys match the denylist."""
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            if isinstance(k, str) and any(s in k.lower() for s in _LOG_SENSITIVE_KEYS):
-                out[k] = "***REDACTED***" if v is not None else None
-            else:
-                out[k] = _sanitize_for_log(v)
-        return out
-    if isinstance(obj, list):
-        return [_sanitize_for_log(v) for v in obj]
-    return obj
 
 def _validate_bucket(bucket: str) -> None:
     """Reject the request if `bucket` is not in the allow-list.
@@ -331,7 +307,7 @@ def handler(event, context):
         Exception: Various exceptions related to S3 operations or invalid input
     """
     try:
-        logger.info(f"Received event: {json.dumps(_sanitize_for_log(event))}")
+        logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
         field_name = (event.get('info') or {}).get('fieldName', 'getFileContents')
         if field_name == 'getFilePresignedUrl':
