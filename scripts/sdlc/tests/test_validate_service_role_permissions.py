@@ -25,7 +25,18 @@ SERVICE_ROLE = (
 
 @pytest.fixture(autouse=True)
 def _repo_root(monkeypatch):
-    """The validator resolves its template paths relative to the repo root."""
+    """Make every test in this file independent of its invocation directory.
+
+    The validator, and the `MAIN_TEMPLATE` / `SERVICE_ROLE` constants above,
+    name templates by **repo-relative** path, so without this chdir a run
+    started from anywhere but the repo root raises `FileNotFoundError` — which is
+    how a gate ends up vacuous in one invocation and green in another.
+
+    ⚠️ `autouse=True` means pytest calls this by registration, not by name, so
+    basedpyright reports it as `reportUnusedFunction`. That diagnostic is a false
+    positive: do not delete this function. It is load-bearing, and the suite
+    passes from an unrelated working directory only because of it.
+    """
     from pathlib import Path
 
     monkeypatch.chdir(Path(__file__).resolve().parents[3])
