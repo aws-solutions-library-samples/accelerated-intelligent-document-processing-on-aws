@@ -154,6 +154,23 @@ def test_the_iam_gated_backend_shape_still_passes_through(adapter):
 # --------------------------------------------------------------------------- #
 # every consumer renders the refusal as a denial
 # --------------------------------------------------------------------------- #
+def _is_staged_library_copy(path: Path) -> bool:
+    """True for a build-staging copy of ``idp_common_pkg`` outside ``lib/``.
+
+    ``feature-platform/idp-data-generator`` stages the library into its own build
+    context (``package_agent_source.sh``), because a Docker build cannot reference
+    ``lib/`` by relative path. Those copies are gitignored and regenerated from
+    ``lib/`` at build time, so a stale one on a developer's tree describes nothing
+    that ships — what ships is whatever ``lib/`` says when the image is built. The
+    canonical file is excluded separately, by exact path.
+    """
+    canonical = (_REPO / _ADAPTER_REL).parents[1]  # lib/idp_common_pkg
+    for parent in path.parents:
+        if parent.name == "idp_common_pkg" and parent != canonical:
+            return True
+    return False
+
+
 def _python_sources():
     for path in _REPO.rglob("*.py"):
         parts = set(path.parts)
@@ -162,6 +179,8 @@ def _python_sources():
         if path.name.startswith("test_") or "tests" in parts:
             continue
         if path.resolve() == (_REPO / _ADAPTER_REL).resolve():
+            continue
+        if _is_staged_library_copy(path):
             continue
         yield path
 
