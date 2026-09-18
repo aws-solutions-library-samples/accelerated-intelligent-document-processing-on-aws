@@ -263,11 +263,37 @@ mutation UpdateUser($userId: ID!, $allowedConfigVersions: [String]) {
 
 ## Enforcement Layers
 
-### Layer 1: AppSync Schema Auth Directives (Server-Side)
+### Layer 1: Authentication at the API, and the declared group policy
 
-Every GraphQL **mutation** and many **queries** have `@aws_cognito_user_pools(cognito_groups: [...])` directives that enforce access at the AppSync level. If a user's Cognito group is not in the allowed list, AppSync returns an **Unauthorized** error before any resolver code runs.
+The UI reaches the backend over an **API Gateway REST API** with a single route,
+`POST /op/{field}`, fronted by a **Cognito User Pools authorizer**. That
+authorizer **only authenticates**: an unauthenticated or invalid-token request is
+rejected with **401** before any code runs, but the authorizer does not know
+which Cognito group a field requires. AWS AppSync used to evaluate the schema's
+group directives itself; it has been removed (see
+[AppSync → REST API Migration](./migration-appsync-to-rest.md) §4), so **all
+authorization is enforced in Layer 2**.
 
-> **⚠️ Do NOT use `@aws_auth(cognito_groups: [...])` on this API.** The API has an additional authorization provider (`AWS_IAM`) configured, and on a multi-auth API AppSync **silently ignores** `@aws_auth` — every field decorated with it becomes reachable by *any* authenticated user regardless of group (a Viewer→Admin privilege escalation). Use `@aws_cognito_user_pools(cognito_groups: [...])`, which AppSync *does* evaluate on multi-auth APIs. As defense-in-depth, the required group is **also** enforced server-side in each privileged resolver Lambda (see Layer 2), so an operation is never reachable by an unauthorized caller even if a schema directive regresses.
+What Layer 1 still contributes is the *declared* policy and the input boundary:
+
+- **The declared policy.** `nested/api-resolvers/src/api/schema.graphql` keeps a
+  `@aws_cognito_user_pools(cognito_groups: [...])` directive on every mutation
+  and most queries. No AWS service evaluates these directives any more — they are
+  the machine-readable **source of truth** for which groups an operation
+  requires, and `make api-test-static`
+  ([`scripts/sdlc/scan_api_rbac.py`](../scripts/sdlc/scan_api_rbac.py)) fails the
+  build when a directive, `scripts/api_rbac_expectations.yaml`, and the resolver
+  that actually enforces the check disagree. Keep using
+  `@aws_cognito_user_pools(cognito_groups: [...])` when adding an operation, and
+  never `@aws_auth(...)`, which the scan does not recognize.
+- **Input-shape validation.** The dispatcher validates each request's arguments
+  against a build-time spec generated from the same schema
+  (`api_validation_spec.json`), rejecting unknown arguments, missing non-null
+  arguments, wrong JSON types and out-of-set enum values with **400
+  BadRequest** — the boundary check the GraphQL schema used to perform for free.
+
+The tables below therefore list the groups each operation **requires**; the
+enforcement itself is Layer 2.
 
 **Key mutations and their allowed roles:**
 
@@ -320,14 +346,14 @@ Every GraphQL **mutation** and many **queries** have `@aws_cognito_user_pools(co
 
 ### Layer 2: Server-Side Resolver Group Checks & Filtering
 
-**Defense-in-depth group enforcement:** In addition to the Layer 1 schema
-directives, each privileged resolver Lambda re-checks the caller's
-`cognito:groups` claim at its entrypoint and rejects the request if the caller
-is not in an allowed group. This ensures a privileged operation is never
-reachable by an unauthorized caller even if a schema directive is missing or
-misconfigured (for example, a regression back to the silently-ignored
-`@aws_auth` directive). The required groups mirror the Layer 1 tables above
-(Admin, Admin+Author, or Admin+Reviewer per operation).
+**This is where authorization is enforced.** Each privileged resolver Lambda —
+and each RBAC-gated operation the dispatcher serves in process from
+`ddb_direct` — reads the caller's `cognito:groups` claim at its entrypoint and
+rejects the request with `PermissionError` (returned as **403**, `errorType:
+"Unauthorized"`) if the caller is not in an allowed group. The required groups
+mirror the Layer 1 tables above (Admin, Admin+Author, or Admin+Reviewer per
+operation), and `make api-test-static` fails if any routable operation lacks a
+recognized enforcement pattern.
 
 **Identity-based filtering:** Lambda resolvers also apply finer-grained
 filtering based on the caller's identity:
@@ -357,7 +383,7 @@ The UI adapts based on the user's role and scope:
 - **Pricing page**: Shows "View Pricing" (read-only) for non-admin; "Pricing Configuration" (editable) for admin
 - **Model Limits page**: Shows "View Model Limits" (read-only) for non-admin; "Model Limits Configuration" (editable) for admin
 
-**This layer is NOT a security boundary** — it's purely for user experience. Security is enforced at Layers 1 & 2.
+**This layer is NOT a security boundary** — it's purely for user experience. Authentication is enforced at Layer 1 and authorization at Layer 2.
 
 ## User Management
 
@@ -387,14 +413,14 @@ Admins can create users with any of the four roles via the User Management page.
 │  useUserRole + getMyProfile     │
 │  useConfigurationVersions       │  ← Filters versions by allowedConfigVersions
 └────────────┬────────────────────┘
-             │ GraphQL
+             │ POST /op/{field} (Cognito ID token)
 ┌────────────▼────────────────────┐
-│  REST API + schema directives   │  Layer 1: @aws_cognito_user_pools(cognito_groups) directives (DENY if wrong group)
-│  Schema Directives              │
-└────────────┬────────────────────┘
+│  API Gateway REST API           │  Layer 1: Cognito User Pools authorizer — authN only (401 if not signed in)
+│  + dispatcher arg validation    │           + input-shape validation from schema.graphql (400 BadRequest)
+└────────────┬────────────────────┘           Group directives are DECLARED here, not evaluated by AWS
              │
 ┌────────────▼────────────────────┐
-│  Lambda Resolvers               │  Layer 2: Server-side group checks (defense-in-depth) + filtering
+│  Lambda Resolvers / ddb_direct  │  Layer 2: Server-side group checks (403 Unauthorized) + filtering
 │  • listDocuments: ConfigVersion │  ← Filters by allowedConfigVersions from UsersTable
 │  • getConfigVersions: scope     │  ← Filters profile list
 │  • getConfigVersion: scope      │  ← Rejects out-of-scope access

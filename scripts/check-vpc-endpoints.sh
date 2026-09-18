@@ -106,7 +106,7 @@ LAMBDA_SG=$(aws cloudformation describe-stacks $AWS_FLAGS \
 
 if [[ -z "$LAMBDA_SG" || "$LAMBDA_SG" == "None" ]]; then
   echo "Error: Could not read LambdaVpcSecurityGroupId from stack '$IDP_STACK_NAME'." >&2
-  echo "Make sure the stack is CREATE_COMPLETE and AppSyncVisibility=PRIVATE." >&2
+  echo "Make sure the stack is CREATE_COMPLETE and ApiGatewayVisibility=PRIVATE." >&2
   exit 1
 fi
 echo "   Lambda SG: $LAMBDA_SG" >&2
@@ -130,8 +130,11 @@ echo "   Subnets: $SUBNET_IDS" >&2
 
 # ──────────────────────────────────────────────────────────
 # Interface endpoint services
-#   15 required by the IDP application:
-#     appsync-api, appsync, sqs, states, kms, logs,
+#   14 required by the IDP application:
+#     execute-api (the private API Gateway REST API the Web UI calls — and the
+#       UI itself when WebUIHosting=APIGateway; a PRIVATE deployment is
+#       unreachable without it),
+#     sqs, states, kms, logs,
 #     monitoring (CloudWatch — DashboardMerger custom resource),
 #     bedrock-runtime, ssm (Lambda→SSM Parameter Store),
 #     secretsmanager, lambda, events, athena,
@@ -139,10 +142,16 @@ echo "   Subnets: $SUBNET_IDS" >&2
 #     sts (BDA pattern — bda/bda_service.py calls STS AssumeRole)
 #   2 required only for SSM Session Manager testing bastion:
 #     ssmmessages, ec2messages
+#
+# Deliberately NOT checked: appsync-api and appsync. AWS AppSync has been removed
+# from the solution, so neither endpoint is required. vpc-endpoints.yaml still
+# declares CreateAppSyncApiEndpoint / CreateAppSyncControlEndpoint so an older
+# parameter file keeps deploying, but both default to "false" — checking for them
+# here would report "missing — will create" for endpoints this script's own
+# deploy command never creates.
 # ──────────────────────────────────────────────────────────
 declare -A ENDPOINTS=(
-  [CreateAppSyncApiEndpoint]="appsync-api"
-  [CreateAppSyncControlEndpoint]="appsync"
+  [CreateExecuteApiEndpoint]="execute-api"
   [CreateSqsEndpoint]="sqs"
   [CreateStatesEndpoint]="states"
   [CreateKmsEndpoint]="kms"

@@ -52,9 +52,30 @@ CI runs the same suites split across two targets — `make test-cicd -C
 lib/idp_common_pkg` and `make test-packages-cicd` — so a suite that exists but is
 wired into neither is invisible to CI even though `make test` runs it locally.
 
-There is **no standing failure set**: a correctly installed tree is green, so treat
-any failure as a real regression until proven otherwise. Nearly every surprising
-failure is a stale virtualenv missing the pinned `[test]` extras. The diagnosis
+There is **no standing failure set** — **Expected standing failures: 0** on a
+correctly installed tree, and the enumerated list of accepted failures in
+[`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)
+is empty. So treat any failure as a real regression until proven otherwise.
+`scripts/tests/test_standing_failure_baseline.py` holds that claim, this page and the
+two skills that repeat it to the same number, so they cannot drift apart again.
+
+Most surprising failures are still a stale virtualenv missing the pinned `[test]`
+extras — but **do not expect a broken install to announce itself as an
+`ImportError`.** Several Lambdas catch a missing `idp_common` on purpose and degrade
+(`feature-platform/main-stack-extensions/lambdas/apply_feature_config_preset/index.py`
+logs at ERROR and applies a config preset without recording a revision), so a
+suite that exercises the non-degraded path fails on a bare assertion instead. Two
+tests in `test_apply_feature_config_preset.py`
+(`test_remove_hands_the_pipeline_back_to_default_then_deletes` and
+`test_remove_keeps_an_active_profile_when_there_is_no_default_to_fall_back_to`) were
+misread as a standing failure of this repo for exactly that reason. With
+`idp_common` unimportable that file reports `2 failed, 18 passed`; with
+`PYTHONPATH=<checkout>/lib/idp_common_pkg` exported it reports `20 passed`, on the
+same interpreter and the same commit. Measured identically under Python 3.12 and
+3.13, so it is not a version incompatibility. Check that
+`python3 -c "import idp_common; print(idp_common.__file__)"` resolves inside your own
+checkout before reading anything else — an editable install can silently point at a
+different, or deleted, checkout. The diagnosis
 order, the per-suite expected totals, and how to prove a failure is inherited are in
 the [`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)
 procedure. Conventions for **writing** tests — pytest markers, `moto`, conftest

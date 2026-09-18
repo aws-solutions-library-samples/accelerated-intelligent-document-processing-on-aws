@@ -286,7 +286,8 @@ Notes:
 ### Step 1: Stack Deployment
 **What it tests**: CloudFormation stack deployment
 - Template validation
-- Nested stack creation (AppSync, Pattern, DocumentKB, MultiDocDiscovery)
+- Nested stack creation (`APIRESOLVERSTACK`, `PATTERNSTACK`, `DOCUMENTKB`,
+  `MULTIDOCDISCOVERYSTACK`)
 - Resource creation and initialization
 - Stack outputs verification
 
@@ -879,7 +880,8 @@ run_command("idp-cli test-result --stack-name {stack} --test-run-id {id} --wait"
 
 ### Stack Deletion
 - Cancels all Bedrock ingestion jobs
-- Deletes nested stacks first (AppSync, Pattern, DocumentKB, MultiDocDiscovery)
+- Deletes nested stacks first (`APIRESOLVERSTACK`, `PATTERNSTACK`, `DOCUMENTKB`,
+  `MULTIDOCDISCOVERYSTACK`)
 - Deletes main stack
 - Cleans up S3 buckets, DynamoDB tables, Lambda functions
 

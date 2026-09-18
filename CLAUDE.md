@@ -325,7 +325,7 @@ The solution uses a modular architecture with the main template (`template.yaml`
 - CloudWatch Alarms and Dashboard
 - Web UI Infrastructure (CloudFront, S3 for static assets, CodeBuild)
 - Authentication (Cognito User Pool, Identity Pool)
-- AppSync GraphQL API (for UI-backend communication)
+- API Gateway REST API + dispatcher Lambda (for UI-backend communication)
 
 **Unified Pattern Stack** (`patterns/unified/template.yaml`) - Processing resources:
 - Step Functions State Machine (BDA branch + Pipeline branch + shared tail)
@@ -414,7 +414,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
   - `pip install -e "lib/idp_common_pkg[extraction]"` - Extraction support (includes optional agentic mode with deterministic table parsing tool)
   - `pip install -e "lib/idp_common_pkg[evaluation]"` - Evaluation support
   - `pip install -e "lib/idp_common_pkg[all]"` - everything
-- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, AppSync integration, Reporting, BDA integration
+- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, API adapter (`idp_common.api_adapter`, the REST dispatcher's resolver-event adapter), Reporting, BDA integration
 - Configuration management via DynamoDB
 - Document models and data structures
 - Extraction features:
@@ -438,7 +438,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
 - Vite build system
 - Node.js 22.12+ and npm required
 - Authentication via AWS Amplify v6 and Cognito
-- Real-time document status via AppSync GraphQL subscriptions
+- Document status via REST polling of the tracking table (`src/ui/src/hooks/use-polling.ts`); chat tokens stream from a Lambda Function URL
 - Location: `src/ui/`
 
 ## Configuration System
@@ -588,7 +588,7 @@ Request access to these models in Amazon Bedrock before deployment:
 - Amazon SQS
 - Amazon DynamoDB
 - Amazon CloudWatch
-- AWS AppSync
+- Amazon API Gateway (UI ⇄ backend REST API; optionally the UI's S3-proxy host)
 - Amazon Cognito
 - Amazon CloudFront
 - Amazon EventBridge
@@ -640,7 +640,9 @@ that domain:
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |
 | `.claude/skills/pr-review.md` | Reviewing an external GitHub PR or GitLab MR at a URL (e.g. `review <url>`) |
+| `.claude/skills/repo-quality-review.md` | Holistic **whole-repository** quality review, re-runnable as periodic QA ("review the whole repo", "how healthy is this codebase?") — ten dimensions fanned out one subagent each, the offline measurement commands that produce the baseline numbers, and the two recurring defect classes (a control that exists but is never consulted; a fix applied to the instance and not the class). Read-only by construction; needs the Agent tool authorized explicitly |
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |
+| `.claude/skills/sync-pii-anonymizer.md` | Re-syncing the **vendored** copy of `awslabs/pii-anonymizer` at `feature-platform/pii-anonymizer/hook/vendor/` after upstream fixes a bug or adds a feature — diff against the commit pinned in `PROVENANCE.md`, re-copy only the documented document closure via `resync.sh` (never audio, handlers, infra or observability), chase newly-added intra-project imports that grow the closure, then verify nothing excluded leaked in |
 | `.claude/skills/create-hf-dataset-pr.md` | Contributing a data/label correction to an external HuggingFace dataset via a community PR (parquet key-order gotcha, verification, review artifacts) |
 | `.claude/skills/testing-qa.md` | Writing tests, pytest patterns, moto, conftest setup |
 | `.claude/skills/release-validation.md` | **Validating a published release end to end in one request** ("validate the 0.6.8 release") — every live tier (security snapshot, deploy variants, `--headless`/`--govcloud` transforms, in-place upgrade, release benchmark A/B) plus the offline battery; writes `docs/release-validation/v<X>.md`, `security/test-results/<X>/` and the benchmark audit, and opens the two PRs. The umbrella over the per-tier skills below |

@@ -179,11 +179,25 @@ Filename map (`.cline` → `.claude`): `backend.md`→`backend-lambda.md`,
 `pr-review.md`→`pr-review.md`, `changelog.md`→`prepare-changelog.md`,
 `release.md`→`cut-release-changelog.md`, `srt.md`→`srt-security-scan.md`,
 `dependabot.md`→`dependabot-prs.md`. Newer skills keep the same name on both
-sides (e.g. `release-validation.md`, `curate-security-results.md`, `ux-test.md`).
+sides (e.g. `release-validation.md`, `curate-security-results.md`, `ux-test.md`,
+`repo-quality-review.md`).
 
 When **adding** a new skill: create it in `.claude/skills/`, then add a symlink
 from the desired `.cline/skills/` name to it
 (`ln -s ../../.claude/skills/<name>.md .cline/skills/<name>.md`).
+
+**Deliberately Claude-only skills are allowed, but the reason has to be written
+down.** Some skills drive live AWS stacks and are not something Cline is set up to
+run, so they have no `.cline` entry on purpose. An unexplained absence is
+indistinguishable from an oversight, so `scripts/tests/test_repo_quality_review_skill.py`
+requires every `.claude/skills/*.md` to either have a `.cline` symlink or a row in that
+file's `CLINE_EXEMPT` table giving the reason in one line. Add the row, not the symlink,
+when the skill genuinely should not be visible to Cline — and never add a symlink merely
+to make the test pass, because whether Cline should see a skill is a judgement about
+that assistant's capabilities. The converse also holds: do not keep a row whose stated
+reason does not actually apply to the skill. If the exemption you are relying on is
+"drives a live stack" and the skill does not, that is not a reason, and the choice is a
+different reason or a symlink.
 
 > **Portability caveat:** Git stores these as symlinks (mode 120000). On clones
 > with `core.symlinks=false` (notably some Windows setups) they materialize as

@@ -12,17 +12,38 @@ import botocore.exceptions
 import pytest
 
 from idp_common.utils.transient_errors import (
+    DETERMINISTIC_MESSAGE_MARKERS,
     TRANSIENT_EXCEPTION_TYPES,
     TRANSIENT_MESSAGE_MARKERS,
     TransientError,
+    is_model_tool_use_sequence_error,
     is_transient_error,
     raise_if_transient,
+)
+
+#: The exact wire text botocore builds for the #895 failure.
+_TOOL_USE_MESSAGE = (
+    "Model produced invalid sequence as part of ToolUse. Please refer to the "
+    "model tool use troubleshooting guide."
 )
 
 
 def _client_error(code: str, message: str = "x"):
     return botocore.exceptions.ClientError(
         {"Error": {"Code": code, "Message": message}}, "Converse"
+    )
+
+
+def _stream_error(message: str):
+    """An ``EventStreamError`` shaped like the one in the #895 logs.
+
+    ``EventStreamError`` subclasses ``ClientError``, so its code is what rule 1
+    would normally judge it by — and ``modelStreamErrorException`` IS a transient
+    code.
+    """
+    return botocore.exceptions.EventStreamError(
+        {"Error": {"Code": "modelStreamErrorException", "Message": message}},
+        "ConverseStream",
     )
 
 
@@ -242,6 +263,84 @@ class TestProducersInThisCodebase:
             is_transient_error(_client_error("ProvisionedThroughputExceededException"))
             is True
         )
+
+
+class TestInvalidToolUseSequenceIsNotTransient:
+    """#895: ``modelStreamErrorException`` stays transient as a CODE; only the
+    "Model produced invalid sequence as part of ToolUse" OUTCOME is deterministic."""
+
+    def test_the_tool_use_outcome_is_not_transient(self):
+        assert is_transient_error(_stream_error(_TOOL_USE_MESSAGE)) is False
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Your request has been throttled mid-stream",
+            "The connection to the model was closed unexpectedly",
+            "internal server error while streaming",
+            "x",
+        ],
+    )
+    def test_a_stream_error_with_any_other_message_is_still_transient(self, message):
+        """THE regression guard: ``ConverseStream`` genuinely does break mid-stream
+        for transport reasons, and those breaks must keep being retried. Narrowing
+        the classification by removing ``modelstreamerrorexception`` from
+        ``TRANSIENT_ERROR_NAMES`` would have failed this test."""
+        assert is_transient_error(_stream_error(message)) is True
+
+    def test_the_same_outcome_through_the_wrapped_chain_from_the_issue(self):
+        """The shard runtime sees the stream error through Strands' agent loop and
+        its own ``raise ... from`` wrappers. The verdict must survive the chain."""
+        stream = _stream_error(_TOOL_USE_MESSAGE)
+        try:
+            try:
+                try:
+                    raise stream
+                except Exception as inner:
+                    raise type("EventLoopException", (Exception,), {})(
+                        "agent loop failed"
+                    ) from inner
+            except Exception as loop:
+                raise RuntimeError("shard runtime shard section 1") from loop
+        except Exception as outer:
+            assert is_transient_error(outer) is False
+            assert is_model_tool_use_sequence_error(outer) is True
+
+    def test_raise_if_transient_returns_silently_so_the_bare_raise_stands(self):
+        """``raise_if_transient`` must NOT surface this as ``TransientError`` — that
+        name is what ``workflow.asl.json`` retries up to eight times per shard task
+        (``MaxAttempts: 8`` on the ``ShardExtractionStep`` retrier)."""
+        raise_if_transient(_stream_error(_TOOL_USE_MESSAGE), where="shard runtime")
+
+    def test_the_verdict_beats_the_code_the_type_and_the_class_name(self):
+        """Rule 4 is evaluated before rules 1-3, so none of the three lookups that
+        would say "transient" for this node can win."""
+        assert (
+            is_transient_error(
+                type("ModelStreamErrorException", (Exception,), {})(_TOOL_USE_MESSAGE)
+            )
+            is False
+        )
+        # A TYPE-based transient (rule 3's isinstance list) carrying the text.
+        assert (
+            is_transient_error(
+                botocore.exceptions.ResponseStreamingError(error=_TOOL_USE_MESSAGE)
+            )
+            is False
+        )
+        # Transport text does not rescue it either: rule 4 runs first.
+        assert (
+            is_transient_error(_stream_error(f"{_TOOL_USE_MESSAGE} Read timed out."))
+            is False
+        )
+
+    def test_the_predicate_is_false_for_unrelated_failures(self):
+        assert is_model_tool_use_sequence_error(ValueError("bad schema")) is False
+        assert is_model_tool_use_sequence_error(_stream_error("x")) is False
+
+    @pytest.mark.parametrize("marker", sorted(DETERMINISTIC_MESSAGE_MARKERS))
+    def test_each_deterministic_marker_overrides_a_transient_code(self, marker):
+        assert is_transient_error(_stream_error(f"zzz {marker.upper()} zzz")) is False
 
 
 class TestEachRuleInIsolation:

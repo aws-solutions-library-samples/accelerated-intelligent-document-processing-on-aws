@@ -6,7 +6,7 @@ deploy-vpc-endpoints.py
 
 Cross-platform script (Windows, macOS, Linux) that:
   1. Reads LambdaSubnetIds and LambdaVpcSecurityGroupId from the IDP stack
-  2. Checks which of the 12 required VPC Interface Endpoints already exist
+  2. Checks which of the required VPC Interface Endpoints already exist
   3. Deploys only the MISSING ones via CloudFormation
   4. Waits for the deployment to complete and reports the result
 
@@ -31,17 +31,27 @@ import time
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
-# The 17 Interface endpoint services for IDP private deployment
-# Maps CFN parameter name → AWS service suffix
+# The 16 Interface endpoint services for an IDP private deployment
+# (ApiGatewayVisibility=PRIVATE) — 14 required by the application plus
+# ssmmessages/ec2messages, which are only needed for an SSM Session Manager
+# bastion. Maps CFN parameter name → AWS service suffix.
 #
 # NOTE: Cognito endpoints (cognito-idp, cognito-identity) are intentionally
 # NOT included. The IDP stack creates a Cognito domain (Hosted UI / Managed Login)
 # which is incompatible with PrivateLink — AWS blocks all cognito-idp VPC endpoint
 # calls when a domain is configured. Cognito auth traffic must flow through the
 # NAT gateway to the public Cognito service instead.
+#
+# NOTE: appsync-api / appsync are deliberately absent. AWS AppSync has been
+# removed from the solution, so neither endpoint is required. vpc-endpoints.yaml
+# still declares CreateAppSyncApiEndpoint / CreateAppSyncControlEndpoint so an
+# older parameter file keeps deploying, but both default to "false"; listing them
+# here would report them as "missing — will create" when this script never
+# creates them.
 REQUIRED_ENDPOINTS = {
-    "CreateAppSyncApiEndpoint":      "appsync-api",
-    "CreateAppSyncControlEndpoint":  "appsync",
+    # The private API Gateway REST API the Web UI calls — and the UI itself when
+    # WebUIHosting=APIGateway. A PRIVATE deployment is unreachable without it.
+    "CreateExecuteApiEndpoint":      "execute-api",
     "CreateSqsEndpoint":             "sqs",
     "CreateStatesEndpoint":          "states",
     "CreateKmsEndpoint":             "kms",
@@ -187,19 +197,19 @@ def main():
         lambda_sg = get_stack_output(cf, args.stack_name, "LambdaVpcSecurityGroupId")
     except ClientError as e:
         print(f"❌ Could not read stack '{args.stack_name}': {e}")
-        print("   Make sure the stack is CREATE_COMPLETE and AppSyncVisibility=PRIVATE.")
+        print("   Make sure the stack is CREATE_COMPLETE and ApiGatewayVisibility=PRIVATE.")
         sys.exit(1)
 
     if not lambda_sg:
         print(f"❌ Output 'LambdaVpcSecurityGroupId' not found in stack '{args.stack_name}'.")
-        print("   Make sure AppSyncVisibility=PRIVATE was set when the stack was created.")
+        print("   Make sure ApiGatewayVisibility=PRIVATE was set when the stack was created.")
         sys.exit(1)
     print(f"   Lambda SG: {lambda_sg}")
 
     # ── Auto-lookup VPC CIDR ──────────────────────────────────────────────
     # The endpoint security group must also allow inbound HTTPS from the VPC
     # CIDR so that browsers running inside the VPC (WorkSpaces, VPN clients,
-    # bastions) can reach the AppSync Interface Endpoint directly.
+    # bastions) can reach the execute-api Interface Endpoint directly.
     print(f"🔍 Looking up VPC CIDR for {args.vpc_id}...")
     try:
         vpc_resp = ec2.describe_vpcs(VpcIds=[args.vpc_id])
