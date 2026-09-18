@@ -301,6 +301,23 @@ extraction:
 > the table path. Set `lazy_images: false` for **image-dependent corpora** where the
 > model must see page layout/marks even when a table is present.
 
+> **The agent is told what was already parsed.** The pre-flight parse happens
+> before the agent runs, so its instructions gain a `PRE-PARSED TABLE DATA
+> AVAILABLE` block: how many tables were found, how many rows in total, the column
+> list, what the `--- PAGE N ---` markers mean, and the `parse_table` →
+> `map_table_to_schema` → `finalize_table_extraction` sequence — ending with the
+> point that `finalize` reads the mapped rows from the agent's own state, so it
+> never needs to write the rows out itself. That last part is what keeps output
+> tokens (and cost) down: an agent that does not know the rows exist re-emits them
+> one by one. Both the single-pass and the **sharded** path send this block; on the
+> sharded path each shard agent also gets its own concrete page range, plus a note
+> that the table and row totals in the block are for the whole section rather than
+> for its own pages — so parsing fewer rows than the total is the correct outcome
+> for a shard, not an incomplete one. Sharding is
+> the default for any multi-page table document, and until
+> [issue #900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)
+> its agents were the only ones not receiving the block.
+
 > **Requires Markdown tables in the OCR output.** Table parsing only engages when
 > OCR emits Markdown pipe-tables — i.e. **Amazon Textract with the `TABLES`
 > feature enabled** (keep `LAYOUT` + `TABLES` in `ocr.features`), or another OCR
