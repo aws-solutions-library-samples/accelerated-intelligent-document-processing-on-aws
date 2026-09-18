@@ -671,13 +671,29 @@ The same loader also applies Bedrock's **many-image dimension cap** (#994): a
 request carrying more than 20 image blocks caps every image in it at 2,000 px per
 side, so `_load_document_images` counts the pages it is actually about to attach
 (page ids not present in `document.pages` are skipped and do not count) and passes
-`max_dimension=image.max_dimension_for_image_count(count)` into the same fit. The
-count is **doubled when `agentic.enabled`**: Strands re-sends the attached page
-images on every turn of the agent loop and a `view_image` tool result adds a second
-copy of a page to the same request, so a section at or just under 20 pages can
-cross the threshold mid-loop. That is a heuristic, deliberately pessimistic —
-clamping to 2,000 px costs ~15% of the image tokens, a rejected request costs the
-section. `BedrockClient.invoke_model` sweeps every request with
+`max_dimension=image.max_dimension_for_image_count(count)` into the same fit.
+
+The count it passes is the count **one request** will carry, not the section's page
+count, because the two differ on the agentic path. When `agentic.enabled`, the
+section's pages are bounded twice before they reach a request — by
+`max_pages_per_shard` (when `max_concurrent_batches > 1`) and by
+`max_images_per_agent` — and the resulting per-request figure is then **doubled**,
+because Strands re-sends the attached page images on every turn and a `view_image`
+tool result adds a further copy of a page to the same request. Counting the whole
+section instead would downscale all 30 pages of a section sent as six 5-image
+shards, for a limit no request comes near. The resulting thresholds:
+
+| Mode | Clamps at |
+|---|---|
+| Simple | 21+ pages in the section |
+| Advanced, `max_concurrent_batches: 1` (default) | 11+ pages (`min(pages, max_images_per_agent=20) * 2 > 20`) |
+| Advanced, sharded | 11+ pages per shard — never at the default `max_pages_per_shard: 5` |
+
+The doubling is a heuristic and deliberately pessimistic — clamping to 2,000 px
+costs ~15% of the image tokens, a rejected request costs the section — but it covers
+only **one** extra copy per page. An agent that calls `view_image` enough times to
+push a 5-image shard past 20 blocks is still a live gap, recorded in
+`image/README.md`. `BedrockClient.invoke_model` sweeps every request with
 `image.fit_images_in_request` as the authoritative backstop (it is the only place
 that sees the whole request, tool results included); the loader exists so the
 reduction is auditable per page and so the agentic path, which builds its own

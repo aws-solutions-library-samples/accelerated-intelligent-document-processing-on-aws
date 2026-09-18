@@ -734,16 +734,31 @@ carrying more than 20 image blocks caps every image at **2,000 px** per side, so
 section over 20 pages has its pages downscaled to that before the request goes out
 ([#994](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/994)).
 Each reduced page appears in `metadata.image_downscale` with a `reason` naming the
-pixel limit rather than the byte limit. Advanced (agentic) extraction counts each
-page twice when deciding whether the request will cross 20 blocks, because the
-agent re-sends attached pages every turn and its `view_image` tool can add a second
-copy of a page to the same request. See
-[A request with more than 20 page images](./configuration.md#a-request-with-more-than-20-page-images-caps-every-image-at-2000-px).
+pixel limit rather than the byte limit.
 
-If Bedrock does reject a request over its images, extraction now fails with
+Advanced (agentic) extraction reaches the limit at a **lower page count**: the agent
+re-sends its attached pages on every turn and its `view_image` tool can add a further
+copy of a page to the same request, so the estimate doubles the number of images one
+agent invocation will carry. With the default `max_concurrent_batches: 1` that puts
+the threshold at **11 pages** rather than 21. With sharding on
+(`max_concurrent_batches > 1`) the figure is per shard, so at the default
+`max_pages_per_shard: 5` the clamp does not apply at all. Simple extraction clamps at
+21 pages. Holistic classification, which sends a whole packet in one request, is
+affected on the same >20-image rule.
+
+Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5 and
+Sonnet 5 it is about 20% below the resolution they would otherwise use, on older
+Claude models it costs nothing, and it has not been measured against extraction
+accuracy either way. See
+[A request with more than 20 page images](./configuration.md#a-request-with-more-than-20-page-images-caps-every-image-at-2000-px)
+for the full trade-off and how to avoid the clamp.
+
+If Bedrock does reject a request over its images, extraction fails with
 `ExtractionImageRejected` and a message naming the image count and the largest
-dimension in the request, instead of `ExtractionInputTooLarge` and advice about
-shard budgets that cannot address it.
+dimension, with the remedy that applies (`extraction.image.target_width` /
+`target_height`) rather than shard-budget advice that cannot address it — and it
+fails on the first attempt instead of retrying a request that will be rejected
+identically every time.
 
 ### Schema validation (`extraction.validation`)
 

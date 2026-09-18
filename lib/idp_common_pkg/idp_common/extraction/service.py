@@ -1581,16 +1581,33 @@ class ExtractionService:
         # therefore depends on how many pages this section is about to attach, so it
         # is decided here, once, from the page count rather than per image.
         #
-        # Agentic (Strands) extraction doubles the effective count: the attached page
-        # images are re-sent on every turn of the agent loop, and a ``view_image``
-        # tool result adds a second copy of a page to the same request. A section at
-        # or just under 20 pages can therefore cross the threshold mid-loop, so the
-        # count is doubled when agentic is enabled — pessimistic by design, since
-        # clamping to 2,000px costs far less than a hard request rejection.
+        # What matters is the count ONE REQUEST will carry, not the section's page
+        # count, and on the agentic (Strands) path those differ: the section's pages
+        # are sliced into shards and capped again per agent invocation, so a long
+        # section can be sent as several small requests. Counting the section would
+        # clamp pages that no request ever over-fills. The per-request count is
+        # therefore derived from the two caps that bound it, and only then doubled,
+        # because the agent re-sends its attached images on every turn and a
+        # ``view_image`` tool result adds a further copy of a page to the same
+        # request. Doubling is pessimistic on purpose — clamping to 2,000px costs
+        # far less than a hard request rejection — and it is what makes the
+        # threshold land at 11 attached images rather than 21 on that path. See
+        # extraction/README.md for the resulting thresholds per mode.
         pages_to_attach = sum(1 for pid in sorted_page_ids if pid in document.pages)
-        effective_image_count = pages_to_attach
-        if self.config.extraction.agentic.enabled:
-            effective_image_count *= 2
+        agentic = self.config.extraction.agentic
+        if agentic.enabled:
+            per_request_images = pages_to_attach
+            if agentic.max_concurrent_batches > 1 and agentic.max_pages_per_shard > 0:
+                per_request_images = min(
+                    per_request_images, agentic.max_pages_per_shard
+                )
+            if agentic.max_images_per_agent > 0:
+                per_request_images = min(
+                    per_request_images, agentic.max_images_per_agent
+                )
+            effective_image_count = per_request_images * 2
+        else:
+            effective_image_count = pages_to_attach
         max_dimension = image.max_dimension_for_image_count(effective_image_count)
 
         page_images = []
@@ -2242,15 +2259,18 @@ class ExtractionService:
             or est.get("max_image_dimension", 0)
             > image.BEDROCK_MANY_IMAGE_MAX_DIMENSION
         ):
-            # The request's shape is also capable of a per-image REJECTION, which
-            # Bedrock words similarly (#994). Say so, so the reader does not spend
-            # the next hour lowering a page budget that is not the binding limit.
+            # This request's SHAPE can also fail on the images themselves, and
+            # Bedrock reports a payload that is simply too large with the same
+            # "Input is too long" wording it uses for a context overflow (#994).
+            # Say so, so the reader does not spend the next hour lowering a page
+            # budget that is not the binding limit.
             size += (
                 f" — note this request carried {est.get('images', 0)} image(s), "
                 f"largest {est.get('max_image_dimension', 0)}px per side; Bedrock "
                 f"also caps images at {image.BEDROCK_MANY_IMAGE_MAX_DIMENSION}px "
                 f"per side once a request carries more than "
-                f"{image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD}"
+                f"{image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD} images, and caps the "
+                f"total request payload independently of the token count."
             )
         if is_agentic and "remedies:" in str(exc).lower():
             advice = ""  # agentic_idp already translated it with its own remedies
@@ -2277,12 +2297,20 @@ class ExtractionService:
         context-window overflow.
         """
         est = getattr(self, "_last_simple_input_estimate", None) or {}
-        images = est.get("images") or len(self._page_images or [])
         largest = est.get("max_image_dimension") or 0
-        shape = f" (request carried {images} image(s)"
-        if largest:
-            shape += f", largest {largest}px per side"
-        shape += ")"
+        if est.get("images"):
+            # Simple mode: the pre-flight measured the request that actually went
+            # out, so the count and the largest dimension are that request's.
+            shape = f" (request carried {est['images']} image(s)"
+            if largest:
+                shape += f", largest {largest}px per side"
+            shape += ")"
+        else:
+            # Advanced/shard mode has no pre-flight estimate, and a shard carries
+            # only its own page range — so the only number available here is the
+            # SECTION's page count. Label it as such rather than claiming it is
+            # what the failing request held.
+            shape = f" (section has {len(self._page_images or [])} page image(s))"
         return (
             f"Error processing section {section_id}: {exc}{shape}. Bedrock rejected "
             "the IMAGES in this request, not its token count: images are capped at "
@@ -6779,9 +6807,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
 
             if is_image_request_rejection(e):
-                # Checked FIRST: Bedrock words an image dimension/byte rejection
-                # closely enough to a context overflow that the overflow matcher
-                # would claim it and hand back advice that cannot work (#994).
+                # Checked FIRST so the image case can never be absorbed by the
+                # overflow branch as Bedrock's wording evolves: the two families
+                # share vocabulary ("exceeds", "too large"), and overflow advice
+                # — fewer pages per shard, switch extraction mode — cannot fix an
+                # image that is too many pixels per side (#994). Measured against
+                # today's wording the overflow matcher does NOT claim
+                # "image exceed max allowed size for many-image requests", so this
+                # branch is what gives that error an explanation at all rather
+                # than a correction of a misrouting.
                 error_msg = self._explain_image_rejection(e, section_id)
                 logger.error(error_msg)
                 document.errors.append(error_msg)

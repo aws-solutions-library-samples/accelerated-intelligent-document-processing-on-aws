@@ -706,9 +706,17 @@ class TestShardWrapperAndMatcher:
         ],
     )
     def test_an_image_rejection_is_not_classified_as_an_overflow(self, message):
-        """The wording overlaps with the context-window wording enough that the
-        overflow matcher used to claim these, so the user was told to shard a
-        request whose problem was pixel dimensions (#994)."""
+        """These get their own class and their own remedy. The two families share
+        vocabulary ("exceeds", "too large"), and overflow advice — fewer pages per
+        shard, switch extraction mode — cannot fix an oversized image, so the
+        image branch is matched separately and consulted first (#994).
+
+        Note what this does NOT claim: measured against the wording as it stands,
+        ``is_input_token_overflow`` does not match these strings either, so the
+        image matcher is what gives them an explanation, not a correction of a
+        misrouting. See
+        ``test_the_overflow_matcher_never_claimed_the_pixel_wording``.
+        """
         from botocore.exceptions import ClientError
 
         exc = ClientError(
@@ -716,6 +724,64 @@ class TestShardWrapperAndMatcher:
         )
         assert is_image_request_rejection(exc)
         assert not is_input_token_overflow(exc)
+
+    def test_the_overflow_matcher_never_claimed_the_pixel_wording(self):
+        """Pins the honest version of the #994 story.
+
+        The overflow matcher requires input/context/prompt vocabulary, which
+        Bedrock's many-image pixel rejection does not carry — so that message was
+        never *misclassified*; it simply had no explanation. What WAS misdiagnosed
+        is the other half: an oversized request PAYLOAD comes back as "Input is
+        too long for requested model", a genuine overflow match, and the old
+        uncapped token estimate then over-stated the page images 2.4x, so the
+        message compared an inflated estimate against a window the request had not
+        actually exceeded. Keeping this assertion stops the narrative drifting
+        back to the wrong one.
+        """
+        pixel_rejection = RuntimeError(
+            "image exceed max allowed size for many-image requests: 2000 pixels"
+        )
+        assert is_input_token_overflow(pixel_rejection) is False
+        payload_rejection = RuntimeError("Input is too long for requested model.")
+        assert is_input_token_overflow(payload_rejection) is True
+        assert is_image_request_rejection(payload_rejection) is False
+
+    def test_a_non_validation_error_code_settles_it_before_the_markers(self):
+        """The image verdict is deterministic — it short-circuits the retry ladder
+        and raises a non-retryable error — so a transient fault whose message
+        happens to use one of the looser markers ("image size", "invalid image")
+        must not be converted into a permanent failure."""
+        from botocore.exceptions import ClientError
+
+        throttle = ClientError(
+            {
+                "Error": {
+                    "Code": "ThrottlingException",
+                    "Message": "Rate exceeded while validating image size",
+                }
+            },
+            "Converse",
+        )
+        assert is_image_request_rejection(throttle) is False
+
+    def test_the_many_image_note_is_a_complete_sentence(self):
+        """The note is appended before the remedy advice, so an unterminated
+        clause runs straight into the next sentence and the reader sees
+        "...more than 20 Simple extraction sends...". It is the fix's primary
+        user-facing output in the scenario #994 reports."""
+        svc = _svc()
+        svc._last_simple_input_estimate = {
+            "estimated_input_tokens": 330_126,
+            "max_input_tokens": 1_000_000,
+            "pages": 29,
+            "images": 29,
+            "max_image_dimension": 3301,
+        }
+        msg = svc._explain_input_overflow(
+            ValueError("Input is too long for requested model."), "s1", is_agentic=False
+        )
+        note_end = msg.index(" Simple extraction sends")
+        assert msg[note_end - 1] == "."
 
     def test_a_genuine_overflow_is_not_claimed_by_the_image_matcher(self):
         assert not is_image_request_rejection(

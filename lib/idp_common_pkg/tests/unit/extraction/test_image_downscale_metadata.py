@@ -173,28 +173,58 @@ def test_missing_pages_do_not_count_toward_the_threshold(service):
     assert all(_page_dimensions(img) == (1585, 2048) for img in images)
 
 
-def test_agentic_mode_halves_the_effective_page_threshold():
-    """Strands re-sends the attached pages each turn and ``view_image`` adds a
-    second copy of a page to the same request, so an agentic section crosses the
-    20-block threshold at ~11 pages, not 21. Clamping early costs ~15% of the
-    image tokens; not clamping costs the whole request."""
-    agentic = ExtractionService(
+def _agentic_service(**agentic_overrides) -> ExtractionService:
+    return ExtractionService(
         region="us-west-2",
         config={
             "classes": [],
             "extraction": {
                 "model": "us.anthropic.claude-sonnet-4-6",
-                "agentic": {"enabled": True},
+                "agentic": {"enabled": True, **agentic_overrides},
             },
         },
     )
-    doc = _doc_with_pages(11)
-    with patch("idp_common.image.prepare_image", return_value=_wide_png()):
-        images = agentic._load_document_images(doc, [str(i) for i in range(1, 12)])
 
+
+def _load(service: ExtractionService, pages: int) -> list[bytes]:
+    doc = _doc_with_pages(pages)
+    with patch("idp_common.image.prepare_image", return_value=_wide_png()):
+        return service._load_document_images(doc, [str(i) for i in range(1, pages + 1)])
+
+
+def test_agentic_mode_halves_the_effective_page_threshold():
+    """Strands re-sends the attached pages each turn and ``view_image`` adds a
+    second copy of a page to the same request, so a single agent invocation
+    carrying 11 pages can present 22 image blocks. On the default agentic path
+    (``max_concurrent_batches`` = 1, so no sharding) the whole section goes to one
+    agent, and the threshold therefore lands at 11 pages rather than 21. Clamping
+    early costs ~15% of the image tokens; not clamping costs the whole request."""
+    images = _load(_agentic_service(), 11)
     assert all(
         max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
     )
+
+
+def test_agentic_mode_counts_what_one_request_carries_not_the_whole_section():
+    """The count that matters is per REQUEST. With sharding on, the section's pages
+    are split into ``max_pages_per_shard``-page requests, so a 30-page section is
+    sent as six 5-image requests — 10 blocks each after doubling, nowhere near the
+    threshold. Counting the section instead would downscale all 30 pages for a
+    limit no request comes close to."""
+    images = _load(
+        _agentic_service(max_concurrent_batches=4, max_pages_per_shard=5), 30
+    )
+    assert len(images) == 30
+    assert all(_page_dimensions(img) == (1585, 2048) for img in images)
+
+
+def test_the_per_agent_image_cap_also_bounds_the_count():
+    """``max_images_per_agent`` caps how many pages are attached to one
+    invocation, so a section far above the threshold still only ever presents that
+    many attached blocks. At a cap of 4 (8 after doubling) nothing is clamped."""
+    images = _load(_agentic_service(max_images_per_agent=4), 40)
+    assert len(images) == 40
+    assert all(_page_dimensions(img) == (1585, 2048) for img in images)
 
 
 def test_reset_context_clears_the_record_for_the_next_section(service, document):

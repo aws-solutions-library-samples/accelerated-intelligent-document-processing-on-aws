@@ -122,3 +122,59 @@ class TestInvokeModelAppliesTheManyImageCap:
         )
         assert client._client.converse.called
         assert all(_dimensions(b) == OVERSIZE for b in _sent_images(client))
+
+    def test_the_callers_own_content_list_is_not_rewritten(self, client):
+        """When no ``<<CACHEPOINT>>`` tag is present ``invoke_model`` puts the
+        caller's OWN list into ``messages``, so fitting in place would permanently
+        downscale whatever the caller holds — a cached few-shot example image, or a
+        page-image list a later pass reuses where the tighter cap does not apply.
+        The sweep works on a copy of the request spine instead."""
+        content = _content(21)
+        originals = [b["image"]["source"]["bytes"] for b in content if "image" in b]
+        client.invoke_model(
+            model_id="us.anthropic.claude-sonnet-5",
+            system_prompt="sys",
+            content=content,
+        )
+        assert [b["image"]["source"]["bytes"] for b in content if "image" in b] == (
+            originals
+        )
+        assert all(
+            _dimensions(b) == OVERSIZE
+            for b in (c["image"] for c in content if "image" in c)
+        )
+        # ...and the request that actually went out IS downscaled.
+        assert all(
+            max(_dimensions(b)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION
+            for b in _sent_images(client)
+        )
+
+    def test_a_request_under_the_threshold_copies_nothing(self, client):
+        """The copy is only worth paying for when the cap binds, so the count is
+        taken first — and at or under the threshold the caller's own objects must
+        reach ``converse`` unchanged, not a duplicate of them."""
+        content = _content(20)
+        client.invoke_model(
+            model_id="us.anthropic.claude-sonnet-5",
+            system_prompt="sys",
+            content=content,
+        )
+        sent = client._client.converse.call_args.kwargs["messages"][0]["content"]
+        assert sent is content
+
+    def test_a_non_claude_model_is_clamped_too(self, client):
+        """Deliberate, and the conservative direction. The 2,000 px many-image cap
+        is measured on Claude; whether Nova / Grok / Astra enforce one is not
+        established either way. 2,000 px is legal on every family, so clamping
+        cannot cause a rejection that would not otherwise happen, whereas NOT
+        clamping risks a hard failure on a family that does enforce it. The cost is
+        some resolution on a >20-image non-Claude request."""
+        client.invoke_model(
+            model_id="us.amazon.nova-pro-v1:0",
+            system_prompt="sys",
+            content=_content(21),
+        )
+        assert all(
+            max(_dimensions(b)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION
+            for b in _sent_images(client)
+        )

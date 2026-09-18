@@ -158,12 +158,21 @@ def _clamped_or_log(
 
 
 # Bedrock rejects a request whose IMAGES are wrong — too many pixels per side, too
-# many bytes — with a ValidationException too, and the wording overlaps with the
-# context-window wording enough to be misclassified ("image exceeds ... maximum").
-# Issue #994 is exactly that: a many-image extraction request rejected on the
-# 2,000px-per-side cap that applies once a request carries more than 20 images,
-# reported to the user as a context-window overflow, which sent them tuning page
-# budgets that could not fix it. Classify the image case first and separately.
+# many bytes — with a ValidationException, the same code it uses for a context
+# overflow, and with overlapping vocabulary ("exceeds", "too large"). The remedies
+# are opposite: an oversized image is fixed only by rendering pages smaller, never
+# by sending fewer pages or switching extraction mode. So the image case is matched
+# separately and checked FIRST, both to give it its own explanation and so it can
+# never be absorbed by the overflow branch as the wording changes (#994).
+#
+# For the record, measured against today's wording: is_input_token_overflow does
+# NOT claim "image exceed max allowed size for many-image requests: 2000 pixels" —
+# it requires "input"/"context"/"prompt" vocabulary that string does not carry. The
+# misdiagnosis reported in #994 came from the OTHER direction: Bedrock reports an
+# oversized request PAYLOAD as "Input is too long for requested model", which is a
+# genuine overflow match, and the token estimate then in use over-stated the page
+# images 2.4x, so the message compared an inflated estimate against a window it
+# had not actually exceeded. That half is fixed in bedrock.model_utils, not here.
 _IMAGE_REJECTION_MARKERS = (
     "many-image request",
     "image exceeds",
@@ -183,7 +192,22 @@ def is_image_request_rejection(error: BaseException) -> bool:
     Distinct from :func:`is_input_token_overflow`: no amount of shrinking the
     text or reducing pages per shard fixes it — the images themselves must be
     downscaled (see ``idp_common.image.fit_images_in_request``).
+
+    Judged by error code first, exactly as the overflow matcher is, because the
+    verdict here is DETERMINISTIC — it turns into a non-retryable
+    ``ExtractionImageRejected`` and short-circuits the retry ladder. Two of the
+    markers ("image size", "invalid image") are generic enough to appear in some
+    unrelated message, and a transient fault that happened to use one of those
+    phrases must not be converted into a permanent failure. An image rejection is
+    always a ``ValidationException``, so a definite code that is anything else
+    settles it.
     """
+    code = ""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        code = str((response.get("Error") or {}).get("Code") or "")
+    if code and code != "ValidationException":
+        return False
     msg = str(error).lower()
     return any(marker in msg for marker in _IMAGE_REJECTION_MARKERS)
 
@@ -351,6 +375,18 @@ def async_exponential_backoff_retry[T, **P](
                     total_slept += sleep_time
                     delay = min(delay * exponential_base, max_delay)
                 except Exception as e:
+                    # An image rejection is deterministic: the same request will be
+                    # rejected identically every time, so retrying it only spends
+                    # the backoff budget. The ClientError branch above already
+                    # raises a raw ValidationException, but Strands re-wraps Bedrock
+                    # errors, and this branch judges retryability by substring —
+                    # "ValidationException" is in DEFAULT_RETRYABLE_ERRORS, so a
+                    # wrapped image rejection would otherwise be retried up to
+                    # max_retries (50 on the agentic extraction path) before the
+                    # caller ever got to classify it (#994).
+                    if is_image_request_rejection(e):
+                        log_bedrock_invocation_error(e, attempt + 1)
+                        raise
                     # Check if this is a retryable exception type (e.g., Strands ModelThrottledException)
                     is_retryable_type = retryable_exception_types and isinstance(
                         e, retryable_exception_types

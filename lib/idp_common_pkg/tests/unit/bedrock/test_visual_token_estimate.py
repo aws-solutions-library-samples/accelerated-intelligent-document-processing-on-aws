@@ -94,3 +94,50 @@ class TestEstimateImageTokens:
     @pytest.mark.parametrize("width,height", [(0, 100), (100, 0), (-1, -1)])
     def test_degenerate_dimensions_never_return_zero_or_negative(self, width, height):
         assert estimate_image_tokens(width, height, "us.anthropic.claude-sonnet-5") == 1
+
+
+class TestTheTwoModelSetsCannotSilentlyDiverge:
+    """``model_utils._HIGH_RES_MODEL_PATTERN`` and
+    ``client._CLAUDE_4_7_BASE_NAMES`` state DIFFERENT properties — "tokenizes
+    images on the high-resolution tier" and "rejects temperature/top_p/top_k" —
+    that happen to describe the same models today. Neither derives from the other,
+    because a future model could have one without the other.
+
+    That is fine only while something notices when they part company. The
+    allowlist's own comment invites a maintainer to add a new base name and says
+    no other code changes are required; without this test, such a name would
+    silently take the 1,568-token standard cap when it may well belong on the
+    4,784 one. A failure here is not necessarily a bug — it is a decision that has
+    to be made explicitly (#994).
+    """
+
+    def test_every_sampling_stripped_model_is_on_the_high_resolution_tier(self):
+        from idp_common.bedrock.client import _CLAUDE_4_7_BASE_NAMES
+
+        for base_name in sorted(_CLAUDE_4_7_BASE_NAMES):
+            assert visual_token_cap_for_model(f"us.{base_name}") == (
+                _HIGH_RES_VISUAL_TOKEN_CAP
+            ), (
+                f"{base_name} is in client._CLAUDE_4_7_BASE_NAMES but "
+                "model_utils._HIGH_RES_MODEL_PATTERN puts it on the standard "
+                "visual-token tier. Decide which is right and update the other."
+            )
+
+    def test_no_other_shipped_claude_model_claims_the_high_resolution_tier(self):
+        """The reverse direction: a model NOT in the allowlist must not be on the
+        high-res tier by accident of the regex matching too loosely."""
+        from idp_common.bedrock.client import _CLAUDE_4_7_BASE_NAMES
+
+        others = [
+            "anthropic.claude-sonnet-4-6",
+            "anthropic.claude-opus-4-6",
+            "anthropic.claude-opus-4-1",
+            "anthropic.claude-haiku-4-5",
+            "anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "anthropic.claude-3-7-sonnet-20250219-v1:0",
+        ]
+        for base_name in others:
+            assert base_name not in _CLAUDE_4_7_BASE_NAMES  # guards the fixture
+            assert visual_token_cap_for_model(f"us.{base_name}") == (
+                _STANDARD_VISUAL_TOKEN_CAP
+            ), f"{base_name} unexpectedly matched the high-resolution pattern"

@@ -439,6 +439,13 @@ _HIGH_RES_VISUAL_TOKEN_CAP = 4784
 _STANDARD_VISUAL_TOKEN_CAP = 1568
 # High resolution is "Claude 4.7 and later": Opus 4.7/4.8, Opus 5, Sonnet 5.
 # Sonnet 4.6, Haiku 4.5 and the 3.x family are standard tier.
+# Deliberately a separate statement of the model set from
+# client._CLAUDE_4_7_BASE_NAMES, not a derivation of it: "rejects sampling
+# parameters" and "tokenizes images on the high-resolution tier" are different
+# properties that coincide today. A parity test fails if the two ever disagree, so
+# a model added to one must be considered for the other rather than silently
+# inheriting a default (#994). The pattern is a substring search so it matches
+# region prefixes (``us.``), the ``:1m`` suffix and inference-profile ARNs alike.
 _HIGH_RES_MODEL_PATTERN = re.compile(r"claude-(opus-4-[78]|opus-5|sonnet-5)", re.I)
 # Non-Claude families tokenize images differently (Nova budgets by payload size,
 # not patches), so they keep the deliberately generous legacy figure: this

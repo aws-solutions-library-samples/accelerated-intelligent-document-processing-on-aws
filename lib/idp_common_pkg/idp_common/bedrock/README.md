@@ -156,6 +156,25 @@ rather than failing a request Bedrock might accept, and one aggregate `WARNING` 
 request replaces the per-image line. To avoid the re-encode entirely, set the
 stage's `image.target_width` / `target_height` to 2,000 or less.
 
+Three properties worth knowing about the call site:
+
+- **It does not mutate what the caller passed.** When the content carries no
+  `<<CACHEPOINT>>` tag, `processed_content is content` — the caller's own list — so
+  `_fit_request_images` counts the blocks first and, only when the cap actually
+  binds, works on a `deepcopy` of the request spine (`bytes` is atomic to
+  `deepcopy`, so the image payloads are shared, not duplicated). Without that, a
+  cached few-shot example image or a page-image list reused by a later pass would be
+  permanently downscaled by one oversized request.
+- **It runs once per `invoke_model`, not once per retry.** The sweep sits before
+  `_invoke_with_retry`, and re-running it would be a no-op anyway since the images
+  then fit.
+- **It applies to every model family, not only Claude.** The 2,000 px figure is
+  measured on Claude and is legal on all of them, so clamping cannot cause a
+  rejection that would not otherwise happen; not clamping risks a hard failure on a
+  family that turns out to enforce a similar cap. The cost is some resolution on a
+  >20-image Nova / Grok / Astra request. The `LambdaHook` path returns before the
+  sweep and is unaffected.
+
 ### How CachePoint Works
 
 When the `invoke_model` method processes your content:

@@ -23,6 +23,7 @@ from __future__ import annotations
 import functools
 import io
 import os
+from unittest import mock
 
 import pytest
 from PIL import Image
@@ -32,6 +33,7 @@ from idp_common.image import (
     BEDROCK_IMAGE_MAX_DIMENSION,
     BEDROCK_MANY_IMAGE_COUNT_THRESHOLD,
     BEDROCK_MANY_IMAGE_MAX_DIMENSION,
+    count_request_image_blocks,
     fit_images_in_request,
     max_dimension_for_image_count,
 )
@@ -236,3 +238,63 @@ class TestFitImagesInRequest:
     )
     def test_degenerate_inputs_are_no_ops(self, messages):
         assert fit_images_in_request(messages) == 0
+
+    def test_a_clamp_lands_exactly_on_the_cap(self):
+        """The fit loop's 5%-per-pass floor exists so a byte-bound fit cannot
+        stall, but the dimension cap is exact — resizing to precisely 2,000 px is
+        guaranteed to satisfy it. Letting the floor overshoot threw away ~2.7%
+        more resolution than required on a page only 48 px over, which became the
+        common case once this cap started binding on ordinary pages."""
+        blocks = [_image_block(OVERSIZE) for _ in range(21)]
+        assert fit_images_in_request(_messages(*blocks)) == 21
+        assert max(_dimensions(blocks[0])) == BEDROCK_MANY_IMAGE_MAX_DIMENSION
+
+    def test_a_format_failure_leaves_the_bytes_untouched(self):
+        """The new format must be resolved BEFORE the bytes are swapped in. If it
+        is resolved after, a failure there leaves the block carrying new bytes
+        under its old declared format — which Bedrock rejects outright — while the
+        handler logs that the image was left unchanged."""
+        blocks = [_image_block(OVERSIZE) for _ in range(21)]
+        originals = [b["image"]["source"]["bytes"] for b in blocks]
+
+        def boom(_data):
+            raise ValueError("unmappable format")
+
+        with mock.patch.object(image_mod, "bedrock_image_format", side_effect=boom):
+            assert fit_images_in_request(_messages(*blocks)) == 0
+        assert [b["image"]["source"]["bytes"] for b in blocks] == originals
+        assert all(b["image"]["format"] == "png" for b in blocks)
+
+
+class TestCountRequestImageBlocks:
+    """Split out of the sweep so a caller can decide whether the cap binds before
+    paying to copy the request (``BedrockClient._fit_request_images``)."""
+
+    def test_counts_images_and_documents_at_every_depth(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    _image_block(UNDERSIZE),
+                    {"text": "ignored"},
+                    {
+                        "document": {
+                            "format": "pdf",
+                            "name": "d",
+                            "source": {"bytes": b"x"},
+                        }
+                    },
+                    {
+                        "toolResult": {
+                            "toolUseId": "t1",
+                            "content": [_image_block(UNDERSIZE)],
+                        }
+                    },
+                ],
+            }
+        ]
+        assert count_request_image_blocks(messages) == 3
+
+    @pytest.mark.parametrize("messages", [None, [], [{}], [{"content": ["junk"]}]])
+    def test_degenerate_inputs_count_zero(self, messages):
+        assert count_request_image_blocks(messages) == 0

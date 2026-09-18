@@ -103,8 +103,17 @@ DEFAULT_MAX_BACKOFF = 300  # 5 minutes
 #
 # NOTE: This set is consulted by BOTH the traditional Bedrock invocation path
 # (this file's BedrockClient.invoke_model) AND the agentic extraction path
-# (idp_common/extraction/agentic_idp.py::_get_inference_params). When adding
-# a new Claude 4.7+ variant here, no other code changes are required.
+# (idp_common/extraction/agentic_idp.py::_get_inference_params).
+#
+# ⚠️ One other place must be decided at the same time, deliberately rather than by
+# default: model_utils._HIGH_RES_MODEL_PATTERN, which says whether a model uses
+# Claude's high-resolution vision tier (a 4,784-token per-image cap) or the
+# standard one (1,568). The two sets happen to be identical today, but they are
+# DIFFERENT properties — a future model could reject sampling parameters and still
+# tokenize on the standard tier, or the reverse — so neither derives from the
+# other. tests/unit/bedrock/test_visual_token_estimate.py fails when they diverge,
+# which forces the decision instead of letting a new name inherit whichever answer
+# happens to be the default (#994).
 _CLAUDE_4_7_BASE_NAMES = {
     "anthropic.claude-opus-4-7",
     "anthropic.claude-opus-4-8",
@@ -1528,7 +1537,7 @@ class BedrockClient:
         # extraction page-image pool is additionally clamped at load time so the
         # reduction is recorded in section metadata and reaches the Strands
         # agentic path, which does not route through here.
-        self._fit_request_images(messages)
+        messages = self._fit_request_images(messages)
 
         # Build converse parameters
         converse_params: Dict[str, Any] = {
@@ -1569,7 +1578,7 @@ class BedrockClient:
         return result
 
     @staticmethod
-    def _fit_request_images(messages: Any) -> None:
+    def _fit_request_images(messages: Any) -> Any:
         """Downscale this request's images to Bedrock's many-image cap (#994).
 
         Delegates to ``idp_common.image.fit_images_in_request``, which is a
@@ -1578,19 +1587,38 @@ class BedrockClient:
         without it cannot be attaching images in the first place. Never raises —
         the guard exists to stop a request failing, so it must not become a new
         way for one to fail.
+
+        Returns the message list to send, which is a COPY whenever an image was
+        actually downscaled. ``invoke_model`` is frequently handed the caller's
+        own ``content`` list (when no ``<<CACHEPOINT>>`` tag is present,
+        ``processed_content is content``), so fitting in place would rewrite the
+        caller's block dicts — permanently downscaling, say, a cached few-shot
+        example image or a page-image list a later pass reuses at a point where
+        the tighter cap does not apply. ``deepcopy`` is cheap here: it treats
+        ``bytes`` and ``str`` as atomic, so only the dict/list spine is
+        duplicated, not the image payloads. The count is taken first so a request
+        under the threshold — the overwhelming majority — copies nothing.
         """
         try:
             from idp_common import image
         except ImportError:
-            return
+            return messages
         try:
-            image.fit_images_in_request(messages)
+            counted = image.count_request_image_blocks(messages)
+            if (
+                image.max_dimension_for_image_count(counted)
+                >= image.BEDROCK_IMAGE_MAX_DIMENSION
+            ):
+                return messages
+            candidate = copy.deepcopy(messages)
+            return candidate if image.fit_images_in_request(candidate) else messages
         except Exception as e:  # noqa: BLE001 - best-effort guard
             logger.warning(
                 "Skipped the Bedrock many-image dimension fit (%s); sending the "
                 "request unchanged.",
                 e,
             )
+            return messages
 
     @staticmethod
     def _apply_max_tokens_limit(converse_params: Dict[str, Any], limit: int) -> bool:

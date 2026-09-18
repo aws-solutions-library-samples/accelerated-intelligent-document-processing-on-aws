@@ -1271,20 +1271,53 @@ pixels`. `document` blocks count toward the 20 alongside images, and so do image
 the agentic extraction tool returns mid-run.
 
 This is what made a 21+ page section fail even though every page was individually
-well inside 8,000 px, and the failure used to be reported as a context-window
-overflow — so tuning page or shard budgets looked like the fix when it was not
+well inside 8,000 px
 ([#994](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/994)).
 The pipeline now **detects the request shape and downscales the images to 2,000 px
 itself**, logging one `WARNING` per request that says how many images were reduced.
 Extraction records the reduction in the section's `metadata.image_downscale` as
 before.
 
-The re-encode costs roughly 15% of the image tokens and a little time per request.
-To avoid it, either set `target_width` / `target_height` to `2000` (or less) for
-stages that send many page images, or keep sections to 20 pages or fewer. If you
-process documents whose sections routinely exceed 20 pages, setting the target
-dimensions is the better choice: the resolution loss is identical, and you get the
-smaller payload on every request instead of re-deriving it each time.
+**Which page counts this affects depends on the extraction mode**, because the
+limit binds on the images in one *request*, not on the section:
+
+| Mode | Downscales at |
+|---|---|
+| Simple (`extraction.mode: simple`) | 21 or more pages in the section |
+| Advanced, unsharded (`agentic.max_concurrent_batches: 1`, the default) | 11 or more pages |
+| Advanced, sharded (`max_concurrent_batches` > 1) | 11 or more pages **per shard** — so never at the default `max_pages_per_shard: 5` |
+
+Advanced mode halves the threshold because the agent re-sends its attached page
+images on every turn and its `view_image` tool can add a further copy of a page to
+the same request, so 11 attached pages can present 22 image blocks. The estimate is
+deliberately pessimistic: some lost resolution is cheaper than a rejected request.
+
+This also reaches stages other than extraction. Holistic classification sends every
+page of a packet in one request, so a packet over 20 pages now has its page images
+downscaled at classification time too.
+
+**What the re-encode costs.** It removes roughly 15% of the image tokens. Whether
+that costs *accuracy* depends on the model: Claude 4.7+, Opus 5 and Sonnet 5
+tokenize images on a high-resolution tier whose own target is about a 2,576 px long
+edge, so 2,000 px sits roughly 20% below the resolution those models would
+otherwise have used — a real reduction, not a free one. On Sonnet 4.6, Haiku 4.5
+and the 3.x family the tier target is about 1,568 px, so the clamp costs nothing
+there. **We have not measured extraction accuracy with and without it.** If you
+process dense small print on a high-resolution-tier model, prefer keeping requests
+at 20 images or fewer (lower `agentic.max_pages_per_shard`, or split sections)
+rather than relying on the clamp.
+
+To avoid the per-request re-encode itself, set `target_width` / `target_height` to
+`2000` (or less) for stages that send many page images. If your sections routinely
+exceed the thresholds above, that is the better choice: the resolution loss is
+identical, and you get the smaller payload on every request instead of re-deriving
+it each time.
+
+**One limit remains.** Bedrock also caps the total size of a request, independently
+of its token count and of any per-image limit, and nothing here bounds that. A long
+enough request — on the order of 60 clamped pages — still fails, reported as `Input
+is too long for requested model`. Splitting the document or lowering the pages per
+request is the remedy.
 
 ### Configuration Benefits
 
