@@ -139,9 +139,8 @@ Deploying this solution requires an IAM role/user with the following permissions
 * `cloudfront:*` - Create and configure CloudFront distributions
 * `cognito-idp:*` - Create and configure Cognito user pools 
 * `cognito-identity:*` - Create and configure Cognito identity pools for AWS service access
-* `apigateway:*` - Create and configure the REST API the web UI calls (this
-  replaced the former `appsync:*` requirement; the solution no longer deploys any
-  `AWS::AppSync` resource)
+* `apigateway:*` - Create and configure the UI ⇄ backend REST API (and the optional API Gateway UI host)
+* `appsync:*` - **Legacy, retained for upgrades only.** No template creates an AppSync API any more (see [AppSync → REST API Migration](./migration-appsync-to-rest.md)); the grant remains so that an in-place update of a stack created *before* that migration can delete the AppSync resources it still owns. Safe to drop once no pre-migration stacks remain.
 * `logs:*` - Create and configure CloudWatch log groups
 * `cloudwatch:*` - Create and configure CloudWatch dashboards and alarms
 * `sns:*` - Create and configure SNS topics

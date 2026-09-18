@@ -34,7 +34,7 @@ Deciding whether to create this role means understanding both halves of what it
 does.
 
 **What it can do.** It holds `cloudformation:*` and a `<service>:*` wildcard on
-24 other services, all on `Resource: "*"`. Whoever can pass this role to
+25 other services, all on `Resource: "*"`. Whoever can pass this role to
 CloudFormation can create, modify or delete any resource in those services in
 this account — not only the ones belonging to an IDP stack. It can also create
 IAM roles and customer managed policies.
@@ -59,7 +59,7 @@ constrain:
    stack name must start with that prefix** — CloudFormation derives generated
    role and policy names from the stack name.
 
-**What is still broad.** `cloudformation:*` and the 24 service wildcards. See
+**What is still broad.** `cloudformation:*` and the 25 service wildcards. See
 ["What Remains Broad, and Why"](#what-remains-broad-and-why) for the reasoning
 and for what it would take to narrow them.
 
@@ -207,14 +207,27 @@ aws cloudformation deploy \
 
 ## <span style="color: blue;">AWS Service Permissions</span>
 
-The role grants `cloudformation:*`, a **scoped and conditioned** set of IAM actions, and a wildcard (`<service>:*`) on **24 other AWS services** — every one of which backs at least one CloudFormation resource type the solution declares. Below is a detailed breakdown organized by category.
+The role grants `cloudformation:*`, a **scoped and conditioned** set of IAM actions, and a wildcard (`<service>:*`) on **25 other AWS services**. 24 of those back at least one CloudFormation resource type the solution declares today. The 25th, `appsync:*`, is **vestigial — retained for upgrades only**, because deleting what a pre-0.6.0 template created is also this role's job. Below is a detailed breakdown organized by category.
 
-Four wildcards that earlier versions of this role carried have been removed
-because nothing in the solution declares a resource in them: **AppSync**
-(replaced by API Gateway), **Textract** and **SageMaker** (runtime-only, called
-by Lambda execution roles rather than CloudFormation), and **Application Auto
-Scaling** (no scalable target is declared anywhere). See the collapsed sections
-below for the evidence in each case.
+Three wildcards that earlier versions of this role carried have been removed
+because nothing in the solution declares a resource in them: **Textract** and
+**SageMaker** (runtime-only, called by Lambda execution roles rather than
+CloudFormation; MLflow is referenced by ARN and uses the distinct
+`sagemaker-mlflow:` prefix), and **Application Auto Scaling** (no scalable
+target or scaling policy is declared anywhere, and all 19 DynamoDB tables are
+`PAY_PER_REQUEST`). See the collapsed sections below for the evidence in each
+case.
+
+> **A wildcard that backs no current resource type is not automatically dead.**
+> `appsync:*` was removed in an earlier revision of this change on exactly that
+> reasoning, and that was wrong. A CloudFormation service role performs
+> **deletions** as well as creations, so it must be able to delete resource
+> types that only an **older** template declared. Deriving the required action
+> set from the current templates alone — which is what
+> `scripts/sdlc/validate_service_role_permissions.py` does — cannot see that
+> obligation. Applied consistently the same reasoning would justify dropping
+> `apigateway:*` the day the UI transport changes again, while stacks still
+> exist that need their API Gateway resources deleted.
 
 ### Services Summary
 
@@ -224,7 +237,7 @@ below for the evidence in each case.
 | Compute & Serverless | 3 | Lambda, Step Functions, CodeBuild |
 | AI/ML Services | 1 | Bedrock |
 | Storage Services | 3 | S3, DynamoDB, ECR |
-| API & Application | 1 | API Gateway |
+| API & Application | 2 | API Gateway, AppSync (vestigial — retained for upgrades only) |
 | Security & Identity | 5 | Cognito User Pools, Cognito Identity, KMS, Secrets Manager, WAF v2 |
 | Messaging & Events | 4 | SNS, SQS, EventBridge, EventBridge Scheduler |
 | Monitoring & Management | 3 | CloudWatch, CloudWatch Logs, Systems Manager |
@@ -265,7 +278,7 @@ this role as least-privilege — it is not.
 | OpenSearch Serverless | Full Access | Vector search for embeddings |
 | CloudFront | Full Access | CDN for web hosting and API acceleration |
 | EC2 (VPC) | Full Access (`ec2:*`) | VPC, subnet, security group and interface-endpoint management for the private hosting variants. The `Utility` column previously said "Limited Access"; the grant is and was `ec2:*`. |
-| ~~AppSync~~ | Removed | Replaced by API Gateway; zero `AWS::AppSync::*` resources remain |
+| AppSync | Full Access — **vestigial, retained for upgrades only** | Nothing declares an `AWS::AppSync::*` resource today. The grant exists so an in-place update of a pre-0.6.0 stack can **delete** the GraphQL API, schema, data sources and resolvers that older template created. Droppable once no pre-0.6.0 stack remains |
 | ~~Textract~~ | Removed | Runtime-only; no CloudFormation resource type |
 | ~~SageMaker~~ | Removed | Runtime-only; MLflow server referenced by ARN, not created |
 | ~~Application Auto Scaling~~ | Removed | No scalable target or scaling policy declared |
@@ -635,16 +648,69 @@ apigateway:*
 </details>
 
 <details>
-<summary><strong>AWS AppSync</strong> (<code>appsync</code>) — no longer granted</summary>
+<summary><strong>AWS AppSync</strong> (<code>appsync</code>) — vestigial, retained for upgrades only</summary>
 
-`appsync:*` was **removed** from this role.
+**Permission Level**: Full (`*`) — the only grant here that is not backed by a
+currently-declared resource type.
 
-The web UI used to talk to the backend through an AppSync GraphQL API. It now
-uses an API Gateway REST API with a Lambda dispatcher, in
-`nested/api-resolvers/template.yaml` (the stack is still named `APIRESOLVERSTACK`
-and was historically `nested/appsync`). There are **zero** `AWS::AppSync::*`
-resources left anywhere in the solution, so this grant could not be exercised by
-any deployment — it was dead permission.
+**Purpose**: in-place upgrades of a pre-0.6.0 stack, and nothing else. Nothing
+declares an `AWS::AppSync::*` resource any more, and the UI no longer speaks
+GraphQL: its transport is an API Gateway REST API with a Lambda dispatcher, in
+`nested/api-resolvers/template.yaml` (logical id `APIRESOLVERSTACK`,
+historically `nested/appsync` / `APPSYNCSTACK`). See
+[the AppSync → REST migration guide](../../docs/migration-appsync-to-rest.md).
+A first-time deployment of 0.6.0 or later never exercises this statement.
+
+**Why it is nonetheless retained for upgrades.** A CloudFormation service role
+performs **deletions**, not only creations, and it is the role — not the caller —
+whose permissions are used. Measured at tag `v0.5.16`: the solution declared
+**151** pre-migration `AWS::AppSync::*` resources, namely 24 in `template.yaml`
+(including the `AWS::AppSync::GraphQLApi` itself, so this is **not** only a
+nested-stack concern), 106 in the pre-migration `nested/appsync/template.yaml`,
+and 21 in `feature-platform/main-stack-extensions/template.yaml`. Commit
+`0b61040c0` removed all 151 and renamed the nested stack's logical id —
+historically `APPSYNCSTACK`, now `APIRESOLVERSTACK` — and CloudFormation treats a
+logical-id rename as a delete plus a create. Nested stacks declare no `RoleARN`
+of their own, so they inherit this role.
+
+Upgrading in place across that boundary is a **documented, supported** path, and
+the repository sets no minimum upgrade source:
+[`docs/migration-appsync-to-rest.md`](../../docs/migration-appsync-to-rest.md)
+publishes the one-time sequence "delete the feature stacks → **update the host
+stack** → reinstall the features", and
+[`docs/migration-v05-to-v06.md`](../../docs/migration-v05-to-v06.md) describes
+"a v0.5.x stack that you **update in place** to v0.6". Without this grant that
+update fails partway through on `AccessDenied`, which also blocks the automatic
+rollback and leaves the stack in `UPDATE_ROLLBACK_FAILED` (the same failure shape
+as issue #632, and as the `iam:UpdateAssumeRolePolicy` gap that broke every
+pre-0.6.2 → 0.6.2+ upgrade under this role).
+
+**Actions Granted**:
+```
+appsync:*
+```
+
+**Why a wildcard rather than a deletion-only action list.** AWS's own
+CloudFormation resource-provider schemas declare the pre-migration delete path as
+`appsync:DeleteGraphqlApi`, `appsync:DeleteResolver`,
+`appsync:DeleteDataSource` and `appsync:GetDataSource` — vestigial actions, in
+the sense that only an upgrade ever reaches them. Note the irregular casing
+(`DeleteGraphqlApi`, not `DeleteGraphQLApi`): the resource type is `GraphQLApi`
+but the IAM action is `Graphql`. That list is deliberately **not** what is
+granted, for three reasons. The vestigial `AWS::AppSync::GraphQLSchema` type is a
+legacy type with no `handlers` block, so AWS publishes no delete permissions for
+it at all and the requirement is genuinely undocumented. A rollback landing
+after a partial delete needs the
+create-side actions too (`CreateGraphqlApi`, `CreateDataSource`,
+`CreateResolver`, `TagResource`, plus `iam:PassRole` and `s3:GetObject`). And
+this is the one path that cannot be rehearsed without a real pre-0.6.0 stack, so
+an action list one call short would be discovered only by wedging a customer —
+the same trade recorded for the other 24 services.
+
+**When this can be dropped**: as soon as no stack predating 0.6.0 remains to be
+upgraded. An operator who will only ever deploy 0.6.0 or later can delete this
+vestigial statement — `Sid: IDPLegacyAppSyncUpgradeCleanup` in
+`IDP-Cloudformation-Service-Role.yaml` — today.
 
 </details>
 
@@ -1048,7 +1114,7 @@ APIs (`DescribeStacks`, `ListStacks`, `ValidateTemplate`) are not
 resource-scopable at all. Narrowing this to an action list would need a
 CloudTrail-derived inventory from a real create, update and delete.
 
-### `<service>:*` on `Resource: "*"` for 24 services
+### `<service>:*` on `Resource: "*"` for 25 services
 
 Two separate reasons, and both need to be addressed to narrow either half:
 
@@ -1114,14 +1180,14 @@ the load-bearing controls are who holds `iam:PassRole` on it and, optionally, a
   it directly, so there are no sessions to time out or credentials to rotate.
 
 ### Permission Scope
-- **Broad service access**: `cloudformation:*` plus `<service>:*` on 24 services,
+- **Broad service access**: `cloudformation:*` plus `<service>:*` on 25 services,
   all on `Resource: "*"`. See ["What Remains Broad, and Why"](#what-remains-broad-and-why).
 - **IAM is the exception**: scoped by action, by resource name prefix, and by
   `iam:PermissionsBoundary` / `iam:PassedToService` conditions, with explicit
   denies on boundary tampering, self-modification and credential creation.
 - **Boundary is mandatory**: `PermissionsBoundaryArn` has no default. The strength
   of the containment is the strength of the boundary policy you write.
-- **Compliance note**: Organizations should refine the 24 service wildcards to
+- **Compliance note**: Organizations should refine the 25 service wildcards to
   their own least-privilege requirements. The method for doing that safely is in
   ["What Remains Broad, and Why"](#what-remains-broad-and-why).
 

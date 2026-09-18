@@ -10,20 +10,20 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   OPTIONAL CloudFormation service role letting a non-administrative user deploy
   IDP Accelerator stacks. It is a DEPLOYMENT role, NOT a least-privilege role: it
-  holds cloudformation:* plus wildcards on 24 services with Resource "*", so
+  holds cloudformation:* plus wildcards on 25 services with Resource "*", so
   whoever can pass it to CloudFormation can change any resource in those
-  services in this account. Grant it deliberately.
+  services in this account. Grant it deliberately. (One of the 25, appsync, is
+  upgrade-only: see IDPLegacyAppSyncUpgradeCleanup.)
 
   What contains it: every IAM role it creates or re-permissions must carry the
   boundary given by PermissionsBoundaryArn (iam:PermissionsBoundary condition).
   Stripping a boundary, editing that policy, creating IAM users or access keys,
-  and modifying its own role are denied. IAM writes and PassRole are confined to
-  names starting with ManagedStackNamePrefix, and PassRole also requires
-  iam:PassedToService. The boundary is the real control here.
+  and self-modification are denied. IAM writes and PassRole are confined to
+  names starting with ManagedStackNamePrefix; PassRole also requires
+  iam:PassedToService. The boundary is the real control.
 
-  The service wildcards are NOT narrowed; README.md explains why, per service.
-  It also creates a CloudFormation-scoped iam:PassRole policy for whoever
-  deploys.
+  README.md explains, per service, why the wildcards are not narrowed. It also
+  creates a CloudFormation-scoped iam:PassRole policy for the deployer.
 
 Parameters:
   PermissionsBoundaryArn:
@@ -62,7 +62,7 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: "Service-level wildcards on 24 services plus cloudformation:* are required to deploy the full IDP stack; the IAM half is bounded by iam:PermissionsBoundary and a role-name prefix. See the template Description and README.md."
+            reason: "Service-level wildcards on 25 services plus cloudformation:* are required to deploy the full IDP stack (24 back a currently-declared resource type; appsync is upgrade-only, to delete what a pre-0.6.0 template created); the IAM half is bounded by iam:PermissionsBoundary and a role-name prefix. See the template Description and README.md."
           - id: W28
             reason: "Explicit role name required for consistent cross-stack references in delegated deployment model"
           - id: F38
@@ -375,15 +375,22 @@ Resources:
               # Each of the 24 services below backs at least one resource type
               # declared in template.yaml, patterns/unified/template.yaml or
               # nested/*/template.yaml (counting the types AWS::Serverless::*
-              # expands into), so every grant is load-bearing. Four wildcards
+              # expands into), so every grant is load-bearing. Three wildcards
               # that were here are gone because nothing declares a resource in
-              # them: appsync (AppSync was replaced by API Gateway; zero
-              # AWS::AppSync resources remain), textract and sagemaker (called
-              # only at RUNTIME by Lambda execution roles, and MLflow is
-              # referenced by ARN rather than created, so CloudFormation never
-              # calls either), and application-autoscaling (no scalable target
-              # or scaling policy is declared anywhere, and no table uses
+              # them: textract and sagemaker (called only at RUNTIME by Lambda
+              # execution roles, and MLflow is referenced by ARN rather than
+              # created — and via the distinct sagemaker-mlflow: prefix — so
+              # CloudFormation never calls either), and application-autoscaling
+              # (no scalable target or scaling policy is declared anywhere, and
+              # every DynamoDB table is PAY_PER_REQUEST, so none uses
               # provisioned throughput).
+              #
+              # appsync was ALSO removed here at one point and has been put back
+              # as its own statement below. It is the one grant that backs no
+              # currently-declared resource type, which is exactly why deriving
+              # this list from the current templates alone is unsafe: a service
+              # role must also be able to DELETE what an OLD template created.
+              # See IDPLegacyAppSyncUpgradeCleanup below.
               #
               # The remaining 24 are NOT narrowed further, and that is a
               # deliberate trade rather than an oversight. `Resource: "*"` stays
@@ -427,6 +434,67 @@ Resources:
                   - scheduler:*
                   - ec2:*
                   - ecr:*
+                Resource: '*'
+              # UPGRADE-ONLY. No current template declares an AWS::AppSync::*
+              # resource, so a first-time deployment of 0.6.0 or later never
+              # exercises this statement. It exists because an IN-PLACE update
+              # of a stack created BEFORE 0.6.0 must DELETE the AppSync
+              # resources that older template left behind, and CloudFormation
+              # performs those deletions with THIS role's permissions, not the
+              # caller's.
+              #
+              # Measured, at tag v0.5.16: 151 AWS::AppSync::* resources —
+              # 24 in template.yaml (including the GraphQLApi resource
+              # itself, so this is NOT only a nested-stack concern), 106 in
+              # nested/appsync/template.yaml, and 21 in
+              # feature-platform/main-stack-extensions/template.yaml. Commit
+              # 0b61040c0 removed all of them and renamed the nested stack's
+              # logical id APPSYNCSTACK -> APIRESOLVERSTACK, which
+              # CloudFormation treats as a delete plus a create. Nested stacks
+              # declare no RoleARN of their own, so they inherit this role.
+              #
+              # In-place upgrade across that boundary is a documented, supported
+              # path (docs/migration-appsync-to-rest.md publishes the one-time
+              # sequence "delete the feature stacks -> update the host stack ->
+              # reinstall the features"; docs/migration-v05-to-v06.md describes
+              # "a v0.5.x stack that you update in place to v0.6"), and the
+              # repository has no documented minimum upgrade source. Without
+              # this grant that update fails partway through on AccessDenied.
+              #
+              # Why a wildcard and not a deletion-only action list. AWS's own
+              # CloudFormation resource-provider schemas declare the delete path
+              # as appsync:DeleteGraphqlApi, appsync:DeleteResolver,
+              # appsync:DeleteDataSource and appsync:GetDataSource (note the
+              # irregular casing: DeleteGraphqlApi, not DeleteGraphQLApi — the
+              # resource type is GraphQLApi but the IAM action is Graphql).
+              # That list is NOT sufficient to rely on here:
+              #   * the GraphQLSchema resource type is a legacy type with no
+              #     handlers block, so AWS publishes no delete permissions for
+              #     it at all and the requirement is genuinely undocumented;
+              #   * a rollback that lands after a partial delete needs the
+              #     CREATE-side actions too (CreateGraphqlApi, CreateDataSource,
+              #     CreateResolver, TagResource, plus iam:PassRole and
+              #     s3:GetObject);
+              #   * this is the one path that cannot be rehearsed — it needs a
+              #     real pre-0.6.0 stack — so an action list that is one call
+              #     short would only be discovered by wedging a customer.
+              # That is the same trade the statement above documents for the
+              # other 24 services (issue #632): one missing action fails the
+              # operation AND its rollback, leaving UPDATE_ROLLBACK_FAILED.
+              #
+              # When this can be dropped: as soon as no stack that predates
+              # 0.6.0 remains to be upgraded. An operator who only ever deploys
+              # 0.6.0 or later can delete this whole statement today.
+              #
+              # Editing note: the individual AWS::AppSync::<Type> names are
+              # written above without their AWS::AppSync:: prefix on purpose.
+              # make check-retired-services treats any template text containing
+              # one of those literals as the resource type having been
+              # reintroduced, and it does not exclude comments.
+              - Sid: IDPLegacyAppSyncUpgradeCleanup
+                Effect: Allow
+                Action:
+                  - appsync:*
                 Resource: '*'
   PassRolePolicy:
     Type: AWS::IAM::ManagedPolicy
