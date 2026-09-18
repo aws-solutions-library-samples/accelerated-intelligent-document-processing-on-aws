@@ -18,10 +18,16 @@ the [AWS Vulnerability Reporting page](https://aws.amazon.com/security/vulnerabi
 This is the same channel stated by the
 [organization-wide security policy](https://github.com/aws-solutions-library-samples/.github/blob/HEAD/SECURITY.md)
 for `aws-solutions-library-samples` and by this repository's
-[`CONTRIBUTING.md`](./CONTRIBUTING.md). This file does not replace or override
-that policy; it repeats the channel so that a reporter who lands on this
-repository does not have to go looking, and adds the repository-specific detail
-below.
+[`CONTRIBUTING.md`](./CONTRIBUTING.md). This file restates the same channels and
+adds repo-specific scope: it repeats the two addresses so that a reporter who
+lands on this repository does not have to go looking, and adds the detail below.
+Note that a repository-local `SECURITY.md` takes precedence over the
+organization default in GitHub's Security tab and its "Report a vulnerability"
+affordance, and that the section below deliberately narrows the org policy's
+general "do not open a public issue" instruction by carving out non-exploitable
+hardening findings as welcome in public. The reporting channels themselves are
+identical, so nothing here sends an exploitable report anywhere other than AWS
+Security.
 
 Please report privately even if you are not sure the finding is exploitable. It is
 straightforward for AWS Security to tell you it is not, and irreversible to
@@ -111,7 +117,7 @@ deployment choice is a documentation or defaults question rather than a
 vulnerability in the code, and is best raised as a public issue.
 
 The guidance for hardening a deployment lives in
-[Well-Architected Framework Assessment](./docs/well-architected.md), with related
+[Well-Architected Framework Review](./docs/well-architected.md), with related
 material in [private-network deployment](./docs/deployment-private-network.md),
 [GovCloud deployment](./docs/govcloud-deployment.md),
 [role-based access control](./docs/rbac.md) and

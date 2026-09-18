@@ -33,12 +33,14 @@ without losing cells, and a table split across an OCR page break has to be
 recognised as one table. Work in this theme is about making the large case behave
 like the small one, and about failing loudly rather than returning a plausible
 short answer. Recent releases added truncation warnings, a deterministic table
-parser, model-aware shard sizing and prompt-overhead-aware shard budgets; open
-work includes assessment that cannot converge on a long multi-instance list
+parser, model-aware shard sizing and prompt-overhead-aware shard budgets, and
+closed the gap where the sharded agentic path never received the pre-parsed table
+guidance the single-pass path builds
+([#900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900),
+now fixed). Open work includes assessment that cannot converge on a long
+multi-instance list
 ([#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894),
 [#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)),
-guidance the sharded agentic path never receives
-([#900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)),
 and the redundant schema restatement that inflates every advanced-extraction
 request
 ([#710](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/710)).
@@ -125,10 +127,12 @@ so a deployer can do that inside the product instead of in a notebook. The
 direction is toward making that loop fast and legible — editable test sets,
 per-configuration accuracy curves, review-effort estimates that say which curve
 they used, and comparison views that show everything the markdown report shows.
-Open items include test set versioning in the individual set view
+The empty Evaluation Method dropdown on `$ref`-declared object fields
+([#906](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/906))
+has since been fixed; test set versioning in the individual set view rather than
+the multi-set view
 ([#903](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/903))
-and gaps in the evaluation method UI for schema-referenced fields
-([#906](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/906)).
+remains open.
 
 ### Extensibility instead of forking
 
