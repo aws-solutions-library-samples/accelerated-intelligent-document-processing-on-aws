@@ -196,7 +196,7 @@ def handler(event, context):
     logger.info(f"Full document content: {json.dumps(document.to_dict(), default=str)}")
     
     # X-Ray annotations
-    xray_recorder.put_annotation('document_id', {document.id})
+    xray_recorder.put_annotation('document_id', document.id)
     xray_recorder.put_annotation('processing_stage', 'ocr')
 
     # Intelligent OCR detection: Skip if pages already have OCR data

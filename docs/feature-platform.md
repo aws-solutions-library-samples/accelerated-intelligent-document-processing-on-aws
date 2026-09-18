@@ -372,7 +372,10 @@ works against the public release bucket). The check is disabled when
 flowchart LR
     subgraph MainStack [Main IDP Accelerator Stack]
         UI[Web UI<br/>nav + FeaturePage]
-        AppSync[(AppSync API<br/>feature-platform resolvers)]
+        RestApi[API Gateway REST API<br/>POST /op/&lt;field&gt;]
+        Dispatcher[Dispatcher Lambda<br/>HttpApiDispatcherFunction]
+        UiResolvers[feature-platform<br/>UI-facing resolver Lambdas]
+        InstallResolvers[feature-platform<br/>install-hook resolver Lambdas]
         InstalledDDB[(InstalledFeatures<br/>DDB table)]
         WebBucket[(WebUIBucket<br/>features/&lt;id&gt;/v&lt;ver&gt;/)]
         FeatureBucket[(FeatureBucket<br/>catalog artifacts)]
@@ -388,14 +391,19 @@ flowchart LR
         ENT[Entitlements]
     end
 
-    UI -- listCatalogFeatures --> AppSync
-    UI -- listInstalledFeatures --> AppSync
-    UI -- checkFeatureEntitlement --> AppSync
-    UI -- getFeatureLaunchUrl --> AppSync
-    AppSync --> InstalledDDB
-    AppSync --> FeatureBucket
-    AppSync -. only when endpoint set .-> ENT
-    FCR --> InstalledDDB
+    UI -- listCatalogFeatures --> RestApi
+    UI -- listInstalledFeatures --> RestApi
+    UI -- checkFeatureEntitlement --> RestApi
+    UI -- getFeatureLaunchUrl --> RestApi
+    UI -- subscribeFeature --> RestApi
+    UI -- unsubscribeFeature --> RestApi
+    RestApi -- Cognito authorizer --> Dispatcher
+    Dispatcher -- invoke by field --> UiResolvers
+    UiResolvers --> InstalledDDB
+    UiResolvers --> FeatureBucket
+    UiResolvers -. only when endpoint set .-> ENT
+    FCR -- direct Lambda invoke --> InstallResolvers
+    InstallResolvers --> InstalledDDB
     FCR --> WebBucket
     UI -- dynamic UMD load --> WebBucket
     UI -- feature REST calls --> FAPI
@@ -405,7 +413,7 @@ flowchart LR
 
 | Component | Lives in | Purpose |
 |-----------|----------|---------|
-| `FeaturePlatformStack` | nested stack from `feature-platform/main-stack-extensions/template.yaml` | Owns the `InstalledFeatures` table, the feature-platform Lambdas, and AppSync data sources / resolvers |
+| `FeaturePlatformStack` | nested stack from `feature-platform/main-stack-extensions/template.yaml` | Owns the `InstalledFeatures` DynamoDB table and the feature-platform resolver Lambdas. The six UI-facing fields are reached through the REST API dispatcher (`HttpApiDispatcherFunction` in `nested/api-resolvers/`), which the stack feeds by exporting each resolver's ARN; the six install-time fields are invoked directly by feature stacks via `lambda:InvokeFunction` on those same exported ARNs. |
 | `FeatureBucket` | main `template.yaml`, condition-gated on `EnableFeaturePlatform` | Holds the catalog of published features (CFN template + UI bundle + `feature.yaml` manifest per feature). Auto-created and pre-populated with the bundled sample feature unless `FeaturePlatformFeatureBucket` is supplied. |
 | Pipeline hooks | `patterns/unified/` (`PipelineHooksDispatcherFunction` + `preprocessing` / `postprocessing` / `postHook` config) | Lets features inject Lambdas at the `preprocessing` and `postprocessing` points (which bracket the pipeline) plus five post-step extension points in between. Inert when no hooks are registered. |
 | Feature stack | standalone CFN template published by the author via `idp-feature-cli publish` | Creates the feature's own resources + registers into the main stack |
@@ -452,6 +460,37 @@ processing workflow. There are two kinds:
 At each point the Step Functions workflow invokes
 `PipelineHooksDispatcherFunction`, which runs any hook Lambdas registered for
 that point.
+
+<a id="hook-points-by-processing-mode"></a>
+### Not every hook point exists in every processing mode
+
+Three of the seven points exist **only on the Pipeline branch** of the state
+machine. In BDA mode (`use_bda: true`) there is no state to invoke the
+dispatcher from, so a hook registered at one of them **never runs at all** —
+including a hook that declares `onError: fail`.
+
+| Hook point | Pipeline mode (`use_bda: false`) | BDA mode (`use_bda: true`) |
+|---|---|---|
+| `preprocessing` | ✅ runs (`StartAt`, before the routing decision) | ✅ runs |
+| `postOcr` | ✅ runs | ❌ **no such state — hook never invoked** |
+| `postClassification` | ✅ runs | ❌ **no such state — hook never invoked** |
+| `postExtraction` | ✅ runs (inside the `ProcessSections` Map) | ❌ **no such state — hook never invoked** |
+| `postRuleValidation` | ✅ runs | ✅ runs (shared tail) |
+| `postSummarization` | ✅ runs | ✅ runs (shared tail) |
+| `postprocessing` | ✅ runs | ✅ runs (shared tail) |
+
+BDA performs OCR, classification and extraction inside a single Bedrock Data
+Automation invocation, so the workflow has no separate OCR, classification or
+extraction step to hook after.
+
+**A registered hook at a point that does not exist in the active mode is
+silently inert — including its `onError: fail` policy.** Nothing warns at
+registration time and nothing appears in the execution history, because the
+dispatcher is never invoked. If you are relying on a hook to **gate** the
+pipeline (PII redaction, a compliance check), register it at `preprocessing`,
+which runs in both modes ahead of the routing decision, or verify that the
+mode you deploy actually reaches your chosen point. Tracked as
+[#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
 
 **Inert by default** — hooks are stored inline in the active configuration
 version. With none registered the dispatcher returns after a single DynamoDB
@@ -501,6 +540,8 @@ extraction:
       arn: <hook-lambda-arn>    # Lambda to invoke
       order: 100                # lower runs first within a point (default 100)
       onError: continue         # continue | skip-remaining | fail (default continue)
+                                # fail aborts the document in a terminal Fail
+                                # state — see "onError: fail" below
       enabled: true             # default true
       allowDocumentUpdate: true # default true — may this hook return an
                                 # `updatedDocument`? Set false to pin it to
@@ -523,9 +564,42 @@ document is marked according to the hook's semantics — e.g.
 nothing left to skip, so the dispatcher logs it and reports `haltIgnored: true`
 rather than appearing to act on it. `onError` controls failure handling:
 `continue` (log and proceed), `skip-remaining` (stop later hooks at that
-point), or `fail` (fail the workflow — for `preprocessing` this stops the
-execution in a terminal `PreprocessingHookFailed` state rather than continuing
-to normal processing).
+point), or `fail`.
+
+**`onError: fail` aborts the document at every hook point that the active
+processing mode actually reaches** — the dispatcher raises a distinct
+`HookFatalError`, and each hook state in the state machine catches that error
+*before* its `States.ALL` catcher and routes to a terminal `Fail` state
+(`PreprocessingHookFailed`, `PostStepHookFailed`, or
+`PostExtractionHookFailed`). The document ends FAILED and no later step runs. A
+dispatcher fault that is *not* the fail policy — a timeout, a throttle, a bug —
+still follows the `States.ALL` catcher, which for the post-step points routes
+forward so a non-gating hook fault cannot discard an otherwise-good document.
+
+⚠️ **"Every hook point" means every point that exists in the mode you are
+running.** In BDA mode (`use_bda: true`) the state machine has no `postOcr`,
+`postClassification` or `postExtraction` state, so the dispatcher is never
+invoked for those points and a `fail` policy registered there is **silently
+inert** — the document processes to completion as though the hook had succeeded.
+See [Not every hook point exists in every processing
+mode](#not-every-hook-point-exists-in-every-processing-mode) and
+[#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
+
+**When a `fail` policy does abort, the document shows only `FAILED`.** The
+tracking row and the UI carry the terminal status and nothing else — the hook's
+`featureId` and the underlying error are in the Step Functions **execution
+history**, on the `ExecutionFailed` event, whose `cause` names the failing hook
+and point. Open the execution for the document (Document detail → the Step
+Functions execution link) to find out *which* hook gated and why.
+
+⚠️ **Before v0.6.9 this only worked at `preprocessing`.** At the other six
+points the `States.ALL` catcher matched the dispatcher's failure first and routed
+the document *forward*, so `onError: fail` was silently inert: a gating hook —
+PII redaction being the case that matters — could fail and the document would be
+processed anyway, with nothing to signal it
+([#919](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/919)).
+If you have a hook relying on `fail` to gate, re-deploy on v0.6.9 or later and
+re-check any documents processed since the hook was registered.
 
 **At `postprocessing`, prefer `onError: continue`** (the default). By the time it
 runs, every expensive step has succeeded and the output objects are written, so

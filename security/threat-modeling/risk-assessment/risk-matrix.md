@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
-| **Applies to release** | v0.6.3 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threats Identified** | 83 |
+| **Total Threats Identified** | 98 |
 
 ## 1. Risk Scoring Methodology
 
@@ -43,9 +43,11 @@
 
 ## 2. Complete Risk Register
 
-> Generated from [`deliverables/threat-model.tc.json`](../deliverables/threat-model.tc.json)
-> by [`scripts/build_threat_model.py`](../scripts/build_threat_model.py). Regenerate
-> after adding a threat rather than editing this table by hand.
+> Derived from [`deliverables/threat-model.tc.json`](../deliverables/threat-model.tc.json),
+> which [`scripts/build_threat_model.py`](../scripts/build_threat_model.py) generates
+> from the Markdown corpus. Re-derive after adding a threat rather than editing these
+> tables by hand — at v3.1 this register silently fell 15 threats behind the export
+> (83 of 98, missing every `SELL.*` entry) because it was edited by hand instead.
 
 ### Critical Risk (Score 8–9)
 
@@ -53,10 +55,13 @@
 |-----------|--------|------|-----------|--------|
 | CHAT.T01 | Prompt Injection via Chat Messages | **9** | Companion Chat | Mitigated |
 | PM.T01 | Prompt Injection via Document Content | **9** | Pipeline Mode | Mitigated |
+| SELL.T02 | Spoofed Buyer Identity in the Request Body | **9** | Seller Entitlement Service | Mitigated |
 | FEAT.T01 | Feature UI Bundle Executes Unsandboxed in the Host Origin | **8** | Feature Platform | Partially Mitigated |
 | HOOK.T02 | Data Exfiltration via Post-Processing Hook | **8** | Lambda Hooks | Partially Mitigated |
 | MCP.T01 | Data Exfiltration via MCP Tools | **8** | MCP Integration | Partially Mitigated |
 | PM.T06 | Configuration Tampering | **8** | Pipeline Mode | Mitigated |
+| SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | **8** | SDK/CLI | **Open** (fix pending, #927) |
+| SELL.T05 | Signing-Key Compromise or Trust Re-Pointing | **8** | Seller Entitlement Service | Mitigated |
 
 ### High Risk (Score 6–7)
 
@@ -69,9 +74,11 @@
 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T08 | Silently-Ignored Schema Authorization Directives | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T09 | Insecure Direct Object Reference (IDOR / BOLA) | **6** | Authentication/RBAC | Mitigated |
-| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | **6** | Companion Chat | **Open** |
+| AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | **6** | Authentication/RBAC | Partially Mitigated (fix pending, #928) |
+| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | **6** | Companion Chat | **Open** (fix pending, #920) |
 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | **6** | Feature Platform | Partially Mitigated |
 | HOOK.T06 | Preprocessing Hook Operates on the Raw Source Document and Can Halt or Replace It | **6** | Lambda Hooks | Mitigated |
+| HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | **6** | Lambda Hooks | **Open** (fix pending, #919) |
 | JOB.T01 | Jobs API Clients Bypass the Cognito Group RBAC Model | **6** | Jobs API | Mitigated |
 | KB.T01 | Knowledge Base Poisoning | **6** | Knowledge Base | Mitigated |
 | KB.T02 | RAG Context Injection | **6** | Knowledge Base | Partially Mitigated |
@@ -85,6 +92,9 @@
 | RPT.T07 | Ground-Truth Tampering via the Test Set Visual Editor | **6** | Reporting/Analytics | Partially Mitigated |
 | SDK.T01 | Credential Exposure on Developer Machines | **6** | SDK/CLI | Partially Mitigated |
 | SDK.T02 | Insecure Automation Pipelines | **6** | SDK/CLI | Partially Mitigated |
+| SELL.T01 | Service Deployed Into an Account That Does Not Own the Product | **6** | Seller Entitlement Service | Mitigated |
+| SELL.T03 | Resource-Policy Over-Exposure (`Principal: '*'`) | **6** | Seller Entitlement Service | Mitigated |
+| SELL.T08 | Unavailability of the Activation Service Locks Out Paying Customers | **6** | Seller Entitlement Service | Partially Mitigated |
 | UI.T01 | Cross-Site Scripting (XSS) | **6** | Web UI | Partially Mitigated |
 | UI.T03 | UI API Abuse (REST dispatcher) | **6** | Web UI | Mitigated |
 | UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | **6** | Web UI | **Open** |
@@ -96,6 +106,8 @@
 | AGT.T02 | Arbitrary Code Execution via AgentCore | **4** | Agent Analysis | Mitigated |
 | AGT.T03 | Agent Routing Manipulation | **4** | Agent Analysis | Mitigated |
 | AUTH.T01 | Privilege Escalation via Group Manipulation | **4** | Authentication/RBAC | Mitigated |
+| AUTH.T13 | Group Assignment From a User-Writable Attribute (External IdP Mapping) | **4** | Authentication/RBAC | Partially Mitigated |
+| AUTH.T15 | Authentication Material in Resolver Logs (Divergent Redaction Denylists) | **4** | Authentication/RBAC | Partially Mitigated (fix pending, #921) |
 | BDA.T01 | BDA Service Opacity | **4** | BDA Mode | Partially Mitigated |
 | BDA.T04 | BDA Service Availability | **4** | BDA Mode | Mitigated |
 | CHAT.T05 | Streaming Response Denial of Service | **4** | Companion Chat | Partially Mitigated |
@@ -108,6 +120,10 @@
 | PM.T08 | Document Content Sent to a Non-Anthropic Model Family (OpenAI via `bedrock-mantle`) | **4** | Pipeline Mode | Partially Mitigated |
 | RPT.T06 | Test Studio — Uncontrolled Processing Costs | **4** | Reporting/Analytics | Mitigated |
 | SDK.T04 | Batch Processing Abuse | **4** | SDK/CLI | Mitigated |
+| SELL.T04 | Cost and Quota Exhaustion by an Arbitrary AWS Account | **4** | Seller Entitlement Service | Partially Mitigated |
+| SELL.T06 | Token Misuse — Replay, Sharing, and Verifier Weakness | **4** | Seller Entitlement Service | Partially Mitigated |
+| SELL.T09 | Customer Roster Disclosure | **4** | Seller Entitlement Service | Mitigated |
+| SELL.T10 | Allow-List Bypass Left Enabled in Production | **4** | Seller Entitlement Service | Accepted |
 | AUTH.T04 | Cognito User Pool Misconfiguration | **3** | Authentication/RBAC | Mitigated |
 | AUTH.T05 | Refresh Token Abuse | **3** | Authentication/RBAC | Mitigated |
 | AUTH.T10 | Token Lifecycle — Post-Logout Token Reuse (Stateless JWT) | **3** | Authentication/RBAC | Accepted |
@@ -116,7 +132,7 @@
 | BDA.T03 | BDA Project Configuration Tampering | **3** | BDA Mode | Mitigated |
 | CHAT.T02 | Conversation Session Hijacking | **3** | Companion Chat | Mitigated |
 | CHAT.T04 | Conversation History Data Exposure | **3** | Companion Chat | Mitigated |
-| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Open** |
+| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Open** (fix pending, #920) |
 | FEAT.T04 | Stale or Downgraded Feature Bundle Served to Users | **3** | Feature Platform | Partially Mitigated |
 | HOOK.T03 | Inference Hook Result Tampering | **3** | Lambda Hooks | Mitigated |
 | HOOK.T05 | Privilege Escalation via Hook IAM Role | **3** | Lambda Hooks | Mitigated |
@@ -146,6 +162,7 @@
 | PM.T07 | Few-Shot Example Poisoning | **2** | Pipeline Mode | Mitigated |
 | RPT.T01 | Reporting Data Tampering | **2** | Reporting/Analytics | Mitigated |
 | RPT.T03 | Glue Catalog Manipulation | **2** | Reporting/Analytics | Mitigated |
+| SELL.T07 | Product-Existence Oracle | **2** | Seller Entitlement Service | Mitigated |
 | UI.T02 | Presigned Upload URL Abuse | **2** | Web UI | Mitigated |
 | UI.T04 | Hosting Origin Misconfiguration | **2** | Web UI | Mitigated |
 | UI.T05 | Client-Side Configuration Exposure | **2** | Web UI | Mitigated |
@@ -153,11 +170,11 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (83 Threats)
-    "Critical (8-9)" : 6
-    "High (6-7)" : 26
-    "Medium (3-5)" : 37
-    "Low (1-2)" : 14
+pie title Risk Distribution (98 Threats)
+    "Critical (8-9)" : 9
+    "High (6-7)" : 31
+    "Medium (3-5)" : 43
+    "Low (1-2)" : 15
 ```
 
 ### By Component
@@ -165,50 +182,58 @@ pie title Risk Distribution (83 Threats)
 | Component | Critical | High | Medium | Low | Total |
 |-----------|----------|------|--------|-----|-------|
 | Agent Analysis | 0 | 2 | 2 | 1 | 5 |
-| Authentication/RBAC | 0 | 5 | 6 | 1 | 12 |
+| Authentication/RBAC | 0 | 6 | 8 | 1 | 15 |
 | BDA Mode | 0 | 0 | 3 | 2 | 5 |
 | Companion Chat | 1 | 1 | 4 | 0 | 6 |
 | Feature Platform | 1 | 1 | 1 | 1 | 4 |
 | Jobs API | 0 | 1 | 2 | 0 | 3 |
 | Knowledge Base | 0 | 2 | 0 | 2 | 4 |
-| Lambda Hooks | 1 | 1 | 4 | 0 | 6 |
+| Lambda Hooks | 1 | 2 | 4 | 0 | 7 |
 | MCP Integration | 1 | 2 | 2 | 1 | 6 |
 | PII Anonymization | 0 | 2 | 3 | 0 | 5 |
 | Pipeline Mode | 2 | 1 | 4 | 1 | 8 |
 | Reporting/Analytics | 0 | 3 | 3 | 2 | 8 |
-| SDK/CLI | 0 | 2 | 2 | 0 | 4 |
+| SDK/CLI | 1 | 2 | 2 | 0 | 5 |
+| Seller Entitlement Service | 2 | 3 | 4 | 1 | 10 |
 | Web UI | 0 | 3 | 1 | 3 | 7 |
-| **Total** | **6** | **26** | **37** | **14** | **83** |
+| **Total** | **9** | **31** | **43** | **15** | **98** |
 
 ### By STRIDE Category
 
+A threat may carry more than one STRIDE category, so these counts sum to more
+than the threat total.
+
 | STRIDE Category | Threats | Highest Risk |
 |----------------|---------|--------------|
-| **Spoofing** | 11 | High |
-| **Tampering** | 36 | Critical |
-| **Repudiation** | 3 | High |
-| **Information Disclosure** | 35 | Critical |
-| **Denial of Service** | 14 | High |
-| **Elevation of Privilege** | 25 | Critical |
+| **Spoofing** | 15 | Critical |
+| **Tampering** | 39 | Critical |
+| **Repudiation** | 4 | High |
+| **Information Disclosure** | 38 | Critical |
+| **Denial of Service** | 17 | High |
+| **Elevation of Privilege** | 31 | Critical |
 
 ### Mitigation Status
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 57 | Controls implemented and verified |
-| **Partially Mitigated** | 19 | Some controls in place, additional measures recommended |
-| **Open** | 4 | **Real gap with no effective control today — see the open-items list below** |
-| **Accepted** | 3 | Risk accepted with documented rationale |
+| **Mitigated** | 63 | Controls implemented and verified |
+| **Partially Mitigated** | 25 | Some controls in place, additional measures recommended |
+| **Open** | 6 | **Real gap with no effective control today — see the open-items list below** |
+| **Accepted** | 4 | Risk accepted with documented rationale |
 
 #### Open items (no effective control today)
 
-| Threat ID | Threat | Component |
-|-----------|--------|-----------|
-| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | Companion Chat |
-| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | Companion Chat |
-| JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | Jobs API |
-| UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | Web UI |
+A fix in flight is **not** a control. Where a change is open against a gap the
+issue is named, but the status stays *Open* until that change merges.
 
+| Threat ID | Threat | Component | Fix in flight |
+|-----------|--------|-----------|---------------|
+| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | Companion Chat | #920 |
+| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | Companion Chat | #920 |
+| HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | Lambda Hooks | #919 |
+| JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | Jobs API | — |
+| SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | SDK/CLI | #927 |
+| UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | Web UI | — |
 
 ## 4. Top Priority Threats
 
@@ -218,16 +243,18 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 |----------|-----------|-------------|------------|--------|
 | 1 | CHAT.T01 | Prompt Injection via Chat Messages | 9 | Mitigated |
 | 2 | PM.T01 | Prompt Injection via Document Content | 9 | Mitigated |
-| 3 | FEAT.T01 | Feature UI Bundle Executes Unsandboxed in the Host Origin | 8 | Partially Mitigated |
-| 4 | HOOK.T02 | Data Exfiltration via Post-Processing Hook | 8 | Partially Mitigated |
-| 5 | MCP.T01 | Data Exfiltration via MCP Tools | 8 | Partially Mitigated |
-| 6 | PM.T06 | Configuration Tampering | 8 | Mitigated |
-| 7 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** |
-| 8 | UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | 6 | **Open** |
-| 9 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
-| 10 | KB.T02 | RAG Context Injection | 6 | Partially Mitigated |
-| 11 | MCP.T03 | MCP Response Injection | 6 | Partially Mitigated |
-| 12 | RPT.T07 | Ground-Truth Tampering via the Test Set Visual Editor | 6 | Partially Mitigated |
+| 3 | SELL.T02 | Spoofed Buyer Identity in the Request Body | 9 | Mitigated |
+| 4 | SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | 8 | **Open** (fix pending, #927) |
+| 5 | FEAT.T01 | Feature UI Bundle Executes Unsandboxed in the Host Origin | 8 | Partially Mitigated |
+| 6 | HOOK.T02 | Data Exfiltration via Post-Processing Hook | 8 | Partially Mitigated |
+| 7 | MCP.T01 | Data Exfiltration via MCP Tools | 8 | Partially Mitigated |
+| 8 | PM.T06 | Configuration Tampering | 8 | Mitigated |
+| 9 | SELL.T05 | Signing-Key Compromise or Trust Re-Pointing | 8 | Mitigated |
+| 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** (fix pending, #920) |
+| 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Open** (fix pending, #919) |
+| 12 | UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | 6 | **Open** |
+| 13 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
+| 14 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
 
 ## 5. Recommendations
 
@@ -244,7 +271,12 @@ effort-to-value:
    identity, which would silently neuter an ownership check that reads it.
    Then extend the automated harness to cover this transport — today
    `make api-test` drives `POST /op/{field}` only, so a regression here is
-   undetectable.
+   undetectable. Tracked in **issue #920**, implemented in part by PR #954 —
+   which rejects a contradicting client-supplied identity but cannot supply a
+   per-user one on this transport, so both threats stay *Open* here even after it
+   merges. The prerequisite neither issue currently covers is a **verified
+   subject**: the browser presenting its Cognito ID token alongside the signed
+   request.
 2. **Presigned read key scoping (UI.T06)** — derive the permitted key prefix
    from the caller's identity/scope instead of trusting the supplied `s3Uri`,
    and make the bucket allow-list fail **closed** when its env vars are unset.
@@ -253,6 +285,19 @@ effort-to-value:
 3. **Jobs API scope-negative test (JOB.T02)** — add a `jobs.read`-only-token
    write attempt and an unauthenticated request to the Jobs API stack test, so
    the gate asymmetry with the UI API closes.
+4. **Hook failure containment (HOOK.T07)** — make `onError: fail` terminal at all
+   seven hook points, so a hook cannot be relied on as a gate at six of them.
+   Tracked in **issue #919**; until it merges the documented behaviour and the
+   state machine's `Catch` blocks disagree.
+5. **Deployment service role (SDK.T05)** — remove the permissions-boundary
+   manipulation actions, narrow the service wildcards to the resources the stack
+   creates, and add trust-policy conditions, so the role is a delegation rather
+   than an administrator alias. Tracked in **issue #927**.
+6. **Default deny at the dispatcher (AUTH.T16)** — reject a field with no recorded
+   authorization expectation instead of forwarding it, and stop keying the 403
+   mapping on error-message prefixes. Tracked in **issue #928**. This is the
+   structural fix behind items 1–3: each of those is an instance of a check that
+   was simply not written.
 
 ### Next Actions (Critical/High Risk, Partially Mitigated)
 
@@ -271,6 +316,14 @@ effort-to-value:
    source (and `style-src`'s `https:`) as well
 7. **Ground-truth change visibility (RPT.T07)**: surface/alert on baseline
    `_editHistory` mutations for high-value test sets
+8. **Log redaction consistency (AUTH.T15)**: converge the divergent redaction
+   denylists so a token-bearing field cannot be logged by one copy of the code
+   after being suppressed in another. Tracked in **issue #921** — pending, so the
+   weaker denylist is what applies today
+9. **External-IdP group mapping (AUTH.T13)**: keep group assignment sourced from
+   provider claims the user cannot edit, and document `Annotator`'s absence from
+   the federation `GROUP_MAPPING` as a deliberate limitation rather than an
+   oversight
 
 ### Ongoing Monitoring
 

@@ -15,8 +15,15 @@ maintained by hand. Regenerate instead of editing the JSON:
     python3 security/threat-modeling/scripts/build_threat_model.py
 
 ``--check`` exits non-zero if the committed JSON differs from a fresh build, or
-if the corpus and the STATUS table below have drifted apart — wire this into CI
-to keep them locked together.
+if the corpus and the STATUS table below have drifted apart. It runs in CI from
+``make check-threat-model-currency`` (itself part of ``make lint-cicd``), which
+also fails when the corpus falls more than one release behind ``VERSION``. It
+was *not* gated before, and the export duly became unbuildable: AUTH.T13 was
+added to the corpus with no STATUS entry, so every run exited on drift.
+
+Export metadata (version, dates, the release the model was last reviewed
+against) is read from ``README.md``'s Document Information table rather than
+hardcoded here — see ``METADATA_ROWS``.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "deliverables" / "threat-model.tc.json"
+INDEX = ROOT / "README.md"
 
 # Documents whose threat blocks are authoritative. Everything else under
 # threat-modeling/ (Talos reports, the historical security review, the AI
@@ -114,11 +122,20 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T10": (3, "Accepted"),
     "AUTH.T11": (3, "Mitigated"),
     "AUTH.T12": (3, "Mitigated"),
+    "AUTH.T13": (4, "Partially Mitigated"),
+    # Likelihood Low / Severity Medium, scored as its two nearest siblings
+    # (AUTH.T10, AUTH.T11) are. "Partially Mitigated" because the entry's own
+    # Mitigations field closes the identity-precedence and input-shape halves but
+    # leaves the group check unenforceable on the streaming transport (GAP-07).
+    "AUTH.T14": (3, "Partially Mitigated"),
+    "AUTH.T15": (4, "Partially Mitigated"),
+    "AUTH.T16": (6, "Partially Mitigated"),
     # SDK / CLI
     "SDK.T01": (6, "Partially Mitigated"),
     "SDK.T02": (6, "Partially Mitigated"),
     "SDK.T03": (3, "Mitigated"),
     "SDK.T04": (4, "Mitigated"),
+    "SDK.T05": (8, "Open"),
     # Hooks
     "HOOK.T01": (4, "Partially Mitigated"),
     "HOOK.T02": (8, "Partially Mitigated"),
@@ -126,6 +143,7 @@ STATUS: dict[str, tuple[int, str]] = {
     "HOOK.T04": (4, "Mitigated"),
     "HOOK.T05": (3, "Mitigated"),
     "HOOK.T06": (6, "Mitigated"),
+    "HOOK.T07": (6, "Open"),
     # Web UI
     "UI.T01": (6, "Partially Mitigated"),
     "UI.T02": (2, "Mitigated"),
@@ -178,6 +196,38 @@ BLOCK_RE = re.compile(
 ROW_RE = re.compile(
     r"^\|\s*\*\*(?P<key>[^*|]+?)\*\*\s*\|\s*(?P<val>.*?)\s*\|\s*$", re.M
 )
+
+
+#: Document Information rows in ``README.md`` that become export metadata, mapped
+#: to their JSON key. These were hardcoded here until v3.2, and drifted: the
+#: export claimed v0.6.3/3.0 while the README said v0.6.5.dev1/3.1. Reading them
+#: from the README makes the README the single source and the drift impossible.
+METADATA_ROWS = {
+    "Version": "version",
+    "Last Updated": "lastUpdated",
+    "Applies to release": "appliesToRelease",
+    "Last reviewed against version": "lastReviewedAgainstVersion",
+}
+
+
+def read_metadata() -> dict[str, str]:
+    """Pull the Document Information rows out of ``README.md``.
+
+    ``lastReviewedAgainstVersion`` is the field ``scripts/check_threat_model_currency.py``
+    gates on; emitting it here means a consumer of the JSON export sees the same
+    currency claim a reader of the README does.
+    """
+    rows = dict(ROW_RE.findall(INDEX.read_text()))
+    values = {k.strip(): v.strip() for k, v in rows.items()}
+    out: dict[str, str] = {}
+    for label, key in METADATA_ROWS.items():
+        if label not in values:
+            raise SystemExit(
+                f"README.md Document Information table has no '**{label}**' row; "
+                f"the export's {key} is read from it"
+            )
+        out[key] = values[label]
+    return out
 
 
 def source_docs() -> list[Path]:
@@ -264,9 +314,7 @@ def build() -> dict[str, object]:
             "from the Markdown corpus by scripts/build_threat_model.py — do not "
             "edit by hand."
         ),
-        "appliesToRelease": "v0.6.3",
-        "lastUpdated": "2026-07-28",
-        "version": "3.0",
+        **read_metadata(),
         "threatCount": len(threats),
         "riskDistribution": risk,
         "mitigationStatus": status,
