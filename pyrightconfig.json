@@ -2,6 +2,9 @@
   "include": [
     "lib/idp_common_pkg/idp_common",
     "lib/idp_cli_pkg/idp_cli",
+    "lib/idp_sdk/idp_sdk",
+    "lib/idp_feature_sdk/idp_feature_sdk",
+    "lib/idp_mcp_connector_pkg/idp_mcp_connector",
     "src/lambda"
   ],
   
