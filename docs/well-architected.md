@@ -72,7 +72,7 @@ parameter to set, so a default deployment does not do them at all:
 
 | Responsibility | Why it is yours |
 |---|---|
-| Confirming what is subscribed to the alerts SNS topic, and adding any further subscribers | Thirteen of the fourteen alarms publish to `AlertsTopic`, and the stack creates the topic — but a topic with no confirmed subscriber notifies nobody, so read the topic's subscription list in the console or with `aws sns list-subscriptions-by-topic` rather than assuming. An email subscription is not delivered to at all until the address owner confirms it, whoever created it. Any additional operator address, chat webhook or existing operational topic is yours to attach |
+| Confirming the alerts SNS subscription, and adding any further subscribers | Thirteen of the fourteen alarms publish to `AlertsTopic`, and the stack now subscribes the `AdminEmail` address to it — but an SNS email subscription is created in `PendingConfirmation` and delivers nothing at all until the recipient clicks the link in the confirmation email, so confirming it is yours. Read the topic's subscription list in the console or with `aws sns list-subscriptions-by-topic` rather than assuming, because a `PendingConfirmation` subscription looks like coverage and is not. The `--headless` variant has no `AdminEmail` parameter, so it creates no subscription at all and the whole topic is yours to wire up. Any additional operator address, chat webhook or existing operational topic is yours to attach either way |
 | Setting an AWS Budget and spend or token-volume alarms | There is no `AWS::Budgets` resource in any template and none of the fourteen alarms is a cost alarm. The metering ledger measures spend after the fact; it does not cap it |
 | Enabling MFA on the Cognito user pool | The pool sets a password policy but no `MfaConfiguration`, so MFA is at the Cognito default of off |
 | Choosing and configuring WAF rules beyond IP allow-listing | The optional WebACL contains a single IP-allow rule; AWS Managed Rules, rate-based rules and bot control are not configured |
@@ -354,7 +354,7 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 312 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 313 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more

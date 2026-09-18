@@ -450,7 +450,7 @@ constant no matter who leaves it. If you rely on email, re-run the
 
 > ⚠️ A `--headless` deployment strips the `AdminEmail` parameter along with
 > Cognito, so it collects no operator address and **creates no subscription at
-> all**. It keeps `AlertsTopic` and all 12 alarms, so a headless stack still has
+> all**. It keeps `AlertsTopic` and all fourteen alarms, so a headless stack still has
 > the original defect: every alarm publishes successfully and nobody is notified.
 > Issue #922 is closed for the standard deployment and remains open for this one.
 

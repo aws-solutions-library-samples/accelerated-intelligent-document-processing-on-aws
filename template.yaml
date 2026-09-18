@@ -7658,8 +7658,8 @@ Resources:
       DisplayName: Workflow Alerts
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
-  # Eleven of the twelve alarms in this template publish to AlertsTopic directly;
-  # the twelfth, BedrockServiceOutageAlarm, publishes to CircuitBreakerTopic and
+  # Thirteen of the fourteen alarms in this template publish to AlertsTopic
+  # directly; the fourteenth, BedrockServiceOutageAlarm, publishes to CircuitBreakerTopic and
   # reaches AlertsTopic via CircuitBreakerManagerFunction, which republishes a
   # readable message. So every alarm ends up here. For the first many releases
   # nothing was ever subscribed to this topic: the ARN was emitted as a stack
@@ -7687,7 +7687,7 @@ Resources:
   #
   # That rationale does NOT carry over to --headless, which strips the AdminEmail
   # parameter and so collects no address at all: a headless stack keeps AlertsTopic
-  # and all 12 alarms and gets zero subscriptions, i.e. #922 is unchanged there.
+  # and all fourteen alarms and gets zero subscriptions, i.e. #922 is unchanged there.
   # Adding an optional AlertsEmail parameter to the headless variant is a
   # deployment-interface decision, not a review fix, so it is deliberately left
   # open rather than smuggled in here. Documented in docs/headless-deployment.md
