@@ -114,6 +114,11 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T10": (3, "Accepted"),
     "AUTH.T11": (3, "Mitigated"),
     "AUTH.T12": (3, "Mitigated"),
+    # Likelihood Low / Severity Medium, scored as its two nearest siblings
+    # (AUTH.T10, AUTH.T11) are. "Partially Mitigated" because the entry's own
+    # Mitigations field closes the identity-precedence and input-shape halves but
+    # leaves the group check unenforceable on the streaming transport (GAP-07).
+    "AUTH.T14": (3, "Partially Mitigated"),
     # SDK / CLI
     "SDK.T01": (6, "Partially Mitigated"),
     "SDK.T02": (6, "Partially Mitigated"),
