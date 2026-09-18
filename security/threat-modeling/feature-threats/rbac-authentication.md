@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.1 |
-| **Last Updated** | 2026-07-17 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-18 |
 | **Feature** | Role-Based Access Control & Authentication |
 | **Classification** | Internal |
 
@@ -61,6 +61,17 @@ flowchart TD
     ScopeCheck -->|no| DenyInBand[in-band Unauthorized 200]
     ScopeCheck -->|yes| BusinessLogic[Role-Aware Logic]
 ```
+
+> **Second entry path (v3.2).** The REST route above is not the only way into the
+> backend. Chat streaming is served by a Lambda **Function URL**
+> (`AuthType=AWS_IAM`, `InvokeMode=RESPONSE_STREAM`) that the browser POSTs to
+> with SigV4-signed Cognito Identity Pool credentials; its handler drives the two
+> chat processors directly, bypassing the dispatcher and the resolvers. That
+> transport authenticates but forwards **no** Cognito group claim, so an
+> operation reachable both ways must enforce its group check in the component
+> that does the work rather than only in the resolver in front of it. See
+> AUTH.T14, and the `function_url_endpoints` section of
+> `scripts/api_rbac_expectations.yaml` (which the static scan reads).
 
 ## 3. Threat Analysis
 
@@ -246,6 +257,20 @@ flowchart TD
 | **Affected Components** | `ExternalIdPGroupMappingFunction` (inline handler in `template.yaml`; standalone copy `src/lambda/external_idp_group_mapping/index.py`), `UserPool` schema (`idp_groups`), `UserPoolClient` attribute permissions |
 | **Mitigations** | **Provenance:** the trigger reads the Cognito-managed `identities` attribute via `AdminGetUser` — a field no client can write — and honours `custom:idp_groups` only for a user linked to the provider named by `EXTERNAL_IDP_NAME`. A native user who writes the attribute themselves gains nothing. **Freshness:** only fresh sign-in trigger sources are honoured, never `TokenGeneration_RefreshTokens`, so a value written after sign-in cannot be picked up by refreshing; at a fresh federated sign-in Cognito has just rewritten the attribute from the assertion. Both checks fail closed. **Attribute permissions:** `UserPoolClient` now declares an explicit `WriteAttributes` naming only the IdP-mapped attributes, so every other attribute is read-only to end users (an attempt returns `NotAuthorizedException`). `scripts/sdlc/tests/test_userpool_attribute_permissions.py` pins that list between its two failure modes. **Tests:** `src/lambda/external_idp_group_mapping/test_index.py` asserts that a user-written attribute and a token refresh both grant nothing, and re-runs those assertions against the InlineCode copy extracted from `template.yaml` so the deployed handler cannot drift from the tested one. `scripts/security/live_checks/verify_idp_group_mapping.py` runs the same scenarios against a real pool, provider and federated identity. **Residual:** a user already federated through the trusted provider can self-set the attribute, and if their IdP omits the group claim on a later fresh sign-in Cognito may leave that value in place — assert the group attribute for all federated users in the IdP (documented in `docs/external-idp.md`). |
 
+### AUTH.T14: Alternate Entry Path Bypassing an Operation's Group Check (Streaming Function URL)
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | AUTH.T14 |
+| **Category** | STRIDE: Elevation of Privilege, Spoofing |
+| **Description** | Agent Chat is reachable by **two** entry paths, not one. Besides `POST /op/sendAgentChatMessage` on the REST dispatcher — whose resolver checks `cognito:groups` — token deltas are streamed from a Lambda **Function URL** (`AuthType=AWS_IAM`, `InvokeMode=RESPONSE_STREAM`) whose FastAPI app (`chat_stream_processor`) drives `agent_chat_processor` directly, without passing through the resolver. An operation whose group check lives *only* in the resolver is therefore enforced on one path and unenforced on the other, and the static RBAC scan only covered dispatcher operations, so the difference was invisible to the gate. Separately, the streaming agent route resolved the caller identity from the request body *before* the transport-verified principal, so a chat turn's persisted attribution (and therefore whose history it was written against) could be decided by the client rather than by the transport. |
+| **Attack Vector** | An authenticated principal invokes the streaming route for an operation whose group restriction is implemented only in the resolver; or supplies a caller identity in the request body that differs from the identity the transport verified. |
+| **Impact** | The Agent Chat group restriction (Admin/Author/Viewer; Reviewer excluded) is not applied on the streaming path, and chat-session ownership/history can be keyed to an identity other than the verified caller. |
+| **Likelihood** | Low (both paths require an authenticated principal of this deployment's pool; the streaming path additionally requires `lambda:InvokeFunctionUrl`, granted to the authenticated Identity Pool role) |
+| **Severity** | Medium |
+| **Affected Components** | `ChatStreamProcessorUrl` (`AWS::Lambda::Url` in `template.yaml`), `src/lambda/chat_stream_processor/app.py`, `src/lambda/agent_chat_processor/index.py`, `nested/api-resolvers/src/lambda/agent_chat_resolver/index.py`, `scripts/sdlc/scan_api_rbac.py` |
+| **Mitigations** | **Enforce at the component that does the work, not only in front of it:** `agent_chat_processor` now applies the Agent Chat group check itself, before any agent/Bedrock call and outside the handler's error-to-stream conversion, raising `PermissionError` exactly as the resolver does; the resolver forwards the caller's group claim (and only that claim) so the same policy is evaluated on whichever path was taken, and a unit test asserts the two group lists cannot drift apart. **One identity resolution for both routes:** the transport-verified principal takes precedence, and a body-supplied identity that *contradicts* it is refused with 403 rather than silently preferred either way; both streaming routes call the same helper. **Input shape:** both routes now declare Pydantic request models, so a malformed body is rejected with a 422 before any processing and every string the processors consume is length-bounded. **Coverage:** `make api-test-static` gained Function-URL checks (S6-S9) that discover every `AWS::Lambda::Url` and its routes from the template, require each route to be declared in `scripts/api_rbac_expectations.yaml` with its authorization, and fail when a route prefers a client-supplied identity, omits the conflict refusal, or reaches a handler with no group check — verified to fail against the pre-fix sources. **Residual:** a Function URL forwards no Cognito group claim (`requestContext.authorizer.iam.cognitoIdentity` is documented as unused by Function URLs), so on that transport the processor's group gate has nothing verified to evaluate and stands down as it does for backend IAM invocations; closing that requires the browser to also present its ID token to this endpoint. Tracked as **GAP-07** in `scripts/api_rbac_expectations.yaml` as a `residual_gap`, which is listed for auditability but does **not** downgrade any of the S6-S9 findings above. |
+
 ## 4. Security Controls Summary
 
 | Control | Implementation | Threats Mitigated |
@@ -257,8 +282,10 @@ flowchart TD
 | **Central input-shape validation** | Dispatcher validates `arguments` against a schema-derived spec (`validation.py`); rejects unknown/missing/wrong-typed args with 400 | AUTH.T12 |
 | **Config-version scope** | `allowedConfigVersions` enforced in scope-aware resolvers; resolver IAM roles granted UsersTable GSI Query | AUTH.T07 |
 | **Caller-supplied ARN bounding** | `getStepFunctionExecution` requires the supplied `executionArn` to name this deployment's state machine before any Step Functions call, then applies the caller's config-version scope to the execution's `config_version` | AUTH.T07, AUTH.T09 |
+| **Enforcement at the worker, not only the front door** | `agent_chat_processor` applies the Agent Chat group check itself (Admin/Author/Viewer) before any agent call, on the same group claim the resolver forwards, so both entry paths evaluate one policy | AUTH.T14 |
+| **Single caller-identity resolution** | The streaming routes resolve the caller from the transport-verified principal first and refuse (403) a request-body identity that contradicts it; both routes share one helper | AUTH.T14, AUTH.T09 |
 | **IdP group-claim provenance** | Group assignment from `custom:idp_groups` requires the user to be federated through the configured provider (`identities` via `AdminGetUser`) and the trigger source to be a fresh sign-in; explicit `WriteAttributes` keeps non-mapped attributes read-only to end users | AUTH.T13 |
-| **Automated authorization testing** | `make api-test-static` (static scan of op↔schema↔expectations drift + missing checks) and `make api-test` (live multi-role + scoped-user + token-negative + **IDOR + token-lifecycle + deleted-resource + input-validation + TLS** suites, with an auditable report); known gaps tracked as WARN so real regressions fail the gate | AUTH.T03, AUTH.T07, AUTH.T08, AUTH.T09, AUTH.T10, AUTH.T11, AUTH.T12 |
+| **Automated authorization testing** | `make api-test-static` (static scan of op↔schema↔expectations drift + missing checks, **including Lambda Function URL routes — S6-S9**) and `make api-test` (live multi-role + scoped-user + token-negative + **IDOR + token-lifecycle + deleted-resource + input-validation + TLS** suites, with an auditable report); known gaps tracked as WARN so real regressions fail the gate | AUTH.T03, AUTH.T07, AUTH.T08, AUTH.T09, AUTH.T10, AUTH.T11, AUTH.T12, AUTH.T14 |
 | **Transport security** | API Gateway/CloudFront TLS 1.2+ minimum, no cleartext HTTP | AUTH.T11 |
 | **Cognito config** | Self-signup off unless `AllowedSignUpEmailDomain` is set (then domain-restricted), strong passwords, email verification | AUTH.T04 |
 | **Defense-in-depth** | `@aws_cognito_user_pools` schema directives in addition to resolver checks | AUTH.T03, AUTH.T08 |

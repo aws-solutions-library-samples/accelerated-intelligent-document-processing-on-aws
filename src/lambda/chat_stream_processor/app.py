@@ -28,10 +28,24 @@ Auth model
 ----------
 The Function URL is ``AuthType=AWS_IAM``; the browser signs the request with
 SigV4 using the authenticated Cognito Identity Pool role. The role is granted
-``lambda:InvokeFunctionUrl`` on this function. The caller's Cognito ``sub`` is
-extracted from the request context (Function URL forwards the SigV4 identity)
-and threaded into the processors for session-ownership + RBAC scope checks,
-identical to the AppSync resolver path.
+``lambda:InvokeFunctionUrl`` on this function. The SigV4 principal is read from
+the request context and threaded into the processors as ``callerSub`` for
+session-ownership + RBAC scope checks.
+
+What this transport does and does not give us:
+
+* It **authenticates**. Only a principal holding ``lambda:InvokeFunction`` on
+  this function can reach any route.
+* It does **not** carry Cognito group claims.
+  ``requestContext.authorizer.iam.cognitoIdentity`` is documented as unused by
+  Function URLs (always ``null`` or absent), and an assumed-role ARN has no
+  group claim, so there is no verified ``cognito:groups`` to enforce against
+  here. Group enforcement on the equivalent operation therefore lives on the
+  dispatcher path, and the residual difference is tracked as GAP-07 in
+  ``scripts/api_rbac_expectations.yaml``. ``_caller_identity`` is the single
+  place a verified claims source plugs in.
+* A body-supplied ``callerSub`` is a fallback only, never an override — see
+  ``_resolve_caller_sub``. Both routes use it, so they cannot drift apart.
 """
 
 from __future__ import annotations
@@ -49,9 +63,16 @@ import threading
 # single source of truth for the Bedrock/agent orchestration logic.
 import agent_chat_processor as agent_proc  # type: ignore
 import chat_with_document_processor as doc_proc  # type: ignore
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sse import caller_sub_from_request_context, now_iso, sse
+from pydantic import BaseModel, Field, StrictBool
+from sse import (
+    CallerIdentityConflict,
+    caller_sub_from_request_context,
+    now_iso,
+    resolve_caller_sub,
+    sse,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -67,6 +88,84 @@ def _caller_sub(request: Request) -> str:
     return caller_sub_from_request_context(
         request.headers.get("x-amzn-request-context")
     )
+
+
+# --- request schemas ---------------------------------------------------------
+# The route bodies used to be raw ``await request.json()`` dicts with no schema,
+# so every field had to be defensively re-coerced at each use site and a
+# malformed body surfaced as a 500 from deep inside a processor. Declaring them
+# lets Starlette reject a malformed body with a 422 before any processing starts
+# and bounds every string the processors go on to use.
+#
+# ``StrictBool`` (not ``bool``) for the opt-in flag: Pydantic's lax mode would
+# accept the STRING "false" and coerce it, and the flag gates a third-party MCP
+# data flow, so only a literal JSON boolean may turn it on.
+#
+# Unknown keys are ignored rather than rejected (Pydantic's default), so adding
+# a field to a request in the web UI cannot 422 against an older deployment.
+
+
+class _ChatRequest(BaseModel):
+    """Fields common to both chat routes."""
+
+    sessionId: str = Field(default="", max_length=128)
+    prompt: str = Field(default="", max_length=100_000)
+    # Client-asserted caller identity. Only honoured when the transport does not
+    # supply a per-user identity of its own, and never when it contradicts one —
+    # see _resolve_caller_sub.
+    callerSub: str = Field(default="", max_length=256)
+
+
+class DocumentChatRequest(_ChatRequest):
+    turnId: str = Field(default="", max_length=128)
+    s3Uri: str = Field(default="", max_length=2048)
+    modelId: str = Field(default="", max_length=256)
+
+
+class AgentChatRequest(_ChatRequest):
+    method: str = Field(default="chat", max_length=64)
+    enableCodeIntelligence: StrictBool = False
+
+
+def _caller_identity() -> dict | None:
+    """Verified Cognito claims for the caller, or ``None`` if none are available.
+
+    Shaped like the ``identity`` object the resolvers receive
+    (``{"claims": {"cognito:groups": [...]}}``) because the processors' group gate
+    reads that shape, and it is what the dispatcher path already supplies.
+
+    On a Lambda Function URL there is nothing to build it from. The only identity
+    the transport forwards is the SigV4 principal —
+    ``requestContext.authorizer.iam.cognitoIdentity`` is documented as "Function
+    URLs don't use this parameter. Lambda sets this to null or excludes this from
+    the JSON" — and an assumed-role ARN carries no Cognito group claim. So this
+    returns ``None``, and the processors' group gate stands down for this
+    transport exactly as it does for backend (IAM) invocations.
+
+    Supplying real claims here needs the browser to present its Cognito ID token
+    to this endpoint in addition to signing the request, which is a change to the
+    transport's auth contract (UI + template + verification) and is tracked as
+    GAP-07 in scripts/api_rbac_expectations.yaml. This function is the single
+    place that change plugs into.
+    """
+    return None
+
+
+def _resolve_caller_sub(request: Request, claimed: str) -> str:
+    """Caller identity for this request; 403 if the body contradicts the token.
+
+    Thin HTTP adapter over ``sse.resolve_caller_sub`` (which holds the decision
+    and its rationale). Both routes go through this one helper so their identity
+    precedence cannot drift apart again.
+    """
+    try:
+        return resolve_caller_sub(_caller_sub(request), claimed)
+    except CallerIdentityConflict as exc:
+        logger.warning("Rejecting chat request: %s", exc)
+        raise HTTPException(
+            status_code=403,
+            detail="Unauthorized: caller identity mismatch",
+        ) from exc
 
 
 def _run_in_thread(target, q: "queue.Queue") -> threading.Thread:
@@ -113,10 +212,11 @@ async def health() -> dict:
 
 
 @app.post("/chat/document")
-async def chat_document(request: Request) -> StreamingResponse:
-    body = await request.json()
-    session_id = str(body.get("sessionId") or "")
-    caller_sub = _caller_sub(request) or str(body.get("callerSub") or "")
+async def chat_document(
+    request: Request, body: DocumentChatRequest
+) -> StreamingResponse:
+    session_id = body.sessionId
+    caller_sub = _resolve_caller_sub(request, body.callerSub)
 
     q: "queue.Queue" = queue.Queue()
 
@@ -150,10 +250,10 @@ async def chat_document(request: Request) -> StreamingResponse:
             doc_proc.handler(
                 {
                     "sessionId": session_id,
-                    "turnId": str(body.get("turnId") or ""),
-                    "prompt": str(body.get("prompt") or ""),
-                    "s3Uri": str(body.get("s3Uri") or ""),
-                    "modelId": str(body.get("modelId") or ""),
+                    "turnId": body.turnId,
+                    "prompt": body.prompt,
+                    "s3Uri": body.s3Uri,
+                    "modelId": body.modelId,
                     "callerSub": caller_sub,
                 },
                 None,
@@ -166,10 +266,13 @@ async def chat_document(request: Request) -> StreamingResponse:
 
 
 @app.post("/chat/agent")
-async def chat_agent(request: Request) -> StreamingResponse:
-    body = await request.json()
-    session_id = str(body.get("sessionId") or "")
-    caller_sub = str(body.get("callerSub") or "") or _caller_sub(request)
+async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingResponse:
+    session_id = body.sessionId
+    # Same precedence as /chat/document: the verified identity wins and a
+    # contradicting body value is refused. This route previously preferred the
+    # body value, which let the persisted attribution of an agent chat session be
+    # chosen by the client.
+    caller_sub = _resolve_caller_sub(request, body.callerSub)
 
     q: "queue.Queue" = queue.Queue()
 
@@ -201,14 +304,19 @@ async def chat_agent(request: Request) -> StreamingResponse:
             agent_proc.handler(
                 {
                     "sessionId": session_id,
-                    "prompt": str(body.get("prompt") or ""),
-                    "method": str(body.get("method") or "chat"),
+                    "prompt": body.prompt,
+                    "method": body.method or "chat",
                     # Default off: opt-in only (third-party MCP data flow).
-                    # `is True`, not bool(): this body is raw client JSON with no
-                    # schema validation on this route, and bool("false") is True.
-                    "enableCodeIntelligence": body.get("enableCodeIntelligence")
-                    is True,
+                    # Typed StrictBool on AgentChatRequest, so a non-boolean is
+                    # rejected with a 422 before reaching here.
+                    "enableCodeIntelligence": body.enableCodeIntelligence,
                     "callerSub": caller_sub,
+                    # Group membership the caller was authorized under. The
+                    # Function URL transport carries no Cognito group claim (see
+                    # the "Authorization" note in the module docstring), so this
+                    # is None here and the processor's group gate stands down for
+                    # this transport; the dispatcher path supplies real claims.
+                    "identity": _caller_identity(),
                     "timestamp": now_iso(),
                 },
                 None,

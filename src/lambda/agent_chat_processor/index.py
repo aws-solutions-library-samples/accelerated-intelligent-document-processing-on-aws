@@ -45,6 +45,49 @@ _CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 _CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
 _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
+# Agent Chat is available to Admin/Author/Viewer; Reviewer is excluded. Must stay
+# equal to _AGENT_CHAT_GROUPS in the agent_chat_resolver — the two enforce the
+# same operation on two different entry paths.
+_AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
+
+
+def _caller_in_groups(event, allowed):
+    """Defense-in-depth RBAC check against the caller's Cognito groups.
+
+    Same idiom as ``_caller_in_groups`` in the agent_chat_resolver, so the two
+    entry paths to Agent Chat read the caller's groups the same way.
+
+    A caller whose groups are known always carries a non-None ``identity``;
+    invocations that carry none are IAM-gated backend calls and are handled by
+    ``_enforce_agent_chat_groups`` rather than here.
+    """
+    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    return bool(set(allowed).intersection(groups))
+
+
+def _enforce_agent_chat_groups(event):
+    """Reject a caller who is not in a group permitted to use Agent Chat.
+
+    The resolver in front of the dispatcher path already applies this check; this
+    is the same gate applied where the work actually happens, so an invocation
+    that arrives by another route is subject to it too. Raising ``PermissionError``
+    matches the resolver, which the dispatcher maps to 403 / ``Unauthorized``.
+
+    Invocations with no ``identity`` are not group-checked: they are the backend
+    paths (a direct ``lambda:InvokeFunction``, and the streaming Function URL,
+    whose transport forwards no Cognito group claim — see ``_caller_identity`` in
+    src/lambda/chat_stream_processor/app.py). Those are gated by IAM instead.
+    """
+    if event.get("identity") is None:
+        return
+    if not _caller_in_groups(event, _AGENT_CHAT_GROUPS):
+        logger.warning("Rejecting agent chat: caller is not in an authorized group")
+        raise PermissionError(
+            "Unauthorized: Agent Chat requires Admin, Author or Viewer group"
+        )
+
 
 def _persist_chat_turn(
     session_id, user_id, surface, prompt, assistant_text, persist_user_message=True
@@ -882,7 +925,13 @@ def handler(event, context):
     
     logger.info(f"Lambda invocation #{_lambda_invocation_count} ({'COLD START' if is_cold_start else 'WARM'})")
     logger.info(f"Received agent chat processor event: {json.dumps(event)}")
-    
+
+    # Authorize before any work. Deliberately outside the try/except below: that
+    # handler converts an exception into a 200-with-error-body stream frame plus a
+    # 500 return, which would turn a denial into an application error. Raising
+    # PermissionError here matches the resolver so the dispatcher maps it to 403.
+    _enforce_agent_chat_groups(event)
+
     try:
         # Use cached boto3 session for warm Lambda containers (significant performance improvement)
         session = get_cached_boto3_session()

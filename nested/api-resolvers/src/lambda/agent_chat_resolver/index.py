@@ -52,6 +52,26 @@ def _caller_in_groups(event, allowed):
     return bool(set(allowed).intersection(groups))
 
 
+def _forwarded_identity(event):
+    """Minimal ``identity`` to pass to the processor, or ``None`` if there is none.
+
+    The processor re-checks the group itself, so it needs the caller's groups. It
+    logs its whole event, so forward ONLY the group claim rather than the full
+    identity object — the rest (email, tokens, source IP) is not needed for the
+    check and does not belong in the processor's log group.
+
+    Returns ``None`` for identity-less (IAM-gated backend) invocations so the
+    processor treats those the same way this resolver does.
+    """
+    identity = event.get("identity")
+    if identity is None:
+        return None
+    groups = (identity.get("claims") or {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    return {"claims": {"cognito:groups": list(groups)}}
+
+
 # --- inline log sanitizer ---------------------------------------------------
 # Minimal inline redactor. Kept here rather than importing from idp_common to
 # avoid adding a Lambda Layer dependency to this resolver. If this file grows
@@ -253,6 +273,10 @@ def handler(event, context):
                         "timestamp": timestamp,
                         "enableCodeIntelligence": enable_code_intelligence,
                         "callerSub": caller_sub,
+                        # Group membership the caller was authorized under, so the
+                        # processor can apply the same group gate at the point the
+                        # work happens instead of trusting this hop.
+                        "identity": _forwarded_identity(event),
                         # This resolver already stored the user message and session
                         # metadata above — tell the processor to persist only the
                         # assistant reply, or every turn would be double-written.
