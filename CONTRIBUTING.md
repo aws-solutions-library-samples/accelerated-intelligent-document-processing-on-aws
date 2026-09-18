@@ -58,10 +58,10 @@ problem is public.
 Hardening suggestions that are not exploitable — a missing header, a permission
 that could be narrower, a dependency worth bumping — are fine as ordinary
 issues. Both channels are also stated in [SECURITY.md](SECURITY.md) at the
-repository root, which is being added under
-[issue #936](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/936).
-If that file is not in your checkout yet, the two paragraphs above are the whole
-policy and nothing is missing from it.
+repository root, which is where GitHub surfaces them in the "Report a
+vulnerability" affordance; that file also records which releases receive fixes.
+The two paragraphs above are the whole policy, so if you only read this page you
+have not missed anything.
 
 ## Reporting bugs and requesting features
 

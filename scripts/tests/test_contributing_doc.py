@@ -80,12 +80,15 @@ DOC = DOC_PATH.read_text(encoding="utf-8")
 # one comes back, the sentence naming it has become wrong, so
 # ``test_paths_expected_absent_are_still_absent`` fails and forces a decision.
 PATHS_EXPECTED_ABSENT: dict[str, str] = {
-    # SECURITY.md is created by the pull request tracked as issue #936. This
-    # document deliberately links it ahead of time and hedges the sentence so it
-    # reads correctly either way. DELETE THIS ENTRY once SECURITY.md is on
-    # develop — leaving it would hide a genuinely broken link.
-    # https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/936
-    "SECURITY.md": "created by issue #936; the document hedges its absence",
+    # ``SECURITY.md`` used to be listed here. It was created by issue #936 while
+    # this document already linked it, so the entry existed to hold the link
+    # exempt from the "every named path exists" check and the sentence hedged its
+    # absence. Both are gone: the file is on ``develop``, the hedge has been
+    # removed from the document, and the link is now covered by
+    # ``test_documented_paths_exist`` like every other. It was deleted the
+    # moment its reason expired, which is the point of writing the expiry
+    # condition into the comment rather than into an issue.
+    #
     # Named only in the note explaining that the three per-pattern directories
     # were merged into patterns/unified/. That note is the reason the rewrite
     # happened; if one of these reappears the note is the thing to fix.
@@ -421,10 +424,16 @@ def test_paths_expected_absent_are_still_absent() -> None:
     """Every deliberate exemption must still be earning its place.
 
     An exemption that outlives its reason is indistinguishable from a hole. Each
-    of these is named by the document *as absent* — ``SECURITY.md`` because it is
-    still being written, the three ``patterns/pattern-N/`` directories because
-    they were merged into ``patterns/unified/``. If one exists, the sentence that
-    names it is now wrong and the exemption is now hiding a real check.
+    of these is named by the document *as absent* — the three
+    ``patterns/pattern-N/`` directories, because they were merged into
+    ``patterns/unified/``. If one exists, the sentence that names it is now wrong
+    and the exemption is now hiding a real check.
+
+    This has already fired once for real. ``SECURITY.md`` was exempt while it was
+    being written under issue #936, and the moment it landed on ``develop`` this
+    test failed and named it, which is what forced both the hedge in
+    ``CONTRIBUTING.md`` and the exemption itself to be removed rather than
+    quietly left behind as a permanently unchecked link.
     """
     stale = [
         f"{name} — exempted because: {reason}"
