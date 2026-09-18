@@ -19,7 +19,33 @@ _settings_cache: Optional[Dict[str, Any]] = None
 _cache_timestamp: float = 0
 _CACHE_TTL_SECONDS = 300  # 5 minute cache
 
-ssm_client = boto3.client("ssm")
+# The SSM client is built on first use rather than at import time. This module is
+# re-exported by ``idp_common.utils``, which ``idp_common.s3`` imports, which in
+# turn is imported by most of this repository's Lambda handlers — so a module-scope
+# ``boto3.client("ssm")`` here made *importing the library at all* require a
+# resolvable AWS region. The Lambda runtime always sets one, so production was
+# never affected; a unit test run on a machine with no region is not, and botocore
+# raised ``NoRegionError`` while pytest was still collecting. That is how the
+# ``save_reporting_data`` suite came to pass only on developer machines, whose
+# region comes from the shared AWS config file, and fail on a CI runner (#988).
+#
+# Deferring construction also matches the sibling
+# ``idp_common.monitoring.settings_cache``, which has always built its SSM client
+# lazily, and costs nothing at run time: the client is created once on the first
+# ``get_settings`` call and cached for the life of the process, exactly as before.
+_ssm_client: Optional[Any] = None
+
+
+def _get_ssm_client() -> Any:
+    """Return the process-wide SSM client, constructing it on first use.
+
+    Tests that need to intercept the call can assign a double to
+    ``settings_helper._ssm_client`` instead of patching ``boto3.client``.
+    """
+    global _ssm_client
+    if _ssm_client is None:
+        _ssm_client = boto3.client("ssm")
+    return _ssm_client
 
 
 def get_settings(
@@ -63,7 +89,7 @@ def get_settings(
         return _settings_cache  # type: ignore[return-value]
 
     try:
-        response = ssm_client.get_parameter(Name=param_name)
+        response = _get_ssm_client().get_parameter(Name=param_name)
         _settings_cache = json.loads(response["Parameter"]["Value"])
         _cache_timestamp = current_time
         return _settings_cache

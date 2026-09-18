@@ -21,11 +21,41 @@ else
   PIP := $(CURDIR)/$(VENV_DIR)/bin/pip
 endif
 
-# Region handed to test suites that construct a boto3 client at import time.
-# Only a region — no credentials are needed or used, and no AWS call is made.
-# Overridable, but it must be set to SOMETHING: botocore raises NoRegionError
-# during collection otherwise. See the note in test-packages-cicd and #988.
-TEST_AWS_REGION ?= us-east-1
+# Neutralise every source botocore consults for a region, credentials or a
+# profile, so the offline suites run the way a CI runner runs them.
+#
+# The suites under test-packages-cicd are offline by contract: no AWS call, no
+# credentials. Nothing enforced that, and a suite that happened to need a region
+# — because the handler it imports builds a boto3 client at module scope — passed
+# on a developer machine and failed in CI, because the developer machine supplies
+# a region from the shared AWS config file and the runner supplies nothing. Three
+# suites were in that state (#988). They were fixed in the suites themselves, by
+# pinning a region in their own conftest.py; this wrapper is what keeps the next
+# one from reaching CI undetected, by making the local run equal the CI run
+# instead of being weaker than it.
+#
+# Two kinds of neutralisation are needed, because botocore has two sources. The
+# `-u` list removes the environment variables. Pointing AWS_CONFIG_FILE and
+# AWS_SHARED_CREDENTIALS_FILE at an empty file removes the shared config file,
+# which no amount of unsetting can reach and which is the source that makes a
+# developer machine disagree with CI. Disabling the instance metadata service
+# stops a credential lookup from stalling when these run on EC2.
+#
+# Removing the credentials as well as the region is deliberate: a suite here that
+# reaches a real AWS endpoint should fail loudly rather than quietly transact
+# against whichever account the developer happens to be signed in to.
+#
+# scripts/tests/test_offline_suites_are_hermetic.py parses this definition out of
+# the Makefile and asserts both that it still works and that every pytest
+# invocation in the recipe still goes through it.
+HERMETIC_AWS := env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_PROFILE \
+	-u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+	-u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE \
+	-u AWS_CONTAINER_CREDENTIALS_FULL_URI \
+	-u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
+	AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+	AWS_EC2_METADATA_DISABLED=true
+PYTEST_HERMETIC := $(HERMETIC_AWS) $(PYTHON) -m pytest
 
 # idp-cli invocation — uses `python -m idp_cli.cli` so it works whether or not
 # the virtualenv is activated (picks up $(PYTHON) which prefers .venv).
@@ -490,28 +520,28 @@ test-list: ## List the discovered test roots (run vs quarantined) without runnin
 
 test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
 	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTHON) -m pytest -m "not integration" -q -p no:cacheprovider
+	cd lib/idp_sdk && $(PYTEST_HERMETIC) -m "not integration" -q -p no:cacheprovider
 	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd feature-platform/feature-template/feature-api && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
 	@# These three ran in NO CI gate until #974. `make test` picked them up via
 	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
 	@# order-dependent failure in the feature API sat unnoticed long enough to be
 	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
-	cd feature-platform/pii-anonymizer/feature-api && $(PYTHON) -m pytest tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/hook && $(PYTHON) -m pytest tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
-	cd feature-platform/seller-entitlement-service && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
-	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
-	$(PYTHON) -m pytest -q -p no:cacheprovider \
+	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor \
 	    src/lambda/workflow_tracker
@@ -519,8 +549,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# Both suites import their own ``index`` module; run each in its
 	@# own directory to prevent the sys.path collision that fails a
 	@# combined pytest invocation.
-	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
-	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
+	cd src/lambda/queue_sender && $(PYTEST_HERMETIC) test_index.py -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTEST_HERMETIC) test_delete_output_data.py -q -p no:cacheprovider
 	@echo "Running the remaining src/lambda Lambda suites (157 tests that reached NEITHER CI)..."
 	@# Every src/lambda dir holding a test_*.py must appear in this recipe —
 	@# asserted by scripts/tests/test_src_lambda_tests_in_ci.py, which derives
@@ -529,52 +559,55 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# they all define a module named ``index``, so a combined pytest run fails
 	@# collection on the basename collision.
 	@#
-	@# Three of them build a boto3 client at import time with no region, so they
-	@# need AWS_DEFAULT_REGION or botocore raises NoRegionError at COLLECTION.
-	@# The Lambda runtime always sets AWS_REGION in production, so this is a
-	@# test-harness assumption rather than a defect in the handlers -- but it
-	@# means those suites pass on a developer machine (which has an ambient
-	@# region) and fail on a CI runner, which is why the value is pinned here
-	@# rather than inherited. No credentials are needed or used. See #988.
-	cd src/lambda/api_handler && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/batch_pre_processor && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/complete_section_review && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/external_idp_group_mapping && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/job_tracker && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/save_reporting_data && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/test_file_copier && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/user_management && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/version_check_resolver && $(PYTHON) -m pytest -q -p no:cacheprovider
+	@# Three of them -- external_idp_group_mapping, save_reporting_data and
+	@# test_file_copier -- used to be run with AWS_DEFAULT_REGION pinned on the
+	@# recipe line, because the handler each one imports builds a boto3 client at
+	@# module scope and botocore raises NoRegionError with no region to resolve.
+	@# The pins are gone: each suite now supplies its own region from its own
+	@# conftest.py (save_reporting_data needed no conftest in the end -- its
+	@# region dependency came from idp_common.utils.settings_helper, which was
+	@# building an SSM client at import and now does so lazily). Running them
+	@# through $(PYTEST_HERMETIC) like everything else is what proves that, since
+	@# the wrapper takes the region away rather than handing one over. See #988.
+	cd src/lambda/api_handler && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/batch_pre_processor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/complete_section_review && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/job_tracker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/save_reporting_data && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/version_check_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
-	cd nested/api-resolvers/src/lambda/test_runner && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/test_runner && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
-	$(PYTHON) -m pytest -q -p no:cacheprovider \
+	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
 	    nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests
 	@echo "Running Chat-stream processor tests (incl. vendored-in-sync guard)..."
-	cd src/lambda/chat_stream_processor && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd src/lambda/chat_stream_processor && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running BDA OCR project custom-resource tests (incl. library drift guard)..."
-	cd src/lambda/bda_ocr_project && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd src/lambda/bda_ocr_project && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running S3 Vectors custom-resource tests (IAM scope vs sanitized bucket name)..."
-	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
-	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	cd src/lambda/finetuning_job_creator && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
 	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.
 	@# They were registered in scripts/run_all_tests.py but in NEITHER CI, so the
 	@# ASL invariants they pin (e.g. the HookFatalError catcher that must precede
 	@# States.ALL, #919) were unguarded on every PR.
-	$(PYTHON) -m pytest patterns/unified/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
-	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTHON) -m pytest scripts/sdlc/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/sdlc/tests -q -p no:cacheprovider
 	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTHON) -m pytest scripts/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/tests -q -p no:cacheprovider
 	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
-	$(PYTHON) -m pytest scripts/srt/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
 	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
-	$(PYTHON) -m pytest scripts/security/tests -q -p no:cacheprovider
+	$(PYTEST_HERMETIC) scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
