@@ -3,147 +3,31 @@
 #
 # Code owners for the GenAI Intelligent Document Processing accelerator.
 #
-# HOW THIS FILE WAS DERIVED
-# -------------------------
-# Ownership was measured, not assigned. Every percentage below is a share of
-# that path's FILE REVISIONS — (commit x file) pairs, not commits — and every
-# one of them is reproduced by exactly this command, one path per run:
+# GitHub uses this file to request reviews automatically. The LAST matching
+# pattern wins, so the default-owner line comes first and specific paths after
+# it; every specific line also keeps the default owner as a co-reviewer.
 #
-#     git log --full-history --pretty=format:'@@A@@%an' --name-only -- <path> \
-#       | sed 's/ \[C\]//' \
-#       | awk '/^@@A@@/{a=substr($0,6); next} NF{n[a]++; t++} \
-#              END{for (k in n) printf "%5.1f%%  %4d/%d  %s\n", \
-#                                      100*n[k]/t, n[k], t, k}' \
-#       | sort -rn
-#
-# Three details of that command are load-bearing. Drop any one of them and the
-# figures below do not come out:
-#
-#   * --full-history. Without it, git's default history simplification prunes
-#     commits that reached the path through a merge. That silently changes the
-#     answer for five of the paths below — /publish.py reads 50% instead of 70%
-#     — and it makes a path's number depend on how many pathspecs you happened
-#     to pass in one invocation. With the flag, a path measures the same either
-#     way.
-#   * File revisions, not commits. A plain `git log --format='%an' | uniq -c`
-#     commit count reproduces none of the figures below, because the authors
-#     differ sharply in commit size — see /lib/idp_sdk/, where @webarch-ai's
-#     share reads 39% by file revisions and 14% by commits. Where a COMMIT count
-#     is quoted below it is measured with the same command plus
-#     `--full-history --no-merges` and the same sed: --full-history for the
-#     reason above, and --no-merges because a merge is one commit but no file
-#     revisions, so counting merges would compare two different populations.
-#     Without those flags the /lib/idp_sdk/ split reads 64%/10% of 221 rather
-#     than 63%/14% of 196.
-#   * The `sed`, which merges the corporate-alias git identity
-#     `Mansoor [C] Malik` into `Mansoor Malik`. Both carry the same commit
-#     email (malmansx@amazon.com), so leaving them split understates that
-#     author on every path he touched. The same `[C]` alias form exists for
-#     other contributors, which is why the sed is general rather than a
-#     one-name special case.
-#
-# Merge commits contribute no file revisions, since `--name-only` prints no
-# diff for them. No path here needs `--follow`: nothing listed below was
-# renamed.
-#
-# Each author was then mapped to a GitHub account from the commit's
-# `author.login` as reported by the GitHub API — not from a guess at their
-# handle. A path appears below only when BOTH are true:
-#
-#   1. a named engineer other than the default owner wrote the majority (or a
-#      near-majority co-share) of that path's history, and
-#   2. that engineer's commits resolve to a real GitHub username.
-#
-# Five paths — two subsystems and one top-level script, by two engineers — meet
-# (1) but not (2) and are therefore deliberately absent. See the "UNASSIGNED"
-# note at the bottom and MAINTAINERS.md for the numbers.
-#
-# HOW GITHUB READS THIS FILE
-# --------------------------
-# The LAST matching pattern wins, so the broad default-owner line must come
-# first and the specific paths after it. Every specific line keeps @rstrahan as
-# a co-owner, because "last match wins" would otherwise remove the maintainer
-# from the reviewers of his own repository's subsystems.
-#
-# A review request is only routed to a user who has write access to this
-# repository. An entry for someone without write access is silently ignored —
-# so if a line below stops routing, check repository access before editing the
-# handle. This is a live dependency, not a hypothetical: see the "CODEOWNERS
-# routing depends on write access" section of MAINTAINERS.md, and verify with
-#
-#     gh api repos/<owner>/<repo>/collaborators/<handle>/permission --jq .permission
-#
-# which returns the effective permission, including access derived from a team.
-#
-# See MAINTAINERS.md for who these people are and what they own, and
-# GOVERNANCE.md for how a change actually gets accepted.
+# Paths without a specific rule below are reviewed by the default owner. This file
+# is the only record of who reviews what; see GOVERNANCE.md for how a change is
+# accepted.
 
-# ---------------------------------------------------------------------------
 # Default owner: everything not matched by a more specific rule below.
-# ---------------------------------------------------------------------------
 *                                                @rstrahan
 
-# ---------------------------------------------------------------------------
 # Agent framework and agent tooling — the Strands-based agents behind Agent
 # Analysis, Agent Chat, Code Intelligence and the MCP tool surface.
-# History of /lib/idp_common_pkg/idp_common/agents/, 625 file revisions:
-# @kaleko 40%, @webarch-ai 30%, @rstrahan 5%. Its unit test directory runs
-# @kaleko 55%, @webarch-ai 19%, @rstrahan 9% of 139 revisions, and
-# /docs/agent-analysis.md is @kaleko 50% of 16 — a small enough sample that it
-# is listed for consistency with the module rather than on its own evidence.
-# ---------------------------------------------------------------------------
 /lib/idp_common_pkg/idp_common/agents/            @kaleko @webarch-ai @rstrahan
 /lib/idp_common_pkg/tests/unit/agents/            @kaleko @webarch-ai @rstrahan
 /docs/agent-analysis.md                           @kaleko @rstrahan
 
-# ---------------------------------------------------------------------------
 # Business rule validation, including the Z3 solver path.
-# History: @Behrad-Gh 77% of the module's 78 file revisions (60/78), and 50%
-# of the 6 revisions in its unit test directory.
-# ---------------------------------------------------------------------------
 /lib/idp_common_pkg/idp_common/rule_validation/   @Behrad-Gh @rstrahan
 /lib/idp_common_pkg/tests/unit/rule_validation/   @Behrad-Gh @rstrahan
 /docs/rule-validation.md                          @Behrad-Gh @rstrahan
 /docs/rule-validation-z3.md                       @Behrad-Gh @rstrahan
 
-# ---------------------------------------------------------------------------
-# Python SDK for programmatic access (lib/idp_sdk).
-# History, 660 file revisions: @rstrahan 46%, @webarch-ai 39% — genuinely
-# co-owned, so both are asked rather than only the default owner. This is the
-# one path where the two metrics diverge sharply: by COMMITS it reads
-# @rstrahan 63% (124/196) and @webarch-ai 14% (27/196), because @webarch-ai's
-# 27 commits carry 255 file touches between them — roughly 9 files per commit
-# against @rstrahan's 2.5. Both readings support the same routing decision.
-# ---------------------------------------------------------------------------
+# Python SDK for programmatic access.
 /lib/idp_sdk/                                     @rstrahan @webarch-ai
 
-# ---------------------------------------------------------------------------
-# Workshop content, authored in full by @tomron-aws — 100% of its history, all
-# 53 file revisions. Read that figure with the caveat, though: all 53 arrived in
-# ONE commit (c2e3c8017, 2026-05-28, "docs: add Amazon Quick + IDP MCP
-# integration workshop (#333)"), which is also his only commit anywhere in the
-# repository — 1 of 8,966, nothing since. Unlike the rules above, the percentage
-# here identifies the author of a single content drop rather than sustained
-# involvement. The line is kept because he is still the only person who has
-# written any of it, but read it as a pointer to the original author. See
-# MAINTAINERS.md.
-# ---------------------------------------------------------------------------
+# Workshop content.
 /workshop/                                        @tomron-aws @rstrahan
-
-# ---------------------------------------------------------------------------
-# UNASSIGNED — known owner, unknown GitHub username
-# ---------------------------------------------------------------------------
-# The following paths are majority-owned by an engineer whose commits carry an
-# email address that is not attached to any GitHub account, so the API returns
-# no `author.login` for them and they do not appear in the repository's
-# contributor list at all. Rather than guess a handle — which would silently
-# route reviews to nobody or, worse, to the wrong person — they are left to the
-# default owner until the maintainer supplies the correct usernames:
-#
-#   /lib/idp_common_pkg/idp_common/synthesis/              Jeremy Feldman (86%)
-#   /lib/idp_common_pkg/tests/unit/synthesis/              Jeremy Feldman (63%)
-#   /feature-platform/idp-data-generator/                  Jeremy Feldman (86%)
-#   /docs/extensions/idp-data-generator.md                 Jeremy Feldman (100%)
-#   /publish.py                                            Taniya Mathur (70%)
-#
-# To fix: add the handle here and in MAINTAINERS.md, keeping the two consistent.
