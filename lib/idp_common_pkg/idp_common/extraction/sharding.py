@@ -98,11 +98,18 @@ def plan_shards(
         token_budget: Target maximum estimated input tokens of page text per
             shard. A single page that alone exceeds the budget still becomes its
             own shard (we never split mid-page).
-        max_shards: Optional hard cap on the number of shards. When the budget
-            would produce more, pages are redistributed into exactly
-            ``max_shards`` roughly-equal groups (the caller's parallelism cap
-            doubles as a shard cap so we don't fan out unboundedly). ``None``
-            means no cap.
+        max_shards: Optional hard cap on the number of shards. When the first
+            pass would produce more, its ranges are DISCARDED and the pages are
+            repacked into exactly ``max_shards`` **token-balanced** groups (the
+            caller's parallelism cap doubles as a shard cap so we don't fan out
+            unboundedly). ``None`` means no cap. Note what this implies: on that
+            path ``max_pages_per_shard`` no longer holds, and because the repack
+            balances estimated tokens rather than page counts, one text-heavy page
+            can occupy a shard alone while sparse pages crowd into another — so
+            neither the page cap nor ``ceil(pages / max_shards)`` bounds the
+            largest shard's page count. Callers that need that number must ask
+            for the plan (see ``ExtractionService._agentic_images_per_request``,
+            which sizes Bedrock's many-image cap from it).
         max_pages_per_shard: Page-count ceiling per shard. A shard is closed
             once it holds this many pages even if its text is still under the
             token budget — so a document with unusually compact pages still
@@ -150,8 +157,11 @@ def plan_shards(
             running += page_tokens
     ranges.append((start, n))
 
-    # Second pass: enforce max_shards by merging the smallest-adjacent ranges
-    # if we produced too many. (Rare; only when many pages each exceed budget.)
+    # Second pass: enforce max_shards. This does NOT merge the first pass's
+    # ranges — _rebalance_to_cap throws them away and repacks from page 0 by
+    # token weight, so max_pages_per_shard does not survive it. Nor is it rare:
+    # at the shipped defaults (max_concurrent_batches 10, max_pages_per_shard 5)
+    # it fires on every section over 50 pages.
     if max_shards is not None and max_shards >= 1 and len(ranges) > max_shards:
         ranges = _rebalance_to_cap(page_texts, n, max_shards)
 

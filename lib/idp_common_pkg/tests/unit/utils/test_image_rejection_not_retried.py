@@ -102,7 +102,18 @@ def test_a_coded_transient_error_mentioning_an_image_is_still_retried():
     that carries a code stays retryable however its message is worded. Note the
     qualifier: a code-less wrapped exception has no code to judge, which is why
     ``_IMAGE_REJECTION_MARKERS`` is kept to phrases that name an image limit
-    explicitly — see the next test."""
+    explicitly — see the next test.
+
+    The message deliberately contains a marker that is still in the list;
+    otherwise this passes without exercising the code guard at all, which is how
+    its previous fixture ("...image size") went vacuous when that marker was
+    dropped."""
+    from idp_common.utils.bedrock_utils import _IMAGE_REJECTION_MARKERS
+
+    message = "Rate exceeded: too many images in flight for this account"
+    assert any(m in message.lower() for m in _IMAGE_REJECTION_MARKERS), (
+        "fixture no longer exercises the code guard"
+    )
     calls = 0
 
     @async_exponential_backoff_retry(max_retries=3, initial_delay=0.01)
@@ -110,12 +121,7 @@ def test_a_coded_transient_error_mentioning_an_image_is_still_retried():
         nonlocal calls
         calls += 1
         raise botocore.exceptions.ClientError(
-            {
-                "Error": {
-                    "Code": "ThrottlingException",
-                    "Message": "Rate exceeded while checking image size",
-                }
-            },
+            {"Error": {"Code": "ThrottlingException", "Message": message}},
             "Converse",
         )
 

@@ -179,9 +179,17 @@ def _clamped_or_log(
 # non-retryable error and short-circuits the retry ladder), so a false positive
 # turns a transient fault into a permanent failure. The error-code guard in
 # is_image_request_rejection catches that only when the error carries a definite
-# code, which a Strands-wrapped exception does not — hence the narrower list. An
-# image error worded outside this list still fails, just without the tailored
-# explanation, which is the safe direction.
+# code, which a Strands-wrapped exception does not — hence the narrower list.
+#
+# Be clear about what a MISS costs, because it is more than a worse message. An
+# image rejection worded outside this list is still a ValidationException, which is
+# in DEFAULT_RETRYABLE_ERRORS and matched by substring in the generic branch below,
+# so it goes back to being retried — on the agentic path up to max_retries=50
+# bounded by max_total_delay=300s (see agentic_idp's invoke_agent_with_retry)
+# before failing the way it failed first time. That stall is the pathology the
+# short-circuit exists to prevent. The trade is still the right way round —
+# retrying a transient error costs time, permanently failing a document costs the
+# document — but a marker added later should be judged on both sides of it.
 _IMAGE_REJECTION_MARKERS = (
     "many-image request",
     "image exceeds",

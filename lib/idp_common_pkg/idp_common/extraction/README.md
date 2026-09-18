@@ -675,28 +675,39 @@ side, so `_load_document_images` counts the pages it is actually about to attach
 
 The count it passes is the count **one request** will carry, not the section's page
 count, because the two differ on the agentic path. `_agentic_images_per_request`
-derives it, and the distinction that matters there is which config keys are real
-ceilings:
+answers it by calling `plan_shards` on the section's real per-page OCR text — which
+`_prepare_section_context` now loads immediately *before* the images for exactly this
+reason — and taking the largest shard, capped by `max_images_per_agent`.
 
-- **`max_images_per_agent` is** — `_cap_agent_images` truncates the attached list to
-  it before every invocation.
-- **`max_pages_per_shard` is not.** `plan_shards` closes a shard at that many pages,
-  but when doing so would produce more shards than `max_concurrent_batches`,
-  `_rebalance_to_cap` redistributes the pages into *exactly* that many roughly-equal
-  ranges and ignores the page cap. At `max_concurrent_batches: 2` a 30-page section
-  is two 15-page requests, not six 5-page ones. So the shard estimate is
-  `ceil(pages / max_concurrent_batches)` **floored** at `max_pages_per_shard`, not
-  capped by it.
+It asks rather than computes because two closed forms were tried and both were wrong:
+
+- `min(pages, max_pages_per_shard)` — the page cap is not a ceiling. `plan_shards`
+  closes a shard at that many pages, but when doing so would produce more shards than
+  `max_concurrent_batches`, `_rebalance_to_cap` discards those ranges and repacks the
+  pages, ignoring the cap. At `max_concurrent_batches: 2` a 30-page section is two
+  15-page requests, not six 5-page ones.
+- `ceil(pages / max_concurrent_batches)` — the repack is **token-balanced**, not
+  page-balanced (`target = total_tokens / max_shards`). One dense page can take a
+  shard to itself and leave the sparse pages crowded into another, so no arithmetic
+  over page counts bounds the largest shard. It also silently dropped the clamp when
+  `max_pages_per_shard: 0` (documented as "page cap off") made the whole section one
+  shard.
+
+`max_images_per_agent` is the only hard ceiling on the attached count —
+`_cap_agent_images` truncates the list before every invocation.
 
 The result is then **doubled**, because Strands re-sends the attached page images on
 every turn and a `view_image` tool result adds a further copy of a page to the same
-request. The resulting thresholds:
+request. The resulting thresholds — note `max_concurrent_batches` caps the shard
+*count*, so raising it makes each request smaller and the threshold higher:
 
-| Mode | Clamps at |
+| Configuration | Clamps at |
 |---|---|
 | Simple | 21+ pages in the section |
-| Advanced, `max_concurrent_batches: 1` (default) | 11+ pages (`min(pages, max_images_per_agent=20) * 2 > 20`) |
-| Advanced, sharded | 11+ pages **per request**, i.e. `ceil(pages / max_concurrent_batches) >= 11` |
+| Advanced, **shipped defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) | ~101+ pages |
+| Advanced, `max_concurrent_batches: 5` / `2` | ~51+ / ~21+ pages |
+| Advanced, sharding off (`max_concurrent_batches: 1`) | 11+ pages (`min(pages, max_images_per_agent=20) * 2 > 20`) |
+| Advanced, `max_images_per_agent` ≤ 10 | never |
 
 The doubling is a heuristic and deliberately pessimistic — clamping to 2,000 px
 costs ~15% of the image tokens, a rejected request costs the section — but it covers
@@ -1437,13 +1448,22 @@ Key behaviors:
 - **Bounded by tokens AND pages.** Pages are grouped so each shard's estimated
   input stays under `shard_token_budget` (default **8,000**; `≈ chars/4`) **and**
   holds at most `max_pages_per_shard` pages (default **5**, `0` disables the page
-  ceiling). A shard closes when *either* bound is hit. The page ceiling
-  guarantees a large document shards even when its OCR text is unusually compact
-  and would otherwise fit one token budget — so sharding engages **by default**
-  with no per-config tuning. `max_concurrent_batches` is an **upper bound on
-  parallelism and shard count** — a very large section is split into as many
-  shards as needed to fit (capped at `max_concurrent_batches`), not exactly N
-  equal pieces.
+  ceiling). A shard closes when *either* bound is hit. The page ceiling means a
+  large document shards even when its OCR text is unusually compact and would
+  otherwise fit one token budget — so sharding engages **by default** with no
+  per-config tuning. `max_concurrent_batches` is an **upper bound on parallelism
+  and shard count** — a very large section is split into as many shards as needed
+  to fit (capped at `max_concurrent_batches`).
+  > ⚠️ **`max_pages_per_shard` is not a guarantee.** Once the page ceiling would
+  > produce more shards than `max_concurrent_batches` allows — which at the
+  > defaults (10 and 5) happens on every section over 50 pages — `_rebalance_to_cap`
+  > **discards** those ranges and repacks the pages into exactly
+  > `max_concurrent_batches` token-balanced groups, ignoring the page cap. At
+  > `max_concurrent_batches: 2` a 30-page section is two 15-page shards, not six
+  > 5-page ones, and because the repack balances estimated tokens rather than pages,
+  > a text-heavy page can occupy a shard alone. Code that needs a shard's real page
+  > count must ask `plan_shards`, not compute it — see the many-image cap note
+  > above.
   > **Why the low default budget?** A high budget (the old 40,000 default) let
   > even a ~25-page dense table fit one shard, so sharding silently did *not*
   > engage and a single agent had to emit the whole giant table in one Bedrock

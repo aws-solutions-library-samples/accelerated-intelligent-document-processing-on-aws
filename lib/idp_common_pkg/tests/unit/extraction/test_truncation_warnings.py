@@ -748,21 +748,33 @@ class TestShardWrapperAndMatcher:
 
     def test_a_non_validation_error_code_settles_it_before_the_markers(self):
         """The image verdict is deterministic — it short-circuits the retry ladder
-        and raises a non-retryable error — so a transient fault whose message
-        happens to use one of the looser markers ("image size", "invalid image")
-        must not be converted into a permanent failure."""
+        and raises a non-retryable error — so a transient fault must not be
+        converted into a permanent failure just because its message happens to
+        carry image vocabulary.
+
+        The fixture message must contain a marker that IS still in the list, or
+        this asserts nothing: an earlier version used "image size", which was then
+        removed from the markers, leaving the test green while exercising no
+        guard at all."""
         from botocore.exceptions import ClientError
 
+        from idp_common.utils.bedrock_utils import _IMAGE_REJECTION_MARKERS
+
+        message = "Rate exceeded: too many images in flight for this account"
+        assert any(m in message.lower() for m in _IMAGE_REJECTION_MARKERS), (
+            "fixture no longer exercises the code guard"
+        )
         throttle = ClientError(
-            {
-                "Error": {
-                    "Code": "ThrottlingException",
-                    "Message": "Rate exceeded while validating image size",
-                }
-            },
+            {"Error": {"Code": "ThrottlingException", "Message": message}},
             "Converse",
         )
         assert is_image_request_rejection(throttle) is False
+        # Same wording, ValidationException: now it IS an image rejection.
+        rejection = ClientError(
+            {"Error": {"Code": "ValidationException", "Message": message}},
+            "Converse",
+        )
+        assert is_image_request_rejection(rejection) is True
 
     def test_the_many_image_note_is_a_complete_sentence(self):
         """The note is appended before the remedy advice, so an unterminated

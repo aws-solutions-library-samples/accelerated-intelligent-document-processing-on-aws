@@ -1281,22 +1281,32 @@ before.
 **Which page counts this affects depends on the extraction mode**, because the
 limit binds on the images in one *request*, not on the section:
 
-| Mode | Downscales at |
+| Configuration | Downscales at |
 |---|---|
 | Simple (`extraction.mode: simple`) | 21 or more pages in the section |
-| Advanced, unsharded (`agentic.max_concurrent_batches: 1`, the default) | 11 or more pages, or `agentic.max_images_per_agent` if you have lowered it below 10 |
-| Advanced, sharded (`max_concurrent_batches` > 1) | 11 or more pages **per request**, where a request carries about `pages ÷ max_concurrent_batches` of them |
+| **Advanced, shipped defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) | about **101** or more pages |
+| Advanced, `max_concurrent_batches: 5` | about 51 or more pages |
+| Advanced, `max_concurrent_batches: 2` | about 21 or more pages |
+| Advanced, `max_concurrent_batches: 1` (sharding off) | 11 or more pages |
+| Advanced, `max_images_per_agent: 10` or lower | never — the request cannot reach 11 attached images |
 
-Advanced mode halves the threshold because the agent re-sends its attached page
-images on every turn and its `view_image` tool can add a further copy of a page to
-the same request, so 11 attached pages can present 22 image blocks. The estimate is
-deliberately pessimistic: some lost resolution is cheaper than a rejected request.
+Advanced mode halves whatever the per-request figure is, because the agent re-sends
+its attached page images on every turn and its `view_image` tool can add a further
+copy of a page to the same request: 11 attached pages can present 22 image blocks.
+The estimate is deliberately pessimistic — some lost resolution is cheaper than a
+rejected request.
 
-Note that `max_pages_per_shard` is **not** a ceiling on how many pages one request
-carries. When honouring it would need more shards than `max_concurrent_batches`
-allows, the planner redistributes the pages into exactly that many roughly-equal
-ranges instead — so at `max_concurrent_batches: 2` a 30-page section goes out as two
-15-page requests, not six 5-page ones, and is downscaled.
+Two things about the Advanced figures. `max_concurrent_batches` is a cap on the
+number of shards as well as on parallelism, so raising it makes each request
+*smaller* and the threshold *higher*; that is why the shipped default of 10 reaches
+the clamp only on very long sections. And `max_pages_per_shard` is **not** a ceiling
+on how many pages one request carries: when honouring it would need more shards than
+`max_concurrent_batches` allows, the planner discards those ranges and repacks the
+pages into exactly that many **token-balanced** groups, ignoring the page cap. Being
+token-balanced rather than page-balanced, one text-heavy page can occupy a shard of
+its own and leave the sparse pages crowded into another, so the page counts above
+are approximate — the pipeline asks the shard planner for the real figure rather
+than computing one.
 
 This also reaches stages other than extraction. Holistic classification sends every
 page of a packet in one request, so a packet over 20 pages now has its page images
@@ -1310,11 +1320,12 @@ otherwise have used — a real reduction, not a free one. On Sonnet 4.6, Haiku 4
 and the 3.x family the tier target is about 1,568 px, so the clamp costs nothing
 there. **We have not measured extraction accuracy with and without it.** If you
 process dense small print on a high-resolution-tier model, prefer keeping requests
-under the threshold rather than relying on the clamp. The lever that always works is
-`agentic.max_images_per_agent` (the only hard ceiling on images per agent request);
-raising `max_concurrent_batches` splits a section across more requests; and splitting
-the documents themselves works in any mode. On a default Advanced configuration
-`max_pages_per_shard` has no effect at all, because no sharding happens there.
+under the threshold rather than relying on the clamp. `agentic.max_images_per_agent`
+is the only hard ceiling on images per agent request, so it is the lever that always
+works; raising `max_concurrent_batches` splits a section across more, smaller
+requests; lowering `max_pages_per_shard` also closes shards earlier, which on the
+shipped defaults is what bounds any section up to 50 pages; and splitting the
+documents themselves works in any mode.
 
 To avoid the per-request re-encode itself, set `target_width` / `target_height` to
 `2000` (or less) for stages that send many page images. If your sections routinely

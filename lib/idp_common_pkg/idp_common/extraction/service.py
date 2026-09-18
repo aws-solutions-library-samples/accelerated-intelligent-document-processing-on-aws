@@ -1557,43 +1557,79 @@ class ExtractionService:
                     )
         return confidence_data
 
-    def _agentic_images_per_request(self, pages_to_attach: int) -> int:
+    def _agentic_images_per_request(
+        self, pages_to_attach: int, page_texts: list[str] | None = None
+    ) -> int:
         """Upper bound on the page images ONE agentic request will carry (#994).
 
         Needed because Bedrock's 2,000px many-image cap binds on a single
         request's image count, and on the agentic path a section is not one
-        request. Two things bound it, and only one of them is a real ceiling:
+        request. Two things bound it, and only one is a ceiling on page COUNT:
 
-        * ``max_images_per_agent`` IS a ceiling — ``_cap_agent_images`` truncates
-          the attached list to it before every invocation.
-        * ``max_pages_per_shard`` is NOT. ``plan_shards`` closes a shard at that
-          many pages, but when doing so would produce more shards than
-          ``max_concurrent_batches``, ``_rebalance_to_cap`` redistributes the
-          pages into *exactly* that many roughly-equal ranges and ignores the page
-          cap entirely. With ``max_concurrent_batches: 2`` a 30-page section is
-          sent as two 15-page requests, not six 5-page ones. So the shard estimate
-          is ``ceil(pages / max_concurrent_batches)``, floored at
-          ``max_pages_per_shard`` rather than capped by it.
+        * ``max_images_per_agent`` is — ``_cap_agent_images`` truncates the
+          attached list to it before every invocation.
+        * ``max_pages_per_shard`` is not, and nor is any arithmetic on it.
+          ``plan_shards`` closes a shard at that many pages, but when that would
+          produce more shards than ``max_concurrent_batches``,
+          ``_rebalance_to_cap`` discards those ranges and repacks the pages into
+          exactly ``max_concurrent_batches`` **token-balanced** groups, ignoring
+          the page cap. Token-balanced, not page-balanced: one dense page can take
+          a whole shard and leave 20 sparse ones in another, so no closed form
+          over page counts bounds it.
+
+        So it is not estimated — ``plan_shards`` is asked. Its inputs are all in
+        hand: ``page_texts`` is loaded immediately before the images
+        (``_prepare_section_context``) precisely so this can run first. The token
+        budget passed is deliberately enormous rather than the real derived one,
+        which is the SAFE direction and avoids duplicating that derivation: a
+        smaller budget can only close shards *earlier*, producing more and smaller
+        shards, and once the rebalance fires the budget stops mattering at all
+        because it repacks from scratch. ``table_boundary_pages`` is likewise
+        omitted — it too only closes shards earlier.
+
+        Without ``page_texts`` (the only other caller shape) the sound answer is
+        the whole section, since a single agent may then receive all of it.
 
         ⚠️ Known gap: sharding is skipped altogether — whole section to one agent
         — when the run is a resume (``existing_data_model``) or carries a
         ``checkpoint_buffer``, even with ``max_concurrent_batches > 1``. The
         estimate cannot see that from here, so a resumed run of a sharded config
         can carry more images than this predicts. ``max_images_per_agent`` still
-        bounds it at 20 attached, and the failure mode is a clear
+        bounds the attached count (at its default of 20; ``0`` means unlimited and
+        removes that backstop), and the failure mode is a clear
         ``ExtractionImageRejected`` rather than a wrong result.
         """
         agentic = self.config.extraction.agentic
         bound = pages_to_attach
-        if agentic.max_concurrent_batches > 1:
-            shard_pages = -(-pages_to_attach // agentic.max_concurrent_batches)
-            bound = min(bound, max(shard_pages, agentic.max_pages_per_shard))
+        if agentic.max_concurrent_batches > 1 and page_texts and pages_to_attach > 1:
+            try:
+                from idp_common.extraction.sharding import plan_shards
+
+                shards = plan_shards(
+                    page_texts,
+                    # Effectively unbounded: see the docstring for why erring
+                    # large here cannot under-estimate the largest shard.
+                    token_budget=1 << 40,
+                    max_shards=agentic.max_concurrent_batches,
+                    max_pages_per_shard=agentic.max_pages_per_shard,
+                )
+                if shards:
+                    bound = min(bound, max(s.page_count for s in shards))
+            except Exception as e:  # noqa: BLE001 - fall back to the sound answer
+                logger.warning(
+                    "Could not plan shards to size the many-image cap (%s); "
+                    "assuming one request carries the whole section.",
+                    e,
+                )
         if agentic.max_images_per_agent > 0:
             bound = min(bound, agentic.max_images_per_agent)
         return max(0, bound)
 
     def _load_document_images(
-        self, document: Document, sorted_page_ids: list[str]
+        self,
+        document: Document,
+        sorted_page_ids: list[str],
+        page_texts: list[str] | None = None,
     ) -> list[Any]:
         """
         Load images from all pages.
@@ -1601,6 +1637,12 @@ class ExtractionService:
         Args:
             document: Document containing pages
             sorted_page_ids: Sorted list of page IDs
+            page_texts: Per-page OCR text in section page order, when the caller
+                has it. Used only to size Bedrock's many-image dimension cap
+                (#994): on the agentic path the pages are sharded by TEXT volume,
+                so how many images one request carries cannot be known without it.
+                Omitted means "assume one request takes the whole section", which
+                is the conservative answer.
 
         Returns:
             List of prepared images
@@ -1618,17 +1660,17 @@ class ExtractionService:
         # count, and on the agentic (Strands) path those differ: the section's pages
         # are sliced into shards and capped again per agent invocation, so a long
         # section can be sent as several small requests. Counting the section would
-        # clamp pages that no request ever over-fills. See
-        # ``_agentic_images_per_request`` for how the per-request figure is bounded;
-        # it is then DOUBLED, because the agent re-sends its attached images on every
-        # turn and a ``view_image`` tool result adds a further copy of a page to the
-        # same request. Doubling is pessimistic on purpose — clamping to 2,000px
-        # costs far less than a hard request rejection. See extraction/README.md for
-        # the resulting thresholds per mode.
+        # clamp pages that no request ever over-fills. ``_agentic_images_per_request``
+        # asks ``plan_shards`` for the real figure; it is then DOUBLED, because the
+        # agent re-sends its attached images on every turn and a ``view_image`` tool
+        # result adds a further copy of a page to the same request. Doubling is
+        # pessimistic on purpose — clamping to 2,000px costs far less than a hard
+        # request rejection. See extraction/README.md for the thresholds this
+        # produces per mode.
         pages_to_attach = sum(1 for pid in sorted_page_ids if pid in document.pages)
         if self.config.extraction.agentic.enabled:
             effective_image_count = (
-                self._agentic_images_per_request(pages_to_attach) * 2
+                self._agentic_images_per_request(pages_to_attach, page_texts) * 2
             )
         else:
             effective_image_count = pages_to_attach
@@ -6943,13 +6985,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             page_id_to_text,
             section_info.page_type_presence,
         )
-        page_images = self._load_document_images(document, section_info.sorted_page_ids)
         # Stash the per-page OCR text (in section page order) so the agentic
         # path can shard the input by page range when concurrent batches are
         # configured. Pages missing from page_id_to_text contribute "".
+        # Built BEFORE the images are loaded because the many-image dimension cap
+        # (#994) depends on how the pages will be sharded, and that is decided by
+        # the page TEXT — see _agentic_images_per_request.
         self._page_texts = [
             page_id_to_text.get(pid, "") for pid in section_info.sorted_page_ids
         ]
+        page_images = self._load_document_images(
+            document, section_info.sorted_page_ids, page_texts=self._page_texts
+        )
 
         # Initialize extraction context
         class_schema, attribute_descriptions = self._initialize_extraction_context(

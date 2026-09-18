@@ -20,6 +20,7 @@ import pytest
 from PIL import Image
 
 from idp_common.extraction.service import ExtractionService
+from idp_common.extraction.sharding import DEFAULT_SHARD_TOKEN_BUDGET, plan_shards
 from idp_common.image import (
     BEDROCK_IMAGE_MAX_ENCODED_BYTES,
     BEDROCK_MANY_IMAGE_MAX_DIMENSION,
@@ -186,66 +187,140 @@ def _agentic_service(**agentic_overrides) -> ExtractionService:
     )
 
 
-def _load(service: ExtractionService, pages: int) -> list[bytes]:
+def _load(
+    service: ExtractionService, pages: int, page_texts: list[str] | None = None
+) -> list[bytes]:
     doc = _doc_with_pages(pages)
     with patch("idp_common.image.prepare_image", return_value=_wide_png()):
-        return service._load_document_images(doc, [str(i) for i in range(1, pages + 1)])
+        return service._load_document_images(
+            doc, [str(i) for i in range(1, pages + 1)], page_texts=page_texts
+        )
+
+
+def _uniform_texts(pages: int) -> list[str]:
+    """Equal OCR volume per page — enough text that the page ceiling, not the
+    token budget, is what closes a shard."""
+    return ["x" * 4000] * pages
 
 
 def test_agentic_mode_halves_the_effective_page_threshold():
     """Strands re-sends the attached pages each turn and ``view_image`` adds a
     second copy of a page to the same request, so a single agent invocation
-    carrying 11 pages can present 22 image blocks. On the default agentic path
-    (``max_concurrent_batches`` = 1, so no sharding) the whole section goes to one
-    agent, and the threshold therefore lands at 11 pages rather than 21. Clamping
-    early costs ~15% of the image tokens; not clamping costs the whole request."""
-    images = _load(_agentic_service(), 11)
+    carrying 11 pages can present 22 image blocks. With sharding off
+    (``max_concurrent_batches: 1``) the whole section goes to one agent, so the
+    threshold lands at 11 pages rather than 21. Clamping early costs ~15% of the
+    image tokens; not clamping costs the whole request.
+
+    Note this is NOT the shipped default — `base-extraction.yaml` and the UI
+    schema both ship ``max_concurrent_batches: 10``. See
+    ``test_the_shipped_default_clamps_only_on_very_long_sections``.
+    """
+    svc = _agentic_service(max_concurrent_batches=1)
+    images = _load(svc, 11, _uniform_texts(11))
     assert all(
         max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
     )
 
 
 def test_agentic_mode_counts_what_one_request_carries_not_the_whole_section():
-    """The count that matters is per REQUEST. With sharding on, a 12-page section
-    at ``max_concurrent_batches: 4`` is sent as four 3-page requests — 6 blocks
-    each after doubling, nowhere near the threshold. Counting the section instead
-    would downscale all 12 pages for a limit no request comes close to."""
-    images = _load(
-        _agentic_service(max_concurrent_batches=4, max_pages_per_shard=5), 12
-    )
+    """The count that matters is per REQUEST. At ``max_concurrent_batches: 4`` a
+    12-page section is sent as shards of at most 5 pages — 10 blocks after
+    doubling, under the threshold. Counting the section instead would downscale
+    all 12 pages for a limit no request comes close to."""
+    svc = _agentic_service(max_concurrent_batches=4, max_pages_per_shard=5)
+    assert svc._agentic_images_per_request(12, _uniform_texts(12)) == 5
+    images = _load(svc, 12, _uniform_texts(12))
     assert len(images) == 12
     assert all(_page_dimensions(img) == (1585, 2048) for img in images)
 
 
-def test_max_pages_per_shard_is_a_floor_on_shard_size_not_a_ceiling():
-    """``plan_shards`` closes a shard at ``max_pages_per_shard``, but when that
-    would produce more shards than ``max_concurrent_batches``, ``_rebalance_to_cap``
-    redistributes the pages into EXACTLY that many roughly-equal ranges and ignores
+def test_the_estimate_is_the_real_planner_not_arithmetic_on_the_page_cap():
+    """``max_pages_per_shard`` bounds neither the estimate nor the outcome.
+    ``plan_shards`` closes a shard at that many pages, but when that would produce
+    more shards than ``max_concurrent_batches``, ``_rebalance_to_cap`` discards
+    those ranges and repacks into exactly that many TOKEN-balanced groups, ignoring
     the page cap. So a 30-page section at ``max_concurrent_batches: 2`` really goes
-    out as two 15-page requests, not six 5-page ones — 30 blocks after doubling,
-    well over the threshold. Treating the page cap as a ceiling made the estimate
-    say 5 here and skip a clamp the service's own rule calls for."""
+    out as two 15-page requests — 30 blocks after doubling, over the threshold.
+
+    Asserted against ``plan_shards`` itself rather than against a number in this
+    test, because two successive review passes accepted a closed form that the
+    planner does not honour: first ``min(pages, max_pages_per_shard)``, then
+    ``ceil(pages / max_concurrent_batches)``."""
     svc = _agentic_service(max_concurrent_batches=2, max_pages_per_shard=5)
-    assert svc._agentic_images_per_request(30) == 15
-    images = _load(svc, 30)
+    texts = _uniform_texts(30)
+    planned = plan_shards(
+        texts,
+        token_budget=DEFAULT_SHARD_TOKEN_BUDGET,
+        max_shards=2,
+        max_pages_per_shard=5,
+    )
+    assert max(s.page_count for s in planned) == 15
+    assert svc._agentic_images_per_request(30, texts) == 15
+    images = _load(svc, 30, texts)
     assert all(
         max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
     )
 
 
-def test_the_per_agent_cap_bounds_the_rebalanced_shard_too():
-    """With 50 pages over 2 shards the rebalanced shards hold 25 pages each, but
-    ``_cap_agent_images`` truncates the attached list to ``max_images_per_agent``,
-    so 20 is the real per-request figure."""
-    svc = _agentic_service(max_concurrent_batches=2, max_pages_per_shard=5)
-    assert svc._agentic_images_per_request(50) == 20
+def test_a_skewed_page_text_distribution_is_still_bounded():
+    """The rebalance balances estimated TOKENS, so one dense page can take a whole
+    shard and leave the rest crowded into another. No arithmetic over page counts
+    predicts that, which is why the planner is asked. The estimate must still be an
+    upper bound on what the largest shard attaches."""
+    svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=5)
+    texts = ["x" * 400_000] + ["x" * 200] * 59
+    planned = plan_shards(
+        texts,
+        token_budget=DEFAULT_SHARD_TOKEN_BUDGET,
+        max_shards=10,
+        max_pages_per_shard=5,
+    )
+    largest = min(max(s.page_count for s in planned), 20)  # _cap_agent_images
+    assert svc._agentic_images_per_request(60, texts) >= largest
+
+
+def test_the_page_ceiling_being_disabled_does_not_lose_the_clamp():
+    """``max_pages_per_shard: 0`` is supported and documented as "page cap off".
+    With it off, a section whose text fits one budget becomes ONE shard holding
+    every page, so the request attaches ``max_images_per_agent`` of them. An
+    estimate derived from ``ceil(pages / max_concurrent_batches)`` said 3 here and
+    dropped a clamp the pre-#994 code applied."""
+    svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=0)
+    texts = ["x" * 50] * 30  # compact: the token budget alone never splits these
+    assert svc._agentic_images_per_request(30, texts) == 20
+    images = _load(svc, 30, texts)
+    assert all(
+        max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
+    )
+
+
+def test_without_page_texts_the_whole_section_is_assumed():
+    """A caller that does not supply the texts cannot be sharded-for, so the
+    conservative answer is the whole section (capped by max_images_per_agent)."""
+    svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=5)
+    assert svc._agentic_images_per_request(30, None) == 20
+
+
+def test_the_shipped_default_clamps_only_on_very_long_sections():
+    """`base-extraction.yaml` and the UI schema ship ``max_concurrent_batches: 10``
+    with ``max_pages_per_shard: 5``, so up to 50 pages the shards hold 5 and beyond
+    that the rebalance gives about ``pages / 10``. The clamp therefore engages at
+    about 101 pages, not 11 — the figure three earlier drafts of the docs printed
+    as "the default"."""
+    svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=5)
+    assert svc._agentic_images_per_request(50, _uniform_texts(50)) == 5
+    assert svc._agentic_images_per_request(100, _uniform_texts(100)) == 10
+    assert svc._agentic_images_per_request(101, _uniform_texts(101)) == 11
+    images = _load(svc, 100, _uniform_texts(100))
+    assert all(_page_dimensions(img) == (1585, 2048) for img in images)
 
 
 def test_the_per_agent_image_cap_also_bounds_the_count():
     """``max_images_per_agent`` caps how many pages are attached to one
     invocation, so a section far above the threshold still only ever presents that
     many attached blocks. At a cap of 4 (8 after doubling) nothing is clamped."""
-    images = _load(_agentic_service(max_images_per_agent=4), 40)
+    svc = _agentic_service(max_concurrent_batches=1, max_images_per_agent=4)
+    images = _load(svc, 40, _uniform_texts(40))
     assert len(images) == 40
     assert all(_page_dimensions(img) == (1585, 2048) for img in images)
 

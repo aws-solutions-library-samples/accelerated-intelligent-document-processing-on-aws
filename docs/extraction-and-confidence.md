@@ -736,15 +736,18 @@ section over 20 pages has its pages downscaled to that before the request goes o
 Each reduced page appears in `metadata.image_downscale` with a `reason` naming the
 pixel limit rather than the byte limit.
 
-Advanced (agentic) extraction reaches the limit at a **lower page count**: the agent
-re-sends its attached pages on every turn and its `view_image` tool can add a further
-copy of a page to the same request, so the estimate doubles the number of images one
-agent invocation will carry. With the default `max_concurrent_batches: 1` that puts
-the threshold at **11 pages** rather than 21. With sharding on
-(`max_concurrent_batches > 1`) the figure is per shard, so at the default
-`max_pages_per_shard: 5` the clamp does not apply at all. Simple extraction clamps at
-21 pages. Holistic classification, which sends a whole packet in one request, is
-affected on the same >20-image rule.
+Simple extraction clamps at **21 pages** — the whole section goes out as one request.
+Advanced (agentic) extraction is judged per *request*, not per section, so its
+threshold depends on how the pages shard. The agent re-sends its attached pages on
+every turn and its `view_image` tool can add a further copy of a page to the same
+request, so the figure one agent invocation will carry is doubled. On the **shipped
+defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) each request
+carries few enough pages that the clamp engages only at about **101 pages**; at
+`max_concurrent_batches: 5` it is about 51, at 2 about 21, and with sharding off
+(`max_concurrent_batches: 1`) it is 11. Because `max_concurrent_batches` caps the
+number of shards as well as the parallelism, *raising* it makes each request smaller
+and the threshold higher. Holistic classification, which sends a whole packet in one
+request, is affected on the same >20-image rule.
 
 Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5 and
 Sonnet 5 it is about 20% below the resolution they would otherwise use, on older
