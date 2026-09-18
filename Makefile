@@ -21,6 +21,12 @@ else
   PIP := $(CURDIR)/$(VENV_DIR)/bin/pip
 endif
 
+# Region handed to test suites that construct a boto3 client at import time.
+# Only a region — no credentials are needed or used, and no AWS call is made.
+# Overridable, but it must be set to SOMETHING: botocore raises NoRegionError
+# during collection otherwise. See the note in test-packages-cicd and #988.
+TEST_AWS_REGION ?= us-east-1
+
 # idp-cli invocation — uses `python -m idp_cli.cli` so it works whether or not
 # the virtualenv is activated (picks up $(PYTHON) which prefers .venv).
 IDP_CLI := $(PYTHON) -m idp_cli.cli
@@ -466,13 +472,21 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# Each gets its own invocation for the same reason as queue_sender above:
 	@# they all define a module named ``index``, so a combined pytest run fails
 	@# collection on the basename collision.
+	@#
+	@# Three of them build a boto3 client at import time with no region, so they
+	@# need AWS_DEFAULT_REGION or botocore raises NoRegionError at COLLECTION.
+	@# The Lambda runtime always sets AWS_REGION in production, so this is a
+	@# test-harness assumption rather than a defect in the handlers -- but it
+	@# means those suites pass on a developer machine (which has an ambient
+	@# region) and fail on a CI runner, which is why the value is pinned here
+	@# rather than inherited. No credentials are needed or used. See #988.
 	cd src/lambda/api_handler && $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd src/lambda/batch_pre_processor && $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd src/lambda/complete_section_review && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/external_idp_group_mapping && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd src/lambda/job_tracker && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/save_reporting_data && $(PYTHON) -m pytest -q -p no:cacheprovider
-	cd src/lambda/test_file_copier && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/save_reporting_data && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/test_file_copier && AWS_DEFAULT_REGION=$(TEST_AWS_REGION) $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTHON) -m pytest -q -p no:cacheprovider
 	cd src/lambda/version_check_resolver && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
