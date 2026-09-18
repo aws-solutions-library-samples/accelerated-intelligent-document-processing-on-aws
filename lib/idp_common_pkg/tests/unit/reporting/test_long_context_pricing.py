@@ -118,6 +118,10 @@ def test_no_premium_at_any_input_volume(unit: str, tokens: int) -> None:
     base_rate = reporter._get_unit_cost("bedrock/us.anthropic.claude-sonnet-5", unit)
     long_rate = reporter._get_unit_cost("bedrock/us.anthropic.claude-sonnet-5:1m", unit)
 
+    # Not-None first: a missing entry returns None, which would otherwise make
+    # the comparisons below a type error rather than a readable failure.
+    assert base_rate is not None, f"no base rate for {unit}"
+    assert long_rate is not None, f"no :1m rate for {unit}"
     assert base_rate > 0
     assert long_rate == base_rate
     assert tokens * long_rate == tokens * base_rate
@@ -156,5 +160,7 @@ def test_a_legacy_1m_metering_key_prices_at_the_standard_rate() -> None:
         for unit in ("inputTokens", "outputTokens"):
             legacy = reporter._get_unit_cost(name, unit)
             plain = reporter._get_unit_cost(base, unit)
+            assert legacy is not None, f"{name}/{unit} has no price entry"
+            assert plain is not None, f"{base}/{unit} has no price entry"
             assert legacy > 0, f"{name}/{unit} priced at 0.0"
             assert legacy == plain, f"{name}/{unit} != {base}/{unit}"
