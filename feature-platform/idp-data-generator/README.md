@@ -80,8 +80,11 @@ Stable interface owned by the accelerator (must not break):
 - Config storage: `idp_common.config.ConfigurationManager` (gzip-compressed
   Binary format) — the extension installs `idp_common` so it shares the host's
   exact read/write format rather than vendoring or round-tripping.
-- Feature registration: direct invoke of the host's `RegisterFeatureFunction`
-  Lambda with the resolver event shape (AppSync transport was removed).
+- Feature registration: direct `lambda:Invoke` of the host's
+  `RegisterFeatureFunction` Lambda with the resolver event shape
+  `{info: {fieldName}, arguments, identity}`. (AppSync was removed from the
+  accelerator; the event shape is unchanged from that era, which is why it still
+  looks like a GraphQL resolver event.)
 - Per-job status is feature-owned (BootstrapTrackingTable), read via the
   FeatureApi `GET /jobs/{id}` — there is no host status channel.
 

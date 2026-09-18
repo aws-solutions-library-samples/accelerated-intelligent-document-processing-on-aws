@@ -32,10 +32,24 @@ Example contents of `.env` file:
   VITE_USER_POOL_ID=us-west-2_XXXXXXXXX
   VITE_USER_POOL_CLIENT_ID=XXXXXXXXXXXXXXXXXXXXXXXXXX
   VITE_IDENTITY_POOL_ID=us-west-2:XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-  VITE_APPSYNC_GRAPHQL_URL=https://XXXXXXXXXX.appsync-api.us-west-2.amazonaws.com/graphql
+  VITE_API_BASE_URL=https://xxxxxxxxxx.execute-api.us-west-2.amazonaws.com/api
+  VITE_STREAM_URL=https://xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.lambda-url.us-west-2.on.aws/
   VITE_AWS_REGION=us-west-2
   VITE_SETTINGS_PARAMETER=CFN-IDPSettingsParameter-XXXXXXXXXXXX
 ```
+
+The two transport variables are the ones most easily mistyped. `VITE_API_BASE_URL`
+is the base URL of the API Gateway REST API (the `api` stage) that the UI reads in
+`src/api/rest-client.ts`; every operation is a `POST` to
+`${VITE_API_BASE_URL}/op/<fieldName>`. `VITE_STREAM_URL` is the Lambda **Function
+URL** of the chat-streaming function, read in `src/api/stream-client.ts` and
+SigV4-signed with Cognito Identity Pool credentials — note that a Function URL is
+shaped `https://<id>.lambda-url.<region>.on.aws/`, not like an API Gateway URL.
+
+The `WebUITestEnvFile` output contains several further variables beyond the ones
+shown above (external-IdP settings, bucket names, and default token/latency
+values). Copying the whole output — which is what `make ui-start` does — is more
+reliable than hand-picking lines.
 
 2. Make sure you have NodeJS 22.12+ installed.
 3. Run `npm install` to install dependencies

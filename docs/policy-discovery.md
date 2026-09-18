@@ -95,8 +95,8 @@ All rules for a policy document are grouped into a single **policy class** — a
 - Validates each rule object (`_validate_rule_class`) has the required `rule_properties` shape
 - Writes results via `_save_rules_to_config`, which performs the append-only merge into `Config#<version>.policy_classes`
 
-**Upload Resolver Lambda (`nested/appsync/src/lambda/discovery_upload_resolver/index.py`):**
-- Handles the `UploadDiscoveryDocument` GraphQL mutation for both classes and rules discovery
+**Upload Resolver Lambda (`nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py`):**
+- Handles the `UploadDiscoveryDocument` operation for both classes and rules discovery
 - When `discoveryType == 'rules'`, sets `jobType: 'rules'` on the tracking record so the UI can discriminate
 - Issues a presigned upload URL and creates the initial job record in DynamoDB
 
@@ -148,9 +148,9 @@ graph TD
 - LLM rule extraction (defaults to `global.anthropic.claude-sonnet-4-6`; substitute `us.anthropic.claude-sonnet-4-6` or a regional equivalent if your stack doesn't have access to global inference profiles)
 - Optional Strands agent with reviewer in agentic mode
 
-**AppSync/GraphQL Integration:**
-- `UploadDiscoveryDocument` mutation carries the `discoveryType` argument
-- `onDiscoveryJobStatusChange` subscription streams progress (reused from classes discovery)
+**Web UI API Integration:**
+- `UploadDiscoveryDocument` carries the `discoveryType` argument
+- Progress is read by polling the discovery job records (reused from classes discovery)
 
 **Rule Validation Integration:**
 - See [Rule Validation Integration](#rule-validation-integration) below. The `PolicyClassificationService` reads from the same `policy_classes` list at pipeline runtime.
@@ -300,7 +300,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 6. Monitor progress in the Discovery Jobs table below
 
 **Monitoring Progress:**
-- Real-time status messages via GraphQL subscriptions (e.g., `Analyzing policy document...`, `Extracted N rules - appended to policy_classes...`)
+- Status messages refreshed by 10-second polling (e.g., `Analyzing policy document...`, `Extracted N rules - appended to policy_classes...`); GraphQL subscriptions are not used
 - Jobs with `jobType === 'rules'` display a **"Policy Discovery Job"** breadcrumb when opened
 
 **Reviewing Results:**

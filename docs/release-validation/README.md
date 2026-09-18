@@ -11,6 +11,10 @@ is written once and never overwritten.
 If you are evaluating whether to deploy or upgrade to a given release, this is the record of
 what was actually exercised against live AWS infrastructure, and what was found.
 
+This directory covers **validating** a release. For the procedure that **publishes** one —
+`scripts/aws-release.sh`, the three public buckets, and the failure/recovery paths — see the
+[Release Runbook](../release-runbook.md).
+
 | Release | Verdict | Record |
 |---------|---------|--------|
 | **v0.6.8** | ✅ Ship — 18 of 18 tiers pass (typecheck baseline unchanged); 4 findings, none in shipped product code — one account quota, three test-tooling (two false-red gates, one unrepeatable test) | [v0.6.8.md](./v0.6.8.md) |

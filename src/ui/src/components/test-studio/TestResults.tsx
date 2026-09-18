@@ -37,7 +37,7 @@ import { formatConfigVersionLink } from './utils/configVersionUtils';
 import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/MetricInfo';
 import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
 import ClassificationErrorsPanel from './ClassificationErrorsPanel';
-import { asFiniteNumber, formatCostUsd, formatUnitCostUsd } from './formatCost';
+import { asFiniteNumber, costCellLabels, formatCostUsd } from './formatCost';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
@@ -818,11 +818,10 @@ const ComprehensiveBreakdown = ({
 
                   const cost = (details.estimated_cost as number) || 0;
                   const unitCost = asFiniteNumber(details.unit_cost);
-                  // Rows like `totalTokens` and `requests` are counts, not charges:
-                  // nothing prices them and nothing is billed for them. Seen live
-                  // reading "$0" unit cost beside "N/A" estimated cost, which says
-                  // both "free" and "not priced" in the same row.
-                  const isUnpriced = cost === 0 && (unitCost === null || unitCost === 0);
+                  // Unpriced / not-chargeable / charged are three distinct states
+                  // that must not collapse to two; costCellLabels holds that rule
+                  // and its ordering, and is unit-tested in formatCost.test.ts.
+                  const labels = costCellLabels(unitCost, cost);
                   contextSubtotal += cost;
 
                   costItems.push({
@@ -830,8 +829,8 @@ const ComprehensiveBreakdown = ({
                     serviceApi: `${service}/${api}`,
                     unit: (details.unit as string) || unit,
                     value: (details.value as string) || 'N/A',
-                    unitCost: isUnpriced ? '—' : unitCost === null ? 'Not priced' : formatUnitCostUsd(unitCost),
-                    estimatedCost: isUnpriced ? '—' : cost > 0 ? formatCostUsd(cost) : 'N/A',
+                    unitCost: labels.unitCost,
+                    estimatedCost: labels.estimatedCost,
                     sortOrder: 0, // Regular items
                   });
                 });

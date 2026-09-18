@@ -115,7 +115,7 @@ The role provides comprehensive access to **28 AWS services** required across bo
 | Compute & Serverless | 3 | Lambda, Step Functions, CodeBuild |
 | AI/ML Services | 3 | Bedrock, Textract, SageMaker (optional MLflow) |
 | Storage Services | 3 | S3, DynamoDB, ECR |
-| API & Application | 2 | API Gateway, AppSync |
+| API & Application | 2 | API Gateway, AppSync (vestigial — upgrade-only, see below) |
 | Security & Identity | 5 | Cognito User Pools, Cognito Identity, KMS, Secrets Manager, WAF v2 |
 | Messaging & Events | 4 | SNS, SQS, EventBridge, EventBridge Scheduler |
 | Monitoring & Management | 3 | CloudWatch, CloudWatch Logs, Systems Manager |
@@ -138,8 +138,8 @@ The role provides comprehensive access to **28 AWS services** required across bo
 | S3 | Full Access | Bucket and object management |
 | DynamoDB | Full Access | Table and data management |
 | ECR | Full Access | Container image registry |
-| API Gateway | Full Access | REST and HTTP API management |
-| AppSync | Full Access | GraphQL API management |
+| API Gateway | Full Access | REST and HTTP API management — including the UI ⇄ backend REST API |
+| AppSync | Full Access | Retained for backward compatibility only: deleting the GraphQL API a pre-migration (v0.5.x) stack created, when such a stack is upgraded in place. No current template creates an AppSync resource |
 | Cognito User Pools | Full Access | User authentication and management |
 | Cognito Identity | Full Access | Federated identity and temporary credentials |
 | KMS | Full Access | Encryption key management |
@@ -481,16 +481,28 @@ apigateway:*
 </details>
 
 <details>
-<summary><strong>AWS AppSync</strong> (<code>appsync</code>)</summary>
+<summary><strong>AWS AppSync</strong> (<code>appsync</code>) — retained for backward compatibility</summary>
 
 **Permission Level**: Full (`*`)
 
-**Purpose**: GraphQL APIs for real-time document processing updates and frontend integration
+**Purpose**: Upgrades from a pre-migration stack only. AWS AppSync was removed
+from the solution in v0.6.0 — the UI ⇄ backend transport is now an API Gateway
+REST API with a dispatcher Lambda, and no template declares an
+`AWS::AppSync::*` resource (see
+[`docs/migration-appsync-to-rest.md`](../../docs/migration-appsync-to-rest.md)).
+The grant is kept because upgrading a v0.5.x stack in place requires
+CloudFormation to **delete** the GraphQL API, schema, data sources and resolvers
+that the old template created; without it that update fails partway through.
+A first-time deployment of the current templates never exercises it, so an
+operator who will only ever deploy v0.6.0 or later can drop the vestigial
+`appsync:*` grant from `IDP-Cloudformation-Service-Role.yaml`.
 
 **Actions Granted**:
 ```
 appsync:*
 ```
+The wildcard covers the actions below. Only the `Delete*`/`Get*`/`List*` ones are
+reached today, and only while an upgrade removes a pre-migration stack's API:
 - `CreateGraphqlApi`, `DeleteGraphqlApi`, `UpdateGraphqlApi`, `GetGraphqlApi`, `ListGraphqlApis`
 - `CreateDataSource`, `DeleteDataSource`, `UpdateDataSource`, `GetDataSource`
 - `CreateResolver`, `DeleteResolver`, `UpdateResolver`, `GetResolver`, `ListResolvers`

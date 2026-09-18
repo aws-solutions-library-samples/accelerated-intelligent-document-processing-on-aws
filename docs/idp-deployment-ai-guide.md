@@ -518,7 +518,7 @@ verify that the `VpcCidr` ingress fix is working correctly.
 | 3 | Open **Upload Documents** page | Shows the input bucket name — NOT "Input bucket not configured" |
 | 4 | Upload `samples/lending_package.pdf` | Document appears in the Document List with status `QUEUED` |
 | 5 | Wait ~2 minutes | Status progresses through `OCR → CLASSIFICATION → EXTRACTION → COMPLETE` without page refresh |
-| 6 | Open browser **DevTools → Network → WS** tab | An active WebSocket connection to `*.appsync-realtime-api.<REGION>.amazonaws.com` is visible |
+| 6 | Open browser **DevTools → Network → Fetch/XHR**, watch the Document List, then switch to another browser tab and back | Repeated `POST` requests to the REST API's `/op/<field>` route about every 5 s (about every 4 s while a document's detail page is open). They stop while the tab is hidden and resume immediately when it is visible again. There is **no** WebSocket connection — the UI polls rather than subscribing |
 | 7 | (Private only) Check endpoint SG has 2 ingress rules | `aws ec2 describe-security-groups` shows both Lambda SG and VPC CIDR rules |
 
 **Test 2, 3, 6** are the primary indicators that the VpcCidr fix is working.  If they
