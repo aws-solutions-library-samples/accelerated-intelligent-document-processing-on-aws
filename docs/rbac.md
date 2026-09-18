@@ -263,6 +263,64 @@ mutation UpdateUser($userId: ID!, $allowedConfigVersions: [String]) {
 
 ## Enforcement Layers
 
+### Layer 0: The API dispatcher denies by default (Server-Side)
+
+The Web UI calls a single REST route, `POST /op/{field}`, whose Cognito
+authorizer only **authenticates** — it performs no group checks. Before routing a
+request to a resolver, the dispatcher
+(`nested/api-resolvers/src/lambda/http_api_dispatcher/authz.py`) compares the
+caller's Cognito groups against a per-operation required-groups manifest and
+refuses the request with **HTTP 403** (`errorType: "Unauthorized"`) when they do
+not intersect. The groups come from the verified JWT claim
+(`identity.claims['cognito:groups']`), never from the request body.
+
+**A field with no manifest entry is denied.** Unmapped means denied, so an
+operation whose required groups were never declared is closed rather than open —
+this is what makes a forgotten resolver check on a **group-scoped** operation a
+visible 403 instead of an unprotected endpoint.
+
+⚠️ **This does not cover every operation.** 26 of the 118 declared operations are
+declared `ANY`, which means the dispatcher enforces authentication but *not* group
+membership for them, so a forgotten resolver check on one of those is still
+reachable by any authenticated caller — `getFileContents`, for example, bounds
+itself with a bucket allowlist rather than a group check. Deciding which of the 26
+should be narrowed is tracked as issue
+[#979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979).
+Separately, the self-asserted-identity passthrough in `idp_common.api_adapter`
+(where an event carrying its own `arguments` + `identity` bypasses this
+normalization entirely) is **not** addressed by this layer and is tracked as
+[#978](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/978).
+
+The manifest
+(`http_api_dispatcher/api_rbac_manifest.json`) is **generated** from
+`scripts/api_rbac_expectations.yaml` by
+`scripts/sdlc/generate_api_rbac_manifest.py`, the same file the static scan and
+the live RBAC harness assert against, so there is no separate list to keep in
+step; `make api-test-static` fails if the two drift, and the dispatcher treats an
+unreadable or unsupported manifest as deny-all.
+
+This layer is a **floor, not a replacement** for the resolver checks in Layer 2:
+only the resolver can enforce per-object scope (config version, test set,
+ownership), so both run. When triaging a 403, the dispatcher logs `Denied
+<field>: ...`; a resolver denial carries the resolver's own message.
+
+**Triaging a deploy where every operation returns 403.** Deny-all is correct when
+the manifest is missing, unparseable, of an unsupported version, or carries an
+entry in a shape the check cannot evaluate — but per-request it is
+indistinguishable from a legitimate denial, so the dispatcher announces the
+condition once per cold start at ERROR under the fixed marker
+`API_RBAC_MANIFEST_UNAVAILABLE`, followed by the specific cause. Alarm on that
+string in the dispatcher's log group: it means the bundled policy file is broken
+(a build or packaging fault), not that the callers lack the groups they need. The
+status stays 403 rather than becoming a 5xx, because the request genuinely is
+unauthorized and a 5xx would invite a retry.
+
+> **⚠️ Adding an API operation now includes declaring its required groups** in
+> `scripts/api_rbac_expectations.yaml` and regenerating the manifest. Skip that
+> and the new operation returns 403 for every caller, including Admin. Fix it by
+> declaring the groups — never by widening an existing entry or letting an
+> unmapped field through. See `.claude/skills/api-rbac-test.md`.
+
 ### Layer 1: Authentication at the API, and the declared group policy
 
 The UI reaches the backend over an **API Gateway REST API** with a single route,
@@ -271,8 +329,9 @@ authorizer **only authenticates**: an unauthenticated or invalid-token request i
 rejected with **401** before any code runs, but the authorizer does not know
 which Cognito group a field requires. AWS AppSync used to evaluate the schema's
 group directives itself; it has been removed (see
-[AppSync → REST API Migration](./migration-appsync-to-rest.md) §4), so **all
-authorization is enforced in Layer 2**.
+[AppSync → REST API Migration](./migration-appsync-to-rest.md) §4), so the group policy is enforced by the dispatcher's
+default-deny floor (Layer 0) and, per object, by the resolvers (Layer 2) — never
+by the authorizer.
 
 What Layer 1 still contributes is the *declared* policy and the input boundary:
 
@@ -416,8 +475,14 @@ Admins can create users with any of the four roles via the User Management page.
              │ POST /op/{field} (Cognito ID token)
 ┌────────────▼────────────────────┐
 │  API Gateway REST API           │  Layer 1: Cognito User Pools authorizer — authN only (401 if not signed in)
-│  + dispatcher arg validation    │           + input-shape validation from schema.graphql (400 BadRequest)
-└────────────┬────────────────────┘           Group directives are DECLARED here, not evaluated by AWS
+│                                 │           Group directives are DECLARED in schema.graphql, not evaluated by AWS
+└────────────┬────────────────────┘
+             │
+┌────────────▼────────────────────┐
+│  HTTP API dispatcher            │  Layer 0: DEFAULT-DENY group check from the generated manifest
+│  authz.py + validation.py       │  ← no entry for the field ⇒ 403, before routing
+│  api_rbac_manifest.json         │           + input-shape validation from schema.graphql (400 BadRequest)
+└────────────┬────────────────────┘
              │
 ┌────────────▼────────────────────┐
 │  Lambda Resolvers / ddb_direct  │  Layer 2: Server-side group checks (403 Unauthorized) + filtering
@@ -441,10 +506,11 @@ Admins can create users with any of the four roles via the User Management page.
 To add a new role:
 1. Add a `AWS::Cognito::UserPoolGroup` in `template.yaml`
 2. Add the group name to relevant `@aws_cognito_user_pools(cognito_groups: [...])` directives in `schema.graphql` (do **not** use `@aws_auth` — see Layer 1 warning), and update the corresponding server-side group check in the resolver Lambda
-3. Update the `VALID_PERSONAS` dict in `src/lambda/user_management/index.py`
-4. Add role detection in `src/ui/src/hooks/use-user-role.ts`
-5. Add navigation items in `src/ui/src/components/genaiidp-layout/navigation.tsx`
-6. Pass the new group as an environment variable to the UserManagement Lambda
+3. Add the group to the affected operations in `scripts/api_rbac_expectations.yaml` and regenerate the dispatcher manifest (`python3 scripts/sdlc/generate_api_rbac_manifest.py`) — otherwise Layer 0 denies the new role even where the resolver allows it
+4. Update the `VALID_PERSONAS` dict in `src/lambda/user_management/index.py`
+5. Add role detection in `src/ui/src/hooks/use-user-role.ts`
+6. Add navigation items in `src/ui/src/components/genaiidp-layout/navigation.tsx`
+7. Pass the new group as an environment variable to the UserManagement Lambda
 
 ## Known Limitations
 

@@ -11,19 +11,24 @@ authorizer. This Lambda:
 1. Normalizes the HTTP API (payload v2.0) event into the AppSync resolver event
    shape via :mod:`idp_common.api_adapter` (restoring ``cognito:groups`` to a
    list — see that module for why this matters).
-2. Routes the field to its handler:
+2. Enforces a **default-deny** group check (:mod:`authz`) before dispatching: the
+   caller's groups (from the verified JWT claim) must satisfy the field's entry in
+   the bundled required-groups manifest, and a field with NO entry is denied. This
+   restores at the API layer what the AppSync schema's ``cognito_groups``
+   directives used to do; the per-resolver checks remain in place beneath it.
+3. Routes the field to its handler:
    - **Lambda-backed fields**: synchronously invokes the existing resolver
      Lambda (the same function AppSync invokes) with the AppSync-shaped event,
      so those resolvers need NO changes.
    - **DynamoDB-direct fields** (discovery jobs, agent jobs) that AppSync
      handled with VTL: served locally by :mod:`ddb_direct` (no Lambda hop).
-3. Wraps the result into an HTTP API proxy response, mapping errors to status
+4. Wraps the result into an HTTP API proxy response, mapping errors to status
    codes with the GraphQL-style ``{"errors": [...]}`` body the UI parses.
 
 Field -> resolver function ARN mapping is provided via the ``FIELD_FUNCTION_MAP``
 environment variable (JSON: ``{"fieldName": "FUNCTION_ARN", ...}``) populated by
-CloudFormation. Fields absent from the map are handled by ``ddb_direct`` or
-rejected as unknown.
+CloudFormation. Fields absent from the map are handled by ``ddb_direct``; a field
+that is neither authorized (step 2) nor routable is rejected.
 """
 
 import json
@@ -31,6 +36,7 @@ import logging
 import os
 from typing import Any, Dict
 
+import authz
 import boto3
 import ddb_direct
 from botocore.config import Config as BotoConfig
@@ -331,11 +337,14 @@ def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
 
 
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
-    # CORS preflight (HTTP API can be configured to route OPTIONS here).
-    http = (event.get("requestContext") or {}).get("http") or {}
-    if http.get("method") == "OPTIONS":
-        return _http_response(200, {})
-
+    # No CORS-preflight branch here on purpose. The API is an
+    # AWS::ApiGateway::RestApi, so OPTIONS /op/{field} is answered by the
+    # HttpApiOptionsMethod MOCK integration in nested/api-resolvers/template.yaml
+    # and never reaches this function; only the POST method has a Lambda proxy
+    # integration. The branch this replaces read requestContext.http.method,
+    # which is a payload-format-2.0 key that a REST API never sends anyway (1.0
+    # uses requestContext.httpMethod), so it could not have matched even if
+    # OPTIONS were routed here.
     appsync_event = normalize_event(event)
     field = appsync_event.get("info", {}).get("fieldName", "")
 
@@ -350,6 +359,16 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         )
 
     try:
+        # Default-deny group authorization (restores what the AppSync schema's
+        # cognito_groups directives did at the API layer). Runs BEFORE argument
+        # validation and before routing: an unauthorized caller learns nothing
+        # about the operation's argument shape, and a field with no manifest
+        # entry is denied rather than dispatched. Raises PermissionError -> 403
+        # via the existing handler below. The per-resolver checks are unchanged
+        # and still run — this is the floor, not a replacement for them, since
+        # only the resolver can enforce per-object scope. See authz.py.
+        authz.enforce(field, appsync_event)
+
         # Central schema-shape validation (restores what AppSync did for free).
         # Validate under the ORIGINAL field name — aliases (getFilePresignedUrl,
         # etc.) resolve to a target only for ROUTING; their own name is what the
@@ -363,6 +382,12 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
         # CircuitBreakerEnabled=false. Treat empty as unroutable so it falls
         # through to ddb_direct (which serves a graceful disabled response for
         # getCircuitBreakerStatus) rather than invoking an empty FunctionName.
+        #
+        # The 404 below is now reached only by an operation that IS declared (it
+        # passed authz above) yet is not routable in this deployment — i.e. a
+        # feature-flagged-off resolver. An undeclared field never gets this far:
+        # authz denies it with 403, which is also why the 404 cannot be used to
+        # probe which operations a deployment has.
         mapped_arn = FIELD_FUNCTION_MAP.get(FIELD_ALIASES.get(field, field))
         if mapped_arn:
             result = _invoke_resolver(mapped_arn, appsync_event)

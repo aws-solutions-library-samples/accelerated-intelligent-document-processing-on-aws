@@ -106,24 +106,33 @@ def handles(field: str) -> bool:
 # only authenticates, so the group check must be re-applied here (defense in
 # depth, matching the Lambda-backed resolvers).
 #   - value = set of allowed groups (caller must be in at least one)
-#   - value = None            -> any authenticated user (schema type-default)
+#   - value = _ANY_AUTHENTICATED -> any authenticated user (schema type-default)
 #   - value = _IAM_ONLY       -> backend/IAM principals only; NEVER a Cognito
 #                                user. These are unreachable from the UI and the
 #                                backend workers now write DynamoDB directly
 #                                (APPSYNC_API_URL is empty), so reject outright.
+#
+# ``_ANY_AUTHENTICATED`` is a named object rather than the bare ``None`` it used
+# to be because ``authz.REQUIRED_GROUPS``, consulted earlier in the same request,
+# uses the absence of an entry to mean the OPPOSITE — deny. One value with two
+# opposite meanings across two tables in one request path is a defect waiting to
+# happen, so each table names its own sentinel and neither uses ``None``. (See
+# ``authz._UNDECLARED``.) The values themselves are unchanged.
 _IAM_ONLY = object()
+_ANY_AUTHENTICATED = object()
 _REQUIRED_GROUPS: Dict[str, Any] = {
-    "getDocument": None,
-    "listDocumentsDateHour": None,
-    "listDocumentsDateShard": None,
+    "getDocument": _ANY_AUTHENTICATED,
+    "listDocumentsDateHour": _ANY_AUTHENTICATED,
+    "listDocumentsDateShard": _ANY_AUTHENTICATED,
     "listDiscoveryJobs": {"Admin", "Author"},
     "deleteDiscoveryJob": {"Admin", "Author"},
     "updateDiscoveryJobStatus": _IAM_ONLY,
     "getAgentJobStatus": {"Admin", "Author", "Viewer"},
     "listAgentJobs": {"Admin", "Author", "Viewer"},
     "updateAgentJobStatus": _IAM_ONLY,
-    "deleteAgentJob": None,  # any authed; further scoped to caller's own PK
-    "getCircuitBreakerStatus": None,
+    # any authed; further scoped to the caller's own PK inside the handler
+    "deleteAgentJob": _ANY_AUTHENTICATED,
+    "getCircuitBreakerStatus": _ANY_AUTHENTICATED,
 }
 
 
@@ -139,8 +148,12 @@ def _caller_groups(event: Dict[str, Any]) -> list:
 def _enforce_rbac(field: str, event: Dict[str, Any]) -> None:
     """Raise PermissionError if the caller isn't allowed to run `field`.
     Mirrors the AppSync schema directives (dispatcher maps PermissionError->403)."""
-    required = _REQUIRED_GROUPS.get(field)
-    if required is None:
+    # The default keeps the pre-existing behaviour for a field with no entry
+    # (unreachable: dispatch() only serves _HANDLED, and a unit test asserts
+    # _HANDLED == _REQUIRED_GROUPS.keys()). authz.enforce has already refused any
+    # field that is undeclared THERE, which is the layer that default-denies.
+    required = _REQUIRED_GROUPS.get(field, _ANY_AUTHENTICATED)
+    if required is _ANY_AUTHENTICATED:
         return  # any authenticated user
     if required is _IAM_ONLY:
         logger.warning("Rejected IAM-only op %s from Cognito caller", field)
