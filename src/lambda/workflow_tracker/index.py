@@ -874,10 +874,16 @@ def handler(event, context):
                 run_timestamp = datetime.fromtimestamp(
                     stop_date / 1000, tz=timezone.utc
                 ).isoformat()
-            # Individually guarded, like put_latency_metrics below it: this is a
-            # history/audit write, and letting a DynamoDB throttle or S3 error
-            # here escape used to abandon the rest of the terminal handling and
-            # take the decrement down the error path with it.
+            # Belt-and-braces, mirroring put_latency_metrics below it.
+            # record_document_run() already wraps its whole body in
+            # `except Exception` and documents "Never raises", so nothing
+            # escapes it today — a DynamoDB throttle or S3 error in that
+            # history/audit write is already swallowed there, and this guard
+            # changes no current behaviour. It earns its keep only if that
+            # contract is ever broken by an edit inside the function, and even
+            # then what it protects is the REST of the terminal handling
+            # (latency metrics, circuit-breaker notify) and the 200 response —
+            # not the decrement, which the error path below performs anyway.
             try:
                 record_document_run(updated_doc, run_timestamp=run_timestamp)
             except Exception as run_error:

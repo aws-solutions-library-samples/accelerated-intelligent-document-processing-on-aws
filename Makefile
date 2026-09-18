@@ -459,6 +459,22 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# combined pytest invocation.
 	cd src/lambda/queue_sender && $(PYTHON) -m pytest test_index.py -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTHON) -m pytest test_delete_output_data.py -q -p no:cacheprovider
+	@echo "Running the remaining src/lambda Lambda suites (157 tests that reached NEITHER CI)..."
+	@# Every src/lambda dir holding a test_*.py must appear in this recipe —
+	@# asserted by scripts/tests/test_src_lambda_tests_in_ci.py, which derives
+	@# both sides (filesystem walk vs this recipe) rather than listing them.
+	@# Each gets its own invocation for the same reason as queue_sender above:
+	@# they all define a module named ``index``, so a combined pytest run fails
+	@# collection on the basename collision.
+	cd src/lambda/api_handler && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/batch_pre_processor && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/complete_section_review && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/external_idp_group_mapping && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/job_tracker && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/save_reporting_data && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/test_file_copier && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/user_management && $(PYTHON) -m pytest -q -p no:cacheprovider
+	cd src/lambda/version_check_resolver && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
 	cd nested/api-resolvers/src/lambda/test_runner && $(PYTHON) -m pytest -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."

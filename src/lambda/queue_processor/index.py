@@ -77,7 +77,9 @@ METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
 # cover. Bounded retry, same shape as the tracker's DECREMENT_MAX_ATTEMPTS /
 # 0.2s-doubling backoff (worst case 0.2 + 0.4 + 0.8 = 1.4s of sleep), because the
 # real conflict rate is unmeasured. See update_counter.
-COUNTER_CONFLICT_MAX_ATTEMPTS = int(os.environ.get("COUNTER_CONFLICT_MAX_ATTEMPTS", "4"))
+COUNTER_CONFLICT_MAX_ATTEMPTS = int(
+    os.environ.get("COUNTER_CONFLICT_MAX_ATTEMPTS", "4")
+)
 COUNTER_CONFLICT_BASE_DELAY_SECONDS = float(
     os.environ.get("COUNTER_CONFLICT_BASE_DELAY_SECONDS", "0.2")
 )
