@@ -4,15 +4,28 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
-| **Applies to release** | v0.6.3 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 | **Methodology** | STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) |
 
 ## 1. Overview
 
-This document provides a comprehensive STRIDE analysis across all components of the GenAI IDP Accelerator unified architecture. Each STRIDE category is analyzed for the system's major components: document processing pipeline, AI/ML services, web UI, agent system, authentication/authorization, extensibility (hooks/MCP), and data storage/analytics.
+This document provides a comprehensive STRIDE analysis across all components of
+the GenAI IDP Accelerator unified architecture. Each STRIDE category is analyzed
+for the system's major components: document processing pipeline, AI/ML services,
+web UI, agent system, authentication/authorization, extensibility (hooks/MCP), and
+data storage/analytics.
+
+> **How to read this document.** It is deliberately **category-level**: rows are
+> phrased as threat *classes* rather than as the numbered threat entries, so a
+> reader can scan a STRIDE category without holding 98 identifiers in their head.
+> The authoritative per-threat record — identifier, score, status, and whether a
+> mitigation is present or pending — is the
+> [risk register](../risk-assessment/risk-matrix.md), which is derived from the
+> generated export. Where a row's mitigation depends on an unmerged change it is
+> marked **pending** with its issue number; treat those as absent today.
 
 ## 2. Spoofing
 
@@ -27,6 +40,8 @@ Spoofing threats involve an attacker pretending to be something or someone they 
 | **Self-registration** of unauthorized accounts | Cognito User Pool | Medium | Self-signup disabled, admin-created accounts only |
 | **Refresh token replay** for persistent access | Cognito | Medium | Configurable refresh token expiry, revocation capabilities, anomaly detection |
 | **External MCP client impersonation** | AgentCore Gateway / MCP handler | Medium | Cognito authentication required for all clients (dedicated M2M resource server) |
+| **Client-supplied caller identity on the agent streaming route** — a request body field is read in preference to the request's signed identity | Lambda Function URL (chat streaming) | High | **Not mitigated today.** The identity available from the signed request is the assumed-role session name rather than a verified Cognito `sub`, so establishing a trustworthy caller is part of the fix, not merely reordering the two. See CHAT.T06; **pending in issue #920** |
+| **Group assignment from a user-writable attribute** — an external identity provider maps a claim the user can edit onto a Cognito group | Cognito pre-token trigger, external IdP | Medium | Group mapping reads provider-controlled claims; `make verify-idp-federation` exercises a real federated sign-in. Note `Annotator` is absent from the federation `GROUP_MAPPING`, so it cannot be granted by federation at all. See AUTH.T13 |
 
 ### 2.2 Service Spoofing
 
@@ -65,6 +80,7 @@ Tampering threats involve unauthorized modification of data or code.
 | **BDA output mapping errors** — data corruption in format normalization | BDA Mode | Medium | Strict schema validation, defensive parsing |
 | **OCR manipulation** — adversarial documents producing incorrect text | Pipeline Processing | Medium | Format validation, confidence thresholds |
 | **Glue Catalog manipulation** — altered data schemas/locations | Reporting | Medium | IAM restrictions, CloudTrail, catalog validation |
+| **Hook failure does not halt the workflow** — a pipeline hook relied on as a gate fails and processing continues past it | Lambda Hooks | High | `onError: fail` is terminal at the `preprocessing` hook point only; at the other six the state machine's `Catch` block routes forward to the next step. A deployment relying on a hook as a compliance or business gate at one of those points does not have that guarantee. See HOOK.T07; **pending in issue #919** |
 
 ## 4. Repudiation
 
@@ -94,13 +110,14 @@ Information disclosure threats involve exposure of sensitive data to unauthorize
 | **Data exfiltration via post-processing hooks** — full results sent externally | Lambda Hooks | Critical | Customer-managed VPC, security review, monitoring |
 | **OpenSearch vector store exposure** — KB embeddings accessible | Knowledge Base | Medium | Encryption, IAM/network policies, no public access |
 | **Client-side config exposure** — backend endpoints visible in JS | Web UI | Low | All endpoints require auth, security through access control |
+| **Credential-shaped values in resolver logs** — divergent redaction denylists across copies of the sanitizer | API resolver Lambdas, CloudWatch Logs | Medium | Every resolver redacts, so the exposure is limited to the key spellings the hand-copied lists omit; log groups are retention-bounded and 108 of 109 use the stack KMS customer-managed key. Converging on the canonical denylist is **pending in issue #921**; giving `HttpApiDispatcherLogGroup` the CMK is a one-line template change. See AUTH.T15 |
 
 ### 5.2 Session/Token Exposure
 
 | Threat | Component | Risk | Mitigations |
 |--------|-----------|------|-------------|
 | **JWT token theft via XSS** — browser-stored tokens stolen | Web UI | High | React XSS protection, CSP headers, short token lifetime |
-| **Chat stream cross-user access** — reading another user's stream via their `sessionId` | Lambda Function URL (chat streaming) | High | **OPEN GAP** — SigV4 authenticates but no group or session-ownership check on this transport; see CHAT.T03 |
+| **Chat stream cross-user access** — reading another user's stream via their `sessionId` | Lambda Function URL (chat streaming) | High | **OPEN GAP** — SigV4 authenticates but no group or session-ownership check on this transport, and the shared `CognitoAuthorizedRole` is common to all five groups so the IAM gate cannot distinguish them. Not covered by `make api-test` or by the WAF WebACL. See CHAT.T03; **pending in issue #920** |
 | **Conversation session hijacking** — accessing other users' chats | Companion Chat | High | UUID session IDs, user-scoped DynamoDB queries |
 | **SDK credential exposure** — credentials on developer machines | SDK/CLI | High | Env var credentials, short-lived tokens, secure documentation |
 | **Presigned URL interception** — captured upload URLs reused | Web UI | Medium | Short expiration, conditions, TLS |
@@ -111,7 +128,7 @@ Denial of service threats involve making the system unavailable.
 
 | Threat | Component | Risk | Mitigations |
 |--------|-----------|------|-------------|
-| **Processing pipeline saturation** — flooding with documents | Document Processing | Medium | SQS queue, DynamoDB concurrency counter, CloudWatch alarms |
+| **Processing pipeline saturation** — flooding with documents | Document Processing | Medium | SQS buffering plus DynamoDB **admission control**: a slot is taken by a conditional counter increment (`active_count < max`), so over-limit work is rejected atomically rather than by an in-memory comparison; drift is reconciled and emitted as a metric, a circuit breaker can stop admission entirely, and execution names are derived deterministically so a redelivered message cannot start a second execution. The failure mode to watch is a *leaked slot* (capacity lost until reconciliation), not over-admission. CloudWatch alarms |
 | **Bedrock quota exhaustion** — excessive model invocations | AI/ML Services | Medium | Token limits, rate limiting, capacity planning, alarms |
 | **Textract throttling** — exceeding OCR API limits | Pipeline Mode | Medium | Retry with backoff, DLQ, service quota management |
 | **BDA service unavailability** — BDA outage or throttling | BDA Mode | Medium | Mode switching fallback, retry/DLQ, alarms |
@@ -130,6 +147,8 @@ Elevation of privilege threats involve gaining capabilities beyond what was auth
 |--------|-----------|------|-------------|
 | **Cognito group manipulation** — self-promoting to Admin role | Authentication | Critical | IAM-protected Cognito admin APIs, no self-service groups, CloudTrail |
 | **API authorization bypass** — exploiting resolver gaps | RBAC | High | Per-op resolver group checks (the authorization boundary — the gateway authorizer only authenticates); `make api-test`/`api-test-static` gate regressions; see AUTH.T03/T08 |
+| **Authorization is opt-in per operation** — the dispatcher forwards a field whether or not anything behind it enforces a group | API Gateway dispatcher | High | The manifest (`scripts/api_rbac_expectations.yaml`, all 118 operations) plus `make api-test-static` in both CI systems is what stands in for a gateway rule; the one dispatcher-level group check does not deny a field it has no entry for, and the 403 mapping keys partly on error-message text. A default-deny gate is **pending in issue #928**. See AUTH.T14 |
+| **Deployment role breadth** — the shipped CloudFormation service role can manipulate permissions boundaries and holds broad service wildcards | Deployment / SDLC | Critical | **Not mitigated today.** Possession of the role is close to possession of the account, and its trust policy carries no conditions. Narrowing it is **pending in issue #927**. Until then, treat who may assume it as the control. See SDK.T05 |
 | **Agent routing manipulation** — tricking orchestrator to invoke restricted agents | Agent System | Medium | Agent-level auth, tool access controls, audit logging |
 | **Configuration-driven privilege escalation** — malicious config enabling unauthorized model access | Configuration | High | Config schema validation, RBAC, model allowlisting |
 | **MCP tool parameter manipulation** — causing tools to access unauthorized resources | MCP Integration | High | Input validation, parameter schemas, least-privilege credentials |
@@ -161,6 +180,6 @@ These threats span multiple STRIDE categories and components:
 
 | Threat | Impact | Mitigations |
 |--------|--------|-------------|
-| **CloudFormation stack manipulation** | Full system compromise | IAM, CloudFormation service role, stack policies |
+| **CloudFormation stack manipulation** | Full system compromise | IAM and stack policies. Note the CloudFormation **service role** is currently part of the problem rather than the mitigation: as shipped it is broad enough to reach account administrator (SDK.T05, **pending in issue #927**), so it does not narrow the blast radius of a stack operation the way a scoped service role would |
 | **S3 bucket policy misconfiguration** | Data exposure | IaC-defined policies, security reviews, automated checks |
 | **DynamoDB over-permissions** | Cross-table data access | Per-table IAM policies, least-privilege Lambda roles |

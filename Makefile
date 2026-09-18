@@ -128,8 +128,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, threat-model currency, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-threat-model-currency validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -196,6 +196,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Threat model currency check"
+	@if ! make check-threat-model-currency; then \
+		echo -e "$(RED)ERROR: Threat model currency check failed (see security/threat-modeling/README.md)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
@@ -205,6 +211,16 @@ check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all ma
 check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/reporting-sql-layer.md §10.3)
 	@$(PYTHON) scripts/check_data_plane_tags.py || \
 		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
+
+check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release behind VERSION, or its export is stale
+	@$(PYTHON) scripts/check_threat_model_currency.py || \
+		(echo -e "$(RED)ERROR: Threat model is overdue for re-review!$(NC)" && exit 1)
+	@# The Threat Composer export is generated from the Markdown corpus. It fell
+	@# silently out of sync before (an added threat with no STATUS entry made it
+	@# unbuildable), so the same target verifies it rebuilds byte-identical.
+	@$(PYTHON) security/threat-modeling/scripts/build_threat_model.py --check || \
+		(echo -e "$(RED)ERROR: threat-model.tc.json is stale — regenerate with$(NC)" && \
+		 echo -e "$(YELLOW)  python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && exit 1)
 
 validate-buildspec: ## Validate AWS CodeBuild buildspec files
 	@echo "Validating buildspec files..."

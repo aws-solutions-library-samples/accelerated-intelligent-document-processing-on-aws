@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
-| **Applies to release** | v0.6.3 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 
 > **v3.0 update.** All UI flows were rewritten: AppSync GraphQL + subscriptions
@@ -15,6 +15,17 @@
 > human-review flow is replaced by the built-in review portal. New flows added
 > for the preprocessing/PII hook, the Feature Platform UI bundle, and the
 > Jobs API.
+
+> **v3.2 refresh (v0.6.9).** Re-verified against `template.yaml`,
+> `patterns/unified/statemachine/workflow.asl.json`, the queue processor and the
+> chat stream processor. Corrections: SQS is encrypted with the stack's KMS CMK,
+> not SSE-SQS (§2.1); the admission-control mechanism is now described rather
+> than summarised as "a counter" (§2.1); `onError: fail` is terminal at the
+> **preprocessing** hook point only, not at every hook point (§2.1a, §8);
+> the Identity Pool role is shared by **five** groups, not four (§4.1, §5.1); and
+> the dispatcher's lack of a default deny is called out where the request path is
+> described (§3.1). In-flight fixes are cited by issue number and marked
+> **pending**; nothing marked pending is a control today.
 
 ## 1. Overview
 
@@ -40,9 +51,9 @@ sequenceDiagram
     EB->>QS: Trigger Lambda
     QS->>SQS: Enqueue document reference
     SQS->>QP: Dequeue message
-    QP->>DDB: Check/update concurrency counter
+    QP->>DDB: Conditional counter increment (admission control)
     QP->>DDB: Create document tracking record
-    QP->>SFN: Start execution (document reference, config)
+    QP->>SFN: Start execution (deterministic name, document reference, config)
 ```
 
 **Data in transit**: Document bytes (S3 upload), S3 object key references (SQS messages), configuration JSON (Step Functions input).
@@ -52,10 +63,27 @@ sequenceDiagram
 - TB3 internal: S3 → EventBridge → Lambda → SQS → Lambda → Step Functions
 
 **Security controls**:
-- S3 bucket policy restricts upload access
-- SQS encryption at rest (SSE-SQS)
+- S3 bucket policy restricts upload access; a bucket policy denies any request where `aws:SecureTransport` is false
+- SQS encryption at rest with the stack's **KMS customer-managed key** (`KmsMasterKeyId: CustomerManagedEncryptionKey` on every queue and DLQ) — not SSE-SQS
 - Step Functions input validated by Queue Processor Lambda
-- DynamoDB concurrency counter prevents runaway processing
+- **Admission control** bounds concurrent processing (below)
+
+**Admission control, in detail.** This is the control that prevents an upload
+burst from becoming unbounded Step Functions and Bedrock spend, so it is worth
+stating precisely rather than as "a counter". A slot is taken with a DynamoDB
+`ADD active_count :inc` under a `ConditionExpression` of `active_count < :max`,
+so admission is decided atomically and a conditional-check failure — not a
+comparison in Lambda memory — is what rejects work over the limit. Around that
+core: `reconcile_counter` corrects drift against the real number of running
+executions under its own conditional write; drift is emitted as a CloudWatch
+metric, so a leaked slot becomes visible rather than silently eroding capacity;
+`check_circuit_breaker` can stop admission entirely; SQS visibility is extended
+during a downstream outage rather than letting messages expire; and
+`execution_name_for` derives the Step Functions execution name deterministically
+from the input key and message id, so a redelivered SQS message cannot start a
+second execution for the same document. The failure mode to model here is a
+**leaked slot** (capacity lost until reconciliation) rather than over-admission.
+See SDK.T04.
 
 ### 2.1a Preprocessing Hook (runs first, both modes)
 
@@ -85,7 +113,7 @@ sequenceDiagram
 **Security-relevant characteristics**:
 - The hook runs **before** any classification/extraction model sees the document, which is the point of the PII feature — but the **detection call itself sends the un-redacted document to Bedrock** (TB3→TB4). This is an accepted, documented residual exposure (see PII.T01).
 - Writing the redacted copy back to the *input* bucket creates a re-entrancy risk; a marker + guard prevents redaction loops (PII.T02).
-- `onError: fail` is terminal — a failed hook stops the execution rather than falling through to processing the un-redacted original (a fail-**closed** design; see PII.T03).
+- `onError: fail` is terminal **here**: a failed preprocessing hook stops the execution rather than falling through to processing the un-redacted original (a fail-**closed** design; see PII.T03). This is specific to the `preprocessing` hook point. At the other six hook points the state machine's `Catch` block routes *forward* to the next step regardless of `onError`, so `onError: fail` does not halt the workflow there — see HOOK.T07 and §8, fix **pending in issue #919**.
 
 **Trust boundary crossings**: TB3→TB6 (hook is customer/feature-managed), TB3→TB4 (PII detection call).
 
@@ -261,12 +289,30 @@ sequenceDiagram
 ```
 
 **Critical control note**: the Cognito authorizer performs **no group
-evaluation** — it only proves the token is valid. Every group and scope decision
-lives in the resolver Lambda. A resolver that omits its check ships an
-operation that *looks* protected in `schema.graphql` but is open to any
-authenticated user (AUTH.T08). This is why the automated authorization harness
-(`make api-test` / `make api-test-static`) is a **primary** control rather than
-a nice-to-have.
+evaluation** — it only proves the token is valid. It could not do more: there is
+a single authorized route (`POST /op/{field}`), so there is nothing
+per-operation for a gateway-level policy to attach to. Every group and scope
+decision therefore lives in the code behind the dispatcher. A resolver that
+omits its check ships an operation that *looks* protected in `schema.graphql`
+but is open to any authenticated user (AUTH.T08). This is why the automated
+authorization harness (`make api-test` / `make api-test-static`) is a **primary**
+control rather than a nice-to-have.
+
+**The dispatcher does not default-deny.** It resolves a field if it can map it,
+whether or not the target enforces anything; `ddb_direct._REQUIRED_GROUPS` is the
+only group check that happens at dispatcher level, and it returns without denying
+for a field that has no entry. Its 403 mapping also keys partly on error-message
+prefixes, so a reworded exception can change an HTTP status. A default-deny gate
+and the removal of that prefix dependency are **pending in issue #928**; until
+then the manifest plus `make api-test-static` is what stands in for a default
+deny. See AUTH.T14.
+
+Two mechanical details are load-bearing when reading resolver code: the REST
+authorizer places claims at `requestContext.authorizer.claims` and flattens
+`cognito:groups` into a comma-joined string, which
+`idp_common.api_adapter._coerce_groups` restores to a list before any group
+comparison; and the REST API's CloudFormation logical id is `HttpApi` although
+its type is `AWS::ApiGateway::RestApi`.
 
 **Trust boundary crossings**: TB1→TB2 (browser to CloudFront/Cognito), TB2→TB3 (JWT to API Gateway → dispatcher → resolvers).
 
@@ -385,7 +431,7 @@ sequenceDiagram
     Browser->>FURL: POST /chat/agent or /chat/document (SigV4-signed)
     FURL->>FURL: IAM authZ: lambda:InvokeFunctionUrl on caller role
     FURL->>Proc: Invoke (RESPONSE_STREAM) + x-amzn-request-context
-    Proc->>Proc: Derive callerSub from SigV4 identity
+    Proc->>Proc: Derive caller id from SigV4 request context (role session name)
     Proc->>DDB: Load session memory keyed by sessionId
     Proc->>Bedrock: Invoke model with context + tools
 
@@ -407,11 +453,13 @@ sequenceDiagram
 |---|---|
 | Network exposure | Public Function URL (no CloudFront/WAF/VPC in front) |
 | Authentication | SigV4 via `AuthType=AWS_IAM` — unauthenticated callers rejected by Lambda |
-| Authorization granularity | **Only** `lambda:InvokeFunctionUrl` on the shared `CognitoAuthorizedRole` — the role is common to **all four RBAC groups**, so the IAM gate cannot distinguish Admin from Reviewer |
-| Group (RBAC) enforcement | **None on this path.** The Admin/Author/Viewer restriction on `sendAgentChatMessage` is enforced in the *resolver*, not here |
-| Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does |
+| Authorization granularity | **Only** `lambda:InvokeFunctionUrl` on the shared `CognitoAuthorizedRole` — the role is common to **all five RBAC groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish Admin from Reviewer |
+| Group (RBAC) enforcement | **None on this path.** The Admin/Author/Viewer restriction on `sendAgentChatMessage` is enforced in the *resolver*, not here. Fix **pending in issue #920** |
+| Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does. Fix **pending in issue #920** |
+| Caller identity available | Weaker than the diagram suggests: the value derived from the request context is the assumed-role **session name**, and on `/chat/agent` a body-supplied `callerSub` takes precedence over it. Establishing a trustworthy identity is part of **issue #920** — see CHAT.T06 |
 | CORS | `AllowOrigins: "*"`, `AllowCredentials: false` (safe: SigV4 in headers, no cookies) |
 | Covered by `make api-test` | **No** — the harness drives `POST /op/{field}` only |
+| Covered by the WAF / stage throttling | **No** — the WebACL is associated with the REST API stage; Lambda concurrency is the bound here |
 
 See CHAT.T03 (streaming-path authorization gaps) and CHAT.T06 (caller-identity
 trust inconsistency) for the full analysis.
@@ -524,7 +572,7 @@ sequenceDiagram
 ```
 
 **Security-relevant characteristics**:
-- Uses a **separate Cognito user pool** (`ApiUserPool`) from the Web UI pool — so Jobs API clients are *not* subject to the 4-group RBAC model at all. Authorization is by OAuth **scope** (`jobs.read` / `jobs.write`), not Cognito group.
+- Uses a **separate Cognito user pool** (`ApiUserPool`) from the Web UI pool — so Jobs API clients are *not* subject to the five-group RBAC model at all. Authorization is by OAuth **scope** (`jobs.read` / `jobs.write`), not Cognito group.
 - The client has a **static secret** (`GenerateSecret: true`); there are no per-document or per-config-version restrictions on what a `jobs.write` client may submit.
 - Endpoint is `PRIVATE` with a resource policy denying any request whose `aws:SourceVpce` doesn't match the supplied endpoint — so exposure is VPC-scoped, not internet-scoped.
 - **Not covered** by `make api-test` (which targets the UI `/op` route).
@@ -564,7 +612,11 @@ inside the authenticated user's session, with a host-provided API client. It is
 `unsafe-inline`/`unsafe-eval`). Installing a feature grants it the effective
 privilege of every user who loads the UI. Install is Admin-gated and the
 ui-deployer's S3 write is prefix-scoped, but there is **no integrity check**
-(no SRI hash, no signature) on the bundle at load time.
+(no SRI hash, no signature) on the bundle at load time: `FeatureLoader` appends
+a `<script>` whose `src` is `/<feature>/ui-bundle.js` with `crossOrigin` set and
+**no `integrity` attribute**, so nothing binds the bytes reviewed at install time
+to the bytes the browser executes later. The controls that do apply are the
+bucket's write permissions and the install-time decision to trust the feature.
 
 See [FEAT.T01–T04](../feature-threats/feature-platform.md).
 
@@ -642,6 +694,16 @@ sequenceDiagram
 
 **Trust boundary crossings**: TB3→TB6. Customer-managed Lambda hooks receive full document processing results and can send data to arbitrary external systems.
 
+> **Failure containment across hook points.** `onError: fail` is documented as
+> stopping the workflow, and does so at the `preprocessing` hook point. At the
+> other six (`postOcr`, `postClassification`, `postExtraction`,
+> `postRuleValidation`, `postSummarization`, `postprocessing`) the state
+> machine's `Catch` block routes forward to the next step, so a hook that fails
+> — including one configured `onError: fail` — does not halt processing. A
+> deployment relying on a hook to enforce a business or compliance gate at one of
+> those points does not have that guarantee today. See HOOK.T07; fix **pending in
+> issue #919**.
+
 ## 9. Summary of Cross-Boundary Data Flows
 
 | Flow | From | To | Data Sensitivity | Controls |
@@ -651,11 +713,11 @@ sequenceDiagram
 | LLM prompts (Anthropic/Nova) | TB3 | TB4 | High (document text + PII) | TLS, IAM roles, no training opt-out |
 | **LLM prompts (OpenAI GPT-5.x via mantle)** | TB3 | TB4 | High (document text + PII) | TLS, IAM roles; **different model family — verify vendor/residency constraints** (PM.T08) |
 | **UI API operations** | TB1 | TB3 | High | JWT authn at gateway; **group/scope authz in resolver Lambdas only**; input-shape validation; optional WAF |
-| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03) |
+| **Chat streaming (SSE)** | TB1 | TB3→TB4 | Medium-High | **SigV4 on a public Function URL; no group check, no session-ownership check** (CHAT.T03) — fixes **pending in issue #920**; not covered by the WAF or by `make api-test` |
 | Chat messages (REST path) | TB1 | TB3→TB4 | Medium-High | Group check + `ownerSub` ownership check |
 | **Jobs API submission** | TB1 | TB3 | High | Separate Cognito pool, OAuth scopes, PRIVATE endpoint + VPCe resource policy (JOB.T01) |
 | **Feature UI bundle** | TB6 | TB1 | High (runs as the user) | Admin-gated install, prefix-scoped S3 write; **no SRI/signature, same-origin, unsandboxed** (FEAT.T01) |
-| **Preprocessing / PII hook** | TB3 | TB6→TB4 | High (un-redacted document) | Fail-closed `onError: fail`; re-entrancy guard; detection call still sees raw PII (PII.T01) |
+| **Preprocessing / PII hook** | TB3 | TB6→TB4 | High (un-redacted document) | Fail-closed `onError: fail` (terminal at this hook point only — HOOK.T07, **pending in issue #919**); re-entrancy guard; detection call still sees raw PII (PII.T01) |
 | MCP tool calls | TB3 | TB6→External | Variable (depends on tool) | IAM, customer responsibility |
 | Lambda hooks | TB3 | TB6 | High (full processing results) | IAM, invocation-only permissions |
 | Analytics queries | TB3 | TB5 | High (aggregated processing data) | Athena workgroup, IAM |

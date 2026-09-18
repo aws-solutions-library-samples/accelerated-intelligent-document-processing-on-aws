@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.1 |
-| **Last Updated** | 2026-08-20 |
-| **Applies to release** | v0.6.5.dev1 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 93 |
+| **Total Threat IDs** | 98 |
 
 ## 1. Threat ID Naming Convention
 
@@ -98,7 +98,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | KB.T03 | OpenSearch Serverless data exposure | ID | 2 (Low) |
 | KB.T04 | Excessive RAG retrieval | ID, DoS | 2 (Low) |
 
-### AUTH — Authentication & RBAC (12 threats)
+### AUTH — Authentication & RBAC (15 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -114,8 +114,11 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | AUTH.T10 | Token lifecycle — post-logout token reuse (stateless JWT) | Spoofing, EoP | 3 (Medium) |
 | AUTH.T11 | Weak transport security (TLS downgrade / cleartext) | ID, Tampering | 3 (Medium) |
 | AUTH.T12 | Missing input-shape validation (type confusion via lost schema validation) | Tampering, DoS | 3 (Medium) |
+| AUTH.T13 | Group assignment from a user-writable attribute (external IdP mapping) | Spoofing, EoP | 4 (Medium) |
+| AUTH.T14 | Authorization is opt-in per resolver — no default deny at the dispatcher | EoP | 6 (High) |
+| AUTH.T15 | Authentication material in resolver logs (divergent redaction denylists) | ID | 4 (Medium) |
 
-### SDK — SDK/CLI (4 threats)
+### SDK — SDK/CLI (5 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -123,8 +126,9 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SDK.T02 | Insecure automation pipelines | Spoofing, ID | 6 (High) |
 | SDK.T03 | SDK supply chain attack | Tampering | 3 (Medium) |
 | SDK.T04 | Batch processing abuse | DoS | 4 (Medium) |
+| SDK.T05 | Deployment service role is broad enough to reach account administrator | EoP | 8 (Critical) |
 
-### HOOK — Lambda Hooks (6 threats)
+### HOOK — Lambda Hooks (7 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -134,6 +138,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | HOOK.T04 | Hook Lambda timeout / failure cascade | DoS | 4 (Medium) |
 | HOOK.T05 | Privilege escalation via hook IAM role | EoP | 3 (Medium) |
 | HOOK.T06 | Preprocessing hook sees raw source document; can halt or replace it | Tampering, ID, DoS | 6 (High) |
+| HOOK.T07 | `onError: fail` does not halt the workflow at six of seven hook points | Tampering, EoP | 6 (High) |
 
 ### UI — Web UI (7 threats)
 

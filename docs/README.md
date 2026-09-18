@@ -80,6 +80,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Planning & Security
 
+- [Threat Model](./threat-model.md) - STRIDE threat model: trust boundaries, controls in place, residual risks and open items, and the currency gate that keeps it from going stale
 - [Well-Architected Framework Assessment](./well-architected.md) - Analysis based on AWS Well-Architected Framework
 - [AWS Services & IAM Roles](./aws-services-and-roles.md) - AWS services used and IAM role requirements
 - [API Gateway Hosting](./apigateway-hosting.md) - Serve the full Web UI from the existing API Gateway REST API (S3 proxy), within a VPC when combined with `ApiGatewayVisibility=PRIVATE` (alternative to CloudFront)

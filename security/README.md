@@ -6,6 +6,9 @@
 This directory is the home for the accelerator's security artifacts, so that
 coverage and results are **auditable and easy to review**.
 
+For an orientation to the threat model before the corpus itself, see the published
+[Threat Model](../docs/threat-model.md) page.
+
 ```
 security/
 ├── README.md            ← you are here: coverage, goals, how to run each test
@@ -58,11 +61,16 @@ The RBAC suites map to specific threat IDs in
 [`threat-modeling/feature-threats/rbac-authentication.md`](./threat-modeling/feature-threats/rbac-authentication.md)
 — e.g. AUTH.T09 (IDOR), AUTH.T10 (token lifecycle), AUTH.T11 (TLS), AUTH.T12
 (input-shape validation). SRT and ZAP provide broad SAST/DAST coverage
-complementary to the per-feature threat analysis. The full threat register (93
+complementary to the per-feature threat analysis. The full threat register (98
 threats) is in
 [`threat-modeling/threat-id-glossary.md`](./threat-modeling/threat-id-glossary.md),
 and [`threat-modeling/README.md`](./threat-modeling/README.md) lists the currently
 **Open** items.
+
+Read the **Open** list with one convention in mind: a mitigation that depends on a
+change which has not merged is recorded as *pending*, with its issue number, and
+does **not** upgrade the threat's status. So an Open threat with a named issue is
+still an Open threat today.
 
 #### Known coverage gaps in the automated tests
 
@@ -71,7 +79,10 @@ gate is not mistaken for full coverage:
 
 | Surface | Covered? | Threat |
 |---------|----------|--------|
-| UI API `POST /op/{field}` (97 ops × 4 roles) | **Yes** — RBAC static + dynamic | AUTH.T03, AUTH.T08 |
+| UI API `POST /op/{field}` (118 ops × 5 groups) | **Yes** — RBAC static + dynamic | AUTH.T03, AUTH.T08 |
+| A field the dispatcher can route but nothing behind it authorizes | **Partly** — the manifest + static scan is what stands in for a default deny; the dispatcher itself does not refuse an unrecorded field | AUTH.T14 |
+| Hook failure containment across the seven pipeline hook points | **No** — no test asserts that `onError: fail` halts the workflow at each point | HOOK.T07 |
+| Breadth of the shipped CloudFormation deployment service role | **Partly** — `scripts/sdlc/validate_service_role_permissions.py` checks the role has what the stack needs, not that it has no more | SDK.T05 |
 | Chat streaming **Lambda Function URL** (`/chat/*`) | **No** — the harness drives `/op` only | CHAT.T03, CHAT.T06 |
 | **Jobs API** (`/jobs`, M2M OAuth realm) | **No** scope-negative test in the gate | JOB.T02 |
 | Object-read key scoping (`getFilePresignedUrl`) | **No** out-of-scope-key case | UI.T06 |
@@ -95,11 +106,39 @@ python3 security/threat-modeling/scripts/build_threat_model.py          # regene
 python3 security/threat-modeling/scripts/build_threat_model.py --check  # CI drift gate
 ```
 
+The `--check` form is now gated, together with the currency check below, by:
+
+```bash
+make check-threat-model-currency
+```
+
+### Keeping the threat model current
+
+The corpus describes a system that keeps moving, so
+[`threat-modeling/README.md`](./threat-modeling/README.md)'s Document Information
+table carries a machine-readable `Last reviewed against version` field, and
+`make check-threat-model-currency` fails when it falls more than one release behind
+the repository's `VERSION`. One release means the gate fires once per release
+cycle, at a point where there is real change to review; zero would fail the build
+the moment `VERSION` is bumped at the *start* of a cycle, and two or more is how
+this model previously came to describe an API that had already been replaced.
+
+When it fires, the remedy is a review — re-derive the architecture documents from
+the templates, read the `CHANGELOG.md` entries since the recorded version for new
+entry points and for controls that were *removed*, update the affected entries,
+regenerate the export, and bump the field **last**. The full procedure is in that
+README's "Re-reviewing for currency" section. Editing the field on its own clears
+the gate while turning a staleness signal into false assurance, which is worse than
+the red build.
+
 ## CI gating (where these run automatically)
 
 - **SRT** runs in the GitLab CI `security_review` stage on MRs targeting
   `develop`; the pipeline fails on any open-or-reopened HIGH finding.
 - **RBAC static** is CI-safe and runs offline.
+- **Threat model currency + export drift** run offline via
+  `make check-threat-model-currency`, called by `make lint-cicd`, so both GitLab
+  and GitHub execute them on every merge/pull request.
 - **ZAP DAST** and **RBAC dynamic** need a live stack; they are on-demand
   `make stacktest-*` / `make api-test` targets (see
   [`run-stack-tests.md`](../.claude/skills/run-stack-tests.md) for why they were

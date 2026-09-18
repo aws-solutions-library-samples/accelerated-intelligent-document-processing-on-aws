@@ -253,6 +253,7 @@ export default defineConfig({
         {
           label: "Planning & Security",
           items: [
+            { label: "Threat Model", slug: "threat-model" },
             {
               label: "Well-Architected Assessment",
               slug: "well-architected",

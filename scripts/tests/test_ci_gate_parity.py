@@ -73,6 +73,7 @@ def test_gate_runs_in_both_cis(gate: str) -> None:
         "check-arn-partitions",
         "check-filtered-scans",
         "check-data-plane-tags",
+        "check-threat-model-currency",
     ],
 )
 def test_lint_cicd_covers_what_local_lint_covers(gate: str) -> None:
