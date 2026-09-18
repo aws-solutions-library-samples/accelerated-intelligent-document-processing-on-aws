@@ -151,6 +151,22 @@ pricing:
       - name: cacheWriteInputTokens
         price: "1.4E-6"
   
+  # Claude 3.5 Sonnet v1. Selected by the shipped ocr-benchmark and docsplit
+  # presets in config_library/, but it had no pricing entry, so the whole model
+  # costed as $0.00 (no pricing key is a substring of this ID, so even the old
+  # fuzzy lookup found nothing). Rates are those of the v2 row below — AWS prices
+  # both 3.5 Sonnet versions identically at $3/$15 per million tokens.
+  - name: bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0
+    units:
+      - name: inputTokens
+        price: "3.0E-6"
+      - name: outputTokens
+        price: "1.5E-5"
+      - name: cacheReadInputTokens
+        price: "3.0E-7"
+      - name: cacheWriteInputTokens
+        price: "3.75E-6"
+
   - name: bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0
     units:
       - name: inputTokens
@@ -203,6 +219,12 @@ pricing:
   # through this inference profile (repeated identical prompt still reports
   # cacheReadInputTokens=0), so GovCloud Claude calls should always be costed
   # as a full cache miss.
+  #
+  # Omitting a unit from an entry that otherwise exists means "not chargeable for
+  # this service", and _get_unit_cost returns $0.00 for it. That only became true
+  # with the GitHub issue #926 fix: the old substring lookup matched the absent
+  # "cacheReadInputTokens" against this row's "inputTokens" price, so the omission
+  # bought a 10x cache-read rate rather than the intended zero.
   - name: bedrock/us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0
     units:
       - name: inputTokens
@@ -211,14 +233,14 @@ pricing:
         price: "1.65E-5"
 
   # GovCloud Nova models are invoked with bare model IDs (the us. cross-region
-  # inference-profile prefix is invalid in GovCloud), so the us.-prefixed
-  # entries above never match at cost-calc time — the lookup in
-  # save_reporting_data._get_unit_cost is substring-based and neither
-  # "bedrock/amazon.nova-pro-v1:0" nor "bedrock/us.amazon.nova-pro-v1:0" is a
-  # substring of the other, so a bare GovCloud Nova call would otherwise be
-  # costed at $0.0. No separate GovCloud per-token pricing is published, so
-  # these mirror the commercial us. rates. Cache units omitted for the same
-  # reason as the us-gov Claude entry above (GovCloud caching unverified).
+  # inference-profile prefix is invalid in GovCloud), so the us.-prefixed entries
+  # above never match at cost-calc time: save_reporting_data._get_unit_cost
+  # resolves by EXACT key, and "bedrock/amazon.nova-pro-v1:0" is a different key
+  # from "bedrock/us.amazon.nova-pro-v1:0". Without these rows a bare GovCloud
+  # Nova call would be reported as UNPRICED (NULL cost). No separate GovCloud
+  # per-token pricing is published, so these mirror the commercial us. rates.
+  # Cache units omitted for the same reason as the us-gov Claude entry above
+  # (GovCloud caching unverified).
   - name: bedrock/amazon.nova-pro-v1:0
     units:
       - name: inputTokens
@@ -602,6 +624,39 @@ pricing:
         price: "9.75E-8"
       - name: cacheWriteInputTokens
         price: "3.9E-7"
+
+  # EU Priority / Flex service tiers for eu.amazon.nova-2-lite. Both IDs are
+  # template AllowedValues AND members of CACHEPOINT_SUPPORTED_MODELS, so they do
+  # report nonzero cacheReadInputTokens — but they had no pricing entry at all
+  # until GitHub issue #926, and the old substring lookup silently priced them off
+  # the base-tier row above (so Flex was billed at 2x its rate, Priority at 0.57x,
+  # and cache reads at the base-tier FRESH INPUT rate — an 8x overcharge).
+  #
+  # Derived from the eu. base rates above with the same tier multipliers the
+  # us. and global. tier rows use (Priority 1.75x, Flex 0.5x, applied to every
+  # unit, rounded to 3 s.f.) rather than copied from a price list. If AWS
+  # publishes EU tier rates that differ, replace these.
+  - name: bedrock/eu.amazon.nova-2-lite-v1:0:priority
+    units:
+      - name: inputTokens
+        price: "6.83E-7"
+      - name: outputTokens
+        price: "5.72E-6"
+      - name: cacheReadInputTokens
+        price: "1.71E-7"
+      - name: cacheWriteInputTokens
+        price: "6.83E-7"
+
+  - name: bedrock/eu.amazon.nova-2-lite-v1:0:flex
+    units:
+      - name: inputTokens
+        price: "1.95E-7"
+      - name: outputTokens
+        price: "1.64E-6"
+      - name: cacheReadInputTokens
+        price: "4.88E-8"
+      - name: cacheWriteInputTokens
+        price: "1.95E-7"
 
   # ---------------------------------------------------------------------------
   # Amazon Bedrock Models - Anthropic Claude (EU)
