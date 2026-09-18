@@ -285,7 +285,6 @@
   },
   "section_id": "list-leaves-wrong-1",
   "stickler_comparison_result": {
-    "all_fields_matched": true,
     "auroc_confidence_metric": 0.5,
     "confidence_metrics": {
       "coverage": {
@@ -452,7 +451,6 @@
       },
       "non_matches": [],
       "overall": {
-        "all_fields_matched": true,
         "derived": {
           "cm_accuracy": 1.0,
           "cm_f1": 1.0,
@@ -668,7 +666,40 @@
     "field_scores": {
       "Items": 0.7333333333333333
     },
-    "non_matches": [],
+    "non_matches": [
+      {
+        "field_path": "Items[1].name",
+        "ground_truth_value": "Widget B",
+        "non_match_type": "false_discovery",
+        "prediction_value": "Foo",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[2].name",
+        "ground_truth_value": "Widget C",
+        "non_match_type": "false_discovery",
+        "prediction_value": "Bar",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[3].name",
+        "ground_truth_value": "Widget D",
+        "non_match_type": "false_discovery",
+        "prediction_value": "Baz",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      },
+      {
+        "field_path": "Items[4].name",
+        "ground_truth_value": "Widget E",
+        "non_match_type": "false_discovery",
+        "prediction_value": "Qux",
+        "reason": "field mismatch",
+        "similarity_score": 0.0
+      }
+    ],
     "overall_score": 0.7333333333333333
   }
 }

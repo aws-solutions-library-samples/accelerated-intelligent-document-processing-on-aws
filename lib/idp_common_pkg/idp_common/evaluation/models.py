@@ -66,6 +66,25 @@ class AttributeEvaluationResult:
     field_comparison_details: Optional[List[Dict[str, Any]]] = (
         None  # Detailed field-by-field comparison from sticker-eval v0.1.4+
     )
+    # Provenance of the comparator applied to this attribute. Populated when a
+    # Stickler model was built for the section (skipped when the section fell
+    # off the Stickler path — e.g. an unbuildable auto-generated schema).
+    #   - ``"configured"``: operator wrote ``x-aws-idp-evaluation-method`` on
+    #     this leaf (or an equivalent extension), so ``comparator_type`` was
+    #     picked by IDP config, not by Stickler's native inference.
+    #   - ``"auto-inferred"``: leaf carried no evaluation-method annotation,
+    #     so Stickler 1.0's ``x-aws-stickler-infer-unspecified`` flag picked
+    #     the comparator from the field's type and name-token.
+    # Kept as ``Optional[str]`` (not an ``Enum``) so older ``results.json``
+    # files that predate this field still round-trip through the dataclass
+    # loader without a schema-migration step.
+    inference_source: Optional[str] = None
+    # Stickler's per-field decision trace from ``spec.explain()``. An ordered
+    # list of strings like ``["type:str -> LevenshteinComparator@0.85",
+    # "name-token:invoice_id -> ExactComparator@1.0"]``. Populated iff
+    # ``inference_source == "auto-inferred"``; ``None`` for configured
+    # fields (there is no trace when the operator made the choice).
+    inference_why: Optional[List[str]] = None
 
 
 @dataclass
@@ -294,6 +313,16 @@ class DocumentEvaluationResult:
                             "confidence_threshold": ar.confidence_threshold,
                             "weight": ar.weight,
                             "field_comparison_details": ar.field_comparison_details,
+                            # Provenance from Stickler 1.0's ``spec.explain()``.
+                            # Load-bearing for the Test Studio Comparator
+                            # Changes panel — the resolver reads these keys off
+                            # ``results.json``. Omitting them here (as the
+                            # first draft of this feature did) collapses every
+                            # attribute's ``source`` to None in the panel and
+                            # the source-flip case (the whole point) never
+                            # surfaces.
+                            "inference_source": ar.inference_source,
+                            "inference_why": ar.inference_why,
                         }
                         for ar in sr.attributes
                     ],

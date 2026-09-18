@@ -474,7 +474,15 @@ def _date_format_error_fields(exc: Exception) -> set[str]:
         return set()
     fields: set[str] = set()
     for err in entries:
-        if not str(err.get("type", "")).startswith("date_"):
+        # Pydantic v2 emits ``date_parsing`` / ``date_from_datetime_parsing``
+        # for ``format: date`` fields AND ``datetime_parsing`` /
+        # ``datetime_from_date_parsing`` for ``format: date-time`` fields.
+        # A prefix check on ``"date_"`` alone missed the entire
+        # date-time family, so schemas that model timestamps with
+        # ``format: date-time`` got no diagnostic and the agent had to
+        # re-emit every row by hand instead of applying a transform.
+        err_type = str(err.get("type", ""))
+        if not (err_type.startswith("date_") or err_type.startswith("datetime_")):
             continue
         leaf = [p for p in err.get("loc", ()) if not isinstance(p, int)]
         if leaf:

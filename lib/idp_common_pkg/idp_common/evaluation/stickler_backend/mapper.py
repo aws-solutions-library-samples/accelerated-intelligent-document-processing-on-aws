@@ -571,7 +571,10 @@ class SticklerConfigMapper:
         This modifies the schema in-place to replace:
         - x-aws-idp-evaluation-method → x-aws-stickler-comparator (except for structured arrays)
         - x-aws-idp-evaluation-threshold → x-aws-stickler-threshold (for non-arrays)
-        - x-aws-idp-evaluation-match-threshold → x-aws-stickler-match-threshold (for array items)
+        - x-aws-idp-evaluation-match-threshold → x-aws-stickler-match-threshold — placed ONLY
+          on the ``items`` object schema (Stickler 1.0 rejects this key on the
+          array field itself with an "unread extension" error, breaking change
+          #312; the element-class builder reads it off the item object)
         - x-aws-idp-evaluation-weight → x-aws-stickler-weight
 
         Also adds empty "required" arrays to objects that don't have one,
@@ -696,10 +699,14 @@ class SticklerConfigMapper:
             # One Bedrock round trip per cell means a 54-row invoice needs ~3,000
             # sequential calls (~45 min), so the 900 s evaluation Lambda can never
             # finish it at any retry count; observed wedging a whole stack.
-            # Downgrade to Stickler's type-appropriate deterministic default
-            # (string -> Levenshtein, number -> Numeric, boolean -> Exact), which
-            # is what a matching cost function should be anyway, unless the author
-            # explicitly opts in for a small list.
+            # Downgrade to Stickler's per-field default (picked from type AND
+            # field name — string ``*_id`` -> Exact, string ``notes`` -> Fuzzy,
+            # numeric -> Numeric, boolean -> Exact, date-typed -> Date) via the
+            # root ``x-aws-stickler-infer-unspecified`` flag set by
+            # ``build_stickler_model_config``, which is a strictly better
+            # matching cost function than the pre-1.0 type-only fallback. The
+            # override is only bypassed when the author explicitly opts in for a
+            # small list.
             # ``_coerce_bool`` handles YAML-quoted ``"false"`` / ``"no"``
             # / ``"off"`` (all truthy under raw Python ``bool()``, so
             # ``not schema.get(...)`` would let a config with
@@ -724,8 +731,9 @@ class SticklerConfigMapper:
                     f"'{X_AWS_IDP_EVALUATION_LLM_IN_LIST}: true' on this field to "
                     f"override (only safe for very small lists)."
                 )
-                # Drop the method so no x-aws-stickler-comparator is emitted and
-                # Stickler's JsonSchemaFieldConverter applies its own type default.
+                # Drop the method so no x-aws-stickler-comparator is emitted
+                # and Stickler's 1.0 infer-unspecified pass picks by type +
+                # name-token instead.
                 # Deliberately fall THROUGH rather than returning early: this
                 # field's threshold / weight / clip-under-threshold / aggregate
                 # extensions are translated further down and must still be
@@ -835,28 +843,60 @@ class SticklerConfigMapper:
                     f"Use 'evaluation-match-threshold' for HUNGARIAN matching instead."
                 )
 
-            # Set match_threshold at field level (array itself)
+            # Set match_threshold on the ITEMS schema only. Stickler 1.0's
+            # importer reads ``x-aws-stickler-match-threshold`` off the
+            # OBJECT (the array's item class) and now rejects the same key
+            # on the array field itself with an "unread extension" error
+            # (breaking change #312: unrecognized ``x-aws-stickler-*`` keys
+            # raise instead of being silently dropped). Setting it only on
+            # the items schema keeps the semantic — the item class picks up
+            # the configured threshold — without the outer-level placement
+            # that v1.0 rejects.
             if X_AWS_IDP_EVALUATION_MATCH_THRESHOLD in schema:
                 match_threshold = cls._coerce_to_float(
                     schema[X_AWS_IDP_EVALUATION_MATCH_THRESHOLD],
                     f"{field_path}.match_threshold",
                 )
-                # Set on the field itself (used by IDP's display + re-derived
-                # match logic and Stickler >0.5.0 will honor this position).
-                schema["x-aws-stickler-match-threshold"] = match_threshold
-                # ALSO set on the items schema — this is where Stickler's
-                # `from_json_schema` reads x-aws-stickler-match-threshold when
-                # building the list-element class (structured_model.py:594 in
-                # 0.5.0). Without this, the element class silently keeps the
-                # ClassVar default (0.7) regardless of config.
                 items_schema = schema.get(SCHEMA_ITEMS)
                 if isinstance(items_schema, dict):
                     items_schema.setdefault(
                         "x-aws-stickler-match-threshold", match_threshold
                     )
-                logger.debug(
-                    f"Field '{field_path}': Set match_threshold={match_threshold} at field level and on items schema for Hungarian matching"
-                )
+                    logger.debug(
+                        f"Field '{field_path}': Set match_threshold={match_threshold} on items schema for Hungarian matching"
+                    )
+                else:
+                    # ``items_schema`` is not a dict — could be missing, a
+                    # string type reference, or a schema shape the mapper
+                    # doesn't recognise. Warn rather than silently
+                    # dropping the operator-configured threshold, so a
+                    # mis-authored schema surfaces at config time instead
+                    # of showing up as "why is my match_threshold being
+                    # ignored" in evaluation output.
+                    logger.warning(
+                        f"Field '{field_path}': evaluation-match-threshold="
+                        f"{match_threshold} configured, but items schema is "
+                        f"{type(items_schema).__name__ if items_schema is not None else 'missing'} "
+                        f"(expected dict). Threshold not applied. Fix the schema "
+                        f"or use evaluation-threshold if the array items are scalars."
+                    )
+
+        # A non-structured array (items is a scalar type, ``oneOf``/``anyOf``,
+        # or a Union type like ``[\"object\", \"null\"]``) that carries
+        # ``evaluation-match-threshold`` reaches here with the extension
+        # silently ignored — Stickler's Hungarian matching only applies to
+        # arrays of objects. Emit a warning so the operator sees why their
+        # configured threshold has no effect.
+        elif (
+            schema.get(SCHEMA_TYPE) == TYPE_ARRAY
+            and X_AWS_IDP_EVALUATION_MATCH_THRESHOLD in schema
+        ):
+            logger.warning(
+                f"Field '{field_path}': evaluation-match-threshold configured on a "
+                f"non-structured array (items type is not 'object'). Match threshold "
+                f"applies only to Hungarian matching of object items — for scalar-item "
+                f"arrays use evaluation-threshold on the items instead. Silently dropping."
+            )
 
         # For non-array fields: use threshold — unless NUMERIC_EXACT already
         # consumed evaluation-threshold as a comparator-config tolerance above.
@@ -985,6 +1025,22 @@ class SticklerConfigMapper:
 
         # Make a deep copy to avoid modifying the original
         schema = copy.deepcopy(document_class_schema)
+
+        # Turn on Stickler 1.0's native comparator inference for any leaf that
+        # carries no explicit x-aws-idp-evaluation-method. Stickler picks by
+        # Python type AND field-name token (``*_id`` → Exact, ``amount`` →
+        # Numeric, ``notes`` → Fuzzy, date-typed strings → Date), so
+        # un-annotated fields end up with a better default than a type-only
+        # fallback could produce. Operator annotations still win — the mapper's
+        # translation pass emits ``x-aws-stickler-comparator`` for every
+        # annotated field before Stickler's inference sees the schema, and
+        # Stickler leaves annotated fields alone.
+        #
+        # ``setdefault`` (not direct assignment) so an author who deliberately
+        # authored ``x-aws-stickler-infer-unspecified: false`` (e.g. a raw
+        # Stickler-shaped config passed straight through) keeps their choice
+        # rather than being silently overwritten to True here.
+        schema.setdefault("x-aws-stickler-infer-unspecified", True)
 
         # Extract model name
         model_name = (

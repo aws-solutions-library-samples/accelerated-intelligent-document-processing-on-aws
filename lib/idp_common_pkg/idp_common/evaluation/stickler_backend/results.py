@@ -45,6 +45,54 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _schema_type_includes(schema: Optional[Dict[str, Any]], type_name: str) -> bool:
+    """True if ``schema['type']`` names ``type_name`` (scalar or in a Union).
+
+    Genson emits Union types on nullable fields — ``type: ["array", "null"]``
+    for an optional list, ``type: ["string", "null"]`` for an optional
+    string. A plain ``schema.get("type") == "array"`` check misses those,
+    silently collapsing every threshold/list-mode decision on a nullable
+    array to the scalar/default branch. Reading with this helper keeps the
+    behavior identical for the scalar case (``"array"``) and adds Union
+    handling.
+    """
+    if not isinstance(schema, dict):
+        return False
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str):
+        return schema_type == type_name
+    if isinstance(schema_type, list):
+        return type_name in schema_type
+    return False
+
+
+def _read_match_threshold(schema: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Read ``x-aws-stickler-match-threshold`` from a schema fragment.
+
+    Stickler 1.0 rejects this extension on the array field itself (breaking
+    change #312 — "unread extension" error); it belongs on the item OBJECT.
+    Our mapper writes it only under ``items``, so a read against the array's
+    own dict returns None and the caller collapses to the document default.
+    This helper unwraps arrays and reads from the item schema so reports and
+    row-verdict fallbacks see the configured value again.
+    """
+    if not isinstance(schema, dict):
+        return None
+    # ``isinstance(True, int)`` is True in Python — a schema that authored
+    # ``x-aws-stickler-match-threshold: true`` (rare but possible YAML slip)
+    # would otherwise coerce silently to 1.0. Reject bools on both branches.
+    direct = schema.get("x-aws-stickler-match-threshold")
+    if isinstance(direct, (int, float)) and not isinstance(direct, bool):
+        return float(direct)
+    if _schema_type_includes(schema, "array"):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            value = items.get("x-aws-stickler-match-threshold")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+    return None
+
+
 def resolve_leaf_schema(
     field_schema: Dict[str, Any], expected_key: str
 ) -> Optional[Dict[str, Any]]:
@@ -213,7 +261,9 @@ def annotate_nested_comparison_methods(
             comparator = leaf_schema.get("x-aws-stickler-comparator")
             threshold = leaf_schema.get("x-aws-stickler-threshold")
             weight = leaf_schema.get("x-aws-stickler-weight")
-            list_match_threshold = leaf_schema.get("x-aws-stickler-match-threshold")
+            # For a top-level list row (leaf_schema IS the array) the
+            # match-threshold key lives under ``items`` on Stickler 1.0.
+            list_match_threshold = _read_match_threshold(leaf_schema)
         else:
             comparator = threshold = weight = list_match_threshold = None
 
@@ -275,6 +325,153 @@ def _has_nonzero_counts(node: Optional[Dict[str, Any]]) -> bool:
             # so the caller's shape-drift warning still fires.
             return True
     return False
+
+
+# Stickler 1.0's ``spec.explain()`` emits four ``source`` values:
+#   * ``"explicit"``  — comparator set on the ``StructuredModel`` class
+#                       (what a translated ``x-aws-stickler-comparator`` looks
+#                       like from Stickler's side)
+#   * ``"type"``      — no annotation; type rule fired (e.g. ``float`` -> Numeric)
+#   * ``"name-token"``— no annotation; name-token rule fired (e.g. ``*_id`` -> Exact)
+#   * ``"degrade"``   — Stickler downgraded an unsupported / degenerate comparator
+#                       (the LLM-in-structured-list downgrade the mapper triggers
+#                       is the case idp will most often see here)
+#
+# ``configured`` is the operator-facing label for ``explicit``; ``auto-inferred``
+# folds ``type`` + ``name-token`` because the panel doesn't need to distinguish
+# them (the ``why`` trace already spells out which rule fired). ``degrade`` gets
+# its own label — it means Stickler had to override the operator's authored
+# choice, which is exactly the case an operator most wants to see flagged.
+_INFERRED_SOURCE_LABEL = "auto-inferred"
+_CONFIGURED_SOURCE_LABEL = "configured"
+_DEGRADED_SOURCE_LABEL = "downgraded"
+
+
+def _resolve_provenance(
+    root_model_cls: Any, field_name: str
+) -> "tuple[Optional[str], Optional[List[str]]]":
+    """Look up a top-level attribute's Stickler ``spec.explain()`` entry and
+    return ``(inference_source, inference_why)`` for it.
+
+    ``model_factory.get_stickler_model`` stashes ``spec.explain()`` output as
+    ``model_class.__idp_explain__``. For SCALAR attributes the top-level
+    entry is what we want. For CONTAINER attributes (nested-object or
+    structured-list), Stickler's own explain entry for the container is
+    always ``source: "explicit"`` (the container comparator —
+    ``StructuredModelComparator`` — is declared on the class), while the
+    per-leaf entries under it (``Address.street``, ``items.sku`` — dotted
+    paths) are where the interesting ``name-token`` / ``type`` /
+    ``degrade`` sources live. Reading only the top-level entry would
+    render every container attribute as ``configured`` even when every
+    leaf inside it was auto-inferred — hiding exactly the case the panel
+    exists to surface.
+
+    Aggregation rule: if the top-level entry is ``explicit`` AND any
+    descendant entry (``{field_name}.*``) has an inferred / degraded
+    source, roll that up. Return the descendants' combined ``why``
+    traces so an operator can see which leaf inferred what.
+
+    Returns ``(None, None)`` when the model class isn't available
+    (non-Stickler path, or a section whose model failed to build), when
+    the field isn't in the explain dict (Stickler shape drift), or when
+    Stickler's ``source`` value is missing. In every ``None`` case
+    ``AttributeEvaluationResult`` just omits the field, which older
+    ``results.json`` readers already tolerate.
+    """
+    if root_model_cls is None:
+        return None, None
+    explain = getattr(root_model_cls, "__idp_explain__", None)
+    if not isinstance(explain, dict):
+        return None, None
+    # A container attribute in an auto-generated schema may have per-leaf
+    # explain entries without a top-level entry for the container itself
+    # (Stickler emits the top-level entry when a comparator is declared on
+    # the class; an inference-only container has none). Don't bail here —
+    # the descendant scan below is the primary information source, and the
+    # rollup can still surface the leaf provenance even if the container
+    # itself is missing. ``entry`` defaults to ``{}`` so subsequent
+    # ``.get("source")`` / ``.get("why")`` return safe values.
+    entry = explain.get(field_name)
+    if not isinstance(entry, dict):
+        entry = {}
+    source = entry.get("source")
+    if not isinstance(source, str):
+        source = None
+
+    # Scan descendants — anything under ``{field_name}.``. Stickler emits
+    # dotted paths for both nested objects and structured-list items
+    # (verified: ``items.sku``, ``Address.street``); the split-on-``.``
+    # captures both without a schema walk.
+    prefix = f"{field_name}."
+    descendant_sources: List[str] = []
+    descendant_whys: List[str] = []
+    for key, sub in explain.items():
+        if not isinstance(key, str) or not key.startswith(prefix):
+            continue
+        if not isinstance(sub, dict):
+            continue
+        sub_source = sub.get("source")
+        if isinstance(sub_source, str):
+            descendant_sources.append(sub_source)
+        sub_why = sub.get("why")
+        if isinstance(sub_why, list):
+            descendant_whys.extend(str(w) for w in sub_why)
+
+    def _label(src: str, why: Optional[List[str]]) -> "tuple[str, Optional[List[str]]]":
+        if src == "explicit":
+            return _CONFIGURED_SOURCE_LABEL, None
+        if src == "degrade":
+            return _DEGRADED_SOURCE_LABEL, why
+        return _INFERRED_SOURCE_LABEL, why
+
+    # If there are descendants at all, this is a container attribute — roll
+    # up leaf-level provenance regardless of the container's own source.
+    # Stickler 1.0 emits ``explicit`` on the container by convention (the
+    # container comparator is declared on the class), but a future Stickler
+    # release that emits ``type``/``name-token``/``degrade`` at the
+    # container level would otherwise fall into the scalar branch and hide
+    # mixed leaf provenance entirely. Rolling up on the presence of
+    # descendants keeps the panel truthful across those changes.
+    if descendant_sources:
+        # ``degrade`` beats ``type``/``name-token`` because a downgrade is
+        # the case the operator most needs to see; every leaf ``explicit``
+        # keeps the container ``configured``. The container's own
+        # ``degrade`` (if Stickler ever emits it) is escalated by the same
+        # rule via ``source`` being folded into ``combined_sources``. A
+        # missing top-level entry (``source is None``) contributes nothing
+        # to the label decision — the leaves alone drive it.
+        combined_sources = list(descendant_sources)
+        if source is not None:
+            combined_sources.append(source)
+        # Include the container's own ``why`` in the rollup trace when it
+        # carries non-configured provenance — the earlier version dropped
+        # this line entirely, so a container that inferred (say ``type``)
+        # + inferring leaves emitted the leaves' traces but silently
+        # discarded the container's own inference reason.
+        container_why = (
+            entry.get("why") if source is not None and source != "explicit" else None
+        )
+        combined_whys: List[str] = list(descendant_whys)
+        if isinstance(container_why, list):
+            combined_whys = [str(w) for w in container_why] + combined_whys
+        if any(s == "degrade" for s in combined_sources):
+            return _DEGRADED_SOURCE_LABEL, combined_whys or None
+        if any(s in ("type", "name-token") for s in combined_sources):
+            return _INFERRED_SOURCE_LABEL, combined_whys or None
+        # Every descendant is ``explicit``: the container is fully
+        # configured. If the top-level entry itself was missing this is a
+        # safe approximation (the leaves carry the configuration).
+        return _CONFIGURED_SOURCE_LABEL, None
+
+    # Scalar attribute — use the top-level entry directly. If the entry is
+    # missing (auto-generated schema with no explicit Stickler configuration
+    # AND no descendants either), we have no basis to label the attribute;
+    # return ``(None, None)`` so ``AttributeEvaluationResult`` just omits
+    # the field, which older ``results.json`` readers already tolerate.
+    if source is None:
+        return None, None
+    why = entry.get("why")
+    return _label(source, list(why) if isinstance(why, list) else None)
 
 
 def transform_stickler_result(
@@ -401,7 +598,11 @@ def transform_stickler_result(
         field_configs[field_name] = {
             "threshold": configured_threshold,
             "applied_threshold": applied_threshold,
-            "match_threshold": field_schema.get("x-aws-stickler-match-threshold"),
+            # For a structured array, ``x-aws-stickler-match-threshold`` lives
+            # under ``items`` on Stickler 1.0 (see ``_read_match_threshold``).
+            # Reading it off the array field directly would return None and
+            # collapse the display + verdict to the document default.
+            "match_threshold": _read_match_threshold(field_schema),
             "comparator": field_schema.get("x-aws-stickler-comparator"),
             "weight": field_schema.get("x-aws-stickler-weight"),
         }
@@ -482,7 +683,7 @@ def transform_stickler_result(
             # back to the section-level ``match_threshold`` (Stickler's
             # 0.8 default) when neither is configured.
             field_schema_here = properties.get(field_name, {}) or {}
-            is_list_field = field_schema_here.get("type") == "array"
+            is_list_field = _schema_type_includes(field_schema_here, "array")
             if is_list_field:
                 list_thresh = field_config.get("match_threshold")
                 attr_threshold = (
@@ -508,6 +709,50 @@ def transform_stickler_result(
 
         field_specific_threshold = field_config.get("threshold")
         comparator_method = field_config.get("comparator")
+        # For un-annotated SCALAR leaves, no ``x-aws-stickler-comparator``
+        # reached the mapper's translated schema — Stickler 1.0 picked the
+        # comparator via its own inference (``x-aws-stickler-infer-unspecified``)
+        # at model-build time. Reading the schema alone would leave
+        # ``comparator_method`` as None here, so ``format_evaluation_method``
+        # would fall through to a type-based default ("Fuzzy" for strings)
+        # even when Stickler actually applied Exact via a name-token rule
+        # (``*_id``) or Date via ``format: date``. Read the applied
+        # comparator off the built model's stashed explain dict so the
+        # Method column reflects what Stickler actually scored against.
+        # Skip container attributes — for lists ``format_evaluation_method``
+        # renders "Hungarian (threshold: N)" (the row-matcher, not the
+        # element comparator) and for nested objects "AggregateObject";
+        # feeding it the container's own explain entry (which Stickler
+        # reports as a default LevenshteinComparator for the class-level
+        # rollup) would replace those with misleading scalar-style output.
+        # Consult the SCHEMA type, not just the runtime values — when both
+        # expected and actual are None (a missing optional list/object
+        # attribute), an "is it a list/dict?" check on the values misses
+        # the container shape and the display collapses to the scalar
+        # branch that reads Stickler's class-level rollup entry.
+        _field_schema_here = properties.get(field_name, {}) or {}
+        _field_type = _field_schema_here.get("type")
+        _is_container_schema = _field_type in ("array", "object") or (
+            isinstance(_field_type, list)
+            and any(t in ("array", "object") for t in _field_type)
+        )
+        _is_container_value = (
+            isinstance(expected_value, (list, dict))
+            or isinstance(actual_value, (list, dict))
+            or _is_container_schema
+        )
+        if (
+            comparator_method is None
+            and not _is_container_value
+            and root_model_cls is not None
+        ):
+            explain = getattr(root_model_cls, "__idp_explain__", None)
+            if isinstance(explain, dict):
+                entry = explain.get(field_name)
+                if isinstance(entry, dict):
+                    inferred = entry.get("comparator")
+                    if isinstance(inferred, str):
+                        comparator_method = inferred
         # The Method display string uses Stickler's applied threshold when the
         # operator omitted an explicit one — that's the value
         # Stickler's reason string ``"below threshold (X < Y)"`` uses for Y.
@@ -537,6 +782,18 @@ def transform_stickler_result(
                 root_model_cls=root_model_cls,
             )
 
+        # Provenance from Stickler 1.0's ``spec.explain()`` (stashed on the
+        # model class in ``model_factory.get_stickler_model``). Stickler's
+        # own ``source`` values ("explicit" vs "type" / "name-token") map
+        # onto our binary ``configured`` / ``auto-inferred`` distinction.
+        # ``None`` when the model class isn't available (non-Stickler path,
+        # auto-generated section whose model failed to build) — the field
+        # then round-trips through results.json without changing anything
+        # older readers relied on.
+        inference_source, inference_why = _resolve_provenance(
+            root_model_cls, field_name
+        )
+
         attribute_results.append(
             AttributeEvaluationResult(
                 name=field_name,
@@ -558,6 +815,8 @@ def transform_stickler_result(
                 ),
                 weight=field_config.get("weight"),
                 field_comparison_details=detailed_comparisons,
+                inference_source=inference_source,
+                inference_why=inference_why,
             )
         )
 

@@ -382,8 +382,12 @@ class EvaluationService:
         # 'required') and avoids "Field required [type=missing]" errors.
         self._strip_required(schema)
 
-        # Add evaluation method extensions recursively
-        self._add_evaluation_extensions_recursive(schema)
+        # No IDP-side per-field evaluation-method stamping: the mapper sets
+        # ``x-aws-stickler-infer-unspecified: true`` at the schema root, so
+        # Stickler 1.0 picks a comparator/threshold per leaf from its type
+        # AND its field-name token. That is strictly better than the previous
+        # type-only fallback ("all strings get Fuzzy@0.85") this method used
+        # to stamp here, and it is now the only place inference happens.
 
         # Count properties for logging
         num_properties = len(schema.get("properties", {}))
@@ -498,66 +502,6 @@ class EvaluationService:
             items = schema["items"]
             if isinstance(items, dict):
                 self._normalize_integer_to_number(items)
-
-    def _add_evaluation_extensions_recursive(self, schema: Dict[str, Any]) -> None:
-        """
-        Recursively add IDP evaluation method extensions to schema.
-
-        Adds x-aws-idp-evaluation-method and x-aws-idp-evaluation-threshold
-        based on the inferred JSON Schema types.
-
-        Args:
-            schema: Schema object to modify in-place
-        """
-        from idp_common.config.schema_constants import (
-            EVALUATION_METHOD_EXACT,
-            EVALUATION_METHOD_FUZZY,
-            EVALUATION_METHOD_HUNGARIAN,
-            EVALUATION_METHOD_NUMERIC_EXACT,
-            SCHEMA_ITEMS,
-            SCHEMA_PROPERTIES,
-            SCHEMA_TYPE,
-            TYPE_ARRAY,
-            TYPE_BOOLEAN,
-            TYPE_INTEGER,
-            TYPE_NUMBER,
-            TYPE_OBJECT,
-            TYPE_STRING,
-            X_AWS_IDP_EVALUATION_METHOD,
-            X_AWS_IDP_EVALUATION_THRESHOLD,
-        )
-
-        schema_type = schema.get(SCHEMA_TYPE)
-
-        # Handle union types from genson (e.g., ["string", "integer"])
-        if isinstance(schema_type, list):
-            # Use first type for evaluation method
-            schema_type = schema_type[0] if schema_type else TYPE_STRING
-
-        # Add evaluation method based on type
-        if schema_type == TYPE_STRING:
-            schema[X_AWS_IDP_EVALUATION_METHOD] = EVALUATION_METHOD_FUZZY
-            schema[X_AWS_IDP_EVALUATION_THRESHOLD] = 0.85
-        elif schema_type in [TYPE_NUMBER, TYPE_INTEGER]:
-            schema[X_AWS_IDP_EVALUATION_METHOD] = EVALUATION_METHOD_NUMERIC_EXACT
-            schema[X_AWS_IDP_EVALUATION_THRESHOLD] = 0.01
-        elif schema_type == TYPE_BOOLEAN:
-            schema[X_AWS_IDP_EVALUATION_METHOD] = EVALUATION_METHOD_EXACT
-        elif schema_type == TYPE_ARRAY:
-            # Recursively process array items
-            items = schema.get(SCHEMA_ITEMS, {})
-            if isinstance(items, dict):
-                items_type = items.get(SCHEMA_TYPE)
-                # Array of objects gets Hungarian matching
-                if items_type == TYPE_OBJECT:
-                    schema[X_AWS_IDP_EVALUATION_METHOD] = EVALUATION_METHOD_HUNGARIAN
-                # Recurse into items
-                self._add_evaluation_extensions_recursive(items)
-        elif schema_type == TYPE_OBJECT:
-            # Recursively process object properties
-            properties = schema.get(SCHEMA_PROPERTIES, {})
-            for prop_schema in properties.values():
-                self._add_evaluation_extensions_recursive(prop_schema)
 
     def _get_stickler_model(
         self, document_class: str, expected_data: Optional[Dict[str, Any]] = None
