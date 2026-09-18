@@ -53,11 +53,11 @@ Vendored copies
 SAM packages each Lambda from its own ``CodeUri`` directory, so a function
 that does not carry the ``idp-common`` layer cannot import this module from
 the library. Rather than attach a layer carrying Pillow/pypdfium2/requests to
-a handful of tiny resolvers just to reach a stdlib-only module — or let each
-one hand-roll its own denylist, which is how they fell eight keys behind —
-byte-identical copies of this file are committed as ``log_sanitizer.py``
-inside the ``nested/api-resolvers/src/lambda/`` function directories that
-need it.
+a handful of tiny resolvers and custom resources just to reach a stdlib-only
+module — or let each one hand-roll its own denylist, which is how they fell
+eight keys behind — byte-identical copies of this file are committed as
+``log_sanitizer.py`` inside the layer-free function directories that need it,
+under both ``nested/api-resolvers/src/lambda/`` and ``src/lambda/``.
 
 **This file is the only copy you edit.** After changing it, re-sync with
 ``scripts/sync_resolver_log_sanitizer.sh``;

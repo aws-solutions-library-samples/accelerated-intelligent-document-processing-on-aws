@@ -34,6 +34,7 @@ from botocore.exceptions import (
     NoRegionError,
     UnknownServiceError,
 )
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -296,7 +297,7 @@ def _delete_project_name(event):
 
 
 def handler(event, context):
-    logger.info("Event received: %s", event)
+    logger.info("Event received: %s", sanitize_event_for_logging(event))
     request_type = event.get("RequestType")
     props = event.get("ResourceProperties", {}) or {}
     stack_name = props.get("StackName") or os.environ.get("STACK_NAME", "")

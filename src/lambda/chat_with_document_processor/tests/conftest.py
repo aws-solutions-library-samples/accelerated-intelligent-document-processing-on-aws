@@ -51,6 +51,19 @@ _scope_mod = importlib.util.module_from_spec(_scope_spec)
 _scope_spec.loader.exec_module(_scope_mod)
 sys.modules["idp_common.config_scope"] = _scope_mod
 
+# log_sanitizer is loaded for REAL for the same two reasons: it is stdlib-only, and
+# a MagicMock would not survive the handler's `json.dumps` of the redacted event.
+# The processor redacts what it logs because that event carries the user's prompt
+# and `callerSub`; an identity stub here would let a regression in that pass.
+_sanitizer_spec = importlib.util.spec_from_file_location(
+    "idp_common.utils.log_sanitizer",
+    Path(__file__).resolve().parents[4]
+    / "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py",
+)
+_sanitizer_mod = importlib.util.module_from_spec(_sanitizer_spec)
+_sanitizer_spec.loader.exec_module(_sanitizer_mod)
+sys.modules["idp_common.utils.log_sanitizer"] = _sanitizer_mod
+
 # Stub idp_common.bedrock.client — used by the processor for the sampling-param
 # and reasoning-effort capability gates, and default_client (passed to the OpenAI
 # streaming generator).

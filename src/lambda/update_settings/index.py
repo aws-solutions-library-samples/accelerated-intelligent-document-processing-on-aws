@@ -3,6 +3,7 @@
 
 import boto3
 import cfnresponse
+from log_sanitizer import sanitize_event_for_logging
 import json
 import os
 import logging
@@ -30,7 +31,7 @@ def updateSSMParameter(props):
     ssm.put_parameter(Name=parameterName, Value=newSettingsJSON, Overwrite=True)
                         
 def handler(event, context):        
-    print(json.dumps(event))
+    print(json.dumps(sanitize_event_for_logging(event)))
     status = cfnresponse.SUCCESS
     responseData = {}
     reason = "Success"

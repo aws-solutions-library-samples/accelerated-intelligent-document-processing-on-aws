@@ -6,6 +6,7 @@ import os
 from typing import Any, Dict, List
 
 import boto3
+from log_sanitizer import sanitize_event_for_logging
 
 
 def _caller_in_groups(event, allowed):
@@ -172,7 +173,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     Invokes the calculate_capacity Lambda function and returns the result.
     """
     try:
-        print(f"[RESOLVER] Received event: {json.dumps(event, default=str)[:1000]}")
+        # Redacted before logging: an AppSync event carries `identity.claims`, so
+        # the Cognito sub, email and group list of every caller would otherwise be
+        # written to CloudWatch on every invocation.
+        print(
+            "[RESOLVER] Received event: "
+            f"{json.dumps(sanitize_event_for_logging(event), default=str)[:1000]}"
+        )
 
         # Defense-in-depth RBAC: calculateCapacity is Admin/Author/Viewer (schema).
         # A Cognito invocation always carries a non-None 'identity'; direct Lambda

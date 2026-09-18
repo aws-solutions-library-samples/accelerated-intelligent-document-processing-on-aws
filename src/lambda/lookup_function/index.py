@@ -6,6 +6,7 @@ import boto3
 import json
 import os
 from datetime import datetime, timezone
+from log_sanitizer import sanitize_event_for_logging
 import logging
 
 logger = logging.getLogger()
@@ -132,7 +133,7 @@ def handler(event, context):
         Single: {'status': 'RUNNING', 'timing': {...}, 'processingDetail': {...}}
         Batch: {'results': [{'object_key': 'doc-1', 'status': 'COMPLETED'}, ...]}
     """
-    logger.info(f"Event: {json.dumps(event)}")
+    logger.info(f"Event: {json.dumps(sanitize_event_for_logging(event))}")
 
     # Extract request parameters
     object_keys = event.get('object_keys')  # Batch mode

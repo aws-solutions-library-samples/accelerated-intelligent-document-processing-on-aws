@@ -29,6 +29,7 @@ import time
 
 import boto3
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -396,7 +397,9 @@ def _send_cfn_response(event, context, status, data=None, reason=""):
 
 def handler(event, context):
     """CloudFormation Custom Resource handler for triggering backfill."""
-    logger.info(f"Custom Resource event: {json.dumps(event)}")
+    logger.info(
+        f"Custom Resource event: {json.dumps(sanitize_event_for_logging(event))}"
+    )
 
     request_type = event.get("RequestType", "")
     

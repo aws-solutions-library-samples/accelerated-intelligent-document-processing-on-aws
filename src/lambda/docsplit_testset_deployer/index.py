@@ -26,6 +26,7 @@ from typing import Dict, Any, List
 import boto3
 import requests
 import cfnresponse
+from log_sanitizer import sanitize_event_for_logging
 from pypdf import PdfReader, PdfWriter
 
 # Configure logging
@@ -59,8 +60,8 @@ def handler(event, context):
     """
     Main Lambda handler for deploying the RVL-CDIP-NMP dataset.
     """
-    logger.info(f"Event: {json.dumps(event)}")
-    
+    logger.info(f"Event: {json.dumps(sanitize_event_for_logging(event))}")
+
     try:
         request_type = event['RequestType']
         
