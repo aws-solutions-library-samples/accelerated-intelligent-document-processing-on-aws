@@ -396,6 +396,8 @@ class TestVersionComparatorIsShared:
     def test_update_configuration_delegates_to_the_shared_parser(self):
         import importlib.util
         import pathlib
+        import sys
+        from unittest.mock import MagicMock
 
         from idp_common.config.migrations._version import parse_version
 
@@ -408,6 +410,9 @@ class TestVersionComparatorIsShared:
         assert "from idp_common.config.migrations._version import parse_version" in (
             source
         ), "update_configuration must not re-implement the version comparison"
+
+        # cfnresponse is provided by the Lambda runtime, not the package.
+        sys.modules.setdefault("cfnresponse", MagicMock())
 
         spec = importlib.util.spec_from_file_location("_uc_index", path)
         assert spec and spec.loader

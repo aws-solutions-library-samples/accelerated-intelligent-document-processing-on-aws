@@ -1321,6 +1321,13 @@ STDERR:
         with zipfile.ZipFile(zipfile_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             # Add lib/idp_common_pkg
             for root, dirs, files in os.walk("lib/idp_common_pkg"):
+                # A developer checkout commonly carries a virtualenv and build
+                # leftovers in here. They are host-architecture wheels the image
+                # must not inherit, and the venv alone is ~900 MB — big enough to
+                # turn the CodeBuild download into the slowest step of publish.
+                # Note `.egg-info` needs a suffix test, not set membership: the
+                # directory is named `<dist>.egg-info`, so the `*.egg-info` glob
+                # this filter used to list never matched anything.
                 dirs[:] = [
                     d
                     for d in dirs
@@ -1328,10 +1335,15 @@ STDERR:
                     not in {
                         "__pycache__",
                         ".pytest_cache",
+                        ".venv",
+                        "venv",
+                        ".tox",
+                        ".mypy_cache",
+                        ".ruff_cache",
                         "dist",
                         "build",
-                        "*.egg-info",
                     }
+                    and not d.endswith(".egg-info")
                 ]
                 for file in files:
                     if file.endswith((".pyc", ".pyo")):
