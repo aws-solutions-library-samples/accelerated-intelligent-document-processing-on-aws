@@ -274,6 +274,30 @@ def get_stickler_model(
 
     make_model_fields_nullable(model_class)
 
+    # Capture Stickler 1.0's per-field comparator/threshold/weight AND its
+    # decision trace for the Test Studio Comparator Changes panel and the
+    # per-attribute Source column. ``spec.explain()`` returns a
+    # ``{dotted_path: {comparator, threshold, weight, source, why}}`` dict —
+    # ``source`` is ``"explicit"`` when the operator's translated
+    # ``x-aws-stickler-comparator`` reached Stickler, and either ``"type"``
+    # or ``"name-token"`` when the ``x-aws-stickler-infer-unspecified: true``
+    # flag on the schema root drove native inference. Stashed on the class
+    # so ``stickler_backend.results.transform_stickler_result`` can populate
+    # ``AttributeEvaluationResult.inference_source`` / ``.inference_why``
+    # without an extra call. Defensive ``try/except`` because provenance is
+    # a UI concern — a failure here must not fault the evaluation pipeline.
+    try:
+        import stickler as _stickler
+
+        spec = _stickler.eval_for(model_class)
+        model_class.__idp_explain__ = spec.explain()  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001 — provenance capture must never fault the pipeline
+        logger.warning(
+            f"stickler.eval_for provenance capture failed for {model_name}: {e}. "
+            f"Inference source/trace will be absent from results.json for this class."
+        )
+        model_class.__idp_explain__ = {}  # type: ignore[attr-defined]
+
     model_cache[cache_key] = model_class
     logger.debug(f"Cached Stickler model: {model_class.__name__}")
 

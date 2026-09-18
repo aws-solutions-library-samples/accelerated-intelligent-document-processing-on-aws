@@ -771,4 +771,18 @@ def compare_with_flags() -> Dict[str, Any]:
 #         gated leaf verdict Stickler emits contributes to section and
 #         document counts. Fixes both the parent-vs-children contradiction
 #         and the section-metric inflation on list-heavy documents.
-STICKLER_RESULT_VERSION = "2.0"
+#   3.0 — Stickler 1.0 upgrade (idp v0.6.9-dev). Two new
+#         ``AttributeEvaluationResult`` keys: ``inference_source`` and
+#         ``inference_why``, populated from Stickler 1.0's ``spec.explain()``
+#         (source: ``"configured"`` / ``"auto-inferred"``). The Stickler 1.0
+#         change to ``HungarianMatcher.calculate_metrics`` — paired-but-weak
+#         match now reports FD instead of FN (upstream #289) — is scoped to
+#         Stickler's own per-class metrics; IDP's ``_stickler_counts`` is
+#         derived leaf-by-leaf from row-level ``field_comparisons``, so the
+#         section goldens are unchanged. Behavior can still drift on
+#         auto-generated / un-annotated schemas where comparator inference
+#         picks a different class than 0.5.0 would have (see
+#         ``mapper._add_evaluation_extensions_recursive`` removal); the
+#         aggregation Lambda's version-mismatch warning surfaces both
+#         cases.
+STICKLER_RESULT_VERSION = "3.0"

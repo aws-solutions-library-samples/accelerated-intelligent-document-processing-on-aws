@@ -4,6 +4,7 @@
 import gzip
 import json
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -652,9 +653,93 @@ _MAX_COMPRESSED_CONFIG_BYTES = 300 * 1024
 
 
 def _json_default(value):
+    """``json.dumps`` fallback for the captured-config round trip.
+
+    Decimals coerce to int/float (preserving integer-ness where possible).
+    Non-finite Decimals (``NaN``, ``Infinity``, ``-Infinity``) raise a
+    clear ``ValueError`` — they cannot round-trip through JSON at all,
+    and ``value % 1`` on them would otherwise raise the cryptic
+    ``decimal.InvalidOperation`` before the equality check is even
+    evaluated, failing ``startTestRun`` with a stack trace that hides
+    the real problem.
+
+    Common Python-native types (``datetime`` / ``date`` / ``time``,
+    ``UUID``, ``bytes``, ``set``) are handled by explicit converters
+    with documented round-trip semantics; genuinely-unknown types raise
+    ``TypeError`` so they surface loudly rather than being silently
+    coerced to a ``str()`` repr that corrupts the round-trip.
+    """
     if isinstance(value, Decimal):
-        return int(value) if value % 1 == 0 else float(value)
-    return str(value)
+        if not value.is_finite():
+            raise ValueError(
+                f"Config contains non-finite Decimal {value!r}; JSON "
+                f"cannot represent NaN/Infinity. Fix the config source."
+            )
+        # Convert to float FIRST — this catches magnitudes outside float64's
+        # range (subnormals underflow to ``0.0``, huge values overflow to
+        # ``inf``). Doing the integer test first would itself raise
+        # ``decimal.InvalidOperation`` on very-large-but-float-finite
+        # Decimals like ``Decimal('1E30')`` (31 digits > default context
+        # prec of 28; the internal division-with-remainder overflows the
+        # context even though ``float(1E30)`` is a fine 1e+30).
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError(
+                f"Config contains a Decimal {value!r} that overflows to "
+                f"{result} when converted to float; JSON cannot represent "
+                f"infinity. Fix the config source."
+            )
+        if result == 0.0 and value != 0:
+            raise ValueError(
+                f"Config contains a Decimal {value!r} that underflows to "
+                f"0.0 when converted to float; JSON cannot preserve the "
+                f"value. Fix the config source (avoid subnormal magnitudes)."
+            )
+        # ``value == value.to_integral_value()`` rather than ``value % 1
+        # == 0`` — the modulo path raises ``InvalidOperation`` /
+        # ``DivisionImpossible`` on Decimals whose coefficient exceeds
+        # the current context precision (default 28 digits), which
+        # includes float-representable values like ``Decimal('1E30')``.
+        # ``to_integral_value`` is a rounding op with no arithmetic
+        # precision requirement, so it never trips on that path.
+        if value == value.to_integral_value():
+            return int(value)
+        return result
+    # Explicit converters for common Python-native types that ``json.dumps``
+    # doesn't handle natively. Historically ``_json_default`` fell through
+    # to ``str(value)`` for anything unrecognized — which meant configs
+    # containing ``datetime``, ``bytes``, ``UUID`` or ``set`` values
+    # serialized cleanly via their ``str()`` repr. A prior round replaced
+    # that with a blanket ``raise TypeError`` to surface unexpected types
+    # loudly, but that broke previously-working configs at
+    # ``startTestRun`` with no fallback. The right shape is EXPLICIT
+    # converters for the types that actually appear (each with a
+    # documented round-trip semantic) and a loud ``TypeError`` for
+    # everything else — configs get their known types converted, and
+    # genuinely-surprising types still raise where they should.
+    import datetime as _dt
+    import uuid as _uuid
+    import base64 as _b64
+
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        # ISO-8601 — read-back is a string, not a datetime; that mirrors
+        # how DDB itself hands date-like fields back to callers.
+        return value.isoformat()
+    if isinstance(value, _uuid.UUID):
+        return str(value)
+    if isinstance(value, (bytes, bytearray)):
+        # base64 preserves round-trip fidelity; ``str(bytes)`` would emit
+        # ``"b'...'"`` which is neither valid data nor decodable.
+        return _b64.b64encode(bytes(value)).decode("ascii")
+    if isinstance(value, (set, frozenset)):
+        return sorted(value) if all(isinstance(v, (str, int, float)) for v in value) else list(value)
+    # Genuinely-surprising types raise so the failure is loud and named
+    # rather than silently coerced to a repr that corrupts the round-trip.
+    # Pinned by ``test_non_decimal_non_json_types_raise_typeerror_not_silent_str``.
+    raise TypeError(
+        f"Config contains a value of type {type(value).__name__} that is "
+        f"not JSON-serialisable and has no registered converter: {value!r}"
+    )
 
 
 def _compress_captured_config(config):

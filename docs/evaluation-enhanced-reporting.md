@@ -5,7 +5,7 @@ title: "Enhanced Evaluation Reporting"
 # Enhanced Evaluation Reporting
 
 This document describes the enhanced evaluation reporting features surfaced
-by the evaluation module (running on `stickler-eval==0.5.0`).
+by the evaluation module (running on `stickler-eval==1.0.0`).
 
 ## Overview
 

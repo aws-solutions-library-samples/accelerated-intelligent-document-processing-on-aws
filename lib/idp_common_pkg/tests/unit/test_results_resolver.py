@@ -192,6 +192,471 @@ def test_compare_test_runs_structure():
 
 
 @pytest.mark.unit
+def test_build_comparator_diff_flags_source_change():
+    """A leaf that stayed on the same comparator+threshold but flipped from
+    operator-configured to auto-inferred (the operator removed the
+    annotation and Stickler's native inference now decides) is a real
+    change even though the numbers are the same. The panel must show it.
+    """
+    runs = {
+        "run-a": {
+            "invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": "configured",
+                "why": None,
+            }
+        },
+        "run-b": {
+            "invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": "auto-inferred",
+                "why": ["name-token:invoice_id -> ExactComparator@1.0"],
+            }
+        },
+    }
+    diff = index._build_comparator_diff(runs)
+    assert len(diff) == 1
+    assert diff[0]["attribute"] == "invoice_id"
+    assert diff[0]["entries"]["run-a"]["source"] == "configured"
+    assert diff[0]["entries"]["run-b"]["source"] == "auto-inferred"
+
+
+@pytest.mark.unit
+def test_build_comparator_diff_ignores_identical_signatures():
+    """When every leaf's (comparator, threshold, source) triple agrees
+    across runs the diff is empty and the panel stays hidden. ``why``
+    variance alone must not surface a row — the trace is informational
+    and its phrasing can differ without implying a scoring change.
+    """
+    runs = {
+        "run-a": {
+            "amount": {
+                "comparator": "NumericComparator",
+                "threshold": 0.95,
+                "source": "auto-inferred",
+                "why": ["name-token:amount -> NumericComparator@0.95"],
+            }
+        },
+        "run-b": {
+            "amount": {
+                "comparator": "NumericComparator",
+                "threshold": 0.95,
+                "source": "auto-inferred",
+                # Different phrasing, same decision — must not trigger a row.
+                "why": ["type:float -> NumericComparator@0.95"],
+            }
+        },
+    }
+    assert index._build_comparator_diff(runs) == []
+
+
+@pytest.mark.unit
+def test_build_comparator_diff_flags_missing_side():
+    """An attribute present in only one run is schema-shape drift — surface
+    it alongside comparator drift so the operator sees BOTH kinds of
+    change in one panel."""
+    runs = {
+        "run-a": {
+            "new_field": {
+                "comparator": "LevenshteinComparator",
+                "threshold": 0.7,
+                "source": "auto-inferred",
+            }
+        },
+        "run-b": {},
+    }
+    diff = index._build_comparator_diff(runs)
+    assert len(diff) == 1
+    assert diff[0]["entries"]["run-a"]["comparator"] == "LevenshteinComparator"
+    assert diff[0]["entries"]["run-b"] is None
+
+
+@pytest.mark.unit
+def test_build_comparator_diff_needs_two_runs():
+    """Diff over one run (or zero) is meaningless — return empty."""
+    assert index._build_comparator_diff({"only-run": {"x": {"comparator": "X"}}}) == []
+    assert index._build_comparator_diff({}) == []
+
+
+@pytest.mark.unit
+def test_build_comparator_diff_ignores_source_on_cross_version_compare():
+    """Runs written before STICKLER_RESULT_VERSION 3.0 had no
+    ``inference_source`` field. Including ``source`` in the diff signature
+    unconditionally would flip every attribute to "changed" purely because
+    one side reads ``None`` and the other reads ``"configured"`` / ``"auto-
+    inferred"`` — drowning the panel in false rows during an upgrade
+    window. The signature must omit the source axis whenever any entry
+    lacks a source, so real comparator/threshold drift remains visible
+    while the pseudo-drift of a missing field is suppressed.
+    """
+    runs = {
+        "old-run": {
+            "invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": None,  # pre-3.0 results.json — no inference_source
+            }
+        },
+        "new-run": {
+            "invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": "auto-inferred",
+            }
+        },
+    }
+    diff = index._build_comparator_diff(runs)
+    assert diff == [], (
+        "Cross-version compare with identical (comparator, threshold) must "
+        "not report a change purely because one side has no source"
+    )
+
+
+@pytest.mark.unit
+def test_iter_completed_doc_keys_is_deterministic():
+    """Sample-doc selection must be deterministic so two runs of the same
+    test set converge on the same representative document (otherwise the
+    Comparator Changes panel reports one-sided drift purely because the
+    sampler picked differently-shaped docs).
+
+    Implementation reads ``Files`` from ``testrun#{id}`` metadata and
+    ``batch_get_item``s the ``doc#{run_id}/{file_name}`` rows — the
+    earlier unbounded ``Scan`` version exceeded the 29s API Gateway
+    ceiling on mature tracking tables. The ``Files`` list is sorted
+    before iteration to give the same determinism the Scan version
+    obtained by sorting Scan results.
+    """
+    fake_client = Mock()
+    # testrun#{id} metadata read — ``Files`` in reverse-lex order to prove
+    # the sampler sorts before iterating
+    fake_client.get_item.return_value = {
+        "Item": {
+            "Files": {
+                "L": [
+                    {"S": "zeta.pdf"},
+                    {"S": "alpha.pdf"},
+                    {"S": "mu.pdf"},
+                    {"S": "skip-me.pdf"},
+                ]
+            }
+        }
+    }
+    # doc# BatchGetItem — one entry is FAILED and must be skipped
+    fake_client.batch_get_item.return_value = {
+        "Responses": {
+            "T": [
+                {
+                    "ObjectKey": {"S": "runid/alpha.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/mu.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/skip-me.pdf"},
+                    "EvaluationStatus": {"S": "FAILED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/zeta.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+            ]
+        }
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index, "ddb_bounded", fake_client),
+    ):
+        keys = list(index._iter_completed_doc_keys("runid", limit=3))
+    assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"], (
+        "Sample doc selection must be lexicographically deterministic so "
+        "two runs of the same test set pick the same representative doc"
+    )
+
+
+@pytest.mark.unit
+def test_iter_completed_doc_keys_accepts_files_stored_as_string_set():
+    """The test_runner writes ``Files`` as a Python list (DDB ``L`` type)
+    via the resource client, but some legacy runs and manual DDB imports
+    stored it as a string set (``SS`` type). Reading only the ``L`` shape
+    would silently blank the Comparator Changes panel for those runs
+    with no visible cause — accept both shapes.
+    """
+    fake_client = Mock()
+    # ``SS`` (string set) shape rather than the ``L`` shape the fixture uses.
+    fake_client.get_item.return_value = {
+        "Item": {
+            "Files": {"SS": ["zeta.pdf", "alpha.pdf", "mu.pdf"]},
+        }
+    }
+    fake_client.batch_get_item.return_value = {
+        "Responses": {
+            "T": [
+                {
+                    "ObjectKey": {"S": "runid/alpha.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/mu.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/zeta.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+            ]
+        }
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index, "ddb_bounded", fake_client),
+    ):
+        keys = list(index._iter_completed_doc_keys("runid", limit=3))
+    assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"]
+
+
+@pytest.mark.unit
+def test_iter_completed_doc_keys_dedupes_files_before_batch_get():
+    """DynamoDB rejects a ``BatchGetItem`` request that contains
+    duplicate keys with a ``ValidationException`` — so a ``Files`` list
+    with any repeated entry (from a re-upload without cleanup, or a
+    manual DDB edit) used to fail the entire request and reduce the
+    Comparator Changes panel to empty for the run. The sampler now
+    dedupes ``Files`` before building the batch keys.
+    """
+    fake_client = Mock()
+    # Deliberate duplicate — ``alpha.pdf`` appears twice.
+    fake_client.get_item.return_value = {
+        "Item": {
+            "Files": {
+                "L": [
+                    {"S": "alpha.pdf"},
+                    {"S": "alpha.pdf"},
+                    {"S": "beta.pdf"},
+                ]
+            }
+        }
+    }
+    fake_client.batch_get_item.return_value = {
+        "Responses": {
+            "T": [
+                {
+                    "ObjectKey": {"S": "runid/alpha.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/beta.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+            ]
+        }
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index, "ddb_bounded", fake_client),
+    ):
+        keys = list(index._iter_completed_doc_keys("runid", limit=5))
+
+    # Only one BatchGetItem call, with distinct keys — no duplicate keys
+    # were passed to DDB even though the Files list had a repeat.
+    assert fake_client.batch_get_item.call_count == 1
+    submitted_keys = fake_client.batch_get_item.call_args.kwargs["RequestItems"]["T"][
+        "Keys"
+    ]
+    submitted_pks = [k["PK"]["S"] for k in submitted_keys]
+    assert submitted_pks == list(dict.fromkeys(submitted_pks)), (
+        "Deduped submission — DDB rejects duplicate keys in one batch"
+    )
+    assert keys == ["runid/alpha.pdf", "runid/beta.pdf"]
+
+
+@pytest.mark.unit
+def test_batch_get_test_run_items_retries_unprocessed_keys():
+    """``getTestRuns`` was timing out at the AppSync 20s resolver ceiling
+    on any stack that had accumulated a few hundred test runs, because the
+    per-batch BatchGetItem loop was sequential AND dropped
+    ``UnprocessedKeys`` silently. The retry loop must re-issue unprocessed
+    keys until they resolve (or the retry budget is exhausted) — otherwise
+    a throttled batch under load returns a shorter test-run list than the
+    GSI actually contains.
+    """
+    # Marshalling client returns unmarshalled responses (bare strings,
+    # not typed AttributeValue dicts) and its request keys are untyped
+    # too. Mock responses match that shape.
+    responses = [
+        {
+            "Responses": {"T": [{"PK": "testrun#a"}]},
+            "UnprocessedKeys": {"T": {"Keys": [{"PK": "testrun#b", "SK": "metadata"}]}},
+        },
+        {
+            "Responses": {"T": [{"PK": "testrun#b"}]},
+            "UnprocessedKeys": {},
+        },
+    ]
+    fake_client = Mock()
+    fake_client.batch_get_item.side_effect = responses
+    # ``_batch_get_test_run_items`` uses the MARSHALLING variant of the
+    # bounded client so untyped keys from ``table.query()`` and
+    # unmarshalled response reads (``item["TestRunId"]`` as a bare string)
+    # both work. Patching the marshalling client — the direct
+    # ``ddb_bounded`` is used by the other DDB path.
+    with patch.object(index, "ddb_bounded_marshalling", fake_client):
+        # Untyped keys — exactly what the caller passes in prod (from
+        # ``table.query()`` in ``_query_test_runs_from_gsi``).
+        keys = [
+            {"PK": "testrun#a", "SK": "metadata"},
+            {"PK": "testrun#b", "SK": "metadata"},
+        ]
+        items = index._batch_get_test_run_items(keys, "T")
+    assert fake_client.batch_get_item.call_count == 2, (
+        "UnprocessedKeys must be re-issued rather than silently dropped"
+    )
+    assert {item["PK"] for item in items} == {"testrun#a", "testrun#b"}
+
+
+@pytest.mark.unit
+def test_get_test_runs_clamps_max_items():
+    """``getTestRuns`` accepts a caller-supplied ``maxItems`` and must
+    clamp it to the server-side hard ceiling. Passing a huge value must
+    not translate into 500-key BatchGetItem requests that reintroduce
+    the throttle-amplification we removed; passing 0 or negative must
+    become at least 1 (a zero-limit DDB Query is a no-op that still
+    burns an invocation).
+    """
+    fake_table = Mock()
+    fake_table.table_name = "T"
+    fake_table.query.return_value = {"Items": []}
+    fake_table.scan.return_value = {"Items": []}
+    ceiling = index._GET_TEST_RUNS_ABSOLUTE_MAX
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index.dynamodb, "Table", return_value=fake_table),
+    ):
+        index.get_test_runs(
+            "2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=999
+        )
+        # First Query's Limit is the clamped value, not the raw 999.
+        assert fake_table.query.call_args.kwargs["Limit"] == ceiling
+
+        fake_table.query.reset_mock()
+        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=0)
+        assert fake_table.query.call_args.kwargs["Limit"] == 1
+
+        fake_table.query.reset_mock()
+        # None means "use the server default".
+        index.get_test_runs(
+            "2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=None
+        )
+        assert fake_table.query.call_args.kwargs["Limit"] == ceiling
+
+        fake_table.query.reset_mock()
+        # Malformed strings fall back to the ceiling (defensive).
+        index.get_test_runs(
+            "2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items="not-a-number"
+        )
+        assert fake_table.query.call_args.kwargs["Limit"] == ceiling
+
+
+@pytest.mark.unit
+def test_load_sample_attribute_methods_swallows_read_timeout():
+    """The panel is a UI nicety — it must NOT fault compare_test_runs on
+    a transient S3 hiccup. ``botocore.exceptions.ReadTimeoutError`` is a
+    subclass of ``BotoCoreError``, NOT ``ClientError``, so an earlier
+    ``except (ClientError, ValueError, KeyError)`` let timeouts escape.
+    Broadened to ``except Exception`` — pin the contract here.
+    """
+    from botocore.exceptions import ReadTimeoutError
+
+    fake_s3 = Mock()
+    fake_s3.get_object.side_effect = ReadTimeoutError(endpoint_url="http://x")
+    with (
+        patch.dict(os.environ, {"OUTPUT_BUCKET": "b", "TRACKING_TABLE": "T"}),
+        patch.object(index, "s3_bounded", fake_s3),
+        patch.object(
+            index, "_iter_completed_doc_keys", return_value=iter(["runid/doc1.pdf"])
+        ),
+    ):
+        # Must return {} rather than propagating ReadTimeoutError.
+        assert index._load_sample_attribute_methods("runid") == {}
+
+
+@pytest.mark.unit
+def test_load_sample_attribute_methods_uses_document_class_key():
+    """Diff key is ``{document_class}.{attribute_name}`` — NOT
+    ``{section_id}.{attribute_name}`` (positional; false drift across
+    differently-sectioned docs) and NOT the bare attribute name (collides
+    across classes in a multi-class packet, hiding real cross-class
+    differences). Same-class sections share a schema and legitimately
+    collapse; different-class sections stay distinct.
+    """
+    fake_s3 = Mock()
+
+    class _Body:
+        # Real botocore StreamingBody has ``.close()``; the resolver now
+        # calls it explicitly to release the urllib3 connection promptly
+        # under the parallel fanout in ``compare_test_runs``.
+        def close(self):
+            pass
+
+        def read(self):
+            return json.dumps(
+                {
+                    "section_results": [
+                        {
+                            "section_id": "2",
+                            "document_class": "Invoice",
+                            "attributes": [
+                                {
+                                    "name": "Amount",
+                                    "comparator_type": "NumericComparator",
+                                    "evaluation_threshold": 0.95,
+                                    "inference_source": "auto-inferred",
+                                    "inference_why": ["name-token"],
+                                }
+                            ],
+                        },
+                        # Different class, same-named attribute — MUST stay
+                        # distinct in the diff (different schemas can carry
+                        # different comparators).
+                        {
+                            "section_id": "3",
+                            "document_class": "Receipt",
+                            "attributes": [
+                                {
+                                    "name": "Amount",
+                                    "comparator_type": "NumericComparator",
+                                    "evaluation_threshold": 0.99,
+                                    "inference_source": "configured",
+                                    "inference_why": None,
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ).encode()
+
+    fake_s3.get_object.return_value = {"Body": _Body()}
+    with (
+        patch.dict(os.environ, {"OUTPUT_BUCKET": "b", "TRACKING_TABLE": "T"}),
+        patch.object(index, "s3_bounded", fake_s3),
+        patch.object(
+            index, "_iter_completed_doc_keys", return_value=iter(["runid/doc.pdf"])
+        ),
+    ):
+        methods = index._load_sample_attribute_methods("runid")
+    # Two entries — one per class — NOT one entry with the last-write
+    # winning. If this collapses to a single ``Amount`` key, the diff
+    # can't tell that ``Invoice.Amount`` and ``Receipt.Amount`` diverge.
+    assert set(methods.keys()) == {"Invoice.Amount", "Receipt.Amount"}
+    assert methods["Invoice.Amount"]["source"] == "auto-inferred"
+    assert methods["Receipt.Amount"]["source"] == "configured"
+
+
+@pytest.mark.unit
 def test_build_config_comparison():
     """Test configuration comparison"""
     configs = {

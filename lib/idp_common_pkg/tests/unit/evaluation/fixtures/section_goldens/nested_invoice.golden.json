@@ -258,7 +258,6 @@
   },
   "section_id": "invoice-42",
   "stickler_comparison_result": {
-    "all_fields_matched": true,
     "auroc_confidence_metric": 0.5,
     "confidence_metrics": {
       "coverage": {
@@ -557,7 +556,6 @@
       },
       "non_matches": [],
       "overall": {
-        "all_fields_matched": true,
         "derived": {
           "cm_accuracy": 1.0,
           "cm_f1": 1.0,

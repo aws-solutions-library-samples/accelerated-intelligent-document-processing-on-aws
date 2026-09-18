@@ -171,7 +171,6 @@
   },
   "section_id": "1",
   "stickler_comparison_result": {
-    "all_fields_matched": false,
     "auroc_confidence_metric": 0.5,
     "confidence_metrics": {
       "coverage": {
@@ -382,7 +381,6 @@
       },
       "non_matches": [],
       "overall": {
-        "all_fields_matched": false,
         "derived": {
           "cm_accuracy": 0.6,
           "cm_f1": 0.7499999999999999,

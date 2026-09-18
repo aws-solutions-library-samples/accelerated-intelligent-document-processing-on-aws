@@ -910,6 +910,13 @@
           "name": "endDateTime",
           "non_null": false,
           "type": "AWSDateTime"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "maxItems",
+          "non_null": false,
+          "type": "Int"
         }
       ]
     },

@@ -1132,10 +1132,18 @@ def create_map_table_to_schema_tool():
             warnings.append(f"Unmapped columns (not in column_mapping): {unmapped}")
 
         # Define value transform functions
-        transform_refusals: dict[str, str] = {}
+        # Per-field ordered dict of "value → reason" pairs. Previously this
+        # was ``dict[str, str]`` and only the FIRST refusal per field was
+        # recorded (``if field not in transform_refusals``), so a mixed
+        # batch where row 1 parses cleanly, row 2 refuses format A, and
+        # row 3 refuses format B saw only row 2's refusal — the agent had
+        # no evidence that row 3 also needed attention. Recording every
+        # distinct value+reason pair per field surfaces the full pattern
+        # so the agent knows which specific rows to re-examine.
+        transform_refusals: dict[str, dict[str, str]] = {}
         warned_unknown: set[str] = set()
 
-        def _apply_transform(value: str, transform: str, field: str = "") -> str:
+        def _apply_transform(value: str, transform: str, field: str) -> str:
             if not value or not transform:
                 return value
             if transform == "strip_currency":
@@ -1148,8 +1156,12 @@ def create_map_table_to_schema_tool():
                 return value.upper()
             elif transform in DATE_TRANSFORMS:
                 converted, reason = _to_iso_date(value, DATE_TRANSFORMS[transform])
-                if reason and field not in transform_refusals:
-                    transform_refusals[field] = f"{value!r}: {reason}"
+                if reason:
+                    per_field = transform_refusals.setdefault(field, {})
+                    # Dedupe on the exact (value, reason) pair — every
+                    # DISTINCT refusal is recorded once, but repeats of
+                    # the same value don't spam the report.
+                    per_field.setdefault(value, reason)
                 return converted
             if transform not in warned_unknown:
                 warned_unknown.add(transform)
@@ -1275,7 +1287,15 @@ def create_map_table_to_schema_tool():
         # Report refused value transforms. A refused date is left exactly as
         # parsed (never guessed), so the agent must know which column still
         # carries a non-schema format rather than discovering it at finalize.
-        for field, detail in list(transform_refusals.items())[:MAX_TRANSFORM_WARNINGS]:
+        # Every distinct (value, reason) pair per field is included — a
+        # mixed batch that refuses two different formats on the same field
+        # surfaces BOTH so the agent doesn't chase only the first.
+        for field, refusals in list(transform_refusals.items())[
+            :MAX_TRANSFORM_WARNINGS
+        ]:
+            detail = "; ".join(
+                f"{value!r}: {reason}" for value, reason in refusals.items()
+            )
             warnings.append(
                 f"Date transform refused for {field!r} ({detail}); value left "
                 f"unchanged. Pass date_to_iso_mdy or date_to_iso_dmy to state "

@@ -45,7 +45,7 @@ only useful if it fires when something is actually wrong.
 
 ### Honest cost and honest confidence
 
-Two numbers this solution reports are load-bearing for the people who deploy it:
+Two numbers this solution reports are important for the people who deploy it:
 what a document cost, and how much to trust each extracted field. Both have to be
 right or they are worse than absent, because a wrong cost figure drives the wrong
 model choice and a miscalibrated confidence score drives the wrong human-review

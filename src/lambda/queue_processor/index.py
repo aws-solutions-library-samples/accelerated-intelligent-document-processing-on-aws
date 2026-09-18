@@ -138,7 +138,14 @@ def execution_name_for(input_key: str, message_id: str) -> Optional[str]:
     prefix = _EXECUTION_NAME_UNSAFE.sub("-", basename).strip("-.")
     room = _EXECUTION_NAME_MAX_LEN - len(token) - 1
     prefix = prefix[:room].rstrip("-.")
-    return f"{prefix}-{token}" if prefix else token
+    # Preserve the "looks like a document list" property in the Step
+    # Functions console even for basenames that yield no allowed chars
+    # (e.g. all-emoji filenames, extension-only basenames like ``.pdf``).
+    # A bare token — 32-char sha1 or 36-char UUID — is uninformative and
+    # loses the browse-by-name affordance the prefix exists for. Fall
+    # back to a generic ``doc-`` prefix so the execution row still reads
+    # as "some document" rather than "some hash".
+    return f"{prefix}-{token}" if prefix else f"doc-{token}"
 
 
 def execution_arn_for(execution_name: str) -> str:
@@ -801,8 +808,9 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
     """Push SQS visibility to RECOVERY_TIMEOUT_SECONDS so OPEN-state retries
     don't burn through the queue's maxReceiveCount during a long Bedrock outage.
 
-    Non-fatal: if the call fails, the message still reappears on the default
-    30s visibility timeout and the next invocation handles the retry.
+    Non-fatal: if the call fails, the message still reappears on the
+    ``DocumentQueue.VisibilityTimeout`` (60s — raised from 30s in the
+    per-message ack fix for #904) and the next invocation handles the retry.
     """
     if not DOCUMENT_QUEUE_URL:
         return
@@ -1038,7 +1046,16 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             logger.info(
                 f"Document {object_key} was aborted by user, skipping workflow start"
             )
-            return True, message_id  # Return success to remove message from queue
+            # Delete the message immediately rather than relying on the
+            # batch-outcome path. If this invocation times out on a later
+            # message, Lambda reports nothing to SQS and every message in
+            # the batch — including this aborted one — would be
+            # redelivered, causing the "check if aborted, skip, return"
+            # cycle to repeat until the message eventually hits its
+            # maxReceiveCount. Same invariant the workflow-started path
+            # below enforces (see #904).
+            ack_message(receipt_handle)
+            return True, message_id
 
         # Check circuit breaker before paying the cost of X-Ray setup and
         # counter increment.
