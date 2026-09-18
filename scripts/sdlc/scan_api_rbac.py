@@ -20,6 +20,12 @@ A new endpoint that ships without a group check looks exactly like drift among
 these three. This scan is the guard. It runs in CI (no stack needed) and is the
 static half of `make api-test`.
 
+The REST dispatcher is not the only way in. Chat streaming is served by a Lambda
+**Function URL** (`AWS::Lambda::Url`, `AuthType=AWS_IAM`) whose FastAPI app
+routes straight to the chat processors, bypassing the dispatcher, the Cognito
+authorizer and every check above. Those routes were outside this scan entirely,
+so an authorization defect on them was invisible to the gate. S6-S9 cover them.
+
 CHECKS
 ------
   S1  Manifest completeness — every routable op has an expectations entry, and
@@ -34,6 +40,20 @@ CHECKS
       reference allowedConfigVersions in their enforced_in file.
   S5  Template auth — every API Gateway Method is COGNITO_USER_POOLS except the
       allowlisted CORS (OPTIONS) and static-SPA (GET) routes.
+  S6  Function URL universe — every AWS::Lambda::Url in template.yaml is
+      declared in the expectations file with a matching AuthType (never NONE),
+      and every route its FastAPI app serves is declared (no undeclared route).
+  S7  Function URL identity precedence — each route must resolve the caller
+      identity from the transport-verified source FIRST; a request-body value
+      may only be a fallback, never preferred, and the name holding the resolved
+      identity must be assigned exactly once (no later rebinding, whatever the
+      second value is spelled like — see `route_identity_rebindings`).
+  S8  Function URL identity conflict — the handler must refuse a request whose
+      body-supplied identity contradicts the verified one, rather than silently
+      picking either.
+  S9  Function URL downstream enforcement — a route declared with a group list
+      must have a recognized group-enforcement pattern (and those group names)
+      in the processor it invokes, and must agree with the equivalent REST op.
 
 EXIT CODES
 ----------
@@ -51,20 +71,18 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
 from pathlib import Path
 
+# Default source root. Every path the checks read is derived from the ``repo``
+# argument of ``run_checks`` (which defaults to this), so the whole scan can be
+# pointed at a fixture tree — see the docstring on ``run_checks``.
+# Note the Function URLs live in the parent template.yaml, not in the
+# api-resolvers nested stack.
 REPO = Path(__file__).resolve().parents[2]
-EXPECTATIONS = REPO / "scripts" / "api_rbac_expectations.yaml"
-TEMPLATE = REPO / "nested" / "api-resolvers" / "template.yaml"
-SCHEMA = REPO / "nested" / "api-resolvers" / "src" / "api" / "schema.graphql"
-DISPATCHER_DIR = (
-    REPO / "nested" / "api-resolvers" / "src" / "lambda" / "http_api_dispatcher"
-)
-DDB_DIRECT = DISPATCHER_DIR / "ddb_direct.py"
-DISPATCHER = DISPATCHER_DIR / "index.py"
 
 # Methods intentionally unauthenticated (CORS preflight + static SPA serving).
 ALLOWED_UNAUTH_METHODS = {
@@ -87,6 +105,58 @@ ENFORCE_PATTERNS = (
 # Patterns indicating row-level / ownership scoping (for ANY-auth ops).
 OWNERSHIP_PATTERNS = ("owner", "user_id", "userId", "sub", "session", "caller")
 SCOPE_PATTERNS = ("allowedConfigVersions", "allowed_config_versions")
+
+# --- Function URL route checks (S6-S9) ---------------------------------------
+# Routes on a Function URL app that need no per-user authorization. Kept as a
+# module constant (like ALLOWED_UNAUTH_METHODS) so adding one is a code change a
+# reviewer sees, not a data edit.
+FUNCTION_URL_OPEN_ROUTES = {
+    "GET /health",  # liveness probe; no caller data, no side effects
+}
+
+# Ways the handler can name the identity the TRANSPORT verified, as opposed to
+# one the client asserted in the request body.
+VERIFIED_IDENTITY_TOKENS = (
+    "resolve_caller_sub(",
+    "_caller_sub(",
+    "caller_sub_from_request_context",
+)
+# Ways the handler can name the identity the CLIENT asserted.
+CLIENT_IDENTITY_TOKENS = (
+    "body.callerSub",
+    'body.get("callerSub"',
+    "body.get('callerSub'",
+    'body["callerSub"]',
+    "body['callerSub']",
+)
+# Refusing the request outright (as opposed to preferring one value silently).
+# Deliberately loose — what S8 actually requires is the CONJUNCTION of naming the
+# verified identity, comparing it (`!=`) and refusing, inside one function. Any
+# of these tokens alone proves nothing.
+IDENTITY_REJECT_TOKENS = ("403", "PermissionError", "HTTPException", "raise ")
+
+# The COMPLETE key schema for a function_url_endpoints entry and for one of its
+# route policies, as documented in the header of that section in
+# scripts/api_rbac_expectations.yaml. An unrecognised key is a FAIL.
+#
+# This exists because a misspelling was silent and consequential. `residual_gapp:`
+# instead of `residual_gap:` produced no FAIL at all — just an S0 WARN saying
+# GAP-07 was defined but unreferenced — while quietly removing the gap from the
+# accepted-risk register that `--strict` and the published security snapshot both
+# read. The same is true of every other key here: a typo'd `enforced_in` silently
+# stops S9 checking the processor. Keys are data, so nothing else would catch it.
+ENDPOINT_ENTRY_KEYS = frozenset({"auth_type", "handler", "routes", "note"})
+ROUTE_POLICY_KEYS = frozenset(
+    {
+        "groups",
+        "ownership",
+        "equivalent_op",
+        "enforced_in",
+        "known_gap",
+        "residual_gap",
+        "note",
+    }
+)
 
 
 class Finding:
@@ -294,16 +364,298 @@ def template_methods(template_text: str) -> list[tuple[str, str]]:
     return out
 
 
+# --- Function URL extraction --------------------------------------------------
+
+
+def _resource_block(template_text: str, logical_id: str) -> str:
+    """Return the YAML text of one top-level (2-space indented) resource block."""
+    m = re.search(rf"^  {re.escape(logical_id)}:\n", template_text, re.M)
+    if not m:
+        return ""
+    nxt = re.search(r"^  \w+:\n", template_text[m.end() :], re.M)
+    end = m.end() + (nxt.start() if nxt else len(template_text))
+    return template_text[m.start() : end]
+
+
+# Every spelling of "this Function URL points at that function" that CloudFormation
+# accepts. `!Ref Fn` and `!GetAtt Fn.Arn` are equally valid and equally idiomatic;
+# reading only `!Ref` made S6 fail OPEN, because an unresolved target left the
+# handler-containment check with nothing to compare and it was skipped silently.
+_TARGET_FUNCTION_RE = re.compile(
+    r"TargetFunctionArn:\s*(?:"
+    r"!Ref\s+(?P<ref>\w+)"
+    r"|!GetAtt\s+(?P<getatt>\w+)(?:\.\w+)*"
+    r"|Ref:\s*(?P<long_ref>\w+)"
+    r"|Fn::GetAtt:\s*\[?\s*[\"']?(?P<long_getatt>\w+)"
+    r")"
+)
+
+
+def lambda_url_resources(template_text: str) -> dict[str, dict[str, str]]:
+    """Return {LogicalId: {auth_type, target}} for each AWS::Lambda::Url.
+
+    ``target`` is the logical id of the function the URL fronts, or ``""`` when
+    it could not be resolved — which callers must treat as a FAILURE, not as
+    "nothing to check". A scanner that cannot find its subject has to say so.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for m in re.finditer(
+        r"^  (\w+):\n(?:    .*\n|\n)*?    Type: AWS::Lambda::Url\b",
+        template_text,
+        re.M,
+    ):
+        logical = m.group(1)
+        block = _resource_block(template_text, logical)
+        auth = re.search(r"AuthType:\s*(\S+)", block)
+        target = _TARGET_FUNCTION_RE.search(block)
+        out[logical] = {
+            "auth_type": auth.group(1) if auth else "UNKNOWN",
+            "target": next(
+                (v for v in (target.groupdict().values() if target else ()) if v),
+                "",
+            ),
+        }
+    return out
+
+
+def function_code_uri(template_text: str, logical_id: str) -> str:
+    """CodeUri of a serverless function resource ('' if not found)."""
+    block = _resource_block(template_text, logical_id)
+    m = re.search(r"^      CodeUri:\s*(\S+)", block, re.M)
+    return m.group(1) if m else ""
+
+
+def app_routes(handler_text: str) -> dict[str, str]:
+    """Map ``"<METHOD> <path>"`` -> handler function body for a FastAPI app.
+
+    The body runs from the decorator to the next top-level decorator or ``def``,
+    which is enough to see how the route resolves the caller identity.
+    """
+    routes: dict[str, str] = {}
+    decorators = list(
+        re.finditer(
+            r'^@app\.(get|post|put|patch|delete)\(\s*"([^"]+)"',
+            handler_text,
+            re.M,
+        )
+    )
+    for m in decorators:
+        # The route's own `def` immediately follows the decorator, so step past
+        # it before looking for the start of the NEXT route/function.
+        search_from = m.end()
+        own = re.search(r"^(?:async )?def ", handler_text[search_from:], re.M)
+        if own:
+            search_from += own.end()
+        nxt = re.search(
+            r"^(?:@app\.|def |async def )", handler_text[search_from:], re.M
+        )
+        end = search_from + (nxt.start() if nxt else len(handler_text) - search_from)
+        routes[f"{m.group(1).upper()} {m.group(2)}"] = handler_text[m.start() : end]
+    return routes
+
+
+def _first_index(text: str, tokens) -> int:
+    """Lowest index at which any of ``tokens`` occurs, or -1."""
+    hits = [text.index(t) for t in tokens if t in text]
+    return min(hits) if hits else -1
+
+
+# --- S7 structural half: the resolved identity must not be rebound ------------
+# The token-position half of S7 compares the FIRST mention of a verified-identity
+# spelling against the first mention of a client-identity spelling. That is blind
+# to a body value re-admitted under a spelling not in CLIENT_IDENTITY_TOKENS, e.g.
+#
+#     _claimed = body.model_dump().get('callerSub') or ''
+#     if _claimed:
+#         caller_sub = _claimed
+#
+# which is issue #920's original defect (the client's claimed identity wins
+# unconditionally) and which left the scan at exit 0 / 0 FAIL. Rather than chase
+# spellings, assert the invariant: the name that receives the verified identity is
+# assigned exactly once in the route's own scope. Measured on the clean sources,
+# both routes assign it once, so this is not a false-positive risk today.
+
+# Callee names that resolve a transport-verified caller identity. Mirrors
+# VERIFIED_IDENTITY_TOKENS above, as callee names rather than substrings.
+VERIFIED_IDENTITY_CALLEES = (
+    "_resolve_caller_sub",
+    "resolve_caller_sub",
+    "_caller_sub",
+    "caller_sub_from_request_context",
+)
+
+
+def _route_function_nodes(handler_text: str) -> dict:
+    """Map ``"<METHOD> <path>"`` -> the route's AST function node."""
+    try:
+        tree = ast.parse(handler_text)
+    except SyntaxError:
+        return {}
+    routes = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if (
+                isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and isinstance(dec.func.value, ast.Name)
+                and dec.func.value.id == "app"
+                and dec.args
+                and isinstance(dec.args[0], ast.Constant)
+            ):
+                routes[f"{dec.func.attr.upper()} {dec.args[0].value}"] = node
+    return routes
+
+
+def _own_scope_statements(fn) -> list:
+    """Statements in ``fn``'s own scope, not descending into nested functions.
+
+    A nested ``def`` has its own scope, so a binding there shadows rather than
+    rebinds; counting it would be a false positive.
+    """
+    out: list = []
+    stack = list(fn.body)
+    while stack:
+        st = stack.pop()
+        if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        out.append(st)
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(getattr(st, field, []) or [])
+    return out
+
+
+def _callees(node) -> set:
+    """Every callee name invoked in ``node``'s subtree."""
+    names = set()
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        func = sub.func
+        if isinstance(func, ast.Name):
+            names.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            names.add(func.attr)
+    return names
+
+
+def route_identity_rebindings(fn) -> tuple[str, list[int]] | None:
+    """``(name, lines)`` if the route's resolved identity is bound >1 time.
+
+    Returns ``None`` when the route binds it exactly once, binds nothing, or does
+    not resolve a verified identity at all (the latter is S7's other half).
+    """
+    resolved: set[str] = set()
+    for st in _own_scope_statements(fn):
+        if not isinstance(st, ast.Assign):
+            continue
+        if not (_callees(st.value) & set(VERIFIED_IDENTITY_CALLEES)):
+            continue
+        for tgt in st.targets:
+            if isinstance(tgt, ast.Name):
+                resolved.add(tgt.id)
+    if len(resolved) != 1:
+        return None
+    name = resolved.pop()
+
+    lines: list[int] = []
+    for st in _own_scope_statements(fn):
+        targets = []
+        if isinstance(st, ast.Assign):
+            targets = list(st.targets)
+        elif isinstance(st, (ast.AugAssign, ast.AnnAssign)):
+            targets = [st.target]
+        elif isinstance(st, (ast.For, ast.AsyncFor)):
+            targets = [st.target]
+        elif isinstance(st, (ast.With, ast.AsyncWith)):
+            targets = [i.optional_vars for i in st.items if i.optional_vars]
+        bound = False
+        for tgt in targets:
+            for sub in ast.walk(tgt):
+                if (
+                    isinstance(sub, ast.Name)
+                    and isinstance(sub.ctx, ast.Store)
+                    and sub.id == name
+                ):
+                    bound = True
+        for sub in ast.walk(st):
+            if (
+                isinstance(sub, ast.NamedExpr)
+                and isinstance(sub.target, ast.Name)
+                and sub.target.id == name
+            ):
+                bound = True
+        if bound:
+            lines.append(st.lineno)
+    return (name, sorted(lines)) if len(lines) > 1 else None
+
+
+def module_functions(text: str) -> list[str]:
+    """Split a module into function texts (top-level ``def``/``async def``)."""
+    starts = [m.start() for m in re.finditer(r"^(?:async )?def ", text, re.M)]
+    out = []
+    for i, s in enumerate(starts):
+        e = starts[i + 1] if i + 1 < len(starts) else len(text)
+        out.append(text[s:e])
+    return out
+
+
+# A module-level constant whose NAME says it holds a group list and whose value is
+# a tuple/list/set literal, e.g. `_AGENT_CHAT_GROUPS = ("Admin", "Author", ...)`.
+_GROUP_CONST_RE = re.compile(
+    r"^(_?[A-Z][A-Z0-9_]*GROUPS?[A-Z0-9_]*)\s*=\s*"
+    r"(?:frozenset\()?[\(\[\{]([^)\]}]*)[\)\]\}]",
+    re.M,
+)
+_GROUP_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def enforced_group_names(text: str) -> set[str] | None:
+    """The exact group list a handler enforces, read from its module constant.
+
+    Returns the set of string literals in the first (and only) module-level
+    ``*GROUP(S)*`` constant whose value is a tuple/list/set of plausible group
+    names, or ``None`` when there is no such constant or more than one — in which
+    case the caller falls back to the weaker containment check rather than
+    guessing which constant is the policy.
+
+    Only string literals inside the literal are read, so the prose comment above
+    the constant (which names the group deliberately EXCLUDED) cannot leak in and
+    turn a correct policy into a failure.
+    """
+    candidates: list[set[str]] = []
+    for m in _GROUP_CONST_RE.finditer(text):
+        names = set(re.findall(r"""["']([^"']+)["']""", m.group(2)))
+        if names and all(_GROUP_NAME_RE.match(n) for n in names):
+            candidates.append(names)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 # --- checks ------------------------------------------------------------------
 
 
-def run_checks(strict: bool) -> list[Finding]:
-    spec = _load_yaml(EXPECTATIONS)
+def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
+    """Run every check against ``repo`` (the real repository by default).
+
+    ``repo`` exists so the tests can drive these checks over a deliberately
+    DEFECTIVE fixture tree and assert the specific finding appears. Without it
+    the only thing a test could assert against the live sources is the absence of
+    failures, which passes just as happily when a check has been deleted — the
+    exact "a check that cannot fail" failure mode this scanner is meant to close.
+    See scripts/sdlc/tests/test_scan_api_rbac_function_urls.py.
+    """
+    repo = Path(repo) if repo is not None else REPO
+    expectations = repo / "scripts" / "api_rbac_expectations.yaml"
+    api_resolvers = repo / "nested" / "api-resolvers"
+    dispatcher_dir = api_resolvers / "src" / "lambda" / "http_api_dispatcher"
+
+    spec = _load_yaml(expectations)
     ops: dict[str, dict] = spec["operations"]
     known_gaps: dict[str, dict] = spec.get("known_gaps") or {}
-    template_text = _read(TEMPLATE)
-    schema_text = _read(SCHEMA)
-    ddb_text = _read(DDB_DIRECT)
+    template_text = _read(api_resolvers / "template.yaml")
+    schema_text = _read(api_resolvers / "src" / "api" / "schema.graphql")
+    ddb_text = _read(dispatcher_dir / "ddb_direct.py")
 
     findings: list[Finding] = []
 
@@ -314,7 +666,7 @@ def run_checks(strict: bool) -> list[Finding]:
         findings.append(Finding(check, level, message + suffix, op_name))
 
     # --- S1: manifest completeness -----------------------------------------
-    dispatcher_text = _read(DISPATCHER)
+    dispatcher_text = _read(dispatcher_dir / "index.py")
     routable = (
         field_function_map_ops(template_text)
         | ddb_direct_ops(ddb_text)
@@ -371,7 +723,7 @@ def run_checks(strict: bool) -> list[Finding]:
 
     # --- S3: resolver enforcement ------------------------------------------
     for op, o in ops.items():
-        src = REPO / o["enforced_in"]
+        src = repo / o["enforced_in"]
         if not src.exists():
             findings.append(
                 Finding("S3", "FAIL",
@@ -411,7 +763,7 @@ def run_checks(strict: bool) -> list[Finding]:
     for op, o in ops.items():
         if not (o.get("scope_checked") or o.get("scope_filtered")):
             continue
-        src = REPO / o["enforced_in"]
+        src = repo / o["enforced_in"]
         if not src.exists():
             continue  # already reported by S3
         text = src.read_text()
@@ -437,8 +789,270 @@ def run_checks(strict: bool) -> list[Finding]:
                         "COGNITO_USER_POOLS (add to ALLOWED_UNAUTH_METHODS only "
                         "if intentionally public)"))
 
+    # --- S6-S9: Lambda Function URL routes ----------------------------------
+    endpoints: dict[str, dict] = spec.get("function_url_endpoints") or {}
+    main_text = _read(repo / "template.yaml")
+    url_resources = lambda_url_resources(main_text)
+
+    def route_gap_or_fail(route_cfg: dict, route: str, check: str, message: str):
+        """As gap_or_fail, but for a route.
+
+        Only `known_gap:` downgrades a finding. `residual_gap:` deliberately does
+        NOT: it records a transport limitation that is listed in the register for
+        auditability while every S6-S9 finding on the route stays a hard FAIL —
+        otherwise declaring the residual risk would silently disarm the checks
+        that caught the defect it sits next to.
+        """
+        gap = route_cfg.get("known_gap")
+        level = "WARN" if (gap and not strict) else "FAIL"
+        suffix = f" [{gap}]" if gap else ""
+        findings.append(Finding(check, level, message + suffix, route))
+
+    for logical in sorted(set(url_resources) - set(endpoints)):
+        findings.append(
+            Finding(
+                "S6", "FAIL",
+                f"Function URL '{logical}' in template.yaml has no "
+                "function_url_endpoints entry in api_rbac_expectations.yaml "
+                "(declare its routes and their authorization)",
+                logical,
+            )
+        )
+    for logical in sorted(set(endpoints) - set(url_resources)):
+        findings.append(
+            Finding(
+                "S6", "FAIL",
+                f"function_url_endpoints entry '{logical}' is not an "
+                "AWS::Lambda::Url in template.yaml (stale — remove it or fix "
+                "the name)",
+                logical,
+            )
+        )
+
+    for logical, ep in endpoints.items():
+        res = url_resources.get(logical)
+        declared_routes: dict[str, dict] = ep.get("routes") or {}
+
+        # --- S6: the declaration itself must be well-formed -----------------
+        # Every key below is read by name, so a misspelling makes the setting
+        # vanish rather than misfire. `residual_gapp:` for `residual_gap:` was
+        # measured to leave the scan at zero failures while removing GAP-07 from
+        # the accepted-risk register.
+        for bad in sorted(set(ep) - ENDPOINT_ENTRY_KEYS):
+            findings.append(
+                Finding("S6", "FAIL",
+                        f"{logical} declares unknown key '{bad}' — a misspelled "
+                        f"key is silently ignored (known: "
+                        f"{sorted(ENDPOINT_ENTRY_KEYS)})", logical))
+        for route, rc in declared_routes.items():
+            for bad in sorted(set(rc or {}) - ROUTE_POLICY_KEYS):
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"route '{route}' on {logical} declares unknown key "
+                            f"'{bad}' — a misspelled key is silently ignored "
+                            f"(known: {sorted(ROUTE_POLICY_KEYS)})", route))
+
+        if res:
+            if res["auth_type"] == "NONE":
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"{logical} has AuthType NONE — the Function URL is "
+                            "reachable unauthenticated", logical))
+            elif res["auth_type"] != ep.get("auth_type"):
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"{logical} AuthType is {res['auth_type']} but "
+                            f"expectations say {ep.get('auth_type')}", logical))
+            # Resolve the handler from the template rather than trusting the
+            # expectations file, so a retargeted URL cannot keep pointing the
+            # scan at the old (still-clean) source file. Both halves of that
+            # resolution must be reported when they fail, because an empty
+            # result would otherwise skip the containment check below and the
+            # scan would validate whatever file the expectations named.
+            code_uri = function_code_uri(main_text, res["target"])
+            if not res["target"]:
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"{logical}: could not resolve TargetFunctionArn to a "
+                            "function logical id, so the declared handler cannot "
+                            "be checked against the target's CodeUri", logical))
+            elif not code_uri:
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"{logical} targets {res['target']}, which has no "
+                            "resolvable CodeUri in template.yaml, so the declared "
+                            "handler cannot be checked against it", logical))
+            if code_uri and not ep["handler"].startswith(code_uri.rstrip("/")):
+                findings.append(
+                    Finding("S6", "FAIL",
+                            f"{logical} targets {res['target']} (CodeUri "
+                            f"{code_uri}) but expectations name handler "
+                            f"{ep['handler']}", logical))
+
+        handler_src = repo / ep["handler"]
+        if not handler_src.exists():
+            findings.append(
+                Finding("S6", "FAIL",
+                        f"handler file missing: {ep['handler']}", logical))
+            continue
+        handler_text = handler_src.read_text()
+        actual_routes = app_routes(handler_text)
+        route_nodes = _route_function_nodes(handler_text)
+        # The identity decision may live in a sibling module of the same Lambda
+        # package (the app file imports FastAPI, so pure logic is factored out to
+        # keep it unit-testable). Scan the package's own modules, not the vendored
+        # processor copies or its tests.
+        package_functions: list[str] = []
+        for py in sorted(handler_src.parent.glob("*.py")):
+            package_functions.extend(module_functions(py.read_text()))
+
+        for route in sorted(
+            set(actual_routes) - set(declared_routes) - FUNCTION_URL_OPEN_ROUTES
+        ):
+            findings.append(
+                Finding("S6", "FAIL",
+                        f"{ep['handler']} serves '{route}' with no "
+                        "function_url_endpoints route entry (declare its "
+                        "authorization)", route))
+        for route in sorted(set(declared_routes) - set(actual_routes)):
+            findings.append(
+                Finding("S6", "FAIL",
+                        f"declared route '{route}' is not served by "
+                        f"{ep['handler']} (stale entry)", route))
+
+        for route, rc in declared_routes.items():
+            body = actual_routes.get(route)
+            if body is None:
+                continue  # already reported above
+
+            # --- S7: verified identity must win --------------------------
+            v_at = _first_index(body, VERIFIED_IDENTITY_TOKENS)
+            c_at = _first_index(body, CLIENT_IDENTITY_TOKENS)
+            if v_at < 0:
+                route_gap_or_fail(
+                    rc, route, "S7",
+                    f"route resolves no transport-verified caller identity in "
+                    f"{ep['handler']}")
+            elif 0 <= c_at < v_at:
+                route_gap_or_fail(
+                    rc, route, "S7",
+                    "route prefers the request-body caller identity over the "
+                    f"transport-verified one in {ep['handler']} — the verified "
+                    "identity must be resolved first, the body value is a "
+                    "fallback only")
+
+            # Structural half of S7: resolving the verified identity first means
+            # nothing if a later statement overwrites it. The token comparison
+            # above only sees the spellings in CLIENT_IDENTITY_TOKENS, so assert
+            # the single binding instead — that holds whatever the second value
+            # is spelled like.
+            node = route_nodes.get(route)
+            if node is not None:
+                rebound = route_identity_rebindings(node)
+                if rebound is not None:
+                    name, lines = rebound
+                    route_gap_or_fail(
+                        rc, route, "S7",
+                        f"'{name}' holds the transport-verified caller identity "
+                        f"in {ep['handler']} but is assigned {len(lines)} times "
+                        f"(lines {lines}) — a later assignment can substitute a "
+                        "client-supplied identity for the verified one no matter "
+                        "how it is spelled; resolve it once and do not rebind it")
+
+            # --- S8: a contradicting body identity must be refused -------
+            # The comparison lives in a shared resolver, so look across the
+            # package for a function that both compares the two and refuses.
+            if c_at >= 0 and not any(
+                any(t in fn for t in VERIFIED_IDENTITY_TOKENS)
+                and "!=" in fn
+                and any(t in fn for t in IDENTITY_REJECT_TOKENS)
+                for fn in package_functions
+            ):
+                route_gap_or_fail(
+                    rc, route, "S8",
+                    f"{ep['handler']} accepts a body-supplied caller identity "
+                    "but never refuses one that contradicts the verified "
+                    "identity (expected an explicit rejection, not a silent "
+                    "preference)")
+
+            # --- S9: downstream group enforcement ------------------------
+            groups = rc.get("groups")
+            enforced_in = rc.get("enforced_in")
+            if isinstance(groups, list) and enforced_in:
+                src = repo / enforced_in
+                if not src.exists():
+                    findings.append(
+                        Finding("S9", "FAIL",
+                                f"enforced_in file missing: {enforced_in}",
+                                route))
+                else:
+                    text = src.read_text()
+                    if not any(p in text for p in ENFORCE_PATTERNS):
+                        route_gap_or_fail(
+                            rc, route, "S9",
+                            f"no group-enforcement pattern found in "
+                            f"{enforced_in} — a Function URL route declared "
+                            f"for {groups} reaches this handler directly")
+                    else:
+                        # Compare the handler's group list with the declared one
+                        # in BOTH directions where possible. Reading the module
+                        # constant gives an exact set, so widening the code's
+                        # list (adding Reviewer to the agent-chat groups) fails
+                        # here and not only via `equivalent_op`.
+                        actual = enforced_group_names(text)
+                        if actual is not None:
+                            if actual != set(groups):
+                                route_gap_or_fail(
+                                    rc, route, "S9",
+                                    f"{enforced_in} enforces "
+                                    f"{sorted(actual)} but the route declares "
+                                    f"{sorted(groups)} — the code and the "
+                                    "expectations must name the same groups")
+                        else:
+                            # No group-list constant found, so fall back to
+                            # containment. NOTE this direction is ASYMMETRIC: it
+                            # catches NARROWING the declared list (a declared
+                            # group the code never names) but not WIDENING the
+                            # code's list. Widening is still caught by the
+                            # `equivalent_op` comparison below, which compares the
+                            # route's groups with the REST operation's, and by
+                            # test_processor_and_resolver_agree_on_the_group_list
+                            # in lib/idp_common_pkg/tests/unit/
+                            # test_agent_chat_rbac.py, which asserts the two
+                            # code-side tuples are equal.
+                            missing = [g for g in groups if f'"{g}"' not in text]
+                            if missing:
+                                route_gap_or_fail(
+                                    rc, route, "S9",
+                                    f"{enforced_in} has a group check but does "
+                                    f"not name {missing} — declared groups "
+                                    f"{groups}")
+            # The two entry paths to one operation must agree on the policy.
+            equivalent = rc.get("equivalent_op")
+            if equivalent:
+                if equivalent not in ops:
+                    findings.append(
+                        Finding("S9", "FAIL",
+                                f"equivalent_op '{equivalent}' is not a "
+                                "declared operation", route))
+                elif ops[equivalent]["groups"] != groups:
+                    findings.append(
+                        Finding("S9", "FAIL",
+                                f"route groups {groups} disagree with the "
+                                f"equivalent REST op '{equivalent}' "
+                                f"({ops[equivalent]['groups']}) — one entry "
+                                "path is more permissive than the other",
+                                route))
+
     # --- known_gaps integrity ----------------------------------------------
     referenced = {o["known_gap"] for o in ops.values() if o.get("known_gap")}
+    referenced |= {
+        rc[key]
+        for ep in endpoints.values()
+        for rc in (ep.get("routes") or {}).values()
+        for key in ("known_gap", "residual_gap")
+        if rc.get(key)
+    }
     for gid in sorted(referenced - set(known_gaps)):
         findings.append(
             Finding("S0", "FAIL",
@@ -457,6 +1071,11 @@ def run_checks(strict: bool) -> list[Finding]:
     for name, o in ops.items():
         if o.get("known_gap"):
             gap_ops.setdefault(o["known_gap"], []).append(name)
+    for ep in endpoints.values():
+        for route, rc in (ep.get("routes") or {}).items():
+            for key in ("known_gap", "residual_gap"):
+                if rc.get(key):
+                    gap_ops.setdefault(rc[key], []).append(route)
     for gid in sorted(referenced):
         summary = known_gaps.get(gid, {}).get("summary", "(no summary)")
         ops_list = ", ".join(sorted(gap_ops.get(gid, [])))

@@ -123,9 +123,12 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T11": (3, "Mitigated"),
     "AUTH.T12": (3, "Mitigated"),
     "AUTH.T13": (4, "Partially Mitigated"),
+    # Likelihood Low / Severity Medium, scored as its two nearest siblings
+    # (AUTH.T10, AUTH.T11) are. "Partially Mitigated" because the entry's own
+    # Mitigations field closes the identity-precedence and input-shape halves but
+    # leaves the group check unenforceable on the streaming transport (GAP-07).
+    "AUTH.T14": (3, "Partially Mitigated"),
     "AUTH.T15": (4, "Partially Mitigated"),
-    # AUTH.T14 is reserved for a threat added by a separate in-review change
-    # (streaming Function URL group check); see threat-id-glossary.md.
     "AUTH.T16": (6, "Partially Mitigated"),
     # SDK / CLI
     "SDK.T01": (6, "Partially Mitigated"),
