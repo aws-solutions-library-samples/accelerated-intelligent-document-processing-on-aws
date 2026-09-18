@@ -28,9 +28,12 @@ tree rather than against a copy of the facts:
 **Granularity, and why it is not per test method.** ``CLAUDE.md`` and the page itself
 used to claim that *every test method* was mapped, and this file never checked
 anything of the sort (issue #986). Measured at the time that claim was corrected, it
-was off by three orders of magnitude: 527 Python test modules holding 8,199 test
-functions, plus 88 Vitest spec files, against 5 test modules and 2 individual test
-functions named anywhere on the page. A guard demanding a page entry per test function
+was off by three orders of magnitude: 527 Python test modules and 88 Vitest spec
+files, against 5 test modules and 2 individual test functions named anywhere on the
+page. A function count is deliberately not quoted here: four defensible definitions
+of "a test function" give four different numbers spanning about fifty, and ``pytest``
+reports more again because parametrisation expands them, so the module count is the
+figure that survives being restated. A guard demanding a page entry per test function
 would be unmaintainable and would be satisfied by a wall of generated rows nobody
 reads, and the page is keyed by ``make`` target by design — it is a map of how to run
 things and what each tier proves, so a method added inside a suite that already runs
@@ -171,6 +174,15 @@ def _markdown_referring_to_the_page() -> list[tuple[str, str]]:
     for path in sorted(REPO_ROOT.rglob("*.md")):
         rel = path.relative_to(REPO_ROOT).as_posix()
         if any(marker in "/" + rel for marker in prune) or rel in OVERCLAIM_EXEMPT:
+            continue
+        # rglob yields broken symlinks, and this tree grows them: the docs-site
+        # build populates docs-site/src/content/docs/ with gitignored symlinks
+        # into docs/, and renaming or deleting a source page leaves one dangling.
+        # Reading it raises FileNotFoundError, which turned this check into a
+        # bare traceback that fired only on a developer machine -- never in CI,
+        # because CI does not build the site into that directory. The worst
+        # possible distribution for a diagnostic with no guidance in it.
+        if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if rel == DOC.relative_to(REPO_ROOT).as_posix() or "testing.md" in text:

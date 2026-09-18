@@ -94,7 +94,10 @@ Auto-discovery means a suite cannot be *forgotten*, not that every suite is *run
 `scripts/run_all_tests.py` refuses to run at all when it finds a directory holding a
 `test_*.py` that is in neither of its two registries — the roots it runs, and the
 roots it excludes with a written reason — so tests in a new location cannot be
-silently skipped. That check backs `make test`, which runs in **neither** CI, so
+silently skipped. An exclusion covers **only the directory named**: nesting under an
+excluded directory used to inherit the exclusion, which meant excluding `scripts`
+quietly accepted every future test directory beneath it, so each excluded directory
+is now listed on its own. That check backs `make test`, which runs in **neither** CI, so
 `scripts/tests/test_testing_doc.py` re-derives it on every pull request, where
 `pytest scripts/tests` does run.
 
@@ -105,9 +108,9 @@ that exists and never runs is otherwise indistinguishable from one that passes:
 |---|---|
 | `scripts` | `scripts/test_api_rbac.py` is the live RBAC harness driven by `make api-test` against a deployed stack (layer 6), not a pytest suite; collecting it picks up its `test_email()` helper as a test |
 | `src/lambda/ocr_benchmark_deployer` | `test_local.py` needs `huggingface_hub`, which is not a test dependency |
-| `nested/bedrockkb/src/s3_vectors_manager` | `test_handler.py` imports `cfnresponse`, which exists only in the Lambda runtime. Its `tests/` subdirectory does run, in `make test-packages-cicd` |
-| `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests |
-| `samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency` | the same |
+| `nested/bedrockkb/src/s3_vectors_manager` | `test_handler.py` imports `cfnresponse`, which exists only in the Lambda runtime |
+| `nested/bedrockkb/src/s3_vectors_manager/tests` | Named separately now that an exclusion no longer covers what is nested under it. Not skipped in practice — `make test-packages-cicd` runs it directly, in both CI systems, so CI runs more than `make test` does |
+| `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests (measured) |
 | `lib/idp_sdk/idp_sdk/_core` | source, not tests: `test_studio_processor.py` is the Test Studio processor module, which the `test_` prefix makes look like a suite |
 
 Adding an exclusion, or lifting one of these, fails that guard until this table and
