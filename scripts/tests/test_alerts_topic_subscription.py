@@ -508,3 +508,131 @@ def test_every_alarm_notifies_a_subscribed_topic() -> None:
         f"means the discovery broke, not that the alarms went away."
     )
     assert not findings, "alarm(s) notify nobody:\n  " + "\n  ".join(findings)
+
+
+# ---------------------------------------------------------------------------
+# The --headless variant: an accepted gap, so documentation IS the mitigation
+# ---------------------------------------------------------------------------
+# A --headless deployment keeps AlertsTopic and every alarm but creates no
+# subscription, because the transform removes the AdminEmail parameter with the
+# Cognito resources and a subscription cannot Ref a parameter that is gone. Adding
+# an optional AlertsEmail parameter was considered and rejected (issue #984):
+# headless operators are automating and mostly attach a pager, chat webhook or
+# existing operational topic through their own IaC, so the parameter would be one
+# most of them never set.
+#
+# That decision makes documentation the entire mitigation for a failure that is
+# otherwise silent -- an unsubscribed topic accepts every publish successfully. A
+# mitigation that consists of three sentences in three files is exactly the kind
+# that rots, so it is checked here rather than trusted. The pairing is the point:
+# the tests below fail if the transform stops removing the subscription (the docs
+# would then be wrong in the other direction) or if any of the three documents
+# stops telling the operator to subscribe.
+HEADLESS_TRANSFORM = (
+    REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "template_transform.py"
+)
+
+#: Each document that must tell a headless operator to set up delivery, with a
+#: phrase that carries the *obligation* rather than merely mentioning the topic.
+#: Matched against the whitespace-flattened text, because all three wrap at ~80
+#: columns and a line-oriented search would miss a sentence that spans a break.
+HEADLESS_DELIVERY_DOCS = {
+    "docs/headless-deployment.md": "required post-deploy step",
+    "docs/monitoring.md": "creates no subscription on `AlertsTopic`",
+    "docs/govcloud-operations.md": "creates no subscription at all",
+}
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+@pytest.mark.unit
+def test_headless_transform_removes_the_subscription_and_keeps_the_topic() -> None:
+    """Pin the shape the documentation describes, from the transform itself.
+
+    Both halves matter. If the subscription stopped being removed, the headless
+    template would carry a resource referencing a deleted parameter, which is a hard
+    error at validate time -- and the documentation telling the operator to
+    subscribe by hand would be wrong. If the *topic* or the ARN output were removed,
+    the documented instruction would be impossible to follow, because there would be
+    nothing to subscribe to.
+    """
+    import sys
+
+    sdk = str(REPO_ROOT / "lib" / "idp_sdk")
+    if sdk not in sys.path:
+        sys.path.insert(0, sdk)
+    from idp_sdk._core.template_transform import HeadlessTemplateTransformer
+
+    transformer = HeadlessTemplateTransformer()
+    removed = transformer.all_resources_to_remove
+
+    assert "AlertsTopicAdminEmailSubscription" in removed, (
+        "the headless transform no longer removes AlertsTopicAdminEmailSubscription. "
+        "It must: AdminEmail is removed with the Cognito resources, and a resource "
+        "left Ref'ing a deleted parameter is a hard template error. If the parameter "
+        "is now retained, the documentation in HEADLESS_DELIVERY_DOCS is wrong and "
+        "issue #984 has been reopened by implementation rather than by decision."
+    )
+    assert ALERTS_TOPIC not in removed, (
+        f"the headless transform removes {ALERTS_TOPIC}. The documented remedy is to "
+        f"subscribe to the SNSAlertsTopicARN output by hand, which is impossible "
+        f"without the topic."
+    )
+    for output in ("SNSAlertsTopicARN", "SNSAlertsTopicConsoleURL"):
+        assert output not in transformer.outputs_to_remove, (
+            f"the headless transform removes the {output} output, which is how the "
+            f"documentation tells an operator to find the topic to subscribe to."
+        )
+
+
+@pytest.mark.unit
+def test_headless_alert_delivery_is_documented() -> None:
+    """Documentation is the whole mitigation here, so it is a checked artifact.
+
+    Each phrase is chosen to carry the obligation, not just the subject. "The
+    ``AlertsTopic`` SNS topic" appearing somewhere in a page proves nothing -- a page
+    can name the topic while leaving a reader believing the stack subscribes
+    something, which is what two of these three pages did before #984 was decided.
+    """
+    missing = []
+    for rel, phrase in HEADLESS_DELIVERY_DOCS.items():
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            missing.append(f"{rel}: file not found")
+            continue
+        if phrase.lower() not in _flat(path.read_text(encoding="utf-8")).lower():
+            missing.append(f"{rel}: does not state {phrase!r}")
+
+    assert not missing, (
+        "the --headless alert-delivery gap is an ACCEPTED gap (issue #984), which "
+        "means these documents are the only thing standing between an operator and "
+        "alarms that notify nobody:\n  " + "\n  ".join(missing) + "\n"
+        "Restore the statement, or -- if the gap was closed in the template instead "
+        "(an AlertsEmail parameter, or any subscription the headless variant "
+        "creates) -- delete the entry here and say so in #984, because the "
+        "documentation would then be describing a limitation that no longer exists."
+    )
+
+
+@pytest.mark.unit
+def test_the_transform_states_no_alarm_count() -> None:
+    """The comment next to the removal must not restate a number nothing derives.
+
+    It used to read "the topic and all 12 alarms stay". ``template.yaml`` has since
+    grown more alarms, so the comment was wrong and nothing noticed, because a
+    number in a comment is not connected to the thing it counts. This is the same
+    defect class the derived-at-test-time document guards exist for; the cheapest
+    fix at this site is to state no count at all, and this test keeps it that way.
+    """
+    text = _flat(HEADLESS_TRANSFORM.read_text(encoding="utf-8"))
+    import re
+
+    offenders = re.findall(r"all \d+ alarms|\d+ alarms stay", text)
+    assert not offenders, (
+        f"{HEADLESS_TRANSFORM.relative_to(REPO_ROOT)} states an alarm count in a "
+        f"comment: {offenders}. Nothing derives it, so it goes stale the next time "
+        f"an alarm is added -- which is exactly what happened to 'all 12 alarms'. "
+        f"Say 'every alarm' instead, or derive the number in a test."
+    )

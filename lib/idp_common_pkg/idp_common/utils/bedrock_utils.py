@@ -157,6 +157,76 @@ def _clamped_or_log(
     return allowed
 
 
+# Bedrock rejects a request whose IMAGES are wrong — too many pixels per side, too
+# many bytes — with a ValidationException, the same code it uses for a context
+# overflow, and with overlapping vocabulary ("exceeds", "too large"). The remedies
+# are opposite: an oversized image is fixed only by rendering pages smaller, never
+# by sending fewer pages or switching extraction mode. So the image case is matched
+# separately and checked FIRST, both to give it its own explanation and so it can
+# never be absorbed by the overflow branch as the wording changes (#994).
+#
+# For the record, measured against today's wording: is_input_token_overflow does
+# NOT claim "image exceed max allowed size for many-image requests: 2000 pixels" —
+# it requires "input"/"context"/"prompt" vocabulary that string does not carry. The
+# misdiagnosis reported in #994 came from the OTHER direction: Bedrock reports an
+# oversized request PAYLOAD as "Input is too long for requested model", which is a
+# genuine overflow match, and the token estimate then in use over-stated the page
+# images 2.4x, so the message compared an inflated estimate against a window it
+# had not actually exceeded. That half is fixed in bedrock.model_utils, not here.
+# Every marker names an image limit explicitly. Two earlier candidates — "image
+# size" and "invalid image" — were dropped: they are generic enough to appear in
+# an unrelated message, and this verdict is DETERMINISTIC (it raises a
+# non-retryable error and short-circuits the retry ladder), so a false positive
+# turns a transient fault into a permanent failure. The error-code guard in
+# is_image_request_rejection catches that only when the error carries a definite
+# code, which a Strands-wrapped exception does not — hence the narrower list.
+#
+# Be clear about what a MISS costs, because it is more than a worse message. An
+# image rejection worded outside this list is still a ValidationException, which is
+# in DEFAULT_RETRYABLE_ERRORS and matched by substring in the generic branch below,
+# so it goes back to being retried — on the agentic path up to max_retries=50
+# bounded by max_total_delay=300s (see agentic_idp's invoke_agent_with_retry)
+# before failing the way it failed first time. That stall is the pathology the
+# short-circuit exists to prevent. The trade is still the right way round —
+# retrying a transient error costs time, permanently failing a document costs the
+# document — but a marker added later should be judged on both sides of it.
+_IMAGE_REJECTION_MARKERS = (
+    "many-image request",
+    "image exceeds",
+    "images exceed",
+    "image dimensions exceed",
+    "image dimension",
+    "too many images",
+    "image is too large",
+)
+
+
+def is_image_request_rejection(error: BaseException) -> bool:
+    """True if ``error`` is Bedrock rejecting an image's dimensions or bytes.
+
+    Distinct from :func:`is_input_token_overflow`: no amount of shrinking the
+    text or reducing pages per shard fixes it — the images themselves must be
+    downscaled (see ``idp_common.image.fit_images_in_request``).
+
+    Judged by error code first, exactly as the overflow matcher is, because the
+    verdict here is DETERMINISTIC — it turns into a non-retryable
+    ``ExtractionImageRejected`` and short-circuits the retry ladder, so a false
+    positive converts a transient fault into a permanent failure. An image
+    rejection is always a ``ValidationException``, so a definite code that is
+    anything else settles it. A Strands-wrapped exception carries no code at all,
+    which is why ``_IMAGE_REJECTION_MARKERS`` is kept narrow enough to stand on
+    its own.
+    """
+    code = ""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        code = str((response.get("Error") or {}).get("Code") or "")
+    if code and code != "ValidationException":
+        return False
+    msg = str(error).lower()
+    return any(marker in msg for marker in _IMAGE_REJECTION_MARKERS)
+
+
 def is_input_token_overflow(error: BaseException) -> bool:
     """True if ``error`` is a Bedrock input/context overflow.
 
@@ -164,7 +234,12 @@ def is_input_token_overflow(error: BaseException) -> bool:
     "Input Tokens Exceeded", "input token count ... exceeds the maximum" — so the
     match is loose. Shared by summarization (which degrades to a stub) and
     extraction (which explains the failure); keep the one matcher.
+
+    An image dimension/byte rejection is NOT an overflow even though the wording
+    overlaps, so it is excluded first (#994).
     """
+    if is_image_request_rejection(error):
+        return False
     code = ""
     response = getattr(error, "response", None)
     if isinstance(response, dict):
@@ -315,6 +390,18 @@ def async_exponential_backoff_retry[T, **P](
                     total_slept += sleep_time
                     delay = min(delay * exponential_base, max_delay)
                 except Exception as e:
+                    # An image rejection is deterministic: the same request will be
+                    # rejected identically every time, so retrying it only spends
+                    # the backoff budget. The ClientError branch above already
+                    # raises a raw ValidationException, but Strands re-wraps Bedrock
+                    # errors, and this branch judges retryability by substring —
+                    # "ValidationException" is in DEFAULT_RETRYABLE_ERRORS, so a
+                    # wrapped image rejection would otherwise be retried up to
+                    # max_retries (50 on the agentic extraction path) before the
+                    # caller ever got to classify it (#994).
+                    if is_image_request_rejection(e):
+                        log_bedrock_invocation_error(e, attempt + 1)
+                        raise
                     # Check if this is a retryable exception type (e.g., Strands ModelThrottledException)
                     is_retryable_type = retryable_exception_types and isinstance(
                         e, retryable_exception_types

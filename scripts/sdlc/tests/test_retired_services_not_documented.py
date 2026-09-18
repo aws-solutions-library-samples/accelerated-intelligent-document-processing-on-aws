@@ -26,6 +26,16 @@ pass/fail check itself:
   like ``API Gateway`` or ``GraphQL`` would match the stale lines too and
   silently turn the gate off. This test is why widening a marker is a reviewable
   act rather than an invisible one.
+
+The security threat-modeling corpus came under the gate in #995, which added four
+marker forms for the ways that corpus states the service is gone. Widening a
+blocking gate's vocabulary is the risky half of that change, so each new form has
+its own near-miss fixture in :data:`STALE_LINES_NEAR_NEW_MARKERS`: a line that
+contains the new marker's own keyword and still asserts the service is present.
+:func:`test_the_threat_model_corpus_is_scanned` pins the tree into the scanned set
+so the exclusion cannot quietly come back, and
+:func:`test_every_exclusion_still_matches_something` closes the gap that let the
+previous exclusion's "revisit once #960 lands" note outlive its trigger unnoticed.
 """
 
 from __future__ import annotations
@@ -46,6 +56,7 @@ from check_retired_services import (  # noqa: E402
     reads_as_historical,
     scanned_files,
     stale_allowlist_entries,
+    stale_exclusions,
     unexpected_resources,
 )
 
@@ -72,6 +83,29 @@ STALE_LINES_AT_HEAD = [
     "Document state persistence through the AppSync GraphQL API.",
     "  - `APPSYNC_API_URL`: AppSync endpoint for streaming",
     "- **Real-Time Streaming**: Streams responses as they're generated via AppSync",
+]
+
+
+#: Near-misses for the marker forms #995 added. Each contains the new marker's own
+#: keyword -- "removed", "gone", "former", "replaced" -- in a construction that
+#: still asserts AppSync is present, so a marker written as a bare keyword search
+#: rather than as an assertion of absence would exempt it. These are the fixtures
+#: that make widening the vocabulary safe rather than merely convenient.
+STALE_LINES_NEAR_NEW_MARKERS = [
+    # "is/are ... removed" must assert that AppSync is removed, not that AppSync
+    # removed something else.
+    "- AppSync removed the need for a custom API layer, and still fronts every "
+    "UI query today.",
+    # "gone" about something else in the sentence.
+    "- The ALB is gone, so the AppSync GraphQL API is now reached directly by the "
+    "browser.",
+    # "former" qualifying a different noun.
+    "- The former ALB hostname is replaced by the AppSync GraphQL endpoint.",
+    # "replaced" where AppSync is the replacement rather than the replaced.
+    "- Polling is replaced by AppSync subscriptions for real-time status.",
+    # The revision-history forms, inverted: an edit note that leaves AppSync in.
+    "| 4.0 | 2026-09-18 | Removed the A2I flow; the AppSync GraphQL API is "
+    "unchanged and still serves the UI. |",
 ]
 
 
@@ -276,6 +310,127 @@ def _findings_for(scoped: dict, root: pathlib.Path, rel: str, body: str) -> list
     path.write_text(body, encoding="utf-8")
     findings, _ = find_violations(scoped, root)
     return findings
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("line", STALE_LINES_NEAR_NEW_MARKERS)
+def test_new_marker_forms_do_not_exempt_a_near_miss(
+    registry: dict, tmp_path: pathlib.Path, line: str
+) -> None:
+    """The four marker forms #995 added must assert absence, not contain a keyword.
+
+    Each fixture contains one of the new markers' own keywords in a construction
+    that still presents AppSync as current -- "AppSync removed the need for...",
+    "The ALB is gone, so the AppSync GraphQL API...", "The former ALB hostname is
+    replaced by the AppSync GraphQL endpoint", "Polling is replaced by AppSync
+    subscriptions". A marker implemented as a keyword search would pass all four
+    and the vocabulary widening would have quietly cost the gate its teeth.
+
+    This is separate from :func:`test_markers_do_not_exempt_a_real_stale_claim`
+    rather than folded into it because those fixtures are real pre-fix lines and
+    these are constructed adversarially. Keeping them apart means a failure names
+    which risk materialised: a marker that matches ordinary architecture prose, or
+    a marker that matches its own keyword in the wrong grammatical role.
+    """
+    scoped = _scoped_to_one_file(registry, "docs/probe.md")
+    findings = _findings_for(scoped, tmp_path, "docs/probe.md", line + "\n")
+
+    assert [f.lineno for f in findings] == [1], (
+        f"the near-miss line {line!r} was NOT reported, so a historicalMarkers "
+        f"pattern is matching its keyword rather than an assertion of absence "
+        f"(findings: {[f.render() for f in findings]}). A marker must be true only "
+        f"of a sentence that says the service is gone -- check whether it needs to "
+        f"be anchored to the service name, to a copula, or to punctuation."
+    )
+
+
+@pytest.mark.unit
+def test_the_threat_model_corpus_is_scanned(registry: dict) -> None:
+    """The living threat-model documents are inside the gate, not exempt from it.
+
+    They were excluded while they were point-in-time review artifacts pinned to the
+    release each assessed. #960 gave the corpus its own currency gate, which made it
+    a living description of the current architecture, and a living document has no
+    business being exempt from the gate that stops documentation presenting a removed
+    service as current. Pinning the files here is what stops the exclusion returning
+    as a quick fix the next time the gate reports one of them.
+
+    The genuinely dated artifacts under the same tree stay excluded, and are checked
+    in the other direction: editing them would falsify the record of what was
+    reviewed at that version.
+    """
+    relative = {
+        p.relative_to(_repo_root()).as_posix() for p in scanned_files(registry, _repo_root())
+    }
+
+    for required in (
+        "security/threat-modeling/README.md",
+        "security/threat-modeling/architecture/system-overview.md",
+        "security/threat-modeling/architecture/data-flows.md",
+        "security/threat-modeling/feature-threats/rbac-authentication.md",
+        "security/threat-modeling/threat-analysis/stride-analysis.md",
+    ):
+        assert required in relative, (
+            f"{required} is not scanned by the retired-service gate. It is part of "
+            f"the living threat model, which has a currency gate of its own "
+            f"(make check-threat-model-currency), so it must not be excluded here. "
+            f"If the gate reported a line in it, fix the line or allowlist that "
+            f"line -- do not re-exclude the tree."
+        )
+
+    # The dated snapshots stay out, for the opposite reason.
+    assert not [rel for rel in relative if rel.startswith("security/test-results/")]
+    assert not [rel for rel in relative if "security-review-v" in rel]
+
+
+@pytest.mark.unit
+def test_every_exclusion_still_matches_something(registry: dict) -> None:
+    """A dead exclusion glob exempts nothing, then exempts whatever moves in.
+
+    ``stale_allowlist_entries`` has always failed on an allowlist entry that matched
+    nothing. Exclusions had no equivalent, and the omission had already cost
+    something: the ``security/threat-modeling/**`` exclusion this change removes
+    carried a justification ending "REVISIT ONCE PR #960 LANDS" for most of a
+    release cycle. #960 landed and nothing asked, because an exclusion's effect is
+    an absence of findings and so cannot fail by matching too little.
+
+    This does not check that a *reason* is still true -- no test can, which is why
+    the justification text is what a reviewer reads. It checks the mechanical half:
+    a renamed or deleted directory leaves a glob that silently grants its exemption
+    to whatever next occupies the path.
+    """
+    assert not stale_exclusions(registry, _repo_root()), (
+        "excludedPaths glob(s) match nothing: "
+        f"{[e['glob'] for e in stale_exclusions(registry, _repo_root())]}. Delete "
+        "the entry, fix the glob if the path was renamed, or -- if the path only "
+        "exists after a build and the exclusion is deliberately defensive -- set "
+        '"mayBeAbsent": true on it and say so in the justification.'
+    )
+
+
+@pytest.mark.unit
+def test_may_be_absent_is_not_a_blanket_escape(registry: dict) -> None:
+    """``mayBeAbsent`` is for gitignored build output, and nothing else.
+
+    The flag exists so three defensive exclusions (node_modules, .aws-sam, the
+    vendored idp_common_pkg copies) do not fail on a clean checkout. It would be an
+    easy way to silence the check above for a genuinely dead exclusion, so the set
+    of entries carrying it is pinned: adding a fourth has to be a visible edit here
+    with a reason, not a field appended to the registry.
+    """
+    flagged = {
+        e["glob"] for e in registry["excludedPaths"] if e.get("mayBeAbsent")
+    }
+    assert flagged == {
+        "**/node_modules/**",
+        "**/.aws-sam/**",
+        "feature-platform/**/idp_common_pkg/**",
+    }, (
+        f"the set of excludedPaths entries marked mayBeAbsent changed: {sorted(flagged)}. "
+        "That flag exempts an exclusion from the staleness check, so it belongs only "
+        "on paths that are gitignored build output or vendored copies. If a new one "
+        "genuinely qualifies, add it here with the reason it can be absent."
+    )
 
 
 @pytest.mark.unit

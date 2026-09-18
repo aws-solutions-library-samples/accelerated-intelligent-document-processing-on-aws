@@ -729,6 +729,40 @@ passes, reason). A page that already fits leaves no entry. Set the service's
 would rather control the resolution than have it reduced per request; see
 [Image Processing Configuration](./configuration.md#effective-per-image-budget-375-mib-enforced-post-base64).
 
+The same mechanism also applies Bedrock's **many-image** dimension cap: a request
+carrying more than 20 image blocks caps every image at **2,000 px** per side, so a
+section over 20 pages has its pages downscaled to that before the request goes out
+([#994](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/994)).
+Each reduced page appears in `metadata.image_downscale` with a `reason` naming the
+pixel limit rather than the byte limit.
+
+Simple extraction clamps at **21 pages** — the whole section goes out as one request.
+Advanced (agentic) extraction is judged per *request*, not per section, so its
+threshold depends on how the pages shard. The agent re-sends its attached pages on
+every turn and its `view_image` tool can add a further copy of a page to the same
+request, so the figure one agent invocation will carry is doubled. On the **shipped
+defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) each request
+carries few enough pages that the clamp engages only at about **101 pages**; at
+`max_concurrent_batches: 5` it is about 51, at 2 about 21, and with sharding off
+(`max_concurrent_batches: 1`) it is 11. Because `max_concurrent_batches` caps the
+number of shards as well as the parallelism, *raising* it makes each request smaller
+and the threshold higher. Holistic classification, which sends a whole packet in one
+request, is affected on the same >20-image rule.
+
+Whether the clamp costs accuracy depends on the model — on Claude 4.7+, Opus 5 and
+Sonnet 5 it is about 20% below the resolution they would otherwise use, on older
+Claude models it costs nothing, and it has not been measured against extraction
+accuracy either way. See
+[A request with more than 20 page images](./configuration.md#a-request-with-more-than-20-page-images-caps-every-image-at-2000-px)
+for the full trade-off and how to avoid the clamp.
+
+If Bedrock does reject a request over its images, extraction fails with
+`ExtractionImageRejected` and a message naming the image count and the largest
+dimension, with the remedy that applies (`extraction.image.target_width` /
+`target_height`) rather than shard-budget advice that cannot address it — and it
+fails on the first attempt instead of retrying a request that will be rejected
+identically every time.
+
 ### Schema validation (`extraction.validation`)
 
 Validates the result against the **full class JSON Schema** — most importantly the
@@ -1360,9 +1394,17 @@ extraction:
 >    extraction) is **not explained by this loop**, so treat it as still open: the
 >    same-model retry rung already stopped on no progress before this change, and the
 >    ladder's wall-clock deadline guard was already in place in the release where
->    those timeouts were observed. Until #894 is fixed, score such a class with a
->    large-output-cap confidence model (`escalation_model`), or split the inner list
->    into its own class.
+>    those timeouts were observed. The single gap in that guard has since been closed
+>    (#958): every recovery call — retry and escalation alike — now checks the
+>    Lambda's remaining time before it is made, as further bisections already did, so
+>    a run that would have spent its whole budget on partially-successful retry
+>    rounds stops at the last call that fits and keeps every row it recovered. With
+>    rows still unscored the section reports `assessment_incomplete` naming the time
+>    budget (the `assessment_deadline_reached` warning is for a run that was cut
+>    short and scored every row regardless). That was the most concrete lead on the
+>    timeout, but it is not confirmed as its cause. Until #894 is fixed, score such a class
+>    with a large-output-cap confidence model (`escalation_model`), or split the inner
+>    list into its own class.
 >
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,
@@ -1423,8 +1465,10 @@ extraction:
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
 > **retired and deleted**. Large-list batching is its full replacement: complete
-> per-cell confidence and geometry at roughly **−78% Bedrock cost** on a 120-row
-> bank statement, with equal accuracy (granular actually produced 0% geometry).
+> per-cell confidence and geometry at **substantially lower Bedrock cost** on a
+> 120-row bank statement, with equal accuracy (granular actually produced 0%
+> geometry). The percentage this sentence used to quote was withdrawn rather than
+> re-measured — see "Why there is no percentage here" in the retirement note.
 > Any legacy `granular.*` keys still validate but are ignored — no config edit is
 > required. See [Granular Assessment Retirement](migration-granular-retirement.md).
 

@@ -16,7 +16,6 @@
     "compatibility: allowlist it and make sure the nearby prose says the name is",
     "vestigial. Only buckets (b) and (c) belong in the allowlist."
   ],
-
   "retiredServices": [
     {
       "name": "AWS AppSync",
@@ -77,7 +76,6 @@
       ]
     }
   ],
-
   "scannedPaths": [
     "*.md",
     ".claude/skills/*.md",
@@ -86,9 +84,9 @@
     "iam-roles/**/*.md",
     "lib/**/*.md",
     "scripts/**/*.md",
+    "security/**/*.md",
     "src/**/*.md"
   ],
-
   "excludedPaths": [
     {
       "glob": "workshop/**",
@@ -97,10 +95,6 @@
     {
       "glob": "CHANGELOG.md",
       "justification": "A historical record by construction. Every release entry describes the architecture as it was at that release, so a retired-service mention is always correct here."
-    },
-    {
-      "glob": "security/threat-modeling/**",
-      "justification": "Point-in-time security review artifacts, each pinned to the release version it assessed. Editing them would falsify the record of what was reviewed. NARROWING THIS IS TRACKED, AND THE WORK IS MEASURED: PR #960 makes the threat model a living document with its own currency gate (make check-threat-model-currency), and a living document should not be exempt from this one. Scanning the corpus was tried while merging #960 and is not yet free: adding security/**/*.md to scannedPaths with this exclusion narrowed to the dated snapshots flags 13 lines across 5 files. Every one of the 13 reads as unambiguously historical to a human -- \"AWS AppSync is fully removed\", \"AppSync subscriptions are gone\", \"now that AppSync is gone\", \"the former AppSync VTL resolvers\" -- but historicalMarkers covers none of those forms, and two of the 13 assert pastness only through verb tense (\"AppSync validated every operation's input arguments\"), which no marker can safely detect. Closing it therefore means extending the marker vocabulary on a blocking gate plus about three allowlist entries, mutation-proved in both directions -- not a merge-time edit. See issue https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/995. Until then the exclusion stands with its cost stated rather than as an open-ended 'revisit later'."
     },
     {
       "glob": "docs/benchmarking/releases/**",
@@ -112,22 +106,40 @@
     },
     {
       "glob": "**/node_modules/**",
-      "justification": "Third-party dependency sources, not this project's documentation."
+      "justification": "Third-party dependency sources, not this project's documentation. Flagged mayBeAbsent because this path is gitignored build output or a vendored copy: it correctly matches nothing on a clean checkout, so the excludedPaths staleness check must not report it as dead.",
+      "mayBeAbsent": true
     },
     {
       "glob": "**/.aws-sam/**",
-      "justification": "SAM build output: gitignored copies of documentation that is scanned at its real path. Only the repository-root .aws-sam/ was skipped before, so anyone who had run a SAM build under feature-platform/ saw 174 findings locally that CI, building from a fresh clone, never sees -- and a gate that is red for a local-only reason teaches people to ignore it. Matched at any depth for the same reason the node_modules glob is."
+      "justification": "SAM build output: gitignored copies of documentation that is scanned at its real path. Only the repository-root .aws-sam/ was skipped before, so anyone who had run a SAM build under feature-platform/ saw 174 findings locally that CI, building from a fresh clone, never sees -- and a gate that is red for a local-only reason teaches people to ignore it. Matched at any depth for the same reason the node_modules glob is. Flagged mayBeAbsent because this path is gitignored build output or a vendored copy: it correctly matches nothing on a clean checkout, so the excludedPaths staleness check must not report it as dead.",
+      "mayBeAbsent": true
     },
     {
       "glob": "feature-platform/**/idp_common_pkg/**",
-      "justification": "A gitignored copy of lib/idp_common_pkg that the extension builds vendor into their Lambda source directories (feature-platform/idp-data-generator/bootstrap-processor/ is the one that exists today). The same README files are scanned at their real path under lib/, so the copies add only duplicate findings, and only for whoever happens to have built locally."
+      "justification": "A gitignored copy of lib/idp_common_pkg that the extension builds vendor into their Lambda source directories (feature-platform/idp-data-generator/bootstrap-processor/ is the one that exists today). The same README files are scanned at their real path under lib/, so the copies add only duplicate findings, and only for whoever happens to have built locally. Flagged mayBeAbsent because this path is gitignored build output or a vendored copy: it correctly matches nothing on a clean checkout, so the excludedPaths staleness check must not report it as dead.",
+      "mayBeAbsent": true
     },
     {
       "glob": "docs-site/**",
       "justification": "Starlight site scaffolding and generated output; the prose it publishes lives in docs/ and is scanned there."
+    },
+    {
+      "glob": "security/test-results/**",
+      "justification": "Curated per-version snapshots of the four security test runs (scripts/security/curate_results.py writes one directory per release). Each records what the scanners reported at that version, so a mention of a service present then is the record, and editing it would falsify the snapshot."
+    },
+    {
+      "glob": "security/threat-modeling/deliverables/security-review-*.md",
+      "justification": "Point-in-time AppSec review reports, named for the version range each assessed (security-review-v0.3.15-to-v0.5.5.md). Unlike the rest of the corpus these are dated findings rather than a living description, and the currency gate (make check-threat-model-currency) deliberately does not hold them to VERSION either."
+    },
+    {
+      "glob": "security/threat-modeling/**/Mitigation *.md",
+      "justification": "Per-threat mitigation write-ups exported from the Threat Designer session that produced them, kept as the artifact of that session rather than maintained."
+    },
+    {
+      "glob": "security/threat-modeling/threat-analysis/threat-designer-results/**",
+      "justification": "Raw Threat Designer tool output for the session that produced the model. Regenerating it is how it changes; hand-editing it would misrepresent what the tool returned."
     }
   ],
-
   "$historicalMarkersComment": [
     "A line that states on its face that the service is gone, or that a name",
     "survives only for compatibility, cannot also be asserting that the service is",
@@ -142,15 +154,14 @@
     "scripts/sdlc/tests/test_retired_services_not_documented.py pins that using",
     "real pre-fix text as the fixture, so an over-broad marker fails the suite."
   ],
-
   "historicalMarkers": [
     {
       "pattern": "migration-appsync-to-rest",
       "justification": "A cross-reference to the document that records the retirement. The service name appears only inside that document's filename, so the line is pointing at the history, not claiming the service is present."
     },
     {
-      "pattern": "(has|had|have) (since |already )?been \\*{0,2}(removed|replaced|superseded|retired)|(was|were) \\*{0,2}(removed|replaced|superseded|retired)\\b|removing AppSync|after AppSync was removed|since AppSync was removed",
-      "justification": "States the removal outright, in any of the four verbs this corpus uses for it. Two shapes are covered deliberately. The optional '**' tolerates Markdown emphasis on the verb: docs/deployment-private-network.md:799 writes 'were **removed** in v0.6', and a marker requiring the bare word would report that correct sentence as stale. And 'replaced'/'superseded'/'retired' are covered because a removal is as often written 'a GraphQL API that had been replaced' as 'removed' -- docs/threat-model.md:104, added by PR #960, is exactly that sentence, and a vocabulary limited to 'removed' would red-line develop as soon as both branches landed. All four are past participles of disappearance, so each asserts pastness on its face."
+      "pattern": "(has|had|have) (since |already )?been \\*{0,2}(removed|replaced|superseded|retired)|(was|were) \\*{0,2}(removed|replaced|superseded|retired)\\b|removing AppSync|after AppSync was removed|since AppSync was removed|(AWS )?AppSync\\b[^.]{0,60}?\\b(is|are) (now )?(fully |completely )?\\*{0,2}(removed|gone|replaced|superseded|retired)\\b|removed the AppSync|\\((?:AWS )?AppSync removed\\)",
+      "justification": "States the removal outright, in any of the four verbs this corpus uses for it. Two shapes are covered deliberately. The optional '**' tolerates Markdown emphasis on the verb: docs/deployment-private-network.md:799 writes 'were **removed** in v0.6', and a marker requiring the bare word would report that correct sentence as stale. And 'replaced'/'superseded'/'retired' are covered because a removal is as often written 'a GraphQL API that had been replaced' as 'removed' -- docs/threat-model.md:104, added by PR #960, is exactly that sentence, and a vocabulary limited to 'removed' would red-line develop as soon as both branches landed. All four are past participles of disappearance, so each asserts pastness on its face. Extended when the threat-modeling corpus came under the gate (#995). The same four verbs, in the present-tense copula, and ANCHORED TO THE SERVICE NAME so the service is the subject of the disappearance rather than merely nearby: 'AWS AppSync is fully removed', 'AppSync subscriptions are gone', 'AppSync GraphQL + subscriptions are replaced by the REST dispatcher'. 'is removed' and 'are gone' cannot describe a service that is present, so each asserts absence exactly as the past forms do; excluding them was an accident of which sentences the earlier corpus happened to use. Two narrower forms come from revision-history rows, which describe the edit rather than the architecture: 'removed the AppSync API layer from system-overview.md', and the parenthetical annotation '(AppSync removed)'. The parenthetical is anchored to its brackets deliberately -- the bare bigram 'AppSync removed' could open a sentence in which AppSync is the subject doing the removing, which would assert the opposite. The anchoring is not decoration. Written unanchored, the marker exempted three constructed near-misses that a keyword search cannot tell apart from the real thing: 'The ALB is gone, so the AppSync GraphQL API is now reached directly', 'The former ALB hostname is replaced by the AppSync GraphQL endpoint', and 'Polling is replaced by AppSync subscriptions' -- in the last two AppSync is the REPLACEMENT, which asserts the opposite of absence. Requiring the service name before the copula, within one sentence and 60 characters, keeps the forms the corpus actually uses ('AWS AppSync is fully removed', 'AppSync real-time subscriptions are gone', 'AppSync GraphQL + subscriptions are replaced by the REST dispatcher') and rejects all three. test_new_marker_forms_do_not_exempt_a_near_miss holds this."
     },
     {
       "pattern": "no longer|nothing (evaluates|serves)|does not exist|zero `?AWS::AppSync|no AppSync resources exist|\\*\\*no AppSync\\*\\*|no current template (creates|declares)",
@@ -161,11 +172,10 @@
       "justification": "Marks a surviving name or grant as compatibility-only, which is bucket (c) by definition."
     },
     {
-      "pattern": "formerly|previously|used to|once (held|selected|served|was)|AppSync era|pre-AppSync|pre-migration|before AppSync|historically|Unlike AWS AppSync|replaced a |This replaced|carried over from",
-      "justification": "Explicitly past tense or contrastive-with-the-past. 'previously' opens the parenthetical at docs/rbac.md:323 that explains why the Reviewer exclusion used to be UI-only; it asserts pastness as plainly as 'formerly' does."
+      "pattern": "formerly|former (AWS )?AppSync|previously|used to|once (held|selected|served|was)|AppSync[- ]era|pre-AppSync|pre-migration|before AppSync|historically|Unlike AWS AppSync|replaced a |This replaced|carried over from",
+      "justification": "Explicitly past tense or contrastive-with-the-past. 'previously' opens the parenthetical at docs/rbac.md:323 that explains why the Reviewer exclusion used to be UI-only; it asserts pastness as plainly as 'formerly' does. Two additions from the threat-modeling corpus (#995). 'former AppSync' as an adjective -- 'the former AppSync VTL resolvers' -- asserts that the thing is no longer that thing, which is the same claim 'formerly' makes in adverb position; it names the service because a bare 'former ' exempted 'The former ALB hostname is replaced by the AppSync GraphQL endpoint', where what is former is the ALB. And 'AppSync era' gains an optional hyphen because system-overview.md writes 'an AppSync-era resolver', the same phrase this marker already covered unhyphenated."
     }
   ],
-
   "allowlist": [
     {
       "path": "docs/migration-appsync-to-rest.md",
@@ -234,6 +244,24 @@
       "linePattern": "APPSYNC_API_URL",
       "bucket": "c",
       "justification": "APPSYNC_API_URL is still set on roughly a dozen Lambdas, always to the empty string, which the consuming code treats as 'fall back to writing DynamoDB directly'. The README documents it as vestigial and tells a reader debugging chat streaming to ignore it, which is more useful than deleting the mention and leaving the variable unexplained to whoever greps for it."
+    },
+    {
+      "path": "security/threat-modeling/README.md",
+      "linePattern": "Corrected controls credited to deleted machinery",
+      "bucket": "b",
+      "justification": "A revision-history row recording what the v3.0 review changed, not a description of the architecture. The row does say the machinery is deleted and that the AppSync API layer was removed, but those statements sit in different SENTENCES of the same table row from the mention that is flagged, and the gate deliberately confines a marker to one sentence -- a removal note elsewhere in a 3,000-character row must not exempt the whole row. So this is an allowlist entry rather than a marker: the reason it reads correctly is the row's purpose, which no phrase pattern can establish."
+    },
+    {
+      "path": "security/threat-modeling/feature-threats/rbac-authentication.md",
+      "linePattern": "AppSync validated every operation's input arguments",
+      "bucket": "b",
+      "justification": "AUTH.T12's Description, explaining what the input-validation gap was a gap RELATIVE TO. Pastness is carried entirely by the verb -- 'validated', then 'The REST dispatcher that replaced it' -- and a marker for a bare past-tense verb would exempt most of the corpus, so this cannot be a marker. The sentence is correct and load-bearing: without it the threat reads as though nothing ever validated these arguments."
+    },
+    {
+      "path": "security/threat-modeling/feature-threats/rbac-authentication.md",
+      "linePattern": "restoring AppSync's input gate for all operations at once",
+      "bucket": "b",
+      "justification": "AUTH.T12's Mitigations, naming what the dispatcher's validator restores. Same shape as the Description above: the possessive plus 'restoring' is what makes it past, and no safe phrase pattern captures that. It is the sentence that tells a reader the control is a replacement for a gate that used to exist rather than a new invention."
     }
   ]
 }

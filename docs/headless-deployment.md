@@ -103,8 +103,12 @@ All core document-processing functionality is retained:
 - ✅ CloudWatch alarms and the `AlertsTopic` SNS topic they publish to —
   ⚠️ but **no subscription**, so alarms notify nobody until you add one. A
   standard deployment subscribes its `AdminEmail`; headless strips that parameter
-  and collects no address, so this is a required post-deploy step. See
-  [Who receives the alerts](./monitoring.md#who-receives-the-alerts).
+  and collects no address, so this is a **required post-deploy step**, not
+  optional hardening. Leaving it undone is indistinguishable from a healthy
+  deployment: the topic accepts every publish successfully. Adding an optional
+  `AlertsEmail` parameter here was considered and deliberately rejected — see
+  [Headless deployments: you set up alert delivery](./monitoring.md#headless-deployments-you-set-up-alert-delivery)
+  for the `aws sns subscribe` commands and the reasoning.
 - ✅ Lambda function logging and tracing
 - ✅ Step Functions execution logging
 

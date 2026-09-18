@@ -66,6 +66,32 @@
 #      PII-anonymizer hook's token tracker.
 #   3. Metering records written before the key changed still carry ":1m" and
 #      must keep resolving to an exact price.
+#
+# -----------------------------------------------------------------------------
+# Before adding or editing an entry: the coverage rules live in a test, not here
+# -----------------------------------------------------------------------------
+# `lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py` enumerates every
+# model id a deployment can select — from template.yaml's parameter enums and the
+# shipped configurations — and requires each to have an exact entry here pricing all
+# four token units. An entry may omit the two cache units only via that module's
+# `_NO_CACHE_UNITS_EXPECTED` allowlist, which records the reason per model AND
+# asserts the condition that makes the reason true: the model must be absent from
+# `bedrock.client.CACHEPOINT_SUPPORTED_MODELS` and not an implicit cacher, so a
+# cache-read token can never be metered for it and there is no rate to miss.
+#
+# Two consequences worth knowing before you edit a row:
+#   * Do NOT copy cache rates from a regional profile onto a bare model id to
+#     "fill a gap". The bare `amazon.nova-*-v1:0` entries are the GovCloud ids
+#     (see template.yaml's model parameter descriptions); their omission of cache
+#     units is a deliberate, asserted decision, not an oversight, and pricing them
+#     from the commercial `us.` profiles would assert a GovCloud rate nobody has
+#     verified.
+#   * A missing unit on an entry that DOES exist resolves to $0.00, not to an
+#     error — see `_get_unit_cost`. That is why the allowlist has to prove the unit
+#     is unreachable rather than merely unpublished: an unpriced-but-reachable unit
+#     understates spend silently. Historically the same gap resolved to the
+#     fresh-input price instead, up to 10x too high, which is what put four
+#     published cost figures out by an unknown factor (issues #926 and #966).
 # =============================================================================
 
 pricing:

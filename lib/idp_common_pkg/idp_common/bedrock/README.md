@@ -173,6 +173,46 @@ response = client.invoke_model(
 )
 ```
 
+### Images are fitted to Bedrock's many-image cap before every call (#994)
+
+Immediately before `converse`, `invoke_model` sweeps the assembled request with
+`idp_common.image.fit_images_in_request`. Bedrock caps each image at 8,000 px per
+side normally, but at **2,000 px** once the request carries more than 20 image
+blocks — counting `document` blocks and images nested in a `toolResult`. That limit
+binds on the request's image **count**, so no per-image guard can see it: every page
+is individually legal and the request fails as a whole with `image exceed max
+allowed size for many-image requests: 2000 pixels`.
+
+This is the only place in the library that sees a complete request, which is why the
+sweep lives here rather than in each stage. It therefore covers classification,
+assessment, summarization, evaluation and few-shot examples as well as extraction
+(which additionally clamps at page-load time, so the reduction is auditable and the
+agentic path — which builds its own requests — is covered).
+
+The sweep is best-effort: an image it cannot resize is sent unchanged with a warning
+rather than failing a request Bedrock might accept, and one aggregate `WARNING` per
+request replaces the per-image line. To avoid the re-encode entirely, set the
+stage's `image.target_width` / `target_height` to 2,000 or less.
+
+Three properties worth knowing about the call site:
+
+- **It does not mutate what the caller passed.** When the content carries no
+  `<<CACHEPOINT>>` tag, `processed_content is content` — the caller's own list — so
+  `_fit_request_images` counts the blocks first and, only when the cap actually
+  binds, works on a `deepcopy` of the request spine (`bytes` is atomic to
+  `deepcopy`, so the image payloads are shared, not duplicated). Without that, a
+  cached few-shot example image or a page-image list reused by a later pass would be
+  permanently downscaled by one oversized request.
+- **It runs once per `invoke_model`, not once per retry.** The sweep sits before
+  `_invoke_with_retry`, and re-running it would be a no-op anyway since the images
+  then fit.
+- **It applies to every model family, not only Claude.** The 2,000 px figure is
+  measured on Claude and is legal on all of them, so clamping cannot cause a
+  rejection that would not otherwise happen; not clamping risks a hard failure on a
+  family that turns out to enforce a similar cap. The cost is some resolution on a
+  >20-image Nova / Grok / Astra request. The `LambdaHook` path returns before the
+  sweep and is unaffected.
+
 ### How CachePoint Works
 
 When the `invoke_model` method processes your content:
