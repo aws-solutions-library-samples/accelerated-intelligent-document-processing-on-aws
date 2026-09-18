@@ -39,7 +39,7 @@ PYTHONPATH=<repo>/lib/idp_common_pkg AWS_PROFILE=default idp-cli run-inference \
 That is the **v0.6** naming. A **v0.5.16** stack (pre-AppSync-removal) names them
 `<stack>-APPSYNCSTAC*`, so the current CLI can't drive it (`TestRunnerFunction
 not found`). For a v0.5.16 baseline, invoke the Lambda directly: find the
-function whose name starts with `<stack>-APPSYNC` and contains
+function whose name starts with the pre-migration `<stack>-APPSYNC` and contains
 `TestRunnerFunction`, call `getTestSets` on the `...TestSetResolverFunction...`
 first (registers the set), then invoke the runner with payload
 `{"arguments":{"input":{"testSetId":<id>,"configVersion":<ver>,"numberOfFiles":N,"context":"..."}}}`.

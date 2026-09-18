@@ -435,13 +435,11 @@ The Document Analytics feature allows users to query their processed documents u
 
 ### Technical Implementation Notes
 
-The analytics feature uses a combination of real-time subscriptions and polling for status updates:
+Analytics job status is delivered by **polling**, not server push:
 
-- **Primary Method**: GraphQL subscriptions via AWS AppSync for immediate notifications when queries complete
-- **Fallback Method**: Polling every 5 seconds to ensure status updates are received even if subscriptions fail
-- **Current Limitation**: The AppSync subscription currently returns a Boolean completion status rather than full job details, requiring a separate query to fetch results when notified
-
-**TODO**: Implement proper AppSync subscriptions that return complete AnalyticsJob objects to eliminate the need for additional queries and improve real-time user experience.
+- **Mechanism**: the analytics panel polls `getAgentJobStatus` through the REST API every 5 seconds while a job is in flight, and stops once the job reaches a terminal state. Polling pauses while the browser tab is hidden (`src/ui/src/hooks/use-polling.ts`), so a backgrounded tab costs nothing.
+- **Latency**: a completed query surfaces within one poll interval rather than instantly. This is the deliberate trade made when AWS AppSync's subscriptions were removed — see [AppSync → REST API Migration](./migration-appsync-to-rest.md) §2 for why polling is acceptable for a document-processing console and where true streaming was kept instead.
+- **Result fetch**: the status poll returns job state; the panel issues a separate query for the result payload once the job completes.
 
 ### How to Use
 
@@ -573,7 +571,7 @@ Your chat history is preserved while you remain on the Document Detail screen; l
 
 ### Streaming & live status
 
-Chat-with-Document runs as an asynchronous workflow so it can use long-latency large-context models without hitting an AppSync synchronous-request timeout. When you submit a prompt:
+Chat-with-Document runs as an asynchronous workflow so it can use long-latency large-context models without hitting the API's synchronous-request timeout. Tokens are delivered by a dedicated **Lambda Function URL** with `InvokeMode=RESPONSE_STREAM` that the browser reads directly, not through the REST API (see [AppSync → REST API Migration](./migration-appsync-to-rest.md) §3). When you submit a prompt:
 
 1. A **status pill** appears above the input area and transitions as the backend makes progress: **Queued → Loading document text → Querying {model} → Streaming response**.
 2. As soon as the model starts producing output, the assistant bubble appears with a blinking cursor and **tokens stream in** live (throttled to ~200 ms / 200-char batches server-side so the UI stays responsive under heavy throttling).
@@ -687,10 +685,14 @@ To run the web UI locally for development:
 VITE_USER_POOL_ID=<value>
 VITE_USER_POOL_CLIENT_ID=<value>
 VITE_IDENTITY_POOL_ID=<value>
-VITE_APPSYNC_GRAPHQL_URL=<value>
+VITE_API_BASE_URL=<value>
+VITE_STREAM_URL=<value>
 VITE_AWS_REGION=<value>
 VITE_SETTINGS_PARAMETER=<value>
 ```
+
+Copy the output verbatim — it carries additional variables (external-IdP
+settings, bucket names, feature flags) beyond the ones shown above.
 
 3. Install dependencies: `npm install`
 4. Start the development server: `npm run start`
@@ -757,26 +759,28 @@ The web UI implementation includes several security features:
 - Session timeouts are enforced
 - CloudFront distribution uses secure configuration (or API Gateway with AWS-managed TLS for VPC-based hosting)
 - S3 buckets are configured with appropriate security policies
-- API access is controlled through IAM and Cognito
-- Web Application Firewall (WAF) protection for AppSync API
+- API access is controlled through Cognito (the REST API's User Pools authorizer) and IAM (the chat streaming Function URL)
+- Optional Web Application Firewall (WAF) protection for the REST API
 
 ### Web Application Firewall (WAF)
 
-The solution includes AWS WAF integration to protect your AppSync API:
+The solution can attach a **REGIONAL WAFv2 WebACL to the REST API stage** that
+carries every UI query and mutation:
 
 - **IP-based access control**: Restrict API access to specific IP ranges
 - **Default behavior**: By default (`0.0.0.0/0`), WAF is disabled and all IPs are allowed
 - **Configuration**: Use the `WAFAllowedIPv4Ranges` parameter to specify allowed IP ranges
   - Example: `"192.168.1.0/24,10.0.0.0/16"` (comma-separated list of CIDR blocks)
-- **Security benefit**: When properly configured, WAF blocks all traffic except from your trusted IP ranges and AWS Lambda service IP ranges
-- **Lambda service access**: The solution automatically maintains a WAF IPSet with current AWS Lambda service IP ranges to ensure Lambda functions can always access the AppSync API even when IP restrictions are enabled
+- **Security benefit**: the WebACL's default action is `Block`, so only your listed IPv4 ranges reach the API at all
 
 When configuring the WAF:
 
 - IP ranges must be in valid CIDR notation (e.g., `192.168.1.0/24`)
 - Multiple ranges should be comma-separated
 - The WAF is only enabled when the parameter is set to something other than the default `0.0.0.0/0`
-- Lambda functions within your account will automatically have access to the AppSync API regardless of IP restrictions
+- The allow-list is exactly what you specify. Nothing is added implicitly — in particular there is **no** automatically maintained IPSet of AWS Lambda service ranges, because backend Lambdas write DynamoDB directly and never call the UI API. If you restrict ranges, make sure the ranges your browsers egress from are included, or the UI will not load data.
+- The WebACL is REGIONAL and lives in the stack's own Region. Unlike CloudFront, API Gateway does not require a us-east-1 WebACL.
+- WAF protects the data API, not the static-asset origin. For access control on the UI itself, use CloudFront geo-restrictions or the private API Gateway hosting option (see [API Gateway Hosting](./apigateway-hosting.md)).
 
 ## Monitoring and Troubleshooting
 

@@ -86,7 +86,7 @@ The Code Intelligence Agent runs within the Agent Companion Chat's Lambda-based 
 3. **Codebase Initialization**: System extracts and prepares codebase files in the Lambda environment
 4. **Context Loading**: Agent loads codebase overview and determines relevant files for analysis
 5. **Intelligent Analysis**: Agent processes the query using specialized tools and codebase understanding
-6. **Streaming Response**: Results stream back in real-time through the Agent Companion Chat's AppSync subscription infrastructure
+6. **Streaming Response**: Results stream back in real time over the Agent Companion Chat's streaming Lambda Function URL, which the browser reads directly (see [agent-companion-chat.md](./agent-companion-chat.md#real-time-streaming))
 7. **Conversation Continuity**: The response is stored in shared conversation memory for follow-up questions
 
 ### Code Intelligence Workflow
@@ -261,7 +261,7 @@ The Code Intelligence Agent shares infrastructure with the Agent Companion Chat:
 
 - **DynamoDB Tables**: `ChatMessagesTable` (message storage) and `ChatMemoryTable` (conversation history)
 - **Lambda Functions**: `agent_chat_resolver` (entry point) and `agent_chat_processor` (agent execution)
-- **AppSync Resolvers**: Shared GraphQL API endpoints for real-time streaming
+- **Shared transport**: the same REST API operations for sending messages, and the same streaming Lambda Function URL for receiving tokens
 - **IAM Roles**: Minimal permissions for secure operation
 
 ### Code Intelligence-Specific Settings

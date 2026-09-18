@@ -957,7 +957,11 @@ Check Lambda execution role has these permissions.
 
 ### Integration Points
 
-#### AppSync GraphQL API
+#### Web UI API operations
+
+These are the GraphQL-shaped operations the UI sends to `POST /op/{field}`; the
+names and argument shapes come from the retained schema contract in
+`nested/api-resolvers/src/api/schema.graphql`.
 
 **Mutations**:
 ```graphql

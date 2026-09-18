@@ -389,8 +389,8 @@ viewer, and — in a future phase — assessment grounding) a single,
 **backend-agnostic** view of text **+ confidence + geometry**, the OCR service
 also writes `pageData.json` per page.
 
-The `Page` model carries its URI as `ocr_page_data_uri`; AppSync/DynamoDB expose
-it as `OcrPageDataUri`. The artifact is **additive** — existing files and the
+The `Page` model carries its URI as `ocr_page_data_uri`; the TrackingTable item
+and the UI's `Page` type expose it as `OcrPageDataUri`. The artifact is **additive** — existing files and the
 `{OCR_TEXT_CONFIDENCE}` assessment prompt are unchanged, so there is **zero
 token-budget impact** and documents processed before this change simply have no
 `pageData.json` (consumers degrade gracefully).

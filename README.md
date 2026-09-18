@@ -178,7 +178,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [Architecture](./docs/architecture.md) - Detailed component architecture and data flow
 - [Demo Videos](./docs/demo-videos.md) - Comprehensive collection of feature demonstration videos
 - [Deployment](./docs/deployment.md) - Build, publish, deploy, and test instructions
-- [Headless Deployment](./docs/headless-deployment.md) - Backend-only deployment (no UI/AppSync/Cognito/WAF) for API-only use cases
+- [Headless Deployment](./docs/headless-deployment.md) - Backend-only deployment (no Web UI, no UI REST API, no Cognito, no WAF) for API-only use cases
 - [GovCloud Deployment](./docs/govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)
 - [IDP CLI](./docs/idp-cli.md) - Command line interface for batch processing, evaluation workflows, and interactive Agent Chat
 - [Web UI](./docs/web-ui.md) - Web interface features and usage
