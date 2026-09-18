@@ -41,6 +41,7 @@ import pytest
 from check_retired_services import (  # noqa: E402
     find_violations,
     load_registry,
+    main,
     marker_matchers,
     reads_as_historical,
     scanned_files,
@@ -128,6 +129,93 @@ def test_no_template_declares_a_retired_resource_type(registry: dict) -> None:
 
 
 @pytest.mark.unit
+def test_naming_a_retired_resource_type_in_a_comment_is_not_a_reintroduction(
+    registry: dict, tmp_path: pathlib.Path
+) -> None:
+    """The reintroduction check must read declarations, not occurrences.
+
+    It used to substring-search the whole template, so a comment explaining why
+    the legacy ``appsync:*`` grant is retained counted as evidence that AppSync had
+    come back -- and the only reason the repository was not already red was that
+    the surviving comment happens to write the wildcard form ``AWS::AppSync::*``.
+    A reader who tidied that comment into a concrete type would have failed the
+    build with a message pointing at the wrong file.
+    """
+    (tmp_path / "t.yaml").write_text(
+        "AWSTemplateFormatVersion: '2010-09-09'\n"
+        "# Retained so an in-place upgrade can delete the\n"
+        "# AWS::AppSync::GraphQLApi a pre-0.6.0 stack created.\n"
+        "Resources:\n"
+        "  Bucket:\n"
+        "    Type: AWS::S3::Bucket\n",
+        encoding="utf-8",
+    )
+    assert not unexpected_resources(registry, tmp_path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        pytest.param("    Type: AWS::AppSync::GraphQLApi\n", id="yaml"),
+        pytest.param('      "Type": "AWS::AppSync::GraphQLApi",\n', id="json-block"),
+    ],
+)
+def test_a_real_declaration_is_still_reported(
+    registry: dict, tmp_path: pathlib.Path, declaration: str
+) -> None:
+    """The other direction: anchoring on ``Type:`` must not blind the check.
+
+    Tightening a check is only safe if the thing it was built to catch is still
+    caught, in every syntax the repository actually uses. Both YAML block form and
+    the JSON spelling of the same declaration must be reported.
+    """
+    (tmp_path / "t.yaml").write_text(
+        "AWSTemplateFormatVersion: '2010-09-09'\nResources:\n  Api:\n" + declaration,
+        encoding="utf-8",
+    )
+    hits = unexpected_resources(registry, tmp_path)
+    assert hits == ["t.yaml: declares AWS::AppSync::GraphQLApi (AWS AppSync)"], hits
+
+
+@pytest.mark.unit
+def test_a_reintroduced_resource_does_not_suppress_the_prose_scan(
+    registry: dict, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One false positive here used to hide every documentation finding.
+
+    ``main`` reported reintroduced resources and returned immediately, so while the
+    comment-matching defect above was live, the entire prose scan was unreachable
+    and the gate's real output was one misleading paragraph. Both scans now run and
+    the exit code reflects either.
+    """
+    scoped = copy.deepcopy(registry)
+    scoped["scannedPaths"] = ["docs/*.md"]
+    scoped["excludedPaths"] = []
+    scoped["allowlist"] = []
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "probe.md").write_text(
+        "3. **API Layer**: AppSync GraphQL API connects the UI to backend services\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "t.yaml").write_text(
+        "AWSTemplateFormatVersion: '2010-09-09'\n"
+        "Resources:\n  Api:\n    Type: AWS::AppSync::GraphQLApi\n",
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "retired_services.json"
+    registry_path.write_text(json.dumps(scoped), encoding="utf-8")
+
+    exit_code = main(["--registry", str(registry_path), "--root", str(tmp_path)])
+    err = capsys.readouterr().err
+
+    assert exit_code == 1
+    assert "AWS::AppSync::GraphQLApi" in err, err
+    assert "docs/probe.md:1" in err, err
+
+
+@pytest.mark.unit
 def test_retired_parameters_are_declared_by_no_template(registry: dict) -> None:
     """``AppSyncVisibility``/``UsePrivateAppSync`` were renamed, not kept.
 
@@ -161,51 +249,230 @@ def test_retired_parameters_are_declared_by_no_template(registry: dict) -> None:
     assert not offenders, sorted(offenders)
 
 
+#: A real historical sentence, written as a bullet because that is the shape it
+#: takes in the architecture lists where this mattered most. Judged on its own it
+#: is correctly exempt; the point of the neighbour cases below is that it must not
+#: lend that exemption to the line above or the line below it.
+HISTORICAL_NEIGHBOUR = "- AWS AppSync has since been removed from the solution."
+
+
+def _scoped_to_one_file(registry: dict, rel: str) -> dict:
+    """A copy of the registry that scans exactly ``rel`` and allowlists nothing."""
+    scoped = copy.deepcopy(registry)
+    scoped["scannedPaths"] = [rel]
+    scoped["excludedPaths"] = []
+    scoped["allowlist"] = []
+    return scoped
+
+
+def _findings_for(scoped: dict, root: pathlib.Path, rel: str, body: str) -> list:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    findings, _ = find_violations(scoped, root)
+    return findings
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("line", STALE_LINES_AT_HEAD)
-def test_markers_do_not_exempt_a_real_stale_claim(registry: dict, line: str) -> None:
-    """Pin ``historicalMarkers`` against over-broadening.
+def test_markers_do_not_exempt_a_real_stale_claim(
+    registry: dict, tmp_path: pathlib.Path, line: str
+) -> None:
+    """Pin ``historicalMarkers`` against over-broadening, in all three directions.
 
     The markers exist so correct historical prose does not need an allowlist entry
     per sentence. The risk they carry is the mirror image: a marker broad enough to
     match ordinary architecture prose would exempt genuinely stale lines and gut
-    the gate without changing a single line of Python. Each fixture here is a real
-    pre-fix line, judged in isolation and with a neighbour either side.
+    the gate without changing a single line of Python.
+
+    The earlier version of this test judged each fixture as a one-line document,
+    which could not see the defect that actually existed. The gate used to exempt a
+    line when a marker appeared anywhere within one line of it, symmetrically and
+    unconditionally, so every genuine historical sentence in the corpus silently
+    exempted its two neighbours -- and consecutive bullets, one historical and one
+    stale, is exactly how these documents are written. A one-element fixture list
+    can never exercise a neighbour rule. Each fixture is therefore checked three
+    ways: alone, with a real historical bullet immediately above it, and with the
+    same bullet immediately below it. The claim must be reported in all three.
+
+    This drives ``find_violations`` rather than ``reads_as_historical`` so that the
+    rule under test is the one the gate actually applies.
     """
-    assert not reads_as_historical([line], 0, registry), (
-        f"a historicalMarkers pattern matches a genuinely stale line: {line!r}. "
-        f"Narrow the marker -- it must assert absence, pastness or vestigiality, "
-        f"not merely co-occur with correct text."
+    scoped = _scoped_to_one_file(registry, "docs/probe.md")
+
+    cases = (
+        ("alone", [line], 1),
+        ("marker on the line above", [HISTORICAL_NEIGHBOUR, line], 2),
+        ("marker on the line below", [line, HISTORICAL_NEIGHBOUR], 1),
     )
+    for label, body, expected in cases:
+        findings = _findings_for(
+            scoped, tmp_path, "docs/probe.md", "\n".join(body) + "\n"
+        )
+        assert [f.lineno for f in findings] == [expected], (
+            f"with the {label}, the stale claim {line!r} was not reported "
+            f"(findings: {[f.render() for f in findings]}). Either a "
+            f"historicalMarkers pattern is broad enough to match ordinary "
+            f"architecture prose, or the marker's reach has been widened beyond "
+            f"the sentence it appears in."
+        )
+
+
+@pytest.mark.unit
+def test_a_marker_elsewhere_on_the_same_line_does_not_exempt(
+    registry: dict, tmp_path: pathlib.Path
+) -> None:
+    """One line can hold two sentences, and only one of them may be historical.
+
+    A table row or a dense bullet often states the history and then makes a
+    separate present-tense claim. Exempting the whole line because a marker
+    appeared somewhere on it would let the second claim ride along behind the
+    first, so the marker governs its own sentence only.
+    """
+    scoped = _scoped_to_one_file(registry, "docs/probe.md")
+    findings = _findings_for(
+        scoped,
+        tmp_path,
+        "docs/probe.md",
+        "The AppSync data source has since been removed. AppSync GraphQL still\n"
+        "serves the UI.\n",
+    )
+    assert [f.lineno for f in findings] == [1], [f.render() for f in findings]
+
+
+#: Sentences that read as historical and must stay clean. The first is the shape
+#: PR #960 adds to ``docs/threat-model.md``: an AppSync mention whose retirement
+#: verb sits on the same wrapped line, in a sentence that begins two lines
+#: earlier. The second is the same sentence with 'replaced' instead of 'removed',
+#: which is how that sentence was phrased at one point in #960's review; the
+#: markers cover both verbs so the merged tree passes either way. The third
+#: carries Markdown emphasis on the verb, as docs/deployment-private-network.md
+#: does.
+HISTORICAL_SENTENCES = [
+    "Two or more is how this model reached roughly six releases behind the\n"
+    "architecture it described, including a period when it still documented an\n"
+    "AWS AppSync GraphQL API that had been removed several releases earlier in\n"
+    "favour of API Gateway.\n",
+    "Two or more is how this model reached roughly six releases behind the\n"
+    "architecture it described, including a period when it still documented an\n"
+    "AWS AppSync GraphQL API that had been replaced several releases earlier by\n"
+    "API Gateway.\n",
+    "The AppSync resources were **removed** in v0.6 and nothing recreates them.\n",
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("body", HISTORICAL_SENTENCES)
+def test_a_historical_sentence_survives_the_line_wrap(
+    registry: dict, tmp_path: pathlib.Path, body: str
+) -> None:
+    """The complement of the marker tests: tightening must not red-line the truth.
+
+    Prose here wraps at roughly 80 columns, so the mention and the verb that makes
+    it historical frequently land on different physical lines of the same
+    sentence. Sixteen correct sentences in the current corpus are written that
+    way. A rule that judged each physical line alone would report all sixteen and
+    push accurate documentation into the allowlist, which is why the gate
+    reconstructs the sentence across a Markdown block before deciding.
+    """
+    scoped = _scoped_to_one_file(registry, "docs/probe.md")
+    findings = _findings_for(scoped, tmp_path, "docs/probe.md", body)
+    assert not findings, [f.render() for f in findings]
+
+
+def _first_matching_line(path: pathlib.Path, line_pattern: str) -> str | None:
+    matcher = re.compile(line_pattern, re.IGNORECASE)
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if matcher.search(line):
+            return line
+    return None
+
+
+@pytest.mark.unit
+def test_only_declared_entries_are_whole_file(registry: dict) -> None:
+    """A whole-file amnesty must say so, and must be the exception.
+
+    ``docs/migration-appsync-to-rest.md`` is the historical record of the
+    migration, so every line in it is legitimately about AppSync and its entry
+    covers the file with ``linePattern: ".*"``. That is the only such entry, and it
+    carries ``wholeFile: true`` so the intent is machine-readable rather than
+    inferred from a suspiciously permissive regex. Any other entry that reached
+    for a file-wide pattern would be exempting lines nobody reviewed.
+    """
+    declared = [e["path"] for e in registry["allowlist"] if e.get("wholeFile")]
+    assert declared == ["docs/migration-appsync-to-rest.md"], declared
+
+    for entry in registry["allowlist"]:
+        if entry.get("wholeFile"):
+            continue
+        pattern = entry["linePattern"]
+        assert pattern not in {".*", ".+", ""}, (entry["path"], pattern)
+        # A bare service name matches every line the gate could ever flag in the
+        # file, present tense or not. docs/well-architected.md was written that
+        # way and PR #951 would have silently transferred the exemption to three
+        # new lines. Require something more literal than the service's name.
+        for service in registry["retiredServices"]:
+            assert pattern.strip().lower() != service["name"].split()[-1].lower(), (
+                entry["path"],
+                pattern,
+            )
 
 
 @pytest.mark.unit
 def test_a_stale_claim_in_an_allowlisted_file_is_still_caught(
     registry: dict, tmp_path: pathlib.Path
 ) -> None:
-    """Allowlisting is per line pattern, not per file (except where stated).
+    """Allowlisting is per line pattern, not per file (except where declared).
 
-    ``docs/architecture.md`` is allowlisted for exactly one line -- the note that
-    ``APIRESOLVERSTACK`` was once ``nested/appsync/``. A newly added claim
-    elsewhere in the same file must still fail, or the exemption would have quietly
-    covered the whole document. Only two entries in the registry are deliberately
-    whole-file, and both say so in their justification.
+    Driven from the registry rather than from one named file, so a newly added
+    entry is covered the day it is added. For every entry that is not declared
+    whole-file, this reconstructs a document containing the real line that entry
+    exempts -- read out of the actual file, so the pattern is checked against text
+    that exists -- plus a stale claim elsewhere in the same file. The exempted line
+    must be credited as used and the stale claim must still be reported. Without
+    this, narrowing an entry's pattern and widening it back to the whole file would
+    look identical from the gate's output.
     """
-    scoped = copy.deepcopy(registry)
-    scoped["scannedPaths"] = ["docs/*.md"]
-    scoped["excludedPaths"] = []
+    root = _repo_root()
+    checked = 0
 
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "architecture.md").write_text(
-        "`APIRESOLVERSTACK` was historically named `nested/appsync/`.\n"
-        "Documents are queued through SQS before the state machine starts.\n"
-        "3. **API Layer**: AppSync GraphQL API connects the UI to backend services\n",
-        encoding="utf-8",
-    )
+    for entry in registry["allowlist"]:
+        if entry.get("wholeFile"):
+            continue
+        rel = entry["path"]
+        real = _first_matching_line(root / rel, entry["linePattern"])
+        assert real is not None, (
+            f"allowlist entry {rel} / {entry['linePattern']!r} matches no line in "
+            f"the file it exempts; either the text moved or the pattern is wrong"
+        )
 
-    findings, used = find_violations(scoped, tmp_path)
-    assert [f.lineno for f in findings] == [3], [f.render() for f in findings]
-    assert used, "the narrow entry should have been credited as used"
+        scoped = copy.deepcopy(registry)
+        scoped["scannedPaths"] = [rel]
+        scoped["excludedPaths"] = []
+        scoped["allowlist"] = [entry]
+
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f"{real}\n"
+            "\n"
+            "Documents are queued through SQS before the state machine starts.\n"
+            "\n"
+            "3. **API Layer**: AppSync GraphQL API connects the UI to backend "
+            "services\n",
+            encoding="utf-8",
+        )
+
+        findings, used = find_violations(scoped, tmp_path)
+        assert [f.lineno for f in findings] == [5], (
+            rel,
+            entry["linePattern"],
+            [f.render() for f in findings],
+        )
+        assert used == {0}, (rel, entry["linePattern"], used)
+        checked += 1
+
+    assert checked >= 8, f"only {checked} narrow allowlist entries were exercised"
 
 
 @pytest.mark.unit
@@ -258,6 +525,22 @@ def test_correct_historical_prose_is_not_reported(
             lambda d: d["excludedPaths"][0].pop("justification"),
             id="unjustified-exclusion",
         ),
+        pytest.param(
+            lambda d: d["allowlist"][0].update(justification="   \n\t "),
+            id="whitespace-only-justification",
+        ),
+        pytest.param(
+            lambda d: d["historicalMarkers"][0].update(justification=" "),
+            id="whitespace-only-marker-justification",
+        ),
+        pytest.param(
+            lambda d: d["excludedPaths"][0].update(justification="\t"),
+            id="whitespace-only-exclusion-justification",
+        ),
+        pytest.param(
+            lambda d: d["allowlist"][0].update(expires="when #937 merges"),
+            id="legacy-unenforced-expires",
+        ),
     ],
 )
 def test_registry_refuses_a_structure_that_would_neuter_the_gate(
@@ -291,3 +574,75 @@ def test_every_marker_is_justified_and_narrow(registry: dict) -> None:
     for marker, matcher in matchers:
         assert marker["justification"].strip()
         assert matcher.pattern
+
+
+@pytest.mark.unit
+def test_a_marker_governs_its_own_sentence_only(registry: dict) -> None:
+    """Directly pin the helper the gate calls, at the column level.
+
+    ``find_violations`` passes each mention's column into
+    ``reads_as_historical``, so the same physical line can be historical at one
+    column and stale at another. Asserting that here, rather than only through the
+    gate, means a regression in the sentence scoping is reported as a scoping
+    failure instead of as a mysterious change in the repo-wide count.
+    """
+    lines = [
+        "The AppSync data source has since been removed. AppSync GraphQL still",
+        "serves the UI.",
+    ]
+    historical = lines[0].index("AppSync")
+    stale = lines[0].index("AppSync", historical + 1)
+
+    assert reads_as_historical(lines, 0, registry, historical)
+    assert not reads_as_historical(lines, 0, registry, stale)
+
+
+@pytest.mark.unit
+def test_an_expiring_allowlist_entry_is_enforced_offline(
+    registry: dict, tmp_path: pathlib.Path
+) -> None:
+    """``expiresAfterVersion`` must be read, not decorated.
+
+    The field started life as ``expires: "when #937 merges"`` -- a free-text
+    condition nothing evaluated, so the exemption would have outlived its reason
+    unless a human happened to reread the registry. Enforcement is deliberately
+    offline: the gate never calls the GitHub API, it compares the deadline against
+    the repository's ``VERSION`` file, so it behaves identically on a developer
+    laptop, in both CI systems and in an air-gapped clone.
+    """
+    entry = next(
+        e for e in registry["allowlist"] if e.get("expiresAfterVersion") is not None
+    )
+    assert entry["bucket"] == "a", (
+        "only a bucket (a) entry -- a known-wrong claim parked because another "
+        "change owns the fix -- should carry an expiry"
+    )
+
+    path = tmp_path / "retired_services.json"
+    path.write_text(json.dumps(registry), encoding="utf-8")
+
+    deadline = entry["expiresAfterVersion"]
+    load_registry(path, version=deadline)
+    load_registry(path, version=f"{deadline}.dev7")
+
+    major, minor, patch = (int(part) for part in deadline.split("."))
+    with pytest.raises(ValueError, match="expired after version"):
+        load_registry(path, version=f"{major}.{minor}.{patch + 1}.dev1")
+
+
+@pytest.mark.unit
+def test_every_bucket_a_entry_carries_an_expiry(registry: dict) -> None:
+    """Bucket (a) is a parking space, and a parking space needs a meter.
+
+    Buckets (b) and (c) -- historical prose and vestigial identifiers -- are
+    permanent by nature and correctly have no deadline. Bucket (a) means the claim
+    is genuinely wrong and is only tolerated because another change owns the fix,
+    so it must expire on a stated release or it becomes the thing this gate exists
+    to prevent.
+    """
+    undated = [
+        e["path"]
+        for e in registry["allowlist"]
+        if e["bucket"] == "a" and not e.get("expiresAfterVersion")
+    ]
+    assert not undated, undated

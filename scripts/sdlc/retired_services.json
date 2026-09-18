@@ -20,7 +20,23 @@
   "retiredServices": [
     {
       "name": "AWS AppSync",
-      "pattern": "appsync",
+      "pattern": "appsync|(?:via|using|through|over|by) (?:a |an )?GraphQL subscriptions?|\\|\\s*GraphQL Subscription\\s*\\||\\[GraphQL Subscription|//\\s*GraphQL subscription",
+      "$patternComment": [
+        "The bare service name catches most of it, but the most misleading claims",
+        "never say 'AppSync' at all: they say updates arrive 'via GraphQL",
+        "subscriptions'. That mechanism does not exist. src/ui/src/api/rest-client.ts",
+        "returns an inertSubscription for every subscription operation -- it logs a",
+        "warning and delivers nothing -- and the real mechanism is polling.",
+        "",
+        "The subscription alternatives are deliberately anchored to the",
+        "MECHANISM-CLAIM forms ('via/using/through/over/by a GraphQL subscription',",
+        "the two Mermaid edge-label shapes, and a '// GraphQL subscription' trailing",
+        "comment labelling a config field) rather than to the bare words",
+        "'GraphQL subscription'. The subscription OPERATIONS survive as a typed",
+        "contract: schema.graphql still declares them, the codegen still emits them,",
+        "and the docs still show `subscription OnDiscoveryJobStatusChange(...)` in",
+        "fenced examples. Matching those would be wrong, so this pattern does not."
+      ],
       "removedIn": "0.6.0",
       "reason": "AppSync is not available in AWS GovCloud and is not FedRAMP-authorized, which blocked the two deployment targets this solution most needs to support.",
       "replacement": "An API Gateway REST API (logical id HttpApi in nested/api-resolvers/template.yaml) with a single POST /op/{field} route, a COGNITO_USER_POOLS authorizer, and an AWS_PROXY integration to the HttpApiDispatcherFunction dispatcher Lambda. Subscriptions became polling (src/ui/src/hooks/use-polling.ts); chat streaming became a Lambda Function URL with InvokeMode=RESPONSE_STREAM.",
@@ -28,6 +44,28 @@
       "retiredParameters": [
         "AppSyncVisibility",
         "UsePrivateAppSync"
+      ],
+      "$absentResourceTypesComment": [
+        "Resource types no template may declare. check_retired_services.py matches",
+        "an actual 'Type:' declaration, not a mention, so naming one in a comment is",
+        "fine -- see _declaration_matcher.",
+        "",
+        "The first four are a MEASUREMENT. At a9e318c53 (the parent of removal commit",
+        "0b61040c0) these four accounted for all 160 AWS::AppSync::* mentions in the",
+        "repo's YAML: Resolver 101, DataSource 57, GraphQLSchema 1, GraphQLApi 1,",
+        "spread over nested/appsync/template.yaml (106), template.yaml (24),",
+        "feature-platform/main-stack-extensions/template.yaml (21) and the non-template",
+        "nested/appsync/extracted_resources.yaml (9). Reproduce with:",
+        "  git grep -o -E 'AWS::AppSync::[A-Za-z]+' a9e318c53 -- '*.yaml' '*.yml'",
+        "",
+        "The last two are GUARDS, not a measurement, and are listed separately so",
+        "nobody reads them as one. AWS::AppSync::FunctionConfiguration has never",
+        "appeared in this repository at all (git log --all -S finds no commit).",
+        "AWS::AppSync::ApiKey did: commit 68e1153bb declared one at",
+        "products/idp-monitor/monitoring-template.yaml:152, in a products/ tree that",
+        "no longer exists. Both are kept because a future AppSync reintroduction is",
+        "as likely to start from an API key or a pipeline resolver as from the four",
+        "types that happened to be in use on the day it was removed."
       ],
       "absentResourceTypes": [
         "AWS::AppSync::GraphQLApi",
@@ -62,7 +100,7 @@
     },
     {
       "glob": "security/threat-modeling/**",
-      "justification": "Point-in-time security review artifacts, each pinned to the release version it assessed. Editing them would falsify the record of what was reviewed."
+      "justification": "Point-in-time security review artifacts, each pinned to the release version it assessed. Editing them would falsify the record of what was reviewed. REVISIT ONCE PR #960 LANDS: that change makes the threat model a living document with its own currency gate (make check-threat-model-currency, which fails the build when the recorded 'Last reviewed against version' falls more than one release behind VERSION). A living document should not be exempt from this gate, so once #960 is merged this exclusion should be narrowed to the dated per-release snapshots or removed outright, with the corpus triaged into the allowlist the same way every other document was."
     },
     {
       "glob": "docs/benchmarking/releases/**",
@@ -103,20 +141,20 @@
       "justification": "A cross-reference to the document that records the retirement. The service name appears only inside that document's filename, so the line is pointing at the history, not claiming the service is present."
     },
     {
-      "pattern": "(has|had|have) (since |already )?been removed|(was|were) removed|removing AppSync|after AppSync was removed|since AppSync was removed",
-      "justification": "States the removal outright."
+      "pattern": "(has|had|have) (since |already )?been \\*{0,2}(removed|replaced|superseded|retired)|(was|were) \\*{0,2}(removed|replaced|superseded|retired)\\b|removing AppSync|after AppSync was removed|since AppSync was removed",
+      "justification": "States the removal outright, in any of the four verbs this corpus uses for it. Two shapes are covered deliberately. The optional '**' tolerates Markdown emphasis on the verb: docs/deployment-private-network.md:799 writes 'were **removed** in v0.6', and a marker requiring the bare word would report that correct sentence as stale. And 'replaced'/'superseded'/'retired' are covered because a removal is as often written 'a GraphQL API that had been replaced' as 'removed' -- docs/threat-model.md:104, added by PR #960, is exactly that sentence, and a vocabulary limited to 'removed' would red-line develop as soon as both branches landed. All four are past participles of disappearance, so each asserts pastness on its face."
     },
     {
-      "pattern": "no longer|nothing (evaluates|serves)|does not exist|zero `?AWS::AppSync|no AppSync resources exist|\\*\\*no AppSync\\*\\*",
-      "justification": "Asserts absence directly."
+      "pattern": "no longer|nothing (evaluates|serves)|does not exist|zero `?AWS::AppSync|no AppSync resources exist|\\*\\*no AppSync\\*\\*|no current template (creates|declares)",
+      "justification": "Asserts absence directly. 'no current template creates|declares' is the phrasing iam-roles/cloudformation-management/README.md uses in its Actions-Granted table to say the retained grant has nothing left to act on."
     },
     {
       "pattern": "vestigial|kept only|retained for (upgrades|backward)|Legacy, retained|backward compatibility|back-compat",
       "justification": "Marks a surviving name or grant as compatibility-only, which is bucket (c) by definition."
     },
     {
-      "pattern": "formerly|used to|once (held|selected|served|was)|AppSync era|pre-AppSync|pre-migration|before AppSync|historically|Unlike AWS AppSync|replaced a |This replaced|carried over from",
-      "justification": "Explicitly past tense or contrastive-with-the-past."
+      "pattern": "formerly|previously|used to|once (held|selected|served|was)|AppSync era|pre-AppSync|pre-migration|before AppSync|historically|Unlike AWS AppSync|replaced a |This replaced|carried over from",
+      "justification": "Explicitly past tense or contrastive-with-the-past. 'previously' opens the parenthetical at docs/rbac.md:323 that explains why the Reviewer exclusion used to be UI-only; it asserts pastness as plainly as 'formerly' does."
     }
   ],
 
@@ -124,6 +162,7 @@
     {
       "path": "docs/migration-appsync-to-rest.md",
       "linePattern": ".*",
+      "wholeFile": true,
       "bucket": "b",
       "justification": "This file IS the historical record of the migration. Its entire purpose is to describe what the architecture used to be and what replaced it, so every mention is correct. It is the document the rest of the allowlist points readers at."
     },
@@ -147,11 +186,11 @@
     },
     {
       "path": "docs/well-architected.md",
-      "linePattern": "appsync",
+      "linePattern": "Web Application Firewall protection for the AppSync GraphQL API|across all Lambda functions, AppSync APIs, and other components",
       "bucket": "a",
-      "justification": "KNOWN STALE, owned by a different change. GitHub issue #937 covers the stale AppSync/WAF claim in this file and is fixing it separately; editing it here would collide. This is the one allowlist entry that is NOT a legitimate historical or vestigial mention -- remove it once #937 lands.",
+      "justification": "KNOWN STALE, owned by a different change. GitHub issue #937 covers the stale AppSync/WAF claim in this file and is fixing it separately; editing it here would collide. This is the one allowlist entry that is NOT a legitimate historical or vestigial mention -- remove it once #937 lands. The pattern is pinned to the two literal stale sentences (docs/well-architected.md:43 and :49) rather than the bare word 'appsync' so that it CANNOT outlive them: PR #951 deletes both lines and adds three new ones at :183-:185 that also contain 'AppSync', and under the old bare pattern this exemption would have silently transferred to those three unreviewed lines with the gate's output byte-identical. Pinned, it goes dead the moment the two sentences go, and stale_allowlist_entries then fails the gate until somebody deletes it.",
       "issue": "https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/937",
-      "expires": "when #937 merges"
+      "expiresAfterVersion": "0.6.9"
     },
     {
       "path": "CLAUDE.md",

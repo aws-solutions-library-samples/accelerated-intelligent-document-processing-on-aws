@@ -132,7 +132,8 @@ This analysis produces structured configuration templates that can be used to co
 
 **Discovery Panel UI (`src/ui/src/components/discovery/DiscoveryPanel.jsx`):**
 - Unified web interface for all discovery operations
-- Real-time job status tracking via GraphQL subscriptions
+- Job status tracking by polling `getDiscoveryJob` every 10 seconds while a job is
+  active (`DiscoveryJobDetails.tsx`); GraphQL subscriptions are not used
 - PDF page thumbnail rendering with color-coded range highlighting
 - Configuration export and integration
 
@@ -800,7 +801,7 @@ discovery:
 > Discovery clears its `policy_classes` list.
 
 **Monitoring Progress:**
-- Real-time progress messages via GraphQL subscriptions (e.g., "Analyzing document structure with AI...", "Saving to configuration...")
+- Progress messages refreshed by 10-second polling (e.g., "Analyzing document structure with AI...", "Saving to configuration..."); GraphQL subscriptions are not used
 - Live elapsed time counter for active jobs
 - Discovered document class name shown as a green badge on success (e.g., `W4-Form`)
 - Failure root cause displayed in expandable error details with user-friendly messages

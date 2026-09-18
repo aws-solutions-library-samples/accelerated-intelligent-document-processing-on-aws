@@ -300,7 +300,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 6. Monitor progress in the Discovery Jobs table below
 
 **Monitoring Progress:**
-- Real-time status messages via GraphQL subscriptions (e.g., `Analyzing policy document...`, `Extracted N rules - appended to policy_classes...`)
+- Status messages refreshed by 10-second polling (e.g., `Analyzing policy document...`, `Extracted N rules - appended to policy_classes...`); GraphQL subscriptions are not used
 - Jobs with `jobType === 'rules'` display a **"Policy Discovery Job"** breadcrumb when opened
 
 **Reviewing Results:**

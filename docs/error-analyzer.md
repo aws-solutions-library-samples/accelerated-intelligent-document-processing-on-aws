@@ -58,7 +58,7 @@ flowchart TD
     
     DocAnalysis --> Result[Analysis Result]
     SysAnalysis --> Result
-    Result -->|GraphQL Subscription| UI
+    Result -->|polled every 2s via getAgentJobStatus| UI
 ```
 
 ### Tool Ecosystem
@@ -635,7 +635,9 @@ stateDiagram-v2
 2. **Parent Tracking**: Component stores job state in parent
 3. **Modal Close**: Job continues running in background
 4. **Modal Reopen**: Automatically resumes displaying existing job
-5. **Status Updates**: Real-time updates via GraphQL subscription
+5. **Status Updates**: `TroubleshootModal.tsx` polls `getAgentJobStatus` every 2
+   seconds until the job reaches a terminal state; GraphQL subscriptions are not
+   used (`subscribeToJobCompletion` is a retained no-op that returns `null`)
 
 **User Experience**:
 - Users can close modal without losing analysis

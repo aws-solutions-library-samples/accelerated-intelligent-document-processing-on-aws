@@ -81,16 +81,16 @@ The UI-facing API itself lives in the `nested/api-resolvers/` nested stack, desc
 ### Nested Stacks
 
 The main template stays under CloudFormation's per-template resource limit by
-delegating whole subsystems to nested stacks. Each is conditional, so a
-deployment only pays for what it enables:
+delegating whole subsystems to nested stacks. Two of the five are conditional and
+the other three are created by every deployment:
 
-| Logical id | Source | Contents |
-|---|---|---|
-| `PATTERNSTACK` | `patterns/unified/` | The Step Functions state machine and every processing Lambda for both the BDA and pipeline modes, plus the pattern CloudWatch dashboard |
-| `APIRESOLVERSTACK` | `nested/api-resolvers/` | The API Gateway REST API and dispatcher Lambda the Web UI calls, and the resolver Lambdas behind it |
-| `DOCUMENTKB` | `nested/bedrockkb/` | The optional Bedrock Knowledge Base and its ingestion resources |
-| `MULTIDOCDISCOVERYSTACK` | `nested/multi-doc-discovery/` | The optional discovery workflow that infers blueprints from sample documents |
-| `FeaturePlatformStack` | `feature-platform/main-stack-extensions/` | The `InstalledFeatures` table and the registration/hook resolver Lambdas that third-party features call at install time |
+| Logical id | Source | Created | Contents |
+|---|---|---|---|
+| `PATTERNSTACK` | `patterns/unified/` | Always | The Step Functions state machine and every processing Lambda for both the BDA and pipeline modes, plus the pattern CloudWatch dashboard |
+| `APIRESOLVERSTACK` | `nested/api-resolvers/` | Always | The API Gateway REST API and dispatcher Lambda the Web UI calls, and the resolver Lambdas behind it |
+| `MULTIDOCDISCOVERYSTACK` | `nested/multi-doc-discovery/` | Always | The discovery workflow that infers blueprints from sample documents. The resources exist in every deployment and sit idle until someone starts a discovery job |
+| `DOCUMENTKB` | `nested/bedrockkb/` | `Condition: ShouldCreateDocumentKnowledgeBase` | The optional Bedrock Knowledge Base and its ingestion resources |
+| `FeaturePlatformStack` | `feature-platform/main-stack-extensions/` | `Condition: IsFeaturePlatformEnabled` | The `InstalledFeatures` table and the registration/hook resolver Lambdas that third-party features call at install time |
 
 `APIRESOLVERSTACK` was historically named `nested/appsync/` with the logical id
 `APPSYNCSTACK`, from when the Web UI talked to AWS AppSync. AppSync has since been
@@ -294,8 +294,13 @@ passes through. Seven hook points exist:
 | `postSummarization` | After summarization |
 | `postprocessing` | After evaluation, as the workflow's last step |
 
-Because `preprocessing` and `postprocessing` sit on the shared tail of the state
-machine, they fire in both BDA and pipeline modes. All seven are dispatched by a
+Four of the seven fire in both BDA and pipeline modes, for two different reasons.
+`preprocessing` is the state machine's `StartAt` state, so it runs before the
+`use_bda` routing choice is made and even when OCR is disabled. The two branches
+rejoin at the HITL check, so `postRuleValidation`, `postSummarization` and
+`postprocessing` all sit on the shared tail. Only `postOcr`,
+`postClassification` and `postExtraction` are on the pipeline branch alone; a
+BDA-mode document never reaches them. All seven are dispatched by a
 single `PipelineHooksDispatcherFunction` in the pattern stack, which invokes your
 Lambda, applies its response, and enforces the guardrails; you never wire a state
 machine transition yourself. A hook returns its changes under the
