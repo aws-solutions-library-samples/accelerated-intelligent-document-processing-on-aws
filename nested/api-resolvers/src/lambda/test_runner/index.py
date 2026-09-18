@@ -4,6 +4,7 @@
 import gzip
 import json
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -699,7 +700,29 @@ def _json_default(value):
                 f"Config contains non-finite Decimal {value!r}; JSON "
                 f"cannot represent NaN/Infinity. Fix the config source."
             )
-        return int(value) if value % 1 == 0 else float(value)
+        # Convert to float FIRST — this catches magnitudes outside float64's
+        # range (subnormals underflow to ``0.0``, huge values overflow to
+        # ``inf``) before ``value % 1`` is evaluated. Doing the modulo first
+        # would itself raise ``decimal.InvalidOperation`` on huge Decimals
+        # (``Decimal('1E500') % 1`` → ``DivisionImpossible``) and would
+        # succeed-but-truncate on subnormals — either way the ``float()``
+        # check is the right guard to run first.
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError(
+                f"Config contains a Decimal {value!r} that overflows to "
+                f"{result} when converted to float; JSON cannot represent "
+                f"infinity. Fix the config source."
+            )
+        if result == 0.0 and value != 0:
+            raise ValueError(
+                f"Config contains a Decimal {value!r} that underflows to "
+                f"0.0 when converted to float; JSON cannot preserve the "
+                f"value. Fix the config source (avoid subnormal magnitudes)."
+            )
+        if value % 1 == 0:
+            return int(value)
+        return result
     raise TypeError(
         f"Config contains a value of type {type(value).__name__} that is "
         f"not JSON-serialisable and has no registered converter: {value!r}"

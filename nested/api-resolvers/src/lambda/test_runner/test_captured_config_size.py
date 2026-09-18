@@ -150,6 +150,21 @@ class TestTheRunItemStoresTheConfigurationCompressed:
         )
         assert not isinstance(body["Config"]["extraction"]["temperature"], str)
 
+    def test_subnormal_decimal_raises_rather_than_silently_truncating_to_zero(
+        self, runner
+    ):
+        """``Decimal('1E-500')`` is finite (``is_finite()`` returns True) but
+        ``float()`` underflows it to ``0.0`` — silent numeric truncation
+        that persists to the compressed config. Similarly a huge Decimal
+        like ``Decimal('1E500')`` overflows to ``inf`` on ``float()``,
+        which JSON cannot represent. Both paths must raise loudly rather
+        than round-trip a corrupted value.
+        """
+        with pytest.raises(ValueError, match="underflows to 0.0"):
+            runner._json_default(Decimal("1E-500"))
+        with pytest.raises(ValueError, match="overflows"):
+            runner._json_default(Decimal("1E500"))
+
     def test_non_finite_decimals_raise_a_clear_error_not_invalid_operation(
         self, runner
     ):
@@ -230,8 +245,51 @@ class TestTheResultsResolverReadsBothStorageShapes:
 
         read_back = results_resolver._get_test_run_config(item["TestRunId"])
 
+        # ``_get_test_run_config`` normalizes Decimals to float/int at
+        # its own boundary via ``convert_decimals``, so the caller sees
+        # a JSON-serialisable dict — but the read INSIDE
+        # ``_captured_config_of`` now uses ``parse_float=Decimal`` for
+        # type-symmetry with the legacy-inline path (see the direct
+        # boundary test ``test_captured_config_of_returns_decimal``
+        # below). Comparing here against the double-roundtripped shape
+        # asserts the end-to-end invariant callers depend on.
         expected = json.loads(json.dumps(config, default=runner._json_default))
         assert read_back == expected
+
+    def test_captured_config_of_returns_decimal_symmetrically_across_storage_formats(
+        self, runner, results_resolver
+    ):
+        """``_captured_config_of`` sits below ``_get_test_run_config``'s
+        Decimal→float normalization and returns the raw config shape any
+        future direct-caller sees. Both storage formats must yield the
+        same TYPE for non-integer numbers so a caller that switches on
+        ``isinstance(x, Decimal)`` — or does equality against a
+        ``Decimal`` literal — doesn't branch differently based on
+        storage format.
+
+        The legacy-inline path returns Decimals naturally (DDB's
+        resource client hands numbers back that way); the compressed
+        path now uses ``parse_float=Decimal`` to match.
+        """
+        # Compressed path
+        _store(runner, {"Config": _large_config(2)})
+        compressed_item = _stored_item(runner)
+        compressed = results_resolver._captured_config_of(compressed_item)
+        threshold_c = compressed["Config"]["classes"][0]["attributes"][0][
+            "confidence_threshold"
+        ]
+        assert isinstance(threshold_c, Decimal), (
+            "compressed path must return Decimals so it matches the "
+            "legacy-inline path — downstream isinstance() checks otherwise "
+            "branch differently across storage formats"
+        )
+
+        # Legacy-inline path
+        legacy_item = {
+            "Config": {"Config": {"threshold": Decimal("0.85")}},
+        }
+        legacy = results_resolver._captured_config_of(legacy_item)
+        assert isinstance(legacy["Config"]["threshold"], Decimal)
 
     def test_a_run_created_before_this_change_still_reads_inline(
         self, results_resolver

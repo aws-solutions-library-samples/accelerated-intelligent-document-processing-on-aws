@@ -644,6 +644,11 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
         pending = {
             "Keys": [{"PK": {"S": f"doc#{dk}"}, "SK": {"S": "none"}} for dk in batch]
         }
+        # ``break`` on failure rather than ``return``: an exception on
+        # retry N > 0 must still let the outer loop process items that
+        # attempt 0 collected — the ``return`` variant discarded them,
+        # so a transient throttle mid-batch could silently blank
+        # previously-collected completed docs from the sample.
         for attempt in range(6):
             try:
                 response = ddb_client.batch_get_item(RequestItems={table_name: pending})
@@ -652,12 +657,16 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
                     f"BatchGetItem for doc#{test_run_id}/* failed: {e}. "
                     f"Comparator diff may be short for this run."
                 )
-                return
+                break
             collected_items.extend(response.get("Responses", {}).get(table_name, []))
             pending = response.get("UnprocessedKeys", {}).get(table_name)
             if not pending or not pending.get("Keys"):
                 break
-            time.sleep(min(0.05 * (2**attempt), 0.5))
+            # Skip the trailing sleep on the final attempt — the ``range``
+            # exhausts and we exit via the ``for/else``, so sleeping there
+            # burns latency for nothing.
+            if attempt < 5:
+                time.sleep(min(0.05 * (2**attempt), 0.5))
         else:
             logger.warning(
                 f"BatchGetItem for doc#{test_run_id}/* still had "
@@ -1230,7 +1239,11 @@ def _batch_get_test_run_items(keys, table_name):
         pending = response.get("UnprocessedKeys", {}).get(table_name)
         if not pending or not pending.get("Keys"):
             return collected
-        time.sleep(min(0.05 * (2**attempt), 0.5))
+        # Skip the trailing sleep on the final attempt — the loop is about
+        # to exit via range exhaustion anyway, so sleeping there just
+        # burns latency on the compareTestRuns critical path.
+        if attempt < 5:
+            time.sleep(min(0.05 * (2**attempt), 0.5))
     logger.warning(
         f"BatchGetItem still has {len(pending.get('Keys', []))} unprocessed "
         f"testrun keys after 6 attempts; dropping them from this list render"
@@ -1826,6 +1839,14 @@ def _captured_config_of(item):
 
     Runs record their configuration as a gzip Binary attribute; runs created
     before that stored the body inline under ``Config``.
+
+    Uses ``parse_float=Decimal`` for the compressed path so the resulting
+    dict matches the type shape of the legacy-inline path — DDB's resource
+    client returns inline numbers as ``Decimal``, so any downstream
+    consumer that branches on ``isinstance(x, Decimal)`` (or does numeric
+    equality against a ``Decimal`` literal) would otherwise see the two
+    storage formats through different lenses. Same reason
+    ``_decompress_config_item`` uses this in ``test_runner``.
     """
     if item.get("_config_storage") == "compressed":
         blob = item.get("_compressed_config")
@@ -1833,7 +1854,9 @@ def _captured_config_of(item):
             return {}
         raw = blob if isinstance(blob, bytes) else bytes(blob)
         try:
-            return json.loads(gzip.decompress(raw).decode("utf-8"))
+            return json.loads(
+                gzip.decompress(raw).decode("utf-8"), parse_float=Decimal
+            )
         except Exception as e:
             logger.error(f"Failed to decompress captured test run config: {e}")
             return {}

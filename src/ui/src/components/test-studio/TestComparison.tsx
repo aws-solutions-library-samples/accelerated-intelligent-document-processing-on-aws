@@ -282,10 +282,17 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   const downloadToCsv = () => {
     if (!comparisonData || !comparisonData.metrics) return;
 
+    // Filter out ``_``-prefixed sentinel keys (server plants ``_comparator_diff``
+    // in the metrics payload) BEFORE the status check. Relying on the status
+    // check alone worked incidentally (arrays don't have ``.status``) but
+    // diverged from ``hasIncompleteRuns`` above which filters by key —
+    // making a future refactor that adds a ``.status`` to any sentinel array
+    // silently break the CSV export. See the assertion in the server's
+    // ``compare_test_runs`` that enforces this key namespace convention.
     const completeTestRuns: Record<string, Record<string, unknown>> = Object.fromEntries(
-      Object.entries(comparisonData.metrics).filter(
-        ([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE',
-      ),
+      Object.entries(comparisonData.metrics)
+        .filter(([key]) => !key.startsWith('_'))
+        .filter(([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE'),
     );
 
     // Create headers

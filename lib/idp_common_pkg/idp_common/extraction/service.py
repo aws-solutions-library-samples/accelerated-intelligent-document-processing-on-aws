@@ -5087,7 +5087,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # images the prompt never asked for. Pass ``[]`` so the tool
             # isn't registered at all in that case (matches the shard path,
             # which never gets ``view_image``).
-            agentic_images = self._page_images if prompt_wants_images else []
+            #
+            # Apply ``_cap_agent_images`` to the ``view_image`` pool too —
+            # the original PR (#396) capped this pool and a later refactor
+            # dropped it. ``max_images_per_agent`` is the operator's cap
+            # on how many images the agent can see AT ALL; without the
+            # cap here, view_image could pull page N > cap on demand and
+            # bypass the operator's constraint entirely.
+            agentic_images = (
+                self._cap_agent_images(self._page_images) if prompt_wants_images else []
+            )
 
             if not prompt_wants_images and self._page_images:
                 logger.info(
