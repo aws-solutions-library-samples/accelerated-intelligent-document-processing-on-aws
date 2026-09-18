@@ -9,17 +9,27 @@ Pins:
 - the counter is decremented EXACTLY once;
 - run-record + latency metrics are skipped (the doc/outputs were deleted);
 - the original is deleted via delete_single_document with the ORIGINAL key.
+
+Also pins the per-execution idempotency KEY passed to decrement_counter (#916),
+on both the happy path and the error path. The two call sites must pass the same
+key: the decrement is deduplicated by a ``dec#<executionArn>`` marker, so an
+error-path decrement called with no argument would write no marker, and the
+EventBridge redelivery of that event (``MaximumRetryAttempts: 3``) would then
+subtract a SECOND slot for the same document. Asserting only ``call_count == 1``
+per invocation cannot see that — it is a cross-invocation property, and it is
+carried entirely by the argument.
 """
 
 import importlib.util
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 _INDEX_PATH = os.path.join(os.path.dirname(__file__), "index.py")
 _MODULE_NAME = "workflow_tracker_redacted_under_test"
+EXEC_ARN = "arn:aws:states:us-west-2:1:execution:sm:exec"
 
 
 class _Status:
@@ -78,7 +88,7 @@ def _event():
             "input": '{"document": {"document_id": "w2.pdf"}}',
             "output": '{"document": {"document_id": "w2.pdf", "status": "REDACTED_SUPERSEDED"}}',
             "status": "SUCCEEDED",
-            "executionArn": "arn:aws:states:us-west-2:1:execution:sm:exec",
+            "executionArn": EXEC_ARN,
             "stopDate": 1700000000000,
         }
     }
@@ -103,9 +113,63 @@ def test_superseded_no_crash_counter_once_skips_run(index_module, monkeypatch):
     assert resp["statusCode"] == 200
     # counter decremented exactly once (regression guard against 4x drift)
     assert m.decrement_counter.call_count == 1
+    # ...and with the per-execution idempotency key, not bare (#916). Without the
+    # key no dec# marker is written and a redelivery subtracts a second slot.
+    assert m.decrement_counter.call_args == call(EXEC_ARN)
     # no run record / metrics for a deleted original
     m.record_document_run.assert_not_called()
     m.put_latency_metrics.assert_not_called()
+
+
+def test_error_path_decrement_uses_same_idempotency_key(index_module, monkeypatch):
+    """The handler's error path decrements too, and it must use the SAME key.
+
+    Drives the terminal handler into its ``except`` block before
+    ``decrement_attempted`` is set, so the error-path decrement at the bottom of
+    handler() is the one that runs. If it is called without the executionArn the
+    decrement writes no ``dec#`` marker, and the EventBridge redelivery of this
+    same event decrements a second time for one document.
+    """
+    m = index_module
+
+    def _boom(*a, **k):
+        raise RuntimeError("transient ProvisionedThroughputExceeded")
+
+    monkeypatch.setattr(m, "update_document_completion", _boom)
+    monkeypatch.setattr(m, "decrement_counter", MagicMock(return_value=2))
+    monkeypatch.setattr(m, "record_document_run", MagicMock())
+    monkeypatch.setattr(m, "put_latency_metrics", MagicMock())
+    monkeypatch.setattr(m, "notify_circuit_breaker_success", MagicMock())
+
+    # The handler re-raises so EventBridge retries the event...
+    with pytest.raises(RuntimeError):
+        m.handler(_event(), None)
+
+    # ...but it released the slot on the way out, exactly once, keyed by the
+    # execution ARN so the retry is deduplicated against this attempt's marker.
+    assert m.decrement_counter.call_count == 1
+    assert m.decrement_counter.call_args == call(EXEC_ARN)
+
+
+def test_error_path_decrement_key_survives_unparseable_event(index_module, monkeypatch):
+    """executionArn is read BEFORE the try, so a malformed event body still keys
+    the error-path decrement. Pins the reason for that ordering: if the read
+    moved inside the try, an event that fails to parse would decrement bare."""
+    m = index_module
+    monkeypatch.setattr(m, "decrement_counter", MagicMock(return_value=2))
+
+    # detail.input is not valid JSON -> json.loads raises at the top of the try.
+    event = {
+        "detail": {
+            "input": "{not json",
+            "status": "SUCCEEDED",
+            "executionArn": EXEC_ARN,
+        }
+    }
+    with pytest.raises(Exception):
+        m.handler(event, None)
+
+    assert m.decrement_counter.call_args == call(EXEC_ARN)
 
 
 def test_superseded_deletes_original_key(index_module):

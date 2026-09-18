@@ -4,14 +4,24 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
-| **Applies to release** | v0.6.3 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 
 ## 1. Overview
 
-This guide details the security controls implemented in the GenAI IDP Accelerator to mitigate the 83 identified threats. Controls are organized by security domain and mapped to the specific threats they address.
+This guide details the security controls implemented in the GenAI IDP Accelerator
+to mitigate the 98 identified threats. Controls are organized by security domain
+and mapped to the specific threats they address.
+
+> **A control listed here is a control that exists in the shipped templates and
+> code.** Where a control is instead the subject of an open change, it is marked
+> **pending** with its issue number and must not be read as present. As of v3.2
+> that applies to the chat streaming transport's group and ownership checks
+> (**#920**), a default-deny gate at the API dispatcher (**#928**), uniform hook
+> failure containment (**#919**), the narrowed deployment service role
+> (**#927**) and converged log-redaction denylists (**#921**).
 
 ## 2. Authentication & Identity (AUTH)
 
@@ -91,8 +101,9 @@ This guide details the security controls implemented in the GenAI IDP Accelerato
 |---------|---------------|
 | **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` granted to `CognitoAuthorizedRole` |
 | **CORS** | `AllowCredentials: false`, SigV4 in headers, no cookies |
-| **Group authorization** | **NOT ENFORCED** — the Identity Pool role is shared by all four groups (open gap, CHAT.T03) |
-| **Session ownership** | **NOT ENFORCED** on this transport (open gap, CHAT.T03) |
+| **Group authorization** | **NOT ENFORCED** — the Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them (open gap, CHAT.T03; fix **pending in issue #920**) |
+| **Session ownership** | **NOT ENFORCED** on this transport (open gap, CHAT.T03; fix **pending in issue #920**) |
+| **Caller identity** | The value the handler derives from the request context is the assumed-role **session name**, not a verified Cognito `sub`; on `/chat/agent` a body-supplied `callerSub` takes precedence over it (CHAT.T06). That session name is also the **same for every user** of the deployment, because the Identity Pool's enhanced flow picks it and one authenticated role is shared by all groups — so the remedy is a verified subject (an ID token presented alongside the signed request), not a reordering. **Issue #920** / PR #954 addresses the precedence and leaves the verified subject outstanding |
 | **Rate limiting** | Lambda concurrency only — **not** covered by API Gateway throttling or the WAF WebACL |
 | **Automated testing** | **None** — `make api-test` drives `POST /op/{field}` only |
 
@@ -150,12 +161,39 @@ This guide details the security controls implemented in the GenAI IDP Accelerato
 
 **Threats mitigated**: CHAT.T04, KB.T03, RPT.T01
 
+Verified against `template.yaml`, `nested/api-resolvers/template.yaml` and
+`patterns/unified/template.yaml` at v0.6.9. The stack creates its own KMS
+customer-managed key (`CustomerManagedEncryptionKey`) and most data stores are
+bound to it, which is stronger than earlier revisions of this document described.
+
 | Resource | Encryption |
 |----------|-----------|
-| S3 buckets (all) | SSE-S3 (default), SSE-KMS (optional) |
-| DynamoDB tables (all) | AWS-managed encryption |
+| S3 buckets | 11 of 13 use the stack's KMS **customer-managed key**; `LoggingBucket` and `WebUIBucket` use `AES256` (they hold access logs and public static assets). All 13 additionally carry a bucket policy denying any request where `aws:SecureTransport` is false |
+| SQS queues and DLQs | All **17** (16 in `template.yaml`, 1 in `patterns/unified/template.yaml`) set `KmsMasterKeyId` to the stack CMK — **not** SSE-SQS. None falls back to SSE-SQS |
+| DynamoDB tables | All 12 set `SSESpecification` with `SSEType: KMS` and the stack CMK — **not** the AWS-owned default key |
 | OpenSearch Serverless | Encryption at rest (AWS-managed) |
-| CloudWatch Logs | CloudWatch default encryption |
+| CloudWatch Logs | **106 of the 109** log groups declared in the three templates (56 + 33 + 20) set `KmsKeyId` to the stack CMK. The three exceptions are `HttpApiDispatcherLogGroup` — the group for the component every UI API request passes through — and the `StacknameCheckFunction` and `ReadPreviousIDPPatternFunction` custom-resource groups, which handle no request data. Retention is a **separate** statistic for the same 109 resources — 108 take `RetentionInDays` from `!Ref LogRetentionDays` and one hardcodes `30`, that one being the dispatcher group again — so the two counts must not be merged. See AUTH.T15 |
+
+> **Three residual notes on the key itself.** Its key policy grants the account
+> root `kms:*` and sets no `kms:ViaService` condition, so the key is usable by any
+> principal in the account that IAM permits, not only by the services that hold
+> the stack's data. That is the common CloudFormation pattern and it keeps the key
+> recoverable, but it means the key policy is not itself a second boundary — IAM
+> is the only one. Sizing the blast radius of the CMK therefore means reading the
+> IAM policies, not the key policy.
+>
+> The third: the `Allow CloudWatch Logs to use the key` statement
+> (`template.yaml:3224-3234`) grants the five data actions to
+> `logs.${AWS::URLSuffix}` on `Resource: "*"` with **no `Condition` block**, so it
+> is not scoped by `kms:EncryptionContext:aws:logs:arn` to the stack's own log
+> group ARNs. Any log group in the account that names this key can therefore use
+> it, which matters mainly for the audit story — a `kms:Encrypt` call attributed to
+> the Logs service does not by itself identify which log group it served. Adding an
+> encryption-context condition is the scoping change, and it needs care rather than
+> a blanket edit: the adjacent CloudWatch Alarms statement carries a comment
+> explaining that it must stay unconditional, because gating it broke every alarm
+> notification on a default deployment. That comment applies to the alarms
+> statement, not to this one.
 
 ### 4.2 Encryption in Transit
 
@@ -269,7 +307,7 @@ This guide details the security controls implemented in the GenAI IDP Accelerato
 | **Bucket policies** | Restrict access to specific IAM roles and CloudFront OAC |
 | **Versioning** | Enabled on reporting and configuration buckets |
 | **Lifecycle policies** | Automatic cleanup of temporary files and query results |
-| **Server-side encryption** | SSE-S3 default, SSE-KMS optional |
+| **Server-side encryption** | Stack KMS customer-managed key on 11 of 13 buckets; `AES256` on the logging and Web UI buckets |
 
 ### 7.3 DynamoDB Security
 
@@ -277,7 +315,7 @@ This guide details the security controls implemented in the GenAI IDP Accelerato
 
 | Control | Implementation |
 |---------|---------------|
-| **Encryption** | AWS-managed encryption at rest |
+| **Encryption** | `SSEType: KMS` with the stack's customer-managed key on all 12 tables |
 | **Per-table IAM** | Lambda roles scoped to specific tables |
 | **Point-in-time recovery** | Optional PITR for critical tables |
 | **TTL** | Conversation records with configurable TTL |
@@ -334,7 +372,7 @@ For deployments requiring network-level isolation:
 
 - [ ] Review and customize RBAC role permissions for your organization
 - [ ] Configure Cognito password policy and advanced security settings
-- [ ] Plan S3 encryption strategy (SSE-S3 vs SSE-KMS)
+- [ ] Review the stack's KMS customer-managed key policy — it grants the account root `kms:*` and sets no `kms:ViaService` condition, so IAM is the only boundary on its use
 - [ ] Review Lambda hook security requirements
 - [ ] Plan VPC configuration if network isolation is required
 
@@ -343,7 +381,7 @@ For deployments requiring network-level isolation:
 - [ ] Create Cognito users with appropriate group assignments
 - [ ] Run `make api-test-static` and `make api-test` — verify every operation's resolver-side group/scope check passes and no new WARN gaps appeared
 - [ ] Confirm any newly added API operation has an entry in `scripts/api_rbac_expectations.yaml` (the static scan fails on drift)
-- [ ] Test RBAC permissions across all four roles
+- [ ] Test RBAC permissions across all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`) — and note that `Precedence` orders IAM-role selection only, so no group inherits another's permissions
 - [ ] Configure CloudWatch alarm notifications
 - [ ] Review CloudTrail logging coverage
 - [ ] Document Lambda hook deployment procedures
@@ -352,7 +390,8 @@ For deployments requiring network-level isolation:
 ### Ongoing Operations
 
 - [ ] Periodic API authorization audit (`make api-test` against a live stack; review the op×role matrix report)
-- [ ] Review the chat streaming Function URL path separately — it is **outside** the automated harness (CHAT.T03)
+- [ ] Review the chat streaming Function URL path separately — it is **outside** the automated harness and outside the WAF WebACL (CHAT.T03, CHAT.T06)
+- [ ] Re-review the threat model each release cycle — `make check-threat-model-currency` fails the build when `security/threat-modeling/README.md`'s `Last reviewed against version` field falls more than one release behind `VERSION`
 - [ ] Review CloudWatch alarm history for security events
 - [ ] Monitor Athena query patterns for anomalies
 - [ ] Review and rotate SDK/CLI credentials

@@ -18,7 +18,7 @@ The IDP Common library provides these main modules:
 - **[OCR](ocr/README.md)**: Text extraction using AWS Textract
 - **[Summarization](summarization/README.md)**: Document summarization services
 - **[BDA](bda/README.md)**: Bedrock Data Automation integration
-- **[AppSync](appsync/README.md)**: Document storage through GraphQL API
+- **[Document Service Factory](docs_service_README.md)**: The `create_document_service()` entry point Lambdas use to record document state (always DynamoDB-backed)
 - **[Reporting](reporting/README.md)**: Analytics data storage
 - **[Assessment](assessment/README.md)**: Confidence scoring and bounding boxes
 - **[Discovery](discovery/README.md)**: Document class and schema discovery
@@ -338,7 +338,8 @@ expected_document = Document.from_s3(
 The document model integrates with all IDP services:
 
 ```python
-from idp_common import ocr, classification, extraction, evaluation, rule_validation, appsync
+from idp_common import ocr, classification, extraction, evaluation, rule_validation
+from idp_common.docs_service import create_document_service
 
 # OCR Processing
 ocr_service = ocr.OcrService()
@@ -374,9 +375,9 @@ result = discovery.discovery_classes_with_document(
 )
 schema = result["schema"]  # JSON Schema dict
 
-# Store in AppSync
-appsync_service = appsync.DocumentAppSyncService()
-document = appsync_service.update_document(document)
+# Record document state in the TrackingTable (DynamoDB)
+document_service = create_document_service()
+document = document_service.update_document(document)
 ```
 
 ## 📝 Best Practices

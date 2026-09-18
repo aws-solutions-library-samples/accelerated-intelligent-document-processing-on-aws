@@ -405,6 +405,20 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
     because pages and unique-doc counts fan out across (service_api, unit)
     — including them here would produce a 6× overcount for a doc with 6
     service rows.
+
+    ``sum_cost`` is deliberately left NULLABLE. ``estimated_cost`` on the raw
+    ``metering`` table is NULL when the service has no pricing entry at all
+    (cost unknown, as distinct from 0.0 for a metered-but-not-chargeable unit),
+    and ``SUM`` skips NULLs. That does not corrupt this rollup, because the
+    grouping key ``(config_version, service_api, unit)`` is exactly the key
+    pricing is resolved by: every row in a group is priced or none is, so an
+    unpriced group yields ``sum_cost = NULL`` for the whole group rather than a
+    silently short total. Coercing it to 0 here would instead destroy the
+    distinction between "free" and "unknown" for every downstream reader. The
+    obligation therefore falls on queries that aggregate ACROSS groups, which
+    must ``COALESCE(sum_cost, 0)`` and surface the NULL count — see the
+    ``metering_hourly`` notes in
+    ``idp_common/agents/analytics/schema_provider.py``.
     """
     if _partition_already_written(
         table="metering_hourly", date=target_date, hour=target_hour

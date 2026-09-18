@@ -53,6 +53,12 @@ def test_cost_calculation_pricing_lookup():
         "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0", "outputTokens"
     )
 
+    # ``_get_unit_cost`` returns Optional[float]: None means "no pricing entry at
+    # all" (recorded as NULL), which for these pinned fixture models would itself
+    # be a failure. Assert that first so the comparison below is well-typed.
+    assert claude_input_cost is not None, "Claude Haiku input token cost is unpriced"
+    assert claude_output_cost is not None, "Claude Haiku output token cost is unpriced"
+
     assert claude_input_cost > 0, (
         "Claude Haiku input token cost should be greater than 0"
     )
@@ -68,11 +74,15 @@ def test_cost_calculation_pricing_lookup():
         "bedrock/us.amazon.nova-lite-v1:0", "outputTokens"
     )
 
+    assert nova_input_cost is not None, "Nova Lite input token cost is unpriced"
+    assert nova_output_cost is not None, "Nova Lite output token cost is unpriced"
+
     assert nova_input_cost > 0, "Nova Lite input token cost should be greater than 0"
     assert nova_output_cost > 0, "Nova Lite output token cost should be greater than 0"
 
     # Test Textract pricing lookup
     textract_cost = reporter._get_unit_cost("textract/detect_document_text", "pages")
+    assert textract_cost is not None, "Textract page cost is unpriced"
     assert textract_cost > 0, (
         "Textract detect document text cost should be greater than 0"
     )
@@ -124,6 +134,16 @@ def test_cost_calculation_with_document():
     )
     textract_cost = reporter._get_unit_cost("textract/detect_document_text", "pages")
 
+    # Every unit above is priced in this fixture, so a None here would mean the
+    # lookup regressed rather than that the unit is free. Assert it explicitly:
+    # that both documents the expectation and narrows Optional[float] to float
+    # for the arithmetic below.
+    assert claude_input_cost is not None, "Claude Haiku input token cost is unpriced"
+    assert claude_output_cost is not None, "Claude Haiku output token cost is unpriced"
+    assert nova_input_cost is not None, "Nova Lite input token cost is unpriced"
+    assert nova_output_cost is not None, "Nova Lite output token cost is unpriced"
+    assert textract_cost is not None, "Textract page cost is unpriced"
+
     # Calculate expected costs
     claude_total = (1000 * claude_input_cost) + (200 * claude_output_cost)
     nova_total = (2000 * nova_input_cost) + (500 * nova_output_cost)
@@ -144,12 +164,18 @@ def test_cost_calculation_with_document():
 
 @pytest.mark.unit
 def test_cost_calculation_unknown_service():
-    """Test cost calculation behavior with unknown service"""
+    """An unknown service is explicitly unpriced (None), not silently $0.00.
+
+    This used to assert ``>= 0``, which passed for the silent-zero fallback AND
+    for a wrongly substituted price. See GitHub issue #926 and
+    test_pricing_lookup.py, which covers the lookup rules in detail.
+    """
     reporter = SaveReportingData("test-bucket")
 
-    # Test with unknown service - should return 0 or handle gracefully
     unknown_cost = reporter._get_unit_cost("unknown/service", "unknown_metric")
-    assert unknown_cost >= 0, "Unknown service cost should be 0 or positive"
+    assert unknown_cost is None, (
+        f"Unknown service must be reported as unpriced (None), got {unknown_cost}"
+    )
 
 
 @pytest.mark.unit

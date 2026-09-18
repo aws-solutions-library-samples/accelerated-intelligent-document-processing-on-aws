@@ -30,13 +30,20 @@ ASL_PATH = Path(__file__).resolve().parents[1] / "statemachine" / "workflow.asl.
 # (with `DefinitionUri` it sets `DefinitionS3Location`; CloudFormation performs
 # the substitution at deploy time), so this only affects reading it here.
 # Resolving them first means these tests inspect the shape that actually deploys.
-_UNQUOTED_PLACEHOLDER_RE = re.compile(r":\s*\$\{[A-Za-z0-9_]+\}")
+#
+# Anchored on the key's CLOSING QUOTE. Restricting the placeholder NAME to
+# ``[A-Za-z0-9_]+`` does NOT make a bare-colon anchor safe: ``Partition`` is itself
+# alphanumeric, so ``:\s*\$\{[A-Za-z0-9_]+\}`` still matches inside
+# ``"arn:${Partition}:states:::lambda:invoke"`` and rewrites all nine task resources to
+# ``"arn: 1:states:::lambda:invoke"`` — defeating the "shape that actually deploys" claim
+# above. See ``scripts/tests/test_asl_placeholder_substitution.py``.
+_UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 
 
 def load_asl() -> dict:
     """Parse the ASL with unquoted numeric substitutions resolved to a number."""
     raw = ASL_PATH.read_text()
-    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub(": 1", raw))
+    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub('": 1', raw))
 
 
 @pytest.fixture(scope="module")
@@ -95,14 +102,26 @@ def test_failure_recorder_records_then_continues_to_the_normal_tail(states):
     assert rec["Resource"] == states["EvaluationStep"]["Resource"]
     # Continues to the normal tail rather than a Fail state...
     assert rec["Next"] == "PostprocessingHook"
-    # ...and its own failure must not take the document down either.
-    assert rec["Catch"][0]["Next"] == "PostprocessingHook"
+    # ...and its own failure must not take the document down either. That path goes
+    # through a normalizing Pass rather than straight to the tail (#918): the Catch
+    # leaves $ as the BARE document dict, and PostprocessingHook reads $.document, so
+    # jumping directly there raised States.Runtime — uncatchable, and it discarded the
+    # very document this state exists to preserve. The Pass rebuilds the envelope.
+    recovery = states[rec["Catch"][0]["Next"]]
+    assert recovery["Type"] == "Pass"
+    assert recovery["Parameters"] == {"document.$": "$"}
+    assert recovery["ResultPath"] == "$"
+    assert recovery["Next"] == "PostprocessingHook"
 
 
 @pytest.mark.unit
 def test_no_path_from_evaluation_leads_to_the_fail_state(states):
     """Nothing in the evaluation failure path may terminate the execution."""
-    for name in ("EvaluationStep", "RecordEvaluationFailure"):
+    for name in (
+        "EvaluationStep",
+        "RecordEvaluationFailure",
+        "NormalizeEvaluationFailureOutput",
+    ):
         targets = {c.get("Next") for c in states[name].get("Catch", [])}
         targets.add(states[name].get("Next"))
         assert "FailState" not in targets, f"{name} must not route to FailState"

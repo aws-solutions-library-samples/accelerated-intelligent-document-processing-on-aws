@@ -57,8 +57,9 @@
     },
     "PreprocessingHookFailed": {
       "Type": "Fail",
+      "Comment": "Deliberately a STATIC Cause, unlike PostStepHookFailed/PostExtractionHookFailed which interpolate the dispatcher message via CausePath. Two reasons. (1) This state is reached by a States.ALL catcher - the broadest in the file - so the caught error output is not necessarily a Lambda function error and a missing $.HookResults.preprocessing.error.Cause would surface as States.Runtime, masking the real failure with a JSONPath error. (2) preprocessing holds exactly ONE flat hook, so unlike the post-step lists there is no ambiguity about WHICH hook failed - the config names it. The dispatcher's own message is still in the execution history on the TaskFailed event immediately before this state.",
       "Error": "PreprocessingHookFailed",
-      "Cause": "A preprocessing hook failed (e.g. a PII-redaction hook with onError:fail). The execution is stopped rather than continuing to process the un-preprocessed original."
+      "Cause": "A preprocessing hook failed (e.g. a PII-redaction hook with onError:fail). The execution is stopped rather than continuing to process the un-preprocessed original. For the hook error itself, read the TaskFailed event for PreprocessingHook in this execution's history - this Fail state's Cause replaces the original error on the ExecutionFailed event."
     },
     "CheckPreprocessingHalt": {
       "Type": "Choice",
@@ -282,8 +283,17 @@
           "BackoffRate": 2
         },
         {
+          "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task.",
           "ErrorEquals": [
             "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -337,6 +347,12 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": "$.HookResults.postOcr.error",
@@ -371,8 +387,17 @@
           "BackoffRate": 2
         },
         {
+          "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task.",
           "ErrorEquals": [
             "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -426,6 +451,12 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": "$.HookResults.postClassification.error",
@@ -474,9 +505,18 @@
                 "BackoffRate": 2
               },
               {
+                "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task.",
+                "ErrorEquals": [
+                  "Sandbox.Timedout",
+                  "States.Timeout"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 1,
+                "BackoffRate": 1.0
+              },
+              {
                 "ErrorEquals": [
                   "TransientError",
-                  "Sandbox.Timedout",
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
@@ -538,11 +578,19 @@
                       "BackoffRate": 2
                     },
                     {
+                      "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task. Lambda.Unknown is Step Functions' report for an unhandled Lambda fault: a function timeout is one cause and an out-of-memory kill is the other, and neither is fixed by trying again.",
                       "ErrorEquals": [
-                        "TransientError",
                         "States.Timeout",
                         "Lambda.Unknown",
-                        "Sandbox.Timedout",
+                        "Sandbox.Timedout"
+                      ],
+                      "IntervalSeconds": 5,
+                      "MaxAttempts": 1,
+                      "BackoffRate": 1.0
+                    },
+                    {
+                      "ErrorEquals": [
+                        "TransientError",
                         "Lambda.ServiceException",
                         "Lambda.AWSLambdaException",
                         "Lambda.SdkClientException",
@@ -595,11 +643,19 @@
                 "BackoffRate": 2
               },
               {
+                "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task. Lambda.Unknown is Step Functions' report for an unhandled Lambda fault: a function timeout is one cause and an out-of-memory kill is the other, and neither is fixed by trying again.",
                 "ErrorEquals": [
-                  "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
-                  "Sandbox.Timedout",
+                  "Sandbox.Timedout"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 1,
+                "BackoffRate": 1.0
+              },
+              {
+                "ErrorEquals": [
+                  "TransientError",
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
@@ -630,11 +686,19 @@
                 "BackoffRate": 2
               },
               {
+                "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task. Lambda.Unknown is Step Functions' report for an unhandled Lambda fault: a function timeout is one cause and an out-of-memory kill is the other, and neither is fixed by trying again.",
                 "ErrorEquals": [
-                  "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
-                  "Sandbox.Timedout",
+                  "Sandbox.Timedout"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 1,
+                "BackoffRate": 1.0
+              },
+              {
+                "ErrorEquals": [
+                  "TransientError",
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
@@ -691,6 +755,12 @@
             "Catch": [
               {
                 "ErrorEquals": [
+                  "HookFatalError"
+                ],
+                "Next": "PostExtractionHookFailed"
+              },
+              {
+                "ErrorEquals": [
                   "States.ALL"
                 ],
                 "ResultPath": "$.HookResults.error",
@@ -726,11 +796,19 @@
                 "BackoffRate": 2
               },
               {
+                "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task. Lambda.Unknown is Step Functions' report for an unhandled Lambda fault: a function timeout is one cause and an out-of-memory kill is the other, and neither is fixed by trying again.",
                 "ErrorEquals": [
-                  "TransientError",
                   "States.Timeout",
                   "Lambda.Unknown",
-                  "Sandbox.Timedout",
+                  "Sandbox.Timedout"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 1,
+                "BackoffRate": 1.0
+              },
+              {
+                "ErrorEquals": [
+                  "TransientError",
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
@@ -751,6 +829,12 @@
           "SectionComplete": {
             "Type": "Pass",
             "End": true
+          },
+          "PostExtractionHookFailed": {
+            "Type": "Fail",
+            "Comment": "CausePath rather than a static Cause, for the reason spelled out on PostStepHookFailed: the static string replaced the dispatcher message that names the failing hook. Reached only by a HookFatalError catcher, so $.Cause is always present.",
+            "Error": "HookFatalError",
+            "CausePath": "States.Format('{} || onError:fail aborted the section rather than assessing and merging it as though the hook had succeeded. This Map has no Catch, so the failure propagates out and fails the execution - which is what onError:fail asks for.', $.Cause)"
           }
         }
       },
@@ -777,8 +861,17 @@
           "BackoffRate": 2
         },
         {
+          "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task.",
           "ErrorEquals": [
             "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -821,8 +914,17 @@
           "BackoffRate": 2
         },
         {
+          "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task.",
           "ErrorEquals": [
             "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -894,8 +996,17 @@
                 "BackoffRate": 2
               },
               {
+                "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task.",
                 "ErrorEquals": [
                   "Sandbox.Timedout",
+                  "States.Timeout"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 1,
+                "BackoffRate": 1.0
+              },
+              {
+                "ErrorEquals": [
                   "Lambda.ServiceException",
                   "Lambda.AWSLambdaException",
                   "Lambda.SdkClientException",
@@ -991,6 +1102,12 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": "$.HookResults.postRuleValidation.error",
@@ -1042,8 +1159,17 @@
           "BackoffRate": 2
         },
         {
+          "Comment": "A Lambda timeout is DETERMINISTIC, not transient: the document needs more work than the function has time for, so every retry burns another full timeout and fails the same way. Sharing the transient ladder below multiplied that by its attempt count and its backoff, holding a concurrency slot for hours before failing (#917). One attempt, then fail - the policy EvaluationStep already carried, now applied to every Lambda task.",
           "ErrorEquals": [
             "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
+          "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -1096,6 +1222,12 @@
         }
       ],
       "Catch": [
+        {
+          "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
         {
           "ErrorEquals": [
             "States.ALL"
@@ -1172,7 +1304,7 @@
       ]
     },
     "RecordEvaluationFailure": {
-      "Comment": "Records that evaluation did not complete, so EvaluationStatus reflects reality instead of being stuck at RUNNING, then continues to the normal tail so the document keeps its extraction output. Its own failure is caught to the tail as well - the document surviving matters more than the status being written. document.$ is $ (not $.document) because ApplyPostSummarizationHookDocument set $ to the document dict itself, so there is no $.document key at this point; the Catch above adds $.EvaluationError as a sibling of the doc fields, and the Lambda handler strips known state-level keys (EvaluationError, record_failure_only, failure_reason, error, execution_arn) on the raw-fallback path.",
+      "Comment": "Records that evaluation did not complete, so EvaluationStatus reflects reality instead of being stuck at RUNNING, then continues to the normal tail so the document keeps its extraction output. Its own failure is caught to the tail as well - the document surviving matters more than the status being written. document.$ is $ (not $.document) because ApplyPostSummarizationHookDocument set $ to the document dict itself, so there is no $.document key at this point; the Catch above adds $.EvaluationError as a sibling of the doc fields. The Lambda handler's raw-fallback path filters event['document'] against a five-name list (EvaluationError, record_failure_only, failure_reason, error, execution_arn), of which only EvaluationError can actually appear there: the other four are siblings of document in the Payload below, not members of it, so those four entries in the list are dead. Its own Catch captures the error under $.RecordFailureError instead of discarding it with ResultPath null (#918): with ResultPath null this state's output was its input unchanged - the bare document dict, which has no 'document' member - so PostprocessingHook's document.$ = $.document could not resolve and raised States.Runtime, which is not retriable and is NOT caught by a Catch on States.ALL, failing the execution and discarding a fully processed document at the last step. NormalizeEvaluationFailureOutput restores the { document: ... } envelope before the tail.",
       "Type": "Task",
       "Resource": "${EvaluationLambdaArn}",
       "Parameters": {
@@ -1194,6 +1326,16 @@
           "BackoffRate": 2
         },
         {
+          "Comment": "The failure-recorder is a minimum-work step, so its own timeout is as deterministic as the evaluation timeout that routed the document here (#917): one attempt, then hand off to the Catch below, which keeps the document. Listing the codes explicitly - they were absent entirely before - is what makes that Catch a documented outcome rather than an accident of the retry list.",
+          "ErrorEquals": [
+            "Sandbox.Timedout",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 1,
+          "BackoffRate": 1.0
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
@@ -1211,15 +1353,24 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "ResultPath": null,
-          "Next": "PostprocessingHook"
+          "ResultPath": "$.RecordFailureError",
+          "Next": "NormalizeEvaluationFailureOutput"
         }
       ],
       "Next": "PostprocessingHook"
     },
+    "NormalizeEvaluationFailureOutput": {
+      "Type": "Pass",
+      "Comment": "Restores the { document: ... } envelope that PostprocessingHook and every state after it read (#918). Reached only when RecordEvaluationFailure itself failed, where $ is the bare document dict (see that state's Comment) with the state-level keys EvaluationError and RecordFailureError merged in alongside the document's own fields. Parameters + ResultPath $ rebuild $ as exactly { \"document\": <that dict> }, which is the shape RecordEvaluationFailure returns on its success path - so the tail behaves identically either way and $.document always resolves. The two diagnostic keys ride along inside the document dict and are harmless for one reason only: Document.from_dict ignores keys it does not know. Do NOT assume the evaluation handler removes them. Its raw-fallback strip list (src/evaluation_function/index.py:283-295) names EvaluationError, record_failure_only, failure_reason, error and execution_arn - RecordFailureError is NOT among them - and that stripping is largely vestigial in any case: it filters event['document'], while four of those five names are only ever siblings of document in RecordEvaluationFailure's Payload, never members of it, and event['document'] on this path is the nine-key compressed wrapper Document.compress returns (serialize_document defaults size_threshold_kb=0, so every step compresses), which carries none of them either. EvaluationError is the only name that list can actually match.",
+      "Parameters": {
+        "document.$": "$"
+      },
+      "ResultPath": "$",
+      "Next": "PostprocessingHook"
+    },
     "PostprocessingHook": {
       "Type": "Task",
-      "Comment": "Standalone postprocessing extension point \u2014 runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the routing decision). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state \u2014 by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which surfaces here as a failed execution.",
+      "Comment": "Standalone postprocessing extension point \u2014 runs LAST, after evaluation and before the terminal state, on the SHARED tail so it fires in both processing modes (mirroring how PreprocessingHook runs before the routing decision). Dispatches to the single generic hook (arn + args) in the config's postprocessing section. A mutation here is the last word on the document: WorkflowComplete's output is what the workflow tracker loads, so it reaches the persisted tracking row, the reporting/Athena rows, and the UI. NOTE: unlike PreprocessingHook, a dispatcher/hook error is caught to the normal terminal state \u2014 by this point every expensive step has succeeded and the output objects are written, so a delivery-integration error must not discard a good document. A hook that needs to gate sets onError:fail, which the dispatcher raises as HookFatalError - caught by the FIRST Catch entry below, ahead of States.ALL, and routed to PostStepHookFailed. Until #919 that entry did not exist, so States.ALL swallowed the fail policy and this comment's claim was false.",
       "Resource": "arn:${Partition}:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${PipelineHooksDispatcherLambdaArn}",
@@ -1254,6 +1405,12 @@
       "Catch": [
         {
           "ErrorEquals": [
+            "HookFatalError"
+          ],
+          "Next": "PostStepHookFailed"
+        },
+        {
+          "ErrorEquals": [
             "States.ALL"
           ],
           "ResultPath": null,
@@ -1274,6 +1431,12 @@
     "WorkflowComplete": {
       "Type": "Pass",
       "End": true
+    },
+    "PostStepHookFailed": {
+      "Type": "Fail",
+      "Comment": "CausePath, not a static Cause: a Fail state's Error/Cause REPLACE the original error in executionFailedEventDetails, so a static string discards the dispatcher's own message - which is the only place the failing hook's featureId and hook point appear - exactly when an operator needs it (the tracking row and the UI show a bare FAILED). The dispatcher message is interpolated FIRST so a truncated read of the cause still names the hook. Safe here because the ONLY catchers routing to this state match HookFatalError, a Lambda function error, whose error output always carries Cause; a States.ALL catcher pointed here would widen that to errors whose shape is not guaranteed and a missing $.Cause would surface as States.Runtime, masking the real failure. patterns/unified/tests/test_workflow_hook_fatal_catch.py asserts that invariant.",
+      "Error": "HookFatalError",
+      "CausePath": "States.Format('{} || onError:fail aborted the document rather than continuing as though the hook had succeeded. Every hook state lists HookFatalError BEFORE its States.ALL catcher: ASL takes the FIRST matching catcher, and States.ALL - which deliberately routes FORWARD so that a non-gating hook fault cannot discard an otherwise-good document - matches this error too. Reordering those two entries silently restores the fail-open behaviour of issue #919.', $.Cause)"
     },
     "FailState": {
       "Type": "Fail",

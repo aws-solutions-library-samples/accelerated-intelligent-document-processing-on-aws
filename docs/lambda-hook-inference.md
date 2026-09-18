@@ -306,14 +306,22 @@ ocr:
 ### Cost metering
 
 The hook returns `usage.pages` (from Mistral's `usage_info.pages_processed`). Add a
-pricing entry keyed on the function name (Mistral OCR list price is $4 / 1,000 pages):
+pricing entry keyed on `lambda_hook/<function-name>` (Mistral OCR list price is
+$4 / 1,000 pages):
 
 ```yaml
-  - name: GENAIIDP-mistral-ocr-hook
+  - name: lambda_hook/GENAIIDP-mistral-ocr-hook
     units:
       - name: pages
         price: "0.004"
 ```
+
+The `lambda_hook/` prefix matches the metering key the pipeline emits
+(`{context}/lambda_hook/{function-name}` — see
+[Metering and Cost Tracking](#metering-and-cost-tracking) below). A key of just
+`GENAIIDP-mistral-ocr-hook` also resolves, because the lookup walks the
+`/`-delimited suffixes of the metering key, but the prefixed form is what
+`config_library/pricing.yaml` ships and is unambiguous.
 
 ### Local Testing
 
@@ -444,7 +452,7 @@ The hook returns `usage.pages` (from Parse's `meta.billed_units.pages`).
 `config_library/pricing.yaml` ships the entry:
 
 ```yaml
-  - name: GENAIIDP-cohere-parse-hook
+  - name: lambda_hook/GENAIIDP-cohere-parse-hook
     units:
       - name: pages
         price: "0.0015"
@@ -572,10 +580,23 @@ The Lambda Hook includes built-in retry logic:
 
 Lambda Hook invocations are tracked in the document's metering data under:
 ```
-{context}/lambda_hook/{lambda_arn}
+{context}/lambda_hook/{function-name}
 ```
 
-For example: `Extraction/lambda_hook/arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-extractor`
+For example, a hook configured as
+`arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-extractor` is metered as
+`Extraction/lambda_hook/GENAIIDP-extractor`.
+
+Note that the key carries the **bare function name**, not the ARN you configured
+in `model_lambda_hook_arn` — the ARN is normalized down to the function name (any
+alias or version qualifier is dropped as well). This matters for pricing. An ARN
+embeds an account id and a region, so a pricing entry keyed on one could never
+ship as a default and would break the moment the stack was redeployed into another
+account. An ARN also delimits the function name with `:` rather than `/`, and the
+pricing lookup resolves a key by walking the `/`-delimited suffixes of the metering
+key — so an ARN-keyed metering row is simply unpriceable, and both shipped hook
+rows recorded a NULL cost until this was fixed
+(GitHub issue [#926](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/926)).
 
 Token usage from the Lambda response's `usage` field is included in metering for cost calculations.
 
