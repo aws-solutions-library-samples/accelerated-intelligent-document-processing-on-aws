@@ -170,9 +170,11 @@ is only on an unmerged branch, the stack will not have it and the flow is
 
 ## Recording a review (optional)
 
-Use this when the user wants a video — "record the walkthrough", "make something
-the team can watch", "demo the annotation flow". The review is the same review;
-the recorder is a sidecar that captures the tab you are driving and turns your
+Use this when the user wants a video **of the review** — "record the walkthrough",
+"make something the team can watch". If they want a **product demo** — a video that
+shows a feature to other people and ends on takeaways rather than findings — use
+`.claude/skills/product-demo.md` instead; it drives the same recorder with
+`--kind demo`. The review is the same review; the recorder is a sidecar that captures the tab you are driving and turns your
 narration into speech afterwards. Nothing about how you drive the browser changes.
 
 ### Before you start

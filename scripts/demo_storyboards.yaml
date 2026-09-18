@@ -1,0 +1,118 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Storyboards for the product-demo skill (.claude/skills/product-demo.md).
+#
+# A storyboard is a demo that has been proposed, confirmed by a person and (usually)
+# recorded once. It is kept so the same demo can be re-recorded on a later release
+# without re-deriving what to show and what to say — the equivalent of what
+# scripts/ux_flows.yaml is for UX reviews.
+#
+# This file is memory, not scope. A demo run starts from what the user asks for
+# (a changelog section, a PR, a feature) and proposes three storyboards; an entry
+# here is offered as one of the three when it covers the request. Add an entry
+# AFTER the user has confirmed it, when its chapters, fixtures and narration have
+# been rehearsed against a real stack. Written beforehand it encodes a guess.
+#
+# Storyboards hold no document content, account ids, stack names or people, so
+# they are safe to commit. The recordings themselves live under
+# scratch/ux-recordings/ and are never committed.
+#
+# Fields:
+#   id             Stable slug. The session's docs-entry and report name it.
+#   title          The title card and the docs/demo-videos.md heading.
+#   source         What the demo is of: a CHANGELOG section and entries, a PR/MR,
+#                  or a feature doc.
+#   audience       Who it is for, in a phrase.
+#   hook           One sentence: what the viewer can do after watching. Spoken on
+#                  the title card (start --say).
+#   persona        The Cognito group the demo is recorded as (Admin, Author,
+#                  Reviewer, Annotator, Viewer).
+#   duration_target  "m:ss". Published demos run 2–5 minutes; aim for 2–4.
+#   fixtures       What must exist before recording, and how to make it. Shipped
+#                  samples and synthetic data unless the user agreed otherwise.
+#   chapters       One per `mark`. `label` is the chapter name, `say` the narration
+#                  spoken before the action (first person plural, present tense,
+#                  why before what), `do` the browser steps precise enough to
+#                  rehearse from.
+#   closing        Spoken on the end card (stop --say): the takeaway and the doc.
+#   takeaways      3–5 lines for the Key takeaways end card. Claims, not a table
+#                  of contents.
+#   not_shown      What the demo deliberately leaves out, and why.
+#   docs           The docs page (and anchor) the docs entry links to.
+#   category       The docs/demo-videos.md heading the entry belongs under.
+#   last_recorded  {date, version} of the most recent recording, or null.
+
+storyboards:
+  - id: test-set-from-documents-only-zip
+    title: Start a test set from documents alone
+    source: 'CHANGELOG [Unreleased] Fixed — a test-set zip with only an input/ folder is accepted as an unlabeled set (#897)'
+    audience: Teams beginning ground-truth collection with no labels yet
+    hook: >-
+      You can start a test set from a folder of documents and nothing else, and let
+      the pipeline draft the first labels for you.
+    persona: Admin
+    duration_target: '2:30'
+    fixtures:
+      - A zip holding a single input/ folder with two or three PDFs from samples/
+        (for example lending_package.pdf and a bank statement sample), zipped from
+        the command line with no baseline/ folder.
+      - The stack signed in as an Admin, on Test Studio → Test sets.
+    chapters:
+      - label: Why start without labels
+        say: >-
+          Ground truth is the expensive part of a test set. Test Studio lets us start
+          with just the documents and have the pipeline draft the labels, so the
+          reviewers correct instead of type.
+        do:
+          - Open Test Studio → Test sets so the table of existing sets is on screen.
+      - label: Create a set from a documents-only zip
+        say: >-
+          We create a test set and choose Upload documents only. The zip we are
+          uploading is a plain input folder with a few sample PDFs and nothing else.
+        do:
+          - Create test set → Upload documents only → choose the fixture zip →
+            name the set → submit.
+      - label: The set completes as unlabeled
+        say: >-
+          The zip is processed in the background. The set completes with its
+          documents counted and the Labels column reading Unlabeled, which is a
+          healthy state, not an error.
+        do:
+          - Wait for the row to reach COMPLETED (pause/resume around the wait if it
+            runs long); point out the file count and the Labels column.
+      - label: Draft labels are one action away
+        say: >-
+          Inside the set every document is present and unlabeled, and Generate draft
+          labels is offered. That is the next step, and the reviewers take it from
+          there in the annotation queue.
+        do:
+          - Open the set; show the document list, the Unlabeled state, and the
+            Generate draft labels action.
+      - label: A mismatched zip is still refused
+        say: >-
+          The guard for real mistakes stays. A zip whose baseline folder covers only
+          some of its documents is refused, and the row says which files are
+          missing.
+        do:
+          - Upload the second fixture (baselines for one of two documents); show the
+            FAILED row and its reason popover.
+      - label: Clean up
+        say: We remove both fixture sets so nothing is left behind.
+        do:
+          - Delete both sets from the table.
+    closing: >-
+      That is a test set started from documents alone. The details are in the Test
+      Studio documentation under creating custom test sets.
+    takeaways:
+      - A zip with only an input/ folder creates an unlabeled test set
+      - Unlabeled is a healthy state; draft labels are one action away
+      - Baselines that do not match the documents are still refused, with a reason
+    not_shown:
+      - Generating the draft labels and reviewing them (its own demo — the
+        annotation queue)
+      - Adding documents to an existing set by zip (same path, covered by the
+        test-set editing demo)
+    docs: docs/creating-custom-test-sets.md
+    category: Evaluation & Testing
+    last_recorded: null
