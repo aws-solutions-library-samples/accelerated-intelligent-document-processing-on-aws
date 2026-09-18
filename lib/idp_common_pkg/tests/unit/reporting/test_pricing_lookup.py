@@ -349,6 +349,11 @@ def test_unpriced_service_records_null_cost_in_the_metering_row():
 _TEMPLATES = (
     _REPO_ROOT / "template.yaml",
     _REPO_ROOT / "patterns" / "unified" / "template.yaml",
+    # Read so the three embedding models in _COVERAGE_EXEMPT are actually
+    # ENCOUNTERED and then exempted. While this template went unread the
+    # exemption filtered nothing and its staleness guard could not mean anything
+    # (see test_coverage_exempt_has_no_stale_entries).
+    _REPO_ROOT / "nested" / "bedrockkb" / "template.yaml",
 )
 
 # A Bedrock model ID: an optional cross-region/geo prefix, a provider, then the
@@ -368,8 +373,10 @@ _COVERAGE_EXEMPT = {
     # generate_embedding() returns a bare vector and emits no metering entry, and
     # Knowledge Base ingestion is billed by the KB service outside this pipeline,
     # so no 'bedrock/<embedding-model>' metering key is ever produced and there is
-    # nothing for a pricing row to price. Listed for the record; the enumeration
-    # below does not read that template.
+    # nothing for a pricing row to price. That template IS read by the
+    # enumeration below (it was not until PR #952, which made this exemption a
+    # no-op), so these three are genuinely encountered and genuinely exempted —
+    # test_coverage_exempt_has_no_stale_entries asserts exactly that.
     "amazon.titan-embed-text-v2:0": "embedding model — never metered",
     "cohere.embed-english-v3": "embedding model — never metered",
     "cohere.embed-multilingual-v3": "embedding model — never metered",
@@ -395,25 +402,59 @@ _NO_CACHE_UNITS_EXPECTED = {
         "GovCloud inference profile"
     ),
     "qwen.qwen3-vl-235b-a22b": "not in CACHEPOINT_SUPPORTED_MODELS",
+    # The four below were invisible until PR #952 widened the enumeration to read
+    # configuration-schema ``enum:`` blocks; all four are absent from
+    # CACHEPOINT_SUPPORTED_MODELS, so like the entries above their cache rate is
+    # unreachable rather than merely unrecorded.
+    "us.meta.llama4-maverick-17b-instruct-v1:0": "not in CACHEPOINT_SUPPORTED_MODELS",
+    "us.meta.llama4-scout-17b-instruct-v1:0": "not in CACHEPOINT_SUPPORTED_MODELS",
+    "google.gemma-3-27b-it": "not in CACHEPOINT_SUPPORTED_MODELS",
+    "nvidia.nemotron-nano-12b-v2": "not in CACHEPOINT_SUPPORTED_MODELS",
 }
 
 
-def _allowed_values(path: Path) -> set:
-    """Every ``AllowedValues:`` list item in a CloudFormation template.
+# Both keys that enumerate a closed set of choices in these templates. CFN
+# parameter dropdowns use ``AllowedValues:``; the configuration-schema dropdowns
+# the UI renders live under ``Metadata`` and are JSON Schema, so they use
+# ``enum:``. Reading only the first is why this guard used to see ZERO model IDs
+# from patterns/unified/template.yaml, hiding 56 selectable IDs including
+# global.amazon.nova-pro-v1:0, which was wholly unpriced.
+_ENUM_KEYS = ("AllowedValues", "enum")
 
-    Parsed as text on purpose: these templates carry CFN intrinsics that a plain
-    yaml.safe_load rejects.
+
+def _enumerated_values(path: Path) -> set:
+    """Every value listed under an ``AllowedValues:`` or ``enum:`` key.
+
+    Parsed as text on purpose rather than with yaml.safe_load: these templates
+    carry CFN intrinsics (``!If``, ``!Ref``, ``!Sub``) that safe_load rejects
+    outright, and the ``enum:`` blocks in patterns/unified/template.yaml embed
+    them mid-list.
+
+    Both YAML sequence forms appear in these files and both are handled:
+    the block form (``enum:`` then ``- "value"`` lines) and the inline flow form
+    (``enum: ["a", "b"]``). Values that are CFN intrinsics rather than literals
+    are returned as-is; callers filter by _MODEL_ID_RE, which no intrinsic
+    matches.
     """
+    keys = "|".join(_ENUM_KEYS)
+    header_re = re.compile(rf"^(\s*)(?:{keys}):\s*(.*?)\s*$")
     values = set()
     lines = path.read_text().splitlines()
     i = 0
     while i < len(lines):
-        header = re.match(r"^(\s*)AllowedValues:\s*$", lines[i])
+        header = header_re.match(lines[i])
         if not header:
             i += 1
             continue
-        indent = len(header.group(1))
+        indent, inline = len(header.group(1)), header.group(2)
         i += 1
+        if inline:
+            # Inline flow form: enum: ["none", "minimal", ...]
+            for item in inline.strip("[]").split(","):
+                item = item.strip().strip("'\"")
+                if item:
+                    values.add(item)
+            continue
         while i < len(lines):
             item = re.match(r"^(\s*)-\s*(.+?)\s*$", lines[i])
             if not item or len(item.group(1)) <= indent:
@@ -423,17 +464,21 @@ def _allowed_values(path: Path) -> set:
     return values
 
 
-def _selectable_model_ids() -> set:
-    """Every Bedrock model ID the repository can actually select.
+def _all_model_ids() -> set:
+    """Every Bedrock model ID the repository can select, exemptions included.
 
     Two sources, because either one alone misses real models: the template
-    ``AllowedValues`` enums (what the deploy-time dropdowns offer) and the
-    ``model:`` keys in ``config_library/`` (what the shipped presets pin, which is
-    how us.anthropic.claude-3-5-sonnet-20240620-v1:0 reached production unpriced).
+    enumerations (what the deploy-time and configuration-schema dropdowns offer)
+    and the ``model:`` keys in ``config_library/`` (what the shipped presets pin,
+    which is how us.anthropic.claude-3-5-sonnet-20240620-v1:0 reached production
+    unpriced).
+
+    Kept separate from ``_selectable_model_ids`` so the _COVERAGE_EXEMPT
+    staleness test can ask whether an exempt ID is still enumerated at all.
     """
     ids = set()
     for template in _TEMPLATES:
-        ids |= {v for v in _allowed_values(template) if _MODEL_ID_RE.match(v)}
+        ids |= {v for v in _enumerated_values(template) if _MODEL_ID_RE.match(v)}
 
     for path in sorted((_REPO_ROOT / "config_library").rglob("*.y*ml")):
         for line in path.read_text(errors="replace").splitlines():
@@ -443,18 +488,45 @@ def _selectable_model_ids() -> set:
             if match and _MODEL_ID_RE.match(match.group(1)):
                 ids.add(match.group(1))
 
-    return ids - set(_COVERAGE_EXEMPT)
+    return ids
+
+
+def _selectable_model_ids() -> set:
+    """``_all_model_ids()`` minus the documented exemptions."""
+    return _all_model_ids() - set(_COVERAGE_EXEMPT)
 
 
 @pytest.mark.unit
 def test_selectable_model_enumeration_is_not_vacuous():
     """Guard the guard: a regex or path drift that finds nothing must fail loudly."""
     ids = _selectable_model_ids()
-    assert len(ids) >= 30, f"only found {len(ids)} selectable model IDs: {sorted(ids)}"
+    assert len(ids) >= 80, f"only found {len(ids)} selectable model IDs: {sorted(ids)}"
     # Spot-check one ID from each source so a broken source is not masked by the
-    # other still working.
-    assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in ids  # template enum
+    # others still working. The three are deliberately distinct SHAPES of source:
+    # a CFN parameter AllowedValues list, a configuration-schema ``enum:`` block
+    # under Metadata (which this guard read none of until PR #952), and a preset.
+    assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in ids  # AllowedValues
+    assert "global.amazon.nova-pro-v1:0" in ids  # Metadata schema enum:
     assert "us.anthropic.claude-3-5-sonnet-20240620-v1:0" in ids  # config_library
+
+
+@pytest.mark.unit
+def test_coverage_exempt_has_no_stale_entries():
+    """Every exemption must still exempt something.
+
+    _COVERAGE_EXEMPT was a no-op: it named three embedding models from
+    nested/bedrockkb/template.yaml, which _TEMPLATES did not read, so subtracting
+    it removed nothing and an ID could sit here forever without meaning anything.
+    Requiring each entry to appear in the raw enumeration makes a stale exemption
+    fail instead of lingering — and makes a real one demonstrably load-bearing.
+    """
+    enumerated = _all_model_ids()
+    stale = sorted(set(_COVERAGE_EXEMPT) - enumerated)
+    assert not stale, (
+        "_COVERAGE_EXEMPT entries that no longer match any enumerated model ID "
+        f"(so they exempt nothing): {stale}. Remove them, or fix _TEMPLATES / "
+        "_MODEL_ID_RE if the ID should still be found."
+    )
 
 
 @pytest.mark.unit
@@ -535,3 +607,205 @@ def test_no_cache_units_allowlist_has_no_stale_entries(shipped_pricing_raw):
         f"_NO_CACHE_UNITS_EXPECTED entries that are no longer needed (model is "
         f"not selectable, or now has cache rates): {stale}"
     )
+
+
+@pytest.mark.unit
+def test_no_cache_units_allowlist_matches_cachepoint_support():
+    """The condition the allowlist's own comment claims, actually asserted.
+
+    _NO_CACHE_UNITS_EXPECTED says every entry is absent from
+    ``CACHEPOINT_SUPPORTED_MODELS`` and that "if any of these is later added to
+    CACHEPOINT_SUPPORTED_MODELS, it must get real cache rates and come off this
+    list — which is what this test will then demand". Nothing demanded it: the
+    stale-entry test above looks only at selectability and at the pricing rows, so
+    adding a listed model to CACHEPOINT_SUPPORTED_MODELS left the whole suite
+    green while the model began emitting cache tokens with no rate to price them —
+    a silent $0.00 under-report, the mirror image of the overcharge #926 fixed.
+
+    Membership in CACHEPOINT_SUPPORTED_MODELS is therefore the rule, with one
+    escape hatch: an entry whose reason begins with "verified live:" documents a
+    MEASURED observation that the profile does not actually cache despite being
+    listed, which no static check can derive. Anything else must be absent.
+    """
+    from idp_common.bedrock.client import CACHEPOINT_SUPPORTED_MODELS
+
+    # Sanity-check the import target before drawing conclusions from it: an empty
+    # or renamed list would make every assertion below pass vacuously.
+    assert len(CACHEPOINT_SUPPORTED_MODELS) > 20, (
+        "CACHEPOINT_SUPPORTED_MODELS looks wrong "
+        f"({len(CACHEPOINT_SUPPORTED_MODELS)} entries); this test would pass "
+        "vacuously"
+    )
+
+    contradictory = sorted(
+        model_id
+        for model_id, reason in _NO_CACHE_UNITS_EXPECTED.items()
+        if model_id in CACHEPOINT_SUPPORTED_MODELS
+        and not reason.startswith("verified live:")
+    )
+    assert not contradictory, (
+        "these models are in bedrock.client.CACHEPOINT_SUPPORTED_MODELS, so the "
+        "client will send cachePoint markers and they WILL emit "
+        "cacheReadInputTokens/cacheWriteInputTokens — but "
+        f"_NO_CACHE_UNITS_EXPECTED excuses them from having cache rates: "
+        f"{contradictory}. Add the real cache rates to "
+        "config_library/pricing.yaml and remove the entry, or — if you have "
+        "MEASURED that this profile does not cache in practice — restate the "
+        "reason starting with 'verified live:'."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 4. Non-Bedrock key shapes: Lambda hooks, the BDA skip counter, Lambda cost   #
+# --------------------------------------------------------------------------- #
+#
+# These are the pricing keys that are NOT `bedrock/<model-id>`, and every one of
+# them was broken or unpriced before PR #952. Nothing covered them, which is why
+# removing the substring fallback silently turned two shipped per-page prices into
+# NULL. All of the assertions below run against the REAL config_library/pricing.yaml
+# (the ``shipped_reporter`` fixture), not a fixture table, because the failure being
+# guarded against is a mismatch between the shipped data and the shipped code.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("hook_reference", "expected"),
+    [
+        # The form every example in docs/lambda-hook-inference.md uses.
+        (
+            "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-mistral-ocr-hook",
+            0.004,
+        ),
+        (
+            "arn:aws:lambda:us-west-2:210987654321:function:GENAIIDP-cohere-parse-hook",
+            0.0015,
+        ),
+        # An alias/version-qualified ARN: the suffix must not become part of the
+        # pricing key, or the row stops matching the moment someone pins a stage.
+        (
+            "arn:aws:lambda:us-east-1:123456789012:function:"
+            "GENAIIDP-mistral-ocr-hook:PROD",
+            0.004,
+        ),
+        # A GovCloud ARN — a different partition must not change the key.
+        (
+            "arn:aws-us-gov:lambda:us-gov-west-1:123456789012:function:"
+            "GENAIIDP-cohere-parse-hook",
+            0.0015,
+        ),
+        # A bare function name, which the config also accepts.
+        ("GENAIIDP-mistral-ocr-hook", 0.004),
+        ("GENAIIDP-cohere-parse-hook", 0.0015),
+    ],
+)
+def test_shipped_lambda_hook_rows_resolve_to_their_per_page_price(
+    shipped_reporter, hook_reference, expected
+):
+    """Both shipped Lambda-hook rows must price, from every configurable ARN form.
+
+    This is the regression PR #952 introduced and this test locks shut. The hook
+    metering key is built by ``bedrock.client`` as
+    ``{context}/lambda_hook/{name}``, and both shipped pricing rows used to be
+    keyed on a bare ``GENAIIDP-<name>`` with no '/' at all — the only two such keys
+    in the whole table. Exact match could therefore never succeed and the old
+    substring fallback was the sole reason they priced. Removing the fallback took
+    Mistral OCR from $0.004/page to NULL and Cohere Parse from $0.0015/page to
+    NULL, unnoticed because nothing tested this key shape.
+
+    The full path is exercised deliberately — ARN normalisation, key construction,
+    the context split SaveReportingData performs, then the lookup — rather than
+    asserting on a hand-written key, because the bug lived in the JOIN between
+    those steps and each one in isolation looked correct.
+    """
+    from idp_common.bedrock.client import lambda_hook_metering_name
+
+    metering_key = (
+        f"classification/lambda_hook/{lambda_hook_metering_name(hook_reference)}"
+    )
+    # SaveReportingData splits the context off the metering key on the FIRST '/'.
+    _context, service_api = metering_key.split("/", 1)
+    assert service_api.startswith("lambda_hook/")
+
+    assert shipped_reporter._get_unit_cost(service_api, "pages") == expected
+
+    # The hook also meters a 'requests' count, which these rows deliberately do
+    # not price. That must read as 0.0 (metered, not chargeable) and not as NULL,
+    # which would mean "we have no idea what this costs".
+    assert shipped_reporter._get_unit_cost(service_api, "requests") == 0.0
+
+
+@pytest.mark.unit
+def test_no_shipped_pricing_key_lacks_a_slash(shipped_pricing_raw):
+    """Every shipped key must be fully qualified, i.e. carry a '/'.
+
+    A key with no '/' cannot be reached by the suffix walk from any metering key
+    that has a context prefix, because the walk only ever strips leading
+    '/'-delimited components — it can never strip a ':' or invent a delimiter. The
+    two Lambda-hook rows were exactly this shape and were dead on exact-match
+    alone. Asserting the invariant here means the next such row fails at review
+    time rather than becoming a silent NULL in the cost table.
+    """
+    unqualified = sorted(
+        entry["name"]
+        for entry in shipped_pricing_raw["pricing"]
+        if "/" not in entry["name"]
+    )
+    assert not unqualified, (
+        f"pricing keys with no '/' cannot be resolved from a metering key: "
+        f"{unqualified}. Key them as '<service>/<name>' — see "
+        "reporting.save_reporting_data._get_unit_cost."
+    )
+
+
+@pytest.mark.unit
+def test_bda_skip_counter_is_priced_at_zero(shipped_reporter):
+    """The BDA skip counter must price as $0.00, not as NULL.
+
+    ``patterns/unified/src/bda_processresults_function/index.py`` emits
+    ``BDAProject/bda/documents-skip`` = 1 when it skips BDA processing. Nothing is
+    invoked, so $0 is the truthful price — but a MISSING row now records NULL and
+    trips the 'reported spend is incomplete' warning on every skipped document.
+    Stating the zero in pricing.yaml keeps the intent in the data instead of
+    special-casing counters in the warning code.
+    """
+    assert shipped_reporter._get_unit_cost("bda/documents-skip", "documents") == 0.0
+
+
+@pytest.mark.unit
+def test_lambda_metering_unit_name_matches_the_shipped_pricing_unit(shipped_reporter):
+    """The unit ``lambda_metering`` emits must be the unit ``pricing.yaml`` prices.
+
+    ``utils.lambda_metering`` emitted ``invocations`` while the ``lambda/requests``
+    row prices ``requests``: the KEY matched, so no 'unpriced' warning ever fired,
+    but the UNIT did not, so every Lambda invocation costed $0.00. Asserting the
+    emitted name against the shipped price closes the naming gap rather than
+    restoring a log line about it.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from idp_common.utils.lambda_metering import calculate_lambda_metering
+
+    metering = calculate_lambda_metering(
+        "OCR",
+        SimpleNamespace(memory_limit_in_mb=1024),
+        start_time=time.time() - 2.0,
+    )
+    # calculate_lambda_metering swallows exceptions and returns {} — which would
+    # make the loop below iterate zero times and pass vacuously.
+    assert set(metering) == {"OCR/lambda/requests", "OCR/lambda/duration"}, metering
+
+    for metering_key, units in metering.items():
+        _context, service_api = metering_key.split("/", 1)
+        for unit_name in units:
+            cost = shipped_reporter._get_unit_cost(service_api, unit_name)
+            assert cost is not None, (
+                f"lambda_metering emits {metering_key!r} unit {unit_name!r}, which "
+                "has no pricing entry at all — it will record NULL"
+            )
+            assert cost > 0, (
+                f"lambda_metering emits {metering_key!r} unit {unit_name!r}, but "
+                f"config_library/pricing.yaml prices that unit at {cost}. The unit "
+                "name almost certainly does not match the shipped one, so every "
+                "Lambda invocation costs $0.00."
+            )

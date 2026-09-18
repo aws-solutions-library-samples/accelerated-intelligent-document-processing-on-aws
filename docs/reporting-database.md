@@ -555,11 +555,19 @@ ORDER BY
   total_cost DESC;
 
 -- Cost per page analysis by document type
+--
+-- Note the COALESCE and the unpriced_rows column. `estimated_cost` is NULL for a
+-- service with no pricing entry, and SUM() skips NULLs while the denominator counts
+-- those rows' pages regardless — so a plain SUM(estimated_cost)/SUM(number_of_pages)
+-- silently understates cost per page whenever any row is unpriced. COALESCE makes
+-- the assumption explicit (treat unpriced as $0) and unpriced_rows tells you whether
+-- that assumption cost you anything: if it is not 0, the figure is a lower bound.
 SELECT 
   se.section_type,
-  SUM(m.estimated_cost) / SUM(m.number_of_pages) as cost_per_page,
-  SUM(m.estimated_cost) as total_cost,
+  SUM(COALESCE(m.estimated_cost, 0)) / SUM(m.number_of_pages) as cost_per_page,
+  SUM(COALESCE(m.estimated_cost, 0)) as total_cost,
   SUM(m.number_of_pages) as total_pages,
+  COUNT_IF(m.unit_cost IS NULL) as unpriced_rows,
   COUNT(DISTINCT m.document_id) as document_count
 FROM 
   metering m
@@ -606,11 +614,17 @@ ORDER BY
 LIMIT 10;
 
 -- Cost efficiency by model (cost per token)
+--
+-- Same NULL caveat as the cost-per-page query above: without COALESCE the numerator
+-- drops unpriced rows while the denominator keeps their token counts, so a model with
+-- no pricing entry appears cheap rather than unknown. unpriced_rows > 0 means the
+-- ratio is a lower bound.
 SELECT 
   service_api,
-  SUM(estimated_cost) / SUM(value) as cost_per_token,
-  SUM(estimated_cost) as total_cost,
+  SUM(COALESCE(estimated_cost, 0)) / SUM(value) as cost_per_token,
+  SUM(COALESCE(estimated_cost, 0)) as total_cost,
   SUM(value) as total_tokens,
+  COUNT_IF(unit_cost IS NULL) as unpriced_rows,
   COUNT(DISTINCT document_id) as document_count
 FROM 
   metering

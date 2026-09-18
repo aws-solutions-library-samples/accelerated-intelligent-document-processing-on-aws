@@ -23,6 +23,7 @@ import pytest
 from idp_common.bedrock.client import (
     LAMBDA_HOOK_MODEL_ID,
     BedrockClient,
+    lambda_hook_metering_name,
 )
 
 
@@ -401,8 +402,15 @@ class TestLambdaResponseParsing:
         )
 
         assert result["response"] == response_payload
-        metering_key = f"Unspecified/lambda_hook/{lambda_arn}"
+        # Keyed on the bare FUNCTION NAME, not on the ARN that was configured.
+        # An ARN embeds an account id and a region, so no shipped pricing entry
+        # could ever match it, and its ':function:' delimiter is not a '/' so the
+        # pricing suffix walk cannot reach past it either — both shipped hook rows
+        # recorded a NULL cost as a result. See
+        # bedrock.client.lambda_hook_metering_name and GitHub issue #926.
+        metering_key = "Unspecified/lambda_hook/GENAIIDP-test"
         assert metering_key in result["metering"]
+        assert f"Unspecified/lambda_hook/{lambda_arn}" not in result["metering"]
         assert result["metering"][metering_key]["inputTokens"] == 100
         assert result["metering"][metering_key]["outputTokens"] == 50
         assert result["metering"][metering_key]["requests"] == 1
@@ -436,9 +444,68 @@ class TestLambdaResponseParsing:
             content=[{"text": "test"}],
         )
 
-        metering_key = f"Unspecified/lambda_hook/{lambda_arn}"
+        # Bare function name, not the ARN — see the note above.
+        metering_key = "Unspecified/lambda_hook/GENAIIDP-test"
         assert result["metering"][metering_key]["inputTokens"] == 0
         assert result["metering"][metering_key]["outputTokens"] == 0
+
+
+class TestLambdaHookMeteringName:
+    """The ARN -> function-name normalisation the metering key depends on.
+
+    ``model_lambda_hook_arn`` accepts three forms and all three have to reduce to
+    the same bare function name, because that name IS the pricing key suffix. If
+    any of them leaked an account id, a region or an alias into the key, the
+    corresponding pricing row would stop matching — which is exactly the failure
+    GitHub issue #926 traced: the key carried the whole ARN and neither shipped
+    hook row could ever be found.
+    """
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            (
+                "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-my-hook",
+                "GENAIIDP-my-hook",
+            ),
+            # Alias / version qualifier must be dropped: pinning a stage must not
+            # change which pricing row applies.
+            (
+                "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-my-hook:PROD",
+                "GENAIIDP-my-hook",
+            ),
+            (
+                "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-my-hook:42",
+                "GENAIIDP-my-hook",
+            ),
+            # A different partition must not change the name either.
+            (
+                "arn:aws-us-gov:lambda:us-gov-west-1:123456789012:function:"
+                "GENAIIDP-my-hook",
+                "GENAIIDP-my-hook",
+            ),
+            # Already a bare function name: passed through unchanged.
+            ("GENAIIDP-my-hook", "GENAIIDP-my-hook"),
+            # A name containing a dot or dash is not truncated.
+            ("my.hook-v2", "my.hook-v2"),
+        ],
+    )
+    def test_every_configurable_form_reduces_to_the_function_name(
+        self, configured, expected
+    ):
+        assert lambda_hook_metering_name(configured) == expected
+
+    def test_result_never_contains_an_arn_delimiter(self):
+        """The returned name must be safe to embed in a '/'-delimited key.
+
+        A ':' surviving into the key is what made the row unreachable: the pricing
+        lookup splits on '/' only, so it can never step over a ':'.
+        """
+        name = lambda_hook_metering_name(
+            "arn:aws:lambda:eu-west-1:210987654321:function:GENAIIDP-hook:STAGE"
+        )
+        assert ":" not in name
+        assert "/" not in name
 
 
 class TestRegionFiltering:

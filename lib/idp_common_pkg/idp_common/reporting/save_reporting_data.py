@@ -981,10 +981,19 @@ class SaveReportingData:
         progressively shorter ``/``-delimited suffixes of it, and the longest
         match wins — the same rule the benchmark harness uses
         (``benchmarks/harness/lib.py::price_metering``), so the two cost figures
-        the project publishes cannot diverge. Every pricing key is fully
-        qualified (``bedrock/<model-id>``, ``textract/<api>``), so the suffix walk
-        only ever strips leading context components; it cannot bind one model to
-        another.
+        the project publishes cannot diverge. Every shipped pricing key is fully
+        qualified (``bedrock/<model-id>``, ``textract/<api>``,
+        ``lambda_hook/<function-name>``), so the suffix walk only ever strips
+        leading context components; it cannot bind one model to another.
+
+        The suffix walk is also what keeps a pricing key that is *less* qualified
+        than the metering key working, which is why a user config that keys a
+        Lambda hook on the bare ``GENAIIDP-<name>`` still resolves even though the
+        shipped default is now ``lambda_hook/GENAIIDP-<name>``. Note the
+        corollary: a Lambda hook's metering key must carry the bare function
+        name, not the configured ARN — an ARN delimits the name with ``:``, which
+        this walk cannot split, so an ARN-keyed metering row is unpriceable. See
+        ``bedrock.client.lambda_hook_metering_name``.
 
         There is deliberately NO substring/fuzzy fallback. The previous
         implementation accepted a pricing key that was merely a substring of the

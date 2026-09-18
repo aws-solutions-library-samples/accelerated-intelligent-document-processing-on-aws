@@ -196,6 +196,32 @@ def _strip_region_and_1m(model_id: str) -> str:
     return base
 
 
+def lambda_hook_metering_name(lambda_arn: str) -> str:
+    """Reduce a Lambda hook reference to the bare function name for metering.
+
+    The metering key for a Lambda hook is ``{context}/lambda_hook/{name}`` and
+    ``name`` MUST be the bare function name, because that is the only part that
+    is stable enough to be a pricing key. ``model_lambda_hook_arn`` is normally
+    configured as a full ARN (every example in docs/lambda-hook-inference.md is),
+    and an ARN embeds the account id and region — so a pricing entry keyed on one
+    could never ship as a default, and would break on redeploy to another
+    account. Worse, an ARN delimits the function name with ``:``, not ``/``, so
+    the ``/``-suffix walk in ``reporting.save_reporting_data._get_unit_cost``
+    could never reach it: both shipped hook rows resolved to "unpriced" (see
+    GitHub issue #926 / PR #952).
+
+    Accepts, and returns the bare function name for, all three configurable
+    forms: a full ARN, a full ARN with an alias or version suffix
+    (``...:function:name:PROD``), and an already-bare function name.
+    """
+    name = lambda_arn
+    if ":function:" in name:
+        # Drop everything up to and including ':function:', then any
+        # alias/version suffix that follows the name.
+        name = name.split(":function:")[-1].split(":")[0]
+    return name
+
+
 def is_claude_effort_model(model_id: str) -> bool:
     """True if the Claude model accepts output_config.effort.
 
@@ -2704,7 +2730,12 @@ class BedrockClient:
             response_with_metering = {
                 "response": response_payload,
                 "metering": {
-                    f"{context}/lambda_hook/{lambda_arn}": {
+                    # Keyed on the bare FUNCTION NAME, never the raw ARN: an ARN
+                    # embeds account id and region, so no shipped pricing entry
+                    # could ever match it, and its ':function:' delimiter is not
+                    # a '/' so the pricing suffix walk cannot split it either.
+                    # See lambda_hook_metering_name.
+                    f"{context}/lambda_hook/{lambda_hook_metering_name(lambda_arn)}": {
                         **numeric_usage(usage),
                         "requests": 1,
                     }

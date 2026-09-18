@@ -818,11 +818,24 @@ const ComprehensiveBreakdown = ({
 
                   const cost = (details.estimated_cost as number) || 0;
                   const unitCost = asFiniteNumber(details.unit_cost);
-                  // Rows like `totalTokens` and `requests` are counts, not charges:
-                  // nothing prices them and nothing is billed for them. Seen live
-                  // reading "$0" unit cost beside "N/A" estimated cost, which says
-                  // both "free" and "not priced" in the same row.
-                  const isUnpriced = cost === 0 && (unitCost === null || unitCost === 0);
+                  // Three states, not two, and they must not be collapsed:
+                  //
+                  //  - unit_cost NULL  => genuinely UNPRICED. Nothing in the
+                  //    pricing table covers this service, so the cost of this row
+                  //    is unknown and the run total is an understatement.
+                  //  - unit_cost 0     => metered but NOT CHARGEABLE. Rows like
+                  //    `totalTokens` and `requests` are counts; nothing is billed.
+                  //  - unit_cost > 0   => a real charge.
+                  //
+                  // The NULL test has to come FIRST. NULL unit_cost implies NULL
+                  // estimated_cost, which `|| 0` turns into 0, so a single
+                  // "cost === 0 && (unitCost === null || unitCost === 0)" test
+                  // swallowed the unpriced case into the not-chargeable one and
+                  // rendered it as '—'. The 'Not priced' label below was
+                  // unreachable, and an unpriced service looked free — which is
+                  // the reading GitHub issue #926 set out to eliminate.
+                  const isUnpriced = unitCost === null;
+                  const isNotChargeable = !isUnpriced && unitCost === 0 && cost === 0;
                   contextSubtotal += cost;
 
                   costItems.push({
@@ -830,8 +843,8 @@ const ComprehensiveBreakdown = ({
                     serviceApi: `${service}/${api}`,
                     unit: (details.unit as string) || unit,
                     value: (details.value as string) || 'N/A',
-                    unitCost: isUnpriced ? '—' : unitCost === null ? 'Not priced' : formatUnitCostUsd(unitCost),
-                    estimatedCost: isUnpriced ? '—' : cost > 0 ? formatCostUsd(cost) : 'N/A',
+                    unitCost: isUnpriced ? 'Not priced' : isNotChargeable ? '—' : formatUnitCostUsd(unitCost),
+                    estimatedCost: isUnpriced ? 'Not priced' : isNotChargeable ? '—' : cost > 0 ? formatCostUsd(cost) : 'N/A',
                     sortOrder: 0, // Regular items
                   });
                 });
