@@ -376,14 +376,16 @@ class AgenticConfig(BaseModel):
     max_pages_per_shard: int = Field(
         default=5,
         ge=0,
-        description="Page-count ceiling per shard when max_concurrent_batches "
-        "> 1. A shard is closed once it holds this many pages even if its OCR "
-        "text is under the token budget. This is the TIMEOUT-critical lever "
-        "(fewer pages/shard = fewer sequential agent turns = each shard Lambda "
-        "finishes well under 900s), so it stays a small fixed default (5) rather "
-        "than model-derived — a roomy token budget must NOT collapse a large doc "
-        "back into one giant shard. 0 = disabled (token budget alone bounds "
-        "shards; not recommended for large docs).",
+        description="Page count at which a shard closes when max_concurrent_batches "
+        "> 1, even if its OCR text is still under the token budget. This is the "
+        "TIMEOUT-critical lever (fewer pages/shard = fewer sequential agent turns = "
+        "each shard Lambda finishes well under 900s), so it stays a small fixed "
+        "default (5) rather than model-derived — a roomy token budget must NOT "
+        "collapse a large doc back into one giant shard. NOT an absolute ceiling: "
+        "once honouring it would need more shards than max_concurrent_batches "
+        "allows, plan_shards repacks the pages into exactly that many "
+        "token-balanced shards and this value no longer applies. 0 = disabled "
+        "(token budget alone bounds shards; not recommended for large docs).",
     )
     max_images_per_agent: int = Field(
         default=20,

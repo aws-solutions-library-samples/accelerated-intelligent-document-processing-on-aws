@@ -667,6 +667,77 @@ leave no entry. The attach-time choke point (`prepare_bedrock_image_attachment`)
 fits as well, so the shard runtime and every other caller are covered even when
 they bypass this loader; only the loader records metadata.
 
+The same loader also applies Bedrock's **many-image dimension cap** (#994): a
+request carrying more than 20 image blocks caps every image in it at 2,000 px per
+side, so `_load_document_images` counts the pages it is actually about to attach
+(page ids not present in `document.pages` are skipped and do not count) and passes
+`max_dimension=image.max_dimension_for_image_count(count)` into the same fit.
+
+The count it passes is the count **one request** will carry, not the section's page
+count, because the two differ on the agentic path. `_agentic_images_per_request`
+answers it from the section's real per-page OCR text — which `_prepare_section_context`
+now loads immediately *before* the images for exactly this reason — by taking the worse
+of the shard planner's **two regimes**, capped by `max_images_per_agent`:
+
+- **the page ceiling holds** → `max_pages_per_shard` (or the whole section when it is
+  `0`, "page cap off");
+- **the repack fired** → the largest range `_rebalance_to_cap` returns. That function
+  takes no token budget, so this is exact rather than an estimate. It is consulted only
+  when the repack could fire for *some* budget (`_repack_is_reachable`); asking
+  unconditionally over-clamps a section with no OCR text at all, whose degenerate
+  zero-token split reports a large tail shard the real planner never produces.
+
+Three closed forms were tried before this and all were wrong:
+
+- `min(pages, max_pages_per_shard)` — the page cap is not a ceiling. `plan_shards`
+  closes a shard at that many pages, but when doing so would produce more shards than
+  `max_concurrent_batches`, `_rebalance_to_cap` discards those ranges and repacks the
+  pages, ignoring the cap. At `max_concurrent_batches: 2` a 30-page section is two
+  15-page requests, not six 5-page ones.
+- `ceil(pages / max_concurrent_batches)` — the repack is **token-balanced**, not
+  page-balanced (`target = total_tokens / max_shards`). One dense page can take a
+  shard to itself and leave the sparse pages crowded into another, so no arithmetic
+  over page counts bounds the largest shard. It also silently dropped the clamp when
+  `max_pages_per_shard: 0` (documented as "page cap off") made the whole section one
+  shard.
+- `plan_shards` under a deliberately huge token budget, on the argument that erring
+  large only closes shards earlier. The budget also decides **whether the repack fires**,
+  and the repack discards the page cap — so on the shipped defaults a 50-page section
+  with one dense page plans as ten 5-page shards under an unbounded budget and as
+  `[1, 41, 1, …]` at Sonnet 4.6's real 18,400-token budget. Reporting 5 there missed
+  the clamp entirely.
+
+`max_images_per_agent` is the only hard ceiling on the attached count —
+`_cap_agent_images` truncates the list before every invocation.
+
+The result is then **doubled**, because Strands re-sends the attached page images on
+every turn and a `view_image` tool result adds a further copy of a page to the same
+request. The resulting thresholds — note `max_concurrent_batches` caps the shard
+*count*, so raising it makes each request smaller and the threshold higher:
+
+| Configuration | Clamps at |
+|---|---|
+| Simple | 21+ pages in the section |
+| Advanced, **shipped defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) | ~101+ pages |
+| Advanced, `max_concurrent_batches: 5` / `2` | ~51+ / ~21+ pages |
+| Advanced, sharding off (`max_concurrent_batches: 1`) | 11+ pages (`min(pages, max_images_per_agent=20) * 2 > 20`) |
+| Advanced, `max_images_per_agent` ≤ 10 | never |
+
+The doubling is a heuristic and deliberately pessimistic — clamping to 2,000 px
+costs ~15% of the image tokens, a rejected request costs the section — but it covers
+only **one** extra copy per page. Two gaps remain, both recorded in
+`image/README.md`: an agent that calls `view_image` enough times to push a small
+shard past 20 blocks, and a **resume** run (`existing_data_model`, or a
+`checkpoint_buffer`), where sharding is skipped entirely and the whole section goes
+to one agent even with `max_concurrent_batches > 1` — something the load-time
+estimate cannot see. `max_images_per_agent` still bounds the attached count there (at its default of
+20; `0` means unlimited and removes that backstop), and the failure mode is a named `ExtractionImageRejected`.
+`BedrockClient.invoke_model` sweeps every request with
+`image.fit_images_in_request` as the authoritative backstop (it is the only place
+that sees the whole request, tool results included); the loader exists so the
+reduction is auditable per page and so the agentic path, which builds its own
+requests, is covered too.
+
 ## Multi-document sections (`instance_count`)
 
 Classification splits sections on document *type*. When a packet concatenates
@@ -1391,13 +1462,22 @@ Key behaviors:
 - **Bounded by tokens AND pages.** Pages are grouped so each shard's estimated
   input stays under `shard_token_budget` (default **8,000**; `≈ chars/4`) **and**
   holds at most `max_pages_per_shard` pages (default **5**, `0` disables the page
-  ceiling). A shard closes when *either* bound is hit. The page ceiling
-  guarantees a large document shards even when its OCR text is unusually compact
-  and would otherwise fit one token budget — so sharding engages **by default**
-  with no per-config tuning. `max_concurrent_batches` is an **upper bound on
-  parallelism and shard count** — a very large section is split into as many
-  shards as needed to fit (capped at `max_concurrent_batches`), not exactly N
-  equal pieces.
+  ceiling). A shard closes when *either* bound is hit. The page ceiling means a
+  large document shards even when its OCR text is unusually compact and would
+  otherwise fit one token budget — so sharding engages **by default** with no
+  per-config tuning. `max_concurrent_batches` is an **upper bound on parallelism
+  and shard count** — a very large section is split into as many shards as needed
+  to fit (capped at `max_concurrent_batches`).
+  > ⚠️ **`max_pages_per_shard` is not a guarantee.** Once the page ceiling would
+  > produce more shards than `max_concurrent_batches` allows — which at the
+  > defaults (10 and 5) happens on every section over 50 pages — `_rebalance_to_cap`
+  > **discards** those ranges and repacks the pages into exactly
+  > `max_concurrent_batches` token-balanced groups, ignoring the page cap. At
+  > `max_concurrent_batches: 2` a 30-page section is two 15-page shards, not six
+  > 5-page ones, and because the repack balances estimated tokens rather than pages,
+  > a text-heavy page can occupy a shard alone. Code that needs a bound on a shard's
+  > page count must cover **both** regimes — the page ceiling and the repack — and
+  > must not derive one from a single token budget; see the many-image cap note above.
   > **Why the low default budget?** A high budget (the old 40,000 default) let
   > even a ~25-page dense table fit one shard, so sharding silently did *not*
   > engage and a single agent had to emit the whole giant table in one Bedrock
@@ -1941,12 +2021,21 @@ make both loud without changing what is extracted:
 - `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
   `ValidationException` (in the shard path, `from` the agentic `ValueError` whose cause is
   that `ValidationException`; the transient check follows the whole chain) with the section size (from the logged pre-flight estimate,
-  `_simple_mode_input_preflight`: text chars/4 + images at Bedrock's pixels/750) and the
+  `_simple_mode_input_preflight`: text chars/4 + images priced by
+  `bedrock.model_utils.estimate_image_tokens`, which is Claude's 28px-patch count capped
+  at the model's resolution tier — 1,568 tokens before Claude 4.7, 4,784 after. The older
+  uncapped `(w*h)/750` figure over-stated a 2550x3301 page 2.4x, 11,223 against a measured
+  4,761, which is how an image **rejection** came to be explained as a token overflow
+  (#994); non-Claude families keep the legacy figure, where over-stating is harmless) and the
   remedy; the wording is mode-aware (`_explain_input_overflow`) and the matcher is the shared
   `bedrock_utils.is_input_token_overflow` (also used by summarization). The class name is in
   no retry list, so #787 keeps it hard. The matcher judges a `ClientError` by its code
   first (only `ValidationException` can be an overflow; a throttle mentioning "input tokens
-  per minute" is not) and by text otherwise. The Step Functions shard runtime raises it too
+  per minute" is not) and by text otherwise, and returns `False` outright for an image
+  rejection (below). When the failing request also had a shape Bedrock rejects on image
+  dimensions (>20 images, or any image over 2,000 px — both recorded by the pre-flight),
+  the message says so, so the reader does not spend the next hour lowering a page budget
+  that is not the binding limit. The Step Functions shard runtime raises it too
   (`_run_shard_or_explain_overflow` is `async` and wraps the **await** of
   `extract_one_shard`), with the Advanced-mode wording; when the agentic path has already
   translated the overflow (`agentic_idp._is_context_overflow_error`, which also recognises
@@ -1954,6 +2043,18 @@ make both loud without changing what is extracted:
   remedies are kept and no second paragraph is added. The pre-flight is **not** a processing
   issue: a
   successful call proves the estimate wrong, and a failed section never reaches the record.
+- `ExtractionImageRejected` — Bedrock rejected the request over its **images**, not its
+  token count: an image over 8,000 px per side, over 2,000 px in a request carrying more
+  than 20 images, or over 5 MB base64. Matched by
+  `bedrock_utils.is_image_request_rejection`, which is checked **before**
+  `is_input_token_overflow` at both raise sites (`extract_from_section`'s handler and
+  `_run_shard_or_explain_overflow`) because Bedrock's wording overlaps enough that the
+  overflow matcher would otherwise claim it — the bug reported in #994, where users were
+  told to shard a request whose problem was pixel dimensions.
+  `_explain_image_rejection` names the request's image count and largest dimension and
+  gives the only remedy that applies: lower `extraction.image.target_width` /
+  `target_height`. Deterministic, so like `ExtractionInputTooLarge` the class name is in no
+  retry list.
 - `ModelInvalidToolUseSequence` — the same shape for a model whose tool-use sequence
   Bedrock rejects: raised `from` Bedrock's `EventStreamError` /
   `modelStreamErrorException` when `is_model_tool_use_sequence_error` matches

@@ -1550,7 +1550,12 @@ def _prepare_prompt_content(
     else:
         prompt_content = [ContentBlock(text=str(prompt))]
 
-    # Add page images if provided - no limit with latest Bedrock API
+    # Add page images if provided. There IS a limit, contrary to what this comment
+    # used to claim: past 20 image blocks in one request Bedrock caps every image at
+    # 2,000 px per side, and past 100 it refuses the request outright (#994). The
+    # attached count is bounded by agentic.max_images_per_agent, and the pages
+    # reaching here are already fitted to the applicable cap by
+    # ExtractionService._load_document_images.
     if page_images and attach_page_images:
         logger.info(
             "Attaching images to agentic extraction prompt",
