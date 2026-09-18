@@ -35,6 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOC = REPO_ROOT / "docs" / "release-runbook.md"
 SCRIPT = REPO_ROOT / "scripts" / "aws-release.sh"
 PUBLISHER = REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "publish.py"
+CLI = REPO_ROOT / "lib" / "idp_cli_pkg" / "idp_cli" / "cli.py"
 MAKEFILE = REPO_ROOT / "Makefile"
 SIDEBAR = REPO_ROOT / "docs-site" / "astro.config.mjs"
 DOCS_INDEX = REPO_ROOT / "docs" / "README.md"
@@ -140,6 +141,45 @@ def test_mutable_keys_the_publisher_writes_are_documented(key: str) -> None:
         f"the runbook's rollback section describes a key that may no longer exist"
     )
     assert key in _doc_text(), f"{key!r} must be documented in {DOC.relative_to(REPO_ROOT)}"
+
+
+@pytest.mark.unit
+def test_the_cli_is_documented_as_a_consumer_of_the_floating_key() -> None:
+    """`idp-cli deploy` reads the same overwritten key the Launch Stack buttons do.
+
+    Derived from the CLI source rather than restated: if `TEMPLATE_URLS` is renamed,
+    moved, or repointed at a versioned key, this fails and forces a decision about the
+    runbook's "What reads it" cell and its §3.2 rollback reasoning — which discusses
+    moving that key and would otherwise not mention that the CLI follows it too.
+    """
+    cli_text = CLI.read_text(encoding="utf-8")
+    block = re.search(r"^TEMPLATE_URLS\s*=\s*\{(.*?)^\}", cli_text, re.S | re.M)
+    assert block, (
+        f"TEMPLATE_URLS is no longer a module-level dict in "
+        f"{CLI.relative_to(REPO_ROOT)}; the runbook names it as a consumer of the "
+        f"floating template key — re-check that cell"
+    )
+
+    # https://<host>/<bucket>/<key> — capture only the object key.
+    keys = set(re.findall(r"https://[^/\s\"']+/[^/\s\"']+/([\w./-]+\.yaml)", block.group(1)))
+    assert keys, f"no template object keys parsed out of TEMPLATE_URLS in {CLI.name}"
+    assert keys == {"artifacts/genai-idp/idp-main.yaml"}, (
+        f"TEMPLATE_URLS now points at {sorted(keys)} rather than the floating "
+        f"idp-main.yaml key; the runbook's mutability table and §3.2 rollback "
+        f"reasoning both assume the CLI follows the floating key"
+    )
+
+    text = _doc_text()
+    cli_rel = str(CLI.relative_to(REPO_ROOT))
+    assert cli_rel in text, (
+        f"{cli_rel} must be named in {DOC.relative_to(REPO_ROOT)} as a consumer of "
+        f"artifacts/genai-idp/idp-main.yaml — an operator moving that key needs to know "
+        f"`idp-cli deploy` is affected"
+    )
+    assert "TEMPLATE_URLS" in text, (
+        f"{DOC.relative_to(REPO_ROOT)} should name TEMPLATE_URLS so the reader can find "
+        f"the hardcoded URLs in {cli_rel}"
+    )
 
 
 @pytest.mark.unit

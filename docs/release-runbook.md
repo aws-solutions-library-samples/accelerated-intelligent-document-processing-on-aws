@@ -67,7 +67,7 @@ read from `./VERSION` relative to the process working directory.
 
 | Key | Mutability | What reads it |
 |---|---|---|
-| `artifacts/genai-idp/idp-main.yaml` | **Overwritten every release** | the "Launch Stack" buttons in `README.md` and `docs/deployment.md` |
+| `artifacts/genai-idp/idp-main.yaml` | **Overwritten every release** | the "Launch Stack" buttons in `README.md` and `docs/deployment.md`; a third set of Launch Stack buttons in `workshop/amazon-quick-integration-workshop.md`; **and `idp-cli` itself** — `lib/idp_cli_pkg/idp_cli/cli.py` hardcodes this key for all three regions in its `TEMPLATE_URLS` dict, used at three call sites on the `deploy` command's create and update paths, so `idp-cli deploy` serves whatever this key currently holds |
 | `artifacts/genai-idp/idp-main_<VERSION>.yaml` | write-once per version | the `## Templates` block in `CHANGELOG.md`; every release-validation and benchmark record |
 | `artifacts/genai-idp/idp-main-latest.json` | **Overwritten every release** | the Web UI "update available" indicator, via the version-check resolver (`src/lambda/version_check_resolver/index.py`) |
 | `artifacts/genai-idp/<VERSION>/layers/idp-common-<name>-<hash>.zip` | content-addressed | the deployed stack's Lambda layers |
@@ -193,6 +193,25 @@ for the bus factor the issue describes. Before the next release, the person who 
 published before should record: the account id (or its name), the role, how to assume it,
 and whether the buckets have versioning enabled. Until then, treat the credential step as
 tribal knowledge that this document cannot supply.
+
+⚠️ **A specific consequence of that gap: it is unknown whether these buckets carry a
+prefix-wide anonymous-read *bucket policy* over `artifacts/genai-idp/`, and several
+statements elsewhere in this runbook turn on the answer.** If such a policy exists, object
+ACLs are not what grants public read, `set_public_acls` is belt-and-braces, and the
+"exposure window" described in §3.1 does not exist as described. If it does not exist, ACLs
+are load-bearing — and then
+[issue #962](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/962)
+applies: `idp-main-latest.json` is never ACL'd by the publisher (`_upload_version_pointer`
+passes no `ACL`, and the key sits at `<prefix>/`, outside both prefixes `set_public_acls`
+paginates), so the Web UI's update indicator would never have been able to read it. Anywhere
+this document depends on the answer is marked ⚠️ rather than ✅. One anonymous `GetObject`
+from a credential-free shell settles it; see #962 for the exact command.
+
+⚠️ Relatedly, the `--headless` and `--govcloud` transformed templates are uploaded to keys
+that `set_public_acls` does not cover at all —
+[issue #963](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/963),
+and see §4 item 8. Latent rather than live, because `scripts/aws-release.sh` passes neither
+flag.
 
 Note also ⚠️/📄: the repo's own AWS guidance is that ambient sandbox environment credentials
 override `AWS_PROFILE`, so `unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN`
@@ -347,15 +366,23 @@ project's memory of a real occurrence). `scripts/aws-release.sh` does not pass
 `--clean-build`; add it by hand for that case, or run the three `idp-cli publish` commands
 individually with the flag.
 
-**The window you should care about.** ✅ `idp-main.yaml` (the floating key the README Launch
+**The window you should care about.** ⚠️ `idp-main.yaml` (the floating key the README Launch
 Stack buttons use) and `idp-main-latest.json` (the key the Web UI update indicator reads)
 are both written inside `build_main_template`, which runs **before** `set_public_acls`. So
 between those two uploads and the end of a successful run, the floating pointer already
-names the new version while some of that version's artifacts are still private. A customer
-who clicks Launch Stack in that window can get a template whose nested stacks or code zips
-answer 403. The window is minutes, not hours, and it only bites on the first publish of a
-version — but it is why §5 says verify before announcing, and why a publish that dies
-between those points should be re-run promptly rather than left overnight.
+names the new version while some of that version's artifacts are — *if object ACLs are what
+grants public read* — still private. A customer who clicks Launch Stack in that window could
+then get a template whose nested stacks or code zips answer 403. The window would be
+minutes, not hours, and would only bite on the first publish of a version.
+
+**Whether this window exists at all depends on something this document could not
+determine**: whether the `aws-ml-blog-*` buckets carry a prefix-wide anonymous-read **bucket
+policy**. If they do, the `set_public_acls` pass is belt-and-braces, objects are readable
+from the moment they are uploaded, and this window does not exist as described. If they do
+not, the window is real. That is the same unknown flagged in the ⚠️ note on anonymous
+readability earlier in this document, and it is why §5 says verify before announcing, and
+why a publish that dies partway should be re-run promptly rather than left overnight —
+advice that is correct under either reading.
 
 **If a middle region fails**, `set -e` leaves you with, say, `us-west-2` published,
 `us-east-1` half-published, `eu-central-1` untouched — and `eu-central-1`'s
@@ -391,13 +418,24 @@ versioning.** `publish.py` enables versioning only on buckets it creates; the
 versioning state is whatever the account configured. This document could not determine it.
 
 If you must move the floating pointer without a rebuild, note the trap: a server-side copy
-of the previous versioned template over `idp-main.yaml` fixes the Launch Stack buttons but
-**does not** touch `idp-main-latest.json`, which will keep advertising the bad version as an
-available update in every deployed Web UI. ✅ That pointer's body is
-`{"version": …, "templateUrl": …}` written by `_upload_version_pointer`; rewriting it by
-hand means putting a correct JSON object at
-`artifacts/genai-idp/idp-main-latest.json` in each region and re-applying `public-read`.
-Prefer the re-publish above.
+of the previous versioned template over `idp-main.yaml` fixes the Launch Stack buttons —
+and, because `idp-cli` reads the same key (see the table in "What lands in each bucket"),
+`idp-cli deploy` too, in both directions — but it **does not** touch
+`idp-main-latest.json`, which will keep advertising the bad version as an available update
+in every deployed Web UI. ✅ That pointer's body is `{"version": …, "templateUrl": …}`
+written by `_upload_version_pointer`; rewriting it by hand means putting a correct JSON
+object at `artifacts/genai-idp/idp-main-latest.json` in each region.
+
+⚠️ Whether you also need to apply `public-read` to that object by hand is **undetermined**,
+and it is the same unknown as the ⚠️ note above on anonymous readability. The publisher
+never applies an ACL to this key — `_upload_version_pointer` calls `put_object` with no
+`ACL` argument, and `set_public_acls` does not cover the key
+([issue #962](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/962)).
+So either a prefix-wide anonymous-read bucket policy makes the ACL unnecessary, or the
+publisher has a gap and every copy of this object — including one you write by hand — is
+unreadable anonymously. Do not assume one or the other: check the bucket's effective policy
+before relying on a hand-written pointer. Prefer the re-publish above, which at least
+reproduces whatever the normal publish path produces.
 
 ### 3.3 Customers who already upgraded, and stacks wedged in rollback
 
@@ -484,10 +522,22 @@ Done by hand, in order:
 8. ✅ **No headless or GovCloud template is published publicly.** `scripts/aws-release.sh`
    passes neither `--headless` nor `--govcloud`, so `idp-headless.yaml` and
    `idp-govcloud.yaml` are never written to the release prefix. Customers needing those
-   build them from source. (Related: if the script *did* pass those flags, the transformed
-   templates would be uploaded by the operations layer **after** `set_public_acls` has
-   already run inside the publisher, so they would land private. See the PR that added this
-   runbook for the follow-up.)
+   build them from source.
+
+   ⚠️ Related, and worse than an ordering bug: if the script *did* pass those flags, the
+   transformed templates would be uploaded by the operations layer
+   (`lib/idp_sdk/idp_sdk/operations/publish.py:242-247` for `idp-govcloud.yaml`,
+   `:284-289` for `idp-headless.yaml`, neither passing an ACL) **after** `set_public_acls`
+   has already run inside `publisher.run()` at `:180`. But **those two keys also fall
+   outside `set_public_acls`' coverage entirely**: it paginates only
+   `<prefix>/<VERSION>/` and `<prefix>/extensions`, then ACLs only `idp-main.yaml` and
+   `idp-main_<VERSION>.yaml`, so `<prefix>/idp-govcloud.yaml` and
+   `<prefix>/idp-headless.yaml` would never be ACL'd **even if the ordering were fixed**.
+   Re-ordering the calls alone would not make them public; the key list has to be extended
+   too, or the ACL passed in the `upload_file` call. Latent rather than live, since
+   `scripts/aws-release.sh` passes neither flag and no public release has taken this path.
+   Tracked in
+   [issue #963](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/963).
 9. ✅ Marketplace extensions under `artifacts/genai-idp-mp/` — a separate `idp-feature-cli
    publish`, by the extension author.
 10. ✅ The seller entitlement service template — deployed directly by a seller via
@@ -533,8 +583,16 @@ done
       curl -s "$B/idp-main_$V.yaml" | grep -om1 'idp-common-base-[0-9a-f]*\.zip'
       curl -sI "$B/$V/layers/<that name>" -o /dev/null -w '%{http_code}\n'
       ```
-      This is the check that would have caught a publish that died before
-      `set_public_acls`.
+      ⚠️ This is *intended* as the check that would catch a publish that died before
+      `set_public_acls` — but whether it can actually catch that depends on the
+      undetermined question above: if the buckets carry a prefix-wide anonymous-read
+      bucket policy, the zip answers `200` whether or not `set_public_acls` ever ran, so
+      the check passes vacuously in exactly the scenario it is written for. Under that
+      reading it still confirms the object *exists* and is readable, which is worth
+      knowing — it just does not confirm the ACL pass completed. Treat a `200` here as
+      "readable", not as "the publish finished". Resolving
+      [#962](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/962)
+      tells you which of the two this check is doing.
 - [ ] The docs site serves the new content.
 - [ ] The GitHub Release exists, is not a draft, and its body matches the CHANGELOG section.
 - [ ] The live tiers: run the battery per
