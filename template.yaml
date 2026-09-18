@@ -5709,6 +5709,14 @@ Resources:
             Condition:
               ArnEquals:
                 aws:SourceArn: !GetAtt DataMartRollupFunction.Arn
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt DataMartRollupDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
 
   DataMartRollupDLQAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -6295,6 +6303,14 @@ Resources:
       KeySchema:
         - AttributeName: counter_id
           KeyType: HASH
+      # The table holds the counter and the circuit-breaker state (neither of
+      # which carries ExpiresAfter, so neither expires) plus one short-lived
+      # "dec#<executionArn>" marker per completed workflow. The marker makes the
+      # tracker's decrement idempotent per execution (issue #916); TTL is what
+      # keeps that from accumulating one item per document forever.
+      TimeToLiveSpecification:
+        AttributeName: ExpiresAfter
+        Enabled: true
       SSESpecification:
         SSEEnabled: true
         SSEType: KMS
@@ -6423,6 +6439,40 @@ Resources:
       VisibilityTimeout: 900
       MessageRetentionPeriod: 345600 # 4 days
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  DiscoveryQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DiscoveryQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt DiscoveryQueue.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
+  DiscoveryDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DiscoveryDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt DiscoveryDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
 
   ##########################################################################
   # Config Bootstrap (Quick Start) tracking + queue
@@ -7271,6 +7321,26 @@ Resources:
     Properties:
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
+  # Condition must match JobTrackerDLQ's: a policy that deployed without its
+  # queue would fail the stack update.
+  JobTrackerDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: DeployApiGateway
+    Properties:
+      Queues:
+        - !Ref JobTrackerDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt JobTrackerDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
   JobTrackerLogGroup:
     Type: AWS::Logs::LogGroup
     Condition: DeployApiGateway
@@ -7734,9 +7804,12 @@ Resources:
         - !Ref AlertsTopic
 
   # A document that reaches DocumentQueueDLQ has exhausted the redrive policy on
-  # DocumentQueue — maxReceiveCount 1000 against a 30s visibility timeout, so
-  # roughly 8 hours of retries — and no execution ever succeeded for it. Nothing
-  # else reports this: the document never completed, so ExecutionsFailed and
+  # DocumentQueue — maxReceiveCount 500 against DocumentQueue's 60s visibility
+  # timeout, so roughly 8 hours of retries — and no execution ever succeeded for
+  # it. (The 1000/30s this comment used to quote was wrong twice over: 1000 is
+  # DiscoveryQueue's maxReceiveCount, and 30s is DocumentQueueDLQ's own
+  # visibility timeout, not DocumentQueue's.)
+  # Nothing else reports this: the document never completed, so ExecutionsFailed and
   # ExecutionTime have no datapoint for it and both AWS/States alarms read OK.
   # Threshold 0 / one period: a message here is rare and every one is a lost
   # document, so there is nothing to tune and no reason to wait.
@@ -7925,6 +7998,49 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       # The metric is only published when the processor is at the limit, so
       # "no data" means "not blocked" — which is healthy, not unknown.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Issue #915: drift is the counter holding slots it should have released, and
+  # ConcurrencyCounterDriftAlarm above covers it. These two alarms cover the
+  # OPPOSITE and worse direction — the counter releasing a slot it never held.
+  # The admission gate is `active_count < MaxConcurrentWorkflows`, so a counter
+  # below zero silently raises the effective ceiling by exactly that much, for as
+  # long as it stays there, and no other signal moves: documents process, queues
+  # drain, nothing errors. The stack just spends more on Bedrock and Textract
+  # than the operator asked it to.
+  ConcurrencyCounterUnderflowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow tracker tried to release a concurrency slot that was not held (the counter was already 0). The decrement is refused rather than driving the counter negative, so admission control is intact — but a duplicate release means the same terminal execution was processed twice, or the counter was edited out from under the tracker. Check the WorkflowTracker logs for 'Concurrency counter was already 0' and correlate with WorkflowTrackerDLQAlarm and EventBridge redeliveries of WorkflowStateChangeRule."
+      MetricName: ConcurrencyCounterUnderflow
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      # Alarm on the FIRST occurrence: the floor already protected the counter,
+      # so this fires on a real anomaly rather than on accumulated symptoms.
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Published only when the floor trips, so "no data" means it never did.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  ConcurrencyCounterNegativeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Alert when the ${AWS::StackName} workflow-concurrency counter is NEGATIVE. Admission control is `active_count < MaxConcurrentWorkflows`, so a counter at -N admits N workflows above the configured ceiling until it is corrected. The queue processor repairs it on the NEXT ADMITTED DOCUMENT (the increment returns the new value, and a post-increment value of 0 or below means it was negative), raising it to the executions actually running plus the slot just claimed, so this should self-clear within one document; if it does not, inspect the ConcurrencyTable's workflow_counter item directly. Note the counter also converges on its own even without the repair, because each admission increments it and the floored decrements absorb the excess once it reaches the ceiling — so the over-admission is bounded to roughly one generation of documents rather than being permanent. Covers a value that reached the table by any route, including a manual edit."
+      MetricName: ConcurrencyCounterActive
+      Namespace: !Ref AWS::StackName
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: LessThanThreshold
+      # The counter value is published on every document completion, so gaps just
+      # mean an idle stack.
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic
@@ -8541,15 +8657,39 @@ Resources:
                     ],
                     [
                       ".",
+                      "ConcurrencyCounterActive",
+                      {
+                        "stat": "Minimum",
+                        "label": "Counter minimum (below 0 = admitting above the ceiling)"
+                      }
+                    ],
+                    [
+                      ".",
                       "ConcurrencyCounterDrift",
                       {
                         "stat": "Maximum",
                         "label": "Drift (slots held by workflows that already ended)"
                       }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyCounterUnderflow",
+                      {
+                        "stat": "Sum",
+                        "label": "Underflows refused (a slot released that was not held)"
+                      }
+                    ],
+                    [
+                      ".",
+                      "ConcurrencyDecrementSuppressed",
+                      {
+                        "stat": "Sum",
+                        "label": "Duplicate releases suppressed (EventBridge redelivered a terminal event)"
+                      }
                     ]
                   ],
                   "region": "${AWS::Region}",
-                  "title": "Workflow Concurrency Counter (a counter that stays near the limit while the queue is not draining is a leak; drift is sampled only when an increment is refused)",
+                  "title": "Workflow Concurrency Counter (a counter that stays near the limit while the queue is not draining is a leak; a counter below zero over-admits; drift is sampled only when an increment is refused)",
                   "view": "timeSeries",
                   "period": 300,
                   "annotations": {
@@ -8557,6 +8697,11 @@ Resources:
                       {
                         "value": ${MaxConcurrentWorkflows},
                         "label": "MaxConcurrentWorkflows (${MaxConcurrentWorkflows}) — queue stops draining here",
+                        "color": "#ff0000"
+                      },
+                      {
+                        "value": 0,
+                        "label": "Zero — the counter must never go below this",
                         "color": "#ff0000"
                       }
                     ]
@@ -11595,6 +11740,23 @@ Resources:
     Properties:
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
+  TestSetFileCopierFunctionDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TestSetFileCopierFunctionDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt TestSetFileCopierFunctionDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
   TestSetFileCopierFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -11938,6 +12100,23 @@ Resources:
     Properties:
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
+  TestFileCopierFunctionDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TestFileCopierFunctionDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt TestFileCopierFunctionDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
   TestFileCopierFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -12018,6 +12197,23 @@ Resources:
       VisibilityTimeout: 900
       MessageRetentionPeriod: 1209600
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  TestResultCacheUpdateQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TestResultCacheUpdateQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt TestResultCacheUpdateQueue.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
 
   DiscoveryProcessorFunction:
     Type: AWS::Serverless::Function

@@ -15,7 +15,7 @@ This README provides a high-level overview of the package. For detailed document
 - [**Extraction**](idp_common/extraction/README.md): Structured information extraction from documents
 - [**Evaluation**](idp_common/evaluation/README.md): Accuracy measurement against ground truth
 - [**Summarization**](idp_common/summarization/README.md): Document summary generation
-- [**AppSync**](idp_common/appsync/README.md): Document storage through GraphQL API
+- [**DynamoDB**](idp_common/dynamodb/README.md): Document tracking storage in the TrackingTable, plus the [document service factory](idp_common/docs_service_README.md) most Lambdas call
 - [**Reporting**](idp_common/reporting/README.md): Analytics data storage and management
 - [**BDA**](idp_common/bda/README.md): Integration with Bedrock Data Automation
 
@@ -29,7 +29,8 @@ This README provides a high-level overview of the package. For detailed document
 - **Extraction**: Structured field extraction using LLMs
 - **Evaluation**: Results comparison against ground truth
 - **Summarization**: Document summary generation
-- **AppSync**: GraphQL API integration for document storage
+- **DynamoDB**: Document tracking writes/reads against the TrackingTable, reached through the `docs_service` factory
+- **API adapter**: `idp_common.api_adapter`, which normalizes an API Gateway request into the resolver event shape for the UI's REST dispatcher
 - **Reporting**: Analytics data storage
 - **Discovery**: Automated document class schema generation using LLMs
 
@@ -38,7 +39,7 @@ This README provides a high-level overview of the package. For detailed document
 - Bedrock client with retry logic
 - S3 client operations
 - CloudWatch metrics
-- AppSync client for GraphQL operations
+- DynamoDB client for TrackingTable operations
 
 ### Configuration
 
@@ -69,7 +70,7 @@ pip install -e "lib/idp_common_pkg[classification]"
 pip install -e "lib/idp_common_pkg[extraction]"
 pip install -e "lib/idp_common_pkg[evaluation]"
 pip install -e "lib/idp_common_pkg[reporting]"
-pip install -e "lib/idp_common_pkg[appsync]"
+pip install -e "lib/idp_common_pkg[docs_service]"
 pip install -e "lib/idp_common_pkg[image]"
 
 # Install everything
@@ -94,7 +95,8 @@ For Lambda functions, specify only the required components in requirements.txt:
 ```python
 from idp_common import get_config
 from idp_common.models import Document
-from idp_common import ocr, classification, extraction, evaluation, appsync, reporting
+from idp_common import ocr, classification, extraction, evaluation, reporting
+from idp_common.docs_service import create_document_service
 
 # Get configuration (merged from Default and Custom records in the DynamoDb Configuration Table)
 cfg = get_config()
@@ -127,9 +129,9 @@ document = evaluation_service.evaluate_document(document, expected_document)
 reporter = reporting.SaveReportingData("reporting-bucket")
 reporter.save(document, data_to_save=["evaluation_results"])
 
-# Store document in AppSync
-appsync_service = appsync.DocumentAppSyncService()
-updated_document = appsync_service.update_document(document)
+# Record document state in the TrackingTable (DynamoDB)
+document_service = create_document_service()
+updated_document = document_service.update_document(document)
 ```
 
 ## 📦 Handling Large Documents

@@ -19,6 +19,7 @@ Examples:
 """
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -146,6 +147,23 @@ def run_type_check(config_path: str) -> int:
     Returns:
         Exit code: 0 if no errors, 1 if errors found
     """
+    # basedpyright is an npm devDependency of the root package.json, NOT installed
+    # by `make setup` or `make setup-venv`. Without this guard the subprocess call
+    # below raises FileNotFoundError and the gate reports a traceback instead of
+    # the one-line remedy, which reads like a bug in this script.
+    if shutil.which("basedpyright") is None:
+        print(
+            "❌ basedpyright is not on PATH, so no type checking was performed.\n"
+            "   It is an npm devDependency of the root package.json and is not\n"
+            "   installed by 'make setup' or 'make setup-venv'. Install it with:\n"
+            "       npm install -g basedpyright\n"
+            "   (this is what both CI systems do). If you used 'make setup-venv',\n"
+            "   also run 'source .venv/bin/activate' so the other gate tools\n"
+            "   resolve.",
+            file=sys.stderr,
+        )
+        return 1
+
     result = subprocess.run(
         ["basedpyright", "--project", config_path],
         capture_output=True,

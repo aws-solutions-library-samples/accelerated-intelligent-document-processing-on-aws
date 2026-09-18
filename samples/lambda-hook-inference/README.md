@@ -190,14 +190,19 @@ Mistral OCR 4 is a document-understanding model that returns markdown-structured
 
 **Confidence scores and geometry (explainability):** Unlike a plain text-only OCR hook, this hook requests structured output (`include_blocks=true`, `confidence_scores_granularity=word`) and translates the Mistral response into **Amazon Textract response format** (a `Blocks` list with `LINE`/`WORD` blocks carrying `Confidence` and `Geometry.BoundingBox`). It returns this under a top-level `textractBlocks` key. The IDP OCR service detects `textractBlocks` and persists it as the page's `rawText.json` and `textConfidence.json`, so the OCR confidence flows into Assessment (the `{OCR_TEXT_CONFIDENCE}` prompt placeholder), and the geometry is available for UI bounding-box highlighting — exactly like the native Textract backend. Hooks that return only text keep the previous behavior unchanged.
 
-**Cost metering:** The hook returns `usage.pages` (from Mistral's `usage_info.pages_processed`), so per-page cost is tracked. Add a pricing entry to `config_library/pricing.yaml` keyed on the function name with a `pages` unit (Mistral OCR list price is $4 / 1,000 pages = `0.004`):
+**Cost metering:** The hook returns `usage.pages` (from Mistral's `usage_info.pages_processed`), so per-page cost is tracked. Add a pricing entry to `config_library/pricing.yaml` keyed on `lambda_hook/<function-name>` with a `pages` unit (Mistral OCR list price is $4 / 1,000 pages = `0.004`):
 
 ```yaml
-  - name: GENAIIDP-mistral-ocr-hook
+  - name: lambda_hook/GENAIIDP-mistral-ocr-hook
     units:
       - name: pages
         price: "0.004"
 ```
+
+The key must be `lambda_hook/<function-name>` (or the bare function name, which the
+suffix walk also resolves) and **not** the ARN you configure in
+`model_lambda_hook_arn` — the metering key carries only the function name. See
+[Metering and Cost Tracking](../../docs/lambda-hook-inference.md#metering-and-cost-tracking).
 
 **Getting an API key:** Sign up at [console.mistral.ai](https://console.mistral.ai) to get your API key, then provide it as `MistralApiKey` when deploying the Lambda function.
 
@@ -254,7 +259,7 @@ Choose the Mistral hook instead if OCR-grounded confidence matters to you.
 **Cost metering:** The hook returns `usage.pages` (from Parse's `meta.billed_units.pages`). `config_library/pricing.yaml` ships the entry:
 
 ```yaml
-  - name: GENAIIDP-cohere-parse-hook
+  - name: lambda_hook/GENAIIDP-cohere-parse-hook
     units:
       - name: pages
         price: "0.0015"
