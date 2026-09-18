@@ -124,8 +124,17 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
-	@echo -e "$(YELLOW)   All 'make' targets will automatically use $(VENV_DIR)/bin/python.$(NC)"
-	@echo -e "$(YELLOW)   To activate manually: source $(VENV_DIR)/bin/activate$(NC)"
+	@# This message used to say only that "all make targets will automatically use
+	@# .venv/bin/python", which is true of PYTHON/PIP but NOT of the lint and
+	@# type-check recipes: those invoke `ruff`, `cfn-lint` and `basedpyright` as
+	@# bare commands, and nothing here puts $(VENV_DIR)/bin on PATH. Reading the
+	@# old wording as "nothing further is needed" is how CONTRIBUTING.md came to
+	@# document a setup sequence that fails with `ruff: No such file or directory`.
+	@echo -e "$(YELLOW)   'make' targets that go through \$$(PYTHON)/\$$(PIP) will use $(VENV_DIR)/bin automatically.$(NC)"
+	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
+	@echo -e "$(YELLOW)   The lint gates call 'ruff' and 'cfn-lint' as bare commands, so they need$(NC)"
+	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
+	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
 lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.

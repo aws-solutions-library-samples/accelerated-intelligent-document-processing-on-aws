@@ -57,10 +57,11 @@ problem is public.
 
 Hardening suggestions that are not exploitable — a missing header, a permission
 that could be narrower, a dependency worth bumping — are fine as ordinary
-issues. Both channels are stated in [SECURITY.md](SECURITY.md), which is being
-added under
-[issue #936](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/936);
-until that lands, the paragraph above is the whole policy.
+issues. Both channels are also stated in [SECURITY.md](SECURITY.md) at the
+repository root, which is being added under
+[issue #936](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/936).
+If that file is not in your checkout yet, the two paragraphs above are the whole
+policy and nothing is missing from it.
 
 ## Reporting bugs and requesting features
 
@@ -125,15 +126,37 @@ git clone <your-fork-url> genaiic-idp-accelerator
 cd genaiic-idp-accelerator
 git checkout develop
 
-make setup-venv     # create .venv and install every first-party package into it
-# or
-make setup          # install into the Python environment you are already in
+make setup-venv                # create .venv and install every first-party package into it
+source .venv/bin/activate      # required — the gate targets need .venv/bin on PATH
+# or, to install into the Python environment you are already in:
+make setup
+
+npm install -g basedpyright    # the type-check gate; neither target above installs it
 ```
 
 `make setup` and `make setup-venv` install `idp_common`, `idp_cli`, `idp_sdk`,
 `idp_mcp_connector`, `idp_feature_sdk`, the capacity-planning test dependencies,
 and the pinned `cfn-lint`, then verify that every first-party package resolved
 from the checkout. Use them in preference to hand-rolling `pip install` lines.
+
+**Activate the virtual environment if you used `make setup-venv`.** The
+`Makefile` resolves `$(PYTHON)` and `$(PIP)` to `.venv/bin/` when `.venv`
+exists, and it says so when `setup-venv` finishes, but it does not add
+`.venv/bin` to `PATH` — and several gate recipes invoke their tool as a bare
+command rather than through `$(PYTHON)`. Without activation, `make ruff-lint`
+and `make format` fail with `make: ruff: No such file or directory` and
+`Error 127`, and `make cfn-lint` exits 1 advising you to `Run 'make setup' or
+pip install cfn-lint==1.51.0` even though `setup-venv` already installed
+`cfn-lint` at `.venv/bin/cfn-lint`. `make setup` does not have this problem,
+because it installs into the environment that is already active.
+
+**`basedpyright` comes from npm, not from either setup target.** It is a
+devDependency of the root `package.json` — which exists only to pin it — and
+both CI systems provision it with `npm install -g basedpyright`. The `make`
+type-check targets invoke it as a bare command, so it has to be on `PATH`: a
+plain `npm install` at the repository root puts it in `node_modules/.bin/`,
+which is enough for `npx basedpyright` or `npm run typecheck` but not for
+`make typecheck` or `make typecheck-pr`.
 
 ### Installing the shared library safely
 
@@ -331,8 +354,24 @@ make fastlint        # ~4s  — ruff lint + format, ARN partitions, filtered sca
 `make fastlint` is `make lint` minus the three slow members: `cfn-lint`,
 `ui-lint` and `codegen-check`. Its individual pieces are also available on their
 own — `make ruff-lint` (auto-fixing lint) and `make format` (formatter) each
-finish in well under a second, and `ruff` is configured in `ruff.toml` at 88
-columns targeting Python 3.12.
+finish in well under a second, and `ruff` is configured in `ruff.toml` targeting
+Python 3.12 with a line length of 88.
+
+Two things about that configuration are worth knowing before you rely on it.
+`ruff.toml`'s `line-length = 88` is a **formatter** setting, not an enforced
+check: `E501` is not in the `[lint] select` list, so `ruff check` passes over
+thousands of lines longer than 88 columns that the formatter chose not to split
+(the longest currently in the linted set is 585 characters). And `ruff.toml`'s
+`extend-exclude` list leaves a substantial part of the tree unlinted — the bare
+directory names `src`, `scripts`, `patterns`, `options` and `notebooks` match at
+any depth, so of the 1,114 tracked `.py` files `ruff` examines 762 and skips 352,
+including all of `src/lambda/` and all of `scripts/`. That is tracked as
+[issue #975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975);
+until it is resolved, a clean `ruff check` on a file under one of those paths
+means the file was not examined. To confirm whether a given file is linted, pass
+`--force-exclude`, which makes `ruff` honour the exclusions for an explicitly
+named path: `ruff check --force-exclude <file>` prints `warning: No Python files
+found under the given path(s)` when the file is excluded.
 
 Note that `make ruff-lint`, `make format` and `make ui-lint` all **modify your
 files** — they auto-fix rather than only report. `make lint-cicd`, which is what
@@ -407,6 +446,15 @@ make test-integration-all                    # only integration-marked tests (ne
 `run_all_tests.py` fails if it finds a test directory registered as neither run
 nor quarantined, so a new suite cannot be silently skipped.
 
+One registered root is easy to overlook because the thing it tests is not Python:
+`patterns/unified/tests` holds structural assertions about the Step Functions
+definition in `patterns/unified/statemachine/workflow.asl.json` — retry policies
+and failure routing that no Python test can see. It is registered only in
+`scripts/run_all_tests.py`, so `make test` runs it and `make test-list` lists it,
+but neither CI configuration file names it; whether a CI job reaches it depends
+on which `make` target that job calls, and `make -n test-packages-cicd` will tell
+you. If you edit the state machine definition, run that root.
+
 The project's intent is that there is **no standing failure set**, so treat a
 failure as a real regression until you have shown otherwise. Two things to check
 before you conclude you caused it: a stale virtualenv missing the pinned
@@ -461,6 +509,12 @@ make typecheck-stats # the same, with per-file statistics
 `make typecheck-pr` is the gate — it is what both CI systems run, and it is what
 you should run. It defaults to comparing against `develop`; override with
 `make typecheck-pr TARGET_BRANCH=<branch>`.
+
+All three targets need `basedpyright` on `PATH`, and neither `make setup` nor
+`make setup-venv` installs it; `npm install -g basedpyright`, which is what both
+CI systems do, is the command that supplies it. Note that `make typecheck-pr`
+exits 0 without `basedpyright` present when your branch changes no Python files
+at all, so a documentation-only branch will not tell you the tool is missing.
 
 ⚠️ **`make typecheck` over the whole repository currently exits non-zero on a
 clean `develop`** — as of this writing, 2 errors and 47 warnings, with both
@@ -556,7 +610,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make all` | `lint` + `test` (the default target) |
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
-| `make lint-cicd` | The same set — what both CIs run. Check-only for Python, but it auto-fixes UI lint and rewrites `src/ui/.checksum` |
+| `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python, but it auto-fixes UI lint and rewrites `src/ui/.checksum` |
 | `make ruff-lint` | Ruff lint with auto-fix |
 | `make format` | Ruff formatter |
 | `make cfn-lint` | Validate every CloudFormation template (fails on errors) |
@@ -599,9 +653,14 @@ documented in [docs/deployment.md](docs/deployment.md) and
 
 ## Coding standards
 
-**Python.** PEP 8, enforced by `ruff` (`ruff.toml`): 88-column lines, target
-Python 3.12. Types are checked with `basedpyright` (`pyrightconfig.json`).
-Prefer adding to the narrowest `idp_common` extra rather than to `core`.
+**Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
+88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
+an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`'s
+`extend-exclude` list means part of the tree is not linted at all. Both caveats
+are explained under [the local gate set](#before-every-commit). Types are checked
+with `basedpyright` (`pyrightconfig.json`), which is installed separately with
+`npm install -g basedpyright`. Prefer adding to the narrowest `idp_common` extra
+rather than to `core`.
 
 **JavaScript and TypeScript.** ESLint, configured in `src/ui/eslint.config.js`;
 `npm run lint` inside `src/ui`, or `make ui-lint` from the root. Prettier
