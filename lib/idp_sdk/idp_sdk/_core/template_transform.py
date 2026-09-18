@@ -203,7 +203,12 @@ class HeadlessTemplateTransformer:
             "DiscoveryBucket",
             "DiscoveryBucketPolicy",
             "DiscoveryDLQ",
+            # The TLS-only deny policies for the two queues, on the same footing
+            # as DiscoveryBucketPolicy above: each names its queue via Ref and
+            # Fn::GetAtt, so leaving it behind dangles on a removed resource.
+            "DiscoveryDLQPolicy",
             "DiscoveryQueue",
+            "DiscoveryQueuePolicy",
             "DiscoveryTrackingTable",
             "DiscoveryProcessorFunction",
             "DiscoveryProcessorFunctionLogGroup",
