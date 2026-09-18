@@ -1,4 +1,63 @@
-import { TYPE_COLORS } from '../../../constants/schemaConstants';
+import { TYPE_COLORS, TYPE_OBJECT } from '../../../constants/schemaConstants';
+
+/** A property node as the schema builder holds it (structural, index-signature friendly). */
+export interface AttributeLike {
+  type?: string;
+  $ref?: string;
+  [key: string]: unknown;
+}
+
+/** A designer class — the in-memory stand-in for one `$defs` entry. */
+export interface ClassLike {
+  name: string;
+  [key: string]: unknown;
+}
+
+const DEFS_PREFIX = '#/$defs/';
+
+/**
+ * The JSON Schema `type` of a property, following a local `#/$defs/<name>`
+ * reference to its target.
+ *
+ * A property written as `{"$ref": "#/$defs/Address"}` carries no `type` of its
+ * own — the type lives on the referenced definition — so reading `.type` off the
+ * referencing node yields `undefined`. Anything that then compares that value
+ * against a list of types silently treats the field as untyped (GitHub #906, the
+ * same blind spot as #638 and #678 on the backend).
+ *
+ * The pointer is followed for real rather than approximated to `'object'`: the
+ * designer holds every `$defs` target as an entry in its class list, so the
+ * target's own declared type is readable, which stays correct if a `$ref` to a
+ * non-object definition ever appears.
+ *
+ * Returns `undefined` when the type genuinely cannot be determined — a dangling
+ * ref, a remote ref, or no class list supplied. Callers must decide what that
+ * means for them; it does not mean "no type applies".
+ */
+export const resolveAttributeType = (
+  attribute: AttributeLike | null | undefined,
+  availableClasses?: ReadonlyArray<ClassLike>,
+): string | undefined => {
+  if (!attribute) return undefined;
+  // A sibling `type` wins, as `$ref` composition works in draft 2020-12 and as
+  // the inspector's Type dropdown already assumes.
+  if (typeof attribute.type === 'string' && attribute.type) return attribute.type;
+
+  const ref = attribute.$ref;
+  if (typeof ref !== 'string' || !ref.startsWith(DEFS_PREFIX)) return undefined;
+
+  const targetName = ref.slice(DEFS_PREFIX.length);
+  const target = (availableClasses ?? []).find((cls) => cls?.name === targetName);
+  if (!target) return undefined;
+
+  // The designer nests a class body under `attributes` (where the importer and
+  // `addClass` record `type: 'object'`); an imported/exported class carries it at
+  // the top. A class that is present but typeless is an object — `buildJSONSchema`
+  // below writes every `$defs` entry as `type: 'object'`.
+  const nested = (target.attributes as { type?: unknown } | undefined)?.type;
+  const declared = typeof nested === 'string' ? nested : target.type;
+  return typeof declared === 'string' && declared ? declared : TYPE_OBJECT;
+};
 
 const typeColorCache = new Map<string, string>();
 

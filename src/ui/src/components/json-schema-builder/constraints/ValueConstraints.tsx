@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Header, FormField, Input, TokenGroup, Button, SpaceBetween } from '@cloudscape-design/components';
-import { formatValueForInput, parseInputValue } from '../utils/schemaHelpers';
+import { ClassLike, formatValueForInput, parseInputValue, resolveAttributeType } from '../utils/schemaHelpers';
 
 interface SchemaAttribute {
   type?: string;
@@ -19,16 +19,25 @@ interface SchemaAttribute {
 interface ValueConstraintsProps {
   attribute: SchemaAttribute;
   onUpdate: (updates: Partial<SchemaAttribute>) => void;
+  /** Used only to resolve a `$ref`'d attribute's real type when parsing Const. */
+  availableClasses?: ClassLike[];
 }
 
-const ValueConstraints = ({ attribute, onUpdate }: ValueConstraintsProps): React.JSX.Element => {
+const ValueConstraints = ({ attribute, onUpdate, availableClasses }: ValueConstraintsProps): React.JSX.Element => {
   // Local state for buffering user input without immediate parsing
   const [constInput, setConstInput] = useState('');
   const [enumInput, setEnumInput] = useState('');
 
+  // A property written as a bare `{"$ref": "#/$defs/Address"}` has no `type` of
+  // its own, so reading `.type` here yields undefined and `parseInputValue` below
+  // stored a JSON Const as a raw string. This panel is rendered for EVERY
+  // non-rule attribute and its Const/Enum inputs are not gated by type, unlike
+  // every sibling constraints panel, so the ref has to be resolved (GitHub #906).
+  const resolvedType = resolveAttributeType(attribute, availableClasses);
+
   // For arrays with simple item types (not $ref), enum/const should be on items, not the array itself
-  const isSimpleArray = attribute.type === 'array' && attribute.items && !attribute.items.$ref;
-  const effectiveType = isSimpleArray ? attribute.items?.type : attribute.type;
+  const isSimpleArray = resolvedType === 'array' && attribute.items && !attribute.items.$ref;
+  const effectiveType = isSimpleArray ? attribute.items?.type : resolvedType;
 
   // Get enum value from the correct location (items for simple arrays, attribute otherwise)
   const currentEnum = isSimpleArray ? attribute.items?.enum : attribute.enum;
