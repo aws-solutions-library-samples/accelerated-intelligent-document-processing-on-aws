@@ -27,7 +27,9 @@ from urllib.parse import quote
 import boto3
 import yaml
 from boto3.s3.transfer import TransferConfig
-from botocore.exceptions import ClientError
+from botocore import UNSIGNED
+from botocore.client import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from rich.console import Console
 from rich.progress import (
     Progress,
@@ -1410,6 +1412,16 @@ STDERR:
             self.console.print(str(e), style="red", markup=False)
             sys.exit(1)
 
+    def version_pointer_key(self):
+        """`<prefix>/idp-main-latest.json` — the key the Web UI update indicator reads.
+
+        Derived in one place because two callers need to agree on it:
+        `_upload_version_pointer`, which writes it, and `set_public_acls`,
+        which must make it readable.
+        """
+        basename = self.main_template.replace(".yaml", "")  # e.g. "idp-main"
+        return f"{self.prefix}/{basename}-latest.json"
+
     def _upload_version_pointer(self):
         """Write `<prefix>/idp-main-latest.json` to the public artifacts bucket.
 
@@ -1418,9 +1430,17 @@ STDERR:
         works against the public release bucket). Overwritten on every publish;
         lives at the version-stripped prefix so it always names the newest
         release. `templateUrl` points at the versioned main template.
+
+        Applies `public-read` inline when publishing publicly. Object ACLs are
+        what grants anonymous read on the release buckets — measured 2026-09-18,
+        credential-free GetObject against all three: this key answered 403 while
+        its ACL'd sibling `idp-main.yaml` in the same prefix answered 200, so
+        there is no prefix-wide anonymous-read bucket policy to fall back on.
+        Without the ACL the indicator fails closed and logs at INFO, which is
+        how it went unnoticed from its introduction to #962.
         """
-        basename = self.main_template.replace(".yaml", "")  # e.g. "idp-main"
-        pointer_key = f"{self.prefix}/{basename}-latest.json"
+        pointer_key = self.version_pointer_key()
+        basename = self.main_template.replace(".yaml", "")
         versioned_key = f"{self.prefix}/{basename}_{self.version}.yaml"
         body = json.dumps(
             {
@@ -1431,13 +1451,35 @@ STDERR:
             },
             indent=2,
         ).encode("utf-8")
+        put_kwargs = {
+            "Bucket": self.bucket,
+            "Key": pointer_key,
+            "Body": body,
+            "ContentType": "application/json",
+        }
         try:
-            self.s3_client.put_object(
-                Bucket=self.bucket,
-                Key=pointer_key,
-                Body=body,
-                ContentType="application/json",
-            )
+            try:
+                self.s3_client.put_object(
+                    **put_kwargs,
+                    **({"ACL": "public-read"} if self.public else {}),
+                )
+            except ClientError as e:
+                # A bucket with Object Ownership = BucketOwnerEnforced rejects any
+                # ACL argument outright. Such a bucket grants public read by policy
+                # instead, so the pointer is readable without the ACL — write it
+                # rather than losing the pointer over an ACL the bucket does not use.
+                code = e.response.get("Error", {}).get("Code", "")
+                if not self.public or code not in (
+                    "AccessControlListNotSupported",
+                    "InvalidBucketAclWithObjectOwnership",
+                ):
+                    raise
+                self.console.print(
+                    f"[yellow]⚠️  Bucket rejects object ACLs ({code}); writing the "
+                    f"version pointer without one. Anonymous read must come from "
+                    f"the bucket policy.[/yellow]"
+                )
+                self.s3_client.put_object(**put_kwargs)
             self.console.print(
                 f"[green]✅ Version pointer updated: s3://{self.bucket}/{pointer_key} "
                 f"→ {self.version}[/green]"
@@ -3899,6 +3941,10 @@ STDERR:
         # Set public ACLs if requested
         self.set_public_acls()
 
+        # Then prove the keys this run is about to advertise are actually readable
+        # by the anonymous callers that will fetch them.
+        self.verify_public_readability()
+
         # Display hyperlinks with complete URLs as the display text
         self.console.print("\n[bold green]Deployment Outputs[/bold green]")
 
@@ -3911,6 +3957,107 @@ STDERR:
         self.console.print("\n[cyan]Template URL (for updating existing stack):[/cyan]")
         template_link = f"[link={template_url}]{template_url}[/link]"
         self.console.print(f"  {template_link}")
+
+    def verify_public_readability(self):
+        """Confirm, anonymously, that the keys a public publish advertises are readable.
+
+        `set_public_acls` applying an ACL is not the same as the object being
+        reachable by the caller that will fetch it: the CloudFormation console
+        fetching a template, and every deployed Web UI polling the version
+        pointer, arrive with no credentials. Both #962 and #963 were cases where
+        a key the run advertised was never made readable, and neither was
+        detectable from the publish output — the publish reported success and the
+        consumer failed silently much later. This closes that gap by checking
+        the advertised keys the way a consumer reaches them, with an UNSIGNED
+        client, so no credential in the publishing shell can mask the result.
+
+        A 403/404 fails the publish: the artifacts are uploaded, but the release
+        is not usable and must not be announced. A transport failure (no egress
+        to the public S3 endpoint, a proxy in the way) is reported as unverified
+        rather than failed, because it says nothing about the object's ACL.
+        """
+        if not self.public:
+            return
+
+        checks = [
+            (f"{self.prefix}/{self.main_template}", "main template (Launch Stack)"),
+            (
+                f"{self.prefix}/{self.main_template.replace('.yaml', f'_{self.version}.yaml')}",
+                "versioned main template",
+            ),
+            (self.version_pointer_key(), "version pointer (update indicator)"),
+        ]
+
+        self.console.print(
+            "\n[cyan]Verifying anonymous readability of advertised keys...[/cyan]"
+        )
+        anon = boto3.client(
+            "s3", region_name=self.region, config=Config(signature_version=UNSIGNED)
+        )
+
+        unreadable, unverified = [], []
+        for key, description in checks:
+            try:
+                anon.head_object(Bucket=self.bucket, Key=key)
+                self.console.print(f"  [green]✅ {description}[/green] — {key}")
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                status = (
+                    e.response.get("ResponseMetadata", {}).get("HTTPStatusCode") or code
+                )
+                unreadable.append((key, description, status))
+                self.console.print(
+                    f"  [red]❌ {description}[/red] — {key} answered {status}"
+                )
+            except (BotoCoreError, OSError) as e:  # no egress / proxy / DNS
+                unverified.append((key, description, str(e)))
+                self.console.print(
+                    f"  [yellow]⚠️  {description}[/yellow] — could not check ({e})"
+                )
+
+        if unreadable:
+            detail = "\n".join(
+                f"  - {key} ({description}) answered {status}"
+                for key, description, status in unreadable
+            )
+            raise Exception(
+                "Artifacts uploaded, but these advertised keys are NOT anonymously "
+                f"readable, so the release must not be announced:\n{detail}\n"
+                "Object ACLs are what grants public read on the release buckets "
+                "(measured 2026-09-18), so check Object Ownership / Public Access "
+                "Block on the bucket and re-run."
+            )
+        if unverified:
+            self.console.print(
+                "[yellow]⚠️  Anonymous readability UNVERIFIED for "
+                f"{len(unverified)} key(s) — this shell could not reach the public "
+                "S3 endpoint. Verify from a credential-free shell with egress "
+                "before announcing.[/yellow]"
+            )
+        else:
+            self.console.print(
+                "[green]✅ All advertised keys are anonymously readable[/green]"
+            )
+
+    def _set_optional_key_public(self, key):
+        """Apply `public-read` to one key, treating an absent key as a no-op.
+
+        The explicit-key loop in `set_public_acls` heads then ACLs, so it raises
+        on a key that was never written. That is the right behaviour for the main
+        templates, whose absence is a broken publish, and the wrong behaviour for
+        a best-effort artifact like the version pointer.
+        """
+        try:
+            self.s3_client.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "NotFound"):
+                self.console.print(
+                    f"[yellow]⚠️  {key} not present; skipping its ACL[/yellow]"
+                )
+                return
+            raise
+        self.s3_client.put_object_acl(Bucket=self.bucket, Key=key, ACL="public-read")
 
     def set_public_acls(self):
         """Set public read ACLs on all uploaded artifacts if public option is enabled"""
@@ -3971,6 +4118,15 @@ STDERR:
                 self.s3_client.put_object_acl(
                     Bucket=self.bucket, Key=key, ACL="public-read"
                 )
+
+            # The version pointer lives at `<prefix>/` — a PARENT of
+            # prefix_and_version, so neither paginated prefix above reaches it
+            # (#962). `_upload_version_pointer` now applies the ACL inline; this
+            # pass also repairs a pointer written by an earlier publish that did
+            # not. Tolerate absence: that write is deliberately non-fatal, so the
+            # key may legitimately not exist, and a missing update indicator must
+            # not fail an otherwise good publish.
+            self._set_optional_key_public(self.version_pointer_key())
 
             self.console.print("[green]✅ Public ACLs set successfully[/green]")
 
