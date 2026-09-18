@@ -13,11 +13,26 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 sqs = boto3.client("sqs")
 s3 = boto3.client("s3")
 athena = boto3.client("athena")
+
+# A short-timeout S3 client for the compareTestRuns fanout only. The default
+# botocore read/connect timeouts are 60s each; four parallel probes under the
+# 20s dispatcher budget can therefore chain into a 60s+ tail on a slow S3
+# request and 504 the entire compare response. This client is used only by
+# ``_load_sample_attribute_methods`` (a UI-nicety panel that must never fault
+# the parent request) — bounded to 3s connect and 4s read so worst-case 4-way
+# fanout still fits well under the 20s dispatcher ceiling. Non-compare S3
+# usage in this file (``get_test_results``, etc.) keeps the module-level
+# ``s3`` client with defaults.
+s3_bounded = boto3.client(
+    "s3",
+    config=BotoConfig(connect_timeout=3, read_timeout=4, retries={"max_attempts": 1}),
+)
 
 
 lambda_client = boto3.client("lambda")
@@ -650,10 +665,15 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
                 f"attempts; sample may be incomplete."
             )
         # Preserve the sorted batch order — batch_get_item does not
-        # guarantee response order.
+        # guarantee response order. Normalize EvaluationStatus casing —
+        # the sibling ``_count_completed_documents`` reads the same field
+        # with ``.upper()`` (writers have historically been inconsistent
+        # about casing on ABORTED-then-recovered runs), so this probe
+        # must apply the same normalization or same-source rows are
+        # classified differently by the two callers.
         by_object_key = {}
         for item in collected_items:
-            eval_status = item.get("EvaluationStatus", {}).get("S")
+            eval_status = item.get("EvaluationStatus", {}).get("S", "").upper()
             if eval_status != "COMPLETED":
                 continue
             doc_key = item.get("ObjectKey", {}).get("S")
@@ -701,7 +721,7 @@ def _load_sample_attribute_methods(test_run_id):
     for doc_key in _iter_completed_doc_keys(test_run_id, limit=5):
         results_s3_key = f"{doc_key}/evaluation/results.json"
         try:
-            body = s3.get_object(Bucket=output_bucket, Key=results_s3_key)[
+            body = s3_bounded.get_object(Bucket=output_bucket, Key=results_s3_key)[
                 "Body"
             ].read()
             eval_data = json.loads(body)
@@ -793,14 +813,25 @@ def _build_comparator_diff(runs_methods):
         entries = {
             run_id: methods.get(attr) for run_id, methods in runs_methods.items()
         }
-        # Compare on the three-key signature that drives the panel. ``why`` is
-        # informational (rendered in a tooltip) and can vary in phrasing without
-        # implying a real difference — omit from the diff decision.
+        # Compare on the (comparator, threshold, source) signature that drives
+        # the panel. ``why`` is informational (rendered in a tooltip) and can
+        # vary in phrasing without implying a real difference — omit from the
+        # diff decision.
+        #
+        # ``source`` is included ONLY when every entry has one. Pre-Stickler-
+        # 1.0 ``results.json`` writes (STICKLER_RESULT_VERSION < 3.0) had no
+        # ``inference_source`` field, so comparing an old run against a new
+        # run would otherwise flag every attribute as changed on the source
+        # axis alone — hiding real comparator drift and drowning the panel
+        # in false rows during upgrade windows. Missing on one side, ignore
+        # the axis; missing on all sides, ditto.
+        sources = [(entry or {}).get("source") for entry in entries.values()]
+        include_source = all(s is not None for s in sources)
         signatures = {
             run_id: (
                 (entry or {}).get("comparator"),
                 (entry or {}).get("threshold"),
-                (entry or {}).get("source"),
+                (entry or {}).get("source") if include_source else None,
             )
             for run_id, entry in entries.items()
         }
@@ -870,9 +901,17 @@ def compare_test_runs(test_run_ids):
     metrics_comparison = {result["testRunId"]: result for result in results}
     # Plant the comparator diff inside the metrics AWSJSON payload under a
     # ``_``-prefixed key so it rides on the response without a new GraphQL
-    # field. Every UI consumer of ``metrics`` already keys by test-run-id
-    # UUID; the ``_comparator_diff`` sentinel key is filtered out by the
-    # UI's ``!key.startsWith('_')`` guard on those iterations.
+    # field. Every UI consumer of ``metrics`` MUST filter ``_``-prefixed
+    # keys before iterating — see ``src/ui/src/components/test-studio/
+    # TestComparison.tsx`` for the shared helper. The convention is
+    # UUIDs-only-in-values, so the assertion below catches a future
+    # regression (a run-id that starts with ``_`` would silently shadow
+    # the sentinel) rather than letting it corrupt the compare view.
+    assert not any(k.startswith("_") for k in metrics_comparison), (
+        "test-run-id keys must not start with '_' — the sentinel "
+        "'_comparator_diff' would collide. Got: "
+        f"{[k for k in metrics_comparison if k.startswith('_')]}"
+    )
     metrics_comparison["_comparator_diff"] = _build_comparator_diff(runs_methods)
     configs_comparison = _build_config_comparison(configs)
 

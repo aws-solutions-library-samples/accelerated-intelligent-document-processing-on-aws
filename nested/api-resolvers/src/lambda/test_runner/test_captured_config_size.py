@@ -150,6 +150,43 @@ class TestTheRunItemStoresTheConfigurationCompressed:
         )
         assert not isinstance(body["Config"]["extraction"]["temperature"], str)
 
+    def test_non_finite_decimals_raise_a_clear_error_not_invalid_operation(
+        self, runner
+    ):
+        """A ``Decimal("NaN")`` in a captured config used to fail
+        ``startTestRun`` with ``decimal.InvalidOperation`` — ``value % 1``
+        raises that before the modulo comparison is even evaluated —
+        which surfaces as a cryptic stack trace hiding what's wrong.
+        Non-finite decimals cannot round-trip through JSON at all, so the
+        default now raises ``ValueError`` naming the offending value.
+        """
+        with pytest.raises(ValueError, match="non-finite Decimal"):
+            runner._json_default(Decimal("NaN"))
+        with pytest.raises(ValueError, match="non-finite Decimal"):
+            runner._json_default(Decimal("Infinity"))
+        with pytest.raises(ValueError, match="non-finite Decimal"):
+            runner._json_default(Decimal("-Infinity"))
+
+    def test_non_decimal_non_json_types_raise_typeerror_not_silent_str(
+        self, runner
+    ):
+        """A ``datetime`` / ``bytes`` / ``UUID`` in a captured config used
+        to be silently coerced to ``str(value)``, corrupting the round-
+        trip and hiding a real config-validity problem. The default now
+        falls through to ``TypeError`` — the same behaviour ``json.dumps``
+        has without a custom default — so the failure is loud and names
+        the offending type.
+        """
+        import datetime as _dt
+        import uuid as _uuid
+
+        with pytest.raises(TypeError, match="not JSON-serialisable"):
+            runner._json_default(_dt.datetime(2026, 9, 18))
+        with pytest.raises(TypeError, match="not JSON-serialisable"):
+            runner._json_default(b"raw-bytes")
+        with pytest.raises(TypeError, match="not JSON-serialisable"):
+            runner._json_default(_uuid.uuid4())
+
     def test_queryable_attributes_stay_top_level(self, runner):
         _store(runner, {"Config": _large_config(2)})
 

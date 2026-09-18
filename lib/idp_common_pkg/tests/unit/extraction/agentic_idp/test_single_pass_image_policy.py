@@ -174,7 +174,7 @@ def test_cap_applies_to_the_sent_prompt_when_lazy_images_off():
 
 
 def test_no_double_attachment_when_nothing_is_suppressed():
-    svc = _service(lazy_images=False, cap=0)  # 0 = unlimited
+    svc = _service(lazy_images=False, cap=0)  # 0 = unlimited per config schema
     captured = _invoke(svc, n_pages=4)
     # Exactly the four pages the substitution placed — not eight.
     assert _images_sent(captured) == 4

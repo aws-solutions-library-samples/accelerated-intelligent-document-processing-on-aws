@@ -45,6 +45,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _schema_type_includes(schema: Optional[Dict[str, Any]], type_name: str) -> bool:
+    """True if ``schema['type']`` names ``type_name`` (scalar or in a Union).
+
+    Genson emits Union types on nullable fields — ``type: ["array", "null"]``
+    for an optional list, ``type: ["string", "null"]`` for an optional
+    string. A plain ``schema.get("type") == "array"`` check misses those,
+    silently collapsing every threshold/list-mode decision on a nullable
+    array to the scalar/default branch. Reading with this helper keeps the
+    behavior identical for the scalar case (``"array"``) and adds Union
+    handling.
+    """
+    if not isinstance(schema, dict):
+        return False
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str):
+        return schema_type == type_name
+    if isinstance(schema_type, list):
+        return type_name in schema_type
+    return False
+
+
 def _read_match_threshold(schema: Optional[Dict[str, Any]]) -> Optional[float]:
     """Read ``x-aws-stickler-match-threshold`` from a schema fragment.
 
@@ -63,7 +84,7 @@ def _read_match_threshold(schema: Optional[Dict[str, Any]]) -> Optional[float]:
     direct = schema.get("x-aws-stickler-match-threshold")
     if isinstance(direct, (int, float)) and not isinstance(direct, bool):
         return float(direct)
-    if schema.get("type") == "array":
+    if _schema_type_includes(schema, "array"):
         items = schema.get("items")
         if isinstance(items, dict):
             value = items.get("x-aws-stickler-match-threshold")
@@ -395,15 +416,24 @@ def _resolve_provenance(
             return _DEGRADED_SOURCE_LABEL, why
         return _INFERRED_SOURCE_LABEL, why
 
-    if source == "explicit" and descendant_sources:
-        # Container attribute — roll up leaf-level provenance so the panel
-        # doesn't misread every container as ``configured``. ``degrade``
-        # beats ``type``/``name-token`` because a downgrade is the case
-        # the operator most needs to see; ``explicit`` on every leaf keeps
-        # the container ``configured``.
-        if any(s == "degrade" for s in descendant_sources):
+    # If there are descendants at all, this is a container attribute — roll
+    # up leaf-level provenance regardless of the container's own source.
+    # Stickler 1.0 emits ``explicit`` on the container by convention (the
+    # container comparator is declared on the class), but a future Stickler
+    # release that emits ``type``/``name-token``/``degrade`` at the
+    # container level would otherwise fall into the scalar branch and hide
+    # mixed leaf provenance entirely. Rolling up on the presence of
+    # descendants keeps the panel truthful across those changes.
+    if descendant_sources:
+        # ``degrade`` beats ``type``/``name-token`` because a downgrade is
+        # the case the operator most needs to see; every leaf ``explicit``
+        # keeps the container ``configured``. Note the container's own
+        # ``degrade`` (if Stickler ever emits it) is escalated by the same
+        # rule via ``source`` being folded into ``descendant_sources``.
+        combined_sources = descendant_sources + [source]
+        if any(s == "degrade" for s in combined_sources):
             return _DEGRADED_SOURCE_LABEL, descendant_whys or None
-        if any(s in ("type", "name-token") for s in descendant_sources):
+        if any(s in ("type", "name-token") for s in combined_sources):
             return _INFERRED_SOURCE_LABEL, descendant_whys or None
         return _CONFIGURED_SOURCE_LABEL, None
 
@@ -621,7 +651,7 @@ def transform_stickler_result(
             # back to the section-level ``match_threshold`` (Stickler's
             # 0.8 default) when neither is configured.
             field_schema_here = properties.get(field_name, {}) or {}
-            is_list_field = field_schema_here.get("type") == "array"
+            is_list_field = _schema_type_includes(field_schema_here, "array")
             if is_list_field:
                 list_thresh = field_config.get("match_threshold")
                 attr_threshold = (

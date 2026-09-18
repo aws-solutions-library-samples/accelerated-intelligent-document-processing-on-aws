@@ -736,7 +736,6 @@ class ExtractionService:
         self,
         send_images: bool,
         preflight_parse_result: dict | None,
-        page_count: int,
     ) -> bool:
         """Apply the ``lazy_images`` cost optimization to an image decision.
 
@@ -769,8 +768,7 @@ class ExtractionService:
         logger.info(
             "Skipping up-front image attachment for agentic extraction "
             "(pre-flight table parse succeeded; table tool is text-driven, "
-            "view_image remains available on demand)",
-            extra={"page_count": page_count},
+            "view_image remains available on demand)"
         )
         return False
 
@@ -5035,13 +5033,26 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # Local+live A/B: identical completeness/accuracy (recall 1.0) with
             # images off on this path.
             send_images = self._apply_lazy_images(
-                prompt_wants_images, preflight_parse_result, num_pages
+                prompt_wants_images, preflight_parse_result
             )
 
             # Enforce the decision on the CONTENT, which is where the images
             # actually are (see _limit_content_images). `agentic_images` is the
             # pool the view_image tool reads from — never a second attachment,
             # hence attach_page_images=False at every call below.
+            #
+            # ``0 = unlimited`` per the config schema's documented "legacy
+            # behavior" (see ``max_images_per_agent`` in
+            # ``idp_common/config/models.py``). ``x or None`` collapses
+            # the operator-authored 0 to ``None`` here so downstream
+            # ``_limit_content_images`` treats it as "no cap". A recent
+            # code review flagged that ``image_limit == 0`` downstream
+            # is now ambiguous — it could mean either "operator wrote 0"
+            # (unlimited) or "lazy_images suppressed" (drop-all). Making
+            # ``0`` an actual cap of zero would fix the ambiguity but
+            # break the documented contract; a config-schema evolution
+            # to a nullable ``Optional[int]`` cap is the right fix, out
+            # of scope here.
             cap = self.config.extraction.agentic.max_images_per_agent or None
             image_limit = 0 if not send_images else cap
             if isinstance(message_prompt, dict):
@@ -5067,9 +5078,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         ),
                     },
                 )
-            # The full page list still reaches the agent — for the view_image
-            # tool only, so a suppressed page can still be fetched on demand.
-            agentic_images = self._page_images
+            # The full page list reaches the agent for the view_image tool
+            # only, so a suppressed page can still be fetched on demand —
+            # but only when the prompt genuinely wants images at all. When
+            # the operator's task prompt has no ``{DOCUMENT_IMAGE}`` slot,
+            # the images are irrelevant to the run: registering ``view_image``
+            # against the page list would let the agent burn tokens fetching
+            # images the prompt never asked for. Pass ``[]`` so the tool
+            # isn't registered at all in that case (matches the shard path,
+            # which never gets ``view_image``).
+            agentic_images = self._page_images if prompt_wants_images else []
 
             if not prompt_wants_images and self._page_images:
                 logger.info(
@@ -7102,7 +7120,24 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
         )
 
-        prompt_template = self.config.extraction.task_prompt or ""
+        # Same prompt-selection as the single-pass agentic path — use
+        # ``select_extraction_task_prompt`` so integrated-confidence variants
+        # (which have different ``{DOCUMENT_IMAGE}`` slot presence) are
+        # honoured here too. Reading ``self.config.extraction.task_prompt``
+        # directly missed those variants, so a stack running with
+        # ``confidence.mode == 'integrated'`` would see the sharded path's
+        # send-images decision disagree with the single-pass path's for the
+        # same document. Falling back to ``self.config.extraction.task_prompt``
+        # matches the historical default when no selector rule fires.
+        from idp_common.extraction.prompt_assembly import (
+            select_extraction_task_prompt,
+        )
+
+        prompt_template = (
+            select_extraction_task_prompt(self.config.extraction)
+            or self.config.extraction.task_prompt
+            or ""
+        )
         # Same lazy_images decision as the single-pass agentic path. This path is
         # the DEFAULT for multi-page table documents, and it used to skip the
         # check entirely: every shard carried its page images on every agent
@@ -7111,7 +7146,6 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         send_images = self._apply_lazy_images(
             "{DOCUMENT_IMAGE}" in prompt_template,
             self._preflight_table_parse(ocr_analysis),
-            len(self._page_texts),
         )
         shard_payloads = self._build_shard_payloads(
             prompt_template=prompt_template,

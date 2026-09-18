@@ -146,6 +146,33 @@ class TestExecutionName:
         assert re.fullmatch(r"[A-Za-z0-9._-]+", name)
         assert name.endswith(MESSAGE_ID)
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "input/😀🎉🚀.pdf",  # all-emoji basename after strip
+            "input/.pdf",  # extension-only basename
+            "input/...",  # only dots
+            "input/",  # empty basename
+        ],
+    )
+    def test_basename_with_no_allowed_chars_still_reads_as_a_document(
+        self, index_module, key
+    ):
+        """When the basename yields no allowed characters after
+        stripping, the pre-fix code returned a bare token — the Step
+        Functions console then showed only a 32-char hash / 36-char UUID
+        and lost the "looks like a document list" property the prefix
+        exists to preserve. The fallback ``doc-`` prefix keeps the
+        execution row identifiable as a document at a glance.
+        """
+        name = index_module.execution_name_for(key, MESSAGE_ID)
+        assert name is not None
+        assert name.startswith("doc-") or name.rsplit("-", 1)[0], (
+            "Execution names must never be a bare token — the console needs "
+            "a readable prefix to browse-by-document"
+        )
+        assert name.endswith(MESSAGE_ID)
+
     def test_an_unsafe_message_id_is_hashed_rather_than_rejected(self, index_module):
         name = index_module.execution_name_for("a.pdf", "not a uuid / at all")
         assert re.fullmatch(r"a\.pdf-[0-9a-f]{32}", name)

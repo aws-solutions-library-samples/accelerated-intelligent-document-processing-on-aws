@@ -677,9 +677,33 @@ _MAX_COMPRESSED_CONFIG_BYTES = 300 * 1024
 
 
 def _json_default(value):
+    """``json.dumps`` fallback for the captured-config round trip.
+
+    Decimals coerce to int/float (preserving integer-ness where possible).
+    Non-finite Decimals (``NaN``, ``Infinity``, ``-Infinity``) raise a
+    clear ``ValueError`` — they cannot round-trip through JSON at all,
+    and ``value % 1`` on them would otherwise raise the cryptic
+    ``decimal.InvalidOperation`` before the equality check is even
+    evaluated, failing ``startTestRun`` with a stack trace that hides
+    the real problem.
+
+    Any other type falls through to ``TypeError`` (the default
+    ``json.dumps`` behaviour) rather than being silently coerced by
+    ``str(value)`` — silently str-ing ``datetime``/``bytes``/``UUID``
+    corrupted the round-trip and hid config-validity problems that
+    should surface loudly.
+    """
     if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(
+                f"Config contains non-finite Decimal {value!r}; JSON "
+                f"cannot represent NaN/Infinity. Fix the config source."
+            )
         return int(value) if value % 1 == 0 else float(value)
-    return str(value)
+    raise TypeError(
+        f"Config contains a value of type {type(value).__name__} that is "
+        f"not JSON-serialisable and has no registered converter: {value!r}"
+    )
 
 
 def _compress_captured_config(config):

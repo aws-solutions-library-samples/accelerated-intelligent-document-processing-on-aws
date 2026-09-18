@@ -126,7 +126,14 @@ def execution_name_for(input_key: str, message_id: str) -> Optional[str]:
     prefix = _EXECUTION_NAME_UNSAFE.sub("-", basename).strip("-.")
     room = _EXECUTION_NAME_MAX_LEN - len(token) - 1
     prefix = prefix[:room].rstrip("-.")
-    return f"{prefix}-{token}" if prefix else token
+    # Preserve the "looks like a document list" property in the Step
+    # Functions console even for basenames that yield no allowed chars
+    # (e.g. all-emoji filenames, extension-only basenames like ``.pdf``).
+    # A bare token — 32-char sha1 or 36-char UUID — is uninformative and
+    # loses the browse-by-name affordance the prefix exists for. Fall
+    # back to a generic ``doc-`` prefix so the execution row still reads
+    # as "some document" rather than "some hash".
+    return f"{prefix}-{token}" if prefix else f"doc-{token}"
 
 
 def execution_arn_for(execution_name: str) -> str:

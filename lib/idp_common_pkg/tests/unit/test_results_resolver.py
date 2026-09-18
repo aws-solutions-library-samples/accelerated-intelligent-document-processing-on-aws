@@ -281,6 +281,40 @@ def test_build_comparator_diff_needs_two_runs():
 
 
 @pytest.mark.unit
+def test_build_comparator_diff_ignores_source_on_cross_version_compare():
+    """Runs written before STICKLER_RESULT_VERSION 3.0 had no
+    ``inference_source`` field. Including ``source`` in the diff signature
+    unconditionally would flip every attribute to "changed" purely because
+    one side reads ``None`` and the other reads ``"configured"`` / ``"auto-
+    inferred"`` — drowning the panel in false rows during an upgrade
+    window. The signature must omit the source axis whenever any entry
+    lacks a source, so real comparator/threshold drift remains visible
+    while the pseudo-drift of a missing field is suppressed.
+    """
+    runs = {
+        "old-run": {
+            "invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": None,  # pre-3.0 results.json — no inference_source
+            }
+        },
+        "new-run": {
+            "invoice_id": {
+                "comparator": "ExactComparator",
+                "threshold": 1.0,
+                "source": "auto-inferred",
+            }
+        },
+    }
+    diff = index._build_comparator_diff(runs)
+    assert diff == [], (
+        "Cross-version compare with identical (comparator, threshold) must "
+        "not report a change purely because one side has no source"
+    )
+
+
+@pytest.mark.unit
 def test_iter_completed_doc_keys_is_deterministic():
     """Sample-doc selection must be deterministic so two runs of the same
     test set converge on the same representative document (otherwise the
@@ -437,7 +471,7 @@ def test_load_sample_attribute_methods_swallows_read_timeout():
     fake_s3.get_object.side_effect = ReadTimeoutError(endpoint_url="http://x")
     with (
         patch.dict(os.environ, {"OUTPUT_BUCKET": "b", "TRACKING_TABLE": "T"}),
-        patch.object(index, "s3", fake_s3),
+        patch.object(index, "s3_bounded", fake_s3),
         patch.object(
             index, "_iter_completed_doc_keys", return_value=iter(["runid/doc1.pdf"])
         ),
@@ -498,7 +532,7 @@ def test_load_sample_attribute_methods_uses_document_class_key():
     fake_s3.get_object.return_value = {"Body": _Body()}
     with (
         patch.dict(os.environ, {"OUTPUT_BUCKET": "b", "TRACKING_TABLE": "T"}),
-        patch.object(index, "s3", fake_s3),
+        patch.object(index, "s3_bounded", fake_s3),
         patch.object(
             index, "_iter_completed_doc_keys", return_value=iter(["runid/doc.pdf"])
         ),
