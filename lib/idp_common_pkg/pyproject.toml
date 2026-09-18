@@ -37,6 +37,15 @@ dependencies = [
   "pydantic>=2.12.0",
   "deepdiff>=6.0.0",
   "PyYAML>=6.0.0",      # Required for YAML configuration parsing
+  # Floor pin for a transitive dependency, not a direct import. anyio arrives
+  # via httpx/mcp/starlette under ``strands-agents`` (the ``agents``,
+  # ``multi_document_discovery``, ``code_intel`` and ``all`` extras) and via
+  # ``jupyter-server`` under ``dev``. GHSA-82r6-8w77-94w6 (anyio <=4.14.1:
+  # ``TLSStream`` encodes host names with IDNA 2003, so a look-alike name can
+  # be accepted against a certificate for a different host) is fixed in 4.14.2.
+  # The floor lives here rather than in each of those five extras so no
+  # resolution path can miss it.
+  "anyio>=4.14.2",
 ]
 readme = "README.md"
 classifiers = [
