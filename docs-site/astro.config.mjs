@@ -124,6 +124,8 @@ export default defineConfig({
         {
           label: "Evaluation & Testing",
           items: [
+            // Every test method in the repo, and whether CI runs it.
+            { label: "Testing", slug: "testing" },
             { label: "Evaluation Framework", slug: "evaluation" },
             {
               label: "Enhanced Reporting",

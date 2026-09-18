@@ -398,7 +398,9 @@ def test_get_test_runs_clamps_max_items():
         patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
         patch.object(index.dynamodb, "Table", return_value=fake_table),
     ):
-        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=999)
+        index.get_test_runs(
+            "2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=999
+        )
         # First Query's Limit is the clamped value, not the raw 999.
         assert fake_table.query.call_args.kwargs["Limit"] == ceiling
 
@@ -408,12 +410,16 @@ def test_get_test_runs_clamps_max_items():
 
         fake_table.query.reset_mock()
         # None means "use the server default".
-        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=None)
+        index.get_test_runs(
+            "2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=None
+        )
         assert fake_table.query.call_args.kwargs["Limit"] == ceiling
 
         fake_table.query.reset_mock()
         # Malformed strings fall back to the ceiling (defensive).
-        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items="not-a-number")
+        index.get_test_runs(
+            "2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items="not-a-number"
+        )
         assert fake_table.query.call_args.kwargs["Limit"] == ceiling
 
 
