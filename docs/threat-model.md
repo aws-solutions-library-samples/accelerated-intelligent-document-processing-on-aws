@@ -140,5 +140,5 @@ assurance.
   the roles the solution creates
 - [Well-Architected Framework Assessment](./well-architected.md) — the security
   pillar review alongside the other five
-- [Testing](./testing.md) — every test method in the repository, including which
-  security gates run automatically and which are manual
+- [Testing](./testing.md) — every test layer and tier in the repository, including
+  which security gates run automatically and which are manual

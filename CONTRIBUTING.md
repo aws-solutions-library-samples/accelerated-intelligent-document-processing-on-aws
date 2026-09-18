@@ -431,7 +431,7 @@ Tests use pytest markers `unit` and `integration`, registered in the repo-root
 @pytest.mark.integration   # requires real AWS resources
 ```
 
-The repository's Python tests live in **59 separate roots** — one per package
+The repository's Python tests live in **many separate roots** — one per package
 and per Lambda directory, each with its own `conftest.py` — so a bare `pytest`
 from the repository root fails on colliding conftest files. `scripts/run_all_tests.py`
 discovers every root and runs each as an isolated pytest invocation, which is
@@ -467,11 +467,13 @@ unrelated `moto` client-ordering problem. To tell an inherited failure from a ne
 one, run the same root against an unmodified `develop` — a second checkout or
 `git worktree add ../baseline develop` is the least disruptive way — and compare.
 
-**[docs/testing.md](docs/testing.md) is the map of every test method in the
-repository** — what each one proves, its `make` target, whether either CI runs
-it, and where its results are recorded. Read it before adding a test tier or
-concluding that something is untested; `scripts/tests/test_testing_doc.py` keeps
-it from going stale.
+**[docs/testing.md](docs/testing.md) is the map of every test layer and tier in the
+repository** — what each one proves, its `make` entry point, whether either CI runs
+it, and where its results are recorded. It maps tiers rather than indexing test
+functions, so a test added inside a suite that already runs needs no edit there; what
+does need one is a new test *directory* or a suite the gate stops running, both of
+which `scripts/tests/test_testing_doc.py` fails on. Read the page before adding a
+test tier or concluding that something is untested.
 
 ### Security gates
 
