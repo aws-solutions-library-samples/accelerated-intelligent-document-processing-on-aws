@@ -162,7 +162,7 @@ CircuitBreakerRecoveryTimeoutSeconds: 600  # 10 minutes
 
 ## Web UI
 
-When `CircuitBreakerEnabled=true`, the document list header shows a live status badge that reflects the current breaker state via an AppSync subscription:
+When `CircuitBreakerEnabled=true`, the document list header shows a live status badge that reflects the current breaker state. The UI polls the breaker's DynamoDB record roughly every 15 seconds through the REST API (`src/ui/src/hooks/use-circuit-breaker.ts`), so a transition is visible within about one interval:
 
 | Badge | State | Meaning |
 |-------|-------|---------|
@@ -179,11 +179,11 @@ Click the badge to open a details panel showing `state`, `openedAt`, `lastChecke
 - **Resume processing** — forces CLOSED and resets failure/recovery counters. Use to clear a stuck OPEN state. Resume is unconditional: if the underlying Bedrock outage is still active, a subsequent alarm will re-open the breaker within ~5 minutes. Hold until the alarm clears before resuming.
 - **Probe recovery** — forces HALF_OPEN (available when state is OPEN). Use to test recovery before the automatic timeout.
 
-Each control requires a **reason** that is persisted to DynamoDB (`lastError` field for pause; also logged) and broadcast over the existing SNS alerts topic. All transitions — including automatic ones from CloudWatch alarms, the scheduled health check, and the `HALF_OPEN → CLOSED` transition triggered by a successful workflow completion — fan out to every connected browser in real time.
+Each control requires a **reason** that is persisted to DynamoDB (`lastError` field for pause; also logged) and broadcast over the existing SNS alerts topic. All transitions — including automatic ones from CloudWatch alarms, the scheduled health check, and the `HALF_OPEN → CLOSED` transition triggered by a successful workflow completion — are written to the same DynamoDB record, so every open browser picks them up on its next poll.
 
 Non-admins can view the panel but do not see the control buttons.
 
-**VPC deployments.** When `AppSyncVisibility=PRIVATE`, both the circuit-breaker manager and the AppSync resolver Lambda are automatically attached to the same VPC/subnets used by the other private-AppSync resolvers — so the manager's SigV4 mutation to the private GraphQL endpoint and the resolver's DynamoDB reads succeed. If you run with `DeployInVPC=true` but `AppSyncVisibility=PUBLIC`, the resolver still reaches DynamoDB over the public endpoint; in accounts whose SCP blocks public DynamoDB without a gateway endpoint, the badge will fail to load. Deploy with `AppSyncVisibility=PRIVATE` in that case.
+**VPC deployments.** When `ApiGatewayVisibility=PRIVATE`, both the circuit-breaker manager and the circuit-breaker resolver Lambda are automatically attached to the same VPC/subnets used by the other private-API resolvers, so their DynamoDB reads and writes succeed from inside the VPC. If you run with `DeployInVPC=true` but `ApiGatewayVisibility=GLOBAL`, the resolver still reaches DynamoDB over the public endpoint; in accounts whose SCP blocks public DynamoDB without a gateway endpoint, the badge will fail to load. Deploy with `ApiGatewayVisibility=PRIVATE` in that case.
 
 ## Manual operations
 

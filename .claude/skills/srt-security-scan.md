@@ -479,8 +479,10 @@ These are accepted and living in `scripts/srt/issues.json` — don't "re-fix":
   bastion/KB/feature-platform **source** templates — reviewed accepted risks.
 
 > ⚠️ The baseline used to also carry 17 entries on `.aws-sam/*.yaml` paths.
-> Those were **deleted** (along with 2 on the removed `nested/alb-hosting` and
-> `nested/appsync` templates) — they were local-scan pollution, not accepted
+> Those were **deleted** (along with 2 more keyed on paths that no longer exist:
+> `nested/alb-hosting`, deleted outright, and `nested/appsync`, which is now
+> `nested/api-resolvers` — the AppSync API it once held was replaced by an API
+> Gateway REST API). They were local-scan pollution and dead paths, not accepted
 > risks. Never add one back; see the next section for why.
 
 ## Never suppress an `.aws-sam/` finding — clean it instead
