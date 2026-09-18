@@ -337,11 +337,14 @@ def _invoke_resolver(function_arn: str, appsync_event: Dict[str, Any]) -> Any:
 
 
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
-    # CORS preflight (HTTP API can be configured to route OPTIONS here).
-    http = (event.get("requestContext") or {}).get("http") or {}
-    if http.get("method") == "OPTIONS":
-        return _http_response(200, {})
-
+    # No CORS-preflight branch here on purpose. The API is an
+    # AWS::ApiGateway::RestApi, so OPTIONS /op/{field} is answered by the
+    # HttpApiOptionsMethod MOCK integration in nested/api-resolvers/template.yaml
+    # and never reaches this function; only the POST method has a Lambda proxy
+    # integration. The branch this replaces read requestContext.http.method,
+    # which is a payload-format-2.0 key that a REST API never sends anyway (1.0
+    # uses requestContext.httpMethod), so it could not have matched even if
+    # OPTIONS were routed here.
     appsync_event = normalize_event(event)
     field = appsync_event.get("info", {}).get("fieldName", "")
 

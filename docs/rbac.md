@@ -276,8 +276,22 @@ not intersect. The groups come from the verified JWT claim
 
 **A field with no manifest entry is denied.** Unmapped means denied, so an
 operation whose required groups were never declared is closed rather than open —
-this is what makes a forgotten resolver check a visible 403 instead of an
-unprotected endpoint. The manifest
+this is what makes a forgotten resolver check on a **group-scoped** operation a
+visible 403 instead of an unprotected endpoint.
+
+⚠️ **This does not cover every operation.** 26 of the 118 declared operations are
+declared `ANY`, which means the dispatcher enforces authentication but *not* group
+membership for them, so a forgotten resolver check on one of those is still
+reachable by any authenticated caller — `getFileContents`, for example, bounds
+itself with a bucket allowlist rather than a group check. Deciding which of the 26
+should be narrowed is tracked as issue
+[#979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979).
+Separately, the self-asserted-identity passthrough in `idp_common.api_adapter`
+(where an event carrying its own `arguments` + `identity` bypasses this
+normalization entirely) is **not** addressed by this layer and is tracked as
+[#978](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/978).
+
+The manifest
 (`http_api_dispatcher/api_rbac_manifest.json`) is **generated** from
 `scripts/api_rbac_expectations.yaml` by
 `scripts/sdlc/generate_api_rbac_manifest.py`, the same file the static scan and
@@ -289,6 +303,17 @@ This layer is a **floor, not a replacement** for the resolver checks in Layer 2:
 only the resolver can enforce per-object scope (config version, test set,
 ownership), so both run. When triaging a 403, the dispatcher logs `Denied
 <field>: ...`; a resolver denial carries the resolver's own message.
+
+**Triaging a deploy where every operation returns 403.** Deny-all is correct when
+the manifest is missing, unparseable, of an unsupported version, or carries an
+entry in a shape the check cannot evaluate — but per-request it is
+indistinguishable from a legitimate denial, so the dispatcher announces the
+condition once per cold start at ERROR under the fixed marker
+`API_RBAC_MANIFEST_UNAVAILABLE`, followed by the specific cause. Alarm on that
+string in the dispatcher's log group: it means the bundled policy file is broken
+(a build or packaging fault), not that the callers lack the groups they need. The
+status stays 403 rather than becoming a 5xx, because the request genuinely is
+unauthorized and a 5xx would invite a retry.
 
 > **⚠️ Adding an API operation now includes declaring its required groups** in
 > `scripts/api_rbac_expectations.yaml` and regenerating the manifest. Skip that
@@ -420,17 +445,20 @@ Admins can create users with any of the four roles via the User Management page.
 │  useUserRole + getMyProfile     │
 │  useConfigurationVersions       │  ← Filters versions by allowedConfigVersions
 └────────────┬────────────────────┘
-             │ GraphQL
+             │ POST /op/{field} + Cognito JWT
 ┌────────────▼────────────────────┐
-│  REST API + schema directives   │  Layer 1: @aws_cognito_user_pools(cognito_groups) directives (typed contract)
-│  Schema Directives              │
+│  REST API Cognito authorizer    │  AUTHENTICATES ONLY — evaluates no groups
 └────────────┬────────────────────┘
              │
 ┌────────────▼────────────────────┐
 │  HTTP API dispatcher (authz.py) │  Layer 0: DEFAULT-DENY group check from the generated manifest
 │  api_rbac_manifest.json         │  ← no entry for the field ⇒ 403, before routing
 └────────────┬────────────────────┘
-             │
+             │                        Layer 1: @aws_cognito_user_pools(cognito_groups)
+             │                        directives in schema.graphql — the typed contract
+             │                        the manifest is cross-checked against at build
+             │                        time. Not in the request path: no gateway
+             │                        evaluates them since AppSync was removed.
 ┌────────────▼────────────────────┐
 │  Lambda Resolvers               │  Layer 2: Server-side group checks (defense-in-depth) + filtering
 │  • listDocuments: ConfigVersion │  ← Filters by allowedConfigVersions from UsersTable

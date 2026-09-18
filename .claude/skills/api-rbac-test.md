@@ -193,4 +193,9 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 > fix is to declare its groups and regenerate (steps 3–4). Do **not** "fix" it by
 > widening an existing entry, adding a bypass, or making an unmapped field fall
 > through: unmapped-means-denied is the property this layer exists to provide, and
-> the reason a forgotten check is no longer an open endpoint.
+> the reason a forgotten check on a **group-scoped** operation is no longer an open
+> endpoint. Declaring an operation `ANY` to make a 403 go away is exactly the
+> widening this warns against: `ANY` means the dispatcher checks authentication
+> only, so a forgotten resolver check on an `ANY` operation is still reachable by
+> any authenticated caller. 26 of the 118 operations are currently `ANY`; narrowing
+> them is tracked as issue #979.

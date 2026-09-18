@@ -46,6 +46,12 @@ EXIT CODES
   0  wrote the manifest (default), or --check found no drift
   1  --check found drift (regenerated manifest differs from the committed file)
   2  usage / file-not-found / invalid expectations entry
+
+The 1-vs-2 split is the point: 1 means "the two files disagree, regenerate", which
+is the routine signal a developer gets after editing the expectations file, while
+2 means "something is missing or malformed", which regenerating will not fix. Both
+are non-zero, so ``make api-test-static`` fails either way, but a script or a
+human reading the code should not have to guess which condition it hit.
 """
 
 from __future__ import annotations
@@ -97,8 +103,10 @@ def _load_yaml(path: Path) -> dict:
     except ImportError:  # pragma: no cover
         print("ERROR: PyYAML is required (pip install pyyaml).", file=sys.stderr)
         sys.exit(2)
-    with path.open() as fh:
-        return yaml.safe_load(fh)
+    # Read through _read so a missing expectations file exits 2 with the path
+    # named, as the EXIT CODES block above promises, rather than raising an
+    # unhandled FileNotFoundError and exiting 1 with a traceback.
+    return yaml.safe_load(_read(path))
 
 
 def cognito_group_names(template_text: str) -> set[str]:
@@ -210,12 +218,14 @@ def main() -> int:
 
     if args.check:
         if not MANIFEST_OUT.exists():
+            # 2, not 1: the committed manifest being absent is the
+            # file-not-found class, not the drift class. See EXIT CODES above.
             print(
                 f"ERROR: committed manifest missing: {MANIFEST_OUT}\n"
                 "Run: python3 scripts/sdlc/generate_api_rbac_manifest.py",
                 file=sys.stderr,
             )
-            return 1
+            return 2
         if MANIFEST_OUT.read_text() != rendered:
             print(
                 "DRIFT: api_rbac_manifest.json is out of date with "
@@ -224,8 +234,10 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        print(f"OK: {MANIFEST_OUT.name} matches api_rbac_expectations.yaml "
-              f"({count} operations)")
+        print(
+            f"OK: {MANIFEST_OUT.name} matches api_rbac_expectations.yaml "
+            f"({count} operations)"
+        )
         return 0
 
     MANIFEST_OUT.write_text(rendered)

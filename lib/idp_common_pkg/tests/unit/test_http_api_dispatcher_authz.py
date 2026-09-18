@@ -27,6 +27,17 @@ Two things are asserted here, and both are enumerated FROM THE CODE:
 * **The deny paths.** No group, insufficient group, unmapped field, an IAM-only
   op, a body that tries to assert its own groups, and an unreadable manifest all
   produce 403; a correctly grouped caller still gets through.
+* **Fail-closed on a malformed manifest, in every shape.** A bare-string policy
+  (``"Admin"`` rather than ``["Admin"]``) used to fail OPEN, because
+  ``set("Admin")`` is a set of CHARACTERS that a caller in a one-character group
+  satisfies; a non-iterable policy failed as a 500 rather than a 403. Both, plus
+  a JSON ``null``, an empty list, a non-string member and an unknown sentinel,
+  are now rejected when the manifest is loaded, and the deny-everything state is
+  announced under an alarmable marker instead of being inferred from a wall of
+  403s.
+
+The events here are payload format **1.0** (``requestContext.authorizer.claims``),
+which is what a REST API's Lambda proxy integration sends — see ``_http_event``.
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ import io
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,14 +106,42 @@ def _load_generator():
 
 
 @pytest.fixture
-def idx(monkeypatch):
-    return _load_dispatcher(monkeypatch)
+def dispatcher(monkeypatch):
+    """Load the dispatcher and its siblings ONCE per test, and hand back all three.
+
+    ``idx``, ``authz`` and ``ddb_direct`` are all derived from this one fixture on
+    purpose. ``_load_dispatcher`` re-executes each module, so two independent
+    loader fixtures in one test would leave the earlier one holding a module
+    object that ``index`` no longer references — monkeypatching that stale copy's
+    ``REQUIRED_GROUPS`` would then have no effect on the handler under test, and
+    the test would pass while proving nothing. Deriving them from a single load
+    makes the three fixtures the same objects ``index`` imported.
+
+    Each module is re-executed per test, so ``authz.REQUIRED_GROUPS`` starts from
+    the real committed manifest every time and no test can leak a policy into the
+    next one.
+    """
+    idx_mod = _load_dispatcher(monkeypatch)
+    return SimpleNamespace(
+        index=idx_mod,
+        authz=sys.modules["authz"],
+        ddb_direct=sys.modules["ddb_direct"],
+    )
 
 
 @pytest.fixture
-def authz(monkeypatch):
-    _load_dispatcher(monkeypatch)
-    return sys.modules["authz"]
+def idx(dispatcher):
+    return dispatcher.index
+
+
+@pytest.fixture
+def authz(dispatcher):
+    return dispatcher.authz
+
+
+@pytest.fixture
+def ddb_direct(dispatcher):
+    return dispatcher.ddb_direct
 
 
 @pytest.fixture(scope="module")
@@ -120,30 +160,51 @@ class _FakeLambda:
         self.payload = payload
         self.calls = 0
 
-    def invoke(self, **kwargs):
+    def invoke(self, **_kwargs):
+        # Signature padding: boto3's invoke() is called with keyword arguments
+        # this double does not need to inspect.
         self.calls += 1
         return {"Payload": io.BytesIO(json.dumps(self.payload).encode("utf-8"))}
 
 
 def _http_event(field, arguments=None, groups=None, extra_claims=None):
-    """An API Gateway event whose groups claim comes from the authorizer.
+    """An API Gateway event in the shape the LIVE API actually delivers.
 
-    ``cognito:groups`` is placed where the JWT authorizer puts it, which is the
-    only place ``api_adapter.normalize_event`` reads it from — deliberately not
-    in the body, which the caller controls.
+    The API is an ``AWS::ApiGateway::RestApi`` (REST was required: only REST
+    supports ``EndpointConfiguration: PRIVATE`` behind a VPC interface endpoint
+    and can be fronted by WAFv2), despite the logical id reading like v2. A REST
+    API with a Lambda proxy integration sends **payload format 1.0**, so a
+    ``COGNITO_USER_POOLS`` authorizer's claims arrive at
+    ``requestContext.authorizer.claims`` — NOT the v2.0
+    ``requestContext.authorizer.jwt.claims``, and the method is
+    ``requestContext.httpMethod``, not ``requestContext.http.method``. Testing
+    against the v2.0 shape would exercise a payload production never sends.
+
+    ``cognito:groups`` is placed where the authorizer puts it, which is the only
+    place ``api_adapter.normalize_event`` reads it from — deliberately not in the
+    body, which the caller controls. A REST Cognito authorizer flattens a
+    multi-valued claim to a comma-joined string; ``_coerce_groups`` normalizes
+    that and a list alike, and ``test_a_string_groups_claim_is_tolerated`` covers
+    the flattened form, so the list form is used here for legibility.
     """
     claims = {"sub": "11111111-2222-3333-4444-555555555555", "email": "u@example.com"}
     if groups is not None:
         claims["cognito:groups"] = groups
     claims.update(extra_claims or {})
     return {
+        "resource": "/op/{field}",
+        "path": f"/op/{field}",
+        "httpMethod": "POST",
         "requestContext": {
-            "http": {"method": "POST"},
-            "authorizer": {"jwt": {"claims": claims}},
+            "resourcePath": "/op/{field}",
+            "httpMethod": "POST",
+            "path": f"/prod/op/{field}",
+            "authorizer": {"claims": claims},
         },
         "pathParameters": {"field": field},
         "body": json.dumps({"arguments": arguments or {}}),
         "headers": {},
+        "isBase64Encoded": False,
     }
 
 
@@ -161,7 +222,9 @@ def test_manifest_matches_expectations_no_drift():
     )
 
 
-def test_every_dispatcher_reachable_field_has_a_manifest_entry(idx, manifest):
+def test_every_dispatcher_reachable_field_has_a_manifest_entry(
+    idx, ddb_direct, manifest
+):
     """Enumerated from the loaded dispatcher + the template, not from a list here.
 
     ``FIELD_ALIASES`` and ``ddb_direct._HANDLED`` are read off the imported
@@ -170,7 +233,6 @@ def test_every_dispatcher_reachable_field_has_a_manifest_entry(idx, manifest):
     the scanner's own parser (the parser CI's S1 check depends on).
     """
     scanner = _load_scanner()
-    ddb_direct = sys.modules["ddb_direct"]
 
     aliases = set(idx.FIELD_ALIASES)
     ddb_handled = set(ddb_direct._HANDLED)
@@ -192,10 +254,9 @@ def test_every_dispatcher_reachable_field_has_a_manifest_entry(idx, manifest):
     )
 
 
-def test_manifest_carries_no_field_that_is_not_reachable(idx, manifest):
+def test_manifest_carries_no_field_that_is_not_reachable(idx, ddb_direct, manifest):
     """A stale entry is a policy nobody can reach — and hides a rename."""
     scanner = _load_scanner()
-    ddb_direct = sys.modules["ddb_direct"]
     reachable = (
         set(idx.FIELD_ALIASES)
         | set(ddb_direct._HANDLED)
@@ -215,7 +276,7 @@ def test_every_manifest_entry_is_a_group_list_or_a_known_sentinel(manifest):
             assert all(isinstance(g, str) for g in required), f"{field}: bad group"
 
 
-def test_ddb_direct_required_groups_agrees_with_the_manifest(authz, manifest):
+def test_ddb_direct_required_groups_agrees_with_the_manifest(ddb_direct, manifest):
     """The DynamoDB-direct table is defence in depth, so it must not contradict.
 
     ``ddb_direct`` keeps its own group check (it serves those ops without a
@@ -223,14 +284,13 @@ def test_ddb_direct_required_groups_agrees_with_the_manifest(authz, manifest):
     of two copies is silent divergence — so compare them, over every key
     ``ddb_direct`` declares.
     """
-    ddb_direct = sys.modules["ddb_direct"]
     required_groups = ddb_direct._REQUIRED_GROUPS
     assert len(required_groups) >= 10, "_REQUIRED_GROUPS looks empty/broken"
 
     for field, required in required_groups.items():
         assert field in manifest, f"{field}: enforced in ddb_direct but not declared"
         expected = manifest[field]
-        if required is None:
+        if required is ddb_direct._ANY_AUTHENTICATED:
             assert expected == "ANY", (
                 f"{field}: ddb_direct allows any authenticated caller but the "
                 f"manifest requires {expected}"
@@ -330,10 +390,9 @@ def test_authorization_runs_before_argument_validation(idx):
     assert _error(resp)["errorType"] == "Unauthorized"
 
 
-def test_unreadable_manifest_denies_everything(idx, monkeypatch):
+def test_unreadable_manifest_denies_everything(idx, authz, monkeypatch):
     """Fail closed: no manifest is not 'no restrictions'."""
-    authz_mod = sys.modules["authz"]
-    monkeypatch.setattr(authz_mod, "REQUIRED_GROUPS", {})
+    monkeypatch.setattr(authz, "REQUIRED_GROUPS", {})
     resp = idx.handler(_http_event("getDocument", {"ObjectKey": "k"}, groups=["Admin"]))
     assert resp["statusCode"] == 403
 
@@ -348,6 +407,157 @@ def test_manifest_with_an_unsupported_version_is_refused(authz, tmp_path, monkey
     bad.write_text(json.dumps({"version": 99, "operations": {"getDocument": "ANY"}}))
     monkeypatch.setattr(authz, "_MANIFEST_PATH", str(bad))
     assert authz._load_manifest() == {}
+
+
+def _install_manifest(authz, tmp_path, monkeypatch, operations):
+    """Write a manifest, reload the policy from it, and install the result.
+
+    The module reads its manifest at IMPORT time, so pointing ``_MANIFEST_PATH``
+    at a new file proves nothing on its own — ``REQUIRED_GROUPS`` still holds the
+    policy loaded from the committed manifest. This re-runs ``_load_manifest`` and
+    assigns the result, and returns it so the caller can assert that
+    ``authz.REQUIRED_GROUPS`` really reflects the file just written before
+    asserting on any behaviour.
+    """
+    path = tmp_path / "api_rbac_manifest.json"
+    path.write_text(json.dumps({"version": 1, "operations": operations}))
+    monkeypatch.setattr(authz, "_MANIFEST_PATH", str(path))
+    loaded = authz._load_manifest()
+    monkeypatch.setattr(authz, "REQUIRED_GROUPS", loaded)
+    assert authz.REQUIRED_GROUPS is loaded, "the reloaded policy was not installed"
+    return loaded
+
+
+def test_a_bare_string_policy_is_refused_not_read_as_a_character_set(
+    idx, authz, tmp_path, monkeypatch
+):
+    """``"Admin"`` is not ``["Admin"]``: ``set("Admin")`` is ``{'A','d','m','i','n'}``.
+
+    A policy value that is a bare string rather than a list turns the membership
+    test in ``enforce`` into a CHARACTER comparison, so a caller whose only group
+    is the single-character group ``A`` satisfies an Admin-only operation. The
+    generator emits only lists and the two sentinels, so this shape is not
+    reachable through it and was never a live exposure — but the module docstring
+    promises that a malformed manifest fails CLOSED, and in this one shape it
+    failed OPEN. Rejecting it at load time is what makes the promise true.
+
+    Driven through ``idx.handler``, not through a local copy of the predicate, so
+    what is asserted is the dispatcher's real response.
+    """
+    loaded = _install_manifest(authz, tmp_path, monkeypatch, {"listUsers": "Admin"})
+    assert loaded == {}, (
+        "a bare-string policy must make the manifest unusable (deny everything), "
+        f"not be carried through and compared character by character: {loaded!r}"
+    )
+
+    resp = idx.handler(_http_event("listUsers", groups=["A"]))
+    assert resp["statusCode"] == 403, (
+        "a caller whose only group is the single character 'A' must not satisfy an "
+        f"Admin-only operation; got {resp['statusCode']}"
+    )
+    assert _error(resp)["errorType"] == "Unauthorized"
+
+
+def test_a_non_iterable_policy_is_refused_rather_than_raising_at_comparison_time(
+    idx, authz, tmp_path, monkeypatch
+):
+    """A number where a group list belongs must deny with 403, not 500.
+
+    ``set(7)`` raises ``TypeError`` inside ``enforce``, which the dispatcher maps
+    to 500 / ``InternalError`` — closed, but reported as an availability fault and
+    with the Python exception text in the response body.
+    """
+    loaded = _install_manifest(authz, tmp_path, monkeypatch, {"getDocument": 7})
+    assert loaded == {}
+
+    resp = idx.handler(_http_event("getDocument", {"ObjectKey": "k"}, groups=["Admin"]))
+    assert resp["statusCode"] == 403, (
+        f"a malformed policy must deny, not error; got {resp['statusCode']} "
+        f"{resp['body'][:120]}"
+    )
+    assert _error(resp)["errorType"] == "Unauthorized"
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [None, [], ["Admin", 3], "EVERYONE", {"groups": ["Admin"]}],
+    ids=["json-null", "empty-list", "non-string-member", "unknown-sentinel", "object"],
+)
+def test_every_other_malformed_policy_shape_denies_everything(
+    authz, tmp_path, monkeypatch, policy
+):
+    assert _install_manifest(authz, tmp_path, monkeypatch, {"listUsers": policy}) == {}
+
+
+def test_a_well_formed_manifest_still_loads(authz, tmp_path, monkeypatch):
+    """The validation must not reject the shapes the generator really emits."""
+    good = {
+        "listUsers": ["Admin"],
+        "getDocument": "ANY",
+        "updateAgentJobStatus": "IAM_ONLY",
+    }
+    assert _install_manifest(authz, tmp_path, monkeypatch, good) == good
+
+
+# =========================== operability of deny-all ======================== #
+def test_denying_everything_is_announced_under_a_stable_marker(authz, caplog):
+    """An empty policy map must not look like a generic availability incident.
+
+    Every request 403s, which per-request is indistinguishable from a legitimate
+    authorization denial, so the cause is announced once at cold start under a
+    fixed string an operator can alarm on. The marker's value is asserted here
+    because an alarm elsewhere is keyed on it: renaming it silently would leave
+    the alarm matching nothing.
+    """
+    assert authz.DENY_ALL_MARKER == "API_RBAC_MANIFEST_UNAVAILABLE"
+
+    with caplog.at_level("ERROR"):
+        authz._announce_if_denying_everything({})
+    assert any(
+        authz.DENY_ALL_MARKER in r.getMessage() and r.levelname == "ERROR"
+        for r in caplog.records
+    ), "deny-all must be announced at ERROR with the marker"
+
+    caplog.clear()
+    with caplog.at_level("ERROR"):
+        authz._announce_if_denying_everything({"getDocument": "ANY"})
+    assert not caplog.records, "a healthy manifest must not raise the marker"
+
+
+def test_the_two_required_groups_tables_use_distinct_named_sentinels(authz, ddb_direct):
+    """``None`` must not mean 'deny' in one table and 'allow anyone' in the other.
+
+    ``authz.REQUIRED_GROUPS`` treats an absent entry as DENY; ``ddb_direct``
+    treats its own sentinel as ALLOW-ANY-AUTHENTICATED. Both are consulted on the
+    same request, so each names its own object and neither uses a bare ``None``.
+    """
+    assert authz._UNDECLARED is not ddb_direct._ANY_AUTHENTICATED
+    assert authz._UNDECLARED is not ddb_direct._IAM_ONLY
+    assert ddb_direct._ANY_AUTHENTICATED is not ddb_direct._IAM_ONLY
+    assert None not in ddb_direct._REQUIRED_GROUPS.values(), (
+        "ddb_direct must not use a bare None for 'any authenticated caller'"
+    )
+    assert None not in authz.REQUIRED_GROUPS.values(), (
+        "a null policy is rejected at load time, so None cannot appear here"
+    )
+
+
+# ============================ generator exit codes ========================== #
+def test_generator_exits_2_when_the_expectations_file_is_missing(tmp_path):
+    """Documented exit codes: 1 is drift, 2 is 'a file or an entry is wrong'."""
+    gen = _load_generator()
+    with pytest.raises(SystemExit) as excinfo:
+        gen._load_yaml(tmp_path / "no_such_expectations.yaml")
+    assert excinfo.value.code == 2
+
+
+def test_generator_check_exits_2_when_the_committed_manifest_is_missing(
+    tmp_path, monkeypatch
+):
+    gen = _load_generator()
+    monkeypatch.setattr(gen, "MANIFEST_OUT", tmp_path / "absent.json")
+    monkeypatch.setattr(sys, "argv", ["generate_api_rbac_manifest.py", "--check"])
+    assert gen.main() == 2
 
 
 # ================================ allow paths =============================== #
