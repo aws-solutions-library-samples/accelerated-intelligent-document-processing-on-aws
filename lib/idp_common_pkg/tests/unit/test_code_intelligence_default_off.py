@@ -146,9 +146,12 @@ def test_stream_processor_schema_refuses_non_boolean_opt_in(value):
     """
     pydantic = pytest.importorskip("pydantic")
 
-    class _AgentChatBody(pydantic.BaseModel):
-        enableCodeIntelligence: pydantic.StrictBool = False
+    # Built with create_model rather than a class body so the annotation comes
+    # from the same object the route's model uses, without naming it statically.
+    body_model = pydantic.create_model(
+        "_AgentChatBody", enableCodeIntelligence=(pydantic.StrictBool, False)
+    )
 
-    assert _AgentChatBody().enableCodeIntelligence is False
+    assert body_model().enableCodeIntelligence is False
     with pytest.raises(pydantic.ValidationError):
-        _AgentChatBody(enableCodeIntelligence=value)
+        body_model(enableCodeIntelligence=value)
