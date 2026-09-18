@@ -41,9 +41,17 @@ hard way, mid-update, where the rollback needs the same missing permission.
 **IMPORTANT**: The following steps require a user or role with permissions to deploy IAM roles.
 
 You also need an existing IAM **permissions boundary policy**.
-`PermissionsBoundaryArn` is a required parameter with no default, and the same ARN
-must be passed to the IDP stack you deploy with this role. See the README's
-"Read This Before Granting the Role" section.
+`CreatedRolePermissionsBoundaryArn` is a required parameter with no default, and
+the same ARN must be passed to the IDP stack you deploy with this role, as its own
+`PermissionsBoundaryArn` parameter. See the README's "Read This Before Granting the
+Role" section.
+
+The service-role template has a **second** boundary parameter,
+`ServiceRolePermissionsBoundaryArn`, which is optional and defaults to empty. It
+sets the ceiling on the deployment role *itself*, not on the roles it creates.
+Leave it blank for these tests. Passing the tight boundary ARN there makes the role
+unable to deploy anything, because a runtime boundary contains neither
+`cloudformation:` nor `iam:` — see "Two Boundaries, Two Jobs" in the README.
 
 ## Console Deployment Steps
 
@@ -64,9 +72,14 @@ must be passed to the IDP stack you deploy with this role. See the README's
 
 4. **Stack Details**
    - **Stack name**: Enter a name for this service-role stack
-   - **`PermissionsBoundaryArn`** (required): ARN of your permissions boundary policy
+   - **`CreatedRolePermissionsBoundaryArn`** (required): ARN of the tight
+     permissions boundary policy that every role this service role creates must
+     carry
+   - **`ServiceRolePermissionsBoundaryArn`** (optional): leave **blank** for these
+     tests
    - **`ManagedStackNamePrefix`** (default `idp`): the name prefix your IDP stacks
-     share. The IDP stack you test with must start with this prefix.
+     share. The IDP stack you test with must start with this prefix, and the
+     comparison is case-sensitive.
    - Click **"Next"**
 
 5. **Configure Stack Options**
@@ -89,14 +102,20 @@ must be passed to the IDP stack you deploy with this role. See the README's
    - Copy `ServiceRoleArn` (the role to pass to CloudFormation),
      `PassRolePolicyArn` (attach to the deploying user), and
      `RequiredPermissionsBoundaryArn` / `RequiredStackNamePrefix` (the two
-     constraints the IDP stack must satisfy)
+     constraints the IDP stack must satisfy). `ServiceRoleOwnPermissionsBoundaryArn`
+     shows `(none)` when you left the optional second parameter blank.
 
 ### Post-Deployment
 - The role is now ready to be used with `--role-arn` parameter in CloudFormation deployments via CLI or as a "an existing AWS Identity and Access Management (IAM) service role that CloudFormation can assume" from the Permissions-Optional section in the Cloudformation Console. 
 - Users will need `iam:PassRole` permission to use this role — attach the
   `PassRolePolicyArn` managed policy
 - The IDP stack must be named with the `ManagedStackNamePrefix` prefix and
-  deployed with the same `PermissionsBoundaryArn`
+  deployed with its `PermissionsBoundaryArn` set to the same ARN you passed as
+  `CreatedRolePermissionsBoundaryArn`
+- If you are pointing this role at an IDP stack that was deployed **before** this
+  hardening landed, read "Updating an Existing Deployment" in the README first —
+  three configurations wedge the update in `UPDATE_ROLLBACK_FAILED`, and all three
+  are detectable beforehand
 
 ## Test Scenario: Processing-Mode Change
 
@@ -188,5 +207,16 @@ The first three are offline; the last two need a deployment.
    `AccessDenied` on `iam:CreateRole`. If it succeeds, the condition is not
    binding and the containment is illusory.
 5. **Name prefix is enforced** (live): attempt an IDP stack whose name does not
-   start with `ManagedStackNamePrefix`. It must fail on `iam:CreateRole`.
+   start with `ManagedStackNamePrefix`. It must fail on `iam:CreateRole`. Try a
+   case variant too (`IDP-...` against a prefix of `idp`): the `Resource` element
+   is matched case-sensitively, so it must also fail.
+6. **The pre-update checks for an existing deployment** (live, and the one to run
+   *before* you tighten anything): the three configurations that wedge a tightened
+   update — roles carrying no boundary, a stack name that does not match the
+   prefix, and clearing the IDP stack's `PermissionsBoundaryArn` — each have a
+   detection command in ["Updating an Existing
+   Deployment"](README.md#updating-an-existing-deployment). Run all three against
+   the target stack. A wedged stack recovers only through
+   `continue-update-rollback --resources-to-skip`, which skips resources rather than
+   fixing them, so detecting beforehand is materially cheaper than recovering.
 

@@ -78,12 +78,23 @@ For organizations with Service Control Policies (SCPs) that mandate permissions 
 > **The boundary is optional for the stack but required by the delegated
 > deployment role.** If you deploy through the example CloudFormation service role
 > in [iam-roles/cloudformation-management/](../iam-roles/cloudformation-management/README.md),
-> `PermissionsBoundaryArn` is **mandatory** and must be the same ARN on both
-> stacks. That role's `iam:CreateRole` grant carries an `iam:PermissionsBoundary`
-> condition, which is the mechanism that stops a delegated deployment identity
-> from being able to create a role more powerful than itself. Deploying with an
-> empty `PermissionsBoundaryArn` through that role fails on `iam:CreateRole` by
-> design. Deploying with administrator credentials is unaffected.
+> a boundary is **mandatory**: that stack's `CreatedRolePermissionsBoundaryArn`
+> parameter has no default, and the same ARN must be passed here as
+> `PermissionsBoundaryArn`. The service role's `iam:CreateRole` grant carries an
+> `iam:PermissionsBoundary` condition, which is the mechanism that stops a
+> delegated deployment identity from being able to create a role more powerful
+> than itself. Deploying with an empty `PermissionsBoundaryArn` through that role
+> fails on `iam:CreateRole` by design. Deploying with administrator credentials is
+> unaffected.
+>
+> Do **not** confuse that with the service-role template's second, optional
+> parameter `ServiceRolePermissionsBoundaryArn`, which caps the deployment role
+> itself and must be left blank or set to a *wide* policy. Passing the tight
+> runtime boundary there stops the role deploying anything.
+>
+> If the IDP stack already exists and was deployed before that role was hardened,
+> read "Updating an Existing Deployment" in the service role's README first: three
+> detectable configurations wedge the update in `UPDATE_ROLLBACK_FAILED`.
 
 **Usage:**
 ```bash
@@ -109,12 +120,12 @@ Deploying this solution requires an IAM role/user with the following permissions
 > access. See also [Deployment → Administrator Access Requirements](./deployment.md#administrator-access-requirements).
 >
 > That role is a **deployment** role, not a least-privilege one. It still holds
-> `cloudformation:*` plus service wildcards on ~24 services, because a
+> `cloudformation:*` plus service wildcards on 25 services, because a
 > CloudFormation service role must be able to create, update, **and roll back**
 > every resource type in every optional feature of the templates. What contains
 > it is not narrow actions but three constraints, which its own template now
-> requires: a mandatory `PermissionsBoundaryArn` (its `iam:CreateRole` grant
-> carries an `iam:PermissionsBoundary` condition, so it cannot mint a role
+> requires: a mandatory `CreatedRolePermissionsBoundaryArn` (its `iam:CreateRole`
+> grant carries an `iam:PermissionsBoundary` condition, so it cannot mint a role
 > outside the boundary), a `ManagedStackNamePrefix` that scopes its IAM
 > role/policy grants to resource names beginning with that prefix, and a trust
 > policy that admits only the CloudFormation service principal in the same

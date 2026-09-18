@@ -183,9 +183,7 @@ def test_the_shipped_role_covers_the_bastion_instance_profile():
     granted = validator.extract_permissions_from_role(validator.SERVICE_ROLE_TEMPLATE)
 
     missing = {
-        action
-        for action in validator.INSTANCE_PROFILE_ACTIONS
-        if action not in granted
+        action for action in validator.INSTANCE_PROFILE_ACTIONS if action not in granted
     }
     assert not missing, f"service role is missing {sorted(missing)}"
 
@@ -550,3 +548,375 @@ Resources:
     assert any("iam:permissionsboundary" in f for f in findings), findings
     assert any('iam:PassRole on Resource: "*"' in f for f in findings), findings
     assert sum("iam:passedtoservice" in f for f in findings) == 2, findings
+
+
+# --- Shapes that used to defeat the hardening checks ---------------------------
+# Every test below constructs a policy that is genuinely over-broad and that the
+# pre-hardening checks reported as clean. They are grouped here because they
+# share one cause: each check recognised exactly one spelling of the thing it was
+# looking for, so any other spelling of the same grant passed silently. That is
+# the same defect class these checks exist to catch.
+
+
+def test_sub_arn_covering_every_role_is_not_treated_as_bounded(tmp_path):
+    """Shape 1: the repository's own `!Sub` ARN convention.
+
+    `role/*` matches every role in the account, so IAM writes on it need the
+    permissions-boundary condition just as much as `Resource: '*'` does. The
+    resource used to collapse to None, which read as "no literal '*' here" and
+    skipped the boundary check entirely. This is the widest hole in this gate and
+    the one most likely to be reintroduced, since this ARN spelling is used
+    throughout the repo.
+    """
+    template = _write(
+        tmp_path,
+        "sub_all_roles.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: EveryRoleInTheAccount
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:AttachRolePolicy
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("iam:permissionsboundary" in f for f in findings), findings
+
+
+def test_name_prefixed_sub_arn_is_still_accepted(tmp_path):
+    """The negative control for shape 1.
+
+    `role/idp*` genuinely bounds the grant, and so does the reserved
+    `role/aws-service-role/*` path that only AWS-defined service-linked roles can
+    occupy. Neither may be reported, or the check would fire on the shipped
+    template and there would be pressure to weaken it again.
+    """
+    template = _write(
+        tmp_path,
+        "sub_prefixed.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: PrefixedByName
+                Effect: Allow
+                Action: [iam:CreateRole]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/idp*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*/idp*'
+              - Sid: ServiceLinked
+                Effect: Allow
+                Action: [iam:CreateServiceLinkedRole]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/*'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert findings == [], findings
+
+
+def test_bare_wildcard_action_is_not_invisible(tmp_path):
+    """Shape 2: `Action: '*'` contains no colon.
+
+    The action iterator required a ':' so that the permission-sufficiency half of
+    the script only ever saw `service:Action` strings. That filter also hid the
+    single broadest grant expressible in IAM: `Action: '*'` on `Resource: '*'` is
+    account administrator, and it yielded an empty action list, so the
+    forbidden-action, IAM-write and PassRole checks all saw nothing to inspect.
+    """
+    template = _write(
+        tmp_path,
+        "bare_star.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: AccountAdministrator
+                Effect: Allow
+                Action: '*'
+                Resource: '*'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("iam:permissionsboundary" in f for f in findings), findings
+    assert any('iam:PassRole on Resource: "*"' in f for f in findings), findings
+
+
+def test_wildcarded_pass_role_action_is_reported(tmp_path):
+    """Shape 3: `iam:Pass*` grants iam:PassRole.
+
+    PassRole was detected by exact string equality against 'iam:passrole' and
+    'iam:*', so every other pattern that grants it — `iam:Pass*`, `iam:P*` — was
+    unscoped and unreported.
+    """
+    template = _write(
+        tmp_path,
+        "wildcard_pass.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: WildcardPass
+                Effect: Allow
+                Action: [iam:Pass*]
+                Resource: '*'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any('iam:PassRole on Resource: "*"' in f for f in findings), findings
+    assert any("iam:passedtoservice" in f for f in findings), findings
+
+
+def test_wildcarded_forbidden_action_is_reported(tmp_path):
+    """Shape 3, second half: a wildcard covering a forbidden action.
+
+    The forbidden-action check was also exact-match, so a pattern covering
+    iam:DeleteRolePermissionsBoundary defeated the one check in this file that is
+    supposed to be unconditional.
+    """
+    template = _write(
+        tmp_path,
+        "wildcard_forbidden.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: StripBoundaries
+                Effect: Allow
+                Action: [iam:DeleteRolePermissionsB*]
+                Resource: '*'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("must never be granted" in f for f in findings), findings
+
+
+def test_allow_with_not_action_is_reported(tmp_path):
+    """Shape 4: `Effect: Allow` combined with `NotAction`.
+
+    This grants every action except those listed, so it includes every IAM write
+    and iam:PassRole. The checks read only `Action`, so the statement looked
+    empty and passed.
+    """
+    template = _write(
+        tmp_path,
+        "not_action.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: EverythingExceptOneS3Call
+                Effect: Allow
+                NotAction: [s3:DeleteBucket]
+                Resource: '*'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("NotAction" in f for f in findings), findings
+    assert any("iam:permissionsboundary" in f for f in findings), findings
+    assert any('iam:PassRole on Resource: "*"' in f for f in findings), findings
+
+
+def test_if_exists_boundary_operator_does_not_satisfy_the_requirement(tmp_path):
+    """Shape 5: `StringEqualsIfExists` on iam:PermissionsBoundary is vacuous.
+
+    An `...IfExists` operator evaluates TRUE when the key is absent from the
+    request. An iam:CreateRole call that creates a role with no boundary at all
+    simply omits iam:PermissionsBoundary, so the condition passes and an
+    unbounded role is created — precisely the escalation the boundary prevents.
+    The check previously accepted any operator other than `Null`.
+    """
+    template = _write(
+        tmp_path,
+        "ifexists_boundary.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: VacuousBoundary
+                Effect: Allow
+                Action: [iam:CreateRole]
+                Resource: '*'
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PermissionsBoundary: arn:aws:iam::1:policy/b
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("iam:permissionsboundary" in f for f in findings), findings
+
+
+def test_for_all_values_boundary_operator_does_not_satisfy_the_requirement(tmp_path):
+    """Shape 5, second spelling: `ForAllValues:` is true for an absent key set."""
+    template = _write(
+        tmp_path,
+        "forallvalues_boundary.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: VacuousBoundarySetOperator
+                Effect: Allow
+                Action: [iam:CreateRole]
+                Resource: '*'
+                Condition:
+                  ForAllValues:StringEquals:
+                    iam:PermissionsBoundary: arn:aws:iam::1:policy/b
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("iam:permissionsboundary" in f for f in findings), findings
+
+
+def test_statements_in_an_iam_policy_resource_are_inspected(tmp_path):
+    """Shape 6: AWS::IAM::Policy was not walked at all.
+
+    Only AWS::IAM::Role and AWS::IAM::ManagedPolicy were, so an over-broad grant
+    written as an AWS::IAM::Policy (or the newer AWS::IAM::RolePolicy) was
+    invisible to every hardening check.
+    """
+    template = _write(
+        tmp_path,
+        "iam_policy_type.yaml",
+        """
+Resources:
+  Attached:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: P
+      Roles: [SomeRole]
+      PolicyDocument:
+        Statement:
+          - Sid: HiddenGrant
+            Effect: Allow
+            Action: [iam:CreateRole, iam:PassRole]
+            Resource: '*'
+  Inline:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: Q
+      RoleName: SomeRole
+      PolicyDocument:
+        Statement:
+          - Sid: AlsoHidden
+            Effect: Allow
+            Action: [iam:DeleteRolePermissionsBoundary]
+            Resource: '*'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("HiddenGrant" in f for f in findings), findings
+    assert any("AlsoHidden" in f for f in findings), findings
+
+
+def test_null_guard_alone_does_not_satisfy_the_passed_to_service_requirement(tmp_path):
+    """Shape 7: the PassedToService check counted a `Null` guard as a condition.
+
+    `Null: {iam:PassedToService: true}` matches only requests that OMIT the key,
+    so on its own it scopes the pass to nothing at all — it is the absence test,
+    not a service list. The boundary check already excluded `Null`; the PassRole
+    check used the unfiltered key set and so accepted it.
+    """
+    template = _write(
+        tmp_path,
+        "null_only_pass.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: NullGuardOnly
+                Effect: Allow
+                Action: [iam:PassRole]
+                Resource: !Sub 'arn:${AWS::Partition}:iam::1:role/idp*'
+                Condition:
+                  'Null':
+                    iam:PassedToService: 'true'
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert any("iam:passedtoservice" in f for f in findings), findings
+
+
+def test_if_exists_passed_to_service_is_accepted(tmp_path):
+    """The negative control for shape 7, and the shape the shipped role uses.
+
+    `StringEqualsIfExists` on iam:PassedToService IS a real service list: it
+    enforces whenever the key is present. It is deliberately treated differently
+    from the same operator on iam:PermissionsBoundary, because the consequences
+    differ. A pass whose key is absent is a pass to a service that does not
+    populate the key, which the role must still be able to do or the rollback
+    wedges; a role CREATED without a boundary is a permanent escalation.
+    """
+    template = _write(
+        tmp_path,
+        "ifexists_pass.yaml",
+        """
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: P
+          PolicyDocument:
+            Statement:
+              - Sid: ScopedPass
+                Effect: Allow
+                Action: [iam:PassRole]
+                Resource: !Sub 'arn:${AWS::Partition}:iam::1:role/idp*'
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService: [lambda.amazonaws.com]
+""",
+    )
+    findings = validator.find_service_role_hardening_findings(template)
+    assert findings == [], findings
