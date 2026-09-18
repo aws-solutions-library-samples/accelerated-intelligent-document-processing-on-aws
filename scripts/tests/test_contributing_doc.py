@@ -18,9 +18,17 @@ Two rules shape what follows.
 test time — the ``Makefile`` for the ``cfn-lint`` pin, ``run_all_tests.py`` for
 the root count, ``check_prerequisites()`` for the SAM and Python floors, the two
 ``package.json`` files for the Node and npm floors, ``ruff`` itself for the
-lint-coverage figures. A hardcoded expected-value list would be exactly the
+lint-coverage claims. A hardcoded expected-value list would be exactly the
 defect this repository keeps rediscovering: a control that exists as an artifact
 but is never consulted where the decision is made.
+
+The corollary is that a claim only belongs in the document if it can survive
+ordinary churn. Exact whole-repository file counts cannot: the first version of
+this file asserted that ``CONTRIBUTING.md`` quoted the exact number of tracked
+``.py`` files ``ruff`` examines and skips, which made every commit that adds a
+``.py`` file anywhere a failing commit — adding *this* file broke it. Such
+claims are stated as proportions and as absolute "every file under X" facts
+instead, both still derived from ``ruff``.
 
 **No network.** ``pytest scripts/tests`` runs in both CI systems with no
 guarantee of egress, so nothing here resolves a URL. The consequence is that a
@@ -481,6 +489,15 @@ def test_prerequisite_floors_match_their_sources() -> None:
 def test_ruff_coverage_figures_match_ruff() -> None:
     """The lint blind spot the document warns about, measured rather than recalled.
 
+    The document deliberately states this as a proportion plus two absolute
+    claims rather than as exact file counts. Exact counts were tried first and
+    are wrong for this job: every commit that adds a ``.py`` file anywhere in the
+    repository changes them, so the figures would turn a docs guard into a gate
+    that red-lines unrelated branches. (Adding *this* file changed them.) The
+    proportion and the two "every file under" claims are stable, still derived
+    from ``ruff`` at test time, and still fail if issue #975 is resolved and the
+    paragraph is left behind.
+
     Skipped rather than failed when ``ruff`` is absent: this file also runs on a
     machine where the contributor has not activated the virtualenv, which is the
     very problem the document now explains.
@@ -491,18 +508,58 @@ def test_ruff_coverage_figures_match_ruff() -> None:
     tracked = _tracked_python_files()
     examined = _ruff_python_files() & tracked
     skipped = tracked - examined
+    assert tracked, "git ls-files '*.py' returned nothing; the measurement is vacuous"
 
-    for label, value in (
-        ("tracked .py files", len(tracked)),
-        ("files ruff examines", len(examined)),
-        ("files ruff skips", len(skipped)),
-    ):
-        pretty = f"{value:,}"
-        assert pretty in DOC or str(value) in DOC, (
-            f"CONTRIBUTING.md no longer quotes the measured count of {label} "
-            f"({value}). Re-measure with `git ls-files '*.py'` and "
-            "`ruff check --show-files .` and update the ruff-coverage paragraph, "
-            "or drop the figures if issue #975 has been resolved."
+    # The document's two absolute claims. These are the load-bearing ones: a
+    # contributor who reads a clean `ruff check` on a file here is reading
+    # nothing at all.
+    for prefix in ("src/lambda/", "scripts/"):
+        present = {path for path in tracked if path.startswith(prefix)}
+        assert present, (
+            f"No tracked .py files under {prefix} any more, so the document's "
+            f"claim that all of {prefix} is unlinted is vacuous and should go."
+        )
+        leaked = sorted(present & examined)
+        assert not leaked, (
+            f"CONTRIBUTING.md says every file under {prefix} is skipped by "
+            f"`ruff`, but it now examines {len(leaked)} of them, starting with "
+            f"{leaked[0]}. Either ruff.toml's extend-exclude changed (good news "
+            "— narrow or remove the paragraph and close issue #975) or the "
+            "claim was wrong."
+        )
+
+    # And the proportion the document quotes. The window is wide enough that
+    # ordinary churn cannot trip it and narrow enough that resolving #975 does.
+    fraction = len(skipped) / len(tracked)
+    assert "roughly a third" in DOC, (
+        "CONTRIBUTING.md no longer describes the unlinted share as 'roughly a "
+        f"third'; `ruff` currently skips {fraction:.0%} of the "
+        f"{len(tracked)} tracked .py files ({len(skipped)} of them)."
+    )
+    assert 0.25 <= fraction <= 0.40, (
+        f"`ruff` now skips {fraction:.0%} of the {len(tracked)} tracked .py "
+        f"files ({len(skipped)} skipped, {len(examined)} examined), which is no "
+        "longer 'roughly a third' as CONTRIBUTING.md says. If the exclusions "
+        "were narrowed, update or delete that paragraph and close issue #975."
+    )
+
+    # The five bare names the document blames for matching at any depth must
+    # still be the ones in the config.
+    exclude_block = re.search(
+        r"extend-exclude\s*=\s*\[(.*?)\]", RUFF_TOML.read_text(encoding="utf-8"), re.DOTALL
+    )
+    assert exclude_block, "ruff.toml no longer has an extend-exclude list"
+    # Match complete quoted entries first and filter afterwards. A
+    # slash-excluding character class matches across a quote boundary here,
+    # because most entries in this list *are* paths and the separator between two
+    # of them (`",\n    "`) contains no slash.
+    excluded_entries = re.findall(r'"([^"]*)"', exclude_block.group(1))
+    excluded_bare_names = {entry for entry in excluded_entries if "/" not in entry}
+    for name in ("src", "scripts", "patterns", "options", "notebooks"):
+        assert name in excluded_bare_names, (
+            f"CONTRIBUTING.md names {name!r} as one of the bare directory names "
+            "in ruff.toml's extend-exclude that match at any depth, but it is "
+            f"no longer there. Current bare names: {sorted(excluded_bare_names)}"
         )
 
 

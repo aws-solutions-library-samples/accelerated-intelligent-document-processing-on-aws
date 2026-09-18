@@ -364,8 +364,10 @@ thousands of lines longer than 88 columns that the formatter chose not to split
 (the longest currently in the linted set is 585 characters). And `ruff.toml`'s
 `extend-exclude` list leaves a substantial part of the tree unlinted — the bare
 directory names `src`, `scripts`, `patterns`, `options` and `notebooks` match at
-any depth, so of the 1,114 tracked `.py` files `ruff` examines 762 and skips 352,
-including all of `src/lambda/` and all of `scripts/`. That is tracked as
+any depth, so roughly a third of the repository's tracked `.py` files are never
+examined at all, among them every file under `src/lambda/` and every file under
+`scripts/`. Comparing `git ls-files '*.py'` against `ruff check --show-files .`
+gives the exact split for the tree you have in front of you. That is tracked as
 [issue #975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975);
 until it is resolved, a clean `ruff check` on a file under one of those paths
 means the file was not examined. To confirm whether a given file is linted, pass
