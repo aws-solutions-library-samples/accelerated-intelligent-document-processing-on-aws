@@ -59,6 +59,19 @@ a retry loop's chained attempts or a swallowed transient error cannot make an
 unrelated deterministic failure look transient); message markers are limited to
 transport text (`Read timed out`, `Connection reset`, ...).
 
+One exception cuts the other way. `DETERMINISTIC_MESSAGE_MARKERS` lists message text
+that marks a **reproducible** outcome even though the error *code* carrying it is
+transient, and it is evaluated **first** for each node — ahead of the `ClientError`
+code lookup, the exception-type check and the class-name lookup — so it beats the
+verdict those would give. The only entry today is Bedrock's `Model produced invalid
+sequence as part of ToolUse` (#895): `modelStreamErrorException` stays transient as a
+code, because `ConverseStream` genuinely does break mid-stream for transport reasons,
+but a model that emits a malformed `toolUse` block emits it again on attempt 8 (the
+shard retrier's `MaxAttempts`). `is_model_tool_use_sequence_error(exc)` is the matching
+predicate, used by `extraction/agentic_idp.py` to raise `ModelInvalidToolUseSequence`
+with the model id and the remedies. Keep the tuple narrow: text that merely sounds deterministic
+("invalid request", "unsupported") also appears inside genuinely transient wrappers.
+
 ```python
 from idp_common.utils.transient_errors import raise_if_transient
 
