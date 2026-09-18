@@ -82,7 +82,13 @@ memory-bank/
 # Claude agent workspace artefacts (plans/specs/transcripts)
 .claude/superpowers/plans/
 .claude/superpowers/specs/
-.claude/settings.json
+
+# NOTE: .claude/settings.json is deliberately NOT ignored. It is the shared,
+# reviewable project settings file — it carries the PreToolUse hook that keeps
+# internal-only content out of commit messages and PR bodies, and a hook nobody
+# can check in protects nobody. Personal overrides belong in
+# .claude/settings.local.json, which is ignored (globally, and below).
+.claude/settings.local.json
 
 # Private feature trees — proprietary subscription features and the legacy
 # products/ tree live in the separate idp-extensions repo, not the open-source

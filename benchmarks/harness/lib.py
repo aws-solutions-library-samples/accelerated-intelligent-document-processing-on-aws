@@ -56,7 +56,16 @@ PRICING = load_pricing()
 
 def price_metering(metering):
     """metering: {'Phase/service/api': {unit: count}}. Price by LONGEST pricing-key
-    suffix of the metering key. Returns (total, {matched_key: cost})."""
+    suffix of the metering key. Returns (total, {matched_key: cost}).
+
+    Both the model key and the unit name are matched EXACTLY — never by substring.
+    This is the reference form of the rule; production
+    (idp_common/reporting/save_reporting_data.py::_get_unit_cost) implements the
+    same one, and did NOT until GitHub issue #926: its substring fallback bound
+    'cacheReadInputTokens' to a row's 'inputTokens' price and overcharged cache
+    reads by up to 10x. Keep the two in step — a benchmark cost that disagrees
+    with the reported cost for the same metering map is a bug in one of them.
+    """
     total = 0.0
     by = {}
     for meter_key, units in (metering or {}).items():

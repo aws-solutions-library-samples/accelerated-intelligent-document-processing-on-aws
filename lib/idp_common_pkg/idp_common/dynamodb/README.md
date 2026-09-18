@@ -1,13 +1,13 @@
 # DynamoDB Module - Direct DynamoDB Integration
 
-The `dynamodb` module provides direct DynamoDB integration for the IDP Common package, allowing Lambda functions to interact with the TrackingTable without going through AppSync GraphQL API.
+The `dynamodb` module provides direct DynamoDB integration for the IDP Common package. It is **the only** path by which Lambda functions read and write document tracking state: they interact with the TrackingTable through this module, either directly or through the [document service factory](../docs_service_README.md), which always returns `DocumentDynamoDBService`. AWS AppSync was removed from the solution — see [AppSync → REST API Migration](../../../../docs/migration-appsync-to-rest.md).
 
 ## Overview
 
-This module is designed to replace AppSync dependencies in Lambda functions while maintaining the same functionality and data structures. It provides:
+The module provides:
 
 - Direct DynamoDB operations using boto3
-- Document CRUD operations matching AppSync schema
+- Document CRUD operations against the TrackingTable
 - Transaction support for atomic operations
 - Error handling and logging
 - TTL support for document expiration
@@ -179,7 +179,13 @@ job_service.update_job_files("a1b2c3d4", {
 
 ## Data Structure Compatibility
 
-The module maintains full compatibility with the existing AppSync schema:
+The attribute names this module writes still match the field names in the
+retained GraphQL contract at `nested/api-resolvers/src/api/schema.graphql`. That
+file is no longer served by a live GraphQL service: it is now a typed contract
+used for UI type codegen (`src/ui/codegen.config.mjs` reads it) and as the
+authoritative baseline for the REST dispatcher's input-shape validation and
+per-resolver RBAC checks. Keep the names below in sync with it — a mismatch
+shows up as a missing field in the UI, not as a schema error.
 
 ### Document Table Structure
 - **PK**: `doc#{ObjectKey}` - Primary partition key
@@ -227,9 +233,15 @@ The module uses these environment variables:
 - `TRACKING_TABLE` - DynamoDB table name
 - `AWS_REGION` - AWS region
 
-## Migration from AppSync
+## Historical: migrating code written before AppSync was removed
 
-To migrate from AppSync to direct DynamoDB:
+> **This section is a historical note, not a live choice.** AppSync is gone from
+> the solution and `idp_common.appsync` no longer exists, so there is no "AppSync
+> vs DynamoDB" decision to make — direct DynamoDB is the only option. The steps
+> below apply only if you are porting old code (an out-of-tree fork, an old
+> branch, or a stale copy of a resolver) that still imports the deleted module;
+> those imports fail with an `ImportError`. New code should call
+> `create_document_service()` from [`docs_service`](../docs_service_README.md).
 
 1. Replace imports:
    ```python
@@ -249,9 +261,8 @@ To migrate from AppSync to direct DynamoDB:
    service = DocumentDynamoDBService(table_name=table_name)
    ```
 
-3. Method calls remain the same:
+3. Method names are unchanged, so call sites do not need edits:
    ```python
-   # These work with both services
    service.create_document(document)
    service.update_document(document)
    service.get_document(object_key)

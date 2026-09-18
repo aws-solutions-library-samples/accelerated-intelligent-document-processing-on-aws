@@ -1260,7 +1260,11 @@ def build_simple_quota_requirements(
                     
                     # Extract actual page count from metering data
                     if 'number_of_pages' in item:
-                        pages = convert_decimal_to_float(item['number_of_pages'])
+                        # float() so the running average below is well-typed:
+                        # convert_decimal_to_float() is recursive and so is inferred
+                        # as returning a scalar/dict/list union, which the "+" and "/"
+                        # below cannot accept. A page count is always scalar.
+                        pages = float(convert_decimal_to_float(item['number_of_pages']))
                         if actual_pages_per_doc is None:
                             actual_pages_per_doc = pages
                         else:

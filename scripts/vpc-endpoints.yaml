@@ -3,9 +3,10 @@
 
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  VPC Interface and Gateway Endpoints for IDP private AppSync deployment.
-  Run scripts/check-vpc-endpoints.sh first to detect pre-existing endpoints
-  and generate the exact deploy command. Deploy AFTER the IDP stack.
+  VPC Interface and Gateway Endpoints for an IDP private-network deployment
+  (ApiGatewayVisibility=PRIVATE). Run scripts/check-vpc-endpoints.sh first to
+  detect pre-existing endpoints and generate the exact deploy command. Deploy
+  AFTER the IDP stack.
 
 Parameters:
   VpcId:
@@ -47,19 +48,27 @@ Parameters:
       Primary CIDR block of the VPC (e.g. 10.1.0.0/16).
       Added to the VPC endpoint security group so that browsers running
       inside the VPC (WorkSpaces, VPN clients, bastions) can reach the
-      AppSync and other Interface Endpoints directly on port 443.
+      execute-api and other Interface Endpoints directly on port 443.
       Auto-detected by deploy-vpc-endpoints.py if not supplied manually.
 
   # ──────────────────────────────────────────────────────────
   # Per-endpoint creation flags
   #
-  # REQUIRED by the IDP application (15 endpoints):
-  #   appsync-api, appsync, sqs, states, kms, logs,
+  # REQUIRED by the IDP application (14 endpoints):
+  #   execute-api (the private API Gateway REST API the Web UI calls — and, when
+  #     WebUIHosting=APIGateway, the UI itself; this is what a private deployment
+  #     is unreachable without),
+  #   sqs, states, kms, logs,
   #   bedrock-runtime, ssm (Lambda→SSM Parameter Store calls),
   #   secretsmanager, lambda, events, athena,
   #   textract (OCR pattern — ocr/service.py calls Textract API),
   #   sts (BDA pattern — bda/bda_service.py and bda/blueprint_optimizer.py call STS for AssumeRole),
   #   monitoring (CloudWatch — workflow_tracker publishes metrics, dashboard_merger manages dashboards)
+  #
+  # NOT required: appsync-api and appsync. AWS AppSync has been removed from the
+  # solution — no template creates an AppSync API — and the two Create*AppSync*
+  # flags below default to "false" for that reason. They exist only so an older
+  # parameter file keeps working; do not turn them on for a new deployment.
   #
   # REQUIRED only for SSM Session Manager testing bastion (2 endpoints):
   #   ssmmessages  — SSM Session Manager port-forwarding channel
@@ -284,7 +293,12 @@ Resources:
       Description: !Sub "Allow HTTPS to VPC endpoints (${IDPStackName})"
 
   ##########################################################################
-  # AppSync Endpoints
+  # UI/API transport endpoints
+  #
+  # execute-api is the live one. The two AppSync endpoints below are retained
+  # only for backward compatibility with existing parameter files and are OFF
+  # by default — AppSync was removed from the solution and no template creates
+  # an AppSync API.
   ##########################################################################
 
   # execute-api endpoint — required for ApiGatewayVisibility=PRIVATE. The
@@ -310,6 +324,9 @@ Resources:
         - Key: Environment
           Value: !Ref EnvironmentTag
 
+  # DEPRECATED — AppSync data-plane endpoint. Created only if an existing
+  # parameter file still sets CreateAppSyncApiEndpoint=true. Nothing in the
+  # solution uses it.
   AppSyncApiVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: ShouldCreateAppSyncApiEndpoint
@@ -329,6 +346,7 @@ Resources:
         - Key: Environment
           Value: !Ref EnvironmentTag
 
+  # DEPRECATED — AppSync control-plane endpoint. Same rationale as above.
   AppSyncControlVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: ShouldCreateAppSyncControlEndpoint

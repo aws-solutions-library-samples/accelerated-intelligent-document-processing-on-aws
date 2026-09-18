@@ -75,16 +75,49 @@ That failure is quiet. Every other signal looks *idle* rather than broken: no
 errors, no failed executions, latency graphs simply stop. The usual first symptom
 is a person noticing that nothing has processed for hours.
 
-Two metrics in the stack's own namespace (`<StackName>`) make it visible, both on
-the **Workflow Concurrency Counter** widget:
+The counter can also drift the other way. Admission is gated on
+`active_count < MaxConcurrentWorkflows`, so a counter driven **below zero** raises
+the effective ceiling by exactly that much and nothing errors: documents process,
+queues drain, every graph looks healthy, and the stack simply spends more on
+Bedrock and Textract than it was configured to. Two guards in the tracker prevent
+it: the decrement is refused when the counter is already at zero, and it carries a
+`dec#<executionArn>` marker written in the same DynamoDB transaction, so a
+redelivered terminal event cannot release a second slot. The markers expire via
+the `ConcurrencyTable` TTL attribute (`ExpiresAfter`, seven days) rather than
+accumulating one item per document forever.
+
+Unlike the upward leak, a negative counter is **not** permanent even without
+intervention: every admitted document increments it, and once it climbs to the
+ceiling the floored decrements absorb the excess, so it converges back on its own.
+The over-admission is therefore bounded to roughly one generation of documents
+rather than lasting forever — which is why the guards and the repair below matter
+for cost and for predictable capacity rather than for recoverability.
+
+Four metrics in the stack's own namespace (`<StackName>`) make all of this
+visible, all on the **Workflow Concurrency Counter** widget:
 
 - **`ConcurrencyCounterActive`** — the counter value, published on every document
-  completion. Continuous, so there is a history to inspect after the fact.
+  completion. Continuous, so there is a history to inspect after the fact. Its
+  **Minimum** is plotted as well as its Average, because a single dip below zero
+  is what matters and an average hides it.
 - **`ConcurrencyCounterDrift`** — claimed slots minus executions actually
   running. Sampled only when an increment is *refused*, i.e. when drift is
   actually blocking work.
+- **`ConcurrencyCounterUnderflow`** — a decrement that was refused because the
+  counter was already at zero. Nothing else reports this: the counter and the
+  document both end up correct, so without this metric a duplicate release is
+  invisible.
+- **`ConcurrencyDecrementSuppressed`** — a terminal event whose slot had already
+  been released, recognised by its `dec#<executionArn>` marker and skipped. This
+  is the guard working, not a fault, so it has **no alarm**: EventBridge
+  redelivery is expected (the rule allows three retries, and a tracker invocation
+  that fails after the decrement lands is redelivered by design), and alarming on
+  correct behaviour would be noise. It is worth watching as a series, because it
+  is the only signal that terminal events are being redelivered at all — a rising
+  count alongside `WorkflowTrackerDLQAlarm` or tracker errors says the tracker is
+  failing *after* it releases the slot.
 
-Two alarms publish to `AlertsTopic`:
+Four alarms publish to `AlertsTopic`:
 
 - **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
   fires on the *symptom*, once slots are already being held wrongly.
@@ -92,15 +125,43 @@ Two alarms publish to `AlertsTopic`:
   dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
   so an event it could not process is a slot that was never released, and it
   alarms on the first message rather than waiting for drift to accumulate.
+- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement. The floor
+  already prevented the damage, so this is a *correctness* signal: something
+  released a slot twice, and the reason is worth finding.
+- **`ConcurrencyCounterNegativeAlarm`** — the counter observed below zero. This
+  should be unreachable now that the decrement is floored; if it fires, the
+  counter is being written by something that bypasses the floor.
 
-The queue processor also **self-heals**: on a refused increment it
-reconciles the counter against `ListExecutions`, requiring the same discrepancy
-in two samples at least five minutes apart, only ever lowering it, and writing
-conditionally on the value it sampled.
+The queue processor also **self-heals**, in two different places for the two
+different directions:
+
+- **Downward correction** (the counter is too high) runs on a *refused* increment,
+  reconciling against `ListExecutions` and writing conditionally on the value it
+  sampled. It requires the same discrepancy in two samples at least five minutes
+  apart, because lowering the counter wrongly over-admits work.
+- **Upward repair** (the counter is negative) runs on the next *successful*
+  increment — which is where it has to be, because a negative counter always
+  satisfies `active_count < MaxConcurrentWorkflows` and so is never refused. The
+  increment asks DynamoDB for the updated value, and a post-increment value of
+  zero or below means it was negative before. The counter is then raised to the
+  executions actually running plus the slot that increment just claimed (that
+  execution does not exist yet, so `ListExecutions` cannot see it), conditionally
+  on the value observed, and never to a value below zero. So a negative counter is
+  corrected within one admitted document rather than needing the queue to be at
+  its ceiling first.
+
+The repair publishes the pre-repair **negative** value — not the value the counter
+reads after the increment — before it writes, so `ConcurrencyCounterNegativeAlarm`
+still fires on a counter that healed itself. Without that a self-healed underflow
+would leave no trace at all.
 
 **Reading the widget:** the counter tracking a busy queue is normal. The counter
 sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
-in flight and the Step Functions widget shows nothing starting is the leak.
+in flight and the Step Functions widget shows nothing starting is the upward
+leak. The counter minimum below the zero annotation, or any
+`ConcurrencyCounterUnderflow` bar, is the downward one. A
+`ConcurrencyDecrementSuppressed` bar on its own is the idempotency guard doing its
+job.
 
 ### Stale Output Purge on Re-upload
 
@@ -170,7 +231,7 @@ The solution creates centralized logging across all components:
 - `/aws/lambda/ClassificationFunction`: Classification processing logs
 - `/aws/lambda/ExtractionFunction`: Extraction processing logs
 - `/aws/lambda/TrackingFunction`: Document tracking and status logs
-- `/aws/appsync/GraphQLAPI`: Web UI API access logs
+- The REST API's access logs and the dispatcher Lambda's log group: Web UI API activity (the dispatcher is the single entry point for every UI query and mutation)
 
 All logs include correlation IDs for tracing individual document processing journeys.
 
@@ -241,9 +302,11 @@ Each pattern includes additional monitoring tailored to its specific workflow:
 
 ## Alarms the Stack Creates
 
-Subscribe an email address or a chat webhook to the alarm's SNS topic to receive
-these — the alarms exist whether or not anything is subscribed, so a stack with
-no subscription raises alarms that nobody sees.
+Every alarm publishes to one SNS topic, `AlertsTopic`. The stack subscribes the
+`AdminEmail` address to it at deploy time — but **that subscription is not live
+until the address confirms it**, and one address is not an on-call rota. Read
+[Who receives the alerts](#who-receives-the-alerts) before assuming these alarms
+will reach anyone.
 
 > ⚠️ **On stacks deployed before release 0.6.7 with the circuit breaker disabled
 > (the default), no alarm notification was ever delivered.** `AlertsTopic` is
@@ -270,6 +333,8 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
 | `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | Threshold is fixed (≥ 1); the bound itself is `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
+| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was already 0 — a slot released twice | `AlertsTopic` | — |
+| `ConcurrencyCounterNegativeAlarm` | Concurrency counter observed below 0 in 5 min — the ceiling is being exceeded | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
 | `DocumentQueueStalledAlarm` | Oldest queued document older than the threshold **and** nothing left the queue, for 30 min | `AlertsTopic` | `QueueStalledAgeThresholdSeconds` (default `1800`, i.e. 30 min) |
@@ -282,7 +347,123 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 `AlertsTopic` carries the display name **Workflow Alerts**.
 `BedrockServiceOutageAlarm` is created only when the circuit breaker is enabled
 and reports to its own topic, since it drives automated back-off rather than
-human attention.
+human attention — the circuit-breaker manager Lambda that topic invokes then
+publishes a readable notification to `AlertsTopic`, so a breaker trip still
+reaches the same recipients.
+
+### Who receives the alerts
+
+The stack creates an **email** subscription on `AlertsTopic` for the address you
+passed as the `AdminEmail` parameter — the same address that receives the
+temporary Cognito password. Before release 0.6.9 there was no subscription to
+`AlertsTopic` — other topics in the solution had one, this one did not: the topic
+ARN was emitted as the `SNSAlertsTopicARN` stack output and an
+operator was tacitly expected to subscribe by hand, so a default deployment
+raised alarms nobody saw ([issue #922](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/922)).
+
+#### You must confirm the subscription before anything is delivered
+
+> ⚠️ **An SNS email subscription starts in `PendingConfirmation` and delivers
+> nothing at all until the recipient clicks the confirmation link.** SNS sends a
+> *"AWS Notification - Subscription Confirmation"* message to `AdminEmail` when
+> the stack is created. Until someone opens it and follows the link, every alarm
+> still publishes successfully and every notification is still dropped — which
+> looks exactly like the pre-0.6.9 behaviour. A pending confirmation does **not**
+> fail or delay the CloudFormation operation, so there is no deployment error to
+> notice; the confirmation token is valid for about two days, after which you have
+> to re-request one from the SNS console.
+
+Check the status any time:
+
+```bash
+aws sns list-subscriptions-by-topic \
+  --topic-arn "$(aws cloudformation describe-stacks --stack-name <stack-name> \
+      --query "Stacks[0].Outputs[?OutputKey=='SNSAlertsTopicARN'].OutputValue" \
+      --output text)" \
+  --query 'Subscriptions[].{Protocol:Protocol,Endpoint:Endpoint,Arn:SubscriptionArn}' \
+  --output table
+```
+
+A `SubscriptionArn` of the literal string `PendingConfirmation` means exactly
+that — unconfirmed, delivering nothing. A real ARN means the endpoint is live.
+
+#### Alert a team, not one person
+
+One personal mailbox is a single point of failure for every alert in the
+solution. The `AdminEmail` subscription is a floor, not a design: add the
+recipients you actually want to the same topic. These are ordinary SNS
+subscriptions and are independent of the stack, so adding them does not conflict
+with a stack update, and removing the stack removes only the subscription it
+created.
+
+There is a second reason beyond the rota. **Every SNS email carries a one-click
+unsubscribe link, so any recipient — or anyone the mail is forwarded to — can
+remove the subscription without telling you, and nothing in the stack notices.**
+Alarms then keep publishing successfully to a topic nobody receives, which is
+indistinguishable from having no subscription at all. This is inherent to
+`Protocol: email` rather than something this solution introduces, and it is the
+strongest argument for the options below: a chat or `https` subscription has no
+unsubscribe link in the payload, and a distribution list keeps the SNS endpoint
+constant no matter who leaves it. If you rely on email, re-run the
+`list-subscriptions-by-topic` check above periodically.
+
+- **A distribution list or ticket queue** — subscribe a group address rather than
+  an individual, so the rota changes without a stack update:
+
+  ```bash
+  aws sns subscribe --topic-arn <alerts-topic-arn> \
+    --protocol email --endpoint idp-oncall@example.com
+  ```
+
+  Every email subscription needs its own confirmation click, including this one.
+
+- **Chat** — [AWS Chatbot](https://docs.aws.amazon.com/chatbot/latest/adminguide/getting-started.html)
+  subscribes the topic to a Slack channel or Amazon Chime/Microsoft Teams room and
+  renders the alarm payload legibly. No confirmation step, and the channel history
+  gives you an audit trail that a mailbox does not.
+
+- **Paging** — PagerDuty, Opsgenie and similar accept an SNS `https` subscription
+  endpoint, which is confirmed automatically by the receiving service. Use this if
+  an alarm needs to wake someone; email will not.
+
+- **An existing operational topic** — if you already centralise alarms, you do not
+  have to use `AlertsTopic` as the fan-out point. Subscribe your own topic's
+  ingest Lambda/queue to it, or point the alarms at your topic directly by
+  editing `AlarmActions` in a template you deploy yourself. A subscriber in
+  another account needs `sns:Subscribe` on the topic policy. It does **not** need
+  any permission on the stack's KMS key: SNS server-side encryption protects the
+  message at rest and SNS decrypts it itself before delivery, so the documented
+  key-policy grants are for *publishers* and for the `sns.amazonaws.com` service
+  principal, not for subscribers. The KMS requirement that does exist runs the
+  other way — if you subscribe an **encrypted SQS queue**, that queue's key
+  policy must allow `sns.amazonaws.com` to `kms:GenerateDataKey*` and
+  `kms:Decrypt`, otherwise delivery fails silently from SNS's side.
+
+  > ⚠️ Do not grant a foreign account `kms:Decrypt` on the stack's
+  > `CustomerManagedEncryptionKey` in order to receive alerts. That one key also
+  > encrypts the input, output, working and evaluation buckets, the DynamoDB
+  > tables and the queues, so the grant would reach the entire processed-document
+  > corpus — an enormous amount of access for an alarm email, and it is not
+  > required.
+
+#### `--headless` deployments still start with no subscribers
+
+> ⚠️ A `--headless` deployment strips the `AdminEmail` parameter along with
+> Cognito, so it collects no operator address and **creates no subscription at
+> all**. It keeps `AlertsTopic` and all fourteen alarms, so a headless stack still has
+> the original defect: every alarm publishes successfully and nobody is notified.
+> Issue #922 is closed for the standard deployment and remains open for this one.
+
+Subscribing at least one recipient to the `SNSAlertsTopicARN` output is therefore
+a required post-deploy step for headless, not an optional improvement:
+
+```bash
+aws sns subscribe --topic-arn <alerts-topic-arn> \
+  --protocol email --endpoint idp-oncall@example.com
+```
+
+Whether the headless variant should gain its own optional alerts-email parameter
+is an open deployment-interface question rather than a defect in the transform.
 
 ### `WorkflowErrorsAlarm` — the primary failure signal
 
@@ -480,14 +661,23 @@ was a `FAILED` run of 306–308 minutes: a single state's Lambda `Sandbox.Timedo
 900 seconds retried eight times at 2.5× backoff. A benchmark stack's longest success
 was 2.6 minutes. Six hours is therefore about ten times the longest observed success.
 
+That particular storm can no longer happen: every Lambda task state now retries the
+timeout codes at most once, so a deterministic timeout fails in about 30 minutes
+rather than 5.1 hours (see
+[Step Functions Retry Configuration](./configuration.md)). The measurement is kept
+here because it is what sized the bound, and because the *transient* ladder is
+unchanged — a state throttled through all eight attempts still spends about 2.8
+hours in backoff alone.
+
 Be precise about what the default does and does not bound. It does **not** shorten
-that measured storm: one state exhausting its `Retry` policy takes about 5.1 hours and
-then fails on its own, inside the 6-hour bound, and shortening it would need a bound
-of 3 hours or less (`10800`), which is a defensible choice for a stack whose largest
-documents finish well under an hour. What the default does bound is everything the
+a state that is still inside its own `Retry` budget: a full transient ladder fails
+on its own inside the 6-hour bound, and cutting the bound to 3 hours or less
+(`10800`) is a defensible choice for a stack whose largest documents finish well
+under an hour. What the default does bound is everything the
 per-state guards cannot: a `.waitForTaskToken` callback that never arrives once the
 BDA bound is exceeded (see below), a state that hangs without erroring, and a storm
-that compounds across two or more states (two consecutive storms are about 10 hours).
+that compounds across two or more states (two consecutive transient ladders are
+about 5.6 hours).
 Not measured: multi-hundred-page packets under agentic table extraction, which are
 the case most likely to approach the bound — if your `ExecutionTime` p99 for
 *successful* runs is within a factor of two of the bound, raise it (up to one year,
@@ -540,6 +730,10 @@ in flight.
 > propagates to `ExecutionsFailed` on its own.
 
 ## Setting Up Alerts
+
+For who receives the **built-in** alarms — and the confirmation click that has to
+happen before any of them are delivered — see
+[Who receives the alerts](#who-receives-the-alerts).
 
 Beyond the built-in alarms you can add your own for metrics specific to your
 deployment:
