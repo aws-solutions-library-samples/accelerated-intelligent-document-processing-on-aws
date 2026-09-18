@@ -112,19 +112,14 @@ failed on any machine with an assume-role `AWS_PROFILE` (#974).
 |---|---|---|---|---|
 <!-- STANDING-FAILURES-END -->
 
-This section previously listed ~26 "known pre-existing failures — DO NOT treat as
-regressions", covering `test_configuration_sync.py`, `test_embedding_service.py`,
-`test_discovery_agent.py`, `test_publish.py`, `test_assessment_enabled_property.py`,
-`test_pdf_page_extraction.py`, `test_document_compression.py` and
-`workflow_tracker/test_notify_circuit_breaker.py`. **All of them now pass**, and the
-list has been removed rather than trimmed, because a stale allow-list is worse than
-none: it invites you to wave through a genuine regression that happens to land in a
-file it names. Two lessons worth keeping:
+**Keep that table empty unless a failure is verified.** A stale allow-list is worse
+than none: it invites you to wave through a genuine regression that happens to land
+in a file it names. Two things to check before you add a row:
 
-- Most of that list was an **environment artifact, not a repo state** — the symptom
-  of a venv missing the pinned `[test]` extras (see gotcha 1). Reach for
-  `pip install -e ".[test]"` before you reach for this section.
-- Order-dependent pollution is still a real phenomenon. If a test fails in the full
+- Most apparent standing failures are an **environment artifact, not a repo state**
+  — the symptom of a venv missing the pinned `[test]` extras (see gotcha 1). Reach
+  for `pip install -e ".[test]"` before you reach for this section.
+- Order-dependent pollution is a real phenomenon. If a test fails in the full
   run, re-run the file alone (`pytest <file> -q`) before concluding anything —
   but note that re-running the file alone is **not** sufficient to rule order out.
   `test_report_list_and_aggregate` (#974) reproduced perfectly with the file run

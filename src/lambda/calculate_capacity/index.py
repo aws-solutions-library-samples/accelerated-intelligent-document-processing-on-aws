@@ -7,6 +7,7 @@ import os
 import time
 import boto3
 from datetime import datetime, timedelta
+from log_sanitizer import sanitize_event_for_logging
 from validation import (
     ValidationError,
     get_validated_env_vars,
@@ -1471,7 +1472,13 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 "recommendations": [f"❌ Configuration error: {str(e)[:200]}"],
             }
 
-        print(f"Received event: {json.dumps(event, default=str)[:1000]}")
+        # The 1000-character cap bounds log volume; it does not redact anything,
+        # so the sanitizer still has to run first. This function is reachable from
+        # the resolver below, which forwards the caller's AppSync event in full.
+        print(
+            "Received event: "
+            f"{json.dumps(sanitize_event_for_logging(event), default=str)[:1000]}"
+        )
 
         # Handle different event formats (direct call vs GraphQL resolver)
         if "body" in event:

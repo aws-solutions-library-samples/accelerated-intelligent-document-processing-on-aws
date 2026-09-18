@@ -7,6 +7,7 @@ import cfnresponse
 import os
 import logging
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger()
@@ -154,8 +155,8 @@ def delete_dashboard(dashboard_name: str) -> None:
 
 def handler(event: Dict[str, Any], context: Any) -> None:
     """Custom resource handler that merges and creates/updates dashboard"""
-    logger.info(f"Received event: {json.dumps(event)}")
-    
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
+
     try:
         request_type = event['RequestType']
         props = event.get('ResourceProperties', {})

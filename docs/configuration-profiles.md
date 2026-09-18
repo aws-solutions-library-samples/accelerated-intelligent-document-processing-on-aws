@@ -13,9 +13,9 @@ compare results across configurations — all without redeploying your stack. Ea
 profile keeps a **revision history**, so saving a change never loses the
 configuration it replaced.
 
-> This page used to be called *Configuration Versions*, and "version" meant the
-> named entity itself — which made the history of one configuration impossible to
-> talk about ("versions of a config version"). See
+> **Renamed from *Configuration Versions*.** "Version" named the entity itself,
+> which made the history of one configuration impossible to talk about ("versions
+> of a config version"). See
 > [Terminology](#terminology-which-word-means-what) for the vocabulary that
 > replaced it.
 >

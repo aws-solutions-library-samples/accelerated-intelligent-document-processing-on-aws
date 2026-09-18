@@ -8,6 +8,7 @@ import logging
 import zipfile
 from idp_common.job_service import create_job_service
 from idp_common.models import Status
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from io import BytesIO
 
 logger = logging.getLogger()
@@ -21,7 +22,7 @@ job_service = create_job_service()
 
 
 def handler(event, context):
-    logger.info(f"Processing event: {json.dumps(event)}")
+    logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
 
     # Extract document ID from Step Functions event
     input_data = json.loads(event["detail"]["input"])

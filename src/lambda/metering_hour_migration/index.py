@@ -48,6 +48,8 @@ from typing import Iterator, Optional
 
 import boto3
 
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+
 # pyarrow is bundled via IDPCommonReportingLayer. Import at module load time
 # rather than inside _infer_hour so a missing layer fails the handler on
 # initialization (fast, loud, actionable) instead of silently parking every
@@ -94,7 +96,9 @@ s3_client = boto3.client("s3", config=_boto_config)
 
 def handler(event, context):
     """CloudFormation Custom Resource entry point."""
-    logger.info(f"Custom Resource event: {json.dumps(event)}")
+    logger.info(
+        f"Custom Resource event: {json.dumps(sanitize_event_for_logging(event))}"
+    )
 
     request_type = event.get("RequestType", "")
     if request_type == "Delete":

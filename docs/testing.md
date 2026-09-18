@@ -7,11 +7,16 @@ SPDX-License-Identifier: MIT-0
 
 # Testing
 
-Every test method in this repository, what it proves, how to run it, and whether CI
-runs it for you. If you are looking for **what a given release was actually
-validated against**, that is the
-[Release Validation Records](./release-validation/README.md); this page is the map of
-the methods themselves.
+Every test layer and tier in this repository: what it proves, how to run it, whether
+CI runs it for you, and where its results are recorded. This is a map of the tiers,
+not an index of individual test functions — there are thousands of those across
+hundreds of test modules, and one added inside a suite that already runs needs no
+change here. `make test-list` enumerates the suites themselves, and the section on
+[what `make test` does not run](#suites-make-test-does-not-run) is the one place the
+suite-level exceptions are written down. If you are looking for **what a given
+release was actually validated against**, that is the
+[Release Validation Records](./release-validation/README.md); this page describes the
+methods, not any particular run of them.
 
 The organising fact: **most of what protects this repo runs on every pull request,
 but the tiers that need a deployed stack cannot.** Roughly a dozen methods below run
@@ -38,8 +43,9 @@ request. `make all` is both.
 `make test` discovers and runs every non-integration suite in the repo — the
 `idp_common` library, `idp_cli`, `idp_sdk`, `idp_feature_sdk`, the feature platform,
 the per-Lambda suites, the config library, and the repo's own tooling tests under
-`scripts/`. `make test-list` prints the discovered roots without running them, which
-is the honest answer to "is my new suite actually being run?".
+`scripts/`, with the handful of documented exceptions [below](#suites-make-test-does-not-run).
+`make test-list` prints the discovered roots without running them, which is the honest
+answer to "is my new suite actually being run?".
 
 ```bash
 make test                                   # everything, auto-discovered
@@ -81,6 +87,35 @@ the [`full-test-battery`](https://github.com/aws-solutions-library-samples/accel
 procedure. Conventions for **writing** tests — pytest markers, `moto`, conftest
 layout — are in
 [`testing-qa`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/testing-qa.md).
+
+### Suites `make test` does not run
+
+Auto-discovery means a suite cannot be *forgotten*, not that every suite is *run*.
+`scripts/run_all_tests.py` refuses to run at all when it finds a directory holding a
+`test_*.py` that is in neither of its two registries — the roots it runs, and the
+roots it excludes with a written reason — so tests in a new location cannot be
+silently skipped. An exclusion covers **only the directory named**: nesting under an
+excluded directory used to inherit the exclusion, which meant excluding `scripts`
+quietly accepted every future test directory beneath it, so each excluded directory
+is now listed on its own. That check backs `make test`, which runs in **neither** CI, so
+`scripts/tests/test_testing_doc.py` re-derives it on every pull request, where
+`pytest scripts/tests` does run.
+
+These are the directories in the excluded registry. They are listed because a suite
+that exists and never runs is otherwise indistinguishable from one that passes:
+
+| Not run by `make test` | Why |
+|---|---|
+| `scripts` | `scripts/test_api_rbac.py` is the live RBAC harness driven by `make api-test` against a deployed stack (layer 6), not a pytest suite; collecting it picks up its `test_email()` helper as a test |
+| `src/lambda/ocr_benchmark_deployer` | `test_local.py` needs `huggingface_hub`, which is not a test dependency |
+| `nested/bedrockkb/src/s3_vectors_manager` | `test_handler.py` imports `cfnresponse`, which exists only in the Lambda runtime |
+| `nested/bedrockkb/src/s3_vectors_manager/tests` | Named separately now that an exclusion no longer covers what is nested under it. Not skipped in practice — `make test-packages-cicd` runs it directly, in both CI systems, so CI runs more than `make test` does |
+| `samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook` | `test_local.py` is a manual local-run script and collects zero pytest tests (measured) |
+| `lib/idp_sdk/idp_sdk/_core` | source, not tests: `test_studio_processor.py` is the Test Studio processor module, which the `test_` prefix makes look like a suite |
+
+Adding an exclusion, or lifting one of these, fails that guard until this table and
+the registry agree — it is checked in both directions, so a row that outlives the
+exclusion it describes fails too.
 
 ## 2. Static gates (lint, types, and hand-written scanners)
 

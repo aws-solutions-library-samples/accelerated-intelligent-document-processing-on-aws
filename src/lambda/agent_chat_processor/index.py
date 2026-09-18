@@ -22,6 +22,7 @@ import botocore.exceptions
 from idp_common.agents.analytics import get_analytics_config
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Import Bedrock error handling
 try:
@@ -943,7 +944,15 @@ def handler(event, context):
     is_cold_start = _lambda_invocation_count == 1
     
     logger.info(f"Lambda invocation #{_lambda_invocation_count} ({'COLD START' if is_cold_start else 'WARM'})")
-    logger.info(f"Received agent chat processor event: {json.dumps(event)}")
+    # Redacted, not raw: this event carries the user's chat prompt, the caller's
+    # Cognito `sub` and the caller's group list, and the log group is readable by
+    # anyone with CloudWatch Logs access — a wider audience than the people
+    # entitled to read a given user's conversation. The sanitizer keeps the shape
+    # of the event, which is what diagnosing a failed turn actually needs.
+    logger.info(
+        f"Received agent chat processor event: "
+        f"{json.dumps(sanitize_event_for_logging(event))}"
+    )
 
     # Authorize before any work. Deliberately outside the try/except below: that
     # handler converts an exception into a 200-with-error-body stream frame plus a

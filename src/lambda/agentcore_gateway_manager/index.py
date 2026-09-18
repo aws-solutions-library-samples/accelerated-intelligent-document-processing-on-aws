@@ -8,6 +8,7 @@ import time
 import logging
 import os
 from bedrock_agentcore_starter_toolkit.operations.gateway.client import GatewayClient
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -150,7 +151,7 @@ IDP_TOOLS_SCHEMA = [
 
 def handler(event, context):
     """CloudFormation custom resource handler for AgentCore Gateway"""
-    logger.info(f"Received event: {json.dumps(event)}")
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
     props = event.get('ResourceProperties', {})
     gateway_name = f"{props.get('StackName', 'UNKNOWN')}-analytics-gateway"

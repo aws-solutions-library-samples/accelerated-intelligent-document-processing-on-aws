@@ -463,6 +463,19 @@ Parameters:
     Description: Maximum acceptable execution time in milliseconds before alerting (default 300000 = 300 seconds)
     MinValue: 1000
 
+  ConfidenceUnavailableThreshold:
+    Type: Number
+    Default: 10
+    Description: >-
+      Number of document sections degraded to "no confidence scores" within a
+      15-minute window before AssessmentConfidenceUnavailableAlarm fires. A single
+      degraded section is an expected, self-limiting outcome (one unusually large
+      section against a small-context confidence model), so the alarm watches
+      volume rather than the first occurrence. Raise this if one large
+      multi-section document can legitimately produce that many degrades in your
+      corpus; lower it to be told sooner.
+    MinValue: 1
+
   QueueStalledAgeThresholdSeconds:
     Type: Number
     Default: 1800
@@ -1534,6 +1547,7 @@ Metadata:
           - DataRetentionInDays
           - ErrorThreshold
           - ExecutionTimeThresholdMs
+          - ConfidenceUnavailableThreshold
           - QueueStalledAgeThresholdSeconds
           - WorkflowExecutionTimeoutSeconds
           - BDACallbackTimeoutSeconds
@@ -1600,6 +1614,8 @@ Metadata:
         default: "Error Alert Threshold"
       ExecutionTimeThresholdMs:
         default: "Execution Time Threshold (ms)"
+      ConfidenceUnavailableThreshold:
+        default: "Confidence-Unavailable Alert Threshold (sections / 15 min)"
       QueueStalledAgeThresholdSeconds:
         default: "Queue Stalled Threshold (seconds)"
       LogLevel:
@@ -2806,6 +2822,7 @@ Resources:
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
+        ConfidenceUnavailableThreshold: !Ref ConfidenceUnavailableThreshold
         BDACallbackTimeoutSeconds: !Ref BDACallbackTimeoutSeconds
         WorkflowExecutionTimeoutSeconds: !Ref WorkflowExecutionTimeoutSeconds
         BedrockGuardrailId: !Ref BedrockGuardrailId
@@ -8076,6 +8093,50 @@ Resources:
       Threshold: 0
       ComparisonOperator: GreaterThanThreshold
       # Published only on failure, so "no data" means "every purge succeeded".
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertsTopic
+
+  # Issue #996. The Assessment Lambda degrades a section to "no confidence" when
+  # the confidence pass fails deterministically, rather than failing the document
+  # and discarding an extraction that already succeeded and was already paid for
+  # (issue #901). That is the right trade for ONE section -- but it means a
+  # SYSTEMIC assessment failure (a missing Bedrock grant, a confidence model every
+  # section's input exceeds, a bad config, a code bug on that path) no longer
+  # fails documents, and so no longer lights any failure alarm: it presents only
+  # as an error-severity processing issue in the Sections panel, one document at a
+  # time. This alarm is the signal that replaced the one degrading removed.
+  #
+  # The metric is published by patterns/unified's AssessmentFunction via
+  # idp_common.metrics.put_metric, whose namespace comes from that function's
+  # METRIC_NAMESPACE -- set to the nested stack's StackName parameter, which the
+  # parent passes as !Ref AWS::StackName. So the ROOT stack's namespace is the
+  # right one to read here, the same way StaleOutputPurgeFailedAlarm above reads a
+  # metric published by a nested resolver.
+  AssessmentConfidenceUnavailableAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: !Sub "Many sections in ${AWS::StackName} were degraded to 'no confidence scores' in 15 minutes, which indicates a SYSTEMIC confidence-assessment failure rather than a few awkward documents. Those documents still COMPLETE with their extracted data intact; what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds). Diagnose from the AssessmentFunction logs - list on the /${AWS::StackName}-PATTERNSTACK log-group prefix, as the group carries the NESTED stack's generated name - where the recorded issue's root_cause names the exception. Usual causes: a confidence model whose input limit the sections exceed (lower extraction.confidence.list_batch_size or pick a larger-context model), a missing bedrock:InvokeModel grant, or a model id not enabled in this region. See docs/monitoring.md#confidence-assessment-degraded."
+      MetricName: AssessmentConfidenceUnavailable
+      Namespace: !Ref AWS::StackName
+      Statistic: Sum
+      # A 15-minute window, and a threshold well above one document's worth of
+      # sections. Alarming on the FIRST degrade would be wrong here and right for
+      # StaleOutputPurgeFailed above, because the two failures differ in kind: a
+      # stale-output failure leaves wrong data in S3 until someone removes it,
+      # whereas a single degraded section is an EXPECTED, self-limiting outcome of
+      # the #901 guard -- one unusually large section against a small-context
+      # confidence model produces it with nothing misconfigured. What is not
+      # expected is a steady stream of them, which is what a systemic cause
+      # produces (every section of every document). Ten in fifteen minutes
+      # separates the two without waiting long enough for a day's throughput to be
+      # degraded silently.
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: !Ref ConfidenceUnavailableThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      # Published only when a section is degraded, so "no data" is the healthy
+      # state and must not hold the alarm in INSUFFICIENT_DATA.
       TreatMissingData: notBreaching
       AlarmActions:
         - !Ref AlertsTopic

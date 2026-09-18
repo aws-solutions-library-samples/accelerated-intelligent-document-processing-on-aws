@@ -20,6 +20,7 @@ os.environ["HUGGINGFACE_HUB_CACHE"] = "/tmp/huggingface/hub"  # nosec B108
 # Lightweight HuggingFace access
 import pyarrow.parquet as pq
 from huggingface_hub import hf_hub_download
+from log_sanitizer import sanitize_event_for_logging
 
 # Configure logging
 logger = logging.getLogger()
@@ -54,7 +55,7 @@ def handler(event, context):
     """
     Main Lambda handler for deploying the FCC dataset.
     """
-    logger.info(f"Event: {json.dumps(event)}")
+    logger.info(f"Event: {json.dumps(sanitize_event_for_logging(event))}")
 
     try:
         request_type = event["RequestType"]

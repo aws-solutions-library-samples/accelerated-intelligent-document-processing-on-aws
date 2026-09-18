@@ -30,6 +30,7 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -127,7 +128,9 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     AppSync passes us ``{"arguments": {...}, "identity": {...}, ...}`` but
     we don't need any of it — the result is the same for every caller.
     """
-    logger.debug("getLatestPublishedVersion invoked: %s", event)
+    logger.debug(
+        "getLatestPublishedVersion invoked: %s", sanitize_event_for_logging(event)
+    )
 
     if not PUBLIC_ARTIFACTS_BUCKET:
         logger.info("Version check disabled (PUBLIC_ARTIFACTS_BUCKET not set)")

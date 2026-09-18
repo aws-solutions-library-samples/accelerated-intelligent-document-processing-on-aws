@@ -26,6 +26,7 @@ os.environ['HUGGINGFACE_HUB_CACHE'] = '/tmp/huggingface/hub'  # nosec B108
 
 # Lightweight HuggingFace access
 from huggingface_hub import hf_hub_download, list_repo_files
+from log_sanitizer import sanitize_event_for_logging
 from PIL import Image
 
 # Configure logging
@@ -65,8 +66,8 @@ def handler(event, context):
     """
     Main Lambda handler for deploying the OCR Benchmark dataset.
     """
-    logger.info(f"Event: {json.dumps(event)}")
-    
+    logger.info(f"Event: {json.dumps(sanitize_event_for_logging(event))}")
+
     try:
         request_type = event['RequestType']
         

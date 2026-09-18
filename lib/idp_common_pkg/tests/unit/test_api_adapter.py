@@ -15,6 +15,7 @@ import json
 import pytest
 
 from idp_common.api_adapter import (
+    CallerIdentityRefused,
     _coerce_groups,
     api_resolver,
     normalize_event,
@@ -56,21 +57,114 @@ def test_coerce_groups(raw, expected):
 
 
 # --------------------------------------------------------------------------- #
-# normalize_event — AppSync passthrough
+# normalize_event — an identity the event asserts is never authoritative
+#
+# AppSync was removed in 0.6.0, so a resolver-shaped event no longer arrives from
+# a transport that authenticated anybody: the only caller that can present one is
+# a principal invoking the function directly, and the identity it puts in the
+# payload is its own assertion. These tests pin the three outcomes — pass through
+# an explicit "no identity" (the IAM-gated backend marker), prefer the verified
+# claims, refuse an assertion that contradicts them or has nothing behind it.
 # --------------------------------------------------------------------------- #
-def test_appsync_event_passthrough():
-    appsync_event = {
+def _asserted(field="listDocuments", groups=("Admin",), **identity_extra):
+    """A resolver-shaped event whose identity is the caller's own claim."""
+    identity = {"claims": {"cognito:groups": list(groups)}}
+    identity.update(identity_extra)
+    return {
         "arguments": {"limit": 50},
-        "identity": {
-            "claims": {"cognito:groups": ["Admin"], "email": "a@b.com"},
-            "username": "a@b.com",
-        },
+        "identity": identity,
+        "info": {"fieldName": field},
+    }
+
+
+def test_backend_invocation_with_no_identity_passes_through_unchanged():
+    """The IAM-gated service-to-service path, which must keep working.
+
+    A null ``identity`` is this repository's marker for an invocation gated by IAM
+    on the function ARN rather than by Cognito groups — see
+    ``idp_common.testset_scope.is_direct_invoke`` and
+    ``_enforce_agent_chat_groups`` in ``src/lambda/agent_chat_processor``. It
+    asserts no groups, so there is nothing to forge, and every group gate
+    downstream reads it as ungrouped.
+    """
+    event = {
+        "arguments": {"limit": 50},
+        "identity": None,
         "info": {"fieldName": "listDocuments"},
     }
-    out = normalize_event(appsync_event)
-    # Returned unchanged (same object) so AppSync behavior is untouched.
-    assert out is appsync_event
-    assert out["identity"]["claims"]["cognito:groups"] == ["Admin"]
+    out = normalize_event(event)
+    assert out is event, "the backend path must be passed through untouched"
+    assert out["identity"] is None
+
+
+def test_an_asserted_identity_with_no_verified_claims_is_refused():
+    """The escalation this refusal exists to stop: choosing your own groups."""
+    with pytest.raises(CallerIdentityRefused):
+        normalize_event(_asserted(groups=("Admin",)))
+
+
+def test_even_an_asserted_identity_claiming_no_groups_is_refused():
+    """Refused, not rewritten to the backend marker.
+
+    Stripping the assertion instead would be worse than honouring it: an identity
+    of ``None`` is the trusted-backend marker, so downgrading a caller's failed
+    assertion into it would stand the group gates down rather than close them.
+    """
+    with pytest.raises(CallerIdentityRefused):
+        normalize_event(_asserted(groups=()))
+
+
+@pytest.mark.parametrize("identity", ["Admin", ["Admin"], 7])
+def test_a_non_dict_asserted_identity_is_refused(identity):
+    event = {"arguments": {}, "identity": identity, "info": {"fieldName": "x"}}
+    with pytest.raises(CallerIdentityRefused):
+        normalize_event(event)
+
+
+def test_the_refusal_is_an_authorization_denial():
+    """A ``PermissionError`` subclass, so every existing mapping makes it a 403."""
+    assert issubclass(CallerIdentityRefused, PermissionError)
+
+
+def test_verified_claims_win_over_an_asserted_identity_that_agrees():
+    """Precedence, not refusal, when there is nothing to disagree about."""
+    event = _http_event("listDocuments", "[Viewer]", email="user@example.com")
+    event["arguments"] = {}
+    event["identity"] = {
+        "claims": {"cognito:groups": ["Viewer"], "email": "user@example.com"},
+        "username": "user@example.com",
+    }
+    out = normalize_event(event)
+    # Rebuilt from the request context, not handed back as supplied.
+    assert out is not event
+    assert out["identity"]["claims"]["cognito:groups"] == ["Viewer"]
+
+
+def test_an_asserted_identity_claiming_an_unverified_group_is_refused():
+    """The verified claim says Viewer; the payload says Admin. Refused, not downgraded.
+
+    Refusing rather than quietly using the verified (lesser) claims is the same
+    rule ``resolve_caller_sub`` applies in ``src/lambda/chat_stream_processor``:
+    a supplied identity that contradicts the proven one is never legitimate.
+    """
+    event = _http_event("listUsers", "Viewer")
+    event["arguments"] = {}
+    event["identity"] = {"claims": {"cognito:groups": ["Admin"]}}
+    with pytest.raises(CallerIdentityRefused) as exc:
+        normalize_event(event)
+    assert "Admin" in str(exc.value)
+
+
+def test_an_asserted_identity_naming_another_principal_is_refused():
+    """Ownership scope is keyed off identity.username/sub, so impersonation counts."""
+    event = _http_event("getMyProfile", "[Viewer]", email="user@example.com")
+    event["arguments"] = {}
+    event["identity"] = {
+        "claims": {"cognito:groups": ["Viewer"]},
+        "username": "someone.else@example.com",
+    }
+    with pytest.raises(CallerIdentityRefused):
+        normalize_event(event)
 
 
 # --------------------------------------------------------------------------- #
@@ -217,19 +311,35 @@ def test_http_event_bare_body_without_arguments_key():
 # --------------------------------------------------------------------------- #
 # api_resolver decorator
 # --------------------------------------------------------------------------- #
-def test_decorator_appsync_returns_raw():
+def test_decorator_direct_invocation_returns_raw():
+    """The direct (resolver-shaped) path returns the handler result unwrapped.
+
+    Exercised with the only resolver-shaped event that is still accepted: the
+    IAM-gated backend invocation, whose identity is null.
+    """
+
     @api_resolver
     def handler(event, context):
-        return {"ok": True, "groups": event["identity"]["claims"]["cognito:groups"]}
+        return {"ok": True, "identity": event["identity"]}
 
-    appsync_event = {
-        "arguments": {},
-        "identity": {"claims": {"cognito:groups": ["Admin"]}, "username": "a"},
-        "info": {"fieldName": "x"},
-    }
-    result = handler(appsync_event, None)
-    # AppSync path: raw return, no statusCode wrapping.
-    assert result == {"ok": True, "groups": ["Admin"]}
+    event = {"arguments": {}, "identity": None, "info": {"fieldName": "x"}}
+    result = handler(event, None)
+    # Direct path: raw return, no statusCode wrapping.
+    assert result == {"ok": True, "identity": None}
+
+
+def test_decorator_refuses_a_direct_invocation_that_asserts_an_identity():
+    """The refusal reaches the invoker instead of the handler running as Admin."""
+    calls = []
+
+    @api_resolver
+    def handler(event, context):
+        calls.append(event)
+        return {"ok": True}
+
+    with pytest.raises(CallerIdentityRefused):
+        handler(_asserted(field="x", groups=("Admin",)), None)
+    assert calls == [], "the handler must not run on a refused identity"
 
 
 def test_decorator_http_wraps_success():
@@ -315,8 +425,14 @@ def test_decorator_http_decimal_serialization():
     assert body == {"cost": 1.23, "count": 5}
 
 
-def test_decorator_rbac_parity_appsync_vs_http():
-    """A handler enforcing Admin-only must behave identically on both transports."""
+def test_decorator_rbac_depends_on_where_the_groups_came_from():
+    """An Admin-only handler admits the verified Admin and nobody who claims to be one.
+
+    The three arms are the whole point of this module: the groups decide the
+    outcome only when the transport established them. Asserting the same group list
+    in the payload buys nothing, and the group list the authorizer flattens is
+    restored so a real Admin is not locked out.
+    """
 
     @api_resolver
     def handler(event, context):
@@ -325,18 +441,12 @@ def test_decorator_rbac_parity_appsync_vs_http():
             raise PermissionError("Admin only")
         return {"ok": True}
 
-    # AppSync admin
-    appsync = {
-        "arguments": {},
-        "identity": {"claims": {"cognito:groups": ["Admin"]}, "username": "a"},
-        "info": {"fieldName": "x"},
-    }
-    assert handler(appsync, None) == {"ok": True}
+    # Verified Admin (flattened groups claim) -> allowed.
+    assert handler(_http_event("x", "[Admin Author]"), None)["statusCode"] == 200
 
-    # HTTP admin (flattened groups) -> allowed
-    http_admin = handler(_http_event("x", "[Admin Author]"), None)
-    assert http_admin["statusCode"] == 200
+    # Verified non-Admin -> 403.
+    assert handler(_http_event("x", "[Viewer]"), None)["statusCode"] == 403
 
-    # HTTP non-admin -> 403
-    http_viewer = handler(_http_event("x", "[Viewer]"), None)
-    assert http_viewer["statusCode"] == 403
+    # Self-asserted Admin on a direct invocation -> refused before the handler runs.
+    with pytest.raises(CallerIdentityRefused):
+        handler(_asserted(field="x", groups=("Admin",)), None)
