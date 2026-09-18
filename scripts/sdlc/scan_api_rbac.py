@@ -45,7 +45,9 @@ CHECKS
       and every route its FastAPI app serves is declared (no undeclared route).
   S7  Function URL identity precedence — each route must resolve the caller
       identity from the transport-verified source FIRST; a request-body value
-      may only be a fallback, never preferred.
+      may only be a fallback, never preferred, and the name holding the resolved
+      identity must be assigned exactly once (no later rebinding, whatever the
+      second value is spelled like — see `route_identity_rebindings`).
   S8  Function URL identity conflict — the handler must refuse a request whose
       body-supplied identity contradicts the verified one, rather than silently
       picking either.
@@ -69,6 +71,7 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -457,6 +460,137 @@ def _first_index(text: str, tokens) -> int:
     return min(hits) if hits else -1
 
 
+# --- S7 structural half: the resolved identity must not be rebound ------------
+# The token-position half of S7 compares the FIRST mention of a verified-identity
+# spelling against the first mention of a client-identity spelling. That is blind
+# to a body value re-admitted under a spelling not in CLIENT_IDENTITY_TOKENS, e.g.
+#
+#     _claimed = body.model_dump().get('callerSub') or ''
+#     if _claimed:
+#         caller_sub = _claimed
+#
+# which is issue #920's original defect (the client's claimed identity wins
+# unconditionally) and which left the scan at exit 0 / 0 FAIL. Rather than chase
+# spellings, assert the invariant: the name that receives the verified identity is
+# assigned exactly once in the route's own scope. Measured on the clean sources,
+# both routes assign it once, so this is not a false-positive risk today.
+
+# Callee names that resolve a transport-verified caller identity. Mirrors
+# VERIFIED_IDENTITY_TOKENS above, as callee names rather than substrings.
+VERIFIED_IDENTITY_CALLEES = (
+    "_resolve_caller_sub",
+    "resolve_caller_sub",
+    "_caller_sub",
+    "caller_sub_from_request_context",
+)
+
+
+def _route_function_nodes(handler_text: str) -> dict:
+    """Map ``"<METHOD> <path>"`` -> the route's AST function node."""
+    try:
+        tree = ast.parse(handler_text)
+    except SyntaxError:
+        return {}
+    routes = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if (
+                isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and isinstance(dec.func.value, ast.Name)
+                and dec.func.value.id == "app"
+                and dec.args
+                and isinstance(dec.args[0], ast.Constant)
+            ):
+                routes[f"{dec.func.attr.upper()} {dec.args[0].value}"] = node
+    return routes
+
+
+def _own_scope_statements(fn) -> list:
+    """Statements in ``fn``'s own scope, not descending into nested functions.
+
+    A nested ``def`` has its own scope, so a binding there shadows rather than
+    rebinds; counting it would be a false positive.
+    """
+    out: list = []
+    stack = list(fn.body)
+    while stack:
+        st = stack.pop()
+        if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        out.append(st)
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(getattr(st, field, []) or [])
+    return out
+
+
+def _callees(node) -> set:
+    """Every callee name invoked in ``node``'s subtree."""
+    names = set()
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        func = sub.func
+        if isinstance(func, ast.Name):
+            names.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            names.add(func.attr)
+    return names
+
+
+def route_identity_rebindings(fn) -> tuple[str, list[int]] | None:
+    """``(name, lines)`` if the route's resolved identity is bound >1 time.
+
+    Returns ``None`` when the route binds it exactly once, binds nothing, or does
+    not resolve a verified identity at all (the latter is S7's other half).
+    """
+    resolved: set[str] = set()
+    for st in _own_scope_statements(fn):
+        if not isinstance(st, ast.Assign):
+            continue
+        if not (_callees(st.value) & set(VERIFIED_IDENTITY_CALLEES)):
+            continue
+        for tgt in st.targets:
+            if isinstance(tgt, ast.Name):
+                resolved.add(tgt.id)
+    if len(resolved) != 1:
+        return None
+    name = resolved.pop()
+
+    lines: list[int] = []
+    for st in _own_scope_statements(fn):
+        targets = []
+        if isinstance(st, ast.Assign):
+            targets = list(st.targets)
+        elif isinstance(st, (ast.AugAssign, ast.AnnAssign)):
+            targets = [st.target]
+        elif isinstance(st, (ast.For, ast.AsyncFor)):
+            targets = [st.target]
+        elif isinstance(st, (ast.With, ast.AsyncWith)):
+            targets = [i.optional_vars for i in st.items if i.optional_vars]
+        bound = False
+        for tgt in targets:
+            for sub in ast.walk(tgt):
+                if (
+                    isinstance(sub, ast.Name)
+                    and isinstance(sub.ctx, ast.Store)
+                    and sub.id == name
+                ):
+                    bound = True
+        for sub in ast.walk(st):
+            if (
+                isinstance(sub, ast.NamedExpr)
+                and isinstance(sub.target, ast.Name)
+                and sub.target.id == name
+            ):
+                bound = True
+        if bound:
+            lines.append(st.lineno)
+    return (name, sorted(lines)) if len(lines) > 1 else None
+
+
 def module_functions(text: str) -> list[str]:
     """Split a module into function texts (top-level ``def``/``async def``)."""
     starts = [m.start() for m in re.finditer(r"^(?:async )?def ", text, re.M)]
@@ -763,6 +897,7 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             continue
         handler_text = handler_src.read_text()
         actual_routes = app_routes(handler_text)
+        route_nodes = _route_function_nodes(handler_text)
         # The identity decision may live in a sibling module of the same Lambda
         # package (the app file imports FastAPI, so pure logic is factored out to
         # keep it unit-testable). Scan the package's own modules, not the vendored
@@ -805,6 +940,24 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                     f"transport-verified one in {ep['handler']} — the verified "
                     "identity must be resolved first, the body value is a "
                     "fallback only")
+
+            # Structural half of S7: resolving the verified identity first means
+            # nothing if a later statement overwrites it. The token comparison
+            # above only sees the spellings in CLIENT_IDENTITY_TOKENS, so assert
+            # the single binding instead — that holds whatever the second value
+            # is spelled like.
+            node = route_nodes.get(route)
+            if node is not None:
+                rebound = route_identity_rebindings(node)
+                if rebound is not None:
+                    name, lines = rebound
+                    route_gap_or_fail(
+                        rc, route, "S7",
+                        f"'{name}' holds the transport-verified caller identity "
+                        f"in {ep['handler']} but is assigned {len(lines)} times "
+                        f"(lines {lines}) — a later assignment can substitute a "
+                        "client-supplied identity for the verified one no matter "
+                        "how it is spelled; resolve it once and do not rebind it")
 
             # --- S8: a contradicting body identity must be refused -------
             # The comparison lives in a shared resolver, so look across the

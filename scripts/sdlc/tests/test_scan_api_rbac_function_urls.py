@@ -345,6 +345,61 @@ def test_run_checks_reports_s7_when_no_verified_identity_is_resolved(tmp_path):
 
 
 @pytest.mark.unit
+def test_run_checks_reports_s7_when_the_resolved_identity_is_rebound(tmp_path):
+    """A body identity re-admitted under an unlisted spelling must still FAIL.
+
+    S7's token comparison holds five literal spellings of the body read, so a
+    mutation that resolves the verified identity first and then overwrites it via
+    a spelling not on that list passed the whole scan. This is issue #920's
+    original defect -- the client's claimed identity wins unconditionally -- and
+    it was measured at exit 0 / 0 FAIL before `route_identity_rebindings` existed.
+    """
+    repo = _make_fixture(
+        tmp_path,
+        app_src=_GOOD_APP.replace(
+            "    return caller_sub\n",
+            "    _claimed = body.model_dump().get('callerSub') or ''\n"
+            "    if _claimed:\n"
+            "        caller_sub = _claimed\n"
+            "    return caller_sub\n",
+        ),
+    )
+    messages = _fails(repo, "S7")
+    assert any("is assigned 2 times" in m for m in messages), messages
+
+
+@pytest.mark.unit
+def test_s7_rebinding_rule_accepts_a_single_assignment(tmp_path):
+    """The clean fixture must not trip the rebinding rule (false-positive guard).
+
+    A count-based invariant is only usable if legitimate code assigns once. Both
+    live routes were measured to, and so must the fixture.
+    """
+    repo = _make_fixture(tmp_path)
+    assert not [m for m in _fails(repo, "S7") if "is assigned" in m]
+
+
+@pytest.mark.unit
+def test_s7_rebinding_rule_ignores_a_nested_scope_shadow(tmp_path):
+    """A nested ``def`` rebinding the name shadows it; that is not a rebinding.
+
+    Without the scope restriction this would be a false positive, and a rule that
+    cries wolf on correct code gets deleted rather than fixed.
+    """
+    repo = _make_fixture(
+        tmp_path,
+        app_src=_GOOD_APP.replace(
+            "    return caller_sub\n",
+            "    def _inner():\n"
+            "        caller_sub = 'local'\n"
+            "        return caller_sub\n"
+            "    return caller_sub, _inner\n",
+        ),
+    )
+    assert not [m for m in _fails(repo, "S7") if "is assigned" in m]
+
+
+@pytest.mark.unit
 def test_run_checks_reports_s8_when_nothing_refuses_a_conflict(tmp_path):
     """The route reads a body identity but no function in the package refuses one."""
     repo = _make_fixture(
