@@ -352,6 +352,15 @@ To update an existing GenAIIDP deployment to a new version:
 
 > **Note**: Updating the stack may cause some resources to be replaced, which could lead to brief service interruptions. Consider updating during a maintenance window if the solution is being used in production.
 
+> **Note**: When you upgrade to a release that includes the alerts subscription,
+> the update subscribes the address already in your `AdminEmail` parameter to the
+> CloudWatch alerts topic, so an *"AWS Notification - Subscription Confirmation"*
+> email arrives at that address. The update succeeds either way, but **alarm
+> notifications are not delivered until someone clicks that confirmation link**.
+> See [Who receives the alerts](./monitoring.md#who-receives-the-alerts) for how
+> to check the subscription status and how to notify a team or a pager instead of
+> one mailbox.
+
 ## Testing the Solution
 
 ### Method 1: CLI-Based Batch Testing (Recommended for Automation)

@@ -120,11 +120,19 @@ class HeadlessTemplateTransformer:
             # Email subscription of AdminEmail to AlertsTopic (#922). Not a
             # Cognito resource, but it is keyed to the same removed parameter:
             # AdminEmail is stripped below, and a resource left Ref'ing a deleted
-            # parameter is a HARD template error at validate time, exactly like
-            # the SuppressAdminInvite condition documented further down. The
-            # topic and all 12 alarms stay; a headless deployment has no operator
-            # address to subscribe, so it subscribes its own recipients to the
-            # SNSAlertsTopicARN output.
+            # parameter is a HARD template error at validate time.
+            #
+            # Listing it here is belt-and-braces rather than strictly required:
+            # stripping its guard condition (ShouldSubscribeAdminToAlerts, in the
+            # condition set further down) already drops the resource, and that
+            # entry IS load-bearing — removing it alone fails
+            # test_headless_transform_leaves_no_unresolved_parameter_reference and
+            # the headless cfn-lint test. Naming the resource explicitly keeps the
+            # removal correct if the guard is ever changed or dropped.
+            #
+            # The topic and all 12 alarms stay; a headless deployment has no
+            # operator address to subscribe, so it subscribes its own recipients
+            # to the SNSAlertsTopicARN output.
             "AlertsTopicAdminEmailSubscription",
         }
 

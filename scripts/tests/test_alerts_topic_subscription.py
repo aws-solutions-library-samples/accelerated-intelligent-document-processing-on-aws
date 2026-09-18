@@ -50,6 +50,13 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PARENT_TEMPLATE = "template.yaml"
 ALERTS_TOPIC = "AlertsTopic"
+ADMIN_EMAIL_PARAM = "AdminEmail"
+# The condition that must guard the subscription, and the pre-existing condition
+# its second leg negates. Both are asserted by name: "some condition is present"
+# is satisfied by a condition that is false on every deployment, which silently
+# restores #922 (see test_admin_email_is_subscribed_to_alerts).
+GUARD_CONDITION = "ShouldSubscribeAdminToAlerts"
+SENTINEL_CONDITION = "SuppressAdminInvite"
 
 
 class _CfnLoader(yaml.SafeLoader):
@@ -123,6 +130,45 @@ def _subscriptions_by_topic(template: dict) -> dict[str, list[str]]:
     return by_topic
 
 
+def _intrinsic(node: Any, name: str) -> Any:
+    """Operand(s) of intrinsic ``name`` on ``node``, or ``None``.
+
+    Accepts the short-form spelling the loader normalises to ``Fn::<name>`` and
+    the long-form ``<name>:`` key, so a purely stylistic rewrite of the template
+    cannot turn these checks into no-ops.
+    """
+    if not isinstance(node, dict):
+        return None
+    if f"Fn::{name}" in node:
+        return node[f"Fn::{name}"]
+    return node.get(name)
+
+
+def _negated(node: Any) -> Any:
+    """The single operand of an ``Fn::Not``, or ``None`` if ``node`` is not one."""
+    operand = _intrinsic(node, "Not")
+    if isinstance(operand, list) and len(operand) == 1:
+        return operand[0]
+    return None
+
+
+def _is_admin_email_empty_test(node: Any) -> bool:
+    """True for ``!Equals [!Ref AdminEmail, '']``, in either operand order."""
+    operands = _intrinsic(node, "Equals")
+    if not isinstance(operands, list) or len(operands) != 2:
+        return False
+    left, right = operands
+    return any(
+        _referenced_names(a) == {ADMIN_EMAIL_PARAM} and b == ""
+        for a, b in ((left, right), (right, left))
+    )
+
+
+def _is_condition_ref(node: Any, condition_name: str) -> bool:
+    """True for ``!Condition <condition_name>``."""
+    return _intrinsic(node, "Condition") == condition_name
+
+
 @pytest.mark.unit
 def test_alerts_topic_exists() -> None:
     """Guard the discovery — a rename would make everything below vacuous."""
@@ -155,6 +201,13 @@ def test_admin_email_is_subscribed_to_alerts() -> None:
     Pinning ``AdminEmail`` specifically (not just "some subscription exists")
     keeps the default deployment self-sufficient: it is the only address the
     stack knows, and wiring it is what removes the manual post-deploy step.
+
+    The guard condition is pinned by name *and* by the meaning of its definition.
+    Asserting only that the resource carries some ``Condition`` is vacuous: it
+    passes for a condition that is false on every possible deployment, and for
+    ``SuppressAdminInvite``, which is the intended guard inverted. Both of those
+    reinstate #922 — no subscriber, or only an unreachable one — while a
+    "has a condition" check reports success.
     """
     template = _load(PARENT_TEMPLATE)
     subscriptions = _of_type(template, "AWS::SNS::Subscription")
@@ -163,7 +216,7 @@ def test_admin_email_is_subscribed_to_alerts() -> None:
         props = body.get("Properties") or {}
         topics = _referenced_names(props.get("TopicArn"))
         endpoints = _referenced_names(props.get("Endpoint"))
-        if ALERTS_TOPIC in topics and "AdminEmail" in endpoints:
+        if ALERTS_TOPIC in topics and ADMIN_EMAIL_PARAM in endpoints:
             matching[name] = body
 
     assert matching, (
@@ -180,11 +233,65 @@ def test_admin_email_is_subscribed_to_alerts() -> None:
         # The guard exists so an empty or CI-sentinel AdminEmail does not create a
         # subscription that can never confirm, and so the --headless transform has
         # a condition to strip alongside the removed AdminEmail parameter.
-        assert body.get("Condition"), (
-            f"{name} has no Condition. It must be guarded so it is skipped when "
-            f"AdminEmail is empty or is the CI sentinel — see "
-            f"ShouldSubscribeAdminToAlerts in {PARENT_TEMPLATE}."
+        #
+        # Assert the guard *by name*, not merely that some Condition is present.
+        # "Has a condition" is satisfied by a condition that is false on every
+        # possible deployment (the subscription is then never created, which is
+        # #922 again), and by SuppressAdminInvite itself, which is the exact
+        # inversion of the intended guard: it would subscribe only the
+        # unreachable CI sentinel and nobody else.
+        assert body.get("Condition") == GUARD_CONDITION, (
+            f"{name} is guarded by Condition {body.get('Condition')!r}, expected "
+            f"{GUARD_CONDITION!r}. The guard must skip the subscription only when "
+            f"{ADMIN_EMAIL_PARAM} is empty or is the CI sentinel. A different "
+            f"condition can be false on every deployment — which never creates "
+            f"the subscription and silently restores #922 — or, if it is "
+            f"{SENTINEL_CONDITION!r}, inverts the intent and subscribes only the "
+            f"unconfirmable sentinel address."
         )
+
+    # ...and the guard's *definition* has to actually mean what its name says.
+    # Checked structurally (not as a string match on serialised YAML) so
+    # reformatting is free but a change of meaning is not. This asserts the two
+    # legs are present; it does not forbid additional legs, so a future third
+    # leg is allowed and must be reviewed on its own merits.
+    conditions = template.get("Conditions") or {}
+    assert GUARD_CONDITION in conditions, (
+        f"{PARENT_TEMPLATE} has no {GUARD_CONDITION!r} entry in its Conditions "
+        f"block, so the subscription references a condition that does not exist "
+        f"and CloudFormation rejects the whole template. Found: "
+        f"{sorted(conditions)}."
+    )
+
+    definition = conditions[GUARD_CONDITION]
+    legs = _intrinsic(definition, "And")
+    assert isinstance(legs, list), (
+        f"{GUARD_CONDITION} is defined as {definition!r}, which is not an "
+        f"Fn::And. It must AND a non-empty {ADMIN_EMAIL_PARAM} test with a "
+        f"negation of {SENTINEL_CONDITION}. Any other expression — in "
+        f"particular a comparison of two unequal literals — is false on every "
+        f"deployment, so the subscription is never created and every alarm "
+        f"notifies nobody again (#922)."
+    )
+
+    assert any(_is_admin_email_empty_test(_negated(leg)) for leg in legs), (
+        f"{GUARD_CONDITION} has no leg negating an empty {ADMIN_EMAIL_PARAM}: "
+        f"expected !Not [ !Equals [ !Ref {ADMIN_EMAIL_PARAM}, '' ] ] among its "
+        f"Fn::And legs, got {legs!r}. Without it, relaxing "
+        f"{ADMIN_EMAIL_PARAM}'s AllowedPattern would create an SNS subscription "
+        f"with an empty Endpoint."
+    )
+
+    assert any(_is_condition_ref(_negated(leg), SENTINEL_CONDITION) for leg in legs), (
+        f"{GUARD_CONDITION} has no leg negating the {SENTINEL_CONDITION} "
+        f"condition: expected !Not [ !Condition {SENTINEL_CONDITION} ] among its "
+        f"Fn::And legs, got {legs!r}. Without it, CI and automated multi-stack "
+        f"deploys subscribe the citest@suppress.welcome.email sentinel, whose "
+        f"domain does not resolve, queueing a confirmation email on every deploy "
+        f"to an address that can never confirm. Note that negating it is "
+        f"required: using {SENTINEL_CONDITION} unnegated subscribes only the "
+        f"sentinel."
+    )
 
 
 @pytest.mark.unit
