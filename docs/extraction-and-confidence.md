@@ -1329,9 +1329,45 @@ extraction:
 >    Per-class override: `x-aws-idp-confidence-escalation-model`. Set
 >    `escalation_model: null` to skip the model step.
 >
+> 4. **Give up when the batch is already one row.** Halving only converges while a
+>    *smaller* batch can fit. If the model still truncates with a **single row** in
+>    the call, that one row's confidence output exceeds the model's cap and no batch
+>    size can work, so the ladder stops there instead of retrying: the futile
+>    same-model retry rung is skipped, at most one escalation round runs (a bigger
+>    output cap is the only remedy that can legitimately succeed), and the section
+>    reports `assessment_row_too_large` (error) naming the model, its output cap,
+>    the field and class, and the offending row's approximate serialized size.
+>    Before this guard there was no terminal condition for that case: the impossible
+>    call was re-run through the retry rounds and the bisection tree, and the section
+>    ended up reporting the generic `assessment_incomplete`, whose remedy (a smaller
+>    batch) cannot work. Measured on a shape that batches — 8 rows at batch 4 — the
+>    guard halves the primary model calls (28 → 14); on the single-outer-row shape
+>    that [#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894)
+>    reports, the call count is unchanged and what improves is the diagnosis.
+>
+>    The known trigger is a **multi-instance class**
+>    (`x-aws-idp-multi-instance: true`): the wrapper makes the *instance* array the
+>    outer list, so one "row" is a whole document instance carrying its own long
+>    inner list (e.g. a 100-row `Transactions` table). ⚠️ **Such a class still
+>    cannot be fully assessed.** The batch sizer measures only the outer row's
+>    column count (it reports `cols=2 per_row~80` for a row holding 100
+>    transactions) and derives a batch size that is wrong by orders of magnitude;
+>    fixing the sizer to descend into inner lists is tracked as open issue #894.
+>    What this guard changes is the reporting, and the wasted calls on shapes that
+>    batch — not the outcome for such a class. ⚠️ The symptom originally reported on
+>    #894 (an Assessment Lambda hitting its 900 s limit three times,
+>    `Sandbox.Timedout` ×3, leaving the document in `ASSESSING` after a 45-second
+>    extraction) is **not explained by this loop**, so treat it as still open: the
+>    same-model retry rung already stopped on no progress before this change, and the
+>    ladder's wall-clock deadline guard was already in place in the release where
+>    those timeouts were observed. Until #894 is fixed, score such a class with a
+>    large-output-cap confidence model (`escalation_model`), or split the inner list
+>    into its own class.
+>
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,
-> `escalation_model`, `rows_recovered_by_escalation`, `unrecoverable_rows`, …) and
+> `escalation_model`, `rows_recovered_by_escalation`, `unrecoverable_rows`,
+> `oversized_row_*`, …) and
 > (for agentic) an `⚠ Assessment Batch Splitting` block in the processing report.
 > If rows remain unscored even after escalation, the durable fix is to reduce
 > per-row output — e.g. set `geometry.mode: ocr_only` (the default) so boxes come
@@ -1340,6 +1376,7 @@ extraction:
 > **Surfaced in the UI.** Whatever the self-healing ladder does (or can't do) is
 > recorded as a structured **processing issue** on the section — `severity`
 > (error / warning / info), `code` (e.g. `assessment_incomplete`,
+> `assessment_row_too_large`, `assessment_coverage_incomplete`,
 > `assessment_recovered_with_retries`, `assessment_deadline_reached`), a
 > user-facing `message`, and a technical `root_cause`. These are persisted to
 > DynamoDB and shown in the Web UI: a **Status** column on the document's Sections
@@ -1348,6 +1385,29 @@ extraction:
 > **Processing Report** tab. A document that quietly self-healed — or one where a
 > row genuinely couldn't be scored — is therefore visible at a glance.
 
+> **A failed confidence pass no longer fails the document.** Confidence scoring
+> runs *after* extraction has written its results and been paid for, so a
+> deterministic confidence failure that discards them destroys the expensive part
+> to report the loss of the advisory part — two observed runs threw away $17.34 and
+> $7.05 of extraction that had scored 1,200 of 1,200 rows at 1.000 cell accuracy,
+> because the confidence model rejected an oversized input with
+> `ValidationException: Input is too long for requested model.`
+> ([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)).
+> A deterministic (non-retryable) failure in the Assessment step now **degrades**
+> instead: the extracted data is returned and the document succeeds, with the
+> missing confidence recorded as an error-severity
+> `assessment_failed_confidence_unavailable` processing issue on the section.
+> Transient failures (throttling, read timeouts, 5xx) are unchanged — they still
+> raise so Step Functions retries the section. ⚠️ Because confidence is absent on a
+> degraded section, HITL confidence routing and the UI threshold signals do not
+> apply to it; check the **Status** column of the Sections panel — that is where this
+> particular issue shows. It is written to the section record only, not into the
+> section's `result.json`, so unlike issues from a *successful* assessment run it
+> does **not** appear in the Visual Editor's Processing Report tab (which renders
+> `metadata.processing_issues` from that file). Re-batching the oversized
+> confidence input so the pass *succeeds* rather than degrading is still open as
+> part of #901.
+>
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
 > **retired and deleted**. Large-list batching is its full replacement: complete
