@@ -133,9 +133,10 @@ def _handle(event, context):
 
     # Absolute epoch deadline for the in-shard/merge confidence self-healing ladder
     # so a truncation-retry storm on a small-cap confidence model can't run this
-    # Lambda into its 900s wall (the ladder stops with an
-    # assessment_deadline_reached warning, keeping recovered rows). None in local
-    # invocations without a real Lambda context.
+    # Lambda into its 900s wall. The ladder keeps every row it already recovered and
+    # reports assessment_incomplete naming the time budget if any row is still
+    # unscored; assessment_deadline_reached (warning) only when coverage completed
+    # anyway. None in local invocations without a real Lambda context.
     deadline_epoch = None
     try:
         deadline_epoch = time.time() + (context.get_remaining_time_in_millis() / 1000.0)

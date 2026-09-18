@@ -1394,9 +1394,17 @@ extraction:
 >    extraction) is **not explained by this loop**, so treat it as still open: the
 >    same-model retry rung already stopped on no progress before this change, and the
 >    ladder's wall-clock deadline guard was already in place in the release where
->    those timeouts were observed. Until #894 is fixed, score such a class with a
->    large-output-cap confidence model (`escalation_model`), or split the inner list
->    into its own class.
+>    those timeouts were observed. The single gap in that guard has since been closed
+>    (#958): every recovery call — retry and escalation alike — now checks the
+>    Lambda's remaining time before it is made, as further bisections already did, so
+>    a run that would have spent its whole budget on partially-successful retry
+>    rounds stops at the last call that fits and keeps every row it recovered. With
+>    rows still unscored the section reports `assessment_incomplete` naming the time
+>    budget (the `assessment_deadline_reached` warning is for a run that was cut
+>    short and scored every row regardless). That was the most concrete lead on the
+>    timeout, but it is not confirmed as its cause. Until #894 is fixed, score such a class
+>    with a large-output-cap confidence model (`escalation_model`), or split the inner
+>    list into its own class.
 >
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,
@@ -1441,6 +1449,18 @@ extraction:
 > `metadata.processing_issues` from that file). Re-batching the oversized
 > confidence input so the pass *succeeds* rather than degrading is still open as
 > part of #901.
+>
+> **Operators: this is also a CloudWatch signal.** Because a degraded section no
+> longer fails its document, a *systemic* confidence failure — a confidence model
+> whose input limit every section exceeds, a revoked `bedrock:InvokeModel` grant, a
+> model id not enabled in the region — produces no failed executions and moves none
+> of the failure alarms. Each degrade therefore publishes
+> `AssessmentConfidenceUnavailable` to the stack's own metric namespace, and
+> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen minutes —
+> on volume, not on the first occurrence, since one degraded section is an expected
+> outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)).
+> See [Monitoring](./monitoring.md#confidence-assessment-degraded) for the metric,
+> the alarm and the three causes worth checking first.
 >
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been

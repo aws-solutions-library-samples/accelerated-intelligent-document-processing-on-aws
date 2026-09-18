@@ -221,6 +221,75 @@ S3 error.
 byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
 scratch.
 
+### Confidence Assessment Degraded
+
+Confidence assessment is an *enrichment* pass: extraction has already run,
+written its results and been paid for by the time it starts. So when the
+confidence model fails **deterministically** — most often
+`ValidationException: Input is too long for requested model.`, which a retry
+would send again unchanged — the Assessment Lambda keeps the extraction and
+degrades that section instead of failing the document
+([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)).
+The document completes, its extracted data is intact, and the gap is recorded as
+an error-severity `assessment_failed_confidence_unavailable` processing issue on
+the section.
+
+That is the right trade for one section, and it creates a monitoring gap for the
+fleet ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)):
+a **systemic** confidence failure no longer fails documents, so it no longer
+lights `WorkflowErrorsAlarm` or any DLQ alarm. Without a metric it would be
+visible only in the Sections panel, one document at a time. `ProcessingIssueCount`
+does not help — it is a DynamoDB attribute on the tracking record, not a
+CloudWatch metric.
+
+One metric in the stack's own namespace (`<StackName>`):
+
+- **`AssessmentConfidenceUnavailable`** — published (value `1`) each time a
+  section is degraded, by the unified pattern's `AssessmentFunction`, with no
+  dimensions. It reaches the **root** stack's namespace because that function's
+  `METRIC_NAMESPACE` is the `StackName` the parent passes down. Published only on
+  a degrade, so no data means every confidence pass either succeeded or failed
+  transiently and was retried.
+
+One alarm publishes to `AlertsTopic`:
+
+- **`AssessmentConfidenceUnavailableAlarm`** — `ConfidenceUnavailableThreshold`
+  (default `10`) or more degrades within 15 minutes. Unlike
+  `StaleOutputPurgeFailedAlarm` this deliberately does **not** alarm on the first
+  occurrence: a single degraded section is an expected, self-limiting outcome — one
+  unusually large section against a small-context confidence model produces it with
+  nothing misconfigured. A steady stream is what a systemic cause produces, because
+  it degrades every section of every document. The default assumes no single
+  document legitimately produces ten degrades; **raise the parameter if your
+  documents split into many sections** that a small-context confidence model cannot
+  fit, since one such document would otherwise fire it on its own. The
+  unified-pattern dashboard draws the configured value as its annotation, so the
+  graph and the trigger stay in step when you tune it.
+
+**Diagnosing.** The recorded issue's `root_cause` names the underlying exception,
+and the same failure is logged at ERROR in the AssessmentFunction log group. Note
+that group is `/<StackName>-PATTERNSTACK-<id>/lambda/AssessmentFunction`: the name
+comes from `AWS::StackName` **inside the nested pattern template**, which is the
+nested stack's CloudFormation-generated name, not the root stack's — so list on the
+`/<StackName>-PATTERNSTACK` prefix rather than typing the path
+("Deterministic (non-retryable) assessment failure"). The three causes worth
+checking first:
+
+| Symptom in `root_cause` | Likely cause | Fix |
+|---|---|---|
+| `ValidationException: Input is too long for requested model.` | The confidence model's input limit is smaller than the sections being assessed | Lower `extraction.confidence.list_batch_size`, or configure a confidence model with a larger context window |
+| `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
+| `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
+
+**What is lost while it is firing:** the affected sections have no confidence
+values, so they are not covered by confidence-based review — HITL confidence
+routing and the UI threshold signals do not apply to them, and per-field scores
+are absent in the UI. The extracted data itself is unaffected.
+
+One dashboard widget on the **unified pattern** dashboard (not the main one):
+**Confidence Assessment Degraded**, a 15-minute-period count with the alarm
+threshold drawn as an annotation so the trend and the trigger are read together.
+
 ## Log Groups
 
 The solution creates centralized logging across all components:
@@ -344,6 +413,7 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `QueueProcessorErrorsAlarm` | Any `QueueProcessor` invocation error in 5 min — for this function, a timeout or out-of-memory before its SQS batch finished | `AlertsTopic` | — |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections degraded to "no confidence scores" within 15 min — a systemic confidence-assessment failure, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
@@ -499,7 +569,7 @@ constant no matter who leaves it. If you rely on email, re-run the
 
 > ⚠️ A `--headless` deployment strips the `AdminEmail` parameter along with
 > Cognito, so it collects no operator address and **creates no subscription at
-> all**. It keeps `AlertsTopic` and all fourteen alarms, so a headless stack still has
+> all**. It keeps `AlertsTopic` and all fifteen alarms, so a headless stack still has
 > the original defect: every alarm publishes successfully and nobody is notified.
 > Issue #922 is closed for the standard deployment and remains open for this one.
 
