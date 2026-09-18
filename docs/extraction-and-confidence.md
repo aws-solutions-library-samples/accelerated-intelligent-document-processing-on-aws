@@ -1411,8 +1411,10 @@ extraction:
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
 > **retired and deleted**. Large-list batching is its full replacement: complete
-> per-cell confidence and geometry at roughly **−78% Bedrock cost** on a 120-row
-> bank statement, with equal accuracy (granular actually produced 0% geometry).
+> per-cell confidence and geometry at **substantially lower Bedrock cost** on a
+> 120-row bank statement, with equal accuracy (granular actually produced 0%
+> geometry). The percentage this sentence used to quote was withdrawn rather than
+> re-measured — see "Why there is no percentage here" in the retirement note.
 > Any legacy `granular.*` keys still validate but are ignored — no config edit is
 > required. See [Granular Assessment Retirement](migration-granular-retirement.md).
 
