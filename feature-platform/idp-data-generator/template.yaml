@@ -596,6 +596,40 @@ Resources:
         - Key: 'idp:feature-id'
           Value: !Ref FeatureId
 
+  BootstrapQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref BootstrapQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt BootstrapQueue.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
+  BootstrapDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref BootstrapDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt BootstrapDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
   BootstrapProcessorFunction:
     Type: AWS::Serverless::Function
     # checkov:skip=CKV_AWS_116: "DLQ handled at the SQS source mapping"

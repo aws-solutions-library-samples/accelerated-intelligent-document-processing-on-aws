@@ -6420,6 +6420,40 @@ Resources:
       MessageRetentionPeriod: 345600 # 4 days
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
+  DiscoveryQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DiscoveryQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt DiscoveryQueue.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
+  DiscoveryDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DiscoveryDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt DiscoveryDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
   ##########################################################################
   # Config Bootstrap (Quick Start) tracking + queue
   ##########################################################################
@@ -7266,6 +7300,26 @@ Resources:
     Condition: DeployApiGateway
     Properties:
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  # Condition must match JobTrackerDLQ's: a policy that deployed without its
+  # queue would fail the stack update.
+  JobTrackerDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: DeployApiGateway
+    Properties:
+      Queues:
+        - !Ref JobTrackerDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt JobTrackerDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
 
   JobTrackerLogGroup:
     Type: AWS::Logs::LogGroup
@@ -11548,6 +11602,23 @@ Resources:
     Properties:
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
+  TestSetFileCopierFunctionDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TestSetFileCopierFunctionDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt TestSetFileCopierFunctionDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
   TestSetFileCopierFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -11891,6 +11962,23 @@ Resources:
     Properties:
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
 
+  TestFileCopierFunctionDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TestFileCopierFunctionDLQ
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt TestFileCopierFunctionDLQ.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
+
   TestFileCopierFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -11971,6 +12059,23 @@ Resources:
       VisibilityTimeout: 900
       MessageRetentionPeriod: 1209600
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  TestResultCacheUpdateQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TestResultCacheUpdateQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnforceSSLOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "sqs:*"
+            Resource: !GetAtt TestResultCacheUpdateQueue.Arn
+            Condition:
+              Bool:
+                "aws:SecureTransport": false
 
   DiscoveryProcessorFunction:
     Type: AWS::Serverless::Function
