@@ -112,8 +112,9 @@ ingestion, queue depth, the concurrency counter and workflow outcomes, and one i
 
 Distributed tracing is instrumented, not merely recommended: `Tracing: Active` is set on
 nineteen Lambda functions across the two main templates — seven in `template.yaml` and
-twelve in `patterns/unified/template.yaml` — plus every feature-platform extension. Note
-the boundary: the Step Functions state machine declares no `TracingConfiguration` and the
+twelve in `patterns/unified/template.yaml` — plus seven of the eight optional
+`feature-platform/` extension templates (`seller-entitlement-service` is the
+exception). Note the boundary: the Step Functions state machine declares no `TracingConfiguration` and the
 REST API stage does not enable X-Ray, so a trace covers Lambda-to-service calls rather
 than the whole orchestration.
 
@@ -164,10 +165,12 @@ tables, the S3 buckets via SSE-KMS, the SNS topics and the CloudWatch log groups
 referenced from the parent template and passed into the nested stacks, so there is one
 key to audit and one key policy to review.
 
-**Data protection in transit.** Twenty-two resource policies deny requests where
-`aws:SecureTransport` is false: all thirteen S3 bucket policies and nine SQS queue
-policies. All thirteen buckets also set `PublicAccessBlockConfiguration`, and twelve send
-server access logs to the logging bucket.
+**Data protection in transit.** Twenty-three resource policies deny requests where
+`aws:SecureTransport` is false: in `template.yaml`, all thirteen S3 bucket policies and
+nine of the ten SQS queue policies, plus one further queue policy in
+`patterns/unified/template.yaml`. All thirteen buckets also set
+`PublicAccessBlockConfiguration`, and twelve send server access logs to the logging
+bucket.
 
 **Authentication and authorization.** The web UI signs in against a Cognito user pool
 whose password policy requires a minimum length of 8 with lowercase, uppercase, numeric
@@ -198,8 +201,9 @@ runtime role surface against privilege-escalation regressions.
 
 **Content safety.** Bedrock Guardrails are supported but bring-your-own and off by
 default: supply the id and version of a guardrail you created via `BedrockGuardrailId`
-and `BedrockGuardrailVersion` (both default empty) and every Bedrock and Knowledge Base
-call routes through it, including
+and `BedrockGuardrailVersion` (`BedrockGuardrailId` defaults to empty, which is what keeps
+Guardrails off; `BedrockGuardrailVersion` defaults to `DRAFT`) and every Bedrock and
+Knowledge Base call routes through it, including
 [Automated Reasoning Checks](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-automated-reasoning.html)
 if your guardrail enables them.
 
@@ -243,8 +247,9 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 `Catch` blocks. Retries target the transient Lambda error classes
 (`Lambda.ServiceException`, `Lambda.TooManyRequestsException`, `Lambda.SdkClientException`,
 `Lambda.AWSLambdaException`, `Lambda.Unknown`) plus `States.Timeout`, with `MaxAttempts`
-between 3 and 8, initial intervals of 2 to 10 seconds and `BackoffRate` between 2 and
-2.5. Independently of Step Functions, the Bedrock client in
+as low as 1 where a timeout is deterministic rather than transient and up to 8 for a
+transient service error, initial intervals of 2 to 10 seconds and `BackoffRate`
+between 2 and 2.5. Independently of Step Functions, the Bedrock client in
 `lib/idp_common_pkg/idp_common/bedrock/client.py` applies its own ladder —
 `DEFAULT_MAX_RETRIES = 7`, an initial backoff of 2 seconds and a cap of 300 seconds — for
 throttling and service errors. The two ladders compose, so a single document can absorb
@@ -271,10 +276,16 @@ downstream failure or a Bedrock throttle backs up in a queue rather than droppin
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
 UI resources.
 
-**Durable state.** All thirteen S3 buckets have versioning enabled. Nine of the ten
-DynamoDB tables have point-in-time recovery enabled; the exception is `ConcurrencyTable`,
-which holds a single ephemeral admission counter that is reconciled from the true
-running-execution count rather than restored.
+**Durable state.** All thirteen S3 buckets have versioning enabled. Ten of the twelve
+DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
+twelve are ten in `template.yaml`, one in `patterns/unified/template.yaml` and one in
+`nested/api-resolvers/template.yaml`. Both exceptions are deliberate and both hold
+ephemeral state: `ConcurrencyTable` holds a single admission counter that is reconciled
+from the true running-execution count rather than restored, and
+`ChatDocumentSessionsTable` holds per-session chat-ownership records under a short TTL, so
+losing it only forces users to start a new chat session. Counting the optional
+`feature-platform/` extensions raises the total to nineteen tables; all seven extension
+tables have point-in-time recovery enabled.
 
 ### Review checklist
 
@@ -284,7 +295,7 @@ running-execution count rather than restored.
 | Have you enabled `CircuitBreakerEnabled`, or accepted that a Bedrock outage will drive the retry ladders to exhaustion? | | | |
 | Who monitors the dead-letter queues, and what is the procedure for redriving a parked document? | | | |
 | Have you tested restoring a document from S3 version history and a table from point-in-time recovery, rather than assuming both work? | | | |
-| Do you accept no point-in-time recovery on `ConcurrencyTable`, given that it is reconciled rather than restored? | | | |
+| Do you accept no point-in-time recovery on `ConcurrencyTable` and `ChatDocumentSessionsTable`, given that both hold ephemeral state that is reconciled or re-created rather than restored? | | | |
 | Are the composed retry ladders — up to 8 Step Functions attempts over up to 7 Bedrock client retries — acceptable for your latency budget and your spend ceiling? | | | |
 | Have you confirmed your chosen Bedrock models, Textract, and any Bedrock Data Automation projects are available in every region you intend to fail over to? | | | |
 | Have you rehearsed the recovery procedure end to end, and when? | | | |
