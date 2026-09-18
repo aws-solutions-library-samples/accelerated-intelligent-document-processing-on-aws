@@ -143,7 +143,12 @@ REQUEST carries, not the section's page count.**
 |---|---|---|
 | Simple (`mode: simple`) | the whole section | **21+ pages** |
 | Advanced, unsharded (`max_concurrent_batches: 1`, the default) | `min(pages, max_images_per_agent)` — 20 by default — doubled, because the agent re-sends its attached images every turn and `view_image` adds a further copy | **11+ pages** |
-| Advanced, sharded (`max_concurrent_batches > 1`) | `min(max_pages_per_shard, …)` — 5 by default — doubled | **11+ pages per shard**, so never at the default of 5 |
+| Advanced, sharded (`max_concurrent_batches > 1`) | `ceil(pages / max_concurrent_batches)`, floored at `max_pages_per_shard`, capped by `max_images_per_agent`, doubled | **11+ pages per request** |
+
+`max_pages_per_shard` is a **floor** on that estimate, not a ceiling: when honouring
+it would need more shards than `max_concurrent_batches` allows, `_rebalance_to_cap`
+redistributes the pages into exactly that many roughly-equal ranges and ignores the
+cap. `max_images_per_agent` is the only hard ceiling.
 
 The doubling is pessimistic on purpose: clamping costs some resolution, a rejected
 request costs the whole section.
@@ -170,10 +175,16 @@ Two limits of this uniform clamp, stated plainly:
 
 Two residual gaps this does not close:
 
-- **Tool-result growth mid-loop.** A sharded agentic request starts at 5 attached
+- **Tool-result growth mid-loop.** A small agentic request starts at 5 attached
   images; an agent that calls `view_image` 16 times in one conversation reaches 21
   blocks, at which point the attached images are retroactively over the cap. The
   doubling covers one extra copy per page, not an arbitrary number.
+- **Resumed agentic runs.** Sharding is skipped entirely when the run carries an
+  `existing_data_model` or a `checkpoint_buffer`, so the whole section goes to one
+  agent even with `max_concurrent_batches > 1`. The load-time estimate cannot see
+  that, so a resumed run can carry more images than it predicted.
+  `max_images_per_agent` still caps the attached count at 20, and the failure is a
+  named `ExtractionImageRejected` rather than a wrong result.
 - **No total-payload guard.** The sweep bounds each image (5 MiB base64) and each
   side (2,000 px), but nothing bounds the request's total bytes. #994 measured 29
   pages at 27.7 MB rejected on payload alone, with the `Input is too long for

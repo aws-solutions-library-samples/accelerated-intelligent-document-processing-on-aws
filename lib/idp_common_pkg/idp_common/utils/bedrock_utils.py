@@ -173,6 +173,15 @@ def _clamped_or_log(
 # genuine overflow match, and the token estimate then in use over-stated the page
 # images 2.4x, so the message compared an inflated estimate against a window it
 # had not actually exceeded. That half is fixed in bedrock.model_utils, not here.
+# Every marker names an image limit explicitly. Two earlier candidates — "image
+# size" and "invalid image" — were dropped: they are generic enough to appear in
+# an unrelated message, and this verdict is DETERMINISTIC (it raises a
+# non-retryable error and short-circuits the retry ladder), so a false positive
+# turns a transient fault into a permanent failure. The error-code guard in
+# is_image_request_rejection catches that only when the error carries a definite
+# code, which a Strands-wrapped exception does not — hence the narrower list. An
+# image error worded outside this list still fails, just without the tailored
+# explanation, which is the safe direction.
 _IMAGE_REJECTION_MARKERS = (
     "many-image request",
     "image exceeds",
@@ -180,8 +189,6 @@ _IMAGE_REJECTION_MARKERS = (
     "image dimensions exceed",
     "image dimension",
     "too many images",
-    "image size",
-    "invalid image",
     "image is too large",
 )
 
@@ -195,12 +202,12 @@ def is_image_request_rejection(error: BaseException) -> bool:
 
     Judged by error code first, exactly as the overflow matcher is, because the
     verdict here is DETERMINISTIC — it turns into a non-retryable
-    ``ExtractionImageRejected`` and short-circuits the retry ladder. Two of the
-    markers ("image size", "invalid image") are generic enough to appear in some
-    unrelated message, and a transient fault that happened to use one of those
-    phrases must not be converted into a permanent failure. An image rejection is
-    always a ``ValidationException``, so a definite code that is anything else
-    settles it.
+    ``ExtractionImageRejected`` and short-circuits the retry ladder, so a false
+    positive converts a transient fault into a permanent failure. An image
+    rejection is always a ``ValidationException``, so a definite code that is
+    anything else settles it. A Strands-wrapped exception carries no code at all,
+    which is why ``_IMAGE_REJECTION_MARKERS`` is kept narrow enough to stand on
+    its own.
     """
     code = ""
     response = getattr(error, "response", None)

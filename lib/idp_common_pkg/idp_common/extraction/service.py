@@ -1559,6 +1559,41 @@ class ExtractionService:
                     )
         return confidence_data
 
+    def _agentic_images_per_request(self, pages_to_attach: int) -> int:
+        """Upper bound on the page images ONE agentic request will carry (#994).
+
+        Needed because Bedrock's 2,000px many-image cap binds on a single
+        request's image count, and on the agentic path a section is not one
+        request. Two things bound it, and only one of them is a real ceiling:
+
+        * ``max_images_per_agent`` IS a ceiling — ``_cap_agent_images`` truncates
+          the attached list to it before every invocation.
+        * ``max_pages_per_shard`` is NOT. ``plan_shards`` closes a shard at that
+          many pages, but when doing so would produce more shards than
+          ``max_concurrent_batches``, ``_rebalance_to_cap`` redistributes the
+          pages into *exactly* that many roughly-equal ranges and ignores the page
+          cap entirely. With ``max_concurrent_batches: 2`` a 30-page section is
+          sent as two 15-page requests, not six 5-page ones. So the shard estimate
+          is ``ceil(pages / max_concurrent_batches)``, floored at
+          ``max_pages_per_shard`` rather than capped by it.
+
+        ⚠️ Known gap: sharding is skipped altogether — whole section to one agent
+        — when the run is a resume (``existing_data_model``) or carries a
+        ``checkpoint_buffer``, even with ``max_concurrent_batches > 1``. The
+        estimate cannot see that from here, so a resumed run of a sharded config
+        can carry more images than this predicts. ``max_images_per_agent`` still
+        bounds it at 20 attached, and the failure mode is a clear
+        ``ExtractionImageRejected`` rather than a wrong result.
+        """
+        agentic = self.config.extraction.agentic
+        bound = pages_to_attach
+        if agentic.max_concurrent_batches > 1:
+            shard_pages = -(-pages_to_attach // agentic.max_concurrent_batches)
+            bound = min(bound, max(shard_pages, agentic.max_pages_per_shard))
+        if agentic.max_images_per_agent > 0:
+            bound = min(bound, agentic.max_images_per_agent)
+        return max(0, bound)
+
     def _load_document_images(
         self, document: Document, sorted_page_ids: list[str]
     ) -> list[Any]:
@@ -1585,27 +1620,18 @@ class ExtractionService:
         # count, and on the agentic (Strands) path those differ: the section's pages
         # are sliced into shards and capped again per agent invocation, so a long
         # section can be sent as several small requests. Counting the section would
-        # clamp pages that no request ever over-fills. The per-request count is
-        # therefore derived from the two caps that bound it, and only then doubled,
-        # because the agent re-sends its attached images on every turn and a
-        # ``view_image`` tool result adds a further copy of a page to the same
-        # request. Doubling is pessimistic on purpose — clamping to 2,000px costs
-        # far less than a hard request rejection — and it is what makes the
-        # threshold land at 11 attached images rather than 21 on that path. See
-        # extraction/README.md for the resulting thresholds per mode.
+        # clamp pages that no request ever over-fills. See
+        # ``_agentic_images_per_request`` for how the per-request figure is bounded;
+        # it is then DOUBLED, because the agent re-sends its attached images on every
+        # turn and a ``view_image`` tool result adds a further copy of a page to the
+        # same request. Doubling is pessimistic on purpose — clamping to 2,000px
+        # costs far less than a hard request rejection. See extraction/README.md for
+        # the resulting thresholds per mode.
         pages_to_attach = sum(1 for pid in sorted_page_ids if pid in document.pages)
-        agentic = self.config.extraction.agentic
-        if agentic.enabled:
-            per_request_images = pages_to_attach
-            if agentic.max_concurrent_batches > 1 and agentic.max_pages_per_shard > 0:
-                per_request_images = min(
-                    per_request_images, agentic.max_pages_per_shard
-                )
-            if agentic.max_images_per_agent > 0:
-                per_request_images = min(
-                    per_request_images, agentic.max_images_per_agent
-                )
-            effective_image_count = per_request_images * 2
+        if self.config.extraction.agentic.enabled:
+            effective_image_count = (
+                self._agentic_images_per_request(pages_to_attach) * 2
+            )
         else:
             effective_image_count = pages_to_attach
         max_dimension = image.max_dimension_for_image_count(effective_image_count)

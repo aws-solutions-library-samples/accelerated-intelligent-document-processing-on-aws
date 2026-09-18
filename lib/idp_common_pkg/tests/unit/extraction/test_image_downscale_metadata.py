@@ -206,16 +206,39 @@ def test_agentic_mode_halves_the_effective_page_threshold():
 
 
 def test_agentic_mode_counts_what_one_request_carries_not_the_whole_section():
-    """The count that matters is per REQUEST. With sharding on, the section's pages
-    are split into ``max_pages_per_shard``-page requests, so a 30-page section is
-    sent as six 5-image requests — 10 blocks each after doubling, nowhere near the
-    threshold. Counting the section instead would downscale all 30 pages for a
-    limit no request comes close to."""
+    """The count that matters is per REQUEST. With sharding on, a 12-page section
+    at ``max_concurrent_batches: 4`` is sent as four 3-page requests — 6 blocks
+    each after doubling, nowhere near the threshold. Counting the section instead
+    would downscale all 12 pages for a limit no request comes close to."""
     images = _load(
-        _agentic_service(max_concurrent_batches=4, max_pages_per_shard=5), 30
+        _agentic_service(max_concurrent_batches=4, max_pages_per_shard=5), 12
     )
-    assert len(images) == 30
+    assert len(images) == 12
     assert all(_page_dimensions(img) == (1585, 2048) for img in images)
+
+
+def test_max_pages_per_shard_is_a_floor_on_shard_size_not_a_ceiling():
+    """``plan_shards`` closes a shard at ``max_pages_per_shard``, but when that
+    would produce more shards than ``max_concurrent_batches``, ``_rebalance_to_cap``
+    redistributes the pages into EXACTLY that many roughly-equal ranges and ignores
+    the page cap. So a 30-page section at ``max_concurrent_batches: 2`` really goes
+    out as two 15-page requests, not six 5-page ones — 30 blocks after doubling,
+    well over the threshold. Treating the page cap as a ceiling made the estimate
+    say 5 here and skip a clamp the service's own rule calls for."""
+    svc = _agentic_service(max_concurrent_batches=2, max_pages_per_shard=5)
+    assert svc._agentic_images_per_request(30) == 15
+    images = _load(svc, 30)
+    assert all(
+        max(_page_dimensions(img)) <= BEDROCK_MANY_IMAGE_MAX_DIMENSION for img in images
+    )
+
+
+def test_the_per_agent_cap_bounds_the_rebalanced_shard_too():
+    """With 50 pages over 2 shards the rebalanced shards hold 25 pages each, but
+    ``_cap_agent_images`` truncates the attached list to ``max_images_per_agent``,
+    so 20 is the real per-request figure."""
+    svc = _agentic_service(max_concurrent_batches=2, max_pages_per_shard=5)
+    assert svc._agentic_images_per_request(50) == 20
 
 
 def test_the_per_agent_image_cap_also_bounds_the_count():

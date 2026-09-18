@@ -1284,13 +1284,19 @@ limit binds on the images in one *request*, not on the section:
 | Mode | Downscales at |
 |---|---|
 | Simple (`extraction.mode: simple`) | 21 or more pages in the section |
-| Advanced, unsharded (`agentic.max_concurrent_batches: 1`, the default) | 11 or more pages |
-| Advanced, sharded (`max_concurrent_batches` > 1) | 11 or more pages **per shard** — so never at the default `max_pages_per_shard: 5` |
+| Advanced, unsharded (`agentic.max_concurrent_batches: 1`, the default) | 11 or more pages, or `agentic.max_images_per_agent` if you have lowered it below 10 |
+| Advanced, sharded (`max_concurrent_batches` > 1) | 11 or more pages **per request**, where a request carries about `pages ÷ max_concurrent_batches` of them |
 
 Advanced mode halves the threshold because the agent re-sends its attached page
 images on every turn and its `view_image` tool can add a further copy of a page to
 the same request, so 11 attached pages can present 22 image blocks. The estimate is
 deliberately pessimistic: some lost resolution is cheaper than a rejected request.
+
+Note that `max_pages_per_shard` is **not** a ceiling on how many pages one request
+carries. When honouring it would need more shards than `max_concurrent_batches`
+allows, the planner redistributes the pages into exactly that many roughly-equal
+ranges instead — so at `max_concurrent_batches: 2` a 30-page section goes out as two
+15-page requests, not six 5-page ones, and is downscaled.
 
 This also reaches stages other than extraction. Holistic classification sends every
 page of a packet in one request, so a packet over 20 pages now has its page images
@@ -1304,8 +1310,11 @@ otherwise have used — a real reduction, not a free one. On Sonnet 4.6, Haiku 4
 and the 3.x family the tier target is about 1,568 px, so the clamp costs nothing
 there. **We have not measured extraction accuracy with and without it.** If you
 process dense small print on a high-resolution-tier model, prefer keeping requests
-at 20 images or fewer (lower `agentic.max_pages_per_shard`, or split sections)
-rather than relying on the clamp.
+under the threshold rather than relying on the clamp. The lever that always works is
+`agentic.max_images_per_agent` (the only hard ceiling on images per agent request);
+raising `max_concurrent_batches` splits a section across more requests; and splitting
+the documents themselves works in any mode. On a default Advanced configuration
+`max_pages_per_shard` has no effect at all, because no sharding happens there.
 
 To avoid the per-request re-encode itself, set `target_width` / `target_height` to
 `2000` (or less) for stages that send many page images. If your sections routinely

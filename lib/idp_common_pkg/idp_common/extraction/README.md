@@ -674,26 +674,40 @@ side, so `_load_document_images` counts the pages it is actually about to attach
 `max_dimension=image.max_dimension_for_image_count(count)` into the same fit.
 
 The count it passes is the count **one request** will carry, not the section's page
-count, because the two differ on the agentic path. When `agentic.enabled`, the
-section's pages are bounded twice before they reach a request — by
-`max_pages_per_shard` (when `max_concurrent_batches > 1`) and by
-`max_images_per_agent` — and the resulting per-request figure is then **doubled**,
-because Strands re-sends the attached page images on every turn and a `view_image`
-tool result adds a further copy of a page to the same request. Counting the whole
-section instead would downscale all 30 pages of a section sent as six 5-image
-shards, for a limit no request comes near. The resulting thresholds:
+count, because the two differ on the agentic path. `_agentic_images_per_request`
+derives it, and the distinction that matters there is which config keys are real
+ceilings:
+
+- **`max_images_per_agent` is** — `_cap_agent_images` truncates the attached list to
+  it before every invocation.
+- **`max_pages_per_shard` is not.** `plan_shards` closes a shard at that many pages,
+  but when doing so would produce more shards than `max_concurrent_batches`,
+  `_rebalance_to_cap` redistributes the pages into *exactly* that many roughly-equal
+  ranges and ignores the page cap. At `max_concurrent_batches: 2` a 30-page section
+  is two 15-page requests, not six 5-page ones. So the shard estimate is
+  `ceil(pages / max_concurrent_batches)` **floored** at `max_pages_per_shard`, not
+  capped by it.
+
+The result is then **doubled**, because Strands re-sends the attached page images on
+every turn and a `view_image` tool result adds a further copy of a page to the same
+request. The resulting thresholds:
 
 | Mode | Clamps at |
 |---|---|
 | Simple | 21+ pages in the section |
 | Advanced, `max_concurrent_batches: 1` (default) | 11+ pages (`min(pages, max_images_per_agent=20) * 2 > 20`) |
-| Advanced, sharded | 11+ pages per shard — never at the default `max_pages_per_shard: 5` |
+| Advanced, sharded | 11+ pages **per request**, i.e. `ceil(pages / max_concurrent_batches) >= 11` |
 
 The doubling is a heuristic and deliberately pessimistic — clamping to 2,000 px
 costs ~15% of the image tokens, a rejected request costs the section — but it covers
-only **one** extra copy per page. An agent that calls `view_image` enough times to
-push a 5-image shard past 20 blocks is still a live gap, recorded in
-`image/README.md`. `BedrockClient.invoke_model` sweeps every request with
+only **one** extra copy per page. Two gaps remain, both recorded in
+`image/README.md`: an agent that calls `view_image` enough times to push a small
+shard past 20 blocks, and a **resume** run (`existing_data_model`, or a
+`checkpoint_buffer`), where sharding is skipped entirely and the whole section goes
+to one agent even with `max_concurrent_batches > 1` — something the load-time
+estimate cannot see. `max_images_per_agent` still bounds the attached count at 20
+there, and the failure mode is a named `ExtractionImageRejected`.
+`BedrockClient.invoke_model` sweeps every request with
 `image.fit_images_in_request` as the authoritative backstop (it is the only place
 that sees the whole request, tool results included); the loader exists so the
 reduction is auditable per page and so the agentic path, which builds its own
