@@ -175,9 +175,13 @@ gh api repos/<owner>/<repo>/codeowners/errors --jq '.errors[] | "\(.line)  \(.ki
 
 Each handle lacking write access produces one `Unknown owner` error per line that
 names it, with the message "make sure the handle exists and has write access to
-the repository". On 2026-09-18 that returned **8** errors, on lines 89, 90, 98,
-99, 100, 101, 112 and 118 — eight lines rather than six rules, because the two
-`agents/` lines each carry an error while still routing usefully to @kaleko.
+the repository". On 2026-09-18 that returned **8** errors: one for each of the
+two `agents/` rules, the four `rule_validation` rules, `/lib/idp_sdk/` and
+`/workshop/`. That is eight lines rather than six rules, because the two
+`agents/` lines each carry an error while still routing usefully to @kaleko. The
+`--jq` above also prints a line number, but do not copy those numbers into this
+page: they shift whenever a comment is added above a rule, so the rule name is
+the stable identifier and the number is only useful in the command's own output.
 
 Per handle, the effective permission — which includes access derived from
 organization team membership, not just direct collaborator grants — is:
