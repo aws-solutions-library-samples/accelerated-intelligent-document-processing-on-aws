@@ -69,9 +69,18 @@ make cfn-lint-warnings
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered — `make check-arn-partitions` still uses hardcoded globs and
-misses `nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/`. It runs
-from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
+without being covered. `make check-arn-partitions` now uses the **same** discovery
+(`scripts/discover_templates.sh cfn`, `Makefile:234`) and both targets fail outright
+if it returns nothing, so the two gates see the same set — 30 templates today. The
+hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
+and `iam-roles/` is gone; that directory list survives only as the historical note in
+the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
+(`Makefile:226`) skips any discovered template whose path starts with
+`scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
+cross-account principal by construction — so the ARN gate's real coverage is
+"every template found by content, less that prefix". `cfn-lint` itself exempts
+nothing. Both run from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate
+sets match.
 
 It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
 defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
@@ -481,7 +490,10 @@ Ensure Docker is running and you have ECR permissions when building Pattern-2.
 The codebase maintains GovCloud compatibility:
 - Use `arn:${AWS::Partition}:` instead of hardcoded `arn:aws:`
 - Use `${AWS::URLSuffix}` instead of hardcoded `amazonaws.com`
-- Validation enforced via `make check-arn-partitions`
+- Validation enforced via `make check-arn-partitions`, which runs in `lint`,
+  `fastlint` and `lint-cicd` (so both CIs) over every template discovered by
+  content, except those under `scripts/sdlc/cfn/` — see the `ARN_PARTITION_EXEMPT`
+  note above
 
 ### Nested Stacks
 
