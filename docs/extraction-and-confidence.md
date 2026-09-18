@@ -43,7 +43,7 @@ They combine freely. The tables below give pros/cons and a recommendation; the r
 |---|---|---|
 | **How it works** | One Bedrock inference returns the structured result | Strands agent with a structured-output tool; can shard large sections, validate against the schema, and self-correct |
 | **Pros** | Cheapest & fastest; fewest moving parts; works with every model incl. OpenAI GPT-5.x | Highest accuracy on complex/nested schemas; guaranteed schema compliance; deterministic **table parsing** for big tables; **sharding** for long docs; model **escalation** on validation failure |
-| **Cons** | No built-in validation/retry; a single huge document must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a tool-use model (no OpenAI GPT-5.x); still in **preview** |
+| **Cons** | No built-in validation/retry; a single huge document must fit one inference (context-overflow / read-timeout risk); weaker on deeply nested structures | More inferences → higher per-doc cost & latency; requires a model that reliably emits tool use (no OpenAI GPT-5.x, and not Amazon Nova Lite — see below); still in **preview** |
 | **Choose when** | Most documents; small–medium size; simple/flat schemas; lowest cost matters | Complex/nested schemas, strict validation needs, **large documents or big multi-row tables**, business-critical accuracy |
 
 > **Rule of thumb:** start Simple. Move to Advanced when you hit nested-schema accuracy limits, need schema-format validation, or the document is large enough that one inference can't hold it (long tables, 20+ dense pages).
@@ -154,8 +154,52 @@ Agentic extraction requires models with tool-use support:
   - `anthropic.claude-3-5-sonnet-20241022-v2:0` — Best balance of speed and accuracy
   - `anthropic.claude-3-7-sonnet-20250219-v1:0` — Latest with enhanced capabilities
 - **Anthropic Claude Opus** models (for highest accuracy requirements)
-- **Amazon Nova Pro** (AWS native alternative)
+- **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
+  been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
+  mid-stream tool-use failure described below and the grid was abandoned, so it is
+  unmeasured on this path rather than known to be incapable. Treat it as unproven
+  until a benchmark run completes on it
 - **Amazon Nova Premier** (for complex multi-modal extraction)
+
+> **⚠️ Amazon Nova Lite does not complete Advanced (agentic) extraction as
+> shipped.** On the agentic path Nova Lite fails mid-stream with Bedrock's
+> `modelStreamErrorException: Model produced invalid sequence as part of ToolUse`
+> — the model emits a `toolUse` block the protocol rejects. The v0.6.8 benchmark
+> refresh logged 247 of these in one three-hour window across 40 shard-runtime log
+> streams, all of them `us.amazon.nova-lite-v1:0`
+> ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)).
+> The failure **reproduces on retry with the same request**, so since v0.6.9 it is
+> classified as **deterministic**: the shard fails in seconds with a message naming
+> the model and the remedies instead of being retried by the state machine.
+>
+> **What causes it is not fully settled.** AWS's
+> [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
+> — the guide Bedrock's own error message points at — attributes this error
+> primarily to inference parameters and output budget rather than to raw model
+> capability: greedy decoding (`temperature: 0` **and** `topK: 1`, the latter sent
+> via `additionalModelRequestFields`), a `maxTokens` large enough for a long
+> tool-output turn, and not stripping the model's chain-of-thought. This repository
+> satisfies part of that — extraction sets `temperature: "0.0"` and the agentic path
+> always requests the model's maximum output — but it does **not** send `top_k` on
+> the agentic path (only on the Simple path), and Nova's output ceiling in
+> `config_library/model_config_limits.yaml` is 10,000 tokens, which is small for a
+> large sharded table. So the observed failure is consistent with a configuration
+> the vendor explicitly warns about, and calling it a hard capability limit would
+> overstate what has been measured. Failing fast is still the right behaviour: as
+> configured today it recurs on every attempt.
+>
+> **Remedies**, in the order worth trying: reduce
+> `extraction.agentic.shard_token_budget` / `extraction.agentic.max_pages_per_shard`
+> so each call emits less; set `extraction.model` to a model measured on this path
+> (Claude Sonnet 5, Sonnet 4.6, Opus 5, OpenAI GPT-6 Astra, xAI Grok 4.6); or use
+> `extraction.mode: simple`.
+>
+> **This is specific to Advanced extraction.** Nova Lite remains fully supported —
+> and is the shipped default — for the **confidence-assessment** pass
+> (`extraction.confidence`), and it works for **Simple** extraction, which needs no
+> tool use in its default configuration (the experimental `forced_tool` path is the
+> one exception). See
+> [Benchmarking → which models are measured](benchmarking/index.md#which-models-are-actually-measured).
 
 > **⚠️ OpenAI GPT-5.x cannot be used with agentic extraction.** All
 > `openai.gpt-5.*` models (`openai.gpt-5.4`, `openai.gpt-5.5`, and GPT-5.6
@@ -169,8 +213,9 @@ Agentic extraction requires models with tool-use support:
 > **✅ xAI Grok CAN be used with agentic extraction.** Grok 4.6
 > (`us.xai.grok-4.6`, `global.xai.grok-4.6`) is served on the standard Converse
 > API and accepts a `toolConfig` with all three `toolChoice` modes, so the Strands
-> agent loop works — making it the only non-Claude/non-Nova option for Advanced
-> extraction. Its 500K context also yields a larger shard budget (~90K tokens)
+> agent loop works — so alongside Anthropic Claude and OpenAI GPT-6 Astra it is one
+> of the families measured on the Advanced path. Its 500K context also yields a
+> larger shard budget (~90K tokens)
 > than a 200K-context Claude model (~18K). Note that `temperature` / `top_p` are
 > rejected by Grok and silently omitted; tune it with `reasoning_effort`
 > (`none`|`low`|`medium`|`high`|`xhigh`) instead. See
@@ -300,6 +345,23 @@ extraction:
 > A/B measured no change in list completeness or field accuracy with images off on
 > the table path. Set `lazy_images: false` for **image-dependent corpora** where the
 > model must see page layout/marks even when a table is present.
+
+> **The agent is told what was already parsed.** The pre-flight parse happens
+> before the agent runs, so its instructions gain a `PRE-PARSED TABLE DATA
+> AVAILABLE` block: how many tables were found, how many rows in total, the column
+> list, what the `--- PAGE N ---` markers mean, and the `parse_table` →
+> `map_table_to_schema` → `finalize_table_extraction` sequence — ending with the
+> point that `finalize` reads the mapped rows from the agent's own state, so it
+> never needs to write the rows out itself. That last part is what keeps output
+> tokens (and cost) down: an agent that does not know the rows exist re-emits them
+> one by one. Both the single-pass and the **sharded** path send this block; on the
+> sharded path each shard agent also gets its own concrete page range, plus a note
+> that the table and row totals in the block are for the whole section rather than
+> for its own pages — so parsing fewer rows than the total is the correct outcome
+> for a shard, not an incomplete one. Sharding is
+> the default for any multi-page table document, and until
+> [issue #900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)
+> its agents were the only ones not receiving the block.
 
 > **Requires Markdown tables in the OCR output.** Table parsing only engages when
 > OCR emits Markdown pipe-tables — i.e. **Amazon Textract with the `TABLES`
@@ -1267,9 +1329,45 @@ extraction:
 >    Per-class override: `x-aws-idp-confidence-escalation-model`. Set
 >    `escalation_model: null` to skip the model step.
 >
+> 4. **Give up when the batch is already one row.** Halving only converges while a
+>    *smaller* batch can fit. If the model still truncates with a **single row** in
+>    the call, that one row's confidence output exceeds the model's cap and no batch
+>    size can work, so the ladder stops there instead of retrying: the futile
+>    same-model retry rung is skipped, at most one escalation round runs (a bigger
+>    output cap is the only remedy that can legitimately succeed), and the section
+>    reports `assessment_row_too_large` (error) naming the model, its output cap,
+>    the field and class, and the offending row's approximate serialized size.
+>    Before this guard there was no terminal condition for that case: the impossible
+>    call was re-run through the retry rounds and the bisection tree, and the section
+>    ended up reporting the generic `assessment_incomplete`, whose remedy (a smaller
+>    batch) cannot work. Measured on a shape that batches — 8 rows at batch 4 — the
+>    guard halves the primary model calls (28 → 14); on the single-outer-row shape
+>    that [#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894)
+>    reports, the call count is unchanged and what improves is the diagnosis.
+>
+>    The known trigger is a **multi-instance class**
+>    (`x-aws-idp-multi-instance: true`): the wrapper makes the *instance* array the
+>    outer list, so one "row" is a whole document instance carrying its own long
+>    inner list (e.g. a 100-row `Transactions` table). ⚠️ **Such a class still
+>    cannot be fully assessed.** The batch sizer measures only the outer row's
+>    column count (it reports `cols=2 per_row~80` for a row holding 100
+>    transactions) and derives a batch size that is wrong by orders of magnitude;
+>    fixing the sizer to descend into inner lists is tracked as open issue #894.
+>    What this guard changes is the reporting, and the wasted calls on shapes that
+>    batch — not the outcome for such a class. ⚠️ The symptom originally reported on
+>    #894 (an Assessment Lambda hitting its 900 s limit three times,
+>    `Sandbox.Timedout` ×3, leaving the document in `ASSESSING` after a 45-second
+>    extraction) is **not explained by this loop**, so treat it as still open: the
+>    same-model retry rung already stopped on no progress before this change, and the
+>    ladder's wall-clock deadline guard was already in place in the release where
+>    those timeouts were observed. Until #894 is fixed, score such a class with a
+>    large-output-cap confidence model (`escalation_model`), or split the inner list
+>    into its own class.
+>
 > This activity is recorded in the section's
 > `metadata.assessment_batch_split_stats` (`derived_batch_size`,
-> `escalation_model`, `rows_recovered_by_escalation`, `unrecoverable_rows`, …) and
+> `escalation_model`, `rows_recovered_by_escalation`, `unrecoverable_rows`,
+> `oversized_row_*`, …) and
 > (for agentic) an `⚠ Assessment Batch Splitting` block in the processing report.
 > If rows remain unscored even after escalation, the durable fix is to reduce
 > per-row output — e.g. set `geometry.mode: ocr_only` (the default) so boxes come
@@ -1278,6 +1376,7 @@ extraction:
 > **Surfaced in the UI.** Whatever the self-healing ladder does (or can't do) is
 > recorded as a structured **processing issue** on the section — `severity`
 > (error / warning / info), `code` (e.g. `assessment_incomplete`,
+> `assessment_row_too_large`, `assessment_coverage_incomplete`,
 > `assessment_recovered_with_retries`, `assessment_deadline_reached`), a
 > user-facing `message`, and a technical `root_cause`. These are persisted to
 > DynamoDB and shown in the Web UI: a **Status** column on the document's Sections
@@ -1286,6 +1385,29 @@ extraction:
 > **Processing Report** tab. A document that quietly self-healed — or one where a
 > row genuinely couldn't be scored — is therefore visible at a glance.
 
+> **A failed confidence pass no longer fails the document.** Confidence scoring
+> runs *after* extraction has written its results and been paid for, so a
+> deterministic confidence failure that discards them destroys the expensive part
+> to report the loss of the advisory part — two observed runs threw away $17.34 and
+> $7.05 of extraction that had scored 1,200 of 1,200 rows at 1.000 cell accuracy,
+> because the confidence model rejected an oversized input with
+> `ValidationException: Input is too long for requested model.`
+> ([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)).
+> A deterministic (non-retryable) failure in the Assessment step now **degrades**
+> instead: the extracted data is returned and the document succeeds, with the
+> missing confidence recorded as an error-severity
+> `assessment_failed_confidence_unavailable` processing issue on the section.
+> Transient failures (throttling, read timeouts, 5xx) are unchanged — they still
+> raise so Step Functions retries the section. ⚠️ Because confidence is absent on a
+> degraded section, HITL confidence routing and the UI threshold signals do not
+> apply to it; check the **Status** column of the Sections panel — that is where this
+> particular issue shows. It is written to the section record only, not into the
+> section's `result.json`, so unlike issues from a *successful* assessment run it
+> does **not** appear in the Visual Editor's Processing Report tab (which renders
+> `metadata.processing_issues` from that file). Re-batching the oversized
+> confidence input so the pass *succeeds* rather than degrading is still open as
+> part of #901.
+>
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
 > **retired and deleted**. Large-list batching is its full replacement: complete
@@ -2061,6 +2183,23 @@ the system automatically adds `confidence_threshold` from configuration.
 - Verify `extraction.confidence.enabled: true` and `mode` is not `off`.
 - Confirm the assessment Lambda deployed successfully.
 - For agentic + `separate`/`integrated`, remember the standalone step is intentionally bypassed (intelligent skip) once extraction writes `explainability_info` — this is expected, not a failure.
+
+**`Model produced invalid sequence as part of ToolUse` (Advanced extraction)**
+
+- The configured extraction model emitted a `toolUse` block Bedrock rejected
+  mid-stream. The same request on the same model reproduces it, so it is **treated as
+  deterministic rather than transient** and is not retried
+  ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)).
+  The failure message names the model and lists models measured on this path.
+- Remedies: reduce `extraction.agentic.shard_token_budget` /
+  `extraction.agentic.max_pages_per_shard` so each call emits less (AWS's
+  [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
+  attributes this error largely to inference parameters and output budget); set
+  `extraction.model` (or a class's `x-aws-idp-extraction-model` override) to a model
+  measured on this path; or set `extraction.mode: simple`, which needs no tool use in
+  its default configuration. Amazon Nova Lite in particular has not completed the
+  Advanced path — see
+  [Supported models for agentic extraction](#supported-models-for-agentic-extraction).
 
 **Template errors**
 

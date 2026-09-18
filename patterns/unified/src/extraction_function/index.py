@@ -217,7 +217,7 @@ def _handle(event, context):
     )
 
     # X-Ray annotations
-    xray_recorder.put_annotation("document_id", {full_document.id})
+    xray_recorder.put_annotation("document_id", full_document.id)
     xray_recorder.put_annotation("processing_stage", "extraction")
 
     # Get the section ID directly from the Map state input

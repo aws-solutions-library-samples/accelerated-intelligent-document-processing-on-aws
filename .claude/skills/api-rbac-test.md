@@ -73,6 +73,42 @@ Notes:
 - **IAM_ONLY ops** (`updateAgentJobStatus`, `updateDiscoveryJobStatus`) must
   reject every Cognito caller.
 
+## The REST route is NOT the only entry path (Function URLs — S6..S9)
+
+Chat streaming is served by a Lambda **Function URL** (`AuthType=AWS_IAM`,
+`InvokeMode=RESPONSE_STREAM`; `ChatStreamProcessorUrl` in `template.yaml`) whose
+FastAPI app (`src/lambda/chat_stream_processor/app.py`) drives the chat
+processors **directly** — no dispatcher, no resolver. Consequences:
+
+- An op reachable both ways must enforce its group check **in the component that
+  does the work** (e.g. `src/lambda/agent_chat_processor/index.py`), not only in
+  the resolver in front of it. A resolver-only check is enforced on one path.
+- That transport **authenticates but carries no `cognito:groups`**:
+  `requestContext.authorizer.iam.cognitoIdentity` is documented as unused by
+  Function URLs, and the assumed-role session name under the Identity Pool
+  enhanced flow is a pool-wide constant. So there is nothing verified to gate on
+  there; the residual difference is **GAP-07** / AUTH.T14.
+- A request-body `callerSub` is a **fallback only** — the transport-verified
+  principal wins, and a body value that *contradicts* it is refused (403), not
+  silently preferred. Both routes go through one helper so they cannot drift.
+
+Declare every Function URL and route in the **`function_url_endpoints:`** section
+of `scripts/api_rbac_expectations.yaml`. The scanner's Function-URL checks:
+
+| Check | Fails when |
+|-------|-----------|
+| **S6** | a `AWS::Lambda::Url` in `template.yaml`, or a route in its handler, is not declared (or a declared route no longer exists) |
+| **S7** | a route reads a client-supplied identity **before** the transport-verified one |
+| **S8** | no function in the handler package refuses a *contradicting* client identity (names the verified value, compares `!=`, and rejects) |
+| **S9** | the handler named by `enforced_in` has no group check for the route's groups, or its group list disagrees with the `equivalent_op`'s |
+
+⚠️ `known_gap:` downgrades a finding to WARN; **`residual_gap:` does not** — it
+records the gap in the register for auditability while leaving the checks armed.
+Use `residual_gap` when part of a route's authorization is genuinely impossible
+on the transport but the rest must still be enforced. `scripts/sdlc/tests/test_scan_api_rbac_function_urls.py`
+pins S7/S8 against snippets of both shapes, so the rules cannot go inert once the
+live repo only exercises the passing side.
+
 ## Three sources of truth that MUST NOT drift
 
 | Source | Where |
@@ -154,3 +190,7 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 2. Add the `@aws_cognito_user_pools` directive in `schema.graphql`.
 3. Add an entry to `scripts/api_rbac_expectations.yaml` (mirror a similar op).
 4. `make api-test-static` must be clean, then run `make api-test` live.
+5. If the op is **also** reachable off the REST route (a Function URL route, a
+   direct `lambda:InvokeFunction` path), put the group check in the component
+   that does the work and declare the route under `function_url_endpoints:` —
+   otherwise S6 fails and the check covers only one path.

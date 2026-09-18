@@ -203,7 +203,21 @@ The metering table now includes automated cost calculation capabilities:
 - **unit_cost**: Retrieved from pricing configuration for each service_api/unit combination
 - **estimated_cost**: Automatically calculated as value × unit_cost for each record
 - **Dynamic Pricing**: Costs are loaded from configuration and cached for performance
-- **Fallback Handling**: When pricing data is not available, unit_cost defaults to $0.0
+- **Unpriced services**: When the pricing configuration has **no entry** for a
+  `service_api`, `unit_cost` and `estimated_cost` are written as `NULL` (not
+  `0.0`), and a warning naming the service is logged. `SUM()` ignores NULLs, so
+  totals are unaffected, but the gap can be found rather than being read as
+  free usage:
+
+  ```sql
+  SELECT DISTINCT service_api, unit
+  FROM metering
+  WHERE unit_cost IS NULL;   -- add pricing entries for anything listed here
+  ```
+
+  A unit that is simply *absent from an entry that exists* is a genuine `0.0` —
+  it is not chargeable for that service (e.g. Bedrock's `totalTokens` and
+  `requests`).
 
 #### Pricing Configuration Format
 
@@ -225,10 +239,28 @@ pricing:
 
 #### Cost Calculation Process
 
-1. **Service/Unit Matching**: System attempts exact match for service_api/unit combination
-2. **Partial Matching**: If exact match fails, uses fuzzy matching for common patterns
+1. **Service Matching**: The pricing key is matched **exactly** against
+   `service_api`, then against progressively shorter `/`-delimited suffixes of
+   it (longest match wins)
+2. **Unit Matching**: The unit name is matched **exactly** within that entry —
+   there is no fuzzy or substring matching in either step, so one model can
+   never be priced off another model's row
 3. **Cost Calculation**: estimated_cost = value × unit_cost
 4. **Caching**: Pricing data is cached to avoid repeated configuration lookups
+
+> **Note on cache-read pricing.** Prompt-cache reads are billed at a fraction of
+> fresh input tokens (about 0.1x for Claude, 0.25x for Nova), so `pricing.yaml`
+> carries a separate `cacheReadInputTokens` rate per model. Releases before this
+> fix resolved pricing by substring, which could bind a `cacheReadInputTokens`
+> lookup to a row's `inputTokens` rate and **overstate** the cost of cache reads
+> by up to 10x. This only happened for a model id that had no exact pricing entry
+> of its own, or whose entry omitted `cacheReadInputTokens`; a model with a
+> complete entry was always priced correctly. Among shipped, selectable models the
+> live case was the EU Nova 2 Lite service tiers
+> (`eu.amazon.nova-2-lite-v1:0:flex` and `:priority`), which had no pricing rows
+> and so billed cache reads at the EU base-tier fresh-input rate — 8x their real
+> price. If your reported costs came from an earlier release **and** you used one
+> of those, re-run the report for corrected numbers.
 
 The metering table is particularly valuable for:
 - **Cost analysis and allocation** - Track spending by document type, service, or time period
@@ -523,11 +555,19 @@ ORDER BY
   total_cost DESC;
 
 -- Cost per page analysis by document type
+--
+-- Note the COALESCE and the unpriced_rows column. `estimated_cost` is NULL for a
+-- service with no pricing entry, and SUM() skips NULLs while the denominator counts
+-- those rows' pages regardless — so a plain SUM(estimated_cost)/SUM(number_of_pages)
+-- silently understates cost per page whenever any row is unpriced. COALESCE makes
+-- the assumption explicit (treat unpriced as $0) and unpriced_rows tells you whether
+-- that assumption cost you anything: if it is not 0, the figure is a lower bound.
 SELECT 
   se.section_type,
-  SUM(m.estimated_cost) / SUM(m.number_of_pages) as cost_per_page,
-  SUM(m.estimated_cost) as total_cost,
+  SUM(COALESCE(m.estimated_cost, 0)) / SUM(m.number_of_pages) as cost_per_page,
+  SUM(COALESCE(m.estimated_cost, 0)) as total_cost,
   SUM(m.number_of_pages) as total_pages,
+  COUNT_IF(m.unit_cost IS NULL) as unpriced_rows,
   COUNT(DISTINCT m.document_id) as document_count
 FROM 
   metering m
@@ -574,11 +614,17 @@ ORDER BY
 LIMIT 10;
 
 -- Cost efficiency by model (cost per token)
+--
+-- Same NULL caveat as the cost-per-page query above: without COALESCE the numerator
+-- drops unpriced rows while the denominator keeps their token counts, so a model with
+-- no pricing entry appears cheap rather than unknown. unpriced_rows > 0 means the
+-- ratio is a lower bound.
 SELECT 
   service_api,
-  SUM(estimated_cost) / SUM(value) as cost_per_token,
-  SUM(estimated_cost) as total_cost,
+  SUM(COALESCE(estimated_cost, 0)) / SUM(value) as cost_per_token,
+  SUM(COALESCE(estimated_cost, 0)) as total_cost,
   SUM(value) as total_tokens,
+  COUNT_IF(unit_cost IS NULL) as unpriced_rows,
   COUNT(DISTINCT document_id) as document_count
 FROM 
   metering

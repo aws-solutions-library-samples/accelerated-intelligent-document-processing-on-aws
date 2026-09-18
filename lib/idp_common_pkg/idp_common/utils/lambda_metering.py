@@ -35,7 +35,7 @@ def calculate_lambda_metering(
     Returns:
         Dictionary with Lambda metering data in the standard format:
         {
-            "{context}/lambda/requests": {"invocations": 1},
+            "{context}/lambda/requests": {"requests": 1},
             "{context}/lambda/duration": {"gb_seconds": calculated_value}
         }
     """
@@ -77,7 +77,16 @@ def calculate_lambda_metering(
 
         # Return metering data in the standard format used by other services
         return {
-            f"{context_name}/lambda/requests": {"invocations": 1},
+            # Unit name must be "requests", matching the `requests` unit of the
+            # `lambda/requests` pricing entry in config_library/pricing.yaml.
+            # This emitted "invocations" until #952: the pricing KEY matched but
+            # the UNIT did not, so every Lambda invocation was costed at $0.00.
+            # Reconciled on the emitter side rather than in pricing.yaml because
+            # pricing is user-overridable config — already-deployed and custom
+            # pricing configs all say "requests", so fixing the emitter fixes
+            # them too, whereas renaming the shipped unit would only fix
+            # deployments that adopt the new default.
+            f"{context_name}/lambda/requests": {"requests": 1},
             f"{context_name}/lambda/duration": {"gb_seconds": gb_seconds},
         }
 
