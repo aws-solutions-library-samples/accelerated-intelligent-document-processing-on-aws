@@ -162,12 +162,17 @@ BOOL_OPERATORS = {"bool", "boolifexists"}
 CONDITION_KEY = "aws:securetransport"
 
 # Floors, not exact counts, so adding a queue or bucket does not edit this file.
-# Measured on the tree that fixed #964: 19 queues and 19 queue policies (17 in
-# template.yaml, 1 in patterns/unified/template.yaml, 2 in
-# feature-platform/idp-data-generator/template.yaml), and 15 buckets with 15
-# bucket policies (13 in template.yaml, 2 under scripts/sdlc/cfn/). A drop below
-# these means either discovery broke — which would make every assertion below
-# pass vacuously — or resources really were deleted.
+# Measured on the tree that fixed #964, over every template
+# ``scripts/discover_templates.sh cfn`` reports: 19 queues with 19 queue
+# policies, and 15 buckets with 15 bucket policies. A drop below these means
+# either discovery broke — which would make every assertion below pass
+# vacuously — or resources really were deleted.
+#
+# No per-template breakdown is transcribed here on purpose. It would go stale
+# the moment a queue moved between templates, and no gate reads this comment, so
+# a wrong split could sit here indefinitely — which is the same defect this file
+# exists to catch, one level down. Re-derive it when you need it:
+# ``_resources_of_type(_repo_templates(), "AWS::SQS::Queue")``.
 MINIMUM_DISCOVERED = {
     "AWS::SQS::Queue": 19,
     "AWS::SQS::QueuePolicy": 19,
@@ -394,7 +399,9 @@ class _Policy:
         return f"{self.template}:{self.name}"
 
 
-def _resources_of_type(paths: Iterable[Path], resource_type: str) -> list[tuple[str, str]]:
+def _resources_of_type(
+    paths: Iterable[Path], resource_type: str
+) -> list[tuple[str, str]]:
     """``(template, logical id)`` for every resource of ``resource_type``."""
     found: list[tuple[str, str]] = []
     for path in paths:
@@ -931,7 +938,10 @@ def test_gate_accepts_a_correct_queue_policy(tmp_path: Path) -> None:
         # but it denies AWS service principals only: an IAM user or an
         # anonymous HTTP caller is left undenied.
         ("principal-service-wildcard", {"principal": '{Service: "*"}'}),
-        ("principal-account-arn", {"principal": '{AWS: "arn:aws:iam::123456789012:root"}'}),
+        (
+            "principal-account-arn",
+            {"principal": '{AWS: "arn:aws:iam::123456789012:root"}'},
+        ),
         ("action-too-narrow", {"action": '"sqs:SendMessage"'}),
         # A substring test on the flattened ARN passes this, because
         # "Q" is a substring of "QDLQ.Arn". The three prefix-nested pairs in
@@ -973,7 +983,10 @@ def test_gate_catches_an_inert_deny(case: str, override: dict, tmp_path: Path) -
         ("resource-wildcard", {"resource": '"*"'}),
         ("boolifexists", {"operator": "BoolIfExists"}),
         ("quoted-false", {"value": '"false"'}),
-        ("effect-conditional-both-legs-deny", {"effect": "!If [SomeCondition, Deny, Deny]"}),
+        (
+            "effect-conditional-both-legs-deny",
+            {"effect": "!If [SomeCondition, Deny, Deny]"},
+        ),
     ],
 )
 def test_gate_accepts_an_equivalent_spelling(
@@ -1206,7 +1219,8 @@ def test_gate_catches_a_conditionally_present_deny(tmp_path: Path) -> None:
         "        Statement:\n"
         "          - !If\n"
         "            - SomeCondition\n"
-        "            - " + _DENY_STATEMENT.replace("\n              ", "\n              ")
+        "            - "
+        + _DENY_STATEMENT.replace("\n              ", "\n              ")
         + "            - !Ref AWS::NoValue\n",
     )
     assert _findings(paths, "AWS::SQS::QueuePolicy"), (
