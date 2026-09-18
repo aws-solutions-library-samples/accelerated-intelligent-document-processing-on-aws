@@ -429,12 +429,21 @@ def _resolve_provenance(
         # the case the operator most needs to see; every leaf ``explicit``
         # keeps the container ``configured``. Note the container's own
         # ``degrade`` (if Stickler ever emits it) is escalated by the same
-        # rule via ``source`` being folded into ``descendant_sources``.
+        # rule via ``source`` being folded into ``combined_sources``.
         combined_sources = descendant_sources + [source]
+        # Include the container's own ``why`` in the rollup trace when it
+        # carries non-configured provenance — the earlier version dropped
+        # this line entirely, so a container that inferred (say ``type``)
+        # + inferring leaves emitted the leaves' traces but silently
+        # discarded the container's own inference reason.
+        container_why = entry.get("why") if source != "explicit" else None
+        combined_whys: List[str] = list(descendant_whys)
+        if isinstance(container_why, list):
+            combined_whys = [str(w) for w in container_why] + combined_whys
         if any(s == "degrade" for s in combined_sources):
-            return _DEGRADED_SOURCE_LABEL, descendant_whys or None
+            return _DEGRADED_SOURCE_LABEL, combined_whys or None
         if any(s in ("type", "name-token") for s in combined_sources):
-            return _INFERRED_SOURCE_LABEL, descendant_whys or None
+            return _INFERRED_SOURCE_LABEL, combined_whys or None
         return _CONFIGURED_SOURCE_LABEL, None
 
     # Scalar attribute — use the top-level entry directly.

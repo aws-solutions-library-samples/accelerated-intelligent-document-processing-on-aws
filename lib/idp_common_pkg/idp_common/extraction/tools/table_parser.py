@@ -1143,7 +1143,7 @@ def create_map_table_to_schema_tool():
         transform_refusals: dict[str, dict[str, str]] = {}
         warned_unknown: set[str] = set()
 
-        def _apply_transform(value: str, transform: str, field: str = "") -> str:
+        def _apply_transform(value: str, transform: str, field: str) -> str:
             if not value or not transform:
                 return value
             if transform == "strip_currency":

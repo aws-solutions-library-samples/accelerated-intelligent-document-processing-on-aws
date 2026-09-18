@@ -378,6 +378,102 @@ def test_iter_completed_doc_keys_is_deterministic():
 
 
 @pytest.mark.unit
+def test_iter_completed_doc_keys_accepts_files_stored_as_string_set():
+    """The test_runner writes ``Files`` as a Python list (DDB ``L`` type)
+    via the resource client, but some legacy runs and manual DDB imports
+    stored it as a string set (``SS`` type). Reading only the ``L`` shape
+    would silently blank the Comparator Changes panel for those runs
+    with no visible cause — accept both shapes.
+    """
+    fake_client = Mock()
+    # ``SS`` (string set) shape rather than the ``L`` shape the fixture uses.
+    fake_client.get_item.return_value = {
+        "Item": {
+            "Files": {"SS": ["zeta.pdf", "alpha.pdf", "mu.pdf"]},
+        }
+    }
+    fake_client.batch_get_item.return_value = {
+        "Responses": {
+            "T": [
+                {
+                    "ObjectKey": {"S": "runid/alpha.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/mu.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/zeta.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+            ]
+        }
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index.dynamodb.meta, "client", fake_client),
+    ):
+        keys = list(index._iter_completed_doc_keys("runid", limit=3))
+    assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"]
+
+
+@pytest.mark.unit
+def test_iter_completed_doc_keys_dedupes_files_before_batch_get():
+    """DynamoDB rejects a ``BatchGetItem`` request that contains
+    duplicate keys with a ``ValidationException`` — so a ``Files`` list
+    with any repeated entry (from a re-upload without cleanup, or a
+    manual DDB edit) used to fail the entire request and reduce the
+    Comparator Changes panel to empty for the run. The sampler now
+    dedupes ``Files`` before building the batch keys.
+    """
+    fake_client = Mock()
+    # Deliberate duplicate — ``alpha.pdf`` appears twice.
+    fake_client.get_item.return_value = {
+        "Item": {
+            "Files": {
+                "L": [
+                    {"S": "alpha.pdf"},
+                    {"S": "alpha.pdf"},
+                    {"S": "beta.pdf"},
+                ]
+            }
+        }
+    }
+    fake_client.batch_get_item.return_value = {
+        "Responses": {
+            "T": [
+                {
+                    "ObjectKey": {"S": "runid/alpha.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/beta.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+            ]
+        }
+    }
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index.dynamodb.meta, "client", fake_client),
+    ):
+        keys = list(index._iter_completed_doc_keys("runid", limit=5))
+
+    # Only one BatchGetItem call, with distinct keys — no duplicate keys
+    # were passed to DDB even though the Files list had a repeat.
+    assert fake_client.batch_get_item.call_count == 1
+    submitted_keys = fake_client.batch_get_item.call_args.kwargs["RequestItems"]["T"][
+        "Keys"
+    ]
+    submitted_pks = [k["PK"]["S"] for k in submitted_keys]
+    assert submitted_pks == list(dict.fromkeys(submitted_pks)), (
+        "Deduped submission — DDB rejects duplicate keys in one batch"
+    )
+    assert keys == ["runid/alpha.pdf", "runid/beta.pdf"]
+
+
+@pytest.mark.unit
 def test_batch_get_test_run_items_retries_unprocessed_keys():
     """``getTestRuns`` was timing out at the AppSync 20s resolver ceiling
     on any stack that had accumulated a few hundred test runs, because the

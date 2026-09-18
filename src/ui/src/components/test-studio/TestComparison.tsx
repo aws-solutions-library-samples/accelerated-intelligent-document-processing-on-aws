@@ -800,10 +800,14 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   const downloadToJson = () => {
     if (!comparisonData?.metrics) return;
 
+    // Same ``_``-prefix guard as ``downloadToCsv`` — parity is load-bearing:
+    // both consumers walk ``comparisonData.metrics`` and both must filter
+    // sentinel keys (``_comparator_diff``) before the status check. See the
+    // longer comment in ``downloadToCsv``.
     const completeTestRuns: Record<string, Record<string, unknown>> = Object.fromEntries(
-      Object.entries(comparisonData.metrics).filter(
-        ([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE',
-      ),
+      Object.entries(comparisonData.metrics)
+        .filter(([key]) => !key.startsWith('_'))
+        .filter(([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE'),
     );
 
     // Create JSON structure matching the UI sections
@@ -993,12 +997,17 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   console.log('Comparison data structure:', comparisonData);
   console.log('Metrics structure:', comparisonData.metrics);
 
-  // Filter out incomplete test runs (include COMPLETE and PARTIAL_COMPLETE)
+  // Filter out incomplete test runs (include COMPLETE and PARTIAL_COMPLETE).
+  // Also strip ``_``-prefixed sentinel keys — this dict feeds the
+  // Comparator-Changes panel column layout, the ``fieldMetrics`` export,
+  // and the same-test-set check below; leaking the ``_comparator_diff``
+  // sentinel into any of them would corrupt the render. Matches the
+  // filter shape used by ``hasIncompleteRuns`` and the two downloaders.
   const completeTestRuns = comparisonData.metrics
     ? Object.fromEntries(
-        Object.entries(comparisonData.metrics).filter(
-          ([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE',
-        ),
+        Object.entries(comparisonData.metrics)
+          .filter(([key]) => !key.startsWith('_'))
+          .filter(([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE'),
       )
     : {};
 

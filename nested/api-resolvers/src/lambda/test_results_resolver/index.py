@@ -619,15 +619,36 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
         )
         return
 
+    # Accept both L (list of strings — the shape the test_runner writes via
+    # the boto3 resource client) and SS (string set — the shape some legacy
+    # runs and manual DDB imports use). An L-only read silently returned
+    # an empty file list for those runs, blanking the Comparator Changes
+    # panel with no visible cause. Both shapes convert to a Python list.
     files_attr = meta_response.get("Item", {}).get("Files", {})
-    files = [entry.get("S") for entry in files_attr.get("L", []) if entry.get("S")]
+    if "L" in files_attr:
+        files = [
+            entry.get("S") for entry in files_attr.get("L", []) if entry.get("S")
+        ]
+    elif "SS" in files_attr:
+        files = [s for s in files_attr.get("SS", []) if s]
+    else:
+        files = []
     if not files:
         return
+
+    # Dedupe before building BatchGetItem keys — DynamoDB rejects a request
+    # that contains duplicate keys with ``ValidationException``, so a Files
+    # list with any duplicate entry (from a re-upload without cleanup, or
+    # a manual DDB edit) would fail the whole request and reduce the
+    # Comparator Changes panel to empty for the run. ``dict.fromkeys``
+    # dedupes while preserving order, and we then sort — the sort is what
+    # gives two runs of the same test set the same representative doc.
+    unique_files = list(dict.fromkeys(files))
 
     # Sorted iteration gives deterministic candidate ordering — two runs of
     # the same test set otherwise probe documents in different orders and
     # the Comparator Changes panel could pick different-shape samples.
-    doc_keys = [f"{test_run_id}/{file_name}" for file_name in sorted(files)]
+    doc_keys = [f"{test_run_id}/{file_name}" for file_name in sorted(unique_files)]
 
     # BatchGetItem in 100-key chunks. Small runs (~5-10 docs) resolve in a
     # single call. UnprocessedKeys are re-issued with capped exponential
@@ -1840,13 +1861,23 @@ def _captured_config_of(item):
     Runs record their configuration as a gzip Binary attribute; runs created
     before that stored the body inline under ``Config``.
 
-    Uses ``parse_float=Decimal`` for the compressed path so the resulting
-    dict matches the type shape of the legacy-inline path — DDB's resource
-    client returns inline numbers as ``Decimal``, so any downstream
-    consumer that branches on ``isinstance(x, Decimal)`` (or does numeric
-    equality against a ``Decimal`` literal) would otherwise see the two
-    storage formats through different lenses. Same reason
-    ``_decompress_config_item`` uses this in ``test_runner``.
+    Uses ``parse_float=Decimal`` for the compressed path so non-integer
+    numbers land as ``Decimal``, matching the legacy-inline path where
+    DDB's resource client returns them as ``Decimal`` already. Same
+    reason ``_decompress_config_item`` uses this in ``test_runner``.
+
+    Caveat — integer-valued numbers are not perfectly type-symmetric
+    across the two storage formats. ``_json_default`` collapses an
+    integer-valued ``Decimal`` (``Decimal('0.0')``, ``Decimal('3.0')``)
+    to a Python ``int`` at compress time, so the JSON payload writes
+    ``0`` / ``3`` rather than ``0.0`` / ``3.0``; ``parse_int`` on
+    read-back keeps those as ``int``, while the legacy-inline path
+    would have kept them as ``Decimal``. Downstream consumers that
+    switch on ``isinstance(x, Decimal)`` for integer-valued numbers
+    should treat ``int`` and ``Decimal`` as equivalent for the
+    integer case (JSON has no representation for "integer-valued
+    Decimal" — the whole path is inherently lossy for the int/float
+    distinction on that specific shape).
     """
     if item.get("_config_storage") == "compressed":
         blob = item.get("_compressed_config")
