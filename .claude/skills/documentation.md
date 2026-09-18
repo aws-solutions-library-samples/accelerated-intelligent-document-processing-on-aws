@@ -186,6 +186,16 @@ When **adding** a new skill: create it in `.claude/skills/`, then add a symlink
 from the desired `.cline/skills/` name to it
 (`ln -s ../../.claude/skills/<name>.md .cline/skills/<name>.md`).
 
+**Deliberately Claude-only skills are allowed, but the reason has to be written
+down.** Some skills drive live AWS stacks and are not something Cline is set up to
+run, so they have no `.cline` entry on purpose. An unexplained absence is
+indistinguishable from an oversight, so `scripts/tests/test_repo_quality_review_skill.py`
+requires every `.claude/skills/*.md` to either have a `.cline` symlink or a row in that
+file's `CLINE_EXEMPT` table giving the reason in one line. Add the row, not the symlink,
+when the skill genuinely should not be visible to Cline — and never add a symlink merely
+to make the test pass, because whether Cline should see a skill is a judgement about
+that assistant's capabilities.
+
 > **Portability caveat:** Git stores these as symlinks (mode 120000). On clones
 > with `core.symlinks=false` (notably some Windows setups) they materialize as
 > plain text files containing the target path. If an assistant reports a skill

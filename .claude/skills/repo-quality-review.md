@@ -94,6 +94,27 @@ So the procedure is:
    finding and demote the instances to examples under it.
 5. **Rank by consequence** and write the report.
 
+### What a run costs, roughly
+
+Ten subagents across thirteen measurements is not cheap, so price it before starting.
+Treat the figures below as **order-of-magnitude and `inferred`**, because the basis is
+thin and stating it precisely would be false precision:
+
+- **Tokens: single-digit millions for a fanned-out run.** The only hard datum in hand is
+  a single narrowly-scoped subagent — two facts to verify, 14 tool calls — which cost
+  **~78k tokens**. A dimension reviewer is materially broader than that: it greps the
+  whole tree, reads templates, and runs its measurement commands. Ten of those plus a
+  consolidation pass that has to hold every finding in context at once lands in the
+  1–5M range. A single-agent run is cheaper, perhaps 300–600k, and buys a weaker review
+  (see the consolidation note above) — that is the actual trade, not speed.
+- **Wall clock: under an hour fanned out, because the reviewers run in parallel.** The
+  long pole is consolidation, which is serial and cannot start until the last reviewer
+  lands. The baseline measurements themselves are seconds to a few minutes each; the
+  Class 1 and Class 2 tree-wide searches are the slowest.
+
+Record what the run actually cost in the report. Two or three real numbers replace this
+estimate with something worth having, and nobody has recorded one yet.
+
 ## The ten dimensions
 
 Each row is mandatory. A dimension you could not assess is reported as **NOT
@@ -128,9 +149,26 @@ a reader can no longer treat a difference as signal.
 The measurements assume an **existing** dev environment with `ruff` on `PATH`
 (measurement B is the only one that needs a binary the shell does not already have —
 it resolves from the project `.venv` that `make setup`/`make dev` creates, which the
-read-only constraint forbids you from running). If `ruff` is missing, ask the user to
-activate their environment; do not create one. Everything else the skill uses
+read-only constraint forbids you from running). Everything else the skill uses
 (`python3`, `gh`, `jq`, `comm`, `awk`, `find`, `sed`, `git`) is ambient.
+
+**If you are working in a throwaway git worktree — which `pr-review.md` recommends for
+read-only work, and which is the natural way to run this review — `ruff` will not be on
+`PATH`.** A worktree has no `.venv` of its own; the virtualenv lives in the main
+checkout, so measurement B dies with `command not found`, and B is the measurement this
+skill argues matters more than any finding count. Resolve it from the main checkout
+instead of asking the user to activate anything — `--git-common-dir` points at the main
+checkout's `.git` from inside any worktree, and at a plain `.git` when you are already
+in the main checkout, so one form works in both:
+
+```bash
+RUFF="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.venv/bin/ruff"
+"$RUFF" --version    # verified from inside a worktree: resolves to the main .venv
+```
+
+Use `"$RUFF"` in place of `ruff` in measurement B. If that path does not exist either,
+then there genuinely is no environment: ask the user to activate theirs, and do not
+create one.
 
 Template and state-machine discovery is **shared with the gates** — always go through
 `scripts/discover_templates.sh` rather than a glob, for the reason its header comment
@@ -163,8 +201,10 @@ Coverage first, findings second. A path that is excluded — or that does not ex
 reports zero problems, which reads identically to clean.
 
 ```bash
-# ruff: files it would actually check, against every tracked .py
-echo "tracked: $(git ls-files '*.py' | wc -l)   ruff-checked: $(ruff check --show-files | wc -l)"
+# ruff: files it would actually check, against every tracked .py.
+# ${RUFF:-ruff} so this works unchanged in a worktree, where ruff is not on PATH
+# (set RUFF as shown above) and in the main checkout, where it is.
+echo "tracked: $(git ls-files '*.py' | wc -l)   ruff-checked: $(${RUFF:-ruff} check --show-files | wc -l)"
 
 # basedpyright: does every include/exclude path in pyrightconfig.json exist?
 python3 -c "
@@ -182,7 +222,18 @@ and `pyrightconfig.json` `include` names **`idp_cli/idp_cli`, which does not exi
 the package lives at `lib/idp_cli_pkg/idp_cli`. basedpyright silently type-checks
 nothing there, including `lib/idp_cli_pkg/idp_cli/cli.py` at **6,791 lines** (issue
 **#923**). `exclude` also names a non-existent `options/*/src`; harmless, but the same
-class. Pair the coverage number with the largest uncovered files:
+class.
+
+One thing to know before you report the ruff gap as new: the bare-name `extend-exclude`
+entries that produce it are tracked as issue **#975**, and `scripts/tests/` is inside
+the excluded `scripts` tree — so this skill's own guard,
+`scripts/tests/test_repo_quality_review_skill.py`, is one of the unlinted files
+(`ruff check --force-exclude <that path>` reports "No Python files found", exit 0;
+`basedpyright` does cover it). Cite #975 rather than re-deriving it, and use
+`--force-exclude` when demonstrating an exclusion — it is not ruff's default, and an
+explicitly named path bypasses exclusions without it.
+
+Pair the coverage number with the largest uncovered files:
 
 ```bash
 git ls-files '*.py' | xargs wc -l | sort -rn | head -20
@@ -311,6 +362,10 @@ ls .claude/skills/*.md | sed 's|.*/||' | sort > /tmp/skills.txt
 grep -oE '\.claude/skills/[a-z0-9-]+\.md' CLAUDE.md | sed 's|.*/||' | sort -u > /tmp/tabled.txt
 comm -23 /tmp/skills.txt /tmp/tabled.txt      # skill files with no CLAUDE.md row
 find .cline/skills -maxdepth 1 -type f -name '*.md'   # any output = a COPY, not a symlink
+
+# the third direction: a .claude skill Cline cannot see at all
+for c in .cline/skills/*.md; do basename "$(readlink -f "$c")"; done | sort -u > /tmp/linked.txt
+comm -23 /tmp/skills.txt /tmp/linked.txt      # .claude skills with no .cline symlink
 ```
 
 Last measured at `fac1c120b`: **26 skill files, 25 rows** — `sync-pii-anonymizer.md`
@@ -321,6 +376,20 @@ the counts are equal from here on and `comm -23` returning **nothing** is the ex
 state. `scripts/tests/test_repo_quality_review_skill.py` asserts it for every skill
 file rather than for one, so this particular drift cannot recur silently — which makes
 this measurement a check on the *test*, not a hunt for a known gap.
+
+The third `comm` is the one worth actually reading, because it is the direction the
+first version of that test left open. Skill visibility is a **triangle** — a `.claude`
+file, a `CLAUDE.md` row, a `.cline` symlink — and closing two sides can leave the third
+wide: registering `sync-pii-anonymizer.md` in the table did nothing to make Cline able
+to read it. Last measured at this PR's head: **27 `.claude` skills, 21 `.cline`
+entries**, the six absences being `full-test-battery.md`, `run-benchmarks.md`,
+`run-stack-tests.md`, `sync-pii-anonymizer.md`, `test-upgrade.md` and
+`transform-deploy-test.md`. Five are deliberately Claude-only live-stack tiers, which is
+a legitimate reason to have no symlink; that is now recorded per entry in the test's
+`CLINE_EXEMPT` table, so an absence has to be stated rather than merely observed. Do not
+close a gap in this direction by creating symlinks — whether a live-stack skill should be
+visible to Cline is a judgement about that assistant, and a symlink added to satisfy a
+test inverts the decision. Report the unexplained ones and let the owner choose.
 
 ### G. Gate inventory — exists / GitHub / GitLab / blocking
 
@@ -574,14 +643,79 @@ comm -23 /tmp/canon.txt /tmp/local.txt      # keys the canonical set has, the co
 # the set-literal annotation bug, as a shape
 grep -rn 'put_annotation([^)]*, *{' --include='*.py' .
 
-# every hand-maintained inventory that a content walk could replace, and the
-# comment that admits it (the giveaway phrase often wraps across lines, so match
-# case-insensitively on the stem rather than on a whole sentence)
-grep -rn -i 'hard.coded' --include='*.py' scripts/tests/ scripts/sdlc/
+# every hand-maintained inventory of tree contents that a content walk could
+# replace. Keyed on the SHAPE of the list, not on a comment admitting to it.
+python3 - <<'PY'
+import ast, pathlib, re
+ITEM = re.compile(r"^(?:[\w.*/-]+\.(?:py|ya?ml|json|ts|tsx|txt|sh|ipynb)"
+                  r"|[\w.*/-]*/[\w.*/-]*|make [\w-]+)$")
+WALKS = re.compile(r"discover_templates|run_all_tests|rglob|\.glob\(|iterdir|os\.walk")
+for f in sorted(p for r in ("scripts/tests", "scripts/sdlc")
+                for p in pathlib.Path(r).rglob("*.py")):
+    src = f.read_text(encoding="utf-8")
+    kind = "cross-checked" if WALKS.search(src) else "ONLY RECORD"
+    for n in ast.parse(src).body:                       # module level only
+        if not isinstance(n, (ast.Assign, ast.AnnAssign)):
+            continue
+        tg = n.targets if isinstance(n, ast.Assign) else [n.target]
+        names = [t.id for t in tg if isinstance(t, ast.Name)]
+        v = n.value
+        if isinstance(v, ast.Call) and v.args:          # frozenset({...}), tuple([...])
+            v = v.args[0]
+        if not names or not isinstance(v, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            continue
+        elts = v.values if isinstance(v, ast.Dict) else v.elts
+        items = [c.value for e in elts for c in ast.walk(e)
+                 if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                 and ITEM.match(c.value)]
+        if len(items) >= 2 and len(items) >= 0.6 * len(elts):
+            print(f"{kind:13} {f}:{n.lineno}  {names[0]} ({len(elts)})")
+PY
 ```
 
-`scripts/tests/test_state_machine_provisioning_retry.py:45` is the honest one — it
-says so and argues the case. Findings live in the ones that do not.
+Three things about that search, because the version it replaces was itself a Class 2
+instance and the lesson is the point.
+
+**Why it is shaped this way.** The obvious search is
+`grep -rn -i 'hard.coded' --include='*.py' scripts/tests/ scripts/sdlc/`. Do not use
+it. It returns **exactly one hit** at this commit —
+`scripts/tests/test_state_machine_provisioning_retry.py:45`, the one the "be fair about
+the trade-off" paragraph above already excuses — because it is keyed on an author having
+*confessed* in a comment. A search that can only return inventories whose authors already flagged them
+finds nothing you did not already know. The replacement matches module-level
+list/tuple/set/dict literals whose elements are path-like or `make`-target-like
+strings, which is what a hardcoded inventory actually looks like regardless of whether
+anyone commented on it. It also has to reach inside `REPO_ROOT / "path"` expressions
+and `frozenset({...})` wrappers, which is why it walks the AST rather than matching
+text — the excused example is a dict of `Path` expressions and a naive literal match
+misses it.
+
+**The discriminator is the second column, and it is the whole value of the output.**
+`ONLY RECORD` means nothing in that file enumerates from the tree, so the list *is* the
+record of what should be there and goes stale silently. `cross-checked` means the file
+also walks the tree somewhere, so a stale entry has a decent chance of being caught.
+Read the `ONLY RECORD` rows; skim the rest. This is a heuristic on the file, not the
+assignment, so confirm by reading before you report.
+
+**Last measured** at `fac1c120b`: **15 inventories, 8 of them `ONLY RECORD`.** The one
+to lead with is `scripts/tests/test_ci_gate_parity.py:36` `SHARED_GATES`, an eight-entry
+list of the gates that must run in both CIs — and the file contains no walk, so the
+list is the only record. Its blind spot is live and specific: the test asserts each
+listed gate appears in **both** CI configurations, so it cannot see a gate that is
+absent from **both**. Adding a gate to `Makefile` and to neither CI passes. Note that
+`grep -c -i 'hard.coded' scripts/tests/test_ci_gate_parity.py` returns **0** — this is
+exactly the inventory the old search could not reach.
+`scripts/tests/test_state_machine_provisioning_retry.py:50` `ASL_JSON_PATHS` also comes
+back `ONLY RECORD`, correctly: it is deliberately the only record, and the paragraph
+above is why that is defensible.
+
+Two known limits of the search, so you do not over-read a clean run. It scans dict
+*values* and not keys — including keys found nothing extra and, by doubling the element
+count, pushed the excused example below the 0.6 ratio threshold, so values-only is
+strictly better here but an inventory keyed by path would be missed. And two files carry
+paths inside dict values that are justification *prose*; the element pattern rejects
+strings containing spaces to keep those out, but re-check any hit whose entries read
+like sentences.
 
 Then, for each fix landed since the last review (read `CHANGELOG.md`'s `### Fixed`
 entries and the PR numbers in them), do the same by hand: take the shape of that bug
@@ -599,6 +733,8 @@ the pass in the date column and then withdrawn after investigation.
 | 2026-09 | Byte-identical vendored module copies under `src/lambda/chat_stream_processor/vendored/` | A deliberate SAM packaging workaround: the two Lambdas cannot share a directory at build time. It is **guarded** — a vendored-in-sync test fails if the copy drifts from the original — and the sync is asserted in CI. Copying without a guard would be a Class 2 finding; this one has the guard |
 | 2026-09 | `reportUnsupportedDunderAll` warnings against `lib/idp_common_pkg/idp_common/__init__.py` | The module is a deliberate **PEP 562 lazy loader** (`__getattr__`), which is the documented pattern for keeping Lambda package size down — `__all__` names attributes that exist only on access. The warning is the type checker not modelling the pattern, not a defect |
 | 2026-09 | `nested/bedrockkb/` declaring 5 Lambda functions and 0 `AWS::Logs::LogGroup` resources | Deliberate: those are custom-resource-only Lambdas that run during a stack operation and keep Lambda's auto-created log group, an accepted retention cost. `scripts/tests/test_lambda_log_groups.py` asserts exactly this shape |
+| 2026-09 | `last_exception` in `lib/idp_common_pkg/idp_common/bedrock/client.py` looks like a swallowed error | It is dead but harmless, and it is a **Python semantics trap a fresh reviewer will re-derive from scratch** — which is why it is here rather than left to be rediscovered. The three sites (`:1554`, `:2058`, `:2603`) are *function parameters*, not local variables, on the recursive retry helpers `_invoke_with_retry`, `_generate_embedding_with_retry` and `_invoke_lambda_hook_with_retry`; each is threaded down the recursion at the `last_exception=e` call sites and **never loaded** (verified by AST: zero `Name`-in-`Load` occurrences). Nothing is swallowed because every exhaustion path ends in a **bare `raise`** (`:1706` and `:1792` in the first helper, `:2165`, `:2746` and `:2768`), which re-raises the exception currently being handled in that frame — i.e. the most recent attempt's — which is what the parameter was presumably meant to supply. Dead code worth deleting; not an error-handling defect |
+| 2026-09 | "108 of 109 log groups are encrypted", i.e. one unencrypted log group | The **figure** is withdrawn as a conflation of two different statistics over the same population, and it carries a **scope trap** worth recording: 106 of 109 declare `KmsKeyId` and 108 of 109 take `RetentionInDays` from a parameter, and the denominator 109 only reproduces if you restrict to `template.yaml` (56), `patterns/unified/template.yaml` (20) and `nested/api-resolvers/template.yaml` (33). Against `scripts/discover_templates.sh cfn`'s **30** templates it is **158** log groups, 131 with `KmsKeyId` and 145 parameterised — so quoting "109" without naming the three-template scope is not reproducible. ⚠️ **Only the statistic is withdrawn, not the gap.** `HttpApiDispatcherLogGroup` (`nested/api-resolvers/template.yaml:2876`) is the sole exception on retention (hardcoded `30`) and one of *three* on encryption, and unlike the other two (`StacknameCheckFunctionLogGroup`, `ReadPreviousIDPPatternFunctionLogGroup`, which each carry a `cfn_nag` W84 suppression and a `checkov:skip` with a reason) it carries no suppression, comment or test saying the deviation is deliberate. That is a live finding, addressed by PR **#973** |
 
 When you withdraw a finding, **add a row here in the same PR as the report**, dated,
 with the reason in one sentence. When you keep a finding that looks like one of these,
@@ -612,6 +748,27 @@ all. `full-test-battery.md` retired its entire 26-entry list on exactly that arg
 this table should stay short for the same reason. If a row survives several runs
 unchanged, prefer moving its justification into a test that fails when it stops being
 true, and delete the row.
+
+## Limitations — what this review cannot establish
+
+Every measurement here is **static and offline**. That is a deliberate design choice —
+it makes the review re-runnable by anyone, with no credentials and no deployed stack —
+but it draws a hard boundary that the report must respect rather than blur.
+
+Nothing offline can establish **runtime behaviour**. Reading the template does not tell
+you whether an X-Ray annotation actually arrives at the service, whether a deployed
+authorizer actually denies the request, whether an alarm actually fires and delivers,
+whether a log group is actually encrypted at rest, or which npm version the build host
+actually runs. Those are all things the *code shape* strongly implies and only a live
+check can confirm.
+
+This matters because several of this skill's own worked examples are exactly that:
+runtime claims reasoned out from static structure. The `onError: fail` routing, the
+`SubIndex` query raising `ValidationException`, the `min-release-age` key being ignored
+by the pinned npm, and the set-literal X-Ray annotation being unusable are all
+**`inferred`**, not `measured`, however confident the reasoning looks. Label them that
+way per the output contract's rule 3, and where a live check would settle it, say which
+check. Do not run it — say it.
 
 ## Output contract
 
