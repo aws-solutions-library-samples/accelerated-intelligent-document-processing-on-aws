@@ -75,8 +75,8 @@ repository can fix those.
 
 Two templates make this easier:
 
-- [Bug Report](/.github/ISSUE_TEMPLATE/bug_report.yml)
-- [Feature Request](/.github/ISSUE_TEMPLATE/feature_request.yml)
+- [Bug Report](.github/ISSUE_TEMPLATE/bug_report.yml)
+- [Feature Request](.github/ISSUE_TEMPLATE/feature_request.yml)
 
 Please check existing open and recently closed issues first. For a bug, the
 details that actually shorten the round trip are a reproducible sequence of
@@ -335,10 +335,13 @@ finish in well under a second, and `ruff` is configured in `ruff.toml` at 88
 columns targeting Python 3.12.
 
 Note that `make ruff-lint`, `make format` and `make ui-lint` all **modify your
-files** — they auto-fix rather than only report. The check-only equivalents live
-inside `make lint-cicd`, which is what CI runs, so a formatting change that
-`make lint` silently fixed for you locally still needs committing or CI will
-fail on it.
+files** — they auto-fix rather than only report. `make lint-cicd`, which is what
+CI runs, uses the check-only equivalents for the *Python* half (`ruff check`,
+`ruff format --check`), so a formatting change that `make lint` silently fixed
+for you locally still needs committing or CI will fail on it. Its UI half is
+**not** check-only: `lint-cicd` calls `make ui-lint`, which runs
+`npm run lint -- --fix` and rewrites `src/ui/.checksum`. That is harmless in CI,
+which runs in a throwaway checkout, but locally it will edit your UI sources.
 
 ### Before opening a pull request
 
@@ -350,7 +353,8 @@ make test            # every offline test suite
 or, matching CI more exactly:
 
 ```bash
-make lint-cicd                                 # check-only; the target both CIs run
+make lint-cicd                                 # the target both CIs run; note it auto-fixes UI
+                                               # lint and rewrites src/ui/.checksum locally
 make typecheck-pr                              # basedpyright on files you changed
 make api-test-static                            # ~0s   authorization scan of every API operation
 python3 scripts/check_first_party_deps.py       # ~0s   dependency-confusion check
@@ -552,7 +556,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make all` | `lint` + `test` (the default target) |
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
-| `make lint-cicd` | The same set, check-only — what both CIs run |
+| `make lint-cicd` | The same set — what both CIs run. Check-only for Python, but it auto-fixes UI lint and rewrites `src/ui/.checksum` |
 | `make ruff-lint` | Ruff lint with auto-fix |
 | `make format` | Ruff formatter |
 | `make cfn-lint` | Validate every CloudFormation template (fails on errors) |
