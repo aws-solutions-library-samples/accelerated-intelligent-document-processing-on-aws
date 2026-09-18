@@ -675,11 +675,19 @@ side, so `_load_document_images` counts the pages it is actually about to attach
 
 The count it passes is the count **one request** will carry, not the section's page
 count, because the two differ on the agentic path. `_agentic_images_per_request`
-answers it by calling `plan_shards` on the section's real per-page OCR text — which
-`_prepare_section_context` now loads immediately *before* the images for exactly this
-reason — and taking the largest shard, capped by `max_images_per_agent`.
+answers it from the section's real per-page OCR text — which `_prepare_section_context`
+now loads immediately *before* the images for exactly this reason — by taking the worse
+of the shard planner's **two regimes**, capped by `max_images_per_agent`:
 
-It asks rather than computes because two closed forms were tried and both were wrong:
+- **the page ceiling holds** → `max_pages_per_shard` (or the whole section when it is
+  `0`, "page cap off");
+- **the repack fired** → the largest range `_rebalance_to_cap` returns. That function
+  takes no token budget, so this is exact rather than an estimate. It is consulted only
+  when the repack could fire for *some* budget (`_repack_is_reachable`); asking
+  unconditionally over-clamps a section with no OCR text at all, whose degenerate
+  zero-token split reports a large tail shard the real planner never produces.
+
+Three closed forms were tried before this and all were wrong:
 
 - `min(pages, max_pages_per_shard)` — the page cap is not a ceiling. `plan_shards`
   closes a shard at that many pages, but when doing so would produce more shards than
@@ -692,6 +700,12 @@ It asks rather than computes because two closed forms were tried and both were w
   over page counts bounds the largest shard. It also silently dropped the clamp when
   `max_pages_per_shard: 0` (documented as "page cap off") made the whole section one
   shard.
+- `plan_shards` under a deliberately huge token budget, on the argument that erring
+  large only closes shards earlier. The budget also decides **whether the repack fires**,
+  and the repack discards the page cap — so on the shipped defaults a 50-page section
+  with one dense page plans as ten 5-page shards under an unbounded budget and as
+  `[1, 41, 1, …]` at Sonnet 4.6's real 18,400-token budget. Reporting 5 there missed
+  the clamp entirely.
 
 `max_images_per_agent` is the only hard ceiling on the attached count —
 `_cap_agent_images` truncates the list before every invocation.
@@ -1461,9 +1475,9 @@ Key behaviors:
   > `max_concurrent_batches` token-balanced groups, ignoring the page cap. At
   > `max_concurrent_batches: 2` a 30-page section is two 15-page shards, not six
   > 5-page ones, and because the repack balances estimated tokens rather than pages,
-  > a text-heavy page can occupy a shard alone. Code that needs a shard's real page
-  > count must ask `plan_shards`, not compute it — see the many-image cap note
-  > above.
+  > a text-heavy page can occupy a shard alone. Code that needs a bound on a shard's
+  > page count must cover **both** regimes — the page ceiling and the repack — and
+  > must not derive one from a single token budget; see the many-image cap note above.
   > **Why the low default budget?** A high budget (the old 40,000 default) let
   > even a ~25-page dense table fit one shard, so sharding silently did *not*
   > engage and a single agent had to emit the whole giant table in one Bedrock

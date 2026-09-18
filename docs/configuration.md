@@ -1307,8 +1307,8 @@ token-balanced rather than page-balanced, one text-heavy page can occupy a shard
 its own and leave the sparse pages crowded into another, so the page counts above
 are approximate. They are approximate in one direction only: the pipeline derives
 the bound from the worse of the planner's two regimes rather than from a formula,
-so on a document with uneven text per page the clamp can engage *earlier* than the
-table says, never later.
+so on a document with uneven — or entirely absent — text per page the clamp can
+engage *earlier* than the table says, never later.
 
 This also reaches stages other than extraction. Holistic classification sends every
 page of a packet in one request, so a packet over 20 pages now has its page images

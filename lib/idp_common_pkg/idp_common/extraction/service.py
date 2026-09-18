@@ -43,6 +43,7 @@ from idp_common.extraction.page_type_resolver import (
 from idp_common.extraction.sharding import (
     DEFAULT_MAX_PAGES_PER_SHARD,
     DEFAULT_SHARD_TOKEN_BUDGET,
+    _rebalance_to_cap,  # noqa: PLC2701 - see _agentic_images_per_request (#994)
     estimate_tokens,
     plan_shards,
 )
@@ -1557,6 +1558,40 @@ class ExtractionService:
                     )
         return confidence_data
 
+    @staticmethod
+    def _repack_is_reachable(
+        page_texts: list[str], max_shards: int, page_cap: int | None
+    ) -> bool:
+        """Can ``plan_shards``' repack pass fire for ANY token budget? (#994)
+
+        It fires only when the first pass produces more than ``max_shards``
+        ranges. The first pass closes a shard on the page cap or on the budget, so
+        the fewest ranges any budget can yield is ``ceil(n / page_cap)`` — what an
+        unbounded budget gives, since only the page cap then applies. If even that
+        exceeds ``max_shards`` the repack fires whatever the budget is. Otherwise
+        it fires only for a budget small enough to split further, which requires
+        some page to carry a nonzero token estimate.
+
+        The case this exists for: a section whose pages have NO OCR text at all
+        (image-only pages, or pages under ``_CHARS_PER_TOKEN`` characters, which
+        ``estimate_tokens`` floors to 0). Every page then costs 0, so no budget can
+        split anything and the repack is unreachable — yet asking
+        ``_rebalance_to_cap`` anyway returns a degenerate split, because its
+        ``target`` of ``total / max_shards`` is 0 and every shard closes on the
+        first page: nine 1-page ranges and a tail holding the rest. Taking that as
+        the bound clamps a 20-page image-only section that the real planner would
+        have sent as 5-page shards. That is the one place the clamp costs most —
+        with no text, the page images are the model's only signal — so the
+        reachability test is worth the few lines.
+        """
+        if (page_cap or 0) > 0:
+            min_first_pass_ranges = -(-len(page_texts) // page_cap)  # type: ignore[operator]
+        else:
+            min_first_pass_ranges = 1
+        if min_first_pass_ranges > max_shards:
+            return True
+        return any(estimate_tokens(text) > 0 for text in page_texts)
+
     def _agentic_images_per_request(
         self, pages_to_attach: int, page_texts: list[str] | None = None
     ) -> int:
@@ -1586,7 +1621,14 @@ class ExtractionService:
           ("page cap off").
         * **B, the repack fired**: the largest range ``_rebalance_to_cap`` returns.
           It takes no budget argument — it repacks from page 0 by token weight —
-          so this is computable exactly.
+          so this is computable exactly. Included only when the repack can actually
+          fire for some budget (see ``_repack_is_reachable``); asking for it
+          unconditionally over-clamps a section with no OCR text at all.
+
+        ``_rebalance_to_cap`` is private but imported at module scope deliberately:
+        the soundness argument below rests on it, so a rename should fail at import
+        rather than be swallowed by the fallback here and silently degrade the
+        bound to "the whole section".
 
         Taking ``max(A, B)`` rather than planning under one budget is deliberate,
         and an earlier version of this method got it wrong in a way worth
@@ -1621,29 +1663,27 @@ class ExtractionService:
         bound = pages_to_attach
         if agentic.max_concurrent_batches > 1 and page_texts and pages_to_attach > 1:
             try:
-                from idp_common.extraction.sharding import _rebalance_to_cap
-
                 n = len(page_texts)
-                # Regime A: the page cap holds. 0 means "page cap off", i.e. the
-                # token budget alone bounds shards, which can leave all of them
-                # in one.
-                page_cap_bound = (
-                    agentic.max_pages_per_shard
-                    if agentic.max_pages_per_shard > 0
-                    else n
-                )
-                # Regime B: the repack fired. Budget-free by construction.
-                repacked = _rebalance_to_cap(
-                    page_texts, n, min(agentic.max_concurrent_batches, n)
-                )
-                repack_bound = max((e - s) for s, e in repacked) if repacked else n
-                bound = min(bound, max(page_cap_bound, repack_bound))
+                max_shards = min(agentic.max_concurrent_batches, n)
+                page_cap = self._max_pages_per_shard()
+                # Regime A: the page cap holds. 0 / None means "page cap off", so
+                # the token budget alone bounds shards and all of them can land in
+                # one.
+                page_cap_bound = page_cap if (page_cap or 0) > 0 else n
+                bound = min(bound, page_cap_bound)
+                if self._repack_is_reachable(page_texts, max_shards, page_cap):
+                    # Regime B: exact, and budget-free by construction — the repack
+                    # ignores the budget and repacks from page 0 by token weight.
+                    repacked = _rebalance_to_cap(page_texts, n, max_shards)
+                    repack_bound = max((e - s) for s, e in repacked) if repacked else n
+                    bound = min(pages_to_attach, max(page_cap_bound, repack_bound))
             except Exception as e:  # noqa: BLE001 - fall back to the sound answer
                 logger.warning(
                     "Could not size the many-image cap from the shard plan (%s); "
                     "assuming one request carries the whole section.",
                     e,
                 )
+                bound = pages_to_attach
         if agentic.max_images_per_agent > 0:
             bound = min(bound, agentic.max_images_per_agent)
         return max(0, bound)
@@ -1684,7 +1724,7 @@ class ExtractionService:
         # are sliced into shards and capped again per agent invocation, so a long
         # section can be sent as several small requests. Counting the section would
         # clamp pages that no request ever over-fills. ``_agentic_images_per_request``
-        # asks ``plan_shards`` for the real figure; it is then DOUBLED, because the
+        # bounds it from the shard planner's two regimes; it is then DOUBLED, because the
         # agent re-sends its attached images on every turn and a ``view_image`` tool
         # result adds a further copy of a page to the same request. Doubling is
         # pessimistic on purpose — clamping to 2,000px costs far less than a hard

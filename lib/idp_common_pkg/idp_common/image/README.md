@@ -142,16 +142,20 @@ REQUEST carries, not the section's page count.**
 | Configuration | Images per request | Clamps at |
 |---|---|---|
 | Simple (`mode: simple`) | the whole section | **21+ pages** |
-| Advanced, **shipped defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) | the largest shard `plan_shards` returns, capped by `max_images_per_agent`, doubled | **~101+ pages** |
+| Advanced, **shipped defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) | the worse of the planner's two regimes, capped by `max_images_per_agent`, doubled | **~101+ pages** |
 | Advanced, `max_concurrent_batches: 5` / `2` | same | ~51+ / ~21+ pages |
 | Advanced, sharding off (`max_concurrent_batches: 1`) | `min(pages, max_images_per_agent)` — 20 by default — doubled | **11+ pages** |
 | Advanced, `max_images_per_agent` ≤ 10 | at most 10, doubled | never |
 
-The Advanced figure is **not computed** — `ExtractionService._agentic_images_per_request`
-calls `plan_shards` on the section's real per-page OCR text and takes the largest
-shard. Two closed forms were tried and both were wrong: `min(pages, max_pages_per_shard)`
-(the page cap is not a ceiling) and `ceil(pages / max_concurrent_batches)` (the
-rebalance is token-balanced, not page-balanced). When honouring the page cap would
+The Advanced figure comes from `ExtractionService._agentic_images_per_request`, which
+takes the worse of the shard planner's **two regimes** over the section's real per-page
+OCR text: `max_pages_per_shard` while the page ceiling holds, and the largest range
+`_rebalance_to_cap` returns once the repack fires (that function takes no token budget,
+so it is exact). Three earlier attempts were all wrong. `min(pages, max_pages_per_shard)`
+— the page cap is not a ceiling. `ceil(pages / max_concurrent_batches)` — the repack is
+token-balanced, not page-balanced. And calling `plan_shards` under a deliberately huge
+budget — the budget decides *whether* the repack fires at all, so a huge one can report
+five where the real budget yields forty-one. When honouring the page cap would
 need more shards than `max_concurrent_batches` allows, `_rebalance_to_cap` discards
 those ranges and repacks into exactly that many **token-balanced** groups, so one
 dense page can take a shard to itself and crowd the sparse pages into another. Note

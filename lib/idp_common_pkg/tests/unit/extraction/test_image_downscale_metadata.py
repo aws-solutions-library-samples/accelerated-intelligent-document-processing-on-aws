@@ -234,7 +234,7 @@ def test_agentic_mode_counts_what_one_request_carries_not_the_whole_section():
     assert all(_page_dimensions(img) == (1585, 2048) for img in images)
 
 
-def test_the_estimate_is_the_real_planner_not_arithmetic_on_the_page_cap():
+def test_the_bound_covers_the_repack_regime_not_just_the_page_cap():
     """``max_pages_per_shard`` bounds neither the estimate nor the outcome.
     ``plan_shards`` closes a shard at that many pages, but when that would produce
     more shards than ``max_concurrent_batches``, ``_rebalance_to_cap`` discards
@@ -243,9 +243,10 @@ def test_the_estimate_is_the_real_planner_not_arithmetic_on_the_page_cap():
     out as two 15-page requests — 30 blocks after doubling, over the threshold.
 
     Asserted against ``plan_shards`` itself rather than against a number in this
-    test, because two successive review passes accepted a closed form that the
-    planner does not honour: first ``min(pages, max_pages_per_shard)``, then
-    ``ceil(pages / max_concurrent_batches)``."""
+    test, because three successive review passes accepted a derivation the planner
+    does not honour: ``min(pages, max_pages_per_shard)``, then
+    ``ceil(pages / max_concurrent_batches)``, then planning under one large token
+    budget."""
     svc = _agentic_service(max_concurrent_batches=2, max_pages_per_shard=5)
     texts = _uniform_texts(30)
     planned = plan_shards(
@@ -265,8 +266,9 @@ def test_the_estimate_is_the_real_planner_not_arithmetic_on_the_page_cap():
 def test_a_skewed_page_text_distribution_is_still_bounded():
     """The rebalance balances estimated TOKENS, so one dense page can take a whole
     shard and leave the rest crowded into another. No arithmetic over page counts
-    predicts that, which is why the planner is asked. The estimate must still be an
-    upper bound on what the largest shard attaches."""
+    predicts that, which is why the bound covers the repack regime
+    explicitly. The estimate must still be an upper bound on what the largest shard
+    attaches."""
     svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=5)
     texts = ["x" * 400_000] + ["x" * 200] * 59
     planned = plan_shards(
@@ -360,6 +362,39 @@ def test_the_bound_covers_every_budget_the_service_can_derive():
                     f"{name} n={pages} budget={budget}: estimate {est} < "
                     f"attached {attached}"
                 )
+
+
+def test_a_section_with_no_ocr_text_is_not_over_clamped():
+    """An image-only section (no OCR text, or pages under the 4-chars-per-token
+    floor) must not be clamped where the real planner would not clamp it.
+
+    ``_rebalance_to_cap``'s ``target`` is ``total_tokens / max_shards``, so with
+    zero tokens it is 0, every shard closes on its first page, and it returns nine
+    1-page ranges plus a tail holding the rest. Taking that as the bound clamped a
+    20-page image-only section that really goes out as 5-page shards — and that is
+    the worst place to lose 20% of the resolution, since with no text the page
+    images are the model's only signal. ``_repack_is_reachable`` suppresses regime
+    B when no budget could have triggered the repack.
+
+    Above 50 pages the repack fires for real (``ceil(51/5) > 10``), so the large
+    tail shard is genuine and the clamp there is correct, not conservatism."""
+    svc = _agentic_service(max_concurrent_batches=10, max_pages_per_shard=5)
+    for pages in (20, 30, 50):
+        assert svc._agentic_images_per_request(pages, [""] * pages) == 5
+        assert svc._agentic_images_per_request(pages, ["ab"] * pages) == 5
+    images = _load(svc, 30, [""] * 30)
+    assert all(_page_dimensions(img) == (1585, 2048) for img in images)
+
+    # Past the point where the page ceiling alone needs more than 10 shards, the
+    # repack really does run and really does leave a large tail shard.
+    planned = plan_shards(
+        [""] * 51,
+        token_budget=DEFAULT_SHARD_TOKEN_BUDGET,
+        max_shards=10,
+        max_pages_per_shard=5,
+    )
+    assert max(s.page_count for s in planned) > 20
+    assert svc._agentic_images_per_request(51, [""] * 51) == 20
 
 
 def test_without_page_texts_the_whole_section_is_assumed():

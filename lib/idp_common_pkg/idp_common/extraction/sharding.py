@@ -107,9 +107,12 @@ def plan_shards(
             balances estimated tokens rather than page counts, one text-heavy page
             can occupy a shard alone while sparse pages crowd into another — so
             neither the page cap nor ``ceil(pages / max_shards)`` bounds the
-            largest shard's page count. Callers that need that number must ask
-            for the plan (see ``ExtractionService._agentic_images_per_request``,
-            which sizes Bedrock's many-image cap from it).
+            largest shard's page count. Nor does planning under one token budget:
+            the budget decides WHETHER this repack fires, so a large budget can
+            report a plan bounded by the page cap where the real budget yields one
+            large shard. A caller needing a bound must cover both regimes — see
+            ``ExtractionService._agentic_images_per_request``, which sizes
+            Bedrock's many-image cap that way.
         max_pages_per_shard: Page-count ceiling per shard. A shard is closed
             once it holds this many pages even if its text is still under the
             token budget — so a document with unusually compact pages still
