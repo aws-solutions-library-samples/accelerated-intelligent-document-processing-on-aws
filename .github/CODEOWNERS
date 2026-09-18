@@ -1,0 +1,33 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Code owners for the GenAI Intelligent Document Processing accelerator.
+#
+# GitHub uses this file to request reviews automatically. The LAST matching
+# pattern wins, so the default-owner line comes first and specific paths after
+# it; every specific line also keeps the default owner as a co-reviewer.
+#
+# Paths without a specific rule below are reviewed by the default owner. See
+# MAINTAINERS.md for who reviews what and GOVERNANCE.md for how a change is
+# accepted.
+
+# Default owner: everything not matched by a more specific rule below.
+*                                                @rstrahan
+
+# Agent framework and agent tooling — the Strands-based agents behind Agent
+# Analysis, Agent Chat, Code Intelligence and the MCP tool surface.
+/lib/idp_common_pkg/idp_common/agents/            @kaleko @webarch-ai @rstrahan
+/lib/idp_common_pkg/tests/unit/agents/            @kaleko @webarch-ai @rstrahan
+/docs/agent-analysis.md                           @kaleko @rstrahan
+
+# Business rule validation, including the Z3 solver path.
+/lib/idp_common_pkg/idp_common/rule_validation/   @Behrad-Gh @rstrahan
+/lib/idp_common_pkg/tests/unit/rule_validation/   @Behrad-Gh @rstrahan
+/docs/rule-validation.md                          @Behrad-Gh @rstrahan
+/docs/rule-validation-z3.md                       @Behrad-Gh @rstrahan
+
+# Python SDK for programmatic access.
+/lib/idp_sdk/                                     @rstrahan @webarch-ai
+
+# Workshop content.
+/workshop/                                        @tomron-aws @rstrahan

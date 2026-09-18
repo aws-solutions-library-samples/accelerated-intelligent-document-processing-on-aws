@@ -732,6 +732,114 @@ class ExtractionService:
         )
         return result
 
+    # Scope note for SHARDED agents ONLY (passed via `scope_note=` below). The
+    # block itself is written for an agent holding the whole section, and two of
+    # its sentences read wrong from inside a shard:
+    #
+    #  * "extract ONLY text between markers for your pages" — a shard's text is
+    #    ALREADY only its pages, and every shard after the first is prefixed with
+    #    a `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
+    #    OUTSIDE the `--- PAGE N ---` markers on purpose (`_build_shard_payloads`)
+    #    because it carries the table's column-header row. An agent obeying that
+    #    sentence literally drops the header, the deterministic parse then fails
+    #    on text that starts mid-table, and the agent falls back to emitting rows
+    #    itself — a COMPLETENESS risk, not only a cost one.
+    #  * the table/row totals are section-wide (`_preflight_table_parse` parses
+    #    the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system
+    #    prompt tells the agent to verify row_count against the document and
+    #    never stop until all rows are captured. A shard covering 2 of 6 pages
+    #    that reads those totals as its own target can over-extract or fail to
+    #    terminate. `_run_shard_agent`'s per-shard "covering pages A-B of T"
+    #    sentence does establish the subset, but only a strong model reconciles
+    #    it with the totals unaided.
+    _SHARD_SCOPE_NOTE = (
+        "YOUR SCOPE (sharded run — this overrides the marker rule above): the "
+        "text you were given ALREADY contains only your assigned pages, so pass "
+        "ALL of it to parse_table, including any leading "
+        "'--- DOCUMENT HEADER (page 1, for context only) ---' block. That header "
+        "carries the table's column headers and deliberately sits outside the "
+        "'--- PAGE N ---' markers; dropping it makes parse_table fail on text "
+        "that starts mid-table.\n"
+        "The table and row totals above are for the WHOLE section, not for your "
+        "pages: parse_table on your pages will legitimately return fewer rows, "
+        "and that is complete for your scope."
+    )
+
+    @staticmethod
+    def _append_preflight_table_guidance(
+        custom_instruction: str | None,
+        preflight_parse_result: dict | None,
+        *,
+        scope_note: str | None = None,
+    ) -> str | None:
+        """Append the PRE-PARSED TABLE DATA block to an agent instruction.
+
+        Returns ``custom_instruction`` unchanged when there is no successful
+        pre-flight parse to describe, so the caller can apply this
+        unconditionally.
+
+        The block tells the agent that the section's tables have *already* been
+        parsed deterministically — how many tables, how many rows, which columns
+        — and then walks it through the tool chain that keeps the rows out of the
+        model's output: ``parse_table`` → ``map_table_to_schema`` →
+        ``finalize_table_extraction``, with the closing note that ``finalize``
+        reads the mapped rows from agent state so no JSON rows need to be
+        generated. Suppressing that row-by-row JSON fallback is the whole point:
+        it is the same failure mode whose removal cut Extraction output tokens
+        from 1,512,506 to 681,222 over an identical 12-run arm in the
+        advanced-extraction study.
+
+        Shared by the single-pass agentic path and the sharded SFN plan
+        (issue #900). It used to live inline in the single-pass path only, so the
+        shard agents — the DEFAULT for any multi-page table document, and the
+        ones the page-marker paragraph was written for — never received it, even
+        after #898 gave the sharded path the same pre-flight parse.
+
+        The page-range wording stays generic ("when you are assigned a page
+        range") rather than naming a concrete range, because the plan builds ONE
+        instruction for all of a section's shards and
+        ``agentic_idp._run_shard_agent`` already appends each shard's own
+        ``pages N-M of T`` sentence immediately after this block.
+
+        ``scope_note`` is an optional paragraph inserted directly after the
+        page-marker rule, so it can qualify it. The sharded call sites pass
+        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for what the block gets
+        wrong when read from inside a shard); the single-agent path passes
+        nothing, which keeps its instruction byte-identical to the text the
+        advanced-extraction study measured.
+        """
+        if (preflight_parse_result or {}).get("status") != "success":
+            return custom_instruction
+
+        total_rows = sum(
+            t.get("row_count", 0) for t in preflight_parse_result.get("tables", [])
+        )
+        columns = preflight_parse_result.get("columns", [])
+        table_count = preflight_parse_result.get("table_count", 0)
+        scope_paragraph = f"{scope_note}\n\n" if scope_note else ""
+
+        guidance = (
+            f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
+            f"Found {table_count} table(s) with {total_rows} total rows.\n"
+            f"Table columns: {columns}\n\n"
+            f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
+            f"markers between pages. When you are assigned a page range, "
+            f"extract ONLY text between markers for your pages before "
+            f"calling parse_table.\n\n"
+            # Empty unless a caller passes scope_note, so the single-agent
+            # path's text is unchanged (pinned byte-for-byte by a unit test).
+            f"{scope_paragraph}"
+            f"EFFICIENT EXTRACTION WORKFLOW:\n"
+            f"1. Extract scalar fields from your pages' text\n"
+            f"2. Call parse_table with your pages' text\n"
+            f"3. Call map_table_to_schema with column_mapping + static_fields\n"
+            f"   (merged rows are auto-split — no manual handling needed)\n"
+            f"4. Call finalize_table_extraction with table_array_field + "
+            f"scalar_fields\n\n"
+            f"finalize reads mapped rows from state — no JSON generation needed."
+        )
+        return f"{custom_instruction}{guidance}" if custom_instruction else guidance
+
     def _apply_lazy_images(
         self,
         send_images: bool,
@@ -4978,41 +5086,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # the LLM having to call parse_table and then generate JSON row-by-row.
             # The LLM only needs to provide a column-to-field mapping, and the
             # map_table_to_schema tool does the bulk transformation instantly.
+            # (`_preflight_table_parse` logs the parse itself, for both agentic
+            # paths; `_append_preflight_table_guidance` builds the instruction
+            # block, likewise for both paths.)
             preflight_parse_result = self._preflight_table_parse(ocr_analysis)
-            if preflight_parse_result is not None:
-                if preflight_parse_result.get("status") == "success":
-                    total_rows = sum(
-                        t.get("row_count", 0)
-                        for t in preflight_parse_result.get("tables", [])
-                    )
-                    columns = preflight_parse_result.get("columns", [])
-                    table_count = preflight_parse_result.get("table_count", 0)
-
-                    # (`_preflight_table_parse` logs the parse itself, for both
-                    # agentic paths.)
-                    # Build efficient extraction guidance with pre-parsed summary
-                    preflight_guidance = (
-                        f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
-                        f"Found {table_count} table(s) with {total_rows} total rows.\n"
-                        f"Table columns: {columns}\n\n"
-                        f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
-                        f"markers between pages. When you are assigned a page range, "
-                        f"extract ONLY text between markers for your pages before "
-                        f"calling parse_table.\n\n"
-                        f"EFFICIENT EXTRACTION WORKFLOW:\n"
-                        f"1. Extract scalar fields from your pages' text\n"
-                        f"2. Call parse_table with your pages' text\n"
-                        f"3. Call map_table_to_schema with column_mapping + static_fields\n"
-                        f"   (merged rows are auto-split — no manual handling needed)\n"
-                        f"4. Call finalize_table_extraction with table_array_field + "
-                        f"scalar_fields\n\n"
-                        f"finalize reads mapped rows from state — no JSON generation needed."
-                    )
-
-                    if custom_instruction:
-                        custom_instruction += preflight_guidance
-                    else:
-                        custom_instruction = preflight_guidance
+            # Kept as-is: the sharded branch below rebuilds the block with the
+            # shard scope note, which is inserted INSIDE the block (after the
+            # page-marker rule it qualifies) and so cannot be appended later.
+            pre_block_instruction = custom_instruction
+            custom_instruction = self._append_preflight_table_guidance(
+                custom_instruction, preflight_parse_result
+            )
 
             # Determine if images should be sent to the agentic model.
             # If the task prompt does not reference {DOCUMENT_IMAGE}, sending
@@ -5158,6 +5242,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 from idp_common.extraction.runtime import select_runtime
 
                 runtime = select_runtime(self.config, num_batches)
+                # These agents are shard agents too (in-process sharding), so
+                # they need the same scope note `_build_agentic_shard_plan`
+                # passes on the Step Functions route. Held in its own local:
+                # `custom_instruction` is reused after this branch by
+                # `_validate_and_maybe_escalate`, whose retry agent sees the
+                # WHOLE section and so must not be told it holds a slice.
+                shard_custom_instruction = self._append_preflight_table_guidance(
+                    pre_block_instruction,
+                    preflight_parse_result,
+                    scope_note=self._SHARD_SCOPE_NOTE,
+                )
                 structured_data, response_with_metering = _asyncio.run(
                     concurrent_structured_output_async(
                         model_id=model_id,
@@ -5167,7 +5262,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         config=self.config,
                         context="Extraction",
                         checkpoint_callback=self._checkpoint_callback,
-                        custom_instruction=custom_instruction,
+                        custom_instruction=shard_custom_instruction,
                         section_id=(
                             f"{section_info.class_label}_"
                             f"{section_info.start_page}_{section_info.end_page}"
@@ -7122,6 +7217,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         branch, but standalone so the per-shard SFN Lambda (and the merge step)
         can each rebuild the identical plan deterministically. Requires
         ``_prepare_section_context`` to have populated the per-section state.
+
+        The returned ``custom_instruction`` is ONE instruction for **all** of the
+        section's shards (the in-process runtime shares it the same way), so it
+        cannot name a single shard's page range. It does not need to:
+        ``agentic_idp._run_shard_agent`` appends each shard's own "shard i of N,
+        covering pages A-B of T" sentence directly after it.
         """
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
@@ -7136,8 +7237,22 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._class_schema
         )
         ocr_analysis = self._analyze_ocr_for_tables(self._document_text)
-        custom_instruction = self._build_table_parsing_guidance(
-            schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
+        # Pre-flight parse FIRST: its result feeds BOTH the shard agents'
+        # instruction block and the lazy_images decision below. It used to run
+        # only for lazy_images, after the instruction was already built, so the
+        # shard agents never learned that their tables had already been parsed
+        # (issue #900) — no row/column summary and no "finalize reads the rows
+        # from state" workflow, which is exactly the guidance that stops an agent
+        # re-emitting every row as output tokens.
+        preflight_parse_result = self._preflight_table_parse(ocr_analysis)
+        custom_instruction = self._append_preflight_table_guidance(
+            self._build_table_parsing_guidance(
+                schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
+            ),
+            preflight_parse_result,
+            # Shard agents read the block's page-marker rule and its section-wide
+            # row totals against a slice of the section; the note reconciles both.
+            scope_note=self._SHARD_SCOPE_NOTE,
         )
 
         # Same prompt-selection as the single-pass agentic path — use
@@ -7164,16 +7279,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # turn, so the shipped `lazy_images: true` default had no effect where it
         # mattered most.
         #
-        # Only run the preflight table parse when the prompt actually
-        # references ``{DOCUMENT_IMAGE}`` — ``_apply_lazy_images`` short-
-        # circuits to ``send_images`` (False) whenever the prompt has no
-        # image slot, so the parsed table result is discarded in that case.
-        # Skipping the parse when we won't consume the result avoids a full
-        # markdown-table parse of the section text on every text-only run.
+        # ``preflight_parse_result`` was computed above (line 7247) to feed
+        # BOTH ``custom_instruction`` (#900 wired the shard agents into the
+        # pre-flight guidance) AND this lazy_images decision, so we reuse
+        # it here rather than parsing twice. My earlier "skip preflight
+        # when prompt has no ``{DOCUMENT_IMAGE}``" optimization was
+        # obsoleted by #900 — the parse now runs unconditionally for the
+        # instruction block, so gating the lazy_images-side call on the
+        # prompt saved nothing.
         prompt_wants_images = "{DOCUMENT_IMAGE}" in prompt_template
         send_images = self._apply_lazy_images(
             prompt_wants_images,
-            self._preflight_table_parse(ocr_analysis) if prompt_wants_images else None,
+            preflight_parse_result,
         )
         shard_payloads = self._build_shard_payloads(
             prompt_template=prompt_template,

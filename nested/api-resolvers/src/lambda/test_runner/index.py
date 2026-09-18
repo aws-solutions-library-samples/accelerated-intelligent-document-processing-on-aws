@@ -12,6 +12,8 @@ from decimal import Decimal
 import boto3
 from botocore.exceptions import ClientError
 
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
@@ -33,40 +35,6 @@ class TestRunIdTaken(Exception):
     """A run with this id already exists; the caller should pick another."""
 
 
-# --- inline log sanitizer ---------------------------------------------------
-# Minimal inline redactor. Kept here rather than importing from idp_common to
-# avoid adding a Lambda Layer dependency to this resolver. If this file grows
-# to need idp_common anyway, promote to
-# `from idp_common.utils.log_sanitizer import sanitize_event_for_logging`.
-_LOG_SENSITIVE_KEYS = (
-    "password",
-    "secret",
-    "token",
-    "authorization",
-    "apikey",
-    "api_key",
-    "cookie",
-    "credential",
-    "claims",
-    "identity",
-)
-
-
-def _sanitize_for_log(obj):
-    """Deep-copy `obj` redacting values whose keys match the denylist."""
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            if isinstance(k, str) and any(s in k.lower() for s in _LOG_SENSITIVE_KEYS):
-                out[k] = "***REDACTED***" if v is not None else None
-            else:
-                out[k] = _sanitize_for_log(v)
-        return out
-    if isinstance(obj, list):
-        return [_sanitize_for_log(v) for v in obj]
-    return obj
-
-
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
 
@@ -84,7 +52,7 @@ def _caller_in_groups(event, allowed):
 
 def handler(event, context):
     logger.info(
-        f"Test runner invoked with event: {json.dumps(_sanitize_for_log(event))}"
+        f"Test runner invoked with event: {json.dumps(sanitize_event_for_logging(event))}"
     )
 
     try:
@@ -399,7 +367,14 @@ def _get_test_set(tracking_table, test_set_id):
 def _decompress_config_item(item):
     """
     Decompress a DynamoDB config item if it uses compressed storage format.
-    Inlined here to avoid dependency on idp_common (not available in this Lambda).
+
+    Kept inline rather than imported from idp_common. NOT because the library is
+    unavailable — this function carries IDPCommonBaseLayer and already imports
+    ``idp_common.config.configuration_manager`` below, plus
+    ``idp_common.utils.log_sanitizer`` at module scope — but because this is a
+    small, stable decode of a storage format the resolver only reads. The
+    stronger reason to reach for idp_common would be if the compressed format
+    changed; if that happens, import the library version instead of editing this.
     """
     if item.get("_config_storage") != "compressed":
         return item  # Legacy inline format — return as-is

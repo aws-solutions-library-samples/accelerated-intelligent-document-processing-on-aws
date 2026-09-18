@@ -7,7 +7,8 @@ A ``<<CACHEPOINT>>`` only creates a cache entry if the prefix before it clears t
 model's **minimum cacheable prefix**. Below it Bedrock returns ``cacheWrite = 0`` and
 ``cacheRead = 0``, raises nothing, and bills the prefix at full input price on every
 request. The minimum is model-dependent and NOT monotonic across generations, so
-"newer is safer" is false; measured in ``docs/benchmarking/prompt-caching.md``.
+"newer is safer" is false; measured in
+``docs/benchmarking/studies/prompt-caching.md``.
 
 Scope and known limits of the estimate here:
 

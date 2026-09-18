@@ -44,7 +44,7 @@ The following Bedrock call paths route through the hub role when configured:
 - ✅ **Strands agentic extraction** in `idp_common/extraction/agentic_idp.py` (uses the same factory via `BedrockModel(boto_session=...)`).
 - ✅ **Multi-doc discovery** nested stack (Embed, Cluster, Analyze, Save Lambdas).
 - ✅ **Chat with Document** — the streaming chat-with-document processor (`src/lambda/chat_with_document_processor`).
-- ✅ **Agent Companion** — the agent chat processor (`src/lambda/agent_chat_processor`) and agent processor (`src/lambda/agent_processor`). These build sub-agent boto3 sessions for connection isolation; the shared `create_strands_bedrock_model()` helper detects `BEDROCK_ASSUME_ROLE_ARN` and overrides those sessions for Bedrock calls only — workload-account AWS calls (DynamoDB, S3, Athena, Glue, AppSync) continue to use local credentials.
+- ✅ **Agent Companion** — the agent chat processor (`src/lambda/agent_chat_processor`) and agent processor (`src/lambda/agent_processor`). These build sub-agent boto3 sessions for connection isolation; the shared `create_strands_bedrock_model()` helper detects `BEDROCK_ASSUME_ROLE_ARN` and overrides those sessions for Bedrock calls only — workload-account AWS calls (DynamoDB, S3, Athena, Glue, CloudWatch Logs) continue to use local credentials.
 - ⏸️ **Bedrock Knowledge Bases** (`query_knowledgebase_resolver`): not yet covered. The KB resolver uses the `bedrock-agent-runtime` service which has a different identity surface; cross-account KB warrants a separate design.
 - ⏸️ **BDA (formerly Pattern 1)**: out of scope for v1. Cross-account BDA has its own model (project ARNs, BDA service roles) and warrants a separate design. If your deployment uses BDA mode (`use_bda: true`), the BDA runtime calls remain in the calling account.
 - ⏸️ **Model fine-tuning utilities** (`idp_common/model_finetuning/`): out of scope for v1.
@@ -171,7 +171,7 @@ If you set `BedrockGuardrailId` in the workload account but enable the hub role,
 
 ## Private (VPC-secured) deployments
 
-If you also use `UsePrivateAppSync=true` or otherwise deploy IDP into a VPC, ensure the VPC has an **STS interface VPC endpoint** in addition to the existing Bedrock and AppSync endpoints. Without it, `sts:AssumeRole` calls from the Lambda cannot reach the AWS STS regional service.
+If you also set `ApiGatewayVisibility=PRIVATE` (which makes the UI/data REST API a private endpoint) or otherwise deploy IDP into a VPC, ensure the VPC has an **STS interface VPC endpoint** in addition to the Bedrock endpoints and the `com.amazonaws.<region>.execute-api` endpoint that the private REST API requires. Without the STS endpoint, `sts:AssumeRole` calls from the Lambda cannot reach the AWS STS regional service.
 
 See [Deployment in a Private Network](./deployment-private-network.md) for the full list of required VPC endpoints.
 
