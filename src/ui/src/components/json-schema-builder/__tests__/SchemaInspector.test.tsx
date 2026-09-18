@@ -18,6 +18,7 @@ import {
   X_AWS_IDP_VALIDATION_ENGINE,
   X_AWS_IDP_RULE_JSON,
   X_AWS_IDP_DOCUMENT_TYPE,
+  X_AWS_IDP_EVALUATION_METHOD,
   X_AWS_IDP_INSTANCE_ARRAY,
   X_AWS_IDP_MULTI_INSTANCE,
 } from '../../../constants/schemaConstants';
@@ -520,5 +521,67 @@ describe('SchemaInspector "Documents per section"', () => {
   it('is not rendered for a policy/rule class', () => {
     render(<SchemaInspector selectedClass={docClass()} onUpdate={vi.fn()} isRuleSchema={true} />);
     expect(screen.queryByText('Documents per section')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Evaluation Method for a property declared as a bare `$ref` (GitHub #906).
+ *
+ * The Cloudscape `Select`'s dropdown is portalled and does not open under jsdom,
+ * so these assert the *selected* option instead: a stored method is displayed only
+ * if it survived the type filter and is therefore present in the option list. With
+ * the bug, the list for a `$ref` property was empty, `selectedOption` resolved to
+ * null, and the control showed nothing but its placeholder. The filter itself is
+ * covered exhaustively in `evaluationMethods.test.ts`.
+ */
+describe('SchemaInspector Evaluation Method for $ref properties', () => {
+  const addressClass = {
+    id: 'class-address',
+    name: 'Address',
+    attributes: { properties: { street: { type: 'string' } }, required: [] },
+  };
+
+  const renderAttribute = (attribute: Record<string, unknown>, availableClasses: Record<string, unknown>[] = [addressClass]) =>
+    render(
+      <SchemaInspector
+        selectedClass={makeClass({ attributes: { properties: { shipsTo: attribute }, required: [] } })}
+        selectedAttribute={attribute}
+        selectedAttributeName="shipsTo"
+        availableClasses={availableClasses as never}
+        onUpdate={vi.fn()}
+      />,
+    );
+
+  it('offers Semantic for a bare $ref to an object class', () => {
+    renderAttribute({ $ref: '#/$defs/Address', description: '', [X_AWS_IDP_EVALUATION_METHOD]: 'SEMANTIC' });
+    expect(screen.getByText('Semantic')).toBeInTheDocument();
+    // The reported symptom: with no options at all, the control fell back to its placeholder.
+    expect(screen.queryByText('Select evaluation method')).not.toBeInTheDocument();
+  });
+
+  it('offers LLM for a bare $ref to an object class', () => {
+    renderAttribute({ $ref: '#/$defs/Address', [X_AWS_IDP_EVALUATION_METHOD]: 'LLM' });
+    expect(screen.getByText('LLM')).toBeInTheDocument();
+    expect(screen.queryByText('Select evaluation method')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the unfiltered list when the $ref names no known class', () => {
+    renderAttribute({ $ref: '#/$defs/Nowhere', [X_AWS_IDP_EVALUATION_METHOD]: 'EXACT' });
+    expect(screen.getByText('Exact')).toBeInTheDocument();
+  });
+
+  it('still filters by an inline type (regression guard)', () => {
+    renderAttribute({ type: 'string', [X_AWS_IDP_EVALUATION_METHOD]: 'FUZZY' });
+    expect(screen.getByText('Fuzzy')).toBeInTheDocument();
+    // FUZZY is threshold-based, so its threshold input must still appear.
+    expect(screen.getByText('Evaluation Threshold')).toBeInTheDocument();
+  });
+
+  it('still treats a list of objects as Hungarian-eligible (regression guard)', () => {
+    renderAttribute({ type: 'array', items: { $ref: '#/$defs/Address' }, [X_AWS_IDP_EVALUATION_METHOD]: 'HUNGARIAN' });
+    expect(screen.getByText('Hungarian')).toBeInTheDocument();
+    // Structured arrays configure match_threshold, not threshold.
+    expect(screen.getByText('Match Threshold')).toBeInTheDocument();
+    expect(screen.queryByText('Evaluation Threshold')).not.toBeInTheDocument();
   });
 });
