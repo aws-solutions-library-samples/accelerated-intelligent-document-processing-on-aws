@@ -133,7 +133,7 @@ flowchart TD
 |-----------|-------|
 | **Threat ID** | CHAT.T06 |
 | **Category** | STRIDE: Spoofing |
-| **Description** | The two streaming routes resolve the caller's identity with **opposite precedence**. `/chat/document` trusts the SigV4 request context first and falls back to the request body: `_caller_sub(request) or str(body.get("callerSub") or "")` (`app.py:119`). `/chat/agent` does the reverse: `str(body.get("callerSub") or "") or _caller_sub(request)` (`app.py:172`) — a **client-supplied body field takes precedence over the SigV4-derived one**. A caller can therefore set an arbitrary `callerSub` on the agent route and have it accepted as their identity. **Neither ordering yields a verified subject, and this is the part that determines the remediation.** The SigV4-derived value is produced by `sse.py:25-47`, which parses the `x-amzn-request-context` header, reads `authorizer.iam.userArn`, and returns `user_arn.rsplit("/", 1)[-1]` — the **assumed-role session name**. No JWT is verified anywhere on this transport. Under the Cognito Identity Pool **enhanced (simplified) flow**, which is how the browser obtains these credentials, Cognito — not the client — chooses that session name, and the pool attaches one `authenticated` role shared by every user, so the value is the **same for every user of the deployment**. It says *a* signed-in user of this deployment is calling, not *which* one. That value becomes `user_id`, the partition key of the chat sessions table. |
+| **Description** | The two streaming routes resolve the caller's identity with **opposite precedence**. `/chat/document` trusts the SigV4 request context first and falls back to the request body: `_caller_sub(request) or str(body.get("callerSub") or "")` (`app.py:119`). `/chat/agent` does the reverse: `str(body.get("callerSub") or "") or _caller_sub(request)` (`app.py:172`) — a **client-supplied body field takes precedence over the SigV4-derived one**. A caller can therefore set an arbitrary `callerSub` on the agent route and have it accepted as their identity. **Neither ordering yields a verified subject, and this is the part that determines the remediation.** The SigV4-derived value is produced by `sse.py:25-47`, which parses the `x-amzn-request-context` header, reads `authorizer.iam.userArn`, and returns `user_arn.rsplit("/", 1)[-1]` — the **assumed-role session name**. No JWT is verified anywhere on this transport. Under the Cognito Identity Pool **enhanced (simplified) flow**, which is how the browser obtains these credentials, Cognito — not the client — chooses that session name, and the pool attaches one `authenticated` role shared by every user, so the value is the **same for every user of the deployment** (measured: the literal `CognitoIdentityCredentials` in 499 of 499 CloudTrail `AssumeRoleWithWebIdentity` records on a reference deployment; see the note below, including why this is a measurement rather than a documented guarantee). It says *a* signed-in user of this deployment is calling, not *which* one. That value becomes `user_id`, the partition key of the chat sessions table. |
 | **Attack Vector** | `POST /chat/agent` with `{"sessionId": "...", "prompt": "...", "callerSub": "<another-users-sub>"}`. |
 | **Impact** | Currently bounded: `caller_sub` on this path flows to `_persist_chat_turn`, so the effect is **write misattribution** — a chat turn written into another user's session/history view, and log/audit records naming the wrong principal. It is not presently an authorization bypass **because no authorization decision consumes `caller_sub` on this path** — which is precisely the CHAT.T03 gap. If CHAT.T03 is fixed by adding an ownership check that reads `caller_sub`, this inconsistency would silently convert that fix into a no-op on the agent route. |
 | **Likelihood** | Low (requires an authenticated account; limited direct impact today) |
@@ -165,11 +165,47 @@ flowchart TD
 > [`requestContext.authorizer.iam.cognitoIdentity` is documented as not populated
 > for Function URLs](https://docs.aws.amazon.com/lambda/latest/dg/urls-invocation.html)
 > — so the assumed-role ARN is the only identity signal this transport offers.
-> The *particular literal* Cognito uses for that session name is worth stating
-> carefully: AWS does not document it, so treat it as observed behaviour rather
-> than a contract. Nothing in the argument depends on the literal — the client has
-> no way to influence a value Cognito picks, and a single shared role cannot
-> distinguish its assumers. This is why issue #920 is a larger change than moving
+>
+> **Measured, not inferred.** The session name Cognito uses in the enhanced flow is
+> the literal `CognitoIdentityCredentials`. That was verified from CloudTrail
+> `AssumeRoleWithWebIdentity` records on a reference deployment: **499 events across
+> three identity pools and three roles, every one carrying the same
+> `roleSessionName`, with no counter-example**. Two properties of those records make
+> the constancy structural rather than incidental. The caller is AWS itself —
+> `userIdentity.type` is `WebIdentityUser` with
+> `identityProvider: cognito-identity.amazonaws.com` and an internal user agent — so
+> the browser has no channel through which to influence the value. And the per-user
+> identity *does* exist at that moment: the record's
+> `subjectFromWebIdentityToken` carries the caller's identity id. It simply never
+> propagates into the assumed-role ARN, which is exactly why the one value the Lambda
+> can read is pool-wide. State this as a measurement rather than as documented
+> behaviour: **AWS publishes no compatibility commitment for this string**, and its
+> IAM-roles page for identity pools enumerates what Cognito includes in that request
+> without mentioning `RoleSessionName` at all.
+>
+> **The consequence is visible in the data, not only in the code.** On the same
+> reference deployment the document route's chat-sessions table — the route that
+> already prefers the transport value (`app.py:119`) — is **empty**, while the agent
+> route's table holds turns whose partition key is, in every case, the
+> client-supplied email address. That contrast is the clearest available statement of
+> the problem: where the transport value is preferred nothing distinguishes users,
+> and where the body value is preferred the client chooses the attribution key.
+>
+> **A related fragility worth recording.** `is_user_specific_identity`
+> (`sse.py:44-54` on the in-review branch) recognises the pool-wide session names by
+> **denylist** — two literal strings — so any unrecognised value is treated as
+> user-specific. If AWS ever changed the enhanced-flow session name, that predicate
+> would start returning true and the shared resolver would raise on every agent turn,
+> because the browser sends an email address which can never equal a session name.
+> The result would be a fail-closed outage triggered by an upstream change with no
+> code change on this side. Fail-closed is the right direction, but the trigger is
+> invisible from here, so the resolver should key on the *shape* of the value it can
+> verify rather than on a list of values it cannot. Recorded here rather than as a new
+> threat identifier because it is a property of the same missing verified subject.
+>
+> Nothing in the argument above depends on the literal — the client cannot influence
+> a value Cognito picks, and a single shared role cannot distinguish its assumers.
+> This is why issue #920 is a larger change than moving
 > one `or` expression: it needs a *new* signal (a verified token), not a different
 > precedence between two existing ones. Scope note: this transport is
 > commercial-partition only — GovCloud has no Lambda Function URLs and the UI falls
@@ -184,14 +220,22 @@ flowchart TD
 > Admin/Author/Viewer group check into `agent_chat_processor` so both entry paths
 > evaluate one policy; and it extends `make api-test-static` with Function-URL
 > checks (S6–S9) that discover every `AWS::Lambda::Url` route from the template
-> and fail on an undeclared route or a missing check. That is real progress and it
-> closes the "opposite precedence" half of CHAT.T06. It does **not** make the
-> body-supplied value untrusted: because the helper correctly recognises the
-> pool-wide session names as non-user-specific, it falls back to the claimed value
-> in exactly the case that matters, so on a Cognito-Identity-Pool deployment the
-> effective identity is still browser-chosen. And a Function URL forwards no
-> Cognito group claim, so the processor's group gate stands down on that transport;
-> #954 records that residual difference explicitly as `GAP-07` in
+> and fail on an undeclared route or a missing check. That is real progress: it
+> removes the divergence between the two routes, and it is correctly reasoned code —
+> its own tests assert the behaviour described next.
+>
+> What it does **not** do is make the body-supplied value untrusted. Because the
+> helper recognises the pool-wide session name as non-user-specific, it falls back to
+> the claimed value in exactly the case that always obtains, so on the streaming
+> agent route the change is **behaviourally a no-op**: the client still fully controls
+> the attribution key. Nor can the group check it adds fire on either live path
+> today — the streaming path has no caller identity to evaluate a group claim
+> against, and on the dispatcher path the resolver already rejects an out-of-group
+> caller before the processor is invoked, using the equivalent test on the same
+> claim. So that check is **defence-in-depth that becomes load-bearing once the
+> identity gap closes**, which is a real contribution and a different claim from
+> closing the threat. A Function URL forwards no Cognito group claim at all, and #954
+> records that residual difference explicitly as `GAP-07` in
 > `scripts/api_rbac_expectations.yaml`. **CHAT.T03 and CHAT.T06 therefore remain
 > Open after #954 merges**, with a smaller remainder: a verified subject, and a
 > group signal on the streaming transport.
