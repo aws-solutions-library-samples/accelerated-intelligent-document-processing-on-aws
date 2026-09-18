@@ -481,6 +481,49 @@ Custom configurations override selected pattern presets when specified.
 - Create feature branches with prefixes: `feature/`, `fix/`, `docs/`
 - PRs should target `develop` branch
 
+### Commit messages and PR descriptions are published text
+
+This repository is public, and both are effectively permanent: a merged commit
+message cannot be edited, and force-pushing a branch does **not** retract one —
+GitHub keeps a merged PR's commits and its "Files changed" view independently of
+any branch, so the only remedy is a GitHub Support request. Write both as if they
+were a published document, because they are.
+
+- **Keep internal-only references out.** Corporate email addresses, hostnames that
+  resolve only on the internal network, and internal review or ticket identifiers
+  mean nothing to a reader of this repository and do not belong in its history.
+  A `PreToolUse` hook blocks the common cases before the command runs — see below.
+- **Write at summary altitude.** Say what the change accomplishes and why, not an
+  inventory of the individual strings it touched. "Trim the governance docs to
+  community-facing guidance" is the right altitude for a documentation cleanup; the
+  line-by-line detail belongs in the diff, which is where a reader will look for
+  it and where it stays accurate.
+- **Third-party and personal information is not ours to publish.** Contributor
+  names, contribution metrics or rankings, and individual repository permissions
+  should not appear on someone else's behalf.
+- **Exploitable security findings go through the channel in `SECURITY.md`,** which
+  is private for a reason. A commit message, roadmap entry or changelog line is a
+  public disclosure.
+- **Facts that rot get dated or left out.** "As of today" counts, live permission
+  tables and in-flight PR states are stale within a week.
+
+`.claude/skills/code-review.md` carries the same points as a pre-submit checklist.
+
+#### The `check-commit-text` hook
+
+`.claude/settings.json` registers a `PreToolUse` hook on `Bash` that runs
+`scripts/hooks/check_commit_text.py`. It inspects `git commit`, `git tag`,
+`gh pr create`, `gh pr edit`, `gh pr comment`, `gh issue create` and `gh release
+create` invocations — including heredoc and `-m` bodies, which appear in the
+command text — and denies the call when it finds an internal address, hostname or
+identifier, naming what it matched.
+
+It is deliberately narrow — it matches the mechanical cases and leaves the altitude
+judgment above to you. The patterns live in the script itself rather than being
+restated here. If it blocks a string that is legitimately public, add that string
+to the allowlist in the script with a comment saying why, rather than loosening the
+pattern. Run its tests with `make test-hooks`.
+
 ## Important Implementation Details
 
 ### Pattern-2 Container Deployment

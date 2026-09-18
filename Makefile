@@ -564,6 +564,10 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTHON) -m pytest config_library/test_config_library.py -v
 
+test-hooks: ## Run only the Claude PreToolUse hook tests (commit/PR text guard)
+	@echo "Running Claude hook tests..."
+	$(PYTHON) -m pytest scripts/tests/test_check_commit_text.py -v
+
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -v
