@@ -74,6 +74,27 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 
 For organizations with Service Control Policies (SCPs) that mandate permissions boundaries on all IAM roles, the solution provides comprehensive support through the `PermissionsBoundaryArn` parameter. This optional parameter can be specified during deployment to attach a permissions boundary to all IAM roles (both explicit roles and implicit roles created by AWS SAM functions).
 
+> **The boundary is optional for the stack but required by the delegated
+> deployment role.** If you deploy through the example CloudFormation service role
+> in [iam-roles/cloudformation-management/](../iam-roles/cloudformation-management/README.md),
+> a boundary is **mandatory**: that stack's `CreatedRolePermissionsBoundaryArn`
+> parameter has no default, and the same ARN must be passed here as
+> `PermissionsBoundaryArn`. The service role's `iam:CreateRole` grant carries an
+> `iam:PermissionsBoundary` condition, which is the mechanism that stops a
+> delegated deployment identity from being able to create a role more powerful
+> than itself. Deploying with an empty `PermissionsBoundaryArn` through that role
+> fails on `iam:CreateRole` by design. Deploying with administrator credentials is
+> unaffected.
+>
+> Do **not** confuse that with the service-role template's second, optional
+> parameter `ServiceRolePermissionsBoundaryArn`, which caps the deployment role
+> itself and must be left blank or set to a *wide* policy. Passing the tight
+> runtime boundary there stops the role deploying anything.
+>
+> If the IDP stack already exists and was deployed before that role was hardened,
+> read "Updating an Existing Deployment" in the service role's README first: three
+> detectable configurations wedge the update in `UPDATE_ROLLBACK_FAILED`.
+
 **Usage:**
 ```bash
 aws cloudformation deploy \
@@ -96,10 +117,29 @@ Deploying this solution requires an IAM role/user with the following permissions
 > CloudFormation assumes on a user's behalf, so developers/DevOps can deploy and
 > manage IDP stacks with only `iam:PassRole` instead of broad administrator
 > access. See also [Deployment → Administrator Access Requirements](./deployment.md#administrator-access-requirements).
+>
+> That role is a **deployment** role, not a least-privilege one. It still holds
+> `cloudformation:*` plus service wildcards on 25 services, because a
+> CloudFormation service role must be able to create, update, **and roll back**
+> every resource type in every optional feature of the templates. What contains
+> it is not narrow actions but three constraints, which its own template now
+> requires: a mandatory `CreatedRolePermissionsBoundaryArn` (its `iam:CreateRole`
+> grant carries an `iam:PermissionsBoundary` condition, so it cannot mint a role
+> outside the boundary), a `ManagedStackNamePrefix` that scopes its IAM
+> role/policy grants to resource names beginning with that prefix, and a trust
+> policy that admits only the CloudFormation service principal in the same
+> account. Read the "Read This Before Granting the Role" and "What Remains Broad,
+> and Why" sections of that
+> [README](../iam-roles/cloudformation-management/README.md) before granting it.
 
 #### Essential Permissions
 * `cloudformation:*` - Create and manage CloudFormation stacks
-* `iam:*` - Create and manage IAM roles and policies
+* `iam:*` - Create and manage IAM roles and policies. This is the one entry the
+  example service role deliberately does **not** grant as a wildcard: it holds a
+  named list of role/policy actions, scoped to the stack name prefix, with
+  `iam:CreateRole` gated on the permissions boundary and explicit denies on
+  removing that boundary, editing the boundary policy, editing the service role
+  itself, and creating IAM users or access keys
 * `lambda:*` - Create and configure Lambda functions
 * `states:*` - Create and manage Step Functions state machines
 * `s3:*` - Create buckets and manage S3 resources
@@ -117,14 +157,25 @@ Deploying this solution requires an IAM role/user with the following permissions
 
 #### Feature-Specific Permissions
 * `bedrock:*` - Create and invoke Bedrock resources (all modes)
-* `textract:*` - OCR via Amazon Textract (Pipeline mode)
 * `ecr:*` - Create ECR repositories and push pattern container images
-* `glue:*`, `athena:*` - Create the reporting database/tables and run analytics queries (evaluation reporting)
+* `glue:*` - Create the reporting database and tables (evaluation reporting).
+  `athena:*` is needed to *query* that data, not to deploy it — no template
+  declares an `AWS::Athena` resource, so the example service role does not grant it
 * `aoss:*` / `opensearch-serverless:*` - Create OpenSearch Serverless collections (Knowledge Base feature, only when `KnowledgeBaseVectorStore: OPENSEARCH_SERVERLESS`; the default S3 Vectors store does not need this)
-* `sagemaker:*` - Optional MLflow tracking server integration (only when MLflow is enabled)
 * `kms:*` - Create KMS keys for encryption
 * `wafv2:*` - Configure WAF rules (optional)
+* `ec2:*` - Create the VPC-attached resources used by the private/VPC hosting
+  variants and the optional bastion host
+* `scheduler:*` / `secretsmanager:*` - Optional scheduled jobs and stored secrets
 * `glue:*` / `codebuild:*` / `ssm:*` - Supporting build, configuration, and reporting infrastructure
+
+> **Runtime-only services are not deployment permissions.** `textract:*` and
+> `sagemaker:*` were previously listed here, but neither is needed to *create* the
+> stack: no template declares an `AWS::Textract` or `AWS::SageMaker` resource.
+> Textract is called at runtime by the OCR Lambda, and SageMaker (MLflow tracking)
+> at runtime by the evaluation path — both via the scoped Lambda execution roles
+> described under [Runtime Roles](#runtime-roles). They have been removed from the
+> example CloudFormation service role for the same reason.
 
 > **Note:** Earlier releases used Amazon SageMaker to host a UDOP classification endpoint (the former "Pattern 3"). The unified architecture no longer deploys a SageMaker inference endpoint; document classification is performed by Bedrock foundation models (with optional custom/fine-tuned model ARNs). SageMaker now appears only in the optional MLflow tracking integration.
 

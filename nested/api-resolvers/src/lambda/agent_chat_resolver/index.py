@@ -31,7 +31,10 @@ CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
 AGENT_CHAT_PROCESSOR_FUNCTION = os.environ.get("AGENT_CHAT_PROCESSOR_FUNCTION")
 DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
-# Agent Chat is available to Admin/Author/Viewer; Reviewer is excluded.
+# Agent Chat is available to Admin/Author/Viewer. This deployment declares FIVE
+# Cognito groups (Admin, Annotator, Author, Reviewer, Viewer — see the
+# AWS::Cognito::UserPoolGroup resources in template.yaml), so the excluded set is
+# Reviewer AND Annotator.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 
 
@@ -51,6 +54,26 @@ def _caller_in_groups(event, allowed):
     if isinstance(groups, str):
         groups = [groups]
     return bool(set(allowed).intersection(groups))
+
+
+def _forwarded_identity(event):
+    """Minimal ``identity`` to pass to the processor, or ``None`` if there is none.
+
+    The processor re-checks the group itself, so it needs the caller's groups. It
+    logs its whole event, so forward ONLY the group claim rather than the full
+    identity object — the rest (email, tokens, source IP) is not needed for the
+    check and does not belong in the processor's log group.
+
+    Returns ``None`` for identity-less (IAM-gated backend) invocations so the
+    processor treats those the same way this resolver does.
+    """
+    identity = event.get("identity")
+    if identity is None:
+        return None
+    groups = (identity.get("claims") or {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    return {"claims": {"cognito:groups": list(groups)}}
 
 
 def handler(event, context):
@@ -75,9 +98,10 @@ def handler(event, context):
         f"Received agent chat event: {json.dumps(sanitize_event_for_logging(event))}"
     )
 
-    # Defense-in-depth RBAC: Reviewer is excluded from Agent Chat. Raise so the
-    # dispatcher maps it to 403/Unauthorized (not an opaque 500 or a 200 error
-    # dict). Backend publish-path invocations have no identity and skip this.
+    # Defense-in-depth RBAC: Reviewer and Annotator are both excluded from Agent
+    # Chat. Raise so the dispatcher maps it to 403/Unauthorized (not an opaque 500
+    # or a 200 error dict). Backend publish-path invocations have no identity and
+    # skip this.
     if event.get("identity") is not None and not _caller_in_groups(
         event, _AGENT_CHAT_GROUPS
     ):
@@ -222,6 +246,10 @@ def handler(event, context):
                         "timestamp": timestamp,
                         "enableCodeIntelligence": enable_code_intelligence,
                         "callerSub": caller_sub,
+                        # Group membership the caller was authorized under, so the
+                        # processor can apply the same group gate at the point the
+                        # work happens instead of trusting this hop.
+                        "identity": _forwarded_identity(event),
                         # This resolver already stored the user message and session
                         # metadata above — tell the processor to persist only the
                         # assistant reply, or every turn would be double-written.

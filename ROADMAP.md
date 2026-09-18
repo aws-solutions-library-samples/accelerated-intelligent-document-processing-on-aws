@@ -15,9 +15,8 @@ before you build it. For what is being worked on right now, read the
 the recent [CHANGELOG.md](./CHANGELOG.md) history and the design plans under
 [`docs/planning/`](./docs/planning/).
 
-See [GOVERNANCE.md](./GOVERNANCE.md) for how a change gets accepted and
-[MAINTAINERS.md](./MAINTAINERS.md) for who reviews what. If you want to work on
-something here, open an issue first — a short conversation before the code is
+See [GOVERNANCE.md](./GOVERNANCE.md) for how a change gets accepted and who
+reviews what. If you want to work on something here, open an issue first — a short conversation before the code is
 written saves both sides a wasted week.
 
 ## Themes

@@ -58,9 +58,20 @@ Notes:
 - **Single route:** the UI calls `POST /op/{field}` on an API Gateway REST API
   (logical id `HttpApiDispatcher`). The Cognito authorizer only
   **authenticates** (401 for missing/bad token); it does **no** group checks.
-- **Per-resolver RBAC:** each resolver Lambda reads
+- **The dispatcher denies by default** (`http_api_dispatcher/authz.py`): before
+  routing, it checks the caller's groups (from the verified JWT claim, never the
+  body) against `api_rbac_manifest.json`, and **a field with no entry there is
+  403** — unmapped means denied. The manifest is generated from
+  `scripts/api_rbac_expectations.yaml` by
+  `scripts/sdlc/generate_api_rbac_manifest.py`; it fails closed if unreadable.
+  So an operation whose groups were never declared is closed, not open.
+- **Per-resolver RBAC:** each resolver Lambda *also* reads
   `identity.claims['cognito:groups']` and raises `PermissionError` →
-  the dispatcher maps that to **HTTP 403** with `errorType: "Unauthorized"`.
+  the dispatcher maps that to **HTTP 403** with `errorType: "Unauthorized"`. This
+  layer stays: the dispatcher enforces the field-level floor, the resolver
+  enforces per-object scope (config version, test set, ownership) on top of it.
+  When triaging a 403, check which layer produced it — the dispatcher logs
+  `Denied <field>: ...` in `authz.py`, the resolver logs its own message.
 - **Config-version scope denials are IN-BAND:** the configuration & sync
   resolvers return `{success:false, error:{type:"Unauthorized"}}` with **HTTP
   200** (NOT a 403). The harness treats an in-band `Unauthorized` as a denial.
@@ -73,6 +84,42 @@ Notes:
 - **IAM_ONLY ops** (`updateAgentJobStatus`, `updateDiscoveryJobStatus`) must
   reject every Cognito caller.
 
+## The REST route is NOT the only entry path (Function URLs — S6..S9)
+
+Chat streaming is served by a Lambda **Function URL** (`AuthType=AWS_IAM`,
+`InvokeMode=RESPONSE_STREAM`; `ChatStreamProcessorUrl` in `template.yaml`) whose
+FastAPI app (`src/lambda/chat_stream_processor/app.py`) drives the chat
+processors **directly** — no dispatcher, no resolver. Consequences:
+
+- An op reachable both ways must enforce its group check **in the component that
+  does the work** (e.g. `src/lambda/agent_chat_processor/index.py`), not only in
+  the resolver in front of it. A resolver-only check is enforced on one path.
+- That transport **authenticates but carries no `cognito:groups`**:
+  `requestContext.authorizer.iam.cognitoIdentity` is documented as unused by
+  Function URLs, and the assumed-role session name under the Identity Pool
+  enhanced flow is a pool-wide constant. So there is nothing verified to gate on
+  there; the residual difference is **GAP-07** / AUTH.T14.
+- A request-body `callerSub` is a **fallback only** — the transport-verified
+  principal wins, and a body value that *contradicts* it is refused (403), not
+  silently preferred. Both routes go through one helper so they cannot drift.
+
+Declare every Function URL and route in the **`function_url_endpoints:`** section
+of `scripts/api_rbac_expectations.yaml`. The scanner's Function-URL checks:
+
+| Check | Fails when |
+|-------|-----------|
+| **S6** | a `AWS::Lambda::Url` in `template.yaml`, or a route in its handler, is not declared (or a declared route no longer exists) |
+| **S7** | a route reads a client-supplied identity **before** the transport-verified one |
+| **S8** | no function in the handler package refuses a *contradicting* client identity (names the verified value, compares `!=`, and rejects) |
+| **S9** | the handler named by `enforced_in` has no group check for the route's groups, or its group list disagrees with the `equivalent_op`'s |
+
+⚠️ `known_gap:` downgrades a finding to WARN; **`residual_gap:` does not** — it
+records the gap in the register for auditability while leaving the checks armed.
+Use `residual_gap` when part of a route's authorization is genuinely impossible
+on the transport but the rest must still be enforced. `scripts/sdlc/tests/test_scan_api_rbac_function_urls.py`
+pins S7/S8 against snippets of both shapes, so the rules cannot go inert once the
+live repo only exercises the passing side.
+
 ## Three sources of truth that MUST NOT drift
 
 | Source | Where |
@@ -80,17 +127,27 @@ Notes:
 | Op universe | `FIELD_FUNCTION_MAP` (SSM `/<stack>/http-api/field-function-map`) ∪ `ddb_direct._HANDLED` ∪ `FIELD_ALIASES` in the dispatcher |
 | Schema groups | `@aws_cognito_user_pools(cognito_groups:[...])` in `nested/api-resolvers/src/api/schema.graphql` |
 | Expectations | `scripts/api_rbac_expectations.yaml` ← **edit this when you add an op** |
+| Runtime manifest | `http_api_dispatcher/api_rbac_manifest.json` — **generated** from the expectations file; never hand-edit |
 
 The static scan **fails** if these diverge. When you add an API operation you
-MUST add an entry to `scripts/api_rbac_expectations.yaml` (and the schema).
+MUST add an entry to `scripts/api_rbac_expectations.yaml` (and the schema), then
+regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (96 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (118 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
+- `scripts/sdlc/generate_api_rbac_manifest.py` — writes the dispatcher's
+  required-groups manifest from the expectations file (`--check` = drift guard,
+  run by `make api-test-static`).
+- `nested/api-resolvers/src/lambda/http_api_dispatcher/authz.py` — the
+  default-deny enforcement point.
 - `scripts/test_api_rbac.py` — dynamic harness.
+- `lib/idp_common_pkg/tests/unit/test_http_api_dispatcher_authz.py` — manifest
+  parity (enumerated from `FIELD_ALIASES`, `ddb_direct._HANDLED` and the
+  template's field→function map) plus the deny paths.
 
 ## Environment (gotchas)
 
@@ -142,7 +199,12 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 3. **Test input short-circuits?** For mutations, auth is checked BEFORE the
    bogus id is used, so an *allowed* role legitimately gets 400 (not-found) —
    that's a pass, not a leak. A *disallowed* role must still get Unauthorized.
-4. **Real leak / fail-open?** If a scoped/lower-privilege caller is ALLOWED,
+4. **Allowed role denied on a NEW op?** Look for `Denied <field>: no
+   required-groups entry` in the dispatcher log — the operation's groups were
+   never declared, so the floor denies everyone. Declare them and regenerate the
+   manifest (see the checklist below); do not widen the manifest to make the
+   symptom go away.
+5. **Real leak / fail-open?** If a scoped/lower-privilege caller is ALLOWED,
    check the resolver's IAM grants (a caught `AccessDeniedException` on the
    UsersTable scope query fails OPEN to unrestricted) and the actual group gate.
    Confirm via the resolver's CloudWatch logs (look for
@@ -152,5 +214,29 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 
 1. Add the resolver's server-side group/scope check.
 2. Add the `@aws_cognito_user_pools` directive in `schema.graphql`.
-3. Add an entry to `scripts/api_rbac_expectations.yaml` (mirror a similar op).
-4. `make api-test-static` must be clean, then run `make api-test` live.
+3. **Declare the operation's required groups** in
+   `scripts/api_rbac_expectations.yaml` (mirror a similar op) — this is now the
+   source the dispatcher enforces, not only what the tests expect.
+4. **Regenerate the dispatcher manifest:**
+   `python3 scripts/sdlc/generate_api_rbac_manifest.py`, and commit the changed
+   `nested/api-resolvers/src/lambda/http_api_dispatcher/api_rbac_manifest.json`.
+5. `make api-test-static` must be clean (it runs the manifest drift check too),
+   then run `make api-test` live.
+6. If the op is **also** reachable off the REST route (a Function URL route, a
+   direct `lambda:InvokeFunction` path), put the group check in the component
+   that does the work and declare the route under `function_url_endpoints:` —
+   otherwise S6 fails and the check covers only one path. The dispatcher's
+   default deny does not help there: it gates the REST route only.
+
+> ⚠️ Steps 3–4 are not optional bookkeeping. The dispatcher **denies by default**,
+> so an operation with no manifest entry returns **403 for everyone** — including
+> Admin — no matter what its resolver allows. If a brand-new operation 403s, the
+> fix is to declare its groups and regenerate (steps 3–4). Do **not** "fix" it by
+> widening an existing entry, adding a bypass, or making an unmapped field fall
+> through: unmapped-means-denied is the property this layer exists to provide, and
+> the reason a forgotten check on a **group-scoped** operation is no longer an open
+> endpoint. Declaring an operation `ANY` to make a 403 go away is exactly the
+> widening this warns against: `ANY` means the dispatcher checks authentication
+> only, so a forgotten resolver check on an `ANY` operation is still reachable by
+> any authenticated caller. 26 of the 118 operations are currently `ANY`; narrowing
+> them is tracked as issue #979.

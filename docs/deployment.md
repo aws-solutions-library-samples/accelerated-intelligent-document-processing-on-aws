@@ -18,7 +18,7 @@ The GenAI IDP Accelerator can be deployed using either the AWS CloudFormation co
 **Important**: Deploying the GenAI IDP Accelerator requires administrator access to your AWS account. However, for organizations that want to enable non-administrator users to deploy and manage IDP stacks, we provide an optional CloudFormation service role approach:
 
 - **For Administrators**: Use the deployment options below with your existing administrator privileges
-- **For Delegated Access**: See [iam-roles/cloudformation-management/README.md](../iam-roles/cloudformation-management/README.md) for instructions on provisioning a CloudFormation service role that allows non-administrator users to deploy and maintain IDP stacks without requiring administrator permissions
+- **For Delegated Access**: See [iam-roles/cloudformation-management/README.md](../iam-roles/cloudformation-management/README.md) for instructions on provisioning a CloudFormation service role that allows non-administrator users to deploy and maintain IDP stacks without requiring administrator permissions. That role requires an IAM **permissions boundary policy** (`CreatedRolePermissionsBoundaryArn`, no default) and a shared stack-name prefix (`ManagedStackNamePrefix`); the boundary is what stops a delegated deployer from creating a role more powerful than the boundary allows, so the same ARN must be passed to the IDP stack itself as its `PermissionsBoundaryArn`. A separate optional parameter, `ServiceRolePermissionsBoundaryArn`, caps the deployment role itself and must be left blank or set to a wide policy — the two are not interchangeable. It is a deployment role, not a least-privilege one — read the README's "Read This Before Granting the Role" section first, and "Updating an Existing Deployment" if the IDP stack already exists.
 
 For the full breakdown of AWS services and the IAM permission scopes required for deployment and runtime, see [AWS Services and IAM Role Requirements](./aws-services-and-roles.md).
 
@@ -37,6 +37,15 @@ For the full breakdown of AWS services and the IAM permission scopes required fo
 4. Wait for the stack to reach the `CREATE_COMPLETE` state (10-15 minutes)
 
 > **Note**: When the stack is deploying for the first time, it will send an email with a temporary password to the address specified in the AdminEmail parameter. You will need to use this temporary password to log into the UI and set a permanent password.
+
+> **Also confirm the alerts subscription.** The stack subscribes the same
+> `AdminEmail` address to the CloudWatch alerts topic, so a **second** email
+> arrives titled *"AWS Notification - Subscription Confirmation"*. Until someone
+> clicks its confirmation link the subscription stays in `PendingConfirmation`
+> and **no alarm notification is delivered** — the alarms still fire, they just
+> reach nobody, and nothing about the deployment reports a problem. See
+> [Who receives the alerts](./monitoring.md#who-receives-the-alerts) for how to
+> check the status and how to alert a team or a pager rather than one mailbox.
 
 ---
 
@@ -65,6 +74,9 @@ idp-cli deploy \
 - Creates all CloudFormation resources (~120 resources)
 - Waits for deployment to complete (10-15 minutes)
 - Sends email with temporary admin password
+- Subscribes the same address to the CloudWatch alerts topic — this needs a
+  confirmation click before any alarm notification is delivered, see
+  [Who receives the alerts](./monitoring.md#who-receives-the-alerts)
 - Returns stack outputs including Web UI URL and bucket names
 
 #### Deploy with Custom Configuration
@@ -339,6 +351,15 @@ To update an existing GenAIIDP deployment to a new version:
 13. Monitor the update process in the CloudFormation console
 
 > **Note**: Updating the stack may cause some resources to be replaced, which could lead to brief service interruptions. Consider updating during a maintenance window if the solution is being used in production.
+
+> **Note**: When you upgrade to a release that includes the alerts subscription,
+> the update subscribes the address already in your `AdminEmail` parameter to the
+> CloudWatch alerts topic, so an *"AWS Notification - Subscription Confirmation"*
+> email arrives at that address. The update succeeds either way, but **alarm
+> notifications are not delivered until someone clicks that confirmation link**.
+> See [Who receives the alerts](./monitoring.md#who-receives-the-alerts) for how
+> to check the subscription status and how to notify a team or a pager instead of
+> one mailbox.
 
 ## Testing the Solution
 

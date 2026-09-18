@@ -29,6 +29,7 @@ SPDX-License-Identifier: MIT-0
     - [Processing Modes](#processing-modes)
     - [Python Development](#python-development)
     - [Planning \& Operations](#planning--operations)
+  - [Security](#security)
   - [Contributing](#contributing)
   - [Project Governance](#project-governance)
   - [Security](#security)
@@ -221,7 +222,38 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [Capacity Planning](./docs/capacity-planning.md) - Comprehensive capacity planning, performance optimization, and resource scaling guidance
 - [Well-Architected Framework Review](./docs/well-architected.md) - What the solution implements per pillar, plus a checklist template you fill in for your own deployment
 - [AWS Services & IAM Roles](./docs/aws-services-and-roles.md) - AWS services used and IAM role requirements
+- [Threat Model](./docs/threat-model.md) - STRIDE threat model: trust boundaries, controls in place, residual risks and open items
 - [Cost Calculator](./docs/cost-calculator.md) - Framework for estimating solution costs
+
+## Security
+
+Security artifacts live under [`security/`](./security/README.md) so that coverage
+and results are auditable rather than asserted.
+
+- **[Threat model](./security/threat-modeling/README.md)** — a STRIDE model of 98
+  threats across the architecture, pipeline, web UI and API, agent and chat
+  features, extension points and analytics stack. Each entry records the controls
+  that address it and, where they do not fully cover it, the residual risk. Threats
+  with no effective control today are listed as **Open** rather than folded into a
+  summary, and a mitigation that depends on an unmerged change is marked *pending*
+  rather than counted as present. [Start with the overview page](./docs/threat-model.md)
+  if you want the orientation before the corpus.
+- **[Security tests](./security/README.md)** — static analysis and dependency
+  scanning, dynamic API scanning, and static plus live authorization testing. That
+  README also records the surfaces those tests do **not** reach, so a green CI run
+  is not mistaken for full coverage.
+- **[Per-release result snapshots](./security/test-results/)** — curated,
+  public-safe output from each of those tests, one folder per release.
+
+The threat model is kept current by a build gate rather than by intention:
+`make check-threat-model-currency` (run from `make lint-cicd` in both CI systems)
+fails when the model's recorded `Last reviewed against version` falls more than one
+release behind the repository's `VERSION`.
+
+If you believe you have found a security issue, please notify AWS/Amazon Security
+via the [vulnerability reporting page](http://aws.amazon.com/security/vulnerability-reporting/)
+rather than opening a public issue — see
+[Security issue notifications](./CONTRIBUTING.md#security-issue-notifications).
 
 ## Contributing
 
@@ -247,12 +279,10 @@ How this project is run is written down, so you can predict what will happen to 
 issue or a pull request before you open one:
 
 - **[GOVERNANCE.md](./GOVERNANCE.md)** — who decides, how a change gets accepted,
-  the `develop`/`main` branch model, the release cadence, and this repository's
-  relationship to the CDK and Terraform ports.
-- **[MAINTAINERS.md](./MAINTAINERS.md)** — who maintains the project and who
-  reviews changes.
-- **[.github/CODEOWNERS](./.github/CODEOWNERS)** — the machine-readable form of
-  that, which is what routes review requests.
+  the `develop`/`main` branch and release model, and this repository's relationship
+  to the CDK and Terraform ports.
+- **[.github/CODEOWNERS](./.github/CODEOWNERS)** — who reviews what, and what
+  routes review requests.
 - **[ROADMAP.md](./ROADMAP.md)** — direction, priorities and explicit non-goals.
   Themes rather than dates, and worth reading before proposing a large feature.
 

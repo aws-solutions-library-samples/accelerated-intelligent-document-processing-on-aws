@@ -235,7 +235,12 @@ def test_retired_parameters_are_declared_by_no_template(registry: dict) -> None:
     for pattern in ("*.yaml", "*.yml"):
         for path in root.rglob(pattern):
             rel = path.relative_to(root).as_posix()
-            if rel.startswith((".aws-sam/", "workshop/")) or "/node_modules/" in rel:
+            if (
+                rel.startswith((".aws-sam/", "workshop/"))
+                or "/node_modules/" in rel
+                # Nested SAM build output, e.g. feature-platform/*/.aws-sam/build/.
+                or "/.aws-sam/" in rel
+            ):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
@@ -609,19 +614,37 @@ def test_an_expiring_allowlist_entry_is_enforced_offline(
     offline: the gate never calls the GitHub API, it compares the deadline against
     the repository's ``VERSION`` file, so it behaves identically on a developer
     laptop, in both CI systems and in an air-gapped clone.
+
+    The expiring entry is SYNTHESIZED here rather than read out of the live
+    registry. This test originally did ``next(e for e in registry["allowlist"] if
+    e.get("expiresAfterVersion"))``, which coupled a claim about the loader to the
+    repository happening to be parking a known-wrong claim at that moment. Bucket
+    (a) is a parking space and the healthy state is an EMPTY one: when #937's fix
+    landed and the last bucket (a) entry was deleted, that ``next()`` raised
+    ``StopIteration`` and the suite failed for the one reason it should not --
+    the registry getting better. ``test_every_bucket_a_entry_carries_an_expiry``
+    still guards the registry's shape and passes vacuously, correctly, when there
+    is nothing parked.
     """
-    entry = next(
-        e for e in registry["allowlist"] if e.get("expiresAfterVersion") is not None
-    )
-    assert entry["bucket"] == "a", (
-        "only a bucket (a) entry -- a known-wrong claim parked because another "
-        "change owns the fix -- should carry an expiry"
-    )
+    deadline = "1.2.3"
+    synthetic = dict(registry)
+    synthetic["allowlist"] = [
+        *registry["allowlist"],
+        {
+            "path": "docs/synthetic-expiry-fixture.md",
+            "linePattern": "a claim this fixture parks",
+            "bucket": "a",
+            "justification": (
+                "Synthetic fixture for test_an_expiring_allowlist_entry_is_"
+                "enforced_offline. Never written to the real registry."
+            ),
+            "expiresAfterVersion": deadline,
+        },
+    ]
 
     path = tmp_path / "retired_services.json"
-    path.write_text(json.dumps(registry), encoding="utf-8")
+    path.write_text(json.dumps(synthetic), encoding="utf-8")
 
-    deadline = entry["expiresAfterVersion"]
     load_registry(path, version=deadline)
     load_registry(path, version=f"{deadline}.dev7")
 

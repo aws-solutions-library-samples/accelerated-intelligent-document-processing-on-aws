@@ -865,10 +865,87 @@ operations:
       @aws_cognito_user_pools(cognito_groups:[Admin]). Formerly GAP-06.
 
 # ============================================================================
+# Lambda Function URL endpoints — the OTHER way into the backend
+# ============================================================================
+#
+# Chat streaming does not go through the REST dispatcher. The browser POSTs
+# SigV4-signed requests straight to a Lambda Function URL whose FastAPI app
+# calls the chat processors, so none of the checks above (Cognito authorizer,
+# FIELD_FUNCTION_MAP, schema directives) apply to it. Declare every such
+# endpoint and route here; scan_api_rbac.py checks S6-S9 against them.
+#
+# Entry schema
+# ------------
+#   <UrlLogicalId>:      an AWS::Lambda::Url resource in template.yaml
+#     auth_type:         must equal the template's AuthType (NONE always fails)
+#     handler:           repo-relative FastAPI app file; must be inside the
+#                        target function's CodeUri
+#     routes:            "<METHOD> <path>" -> route policy:
+#       groups:          groups the SERVER must enforce, or ANY
+#       ownership:       true -> scoped to the caller's own records
+#       equivalent_op:   the operations: entry serving the same user action;
+#                        the two must declare the same groups
+#       enforced_in:     the processor this route invokes, which must carry the
+#                        group check for a group-restricted route
+#       known_gap:       GAP-NN, as for operations above — downgrades a
+#                        mismatch on this route from FAIL to WARN
+#       residual_gap:    GAP-NN listed in the register for auditability that
+#                        does NOT downgrade anything: S6-S9 findings on the
+#                        route stay hard FAILs. Use this for a limitation of
+#                        the transport itself, so recording it cannot disarm
+#                        the checks on the code.
+#       note:            free text
+#
+# The key lists above are CLOSED, and the scanner enforces them (S6): an
+# unrecognised key is a hard FAIL rather than being ignored. Every key here is
+# read by name, so a misspelling makes the setting vanish silently — writing
+# `residual_gapp:` was measured to leave the scan at 0 FAIL while removing GAP-07
+# from this register. Adding a key means adding it to ENDPOINT_ENTRY_KEYS /
+# ROUTE_POLICY_KEYS in scripts/sdlc/scan_api_rbac.py, which is a code change a
+# reviewer sees.
+#
+# Routes needing no per-user authorization (health checks) are allowlisted in
+# FUNCTION_URL_OPEN_ROUTES in the scanner, not here.
+function_url_endpoints:
+  ChatStreamProcessorUrl:
+    auth_type: AWS_IAM
+    handler: src/lambda/chat_stream_processor/app.py
+    routes:
+      POST /chat/document:
+        groups: ANY
+        ownership: true
+        equivalent_op: sendChatDocumentMessage
+        enforced_in: src/lambda/chat_with_document_processor/index.py
+        note: >
+          same processor and the same allowedConfigVersions scope check as the
+          REST path; the processor denies a turn it cannot attribute to a caller
+      POST /chat/agent:
+        groups: [Admin, Author, Viewer]
+        equivalent_op: sendAgentChatMessage
+        enforced_in: src/lambda/agent_chat_processor/index.py
+        residual_gap: GAP-07
+        note: >
+          the processor now carries the same Admin/Author/Viewer check as the
+          agent_chat_resolver, and the route resolves the caller identity from
+          the verified transport principal only. The group check is enforced for
+          callers whose groups are known (the dispatcher path forwards them);
+          this transport forwards no group claim at all, hence GAP-07.
+
+# ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization
 # posture and current enforcement. Each id must be referenced by at least one
-# operation above, and is mirrored in
-# security/threat-modeling/feature-threats/rbac-authentication.md (AUTH.T07/T08).
+# operation or route above (the scan enforces that in both directions).
+#
+# CORRECTION: this header previously claimed every id here "is mirrored in
+# security/threat-modeling/feature-threats/rbac-authentication.md
+# (AUTH.T07/T08)". That is not true and never was — `grep -rn GAP-02
+# security/threat-modeling/` returns nothing. What IS true: GAP-07 is recorded
+# under AUTH.T14 in that document, and the retired GAP-06 is referenced under
+# AUTH.T08. GAP-02 (queryKnowledgeBase) is recorded only here and in the
+# published scan snapshots under security/test-results/. Giving it a threat-model
+# entry is a documentation follow-up, deliberately not done on this branch
+# because rbac-authentication.md is being edited concurrently.
+#
 # A gap entry downgrades a scan/test mismatch from FAIL to WARN; remove the
 # gap (and its references) when the enforcement is fixed, and the harness
 # will then hold the line.
@@ -879,6 +956,69 @@ known_gaps:
     detail: >
       Any authenticated user (including Reviewer) can query the knowledge base
       when one is configured.
+  GAP-07:
+    summary: >
+      the chat Function URL transport carries no Cognito group claim, so the
+      agent-chat group check cannot be applied to callers arriving that way
+    detail: >
+      POST /chat/agent on ChatStreamProcessorUrl is authenticated by IAM
+      (SigV4 with the authenticated Cognito Identity Pool role), which proves
+      the caller is a signed-in user of this deployment but says nothing about
+      their group. Lambda Function URLs do not forward the Cognito identity:
+      requestContext.authorizer.iam.cognitoIdentity is documented as unused
+      ("Lambda sets this to null or excludes this from the JSON"), and an
+      assumed-role ARN has no cognito:groups claim. The processor's
+      Admin/Author/Viewer check therefore applies to invocations that carry
+      known groups (the dispatcher path forwards them) and stands down on this
+      transport, exactly as it does for IAM-authorized backend invocations.
+      Closing it means the browser presenting its Cognito ID token to this
+      endpoint in addition to signing the request, and the endpoint verifying
+      that token — a change to the transport's auth contract (UI, template and
+      a JWKS verification dependency) that cannot be validated without a
+      deployment. _caller_identity() in
+      src/lambda/chat_stream_processor/app.py is where the claims are obtained;
+      _enforce_groups_or_403() beside it is what turns them into a 403, and it
+      already runs synchronously in the route so closing this gap needs no
+      second change on that path.
+
+      Until then the practical exposure is limited to the Reviewer group, the
+      only signed-in role excluded from agent chat.
+
+      SCOPE — what that last sentence does and does not cover. "Limited to the
+      Reviewer group" is true of the AGENT-CHAT GROUP CHECK on this transport
+      specifically: Admin, Author and Viewer are all allowed the operation, so
+      the only group whose denial is lost is Reviewer, and a Reviewer reaching
+      /chat/agent is still an authenticated user of this deployment. The residual
+      is wider than that one check, though: NEITHER streaming route obtains a
+      per-user identity from the transport. That also leaves the
+      allowedConfigVersions scope lookup in
+      src/lambda/chat_with_document_processor/index.py (the caller-scope
+      resolution around lines 239-291) without a verified per-user subject to
+      resolve, so it falls back rather than failing closed. Both halves close
+      together when the endpoint verifies an ID token.
+
+      RESIDUAL — the transport principal's session name is undocumented. The
+      identity resolution in src/lambda/chat_stream_processor/sse.py has to
+      recognise the assumed-role session name Cognito chooses, and AWS documents
+      no RoleSessionName for the Identity Pool enhanced flow. The value is
+      MEASURED, not documented: 499 CloudTrail AssumeRoleWithWebIdentity events
+      across three identity pools and three roles all carry
+      "CognitoIdentityCredentials", with zero counter-examples, and the call is
+      made by an AWS-internal principal so a client cannot influence it. There is
+      no compatibility commitment on that string. The code is written so an
+      unrecognised future value degrades safely — is_user_specific_identity() is
+      a POSITIVE shape test (Cognito sub, or <region>:<uuid> identity id), so an
+      unknown value falls through to the body-supplied fallback rather than
+      refusing every request — but a change to a genuinely per-user session name
+      would silently shift attribution from the body value to the transport one.
+      This is accepted rather than fixed because the only durable fix is the same
+      ID-token verification that closes the gap itself.
+
+      PARTITION — this transport exists in the commercial partition only. On
+      GovCloud the UI falls back to the REST dispatcher plus polling
+      (src/ui/src/components/chat-panel/ChatPanel.tsx), which is the dispatcher
+      path and
+      carries the group claim, so this gap does not apply there.
 # GAP-01, GAP-03, GAP-04, GAP-05 and GAP-06 were RESOLVED (no longer accepted
 # risks — a regression now hard-FAILS the gate):
 #   GAP-01 getStepFunctionExecution now requires the caller-supplied

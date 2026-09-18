@@ -348,8 +348,15 @@ Last measured: **26 service namespaces** shipped, of which four —
 `AWS::CodePipeline`, `AWS::OpenSearchServerless`, `AWS::Scheduler`,
 `AWS::SecretsManager` — appear in no template *and* nowhere in
 `docs/aws-services-and-roles.md`. In the reverse direction, **no template declares an
-AppSync resource** and **28 files under `docs/`** still describe AppSync as the
-UI-to-backend API; `CLAUDE.md` still lists it under "Key AWS Services Used" too.
+AppSync resource**, and when this review was first run **28 files under `docs/`**
+described AppSync as the UI-to-backend API while `CLAUDE.md` listed it under "Key AWS
+Services Used". That is now closed: issue #929 fixed the prose, `CLAUDE.md` keeps only
+a parenthetical saying the nested stack was *historically* named `APPSYNCSTACK`, and
+the 12 remaining `docs/` mentions are each either explicitly historical or a retained
+GraphQL-schema identifier, triaged one at a time in
+`scripts/sdlc/retired_services.json`. The reverse direction is therefore no longer a
+manual search here — `make check-retired-services` enforces it on every push and MR,
+so run this section to look for the *next* retired service, not for AppSync.
 Substitute the current name for a removed service each run — the search only works if
 you know what was removed, so read `CHANGELOG.md`'s `### Changed`/`### Removed`
 entries since the last review to get the candidate list.
