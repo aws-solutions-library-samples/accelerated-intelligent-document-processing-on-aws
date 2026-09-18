@@ -480,14 +480,23 @@ was a `FAILED` run of 306–308 minutes: a single state's Lambda `Sandbox.Timedo
 900 seconds retried eight times at 2.5× backoff. A benchmark stack's longest success
 was 2.6 minutes. Six hours is therefore about ten times the longest observed success.
 
+That particular storm can no longer happen: every Lambda task state now retries the
+timeout codes at most once, so a deterministic timeout fails in about 30 minutes
+rather than 5.1 hours (see
+[Step Functions Retry Configuration](./configuration.md)). The measurement is kept
+here because it is what sized the bound, and because the *transient* ladder is
+unchanged — a state throttled through all eight attempts still spends about 2.8
+hours in backoff alone.
+
 Be precise about what the default does and does not bound. It does **not** shorten
-that measured storm: one state exhausting its `Retry` policy takes about 5.1 hours and
-then fails on its own, inside the 6-hour bound, and shortening it would need a bound
-of 3 hours or less (`10800`), which is a defensible choice for a stack whose largest
-documents finish well under an hour. What the default does bound is everything the
+a state that is still inside its own `Retry` budget: a full transient ladder fails
+on its own inside the 6-hour bound, and cutting the bound to 3 hours or less
+(`10800`) is a defensible choice for a stack whose largest documents finish well
+under an hour. What the default does bound is everything the
 per-state guards cannot: a `.waitForTaskToken` callback that never arrives once the
 BDA bound is exceeded (see below), a state that hangs without erroring, and a storm
-that compounds across two or more states (two consecutive storms are about 10 hours).
+that compounds across two or more states (two consecutive transient ladders are
+about 5.6 hours).
 Not measured: multi-hundred-page packets under agentic table extraction, which are
 the case most likely to approach the bound — if your `ExecutionTime` p99 for
 *successful* runs is within a factor of two of the bound, raise it (up to one year,

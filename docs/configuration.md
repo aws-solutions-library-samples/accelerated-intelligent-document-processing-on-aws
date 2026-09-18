@@ -504,8 +504,8 @@ The solution tracks metrics for throttling events and successful retries, viewab
 
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
-so each task lists the Lambda service errors, the Lambda timeout
-(`Sandbox.Timedout`) and the Bedrock throttling / availability codes. The five
+so each task lists the Lambda service errors and the Bedrock throttling /
+availability codes. The five
 extraction and assessment task states (in-process extraction, shard plan, shard,
 shard merge, assessment) additionally list `TransientError` — the one name their
 handlers re-raise a transient cause under when it arrives as an ordinary Python
@@ -523,12 +523,32 @@ violation, an unparseable document, missing input — keep their own names and a
 same way every time succeed, they only multiply its cost and delay. No task retries
 `States.TaskFailed` or `States.ALL` for that reason.
 
+**A Lambda timeout is deterministic, so it gets its own retrier with
+`MaxAttempts: 1`.** `Sandbox.Timedout` is Step Functions' name for a function that
+hit its configured timeout, `States.Timeout` for a task that hit the state's own
+bound, and `Lambda.Unknown` for an unhandled Lambda fault — a timeout is one cause
+of it and an out-of-memory kill the other. In all three cases the document needs
+more work than the function has room for, so each further attempt burns another
+full timeout and fails identically. While these codes shared the transient ladder,
+one such document held a workflow-concurrency slot for about 5.2 hours (8 attempts
+of 900 s at 2.5× backoff) before failing anyway. Every Lambda task state now
+carries the single-attempt timeout retrier, which previously only `EvaluationStep`
+had. Throttling and Lambda service errors keep the full ladder — the split narrows
+what is retried, it does not weaken retrying for genuinely transient faults.
+
 ```json
 {
   "Retry": [
     {
       "ErrorEquals": [
-        "States.Timeout", "Lambda.Unknown", "Sandbox.Timedout",
+        "States.Timeout", "Lambda.Unknown", "Sandbox.Timedout"
+      ],
+      "IntervalSeconds": 5,
+      "MaxAttempts": 1,
+      "BackoffRate": 1.0
+    },
+    {
+      "ErrorEquals": [
         "Lambda.ServiceException", "Lambda.AWSLambdaException",
         "Lambda.SdkClientException", "Lambda.TooManyRequestsException",
         "ThrottlingException", "ServiceUnavailableException",
@@ -541,6 +561,14 @@ same way every time succeed, they only multiply its cost and delay. No task retr
   ]
 }
 ```
+
+Per-state values differ (the shard and rule-validation states use shorter
+intervals and 6 attempts on the transient ladder, and `Lambda.Unknown` appears only
+where a state already listed it), but the shape above holds everywhere: one
+single-attempt timeout retrier, one generous transient retrier, and no
+`States.ALL`. `scripts/tests/test_state_machine_retry_policies.py` enumerates the
+Lambda task states out of `workflow.asl.json` and asserts both halves, so a state
+added later is covered without editing the test.
 
 ### Concurrency Control
 

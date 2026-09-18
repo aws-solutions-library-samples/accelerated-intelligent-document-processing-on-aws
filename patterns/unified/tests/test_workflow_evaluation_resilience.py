@@ -95,14 +95,26 @@ def test_failure_recorder_records_then_continues_to_the_normal_tail(states):
     assert rec["Resource"] == states["EvaluationStep"]["Resource"]
     # Continues to the normal tail rather than a Fail state...
     assert rec["Next"] == "PostprocessingHook"
-    # ...and its own failure must not take the document down either.
-    assert rec["Catch"][0]["Next"] == "PostprocessingHook"
+    # ...and its own failure must not take the document down either. That path goes
+    # through a normalizing Pass rather than straight to the tail (#918): the Catch
+    # leaves $ as the BARE document dict, and PostprocessingHook reads $.document, so
+    # jumping directly there raised States.Runtime — uncatchable, and it discarded the
+    # very document this state exists to preserve. The Pass rebuilds the envelope.
+    recovery = states[rec["Catch"][0]["Next"]]
+    assert recovery["Type"] == "Pass"
+    assert recovery["Parameters"] == {"document.$": "$"}
+    assert recovery["ResultPath"] == "$"
+    assert recovery["Next"] == "PostprocessingHook"
 
 
 @pytest.mark.unit
 def test_no_path_from_evaluation_leads_to_the_fail_state(states):
     """Nothing in the evaluation failure path may terminate the execution."""
-    for name in ("EvaluationStep", "RecordEvaluationFailure"):
+    for name in (
+        "EvaluationStep",
+        "RecordEvaluationFailure",
+        "NormalizeEvaluationFailureOutput",
+    ):
         targets = {c.get("Next") for c in states[name].get("Catch", [])}
         targets.add(states[name].get("Next"))
         assert "FailState" not in targets, f"{name} must not route to FailState"
