@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
-| **Applies to release** | v0.6.3 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
 | **Feature** | IDP SDK & CLI (Programmatic Access) |
 | **Classification** | Internal |
 
@@ -96,6 +96,21 @@ flowchart TD
 | **Affected Components** | SQS queue, Step Functions, Lambda concurrency, Bedrock quotas |
 | **Mitigations** | Concurrency controls in Queue Processor Lambda, SQS message rate limiting, DynamoDB-based concurrency counter, CloudWatch alarms on queue depth and processing rates, per-user rate limits |
 
+### SDK.T05: Deployment Service Role Is Broad Enough to Reach Account Administrator
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | SDK.T05 |
+| **Category** | STRIDE: Elevation of Privilege |
+| **Description** | The accelerator ships a CloudFormation **service role** (`iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`) so that operators can deploy the stack without holding administrator rights themselves. As written it does not achieve that separation. It carries IAM permissions broad enough to modify the guardrails that would otherwise bound it — including `iam:DeleteRolePermissionsBoundary` on `*`, which removes a permissions boundary from any role in the account — alongside wildcard actions on 29 services. Anyone who can pass this role to a CloudFormation stack operation can therefore obtain effective account administrator, so the role is not a least-privilege delegation but an administrator alias with an extra step. The trust policy compounds it: it names the principal without an `ExternalId` or `aws:SourceAccount` condition, so it does not constrain *which* context may assume it. This is a deployment-time control rather than a runtime one, which is why it appears here with the SDK/CLI rather than in the API threats — the CLI's deploy path is its most common consumer. |
+| **Attack Vector** | A principal permitted to create or update a stack with this service role passes it, and uses a template to grant itself privileges the role holds — or first strips a permissions boundary that was intended to contain it. No exploitation of a software defect is involved; the permissions as granted allow it. |
+| **Impact** | Full administrative control of the deploying AWS account, from a role documented as a scoped deployment role. Any permissions-boundary-based containment strategy in the account is defeated rather than merely bypassed. |
+| **Likelihood** | Low (requires an existing principal able to pass the role) |
+| **Severity** | Critical |
+| **Affected Components** | `iam-roles/cloudformation-management/IDP-Cloudformation-Service-Role.yaml`, `scripts/sdlc/validate_service_role_permissions.py` |
+| **Mitigations** | **In place today:** the role is an *optional* artefact — a deployment may use any role or an administrator directly, so its scope is a ceiling on the delegated case rather than a permission the product requires; `scripts/sdlc/validate_service_role_permissions.py` runs in both CI systems and checks the role against the permissions the stack actually needs, so the file is at least under review; the role must be explicitly passed to a stack operation and every use is a CloudTrail event attributable to the passing principal. **Pending — do not read as present:** removing the boundary-manipulation permissions, narrowing the service wildcards to the resources this stack creates, adding a permissions boundary to the role itself, and adding trust-policy conditions, is tracked in **issue #927**. Until that merges, treat granting `iam:PassRole` for this role as equivalent to granting account administrator, and scope who may do so accordingly. |
+| **Residual risk / recommendation** | A CloudFormation service role for a stack this broad will always be substantial — it creates IAM roles, KMS keys, buckets and Lambda functions. The realistic goal is that it cannot *escalate beyond* what deploying this stack requires, not that it be small. Document the role's true privilege level plainly wherever it is offered, so an operator does not adopt it believing it to be a containment measure. |
+
 ## 4. Security Controls Summary
 
 | Control | Implementation | Threats Mitigated |
@@ -106,3 +121,5 @@ flowchart TD
 | **Dependency management** | Pinned versions, scanning | SDK.T03 |
 | **Rate limiting** | Concurrency counter, SQS throttling | SDK.T04 |
 | **Monitoring** | CloudWatch alarms on processing volume | SDK.T04 |
+| **Deployment role review** | `scripts/sdlc/validate_service_role_permissions.py` (both CI systems) checks the shipped CloudFormation service role against the permissions the stack needs | SDK.T05 |
+| **Attributable deploys** | The service role must be explicitly passed to a stack operation; CloudTrail records the passing principal | SDK.T05 |
