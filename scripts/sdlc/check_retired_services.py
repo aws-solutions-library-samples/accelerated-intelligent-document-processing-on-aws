@@ -535,6 +535,54 @@ def stale_allowlist_entries(registry: dict, used: set[int]) -> list[dict]:
     ]
 
 
+def stale_exclusions(registry: dict, root: Path = REPO_ROOT) -> list[dict]:
+    """``excludedPaths`` globs that match no file in the tree.
+
+    This half was missing, and the omission had already cost something. For most
+    of a release cycle the ``security/threat-modeling/**`` exclusion carried a
+    justification ending "REVISIT ONCE PR #960 LANDS" -- a condition written into
+    the registry precisely so it could not be forgotten. #960 landed. Nothing
+    asked. The note would have read as a live intention indefinitely, because
+    ``stale_allowlist_entries`` polices allowlist entries and nothing policed
+    exclusions at all: an exclusion is an *absence* of findings, so it cannot fail
+    by matching too little the way an allowlist entry can.
+
+    Checking that a glob still matches something does not catch a stale *reason* --
+    no check can, and the justification text is what a reviewer has to read. What
+    it does catch is the mechanical half: a directory that was renamed or deleted
+    leaves behind a glob that silently exempts nothing, and the next directory to
+    take that path inherits the exemption without anyone deciding to grant it.
+    That is the same failure mode as a dead allowlist entry, and it now fails the
+    same way.
+
+    Three exclusions are **defensive** rather than descriptive: they cover build
+    output and vendored copies that are gitignored, so on a clean checkout they
+    correctly match nothing and must stay anyway -- ``**/node_modules/**``,
+    ``**/.aws-sam/**`` and the vendored ``idp_common_pkg`` copies. Those carry
+    ``"mayBeAbsent": true``. That is an explicit flag rather than a heuristic on
+    the glob text on purpose: "does this path exist only after a build?" is a fact
+    about the repository that the person writing the exclusion knows and a pattern
+    match would have to guess. The flag is also the thing a reviewer sees, which
+    is the point -- an exclusion asking to be exempt from the staleness check has
+    to say so in the registry.
+    """
+    stale = []
+    for excluded in registry.get("excludedPaths", []):
+        if excluded.get("mayBeAbsent"):
+            continue
+        glob = excluded["glob"]
+        # A trailing ``/**`` means "this directory and everything under it"; glob
+        # that as a prefix test rather than a literal pattern, because Path.glob
+        # does not match the directory itself with that spelling.
+        if glob.endswith("/**"):
+            if (root / glob[: -len("/**")]).exists():
+                continue
+        elif any(root.glob(glob)):
+            continue
+        stale.append(excluded)
+    return stale
+
+
 def _declaration_matcher(resource_type: str) -> re.Pattern[str]:
     """Match an actual ``Type:`` declaration of ``resource_type``, not a mention.
 
@@ -694,10 +742,23 @@ def main(argv: list[str] | None = None) -> int:
     files = scanned_files(registry, root)
     findings, used = find_violations(registry, root)
     stale = stale_allowlist_entries(registry, used)
+    dead_exclusions = stale_exclusions(registry, root)
 
     if findings or stale:
         _report(registry, findings, stale)
-    if findings or stale or reintroduced:
+    if dead_exclusions:
+        print(
+            "\nexcludedPaths glob(s) match nothing in this tree, so they exempt "
+            "nothing and would silently exempt whatever next occupies the path:\n",
+            file=sys.stderr,
+        )
+        for excluded in dead_exclusions:
+            print(f"  {excluded['glob']}", file=sys.stderr)
+        print(
+            "\nDelete the entry, or fix the glob if the path was renamed.",
+            file=sys.stderr,
+        )
+    if findings or stale or reintroduced or dead_exclusions:
         return 1
 
     services = ", ".join(service["name"] for service in registry["retiredServices"])
