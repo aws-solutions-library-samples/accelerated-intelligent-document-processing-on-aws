@@ -27,14 +27,12 @@ verification is exactly what this file exists to replace.
 the document set are all read out of the files, so a rule, a handle or a new
 governance page added later is covered without touching this test.
 
-Deliberately *not* covered here: whether each named owner actually holds **write
-access**, which is the failure mode that is currently live (three of five named
-owners hold read access only). That needs an authenticated token, and GitHub's own
-``GET /repos/{owner}/{repo}/codeowners/errors`` is the authoritative answer —
-which today reports 8 findings, so wiring it into a blocking gate would red-line
-every pull request, forks included, for a condition no pull request can fix. It
-is documented as a maintainer-run command in the "CODEOWNERS routing depends on
-write access" section of ``MAINTAINERS.md`` instead.
+Deliberately *not* covered here: whether each named owner holds **write access**,
+without which GitHub silently ignores their CODEOWNERS entry. That needs an
+authenticated token, and GitHub's own
+``GET /repos/{owner}/{repo}/codeowners/errors`` is the authoritative answer, so it
+belongs in a maintainer-run check rather than in a gate that would red-line pull
+requests from forks for a condition no pull request can fix.
 """
 
 from __future__ import annotations
@@ -280,7 +278,9 @@ def test_codeowners_and_maintainers_name_the_same_handles() -> None:
             )
             in_codeowners.add(owner[1:].casefold())
 
-    in_companion = {m.casefold() for m in MENTION.findall(_strip_code(_read(COMPANION)))}
+    in_companion = {
+        m.casefold() for m in MENTION.findall(_strip_code(_read(COMPANION)))
+    }
 
     assert in_codeowners, "extracted no handles from CODEOWNERS; parser is broken"
     assert in_companion, f"extracted no handles from {COMPANION}; parser is broken"
@@ -359,7 +359,7 @@ def test_every_relative_link_in_the_governance_docs_resolves() -> None:
 
     assert checked >= 20, (
         f"only {checked} relative links found across {_governance_docs()}; the "
-        "link extractor is broken (38 at the time of writing; most links in these "
+        "link extractor is broken (40 at the time of writing; most links in these "
         "files are external URLs, which are deliberately not fetched)"
     )
     assert not broken, "broken relative links:\n  " + "\n  ".join(broken)
