@@ -23,7 +23,13 @@ from pathlib import Path
 import pytest
 
 ASL_PATH = Path(__file__).resolve().parents[1] / "statemachine" / "workflow.asl.json"
-_UNQUOTED_PLACEHOLDER_RE = re.compile(r":\s*\$\{[^}]+\}")
+# The leading `"` anchors the match to a KEY's closing quote, so only a
+# placeholder standing where a bare JSON value goes is replaced. Without it the
+# pattern also fired INSIDE a quoted string wherever a colon preceded a
+# placeholder: `"arn:${Partition}:states:::lambda:invoke"` loaded as
+# `"arn: 1:states:::lambda:invoke"`. Kept identical in shape to
+# test_workflow_evaluation_resilience.py and test_workflow_hook_fatal_catch.py.
+_UNQUOTED_PLACEHOLDER_RE = re.compile(r"\"\s*:\s*\$\{[^}]+\}")
 
 # Every task whose Lambda handler re-raises TransientError: the in-process
 # extraction task, the assessment task, and all THREE shard-runtime tasks (plan,
@@ -56,7 +62,7 @@ def _find_state(states: dict, name: str) -> dict:
 @pytest.fixture(scope="module")
 def states() -> dict:
     raw = ASL_PATH.read_text(encoding="utf-8")
-    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub(": 1", raw))["States"]
+    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub('": 1', raw))["States"]
 
 
 @pytest.mark.parametrize("task", TASKS)

@@ -34,7 +34,14 @@ HOOK_ERRORS_PATH = PATTERN_ROOT / "src" / "pipeline_hooks_function" / "hook_erro
 
 # See test_workflow_evaluation_resilience.py: a numeric ASL field needs its
 # CloudFormation placeholder UNQUOTED, which makes the raw file invalid JSON.
-_UNQUOTED_PLACEHOLDER_RE = re.compile(r":\s*\$\{[A-Za-z0-9_]+\}")
+#
+# The leading `"` anchors the match to a KEY's closing quote, so only a
+# placeholder standing where a bare JSON value goes is replaced. Without it the
+# pattern also matched INSIDE a quoted string wherever a colon happened to
+# precede a placeholder — `"arn:${Partition}:states:::lambda:invoke"` became
+# `"arn: 1:states:::lambda:invoke"`, i.e. the parsed document silently
+# misrepresented all nine hook/task `Resource` values.
+_UNQUOTED_PLACEHOLDER_RE = re.compile(r"\"\s*:\s*\$\{[A-Za-z0-9_]+\}")
 
 # The dispatcher Lambda's ARN substitution. A hook state is identified by the
 # function it invokes rather than by its name, so a hook state named differently
@@ -43,7 +50,7 @@ _DISPATCHER_SUBSTITUTION = "PipelineHooksDispatcherLambdaArn"
 
 
 def _load_asl() -> dict:
-    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub(": 1", ASL_PATH.read_text()))
+    return json.loads(_UNQUOTED_PLACEHOLDER_RE.sub('": 1', ASL_PATH.read_text()))
 
 
 def _fatal_error_name() -> str:
@@ -187,4 +194,80 @@ def test_no_hook_state_routes_the_fail_policy_forward():
                 offenders.append(f"{hook_state} -> {target}")
     assert not offenders, (
         f"{FATAL_ERROR_NAME} is caught and routed to a non-Fail state: {offenders}"
+    )
+
+
+def _post_step_hook_states() -> dict[str, tuple[dict, dict]]:
+    """The hook states that use the two-catcher, fail-OPEN-on-transient shape.
+
+    Classified by SHAPE, not by name, so a seventh post-step point is covered the
+    day it is added: a post-step state carries a distinct `FATAL_ERROR_NAME`
+    catcher (to fail closed on the gate) *and* a `States.ALL` catcher (to stay
+    open on everything else). `PreprocessingHook` has only `States.ALL`, which
+    terminates, so it is correctly excluded.
+    """
+    selected = {}
+    for hook_state, (state, siblings) in HOOK_STATES.items():
+        errors = [set(c.get("ErrorEquals") or []) for c in state.get("Catch") or []]
+        if any(FATAL_ERROR_NAME in e for e in errors) and any(
+            "States.ALL" in e for e in errors
+        ):
+            selected[hook_state] = (state, siblings)
+    return selected
+
+
+POST_STEP_HOOK_STATES = _post_step_hook_states()
+
+
+@pytest.mark.unit
+def test_post_step_hook_states_are_discovered():
+    """Non-vacuity guard for the fail-OPEN half below.
+
+    Floor is the six post-step points that exist today. If a state stops matching
+    the two-catcher shape it drops out of the set silently, and the assertion
+    below would then pass by testing nothing — which is how the original #919 bug
+    survived.
+    """
+    assert len(POST_STEP_HOOK_STATES) >= 6, (
+        f"expected at least the 6 post-step hook points, found "
+        f"{sorted(POST_STEP_HOOK_STATES)}. Either a post-step state lost its "
+        f"{FATAL_ERROR_NAME} catcher (fail-open on the gate, #919) or lost its "
+        f"States.ALL catcher (fail-closed on a transient fault) — both are "
+        f"regressions, and both would make the next test vacuous."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("hook_state", sorted(POST_STEP_HOOK_STATES))
+def test_post_step_hook_state_stays_open_on_a_transient_fault(hook_state):
+    """The OTHER half of the invariant: fail closed on the gate, OPEN on a fault.
+
+    `test_hook_state_fails_closed_on_the_fail_policy` proves a hook that declares
+    `onError: fail` aborts the document. That is only half the design. At a
+    POST-STEP point the `States.ALL` catcher must still route FORWARD, because a
+    dispatcher timeout, throttle or cold-start fault is not a gating decision and
+    must not discard an otherwise-good document that has already been OCR'd,
+    classified and extracted.
+
+    Nothing asserted this. The companion test's early return accepts
+    "`States.ALL` already routes to a Fail state" and stops checking — correct for
+    `PreprocessingHook`, which must terminate, but it means that flipping a
+    post-step `States.ALL` to a Fail state would keep that suite green while
+    silently converting every transient dispatcher fault into a discarded
+    document.
+    """
+    state, siblings = POST_STEP_HOOK_STATES[hook_state]
+    catchers = state.get("Catch") or []
+    catch_all = next(
+        c for c in catchers if "States.ALL" in (c.get("ErrorEquals") or [])
+    )
+    target = catch_all.get("Next", "")
+    target_type = siblings.get(target, {}).get("Type", "not a state in this scope")
+    assert target_type != "Fail", (
+        f"{hook_state} routes its States.ALL catcher to {target!r}, a Fail state. "
+        f"At a post-step hook point States.ALL is the TRANSIENT path — a "
+        f"dispatcher timeout or throttle — and it must route forward. Failing the "
+        f"execution here discards a document that was already processed "
+        f"successfully, over a fault the hook author never asked to gate on. "
+        f"Only {FATAL_ERROR_NAME} (the declared onError: fail policy) may abort."
     )

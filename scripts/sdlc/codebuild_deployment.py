@@ -3236,6 +3236,40 @@ def _recovery_command(stack_name):
     return ("", status)
 
 
+def _is_deliberate_hook_fail_execution(sfn, execution_arn):
+    """True if `execution_arn` is step 14's own `onError: fail` probe.
+
+    Step 14 phase 2 (`_assert_onerror_fail_aborts`) deliberately FAILS one
+    document to prove the `onError: fail` gate aborts it. That execution then
+    sits in the shared test stack for the rest of the pipeline run, and
+    `get_workflow_failure_details` lists FAILED executions to feed the
+    Bedrock-grounded failure summary. Without this filter, a LATER and entirely
+    unrelated step's failure could be summarised as caused by
+    `HookFatalError: ci-hook deliberate failure at postOcr (onError:fail test)`
+    — naming a deliberate success as the root cause of someone else's problem,
+    in a report whose whole purpose is to avoid guessing.
+
+    Matched on the execution INPUT's `document.config_version`, the same exact
+    identifier `_find_target_execution` uses to locate the probe in the first
+    place. Matching on the error name (`HookFatalError`) instead would also
+    swallow a GENUINE fail-policy abort raised by a real hook, which is real
+    evidence and must still be reported.
+    """
+    try:
+        raw = sfn.describe_execution(executionArn=execution_arn).get("input") or "{}"
+        doc_in = json.loads(raw).get("document") or {}
+    except Exception:  # noqa: BLE001
+        # Unreadable input — keep the execution. Dropping real evidence is worse
+        # than the occasional misleading line.
+        return False
+    return doc_in.get("config_version") == _HOOK_FAIL_CONFIG_VERSION
+
+
+# Extra FAILED executions to list so that excluding step 14's deliberate failure
+# cannot crowd a genuine one out of the window.
+_HOOK_FAIL_EVIDENCE_MARGIN = 3
+
+
 def get_workflow_failure_details(stack_name, max_executions=5):
     """Capture the real cause of a document processing failure before teardown.
 
@@ -3266,12 +3300,18 @@ def get_workflow_failure_details(stack_name, max_executions=5):
         failed = sfn.list_executions(
             stateMachineArn=state_machine_arn,
             statusFilter="FAILED",
-            maxResults=max_executions,
+            maxResults=min(max_executions + _HOOK_FAIL_EVIDENCE_MARGIN, 100),
         ).get("executions", [])
 
         details = []
         for execution in failed:
+            if len(details) >= max_executions:
+                break
             arn = execution["executionArn"]
+            # Step 14's onError:fail probe FAILS on purpose; reporting it as
+            # evidence would misname the root cause of a later step's failure.
+            if _is_deliberate_hook_fail_execution(sfn, arn):
+                continue
             # Walk the execution history for the terminal failure event, which
             # carries the concrete error + cause (Lambda stack trace, service
             # exception) that the tracking table flattens to "Unknown error".

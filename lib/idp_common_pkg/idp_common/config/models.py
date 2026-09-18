@@ -660,7 +660,14 @@ class PipelineHook(BaseModel):
     )
     arn: str = Field(description="Lambda ARN the dispatcher invokes")
     order: int = Field(default=100, description="Lower runs first within a hook point")
-    onError: str = Field(  # noqa: N815 — matches stored config key
+    # Literal, not bare str: the dispatcher normalizes an unrecognised value to
+    # "continue" (patterns/unified/src/pipeline_hooks_function/index.py), so a
+    # typo like "Fail" or "fail-fast" would silently STOP THE GATE FROM GATING.
+    # template.yaml constrains this with `enum` for the config editor and
+    # register_feature_hooks validates feature-registered hooks, but a
+    # hand-edited YAML pushed through `idp-cli config-upload` reaches here with
+    # no other check.
+    onError: Literal["continue", "skip-remaining", "fail"] = Field(  # noqa: N815
         default="continue",
         description="continue | skip-remaining | fail",
     )
@@ -708,7 +715,10 @@ class FlatHookConfig(BaseModel):
         description="Lambda ARN the dispatcher invokes. Must be tagged "
         "idp:feature-id or named GENAIIDP-*.",
     )
-    onError: str = Field(  # noqa: N815 — matches stored config key
+    # Literal for the same reason as HookConfig.onError above: the dispatcher
+    # normalizes an unrecognised value to "continue", so an unconstrained typo
+    # turns a declared gate into a no-op.
+    onError: Literal["continue", "skip-remaining", "fail"] = Field(  # noqa: N815
         default="continue",
         description="Behavior when the hook errors: continue | skip-remaining | fail",
     )
