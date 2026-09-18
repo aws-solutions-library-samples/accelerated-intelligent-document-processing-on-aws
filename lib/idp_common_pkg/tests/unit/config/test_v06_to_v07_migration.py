@@ -396,6 +396,8 @@ class TestVersionComparatorIsShared:
     def test_update_configuration_delegates_to_the_shared_parser(self):
         import importlib.util
         import pathlib
+        import sys
+        from unittest.mock import MagicMock, patch
 
         from idp_common.config.migrations._version import parse_version
 
@@ -412,7 +414,12 @@ class TestVersionComparatorIsShared:
         spec = importlib.util.spec_from_file_location("_uc_index", path)
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        # cfnresponse ships with the Lambda runtime, not with the test env, so it
+        # is stubbed for the exec. Scoped rather than left in sys.modules: a
+        # global stub made this test pass only when some earlier test in the same
+        # worker happened to install one.
+        with patch.dict(sys.modules, {"cfnresponse": MagicMock()}):
+            spec.loader.exec_module(mod)
 
         for stamp in ("0.6", "0.7", "0.10", "1.0", "0.7.1"):
             assert mod._parse_format_version(stamp) == parse_version(stamp), stamp

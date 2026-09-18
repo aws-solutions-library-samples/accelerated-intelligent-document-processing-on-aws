@@ -16,6 +16,7 @@ DynamoDB ItemType.
 
 import importlib.util
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -46,13 +47,31 @@ class _FakeContext:
 
 
 def _load_backfill_worker():
-    path = os.path.join(
+    """Import the backfill worker by path, with its handler dir importable.
+
+    The worker imports ``log_sanitizer``, a sibling file in its own handler
+    directory rather than a package — that resolves in Lambda (the handler dir is
+    the working directory) but not here, so the directory goes on ``sys.path`` for
+    the exec. Over twenty handlers ship their own copy of that filename, so the
+    entry is removed from ``sys.modules`` again afterwards: leaving this copy
+    behind would hand it to whichever test loads a different handler next.
+    """
+    directory = os.path.join(
         os.path.dirname(__file__),
-        "../../../../src/lambda/backfill_gsi_attributes/index.py",
+        "../../../../src/lambda/backfill_gsi_attributes",
     )
+    path = os.path.join(directory, "index.py")
     spec = importlib.util.spec_from_file_location("backfill_index", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = sys.modules.pop("log_sanitizer", None)
+    sys.path.insert(0, directory)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(directory)
+        sys.modules.pop("log_sanitizer", None)
+        if previous is not None:
+            sys.modules["log_sanitizer"] = previous
     return module
 
 
