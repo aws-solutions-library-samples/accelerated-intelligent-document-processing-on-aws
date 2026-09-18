@@ -39,7 +39,7 @@ https://github.com/user-attachments/assets/e2dea2c5-5eb1-42f6-9af5-469afd2135a7
 
 ## Architecture
 
-The architecture of the Agent Analysis feature is shown below. The Web UI and AppSync API components are the same as used by the rest of the IDP system (with new AppSync endpoints added). Note the inclusion of Amazon Athena and the AgentCore Code Interpreter is specific to the Analytics Agent, but the Agent Request Handler and Processor lambdas along with jobs table are used for all agents, including [MCP agents](./custom-MCP-agent.md).
+The architecture of the Agent Analysis feature is shown below. The Web UI and the API Gateway REST API it calls are the same components the rest of the IDP system uses — this feature adds new operations to the existing single `POST /op/{field}` route rather than a new API. Note the inclusion of Amazon Athena and the AgentCore Code Interpreter is specific to the Analytics Agent, but the Agent Request Handler and Processor lambdas along with jobs table are used for all agents, including [MCP agents](./custom-MCP-agent.md).
 
 ![Architecture Diagram](../images/IDP-AnalyticsAgent.drawio.png)
 
@@ -90,7 +90,7 @@ User Question → Analytics Request Handler → Analytics Processor → Agent To
                                                                   ├── Code Sandbox Tool
                                                                   └── Python Execution Tool
                                                                        ↓
-Results ← Web UI ← AppSync Subscription ← DynamoDB ← Agent Response
+Results ← Web UI (polls getAgentJobStatus over the REST API) ← DynamoDB ← Agent Response
 ```
 
 ## Available Tools
@@ -284,7 +284,7 @@ The feature automatically creates:
 
 - **DynamoDB Table**: Tracks analytics job status and results
 - **Lambda Functions**: Request handler and processor functions
-- **AppSync Resolvers**: GraphQL API endpoints for web UI integration
+- **API Resolvers**: the agent operations the REST API dispatcher routes to (`nested/api-resolvers/`)
 - **IAM Roles**: Minimal permissions for secure operation
 
 ### Environment Variables

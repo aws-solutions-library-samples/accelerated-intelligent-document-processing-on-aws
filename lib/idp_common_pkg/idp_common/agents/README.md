@@ -10,7 +10,7 @@ The Conversational Agent System enables natural, multi-turn conversations with A
 
 - **Multi-Turn Conversations**: Maintains context across multiple exchanges
 - **Persistent Memory**: Stores conversation history in DynamoDB
-- **Real-Time Streaming**: Streams responses as they're generated via AppSync
+- **Real-Time Streaming**: Streams responses as they are generated, over a Lambda Function URL with `InvokeMode=RESPONSE_STREAM`
 - **Automatic Agent Selection**: Orchestrator routes queries to the best agent
 - **All Agents Available**: No manual agent selection needed
 - **Session-Based**: Each conversation has a unique session ID
@@ -20,24 +20,31 @@ The Conversational Agent System enables natural, multi-turn conversations with A
 ```
 User Message
     ↓
-AgentChatResolver (Lambda)
-    ↓
-Store in ChatMessagesTable (DynamoDB)
-    ↓
-Invoke AgentChatProcessor (Lambda)
+Browser SigV4-signs and POSTs directly to the chat streaming
+Lambda Function URL (POST /chat/agent, InvokeMode=RESPONSE_STREAM)
     ↓
 Create Conversational Orchestrator
     ├─ Load conversation history from memory
     ├─ Include all registered agents
     └─ Configure context management
     ↓
-Stream Response via AppSync
-    ├─ Publish chunks in real-time
+Stream Response as Server-Sent Events on the open response body
+    ├─ Emit each chunk as one SSE frame in real time
     ├─ Store in memory table
-    └─ Publish final response
+    └─ Emit the final response event
     ↓
 User receives streaming response
 ```
+
+There is a second, non-streaming delivery path for environments where Lambda
+Function URLs are unavailable (notably AWS GovCloud, where `VITE_STREAM_URL` is
+empty). In that case the UI calls the `sendAgentChatMessage` field on the API
+Gateway REST API, which routes through the dispatcher to `AgentChatResolver`;
+that Lambda stores the user message in `ChatMessagesTable` and async-invokes
+`AgentChatProcessor`, and the UI polls `getChatMessages` until the final
+assistant message appears (see `src/ui/src/api/chat-poll.ts`). Because the
+processors persist only the final message, this path shows a spinner followed by
+the complete answer rather than token-by-token output.
 
 ## Components
 
@@ -277,35 +284,56 @@ This tests:
 - `STREAMING_ENABLED`: Enable streaming (default: true)
 - `MAX_CONVERSATION_TURNS`: Max turns to load (default: 20)
 - `MAX_MESSAGE_SIZE_KB`: Max message size (default: 8.5)
-- `APPSYNC_API_URL`: AppSync endpoint for streaming
+- `APPSYNC_API_URL`: **Vestigial and always the empty string.** AppSync has been
+  removed, but the root `template.yaml` still sets `APPSYNC_API_URL: ""` on about
+  a dozen Lambdas (including this one) on purpose: the pre-migration publish
+  helpers check the variable and no-op when it is empty, falling back to writing
+  DynamoDB directly. If you grep and find it, that is why — do not set it to a
+  URL, and do not expect streaming to depend on it.
 
 ### CloudFormation Resources
 
 The system is deployed via CloudFormation with these key resources:
 
-- `AgentChatResolverFunction`: Resolver Lambda
+- `ChatStreamProcessorFunction` / `ChatStreamProcessorUrl`: the streaming endpoint
+  (root `template.yaml`) — a Lambda behind the AWS Lambda Web Adapter with a
+  Function URL (`AuthType=AWS_IAM`, `InvokeMode=RESPONSE_STREAM`). It runs the
+  *same* processor source in-process and emits SSE frames.
+- `AgentChatResolverFunction`: Resolver Lambda for the non-streaming path
+  (`nested/api-resolvers/template.yaml`), reached via the REST API dispatcher's
+  `sendAgentChatMessage` → function mapping
 - `AgentChatProcessorFunction`: Processor Lambda
 - `ChatMessagesTable`: Message storage
 - `IdHelperChatMemoryTable`: Memory storage
-- `SendAgentChatMessageResolver`: AppSync resolver
-- `OnAgentChatMessageUpdate`: AppSync subscription
 
 ## How It Works
 
 ### 1. User Sends Message
 
-User sends a message via GraphQL mutation:
-```graphql
-sendAgentChatMessage(prompt: "Hello", sessionId: "session-123")
+On the streaming path the browser POSTs the message straight to the chat
+streaming Function URL, SigV4-signed with the caller's Cognito Identity Pool
+credentials:
+
+```
+POST https://<id>.lambda-url.<region>.on.aws/chat/agent
+{"sessionId": "session-123", "prompt": "Hello"}
 ```
 
-### 2. Resolver Stores Message
+On the non-streaming fallback path the UI instead calls the REST API's
+`sendAgentChatMessage` field (`POST <apiBaseUrl>/op/sendAgentChatMessage`), which
+the dispatcher routes to `AgentChatResolver`.
+
+### 2. Resolver Stores Message (non-streaming path only)
 
 `AgentChatResolver` Lambda:
 - Validates the message
 - Stores in `ChatMessagesTable` with PK=sessionId, SK=timestamp
 - Invokes `AgentChatProcessor` asynchronously
 - Returns immediate acknowledgment
+
+On the streaming path there is no separate resolver hop: the streaming function
+runs the processor code in-process so it can emit deltas on the response body as
+they are produced.
 
 ### 3. Processor Creates Orchestrator
 
@@ -327,10 +355,17 @@ The orchestrator:
 ### 5. Response Streams Back
 
 As the response is generated:
-- Chunks are published via AppSync mutation
-- Frontend receives real-time updates via subscription
+- Each chunk is written as one Server-Sent-Events frame on the still-open Function
+  URL response body (`data: {...}\n\n`)
+- The frontend reads the frames incrementally from that response — the event
+  shapes are the same objects the old subscription delivered, so the UI's message
+  handling is unchanged
 - Thinking tags are removed for clean display
 - Final response is stored in memory
+
+On the non-streaming fallback path nothing is emitted mid-flight: only the final
+assistant message is written to `ChatMessagesTable`, and the UI polls
+`getChatMessages` for it.
 
 ### 6. Memory Persists
 
@@ -411,10 +446,19 @@ Look for:
 
 ### Streaming Not Working
 
-**Check AppSync**:
-- Verify `APPSYNC_API_URL` is set correctly
-- Check IAM permissions for `appsync:GraphQL`
-- Verify subscription is active in frontend
+**Check the streaming Function URL**:
+- Verify the UI has `VITE_STREAM_URL` set to the `ChatStreamProcessorUrl` Function
+  URL. When it is empty the UI silently falls back to the non-streaming polling
+  path, which looks like "streaming is broken" but is working as designed.
+- Check that the authenticated Cognito role grants **`lambda:InvokeFunction`** on
+  `ChatStreamProcessorFunction`. A Function URL invocation requires
+  `lambda:InvokeFunction` — `lambda:InvokeFunctionUrl` alone returns a 403
+  `AccessDeniedException` at invoke time.
+- Confirm the browser request is SigV4-signed with Identity Pool credentials; the
+  Function URL is `AuthType=AWS_IAM`, so an unsigned request is rejected at the
+  function edge before any code runs.
+- Ignore `APPSYNC_API_URL` here. It is deliberately empty (see Environment
+  Variables above) and has nothing to do with streaming.
 
 ### Context Not Maintained
 
@@ -433,8 +477,13 @@ Look for:
 
 ## Security
 
-- **Authentication**: Cognito User Pools or IAM
-- **Authorization**: AppSync resolvers enforce auth
+- **Authentication**: the REST API's Cognito User Pools authorizer for the
+  `sendAgentChatMessage` path; IAM (SigV4 with Identity Pool credentials) at the
+  Function URL for the streaming path
+- **Authorization**: enforced in the resolver/processor code from the caller's
+  identity — group membership from the `cognito:groups` claim, plus session
+  ownership checks against the caller's Cognito `sub`. The REST authorizer only
+  authenticates; it does not evaluate any group policy.
 - **Encryption**: KMS encryption for DynamoDB tables
 - **TTL**: Messages expire after 30 days (configurable)
 - **VPC**: Not required (uses AWS service APIs)
@@ -446,7 +495,8 @@ Look for:
 - Lambda invocations (resolver and processor)
 - Lambda duration and errors
 - DynamoDB read/write capacity
-- AppSync request count
+- API Gateway request count and 4xx/5xx rate on the REST API
+- Invocations, duration and errors on the streaming function
 - Bedrock API calls
 
 ### CloudWatch Logs
@@ -467,7 +517,9 @@ Consider setting up alarms for:
 - **DynamoDB**: On-demand pricing, TTL reduces storage
 - **Lambda**: Pay per invocation, warm starts reduce cost
 - **Bedrock**: Pay per token, context management reduces usage
-- **AppSync**: Pay per request and data transfer
+- **API Gateway**: Pay per request on the REST API transport
+- **Streaming function**: Pay for the invocation's full duration (the Lambda stays
+  billed while the response streams) plus streamed-response data transfer
 
 ## Future Enhancements
 

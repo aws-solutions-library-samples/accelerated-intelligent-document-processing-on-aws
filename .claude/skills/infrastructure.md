@@ -4,14 +4,17 @@
 The solution uses **nested CloudFormation stacks** via AWS SAM:
 
 ```
-template.yaml (Main Stack — ~349 KB)
-├── patterns/unified/template.yaml (Unified Pattern — ~218 KB)
-├── nested/api-resolvers/ (REST API + resolver Lambdas; also serves the Web UI
-│                          as an S3 proxy when WebUIHosting=APIGateway — the
-│                          API-Gateway alternative to CloudFront)
+template.yaml (Main Stack — ~584 KB)
+├── patterns/unified/template.yaml (Unified Pattern — ~364 KB)
+├── nested/api-resolvers/ (logical id APIRESOLVERSTACK — the API Gateway REST API
+│                          the UI calls, its dispatcher Lambda, and the resolver
+│                          Lambdas; also serves the Web UI as an S3 proxy when
+│                          WebUIHosting=APIGateway — the API-Gateway alternative
+│                          to CloudFront)
 ├── nested/bedrockkb/ (Bedrock Knowledge Base)
-├── nested/bda-lending-project/ (BDA resources)
-└── nested/multi-doc-discovery/ (Discovery pipeline)
+├── nested/multi-doc-discovery/ (Discovery pipeline)
+└── feature-platform/main-stack-extensions/ (FeaturePlatformStack, conditional on
+                            EnableFeaturePlatform)
 ```
 
 ## Main Stack (`template.yaml`)
@@ -23,7 +26,11 @@ Contains pattern-agnostic resources:
 - CloudWatch Alarms + Dashboard
 - Web UI (CloudFront, S3 static hosting, CodeBuild)
 - Authentication (Cognito User Pool + Identity Pool)
-- AppSync GraphQL API (UI ↔ backend communication)
+- API Gateway REST API + dispatcher Lambda (UI ↔ backend communication) — these
+  live in the `nested/api-resolvers/` stack (logical id `APIRESOLVERSTACK`),
+  which the main stack wires up. There is **no AppSync**: zero
+  `AWS::AppSync::*` resources exist in any template. See
+  `docs/migration-appsync-to-rest.md`.
 
 ## Key Parameters
 - `AdminEmail`, `AllowedSignUpEmailDomain`
@@ -104,10 +111,12 @@ MyFunction:
         LOG_LEVEL: !Ref LogLevel
         METRIC_NAMESPACE: !Ref MetricNamespace
         STACK_NAME: !Ref "AWS::StackName"
-    # VPC conditional (for private AppSync deployments)
+    # VPC conditional (private-API deployments — ApiGatewayVisibility=PRIVATE in
+    # template.yaml, passed to the nested stack as UsePrivateApi=true, which
+    # defines the IsPrivateApi condition)
     VpcConfig:
       !If
-        - IsPrivateAppSync
+        - IsPrivateApi
         - SecurityGroupIds: [!Ref LambdaSecurityGroup]
           SubnetIds: !Ref PrivateSubnetIds
         - !Ref "AWS::NoValue"

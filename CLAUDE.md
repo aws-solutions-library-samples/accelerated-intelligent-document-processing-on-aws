@@ -69,9 +69,22 @@ make cfn-lint-warnings
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered — `make check-arn-partitions` still uses hardcoded globs and
-misses `nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/`. It runs
-from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
+without being covered. `make check-arn-partitions` now uses the **same** discovery
+(`scripts/discover_templates.sh cfn`, `Makefile:234`) and both targets fail outright
+if it returns nothing, so the two gates see the same set — 30 templates today. The
+hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
+and `iam-roles/` is gone; that directory list survives only as the historical note in
+the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
+(`Makefile:226`) skips any discovered template whose path starts with
+`scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
+cross-account principal by construction — so the ARN gate's real coverage is
+"every template found by content, less that prefix" — 26 of the 30. `cfn-lint`
+exempts nothing at **path** scope: no template is skipped. It does exempt specific
+*rules*, which is a different axis — it runs with `--ignore-checks
+$(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
+suppressed at resource scope on three layer resources in `template.yaml`. Both
+targets run from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets
+match.
 
 It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
 defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
@@ -125,9 +138,55 @@ nothing checked.
 
 ⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
 push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
-to `develop` runs nothing on GitHub. And being visible is not being blocking —
-each check must also be a required status check on `develop` in branch-protection
-settings.
+to `develop` runs nothing on GitHub.
+
+### Visible is not blocking — `make check-branch-protection`
+
+Parity between the two CIs only means both *run* the gates. Whether a red gate can
+actually stop a merge is a **repository setting**, not anything in this tree, and
+today it does not: `develop` has no branch protection at all, so every gate above
+is advisory. A pull request can be merged with all checks red.
+
+That used to be a bolded prose warning in this file, which is how it sat unnoticed
+for months. It is now measured:
+
+```bash
+make check-branch-protection          # reads the live setting via the GitHub API
+```
+
+The command derives the expected required-check list by **parsing**
+`.github/workflows/*.yml` for job names (a hardcoded inventory would drift the
+moment a job is renamed), then asserts against the live API that protection is on,
+that every check a PR produces is required, that stale approvals are dismissed,
+that force-push and deletion are blocked, that an approving review is required,
+and that `enforce_admins` is on. It also reports which contexts must stay
+advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, and
+`Test Results` is an action-created check run behind an `if:`, so requiring any of
+them would leave a check pending forever and block every merge.
+
+Three things about what it reads. All eight shared gates are *steps* in one job
+(`developer_tests`), so they are **one** requireable context sharing one red mark,
+not three and not eight. It reads classic branch protection **and** rulesets,
+because a branch can be governed entirely by a ruleset while the classic endpoint
+reports nothing. And it separates "not protected" from "cannot see": the classic
+endpoint needs repository admin and answers 404 without it, so `GET
+.../branches/<branch>` (readable with `pull`) is cross-checked, and `--json`
+reports `protected: null` rather than `false` when the answer is genuinely
+unknown.
+
+It is **opt-in and non-blocking on purpose**: it needs network access and a token
+(`pull` suffices for a verified answer and for the required-check comparison, which
+comes from the nested `protection.required_status_checks` object on
+`GET .../branches/<branch>`; `administration:read` is what the other five
+assertions need, and without it those five are reported **unread** rather than
+satisfied), and it reports "not protected" until
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+is closed — enabling protection needs repository **admin**, which no contributor
+and no CI token here has. In `lint-cicd` it would red-line every branch for a
+condition nobody in the tree can fix, so it is in neither `lint-cicd` nor
+`test_ci_gate_parity.py`'s `SHARED_GATES`. With no token or no network it exits 0
+with an explanation; `--fail-on-skip` turns that into an error, which is how it
+should be run once #933 closes and it becomes a required, blocking gate.
 
 ### Testing
 
@@ -177,8 +236,9 @@ make srt-fix       # Interactive fix mode
 - SRT runs on every push and MR in GitLab CI (`srt_security_review`, `fast_checks`)
   **and** on every GitHub pull request (`.github/workflows/security-checks.yml`).
   A change merged on GitHub used to skip it entirely — see the note in that
-  workflow. ⚠️ Being visible is not being blocking: the check must also be a
-  required status check on `develop` in branch-protection settings.
+  workflow. ⚠️ Being visible is not being blocking: run
+  `make check-branch-protection` to see whether this check is actually required
+  on `develop` (it is not, yet — issue #933).
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -265,7 +325,7 @@ The solution uses a modular architecture with the main template (`template.yaml`
 - CloudWatch Alarms and Dashboard
 - Web UI Infrastructure (CloudFront, S3 for static assets, CodeBuild)
 - Authentication (Cognito User Pool, Identity Pool)
-- AppSync GraphQL API (for UI-backend communication)
+- API Gateway REST API + dispatcher Lambda (for UI-backend communication)
 
 **Unified Pattern Stack** (`patterns/unified/template.yaml`) - Processing resources:
 - Step Functions State Machine (BDA branch + Pipeline branch + shared tail)
@@ -354,7 +414,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
   - `pip install -e "lib/idp_common_pkg[extraction]"` - Extraction support (includes optional agentic mode with deterministic table parsing tool)
   - `pip install -e "lib/idp_common_pkg[evaluation]"` - Evaluation support
   - `pip install -e "lib/idp_common_pkg[all]"` - everything
-- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, AppSync integration, Reporting, BDA integration
+- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, API adapter (`idp_common.api_adapter`, the REST dispatcher's resolver-event adapter), Reporting, BDA integration
 - Configuration management via DynamoDB
 - Document models and data structures
 - Extraction features:
@@ -378,7 +438,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
 - Vite build system
 - Node.js 22.12+ and npm required
 - Authentication via AWS Amplify v6 and Cognito
-- Real-time document status via AppSync GraphQL subscriptions
+- Document status via REST polling of the tracking table (`src/ui/src/hooks/use-polling.ts`); chat tokens stream from a Lambda Function URL
 - Location: `src/ui/`
 
 ## Configuration System
@@ -437,7 +497,10 @@ Ensure Docker is running and you have ECR permissions when building Pattern-2.
 The codebase maintains GovCloud compatibility:
 - Use `arn:${AWS::Partition}:` instead of hardcoded `arn:aws:`
 - Use `${AWS::URLSuffix}` instead of hardcoded `amazonaws.com`
-- Validation enforced via `make check-arn-partitions`
+- Validation enforced via `make check-arn-partitions`, which runs in `lint`,
+  `fastlint` and `lint-cicd` (so both CIs) over every template discovered by
+  content, except those under `scripts/sdlc/cfn/` — see the `ARN_PARTITION_EXEMPT`
+  note above
 
 ### Nested Stacks
 
@@ -472,6 +535,9 @@ Testing samples available in `samples/`:
 - `scripts/sdlc/validate_buildspec.py` - Validates CodeBuild buildspec files
 - `scripts/sdlc/validate_service_role_permissions.py` - Verifies IAM service role permissions
 - `scripts/sdlc/typecheck_pr_changes.py` - Type checks only changed files in PRs
+- `scripts/sdlc/check_branch_protection.py` - Checks that `develop`'s required
+  status checks match the jobs the workflows actually run (`make
+  check-branch-protection`; opt-in, read-only GitHub API, see issue #933)
 
 ## AWS Access for Live Troubleshooting
 
@@ -522,7 +588,7 @@ Request access to these models in Amazon Bedrock before deployment:
 - Amazon SQS
 - Amazon DynamoDB
 - Amazon CloudWatch
-- AWS AppSync
+- Amazon API Gateway (UI ⇄ backend REST API; optionally the UI's S3-proxy host)
 - Amazon Cognito
 - Amazon CloudFront
 - Amazon EventBridge
@@ -574,7 +640,9 @@ that domain:
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |
 | `.claude/skills/pr-review.md` | Reviewing an external GitHub PR or GitLab MR at a URL (e.g. `review <url>`) |
+| `.claude/skills/repo-quality-review.md` | Holistic **whole-repository** quality review, re-runnable as periodic QA ("review the whole repo", "how healthy is this codebase?") — ten dimensions fanned out one subagent each, the offline measurement commands that produce the baseline numbers, and the two recurring defect classes (a control that exists but is never consulted; a fix applied to the instance and not the class). Read-only by construction; needs the Agent tool authorized explicitly |
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |
+| `.claude/skills/sync-pii-anonymizer.md` | Re-syncing the **vendored** copy of `awslabs/pii-anonymizer` at `feature-platform/pii-anonymizer/hook/vendor/` after upstream fixes a bug or adds a feature — diff against the commit pinned in `PROVENANCE.md`, re-copy only the documented document closure via `resync.sh` (never audio, handlers, infra or observability), chase newly-added intra-project imports that grow the closure, then verify nothing excluded leaked in |
 | `.claude/skills/create-hf-dataset-pr.md` | Contributing a data/label correction to an external HuggingFace dataset via a community PR (parquet key-order gotcha, verification, review artifacts) |
 | `.claude/skills/testing-qa.md` | Writing tests, pytest patterns, moto, conftest setup |
 | `.claude/skills/release-validation.md` | **Validating a published release end to end in one request** ("validate the 0.6.8 release") — every live tier (security snapshot, deploy variants, `--headless`/`--govcloud` transforms, in-place upgrade, release benchmark A/B) plus the offline battery; writes `docs/release-validation/v<X>.md`, `security/test-results/<X>/` and the benchmark audit, and opens the two PRs. The umbrella over the per-tier skills below |

@@ -450,7 +450,6 @@ Resources:
                       - cloudformation.amazonaws.com
                       - lambda.amazonaws.com
                       - states.amazonaws.com
-                      - appsync.amazonaws.com
                       - bedrock.amazonaws.com
               # Service-linked roles
               - Effect: Allow
@@ -506,7 +505,15 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:idp-*'
                   - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:idp-*:*'
-              # AppSync - required for cleanup
+              # AppSync - cleanup of PRE-MIGRATION leftovers only.
+              # No current template creates an AppSync API: the UI now calls an
+              # API Gateway REST API (the APIRESOLVERSTACK nested stack), and zero
+              # AWS::AppSync::* resources exist anywhere in the repo. These three
+              # read/delete actions exist solely so the orphan reaper
+              # (cleanup_appsync_apis() in lib/idp_sdk/idp_sdk/_core/cleanup_orphaned.py)
+              # can still find and delete GraphQL APIs left behind by stacks created
+              # before the migration. Do not read this grant as evidence the pipeline
+              # deploys AppSync, and do not add create/update actions here.
               - Effect: Allow
                 Action:
                   - appsync:ListGraphqlApis

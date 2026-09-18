@@ -1,11 +1,20 @@
 # Applying the Feature Platform to the main IDP stack
 
 This document describes the exact, minimal changes needed to wire the
-`subscription-features/feature-platform/main-stack-extensions/` pieces into the real
-`template.yaml` + `nested/appsync/`. **None** of these changes have been
-applied yet — this is the integration plan.
+`feature-platform/main-stack-extensions/` pieces into the real `template.yaml`
+and `nested/api-resolvers/`.
 
-All changes are gated by a new **`EnableFeaturePlatform`** parameter so the
+> **Status:** this integration has since been applied — `template.yaml` declares
+> `EnableFeaturePlatform`, the `IsFeaturePlatformEnabled` condition and the
+> `FeaturePlatformStack` nested stack, and the schema fragment is merged into
+> `nested/api-resolvers/src/api/schema.graphql`. The steps below are kept as the
+> reference for what the wiring consists of. They have also been updated because
+> AWS AppSync was removed: the UI ⇄ backend transport is now an API Gateway REST
+> API with a dispatcher Lambda (see
+> [`docs/migration-appsync-to-rest.md`](../../docs/migration-appsync-to-rest.md)),
+> and no AppSync resources exist in any template.
+
+All changes are gated by the **`EnableFeaturePlatform`** parameter so the
 main stack behaves identically for existing deployments that don't opt in.
 
 ---
@@ -21,7 +30,7 @@ Parameters:
     Default: 'false'
     AllowedValues: ['true', 'false']
     Description: When 'true', the main stack deploys the Feature Platform
-      extensions — InstalledFeatures table, 4 AppSync resolvers, and a
+      extensions — InstalledFeatures table, the feature resolver Lambdas, and a
       prefix-scoped WebUIBucket policy allowing feature stacks to publish
       their UI bundles. Off by default.
 
@@ -52,7 +61,7 @@ Conditions:
 
 ## 2. Nested-stack invocation
 
-Add near the existing `GraphQLApi` / `AppSyncNestedStack` resource:
+Add near the existing `APIRESOLVERSTACK` nested-stack resource:
 
 ```yaml
 Resources:
@@ -60,12 +69,13 @@ Resources:
     Type: AWS::CloudFormation::Stack
     Condition: IsFeaturePlatformEnabled
     Properties:
-      TemplateURL: !Sub 'https://${ArtifactBucketName}.s3.${AWS::Region}.amazonaws.com/${ArtifactPrefix}/feature-platform.yaml'
+      TemplateURL: ./feature-platform/main-stack-extensions/.aws-sam/packaged.yaml
       Parameters:
         MainStackName: !Ref AWS::StackName
-        GraphQLApiId: !GetAtt GraphQLApi.ApiId
-        GraphQLApiArn: !GetAtt GraphQLApi.Arn
-        AppSyncApiUrl: !GetAtt GraphQLApi.GraphQLUrl
+        # No API id/ARN/URL is passed: the six UI-facing fields are wired the
+        # other way round. The nested stack returns its resolver function ARNs
+        # as plain Outputs, and the main template forwards them into
+        # APIRESOLVERSTACK's dispatcher field→function map parameters.
         UserPoolId: !Ref UserPool
         WebUIBucketName: !Ref WebUIBucket
         WebUIBucketArn: !GetAtt WebUIBucket.Arn
@@ -79,24 +89,32 @@ Resources:
 
 The template file must be uploaded alongside the Lambda bundles to the same
 artifact bucket as the rest of the main-stack assets (same mechanism that
-already publishes `nested/appsync/template.yaml` et al.).
+already publishes `nested/api-resolvers/template.yaml` et al.).
 
-## 3. AppSync schema merge
+## 3. Schema merge
 
-The main schema `nested/appsync/src/api/schema.graphql` gains the feature
-platform types. Copy the contents of
-[`appsync/feature-platform.graphql`](appsync/feature-platform.graphql) into
-the main schema file, keeping the BEGIN/END marker comments intact so the
-block can be lifted back out. The fragment uses `extend type Query` and
-`extend type Mutation`, so it can be appended at the bottom of the main
-schema without conflicting with the existing `Query` and `Mutation`
-definitions.
+The schema of record, `nested/api-resolvers/src/api/schema.graphql`, gains the
+feature platform types. Copy the contents of
+[`appsync/feature-platform.graphql`](appsync/feature-platform.graphql) — the
+`appsync/` directory name is vestigial, kept only to avoid churning the path —
+into that file, keeping the BEGIN/END marker comments intact so the block can be
+lifted back out. The fragment uses `extend type Query` and `extend type
+Mutation`, so it can be appended at the bottom without conflicting with the
+existing `Query` and `Mutation` definitions.
 
-> **Gotcha**: if `EnableFeaturePlatform=false` at deploy time, the schema
-> still compiles because the types are never referenced from any resolver —
-> AppSync accepts unreachable type definitions. The feature resolvers in the
-> `FeaturePlatformStack` are the only things that break without the nested
-> stack, and those are condition-guarded.
+Nothing serves this schema at runtime any more; it is the source of truth for
+two build-time gates. `scripts/sdlc/scan_api_rbac.py` derives each field's
+required Cognito groups from its `@aws_cognito_user_pools(cognito_groups: [...])`
+directive and checks the resolvers enforce them, and
+`scripts/sdlc/generate_api_validation_spec.py` compiles the argument signatures
+into the dispatcher's `api_validation_spec.json`. A feature field that is not
+declared here therefore has no RBAC expectation and no argument validation.
+
+> **Gotcha**: if `EnableFeaturePlatform=false` at deploy time, the extra type
+> definitions are harmless — nothing parses the schema at runtime, and the two
+> gates above read the source tree rather than a deployed stack, so they are
+> unaffected by the toggle. The feature resolvers in the `FeaturePlatformStack` are the only things that break
+> without the nested stack, and those are condition-guarded.
 
 ## 4. WebUIBucket policy merge
 
@@ -143,17 +161,25 @@ WebUIBucketPolicy:
 > possible but requires more changes in the feature stack; this policy is
 > already sufficient for a trusted-admin-installs-feature scenario.)
 
-## 5. IAM: grant RegisterFeatureLambda the right to be invoked by other stacks
+## 5. IAM: let feature stacks invoke the install-hook resolvers
 
-The `RegisterFeatureFunction` produced by the nested stack is already
-invokable via AppSync (Lambda data source). Feature stacks call it
-**indirectly** by signing a GraphQL mutation with their own IAM role, so no
-additional cross-stack Lambda policy is needed.
+Feature stacks call the install-hook resolvers **directly**: the feature
+stack's `ui-deployer` custom-resource Lambda issues `lambda:Invoke` on the
+resolver function ARN. (This replaced the older indirection, where the feature
+stack signed a SigV4 GraphQL mutation against the main stack's AppSync API.)
 
-The feature-stack author grants their `RegisterFeature` custom-resource
-Lambda `appsync:GraphQL` on the main stack's GraphQL API — the Export
-`<MainStackName>-AppSyncApiArn` published by the nested stack gives them
-the ARN to reference.
+The feature-stack author grants their own custom-resource role
+`lambda:InvokeFunction` on the ARN imported from the host — see
+`feature-platform/feature-template/template.yaml`, which imports
+`<MainStackName>-RegisterFeatureFunctionArn` both as the policy `Resource` and
+as the `REGISTER_FEATURE_FUNCTION_ARN` environment variable. The same pattern
+applies to `-RegisterFeatureHooksFunctionArn` and
+`-ApplyFeatureConfigPresetFunctionArn`. No resource-based policy is needed on
+the host side, because the caller is in the same account.
+
+The invocation payload is unchanged from the AppSync era — the resolver event
+shape `{info: {fieldName}, arguments, identity}` — so the resolver Lambdas did
+not have to be rewritten.
 
 ## 6. (Optional) Main-stack outputs used by feature stacks
 
@@ -163,12 +189,21 @@ Already covered: the nested `FeaturePlatformStack` publishes these Exports:
 |----------------------------------------|-----------------------|
 | `<MainStackName>-WebUIBucketName`      | Feature ui-deployer   |
 | `<MainStackName>-WebUIBucketArn`       | Feature ui-deployer   |
-| `<MainStackName>-AppSyncApiUrl`        | Feature CR            |
-| `<MainStackName>-AppSyncApiArn`        | Feature CR role       |
+| `<MainStackName>-RegisterFeatureFunctionArn` | Feature ui-deployer CR (direct invoke) + its role |
+| `<MainStackName>-RegisterFeatureHooksFunctionArn` | Feature CR that registers pipeline hooks |
+| `<MainStackName>-ApplyFeatureConfigPresetFunctionArn` | Feature CR that bundles a config preset |
 | `<MainStackName>-UserPoolId`           | Feature API authorizer|
-| `<MainStackName>-RegisterFeatureLambdaArn` | (future: direct invoke path) |
-| `<MainStackName>-InstalledFeaturesTableName` | (future: direct-write path) |
-| `<MainStackName>-InstalledFeaturesTableArn`  | (future: direct-write path) |
+| `<MainStackName>-UserPoolClientId`     | Feature API authorizer (JWT audience) |
+| `<MainStackName>-InstalledFeaturesTableName` | Feature/host reads of the install registry |
+| `<MainStackName>-InstalledFeaturesTableArn`  | Scoped DynamoDB grants on that table |
+
+The nested stack also re-exports the host's Tracking/Configuration/Users tables
+and the Input/Output/Working/Discovery/Reporting/TestSet bucket names for
+features that need scoped access to them; see the `Outputs` section of
+`template.yaml` for the authoritative list. Note that the six **UI-facing**
+resolver ARNs are deliberately *not* exported — they are plain Outputs the main
+template reads with `!GetAtt FeaturePlatformStack.Outputs.<X>` and forwards into
+the dispatcher's field→function map.
 
 Feature stacks declare parameters for `MainStackName` and use
 `Fn::ImportValue` to pull the rest.
@@ -180,9 +215,10 @@ Feature stacks declare parameters for `MainStackName` and use
 - [ ] Add `EnableFeaturePlatform` + 5 related parameters to `template.yaml`
 - [ ] Add `IsFeaturePlatformEnabled` condition
 - [ ] Add `FeaturePlatformStack` nested-stack resource
-- [ ] Append BEGIN/END-bracketed GraphQL fragment into `nested/appsync/src/api/schema.graphql`
+- [ ] Append BEGIN/END-bracketed schema fragment into `nested/api-resolvers/src/api/schema.graphql`
+- [ ] Forward the six UI-facing resolver ARNs from `FeaturePlatformStack.Outputs` into `APIRESOLVERSTACK`'s dispatcher field→function map parameters
 - [ ] Insert feature-platform statement into `WebUIBucketPolicy`
-- [ ] Publish `cfn/feature-platform.yaml` + the 4 lambda directories to the artifact bucket during `publish.py`
+- [ ] Publish `feature-platform/main-stack-extensions/template.yaml` + the lambda directories to the artifact bucket during `publish.py`
 - [ ] Deploy stack with `EnableFeaturePlatform=true` in a dev account and run Phase E e2e tests
 
 ## Rollback
@@ -193,4 +229,4 @@ If the feature platform needs to be removed:
    the DDB table is **retained** (`DeletionPolicy: Retain`) so installed
    features are preserved for future re-enable.
 2. Remove the `StringLike` statement from `WebUIBucketPolicy`.
-3. (Optional) Remove the BEGIN/END block from the GraphQL schema.
+3. (Optional) Remove the BEGIN/END block from `schema.graphql`.
