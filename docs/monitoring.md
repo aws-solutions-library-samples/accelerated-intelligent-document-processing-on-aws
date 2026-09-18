@@ -292,8 +292,9 @@ reaches the same recipients.
 
 The stack creates an **email** subscription on `AlertsTopic` for the address you
 passed as the `AdminEmail` parameter — the same address that receives the
-temporary Cognito password. Before release 0.6.9 it created no subscription at
-all: the topic ARN was emitted as the `SNSAlertsTopicARN` stack output and an
+temporary Cognito password. Before release 0.6.9 there was no subscription to
+`AlertsTopic` — other topics in the solution had one, this one did not: the topic
+ARN was emitted as the `SNSAlertsTopicARN` stack output and an
 operator was tacitly expected to subscribe by hand, so a default deployment
 raised alarms nobody saw ([issue #922](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/922)).
 
