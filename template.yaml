@@ -7679,9 +7679,12 @@ Resources:
         - !Ref AlertsTopic
 
   # A document that reaches DocumentQueueDLQ has exhausted the redrive policy on
-  # DocumentQueue — maxReceiveCount 1000 against a 30s visibility timeout, so
-  # roughly 8 hours of retries — and no execution ever succeeded for it. Nothing
-  # else reports this: the document never completed, so ExecutionsFailed and
+  # DocumentQueue — maxReceiveCount 500 against DocumentQueue's 60s visibility
+  # timeout, so roughly 8 hours of retries — and no execution ever succeeded for
+  # it. (The 1000/30s this comment used to quote was wrong twice over: 1000 is
+  # DiscoveryQueue's maxReceiveCount, and 30s is DocumentQueueDLQ's own
+  # visibility timeout, not DocumentQueue's.)
+  # Nothing else reports this: the document never completed, so ExecutionsFailed and
   # ExecutionTime have no datapoint for it and both AWS/States alarms read OK.
   # Threshold 0 / one period: a message here is rare and every one is a lost
   # document, so there is nothing to tune and no reason to wait.

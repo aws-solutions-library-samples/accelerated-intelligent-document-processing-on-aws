@@ -81,7 +81,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Planning & Security
 
-- [Well-Architected Framework Assessment](./well-architected.md) - Analysis based on AWS Well-Architected Framework
+- [Well-Architected Framework Review](./well-architected.md) - What the solution implements per pillar, plus a checklist template you fill in for your own deployment
 - [AWS Services & IAM Roles](./aws-services-and-roles.md) - AWS services used and IAM role requirements
 - [API Gateway Hosting](./apigateway-hosting.md) - Serve the full Web UI from the existing API Gateway REST API (S3 proxy), within a VPC when combined with `ApiGatewayVisibility=PRIVATE` (alternative to CloudFront)
 - [GovCloud Deployment](./govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)
