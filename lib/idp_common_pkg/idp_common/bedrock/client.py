@@ -210,16 +210,28 @@ def lambda_hook_metering_name(lambda_arn: str) -> str:
     could never reach it: both shipped hook rows resolved to "unpriced" (see
     GitHub issue #926 / PR #952).
 
-    Accepts, and returns the bare function name for, all three configurable
+    Accepts, and returns the bare function name for, all four configurable
     forms: a full ARN, a full ARN with an alias or version suffix
-    (``...:function:name:PROD``), and an already-bare function name.
+    (``...:function:name:PROD``), an already-bare function name, and a bare
+    ``name:alias`` / ``name:version`` partial reference.
+
+    That last form is why the ``:``-split runs unconditionally rather than only
+    inside the ``:function:`` branch. Lambda accepts ``GENAIIDP-hook:PROD`` as an
+    invocation target and nothing in ``model_lambda_hook_arn``'s documentation
+    forbids configuring it, but it carries no ``:function:`` to key off — so it
+    used to pass through whole and produce the key
+    ``.../lambda_hook/GENAIIDP-hook:PROD``, which the '/'-only suffix walk cannot
+    split and which therefore resolved to NULL with an UNPRICED warning. The
+    unconditional split is safe because a Lambda function name may not contain a
+    colon, so there is no legal name for it to truncate.
     """
     name = lambda_arn
     if ":function:" in name:
-        # Drop everything up to and including ':function:', then any
-        # alias/version suffix that follows the name.
-        name = name.split(":function:")[-1].split(":")[0]
-    return name
+        # Drop everything up to and including ':function:'.
+        name = name.split(":function:")[-1]
+    # Drop any alias/version qualifier. Applies to both an ARN-derived name and a
+    # bare 'name:alias' partial reference.
+    return name.split(":")[0]
 
 
 def is_claude_effort_model(model_id: str) -> bool:
@@ -2401,12 +2413,14 @@ class BedrockClient:
                 "Configure the Lambda function ARN in the configuration."
             )
 
-        # Validate Lambda function name starts with GENAIIDP-
-        # Extract function name from ARN (last segment after ':function:')
+        # Validate Lambda function name starts with GENAIIDP-.
+        # The ARN -> function-name parse is lambda_hook_metering_name's, not a
+        # second copy of it: two copies of one rule is how the UI's copy of the
+        # pricing lookup drifted from the backend's (see PR #952). The
+        # ':function:' guard is kept so this validation's scope is unchanged — a
+        # bare function name is still not checked here.
         if ":function:" in lambda_arn:
-            func_name_part = lambda_arn.split(":function:")[-1]
-            # Handle alias/version suffix (function:name:alias)
-            func_name = func_name_part.split(":")[0]
+            func_name = lambda_hook_metering_name(lambda_arn)
             if not func_name.startswith("GENAIIDP-"):
                 raise ValueError(
                     f"Lambda function name must start with 'GENAIIDP-'. "

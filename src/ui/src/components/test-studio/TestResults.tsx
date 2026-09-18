@@ -37,7 +37,7 @@ import { formatConfigVersionLink } from './utils/configVersionUtils';
 import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/MetricInfo';
 import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
 import ClassificationErrorsPanel from './ClassificationErrorsPanel';
-import { asFiniteNumber, formatCostUsd, formatUnitCostUsd } from './formatCost';
+import { asFiniteNumber, costCellLabels, formatCostUsd } from './formatCost';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
@@ -818,24 +818,10 @@ const ComprehensiveBreakdown = ({
 
                   const cost = (details.estimated_cost as number) || 0;
                   const unitCost = asFiniteNumber(details.unit_cost);
-                  // Three states, not two, and they must not be collapsed:
-                  //
-                  //  - unit_cost NULL  => genuinely UNPRICED. Nothing in the
-                  //    pricing table covers this service, so the cost of this row
-                  //    is unknown and the run total is an understatement.
-                  //  - unit_cost 0     => metered but NOT CHARGEABLE. Rows like
-                  //    `totalTokens` and `requests` are counts; nothing is billed.
-                  //  - unit_cost > 0   => a real charge.
-                  //
-                  // The NULL test has to come FIRST. NULL unit_cost implies NULL
-                  // estimated_cost, which `|| 0` turns into 0, so a single
-                  // "cost === 0 && (unitCost === null || unitCost === 0)" test
-                  // swallowed the unpriced case into the not-chargeable one and
-                  // rendered it as '—'. The 'Not priced' label below was
-                  // unreachable, and an unpriced service looked free — which is
-                  // the reading GitHub issue #926 set out to eliminate.
-                  const isUnpriced = unitCost === null;
-                  const isNotChargeable = !isUnpriced && unitCost === 0 && cost === 0;
+                  // Unpriced / not-chargeable / charged are three distinct states
+                  // that must not collapse to two; costCellLabels holds that rule
+                  // and its ordering, and is unit-tested in formatCost.test.ts.
+                  const labels = costCellLabels(unitCost, cost);
                   contextSubtotal += cost;
 
                   costItems.push({
@@ -843,8 +829,8 @@ const ComprehensiveBreakdown = ({
                     serviceApi: `${service}/${api}`,
                     unit: (details.unit as string) || unit,
                     value: (details.value as string) || 'N/A',
-                    unitCost: isUnpriced ? 'Not priced' : isNotChargeable ? '—' : formatUnitCostUsd(unitCost),
-                    estimatedCost: isUnpriced ? 'Not priced' : isNotChargeable ? '—' : cost > 0 ? formatCostUsd(cost) : 'N/A',
+                    unitCost: labels.unitCost,
+                    estimatedCost: labels.estimatedCost,
                     sortOrder: 0, // Regular items
                   });
                 });

@@ -488,6 +488,15 @@ class TestLambdaHookMeteringName:
             ("GENAIIDP-my-hook", "GENAIIDP-my-hook"),
             # A name containing a dot or dash is not truncated.
             ("my.hook-v2", "my.hook-v2"),
+            # A bare 'name:alias' partial reference — the fourth form Lambda
+            # accepts as an invocation target, and the one this function used to
+            # pass through whole because it carries no ':function:' to key off.
+            # The resulting key '.../lambda_hook/GENAIIDP-my-hook:PROD' cannot be
+            # split by the '/'-only pricing suffix walk, so the row resolved to
+            # NULL. A function name may not contain a colon, so truncating at the
+            # first one cannot damage a legal name.
+            ("GENAIIDP-my-hook:PROD", "GENAIIDP-my-hook"),
+            ("GENAIIDP-my-hook:42", "GENAIIDP-my-hook"),
         ],
     )
     def test_every_configurable_form_reduces_to_the_function_name(

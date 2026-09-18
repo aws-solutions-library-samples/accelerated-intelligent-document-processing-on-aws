@@ -383,14 +383,18 @@ _COVERAGE_EXEMPT = {
 }
 
 # Entries that legitimately carry only inputTokens/outputTokens, with the reason
-# each cache unit is absent. Every one of these model IDs is absent from
-# ``bedrock.client.CACHEPOINT_SUPPORTED_MODELS``, so the client strips cache
-# markers before the call and cacheReadInputTokens is always 0 — the rate is
-# unreachable, not merely unpublished. None of them caches implicitly either
-# (the implicit cachers are the OpenAI gpt-5.4/5.5/6-astra models, and none of
-# those is selectable here). If any of these is later added to
-# CACHEPOINT_SUPPORTED_MODELS, it must get real cache rates and come off this
-# list — which is what this test will then demand.
+# each cache unit is absent. Two conditions have to hold for the rate to be
+# unreachable rather than merely unpublished, and
+# test_no_cache_units_allowlist_matches_cachepoint_support asserts BOTH:
+#   1. absent from ``bedrock.client.CACHEPOINT_SUPPORTED_MODELS``, so the client
+#      strips cache markers before the call; and
+#   2. not an implicit cacher per ``bedrock.prompt_cache.model_caches_implicitly``,
+#      since those models cache with no cachePoint sent at all (the implicit
+#      cachers are the OpenAI gpt-5.4/5.5/6-astra models, and none of those is
+#      selectable here).
+# Either one failing means cacheReadInputTokens can be nonzero with no rate to
+# price it, so the model must get real cache rates and come off this list — which
+# is what that test will then demand.
 _NO_CACHE_UNITS_EXPECTED = {
     "us.amazon.nova-premier-v1:0": "not in CACHEPOINT_SUPPORTED_MODELS",
     "amazon.nova-lite-v1:0": "bare GovCloud ID; GovCloud caching unverified",
@@ -626,32 +630,84 @@ def test_no_cache_units_allowlist_matches_cachepoint_support():
     escape hatch: an entry whose reason begins with "verified live:" documents a
     MEASURED observation that the profile does not actually cache despite being
     listed, which no static check can derive. Anything else must be absent.
+
+    There are TWO independent ways a model can emit cache units, and the
+    allowlist's claim is that the rate is *unreachable*, which needs both ruled
+    out. A model absent from CACHEPOINT_SUPPORTED_MODELS never receives a Converse
+    ``cachePoint`` block — but the models in
+    ``prompt_cache._IMPLICIT_CACHE_BASE_NAMES`` cache without one, and
+    ``prompt_cache`` records ``openai.gpt-6-astra`` emitting
+    ``cacheReadInputTokens=2707`` while absent from CACHEPOINT_SUPPORTED_MODELS.
+    The two sets are genuinely disjoint concepts, so an implicit cacher could be
+    allowlisted on the strength of the CACHEPOINT check alone and its cache reads
+    would then silently cost $0.00. Current exposure is zero — all three implicit
+    base names are ``openai.*`` and no allowlisted id is — so this half of the
+    assertion is a forward guard, not a live finding.
     """
     from idp_common.bedrock.client import CACHEPOINT_SUPPORTED_MODELS
+    from idp_common.bedrock.prompt_cache import (
+        _IMPLICIT_CACHE_BASE_NAMES,
+        model_caches_implicitly,
+    )
 
-    # Sanity-check the import target before drawing conclusions from it: an empty
-    # or renamed list would make every assertion below pass vacuously.
+    # Sanity-check both import targets before drawing conclusions from them: an
+    # empty or renamed list, or a predicate that answered the same way for every
+    # input, would make the assertions below pass vacuously.
+    #
+    # The implicit-cache predicate is probed in BOTH directions rather than by
+    # asserting the constant is non-empty. `assert _IMPLICIT_CACHE_BASE_NAMES` was
+    # the obvious way to write that and it is dead code: the constant is a literal
+    # `tuple[str, str, str]`, so the expression is statically always true, which
+    # basedpyright reports as reportAssertAlwaysTrue. Probing the predicate covers
+    # the empty-tuple case anyway, because indexing `[0]` would raise IndexError.
     assert len(CACHEPOINT_SUPPORTED_MODELS) > 20, (
         "CACHEPOINT_SUPPORTED_MODELS looks wrong "
         f"({len(CACHEPOINT_SUPPORTED_MODELS)} entries); this test would pass "
         "vacuously"
     )
-
-    contradictory = sorted(
-        model_id
-        for model_id, reason in _NO_CACHE_UNITS_EXPECTED.items()
-        if model_id in CACHEPOINT_SUPPORTED_MODELS
-        and not reason.startswith("verified live:")
+    assert model_caches_implicitly(f"us.{_IMPLICIT_CACHE_BASE_NAMES[0]}-v1:0"), (
+        "model_caches_implicitly no longer recognises its own base names "
+        f"({_IMPLICIT_CACHE_BASE_NAMES}); the implicit-cache half of this test "
+        "would pass vacuously"
     )
-    assert not contradictory, (
+    assert not model_caches_implicitly(
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    ), (
+        "model_caches_implicitly answers True for a model that caches only when "
+        "sent a cachePoint; the implicit-cache half of this test would fail for "
+        "every model rather than for the right ones"
+    )
+
+    contradictory = []
+    implicit = []
+    for model_id, reason in _NO_CACHE_UNITS_EXPECTED.items():
+        excused = reason.startswith("verified live:")
+        if model_id in CACHEPOINT_SUPPORTED_MODELS and not excused:
+            contradictory.append(model_id)
+        # No "verified live:" escape hatch here: that hatch records a measurement
+        # that a cachePoint had no effect, which says nothing about whether the
+        # model caches implicitly on its own.
+        if model_caches_implicitly(model_id):
+            implicit.append(model_id)
+
+    assert not sorted(contradictory), (
         "these models are in bedrock.client.CACHEPOINT_SUPPORTED_MODELS, so the "
         "client will send cachePoint markers and they WILL emit "
         "cacheReadInputTokens/cacheWriteInputTokens — but "
         f"_NO_CACHE_UNITS_EXPECTED excuses them from having cache rates: "
-        f"{contradictory}. Add the real cache rates to "
+        f"{sorted(contradictory)}. Add the real cache rates to "
         "config_library/pricing.yaml and remove the entry, or — if you have "
         "MEASURED that this profile does not cache in practice — restate the "
         "reason starting with 'verified live:'."
+    )
+    assert not sorted(implicit), (
+        "these models cache IMPLICITLY per "
+        "bedrock.prompt_cache.model_caches_implicitly, so they emit "
+        "cacheReadInputTokens with no cachePoint sent and regardless of "
+        "CACHEPOINT_SUPPORTED_MODELS — but _NO_CACHE_UNITS_EXPECTED excuses them "
+        f"from having cache rates, which prices those reads at $0.00: "
+        f"{sorted(implicit)}. Add the real cache rates to "
+        "config_library/pricing.yaml and remove the entry."
     )
 
 
@@ -696,6 +752,11 @@ def test_no_cache_units_allowlist_matches_cachepoint_support():
         # A bare function name, which the config also accepts.
         ("GENAIIDP-mistral-ocr-hook", 0.004),
         ("GENAIIDP-cohere-parse-hook", 0.0015),
+        # A bare 'name:alias' partial reference — also a valid Lambda invocation
+        # target, and the one form that still leaked a ':' into the key and so
+        # still resolved to NULL after the ARN cases were fixed.
+        ("GENAIIDP-mistral-ocr-hook:PROD", 0.004),
+        ("GENAIIDP-cohere-parse-hook:7", 0.0015),
     ],
 )
 def test_shipped_lambda_hook_rows_resolve_to_their_per_page_price(

@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { asFiniteNumber, formatCostUsd, formatUnitCostUsd } from '../formatCost';
+import { asFiniteNumber, costCellLabels, formatCostUsd, formatUnitCostUsd } from '../formatCost';
 
 describe('formatUnitCostUsd', () => {
   it('renders a price of exactly $2.40 without floating point noise', () => {
@@ -80,11 +80,46 @@ describe('asFiniteNumber', () => {
     // The old code used a truthiness check, so a real 0 unit cost rendered as
     // 'None' — indistinguishable from not being priced at all. The table uses that
     // distinction to decide whether a row is a count ('—') or a zero-priced
-    // charge; see the isUnpriced branch in TestResults.
+    // charge; see costCellLabels below, which consumes exactly this distinction.
     expect(asFiniteNumber(0)).toBe(0);
     expect(asFiniteNumber(undefined)).toBeNull();
     expect(asFiniteNumber(null)).toBeNull();
     expect(asFiniteNumber('')).toBeNull();
     expect(asFiniteNumber('n/a')).toBeNull();
+  });
+});
+
+describe('costCellLabels', () => {
+  it('labels an unpriced service as such in BOTH columns, not as free', () => {
+    // The regression this exists to pin. A service with no pricing entry writes
+    // SQL NULL to both unit_cost and estimated_cost; the caller's `|| 0` turns
+    // the cost into 0, so a not-chargeable test written as
+    // `cost === 0 && (unitCost === null || unitCost === 0)` — or simply ordered
+    // before the null test — matches here and renders '—'. An unpriced service
+    // then reads as a free count, which is the misreading GitHub issue #926 set
+    // out to eliminate, and the run total silently understates.
+    expect(costCellLabels(null, 0)).toEqual({ unitCost: 'Not priced', estimatedCost: 'Not priced' });
+    // NULL unit cost with a non-zero cost should not exist, but if the two ever
+    // disagree the unpriced label still wins: it is the honest one.
+    expect(costCellLabels(null, 1.25)).toEqual({ unitCost: 'Not priced', estimatedCost: 'Not priced' });
+  });
+
+  it('labels a metered-but-not-chargeable row with an em dash, not $0.0000', () => {
+    // `totalTokens` and `requests` are counts that every Bedrock row meters and
+    // no pricing row charges. The entry exists, so this is a real 0 rather than
+    // a pricing gap, and it must not read as 'Not priced' either.
+    expect(costCellLabels(0, 0)).toEqual({ unitCost: '—', estimatedCost: '—' });
+  });
+
+  it('formats a real charge as money in both columns', () => {
+    expect(costCellLabels(2.4e-7, 0.0123)).toEqual({ unitCost: '$0.00000024', estimatedCost: '$0.0123' });
+  });
+
+  it('keeps a priced row priced even when its measured cost rounds to nothing', () => {
+    // A priced unit whose count is 0 is charged at a known rate: the unit column
+    // must still show the rate rather than collapsing to '—', so the reader can
+    // tell "we know this costs $0.00000024 and used none of it" from "we do not
+    // know what this costs".
+    expect(costCellLabels(2.4e-7, 0)).toEqual({ unitCost: '$0.00000024', estimatedCost: 'N/A' });
   });
 });
