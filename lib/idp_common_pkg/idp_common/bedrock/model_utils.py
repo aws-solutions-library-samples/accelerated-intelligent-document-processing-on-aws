@@ -77,6 +77,59 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
     return model_id, None
 
 
+# The suffix that selects Anthropic's 1M-token context beta. Like a service-tier
+# suffix (``:flex``, ``:priority``), it is stripped before Bedrock is called —
+# ``parse_model_id`` removes a tier and passes it as ``converse_params
+# ["serviceTier"]``, while this one is replaced by the ``context-1m-2025-08-07``
+# beta header. What separates them is pricing, not the wire format: a service
+# tier re-prices *every* request made in it (flex 0.5x, priority 1.75x) and has
+# its own ``config_library/pricing.yaml`` entries, whereas the 1M window carries
+# no price difference at all.
+LONG_CONTEXT_SUFFIX = ":1m"
+
+
+def metering_model_id(model_id: str) -> str:
+    """
+    Reduce a configured model ID to the identity that should appear in a
+    metering key (and therefore drive cost reporting).
+
+    A suffix belongs in a metering key only when it names a different price. A
+    service tier does: ``:flex`` and ``:priority`` are priced differently per
+    token for the whole request, and they have their own
+    ``config_library/pricing.yaml`` entries, so they are kept.
+
+    ``:1m`` does not. It opts the request into the 1M-token context window, which
+    Anthropic prices at the standard per-token rates on Claude 4.6 and later —
+    the only models the suffix is offered on here — so there is no second rate for
+    the key to select (see the long-context note in ``config_library/pricing.yaml``
+    for the citation). The suffix is also not sent to Bedrock: the client removes
+    it and passes the ``context-1m-2025-08-07`` beta header, so a key that carries
+    it names something that was never invoked. Collapsing it keeps one price per
+    model instead of two entries holding identical rates, and stops a premium rate
+    card being reintroduced under a key nothing invoked — which is exactly the
+    defect in issue #899, where ``:1m`` entries carried a flat 2x input / 1.5x
+    output premium (the rate card of the earlier Sonnet 4 / 4.5 1M beta, which
+    never applied to these models) and overstated every reported cost on them.
+
+    Examples:
+        >>> metering_model_id("us.anthropic.claude-sonnet-5:1m")
+        'us.anthropic.claude-sonnet-5'
+
+        >>> metering_model_id("us.amazon.nova-2-lite-v1:0:flex")
+        'us.amazon.nova-2-lite-v1:0:flex'
+
+    Args:
+        model_id: The configured model ID, possibly with a ``:1m`` suffix
+
+    Returns:
+        The model ID to use in the metering key. Anything else (including an
+        empty value or an ARN) is returned unchanged.
+    """
+    if model_id and model_id.endswith(LONG_CONTEXT_SUFFIX):
+        return model_id[: -len(LONG_CONTEXT_SUFFIX)]
+    return model_id
+
+
 def resolve_model_id_from_arn(model_id: str) -> str:
     """
     Reduce a Bedrock model ARN to the model ID it names.

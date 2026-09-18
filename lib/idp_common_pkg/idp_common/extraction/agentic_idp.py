@@ -47,7 +47,10 @@ from idp_common.bedrock.client import (
     is_grok_model,
     strips_sampling_params,
 )
-from idp_common.bedrock.model_utils import get_model_max_output_tokens
+from idp_common.bedrock.model_utils import (
+    get_model_max_output_tokens,
+    metering_model_id,
+)
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.topk_resolver import resolve_candidates
@@ -474,7 +477,15 @@ def _date_format_error_fields(exc: Exception) -> set[str]:
         return set()
     fields: set[str] = set()
     for err in entries:
-        if not str(err.get("type", "")).startswith("date_"):
+        # Pydantic v2 emits ``date_parsing`` / ``date_from_datetime_parsing``
+        # for ``format: date`` fields AND ``datetime_parsing`` /
+        # ``datetime_from_date_parsing`` for ``format: date-time`` fields.
+        # A prefix check on ``"date_"`` alone missed the entire
+        # date-time family, so schemas that model timestamps with
+        # ``format: date-time`` got no diagnostic and the agent had to
+        # re-emit every row by hand instead of applying a transform.
+        err_type = str(err.get("type", ""))
+        if not (err_type.startswith("date_") or err_type.startswith("datetime_")):
             continue
         leaf = [p for p in err.get("loc", ()) if not isinstance(p, int)]
         if leaf:
@@ -2326,8 +2337,16 @@ async def structured_output_async(
 
     # Return best effort result
     if result and response:
-        # Build metering dict with token usage
-        metering_dict = {f"{context}/bedrock/{model_id}": BedrockUsage(**token_usage)}
+        # Build metering dict with token usage. As at the Converse site in
+        # bedrock/client.py, the key names the model actually invoked: a ``:1m``
+        # suffix is a beta header rather than part of the model ID, and the 1M
+        # context window it selects carries no price premium, so it names no
+        # separate rate. See issue #899.
+        metering_dict = {
+            f"{context}/bedrock/{metering_model_id(model_id)}": BedrockUsage(
+                **token_usage
+            )
+        }
 
         # Include table parsing stats if tool was used
         tool_stats = agent.state.get("table_parsing_stats")

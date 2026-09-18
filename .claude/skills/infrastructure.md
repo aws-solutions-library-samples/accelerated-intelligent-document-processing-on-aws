@@ -264,11 +264,26 @@ IAM role, update BOTH in the same PR:**
    (service tables + deployment/runtime role scopes).
 2. **`iam-roles/cloudformation-management/`** — the example CloudFormation
    service role. Its `IDP-Cloudformation-Service-Role.yaml` is a *real
-   deployable policy* (a flat list of `service:*` grants) and its `README.md`
-   documents that list service-by-service. A new top-level AWS service usually
-   means a new `service:*` line in the YAML **and** a new row in the README
+   deployable policy* and its `README.md` documents it service-by-service. A new
+   top-level AWS service usually means a new `service:*` line in the
+   `IDPAcceleratorPermissions` policy **and** a new row in the README
    tables/accordions. (This README is repo-only by design — it is NOT published
    to the Starlight doc site; do not move it into `docs/`.)
+
+   ⚠️ **The IAM half of that template is not a flat wildcard list and must not
+   become one** (see
+   [#927](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/927)).
+   `iam:CreateRole` and the other role-mutating actions are scoped to the
+   `ManagedStackNamePrefix` name pattern and conditioned on
+   `iam:PermissionsBoundary`; `iam:PassRole` is scoped and carries
+   `iam:PassedToService`; four explicit `Deny` statements stop the boundary being
+   stripped, the boundary policy being edited, the service role editing itself,
+   and IAM user/access-key creation. `scripts/sdlc/validate_service_role_permissions.py`
+   now **fails** on an IAM write granted on `Resource: "*"` without a boundary
+   condition, and on a `PassRole` without `iam:PassedToService` — run it after any
+   edit to that file. Note also that the IAM `Null` condition operator must be
+   written quoted (`'Null':`): unquoted, YAML resolves the key to the null scalar
+   and the rendered policy is invalid.
 
 Triggers that REQUIRE a doc update:
 - A new `AWS::IAM::Role` / `AWS::IAM::ManagedPolicy`, or a new service principal.

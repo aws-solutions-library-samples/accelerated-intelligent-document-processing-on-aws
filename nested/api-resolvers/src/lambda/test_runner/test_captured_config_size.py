@@ -150,6 +150,116 @@ class TestTheRunItemStoresTheConfigurationCompressed:
         )
         assert not isinstance(body["Config"]["extraction"]["temperature"], str)
 
+    def test_large_but_float_finite_decimals_are_serialised_not_crashed(
+        self, runner
+    ):
+        """The integer-test branch used to be ``value % 1 == 0``, which
+        raises ``decimal.InvalidOperation`` (``DivisionImpossible``) on
+        Decimals whose coefficient exceeds the current context precision
+        (default 28 digits) — but ``Decimal('1E30')`` and similar are
+        finite floats (``1e+30`` is well inside float64's range) that
+        must NOT crash ``startTestRun``. The prior overflow-check fix
+        left this middle case unprotected: ``float()`` says "fine, that
+        fits", then ``value % 1`` raises anyway.
+
+        ``value == value.to_integral_value()`` is a rounding-only op
+        with no context-precision requirement, so it never trips on
+        this path. Verify:
+
+        * a large integer-valued Decimal (``1E30``) returns ``int`` and
+          does not crash — the regression-guard case;
+        * a small non-integer Decimal (``0.85``) still returns ``float``
+          — the pre-change happy path stayed intact.
+        """
+        # Regression case: previously raised DivisionImpossible on the
+        # modulo. Must return int(10**30) cleanly.
+        result = runner._json_default(Decimal("1E30"))
+        assert result == 10**30
+        assert isinstance(result, int)
+
+        # Happy path: non-integer Decimals still coerce to float.
+        result = runner._json_default(Decimal("0.85"))
+        assert result == 0.85
+        assert isinstance(result, float)
+
+    def test_subnormal_decimal_raises_rather_than_silently_truncating_to_zero(
+        self, runner
+    ):
+        """``Decimal('1E-500')`` is finite (``is_finite()`` returns True) but
+        ``float()`` underflows it to ``0.0`` — silent numeric truncation
+        that persists to the compressed config. Similarly a huge Decimal
+        like ``Decimal('1E500')`` overflows to ``inf`` on ``float()``,
+        which JSON cannot represent. Both paths must raise loudly rather
+        than round-trip a corrupted value.
+        """
+        with pytest.raises(ValueError, match="underflows to 0.0"):
+            runner._json_default(Decimal("1E-500"))
+        with pytest.raises(ValueError, match="overflows"):
+            runner._json_default(Decimal("1E500"))
+
+    def test_non_finite_decimals_raise_a_clear_error_not_invalid_operation(
+        self, runner
+    ):
+        """A ``Decimal("NaN")`` in a captured config used to fail
+        ``startTestRun`` with ``decimal.InvalidOperation`` — ``value % 1``
+        raises that before the modulo comparison is even evaluated —
+        which surfaces as a cryptic stack trace hiding what's wrong.
+        Non-finite decimals cannot round-trip through JSON at all, so the
+        default now raises ``ValueError`` naming the offending value.
+        """
+        with pytest.raises(ValueError, match="non-finite Decimal"):
+            runner._json_default(Decimal("NaN"))
+        with pytest.raises(ValueError, match="non-finite Decimal"):
+            runner._json_default(Decimal("Infinity"))
+        with pytest.raises(ValueError, match="non-finite Decimal"):
+            runner._json_default(Decimal("-Infinity"))
+
+    def test_common_python_types_get_explicit_converters_not_str_fallback(
+        self, runner
+    ):
+        """``datetime`` / ``UUID`` / ``bytes`` / ``set`` are common enough
+        that reasonable configs may carry them. Historically they went
+        through a blanket ``str(value)`` fallback that corrupted the
+        round-trip (``str(bytes)`` emits ``"b'...'"``, not decodable).
+        A prior round replaced that with ``raise TypeError`` for ALL
+        non-Decimal types, which broke previously-working configs at
+        ``startTestRun``. The right shape is EXPLICIT converters for
+        these four types with documented round-trip semantics.
+        """
+        import datetime as _dt
+        import uuid as _uuid
+
+        # datetime → ISO-8601 string (round-trips as string, not datetime,
+        # but that's how DDB itself hands date-like fields back)
+        assert (
+            runner._json_default(_dt.datetime(2026, 9, 18, 12, 30, 45))
+            == "2026-09-18T12:30:45"
+        )
+        assert runner._json_default(_dt.date(2026, 9, 18)) == "2026-09-18"
+
+        # UUID → its string form (canonical round-trip via uuid.UUID(str))
+        u = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+        assert runner._json_default(u) == "12345678-1234-5678-1234-567812345678"
+
+        # bytes → base64 (preserves round-trip; ``str(b'...')`` would not)
+        assert runner._json_default(b"raw-bytes") == "cmF3LWJ5dGVz"
+
+        # set → sorted list of scalars, or list otherwise
+        assert runner._json_default({3, 1, 2}) == [1, 2, 3]
+
+    def test_genuinely_unknown_types_still_raise_loudly(self, runner):
+        """Any type that isn't Decimal + one of the common-native
+        converters above should still raise ``TypeError`` — the point
+        was to surface unexpected types, and that guarantee holds for
+        anything outside the explicit converter list.
+        """
+
+        class Weird:
+            pass
+
+        with pytest.raises(TypeError, match="not JSON-serialisable"):
+            runner._json_default(Weird())
+
     def test_queryable_attributes_stay_top_level(self, runner):
         _store(runner, {"Config": _large_config(2)})
 
@@ -193,8 +303,51 @@ class TestTheResultsResolverReadsBothStorageShapes:
 
         read_back = results_resolver._get_test_run_config(item["TestRunId"])
 
+        # ``_get_test_run_config`` normalizes Decimals to float/int at
+        # its own boundary via ``convert_decimals``, so the caller sees
+        # a JSON-serialisable dict — but the read INSIDE
+        # ``_captured_config_of`` now uses ``parse_float=Decimal`` for
+        # type-symmetry with the legacy-inline path (see the direct
+        # boundary test ``test_captured_config_of_returns_decimal``
+        # below). Comparing here against the double-roundtripped shape
+        # asserts the end-to-end invariant callers depend on.
         expected = json.loads(json.dumps(config, default=runner._json_default))
         assert read_back == expected
+
+    def test_captured_config_of_returns_decimal_symmetrically_across_storage_formats(
+        self, runner, results_resolver
+    ):
+        """``_captured_config_of`` sits below ``_get_test_run_config``'s
+        Decimal→float normalization and returns the raw config shape any
+        future direct-caller sees. Both storage formats must yield the
+        same TYPE for non-integer numbers so a caller that switches on
+        ``isinstance(x, Decimal)`` — or does equality against a
+        ``Decimal`` literal — doesn't branch differently based on
+        storage format.
+
+        The legacy-inline path returns Decimals naturally (DDB's
+        resource client hands numbers back that way); the compressed
+        path now uses ``parse_float=Decimal`` to match.
+        """
+        # Compressed path
+        _store(runner, {"Config": _large_config(2)})
+        compressed_item = _stored_item(runner)
+        compressed = results_resolver._captured_config_of(compressed_item)
+        threshold_c = compressed["Config"]["classes"][0]["attributes"][0][
+            "confidence_threshold"
+        ]
+        assert isinstance(threshold_c, Decimal), (
+            "compressed path must return Decimals so it matches the "
+            "legacy-inline path — downstream isinstance() checks otherwise "
+            "branch differently across storage formats"
+        )
+
+        # Legacy-inline path
+        legacy_item = {
+            "Config": {"Config": {"threshold": Decimal("0.85")}},
+        }
+        legacy = results_resolver._captured_config_of(legacy_item)
+        assert isinstance(legacy["Config"]["threshold"], Decimal)
 
     def test_a_run_created_before_this_change_still_reads_inline(
         self, results_resolver

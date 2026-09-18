@@ -32,6 +32,11 @@ _PAYLOAD = "a: !!python/object/apply:os.system ['true']"
 # (module, loader attribute) for every CFN loader in the SDLC harness.
 _LOADERS = [
     ("validate_service_role_permissions", "CFNLoader"),
+    # The same module's second loader, which PRESERVES intrinsic operand text so
+    # the hardening checks can see a `!Sub` ARN. It must satisfy exactly the same
+    # safety properties as the collapse-to-None one: preserving more of the
+    # document is only acceptable while every value it yields is plain data.
+    ("validate_service_role_permissions", "PatternCFNLoader"),
     ("test_iam_trust_policy_partitions", "CfnLoader"),
     # The ConfigSchema sweeps (sibling `order` uniqueness, and the IDPConfig <->
     # UI-schema parity gate that reuses this loader) parse both full templates.

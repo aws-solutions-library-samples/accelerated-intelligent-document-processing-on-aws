@@ -33,13 +33,24 @@ _REPO_ROOT = os.path.join(os.path.dirname(__file__), "../../../..")
 
 
 def _load(module_name, rel_path):
-    """Load a resolver's index.py as a fresh module by absolute path."""
-    spec = importlib.util.spec_from_file_location(
-        module_name, os.path.join(_REPO_LAMBDA, rel_path)
-    )
+    """Load a resolver's index.py as a fresh module by absolute path.
+
+    The resolver's own directory goes on ``sys.path`` for the duration of the
+    exec, because that is where Lambda puts it: a resolver may import a sibling
+    module by bare name (``from log_sanitizer import ...``) and that resolves at
+    runtime only because the handler's directory is the package root. Loading
+    the file by path alone does not reproduce that, so without this the import
+    fails here while working in the deployed function.
+    """
+    path = os.path.join(_REPO_LAMBDA, rel_path)
+    spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    sys.path.insert(0, os.path.dirname(path))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
     return module
 
 

@@ -15,6 +15,7 @@ import pytest
 
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
+    DocumentEvaluationResult,
     SectionEvaluationResult,
 )
 from idp_common.evaluation.service import EvaluationService
@@ -155,6 +156,136 @@ class TestSticklerEvaluationService:
         model = svc._get_stickler_model("Form")
         assert model.match_threshold == 0.85
 
+    def test_provenance_capture_configured_vs_auto_inferred(self):
+        """Comparator Changes panel needs to know, per attribute, whether the
+        applied comparator was operator-configured or Stickler-inferred.
+        ``model_factory.get_stickler_model`` stashes ``spec.explain()`` on
+        ``model_class.__idp_explain__`` — one leaf has an operator-authored
+        method, another lets Stickler's native inference fire, and the
+        stashed dict should show both cases side by side.
+        """
+        config = {
+            "classes": [
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$id": "mix",
+                    "x-aws-idp-document-type": "Mix",
+                    "type": "object",
+                    "properties": {
+                        # Operator-configured: mapper translates to
+                        # x-aws-stickler-comparator, Stickler marks "explicit".
+                        "agency_name": {
+                            "type": "string",
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": 0.9,
+                        },
+                        # Un-annotated — infer-unspecified flag fires, name-token
+                        # rule picks Exact for the ``*_id`` suffix.
+                        "invoice_id": {"type": "string"},
+                        # Un-annotated numeric — type + name-token both point at
+                        # Numeric.
+                        "total_amount": {"type": "number"},
+                    },
+                }
+            ]
+        }
+        svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+        model_class = svc._get_stickler_model("Mix")
+        explain = getattr(model_class, "__idp_explain__", None)
+        assert isinstance(explain, dict), (
+            "model_factory must stash Stickler's spec.explain() output as "
+            "__idp_explain__ on the built model class"
+        )
+        # Configured leaf: source is ``explicit`` (operator's translated
+        # ``x-aws-stickler-comparator`` reached Stickler).
+        assert explain["agency_name"]["source"] == "explicit"
+        assert explain["agency_name"]["comparator"] == "FuzzyComparator"
+        # Un-annotated leaves: source is one of Stickler's inference labels
+        # (``type`` or ``name-token``), never ``explicit``.
+        assert explain["invoice_id"]["source"] in ("type", "name-token")
+        assert explain["total_amount"]["source"] in ("type", "name-token")
+        # And the picker actually used the name-token rule for both.
+        assert explain["invoice_id"]["comparator"] == "ExactComparator"
+        assert explain["total_amount"]["comparator"] == "NumericComparator"
+
+    def test_inference_source_survives_to_dict_round_trip(self):
+        """End-to-end regression for the ``results.json`` writer.
+
+        Both the ``inference_source`` dataclass field on
+        ``AttributeEvaluationResult`` and the resolver flow that reads it
+        from ``results.json`` are already covered — but nothing asserted
+        that the writer, ``DocumentEvaluationResult.to_dict()``, emits the
+        field into the JSON blob it produces. The first shipped iteration
+        of this feature omitted the field from ``to_dict``'s explicit
+        allowlist, so every provenance value made it as far as the
+        section-evaluation result and then vanished at the serialization
+        boundary — leaving the Test Studio Comparator Changes panel
+        source-blind in production even though every unit test passed.
+
+        This test round-trips a full ``evaluate_section`` -> ``to_dict``
+        pipeline for a doc with one operator-configured and one
+        un-annotated leaf, and asserts BOTH ``inference_source`` values
+        appear in the serialized attribute dict — the shape the resolver
+        actually reads.
+        """
+        from unittest.mock import patch
+
+        config = {
+            "classes": [
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$id": "roundtrip",
+                    "x-aws-idp-document-type": "Roundtrip",
+                    "type": "object",
+                    "properties": {
+                        "agency_name": {
+                            "type": "string",
+                            "x-aws-idp-evaluation-method": "FUZZY",
+                            "x-aws-idp-evaluation-threshold": 0.9,
+                        },
+                        "invoice_id": {"type": "string"},
+                    },
+                }
+            ]
+        }
+        svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+        section = Section(
+            section_id="1",
+            classification="Roundtrip",
+            page_ids=["1"],
+            confidence=1.0,
+            extraction_result_uri="s3://bucket/expected.json",
+        )
+        payload = {"agency_name": "Acme Media", "invoice_id": "INV-42"}
+        with (
+            patch(
+                "idp_common.evaluation.service.s3.get_json_content",
+                return_value={"inference_result": payload},
+            ),
+            patch("idp_common.evaluation.service.s3.write_content"),
+        ):
+            section_result = svc.evaluate_section(
+                section=section, expected_results=payload, actual_results=payload
+            )
+        # Wrap into the document-level dataclass so ``to_dict`` uses the same
+        # code path that ``EvaluationService`` uses to write ``results.json``.
+        doc_result = DocumentEvaluationResult(
+            document_id="test-doc",
+            section_results=[section_result],
+            overall_metrics={},
+            execution_time=0.0,
+            output_uri="s3://bucket/results.json",
+        )
+        serialized = doc_result.to_dict()
+        attrs = {a["name"]: a for a in serialized["section_results"][0]["attributes"]}
+        # The writer MUST carry both provenance keys through — the resolver
+        # reads them off ``results.json`` and the panel goes source-blind
+        # if either is absent.
+        assert "inference_source" in attrs["agency_name"]
+        assert "inference_source" in attrs["invoice_id"]
+        assert attrs["agency_name"]["inference_source"] == "configured"
+        assert attrs["invoice_id"]["inference_source"] == "auto-inferred"
+
     def test_idp_llm_comparator_registered_via_public_api(self):
         """R5: IDPLLMComparator is registered under a distinct name in Stickler's
         registry (no private-dict rewrite of the built-in LLMComparator)."""
@@ -265,6 +396,69 @@ class TestSticklerEvaluationService:
         while typing.get_args(annotation):
             annotation = typing.get_args(annotation)[0]
         assert getattr(annotation, "match_threshold", None) == 0.55
+
+    def test_list_match_threshold_reaches_display_and_verdict(self):
+        """Regression: after Stickler 1.0 moved ``x-aws-stickler-match-threshold``
+        off the array field onto the item object, the reader in
+        ``stickler_backend.results`` must unwrap arrays to find the key —
+        otherwise both the ``Method`` display and the empty-rows verdict
+        fallback collapse to the document-level default (0.8), silently
+        overriding the configured value.
+
+        Pins the fix by evaluating a section against a config with a
+        configured list-match-threshold and asserting the display carries
+        it through to ``evaluation_method``.
+        """
+        from unittest.mock import patch
+
+        config = {
+            "classes": [
+                {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "$id": "reg",
+                    "x-aws-idp-document-type": "Reg",
+                    "x-aws-idp-evaluation-match-threshold": 0.8,
+                    "type": "object",
+                    "properties": {
+                        "Items": {
+                            "type": "array",
+                            "x-aws-idp-evaluation-match-threshold": 0.55,
+                            "items": {
+                                "type": "object",
+                                "properties": {"sku": {"type": "string"}},
+                            },
+                        }
+                    },
+                }
+            ]
+        }
+        svc = EvaluationService(region="us-east-1", config=config, max_workers=1)
+        section = Section(
+            section_id="1",
+            classification="Reg",
+            page_ids=["1"],
+            confidence=1.0,
+            extraction_result_uri="s3://bucket/expected.json",
+        )
+        payload = {"Items": [{"sku": "A"}]}
+        with (
+            patch(
+                "idp_common.evaluation.service.s3.get_json_content",
+                return_value={"inference_result": payload},
+            ),
+            patch("idp_common.evaluation.service.s3.write_content"),
+        ):
+            result = svc.evaluate_section(
+                section=section, expected_results=payload, actual_results=payload
+            )
+        list_attr = next(a for a in result.attributes if a.name == "Items")
+        # The display must carry the field-level 0.55 through, not
+        # collapse to the document-level 0.80.
+        assert "0.55" in list_attr.evaluation_method, (
+            f"Expected list-level match threshold 0.55 in display, "
+            f"got {list_attr.evaluation_method!r}"
+        )
+        assert "0.80" not in list_attr.evaluation_method
 
     def test_stickler_model_not_found(self, service):
         """Test error when Stickler model not found for class."""

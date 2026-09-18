@@ -27,7 +27,9 @@ from botocore.exceptions import (
 from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
 from .model_utils import (
+    LONG_CONTEXT_SUFFIX,
     get_model_max_output_tokens,
+    metering_model_id,
     parse_max_tokens_limit_from_error,
     parse_model_id,
     resolve_model_id_from_arn,
@@ -1476,10 +1478,13 @@ class BedrockClient:
                         ", ".join(ASTRA_EFFORT_LEVELS),
                     )
 
-        # Add 1M context headers if needed
+        # Add 1M context headers if needed. ``:1m`` is not a model ID Bedrock
+        # knows, so it is replaced by the beta header here; metering_model_id()
+        # removes the same suffix for the metering key below, which keeps the key
+        # naming exactly what was invoked.
         use_model_id = model_id
-        if model_id and model_id.endswith(":1m"):
-            use_model_id = model_id[:-3]  # Remove ':1m'
+        if model_id and model_id.endswith(LONG_CONTEXT_SUFFIX):
+            use_model_id = metering_model_id(model_id)
             if additional_model_fields is None:
                 additional_model_fields = {}
             additional_model_fields["anthropic_beta"] = ["context-1m-2025-08-07"]
@@ -1684,11 +1689,14 @@ class BedrockClient:
             # returns structured members too (e.g. ``cacheDetails``, a list of
             # per-TTL cache-write breakdowns) and metering values are summed
             # (merge_metering_data) and priced (save_reporting_data) as numbers.
+            # The key names what was actually invoked, so a ``:1m`` suffix is
+            # dropped (metering_model_id) — it is a beta header, not a model, and
+            # the 1M context window it selects is priced at the standard rates.
             usage = response.get("usage", {})
             response_with_metering = {
                 "response": response,
                 "metering": {
-                    f"{context}/bedrock/{model_id}": {
+                    f"{context}/bedrock/{metering_model_id(model_id)}": {
                         **numeric_usage(usage),
                         "requests": 1,
                     }

@@ -1,0 +1,402 @@
+{
+  "_comment": "GENERATED FILE - do not edit. Required Cognito groups per API operation, enforced by the dispatcher (authz.py). Source of truth: scripts/api_rbac_expectations.yaml. Regenerate with scripts/sdlc/generate_api_rbac_manifest.py.",
+  "generated_from": "scripts/api_rbac_expectations.yaml",
+  "operations": {
+    "abortTestRuns": [
+      "Admin",
+      "Author"
+    ],
+    "abortWorkflow": [
+      "Admin",
+      "Author"
+    ],
+    "addDocumentsToTestSet": [
+      "Admin"
+    ],
+    "addDocumentsToTestSetFromUpload": [
+      "Admin",
+      "Author"
+    ],
+    "addTestSet": [
+      "Admin"
+    ],
+    "addTestSetFromUpload": [
+      "Admin",
+      "Author"
+    ],
+    "autoDetectSections": [
+      "Admin",
+      "Author"
+    ],
+    "calculateCapacity": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "checkFeatureEntitlement": "ANY",
+    "claimReview": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "clearDraftLabels": [
+      "Admin",
+      "Author"
+    ],
+    "compareDocumentVersions": "ANY",
+    "compareTestRuns": [
+      "Admin",
+      "Author"
+    ],
+    "completeSectionReview": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "copyToBaseline": [
+      "Admin",
+      "Author"
+    ],
+    "createEmptyTestSet": [
+      "Admin",
+      "Author"
+    ],
+    "createFinetuningJob": [
+      "Admin",
+      "Author"
+    ],
+    "createUser": [
+      "Admin"
+    ],
+    "deleteAgentJob": "ANY",
+    "deleteChatSession": "ANY",
+    "deleteConfigProfileRevision": [
+      "Admin"
+    ],
+    "deleteConfigVersion": [
+      "Admin"
+    ],
+    "deleteDiscoveryJob": [
+      "Admin",
+      "Author"
+    ],
+    "deleteDocument": [
+      "Admin",
+      "Author"
+    ],
+    "deleteDocumentVersion": [
+      "Admin"
+    ],
+    "deleteFinetuningJob": [
+      "Admin",
+      "Author"
+    ],
+    "deleteTestSets": [
+      "Admin",
+      "Author"
+    ],
+    "deleteTests": [
+      "Admin",
+      "Author"
+    ],
+    "deleteUser": [
+      "Admin"
+    ],
+    "estimateReviewEffort": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
+    "generateDraftLabels": [
+      "Admin",
+      "Author"
+    ],
+    "generateRuleJson": [
+      "Admin",
+      "Author"
+    ],
+    "getAgentJobStatus": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "getAnnotationQueue": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
+    "getChatMessages": "ANY",
+    "getCircuitBreakerStatus": "ANY",
+    "getConfigProfileRevision": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "getConfigVersion": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Viewer"
+    ],
+    "getConfigVersions": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "getConfigurationLibraryFile": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "getDocument": "ANY",
+    "getDocumentCount": "ANY",
+    "getDocumentVersion": "ANY",
+    "getDraftLabelJob": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
+    "getFeatureLaunchUrl": [
+      "Admin"
+    ],
+    "getFileContents": "ANY",
+    "getFilePresignedUrl": "ANY",
+    "getFinetuningJob": "ANY",
+    "getLatestPublishedVersion": "ANY",
+    "getModelConfigLimits": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "getMyProfile": "ANY",
+    "getPricing": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "getSampleDocumentUrl": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "getStepFunctionExecution": "ANY",
+    "getTestRun": [
+      "Admin",
+      "Author"
+    ],
+    "getTestRunStatus": [
+      "Admin",
+      "Author"
+    ],
+    "getTestRuns": [
+      "Admin",
+      "Author"
+    ],
+    "getTestSetDocuments": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
+    "getTestSetVersions": [
+      "Admin",
+      "Author"
+    ],
+    "getTestSets": [
+      "Admin",
+      "Author"
+    ],
+    "labelConfigProfileRevision": [
+      "Admin",
+      "Author"
+    ],
+    "listAgentJobs": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "listAvailableAgents": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "listBucketFiles": [
+      "Admin"
+    ],
+    "listCatalogFeatures": "ANY",
+    "listChatSessions": "ANY",
+    "listConfigProfileRevisions": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "listConfigurationLibrary": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "listDiscoveryJobs": [
+      "Admin",
+      "Author"
+    ],
+    "listDocumentVersions": "ANY",
+    "listDocuments": "ANY",
+    "listDocumentsByDateRange": "ANY",
+    "listDocumentsDateHour": "ANY",
+    "listDocumentsDateShard": "ANY",
+    "listFinetuningJobs": "ANY",
+    "listInstalledFeatures": "ANY",
+    "listSampleDocuments": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "listUsers": [
+      "Admin"
+    ],
+    "openTestSetAnnotationDraft": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
+    "pauseCircuitBreaker": [
+      "Admin"
+    ],
+    "probeCircuitBreaker": [
+      "Admin"
+    ],
+    "processChanges": [
+      "Admin",
+      "Reviewer"
+    ],
+    "publishTestSetVersion": [
+      "Admin",
+      "Author"
+    ],
+    "queryKnowledgeBase": "ANY",
+    "reextractTestSetDocument": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
+    "releaseReview": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "removeDocumentsFromTestSet": [
+      "Admin",
+      "Author"
+    ],
+    "reprocessDocument": [
+      "Admin",
+      "Author"
+    ],
+    "resetTestSetLabels": [
+      "Admin"
+    ],
+    "restoreConfigProfileRevision": [
+      "Admin",
+      "Author"
+    ],
+    "restoreDefaultModelConfigLimits": [
+      "Admin"
+    ],
+    "restoreDefaultPricing": [
+      "Admin"
+    ],
+    "resumeCircuitBreaker": [
+      "Admin"
+    ],
+    "sendAgentChatMessage": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "sendChatDocumentMessage": "ANY",
+    "sendTestRunToReview": [
+      "Admin",
+      "Author"
+    ],
+    "setActiveVersion": [
+      "Admin",
+      "Author"
+    ],
+    "skipAllSectionsReview": [
+      "Admin",
+      "Reviewer"
+    ],
+    "startMultiDocDiscovery": [
+      "Admin",
+      "Author"
+    ],
+    "startTestRun": [
+      "Admin",
+      "Author"
+    ],
+    "submitAgentQuery": [
+      "Admin",
+      "Author",
+      "Viewer"
+    ],
+    "subscribeFeature": [
+      "Admin"
+    ],
+    "syncBdaIdp": [
+      "Admin",
+      "Author"
+    ],
+    "unsubscribeFeature": [
+      "Admin"
+    ],
+    "updateAgentJobStatus": "IAM_ONLY",
+    "updateConfiguration": [
+      "Admin",
+      "Author"
+    ],
+    "updateDiscoveryJobStatus": "IAM_ONLY",
+    "updateDocumentSections": [
+      "Admin",
+      "Annotator",
+      "Reviewer"
+    ],
+    "updateModelConfigLimits": [
+      "Admin"
+    ],
+    "updatePricing": [
+      "Admin"
+    ],
+    "updateTestSet": [
+      "Admin",
+      "Author"
+    ],
+    "updateTestSetDocumentSections": [
+      "Admin",
+      "Annotator",
+      "Author"
+    ],
+    "updateUser": [
+      "Admin"
+    ],
+    "uploadDiscoveryDocument": [
+      "Admin",
+      "Author"
+    ],
+    "uploadDocument": [
+      "Admin",
+      "Author"
+    ],
+    "uploadMultiDocDiscoveryZip": [
+      "Admin",
+      "Author"
+    ],
+    "uploadSampleDocument": [
+      "Admin",
+      "Author"
+    ],
+    "validateTestFileName": [
+      "Admin",
+      "Author"
+    ]
+  },
+  "version": 1
+}
