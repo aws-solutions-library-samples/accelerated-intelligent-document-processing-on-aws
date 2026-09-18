@@ -143,8 +143,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -217,6 +217,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
+	@echo "Threat model currency check"
+	@if ! make check-threat-model-currency; then \
+		echo -e "$(RED)ERROR: Threat model currency check failed (see security/threat-modeling/README.md)$(NC)"; \
+		exit 1; \
+	fi
+
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
@@ -226,6 +232,16 @@ check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all ma
 check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane Lambdas (see docs/reporting-sql-layer.md §10.3)
 	@$(PYTHON) scripts/check_data_plane_tags.py || \
 		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
+
+check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release behind VERSION, or its export is stale
+	@$(PYTHON) scripts/check_threat_model_currency.py || \
+		(echo -e "$(RED)ERROR: Threat model is overdue for re-review!$(NC)" && exit 1)
+	@# The Threat Composer export is generated from the Markdown corpus. It fell
+	@# silently out of sync before (an added threat with no STATUS entry made it
+	@# unbuildable), so the same target verifies it rebuilds byte-identical.
+	@$(PYTHON) security/threat-modeling/scripts/build_threat_model.py --check || \
+		(echo -e "$(RED)ERROR: threat-model.tc.json is stale — regenerate with$(NC)" && \
+		 echo -e "$(YELLOW)  python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && exit 1)
 
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
@@ -543,6 +559,12 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/bedrockkb/src/s3_vectors_manager && $(PYTHON) -m pytest tests -q -p no:cacheprovider
 	@echo "Running fine-tuning job creator tests (ARN partition passthrough)..."
 	cd src/lambda/finetuning_job_creator && $(PYTHON) -m pytest tests -q -p no:cacheprovider
+	@echo "Running unified state-machine structure tests (hook fail-closed ordering, retry/timeout shape)..."
+	@# These parse patterns/unified/statemachine/workflow.asl.json only — no AWS.
+	@# They were registered in scripts/run_all_tests.py but in NEITHER CI, so the
+	@# ASL invariants they pin (e.g. the HookFatalError catcher that must precede
+	@# States.ALL, #919) were unguarded on every PR.
+	$(PYTHON) -m pytest patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTHON) -m pytest config_library/test_config_library.py -q -p no:cacheprovider
 	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."

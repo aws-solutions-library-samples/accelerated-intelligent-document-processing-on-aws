@@ -1210,6 +1210,18 @@ Conditions:
   # email (keeps automated multi-stack deploys under Cognito's daily email quota).
   # Keep in sync with SUPPRESS_INVITE_ADMIN_EMAIL in scripts/sdlc/codebuild_deployment.py.
   SuppressAdminInvite: !Equals [!Ref AdminEmail, 'citest@suppress.welcome.email']
+  # Guards AlertsTopicAdminEmailSubscription. The empty-string leg is
+  # belt-and-braces -- AdminEmail's AllowedPattern already rejects "" -- and is
+  # here so relaxing that pattern cannot produce an SNS subscription with an
+  # empty Endpoint. The sentinel leg is the one that matters day to day: CI and
+  # automated multi-stack deploys pass citest@suppress.welcome.email, a domain
+  # that does not resolve, so subscribing it would queue a bounced confirmation
+  # email on every deploy for an address that can never confirm.
+  ShouldSubscribeAdminToAlerts:
+    !And [
+      !Not [ !Equals [ !Ref AdminEmail, "" ] ],
+      !Not [ !Condition SuppressAdminInvite ],
+    ]
 
   HasGuardrailConfig:
     !And [
@@ -7645,6 +7657,49 @@ Resources:
     Properties:
       DisplayName: Workflow Alerts
       KmsMasterKeyId: !Ref CustomerManagedEncryptionKey
+
+  # Thirteen of the fourteen alarms in this template publish to AlertsTopic
+  # directly; the fourteenth, BedrockServiceOutageAlarm, publishes to CircuitBreakerTopic and
+  # reaches AlertsTopic via CircuitBreakerManagerFunction, which republishes a
+  # readable message. So every alarm ends up here. For the first many releases
+  # nothing was ever subscribed to this topic: the ARN was emitted as a stack
+  # output (SNSAlertsTopicARN) and an operator was silently expected to go
+  # subscribe by hand. Nobody reads outputs looking for homework, so the default
+  # deployment alarmed into the void -- the same report-OK-by-silence failure as
+  # the KMS grant bug above, one layer further out again (GitHub issue #922).
+  # Note that a subscription to AlertsTopic is what was missing; two
+  # AWS::SNS::Subscription resources already existed elsewhere in the repository
+  # (CircuitBreakerTopicSubscription below, and FailureNotificationSubscription in
+  # scripts/sdlc/cfn/codepipeline-s3.yml, which is the working precedent for the
+  # HasNotificationEmail-style conditional email subscription used here).
+  #
+  # SNS email subscriptions are created in PendingConfirmation and deliver
+  # NOTHING until the recipient clicks the confirmation link, so this resource
+  # makes alerting reachable, not live. That caveat is documented in
+  # docs/monitoring.md; do not describe the stack as "alerting by default".
+  # A pending confirmation does not block or fail the stack operation.
+  #
+  # Additional recipients (a team distribution list, a chat webhook, PagerDuty)
+  # are added to the same topic out of band -- see docs/monitoring.md. This is
+  # deliberately one subscription and not a list parameter: the address is
+  # already collected, and a second parameter would be one more thing to get
+  # wrong for the same result.
+  #
+  # That rationale does NOT carry over to --headless, which strips the AdminEmail
+  # parameter and so collects no address at all: a headless stack keeps AlertsTopic
+  # and all fourteen alarms and gets zero subscriptions, i.e. #922 is unchanged there.
+  # Adding an optional AlertsEmail parameter to the headless variant is a
+  # deployment-interface decision, not a review fix, so it is deliberately left
+  # open rather than smuggled in here. Documented in docs/headless-deployment.md
+  # and docs/monitoring.md; do not describe #922 as closed for every mode.
+  # scripts/tests/test_alerts_topic_subscription.py pins that this exists.
+  AlertsTopicAdminEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: ShouldSubscribeAdminToAlerts
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AdminEmail
 
   # The metric name is `ExecutionsFailed`, NOT `ExecutionsFailedCount` -- the
   # latter does not exist in AWS/States, so an alarm pointed at it can never
