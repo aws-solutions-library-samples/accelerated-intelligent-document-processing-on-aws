@@ -100,7 +100,11 @@ All core document-processing functionality is retained:
 ### Monitoring & Operations
 
 - ✅ CloudWatch dashboards and metrics
-- ✅ CloudWatch alarms and SNS notifications
+- ✅ CloudWatch alarms and the `AlertsTopic` SNS topic they publish to —
+  ⚠️ but **no subscription**, so alarms notify nobody until you add one. A
+  standard deployment subscribes its `AdminEmail`; headless strips that parameter
+  and collects no address, so this is a required post-deploy step. See
+  [Who receives the alerts](./monitoring.md#who-receives-the-alerts).
 - ✅ Lambda function logging and tracing
 - ✅ Step Functions execution logging
 
@@ -336,7 +340,7 @@ The following features depend on the UI / UI REST API / Cognito stack and are th
 
 ### Operations
 
-1. **Monitoring**: CloudWatch dashboards, alarms, and SNS alerts are still deployed — subscribe your ops email to the AlertsTopic.
+1. **Monitoring**: CloudWatch dashboards and alarms are still deployed, and so is the `AlertsTopic` they publish to — but headless creates **no subscription** to it, so you must subscribe your ops email (or a distribution list, chat or pager endpoint) to the `SNSAlertsTopicARN` output yourself. Until you do, every alarm publishes successfully and notifies nobody. See [Who receives the alerts](./monitoring.md#who-receives-the-alerts).
 2. **Logging**: Configure appropriate log-retention policies for CloudWatch log groups.
 3. **Capacity**: Tune `MaxConcurrentWorkflows`, Lambda memory, and Bedrock throughput the same way as a standard deployment. See [Capacity Planning](./capacity-planning.md).
 4. **Updates**: Re-run `idp-cli deploy --headless` (optionally with `--from-code .`) to apply template or code changes.

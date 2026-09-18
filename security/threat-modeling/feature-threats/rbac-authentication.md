@@ -6,32 +6,52 @@
 |-------|-------|
 | **Document Version** | 3.2 |
 | **Last Updated** | 2026-09-18 |
+| **Applies to release** | v0.6.9 |
 | **Feature** | Role-Based Access Control & Authentication |
 | **Classification** | Internal |
 
 ## 1. Feature Overview
 
-The IDP Accelerator implements a 4-tier RBAC system using Amazon Cognito User Pools:
+The IDP Accelerator implements a **5-group** RBAC system using Amazon Cognito
+User Pools (`template.yaml`, `AWS::Cognito::UserPoolGroup` x5):
 
 | Role | Precedence | Capabilities |
 |------|-----------|--------------|
-| **Admin** | 0 (highest) | Full system access: configuration, processing, review, agent access, user management |
+| **Admin** | 0 | Full system access: configuration, processing, review, agent access, user management |
 | **Author** | 1 | Create/edit configurations, upload documents, run processing, use agents |
 | **Reviewer** | 2 | Review processed documents, HITL review tasks, view results |
-| **Viewer** | 3 (lowest) | Read-only access to processing results and dashboards |
+| **Annotator** | 3 | Ground-truth annotation, restricted to the test sets named in the user's `allowedTestSets` |
+| **Viewer** | 4 | Read-only access to processing results and dashboards |
+
+> **`Precedence` is not a hierarchy.** It is only Cognito's tiebreaker when
+> resolving which IAM role an identity assumes. Every authorization decision in
+> this system is a plain set intersection against an explicit per-operation
+> allow-list, so `Admin` is not implicitly a superset of `Author` — it is named
+> in each allow-list where it applies. Membership is additive: a user in two
+> groups holds the union of both. Reading `Precedence` as a privilege ladder is
+> the most likely way to mis-review a new operation's allow-list.
+
+> **`Annotator` cannot be granted by federation.** The external-IdP group mapping
+> recognises only Admin, Author, Reviewer and Viewer (there is no
+> `ExternalIdPAnnotatorGroupName` parameter), while 12 server-side allow-lists
+> and the UI's `APP_GROUPS` do recognise `Annotator`. In a federated deployment
+> the group must be assigned directly in Cognito, which places it outside the
+> IdP's own joiner/leaver process — an access-review gap rather than a bypass.
 
 Authorization is enforced at multiple layers:
 - **Cognito Groups**: Users assigned to groups corresponding to roles
 - **Resolver Lambdas**: Per-operation authorization checking Cognito group
   membership (and, for config-scoped ops, the caller's `allowedConfigVersions`)
 - **Lambda Functions**: Role-aware business logic
-- **UI Components**: Feature visibility based on user role
+- **UI Components**: Feature visibility based on user role — an **affordance
+  only**; every check is repeated server-side
 
-> **API architecture note (v3.0).** The UI no longer talks to AWS AppSync. It
-> now calls a single API Gateway **REST** route, `POST /op/{field}`, fronted by
-> a Cognito User Pools authorizer and WAF (private endpoint). The authorizer
-> **only authenticates** the JWT (401 for a missing/invalid token) — it performs
-> **no group evaluation**. All group/scope authorization is enforced inside the
+> **API architecture note (v3.0, re-verified against v0.6.9).** The UI no longer
+> talks to AWS AppSync. It now calls a single API Gateway **REST** route,
+> `POST /op/{field}`, fronted by a Cognito User Pools authorizer and, optionally,
+> WAF and a PRIVATE (VPC-only) endpoint. The authorizer **only authenticates**
+> the JWT (401 for a missing/invalid token) — it performs **no group
+> evaluation**. Almost all group/scope authorization is enforced inside the
 > resolver Lambdas: an HTTP dispatcher (`http_api_dispatcher`) normalizes the
 > request and invokes the same resolver Lambda that AppSync used to invoke; the
 > resolver raises `PermissionError`, which the dispatcher maps to **HTTP 403**
@@ -40,6 +60,33 @@ Authorization is enforced at multiple layers:
 > **HTTP 200**. This shifts the authorization trust boundary entirely to the
 > resolver Lambdas, which makes automated per-operation authorization testing
 > (see §5) a primary control rather than a nice-to-have.
+>
+> **Shape of that surface at v0.6.9:** **118** operations reach the single route —
+> 40 through `FIELD_FUNCTION_MAP` (an SSM-published field→Lambda map), **68**
+> through `FIELD_ALIASES` onto shared resolvers, and **11** served in-process by
+> `ddb_direct` (the former AppSync VTL resolvers). Those add to 119 rather than
+> 118 because `getCircuitBreakerStatus` is in both the function map and
+> `ddb_direct`; the distinct union is 118, matching
+> `scripts/api_rbac_expectations.yaml` entry for entry. `ddb_direct` is the one place
+> the dispatcher itself enforces groups, via its own `_REQUIRED_GROUPS` table.
+> Across all 118: 21 require `Admin`; 40 `Admin`+`Author`; 15
+> `Admin`+`Author`+`Viewer`; 7 `Admin`+`Author`+`Annotator`; 4
+> `Admin`+`Reviewer`+`Annotator`; 2 `Admin`+`Reviewer`; 1
+> `Admin`+`Author`+`Annotator`+`Viewer` (every group except `Reviewer`);
+> 2 are IAM-only (rejected for every Cognito caller); and **26 require
+> only authentication**. 13 additionally enforce config-version scope, 4 filter
+> list rows by it, and 8 enforce per-object ownership. `scripts/api_rbac_expectations.yaml`
+> is the manifest of record for all of this, and records exactly one accepted
+> open gap (**GAP-02**, `queryKnowledgeBase` carries no group check).
+>
+> **Naming trap.** The CloudFormation logical id is `HttpApi` and much of the
+> surrounding code says "HTTP API" / "JWT authorizer", but the deployed resource
+> is `AWS::ApiGateway::RestApi`. The REST authorizer places claims at
+> `requestContext.authorizer.claims` (not `.authorizer.jwt.claims`) and flattens
+> `cognito:groups` into a **comma-joined string**;
+> `idp_common.api_adapter._coerce_groups` restores the list. That coercion is
+> load-bearing for every group check in the system: getting it wrong either
+> locks every user out or admits everyone.
 
 ## 2. Architecture
 
@@ -115,7 +162,7 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | High |
 | **Affected Components** | Resolver Lambdas, `http_api_dispatcher`, `ddb_direct` handlers |
-| **Mitigations** | Comprehensive resolver-level authorization for every operation; **automated per-operation authorization testing** — a static scan and a live multi-role harness (`make api-test`, see §5) that fail on any missing/incorrect check and track known gaps; defense-in-depth `@aws_cognito_user_pools` schema directives; security review of new operations. |
+| **Mitigations** | Comprehensive resolver-level authorization for every operation; **automated per-operation authorization testing** — a static scan and a live multi-role harness (`make api-test`, see §5) that fail on any missing/incorrect check and track known gaps; security review of new operations. **Not a control:** the `@aws_cognito_user_pools` directives in `schema.graphql` are **not** defense-in-depth here — nothing enforces them at runtime now that AppSync is gone, so they carry no enforcement weight at all. They are retained as the input for the dispatcher's shape validation and as documentation of intent, and they are read by the static scan as one of the things it checks *for drift against the code*. Reading them as a second layer is exactly the mistake AUTH.T08 describes. |
 
 ### AUTH.T04: Cognito User Pool Misconfiguration
 
@@ -270,6 +317,33 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | `ChatStreamProcessorUrl` (`AWS::Lambda::Url` in `template.yaml`), `src/lambda/chat_stream_processor/app.py`, `src/lambda/agent_chat_processor/index.py`, `nested/api-resolvers/src/lambda/agent_chat_resolver/index.py`, `scripts/sdlc/scan_api_rbac.py` |
 | **Mitigations** | **Enforce at the component that does the work, not only in front of it:** `agent_chat_processor` now applies the Agent Chat group check itself, before any agent/Bedrock call and outside the handler's error-to-stream conversion, raising `PermissionError` exactly as the resolver does; the resolver forwards the caller's group claim (and only that claim), and a unit test plus a both-directions static check assert that the two group lists cannot drift apart. **This is defence in depth, not the deciding check on either path, and the entry is written that way deliberately.** On the dispatcher path the resolver refuses an unauthorized caller *before* it invokes the processor, so the processor's copy never receives one; on the streaming path the transport carries no group claim, so it has nothing to evaluate (the residual below). Its value is that the policy no longer exists in only one place: it holds if the resolver's gate is removed or bypassed, it covers any future caller that reaches the processor directly, and it becomes the load-bearing check the moment the residual is closed. To make that closure a one-line change rather than a redesign, the streaming route applies the gate **synchronously, before the response is committed** — a denial raised after `StreamingResponse` is returned could only be rendered as an error frame on an HTTP 200, which is the same error-to-stream conversion the processor's own gate was placed outside its `try` to avoid. **One identity resolution for both routes:** the transport-verified principal takes precedence, and a body-supplied identity that *contradicts* it is refused with 403 rather than silently preferred either way; both streaming routes call the same helper. **Input shape:** both routes now declare Pydantic request models, so a malformed body is rejected with a 422 before any processing and every string the processors consume is length-bounded. **Coverage:** `make api-test-static` gained Function-URL checks (S6-S9) that discover every `AWS::Lambda::Url` and its routes from the template, require each route to be declared in `scripts/api_rbac_expectations.yaml` with its authorization, and fail when a route prefers a client-supplied identity, omits the conflict refusal, or reaches a handler with no group check — verified to fail against the pre-fix sources. **Residual:** a Function URL forwards no Cognito group claim (`requestContext.authorizer.iam.cognitoIdentity` is documented as unused by Function URLs), so on that transport the processor's group gate has nothing verified to evaluate and stands down as it does for backend IAM invocations; closing that requires the browser to also present its ID token to this endpoint. The residual is wider than the group check alone: neither streaming route obtains a **per-user** identity from the transport either, because under the Cognito Identity Pool enhanced flow the assumed-role session name is a pool-wide constant (measured, not documented, so the identity helper uses a positive shape test that degrades to the body-supplied fallback rather than refusing every request if AWS changes it). That also leaves the `allowedConfigVersions` caller-scope lookup in `chat_with_document_processor` with no verified subject to resolve, so it falls back rather than failing closed. Both halves close together when the endpoint verifies an ID token. This transport exists in the **commercial partition only** — on GovCloud the UI uses the REST dispatcher plus polling, which carries the group claim — so the residual is scoped to commercial deployments. Tracked as **GAP-07** in `scripts/api_rbac_expectations.yaml` as a `residual_gap`, which is listed for auditability but does **not** downgrade any of the S6-S9 findings above; a test drives the scanner over a defective fixture tree to prove that distinction is enforced, and an unrecognised (misspelled) policy key is now a hard failure rather than a silently ignored setting. |
+### AUTH.T16: Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher)
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | AUTH.T16 |
+| **Category** | STRIDE: Elevation of Privilege |
+| **Description** | AUTH.T03 covers a resolver whose group check is *wrong*. This covers the structural reason that is easy to do: nothing requires a check to exist. The dispatcher routes any field it can resolve — 40 mapped Lambdas, 68 aliases, 11 `ddb_direct` handlers (118 distinct fields) — and, for the Lambda-routed fields, performs only argument-shape validation before invoking. A resolver that simply never consults `cognito:groups` is therefore reachable by any authenticated caller, and it fails *open* rather than closed. There is no shared enforcement primitive: three different naming conventions for the check coexist across ~40 resolvers (`_enforce_operation_group`, `_enforce_rbac`, `_caller_in_groups`), each hand-written, so "did this one get a check?" is answered per file. `ddb_direct` is the exception and enforces a table of required groups before dispatching, but its own helper returns without denying when a field has no entry. A related consequence: whether a denial becomes an HTTP 403 depends on **error-message text** — the dispatcher recognises `PermissionError`/`AuthorizationError` *or* a message beginning `Unauthorized`/`Forbidden`, and at least one resolver raises a bare `Exception` relying on that prefix, so rewording a denial message downgrades it to a 500 and it disappears from denial telemetry. |
+| **Attack Vector** | A caller holding any valid pool JWT invokes `POST /op/{field}` for an operation whose resolver was shipped without a group check. No UI path is involved. |
+| **Impact** | An unchecked operation is exercisable by every authenticated user regardless of group, up to and including operations intended for `Admin` only. |
+| **Likelihood** | Medium (the failure mode is omission during development, not an attack step) |
+| **Severity** | High |
+| **Affected Components** | `http_api_dispatcher` (`index.py`, `ddb_direct.py`), all resolver Lambdas, `scripts/api_rbac_expectations.yaml` |
+| **Mitigations** | **In place today:** the manifest-plus-scan pair is the real control — `scripts/api_rbac_expectations.yaml` declares the required groups for all 118 operations and `make api-test-static` (both CI systems) fails when an operation exists without a documented server-side check or drifts from the manifest; `make api-test` re-tests the matrix live against a real deployment with one user per group. One accepted gap is recorded (GAP-02). **Pending — do not read as present:** a default-deny gate in the dispatcher, so that an operation with no declared authorization is refused rather than forwarded, plus removal of the error-message-prefix dependency in the 403 mapping, is tracked in **issue #928** and is being implemented in a separate change. Until that merges, absence of a check means absence of enforcement, and the scan is the only thing standing between an omission and production. |
+
+### AUTH.T15: Authentication Material in Resolver Logs (Divergent Redaction Denylists)
+
+| Attribute | Value |
+|-----------|-------|
+| **Threat ID** | AUTH.T15 |
+| **Category** | STRIDE: Information Disclosure |
+| **Description** | `idp_common.utils.log_sanitizer` holds the canonical denylist of key substrings whose values must never be written to logs (18 entries, covering credential, token, key and password spellings). Ten resolver Lambdas do not import it; each carries a hand-copied 10-entry subset. The copies omit several spellings that appear in real payloads — among them the underscore and concatenated forms of access key, secret key and private key, `passwd`, and the API-key header name. A request or DynamoDB item carrying one of those keys is logged with its value intact, so credential-shaped data can reach CloudWatch Logs, where the audience is everyone with log read access rather than everyone with API access. |
+| **Attack Vector** | Not an attack step so much as an exposure: any operation whose logged payload contains one of the missed key spellings writes the value to its log group, where it persists for the retention period. |
+| **Impact** | Credential or token material readable by principals granted CloudWatch Logs access, which is a broader and less-reviewed population than the operation's own group allow-list. |
+| **Likelihood** | Medium |
+| **Severity** | Medium |
+| **Affected Components** | Ten resolver Lambdas under `nested/api-resolvers/src/lambda/`, `lib/idp_common_pkg/idp_common/utils/log_sanitizer.py`, `HttpApiDispatcherLogGroup` in `nested/api-resolvers/template.yaml` |
+| **Mitigations** | **In place today:** every resolver does redact — the sanitizer runs on the logged payload, so the exposure is limited to the key spellings the copies omit rather than to all sensitive keys; log groups are retention-bounded, and **107 of the 109** log groups declared across `template.yaml` (56), `nested/api-resolvers/template.yaml` (33) and `patterns/unified/template.yaml` (20) set `KmsKeyId` to the stack's customer-managed key — 54 via `!GetAtt CustomerManagedEncryptionKey.Arn` in the parent template and 53 via `!Ref CustomerManagedEncryptionKeyArn` in the two nested ones. `HttpApiDispatcherLogGroup` — the log group for the component every UI API request passes through, and therefore the one most likely to contain request payloads — was the exception that mattered, and PR #973 has merged, so it now declares `KmsKeyId: !Ref CustomerManagedEncryptionKeyArn` and is inside the key policy and the key's grant-level audit trail. **Not in place:** the remaining **two** do not, and both are the `StacknameCheckFunction` and `ReadPreviousIDPPatternFunction` custom-resource groups, which handle no request data; both already carry a `cfn_nag` `W84` suppression and a `checkov:skip=CKV_AWS_158` comment in the template (`template.yaml:1718` and `:2760`), so for those two the decision was recorded even though nothing enforced it. The convention is now a control rather than a habit: `scripts/tests/test_log_group_encryption.py` fails if any log group in these templates drops the property, including via an `Fn::If` branch that resolves to `AWS::NoValue`. **Do not merge this figure with the retention figure**, which is a different property of the same 109 resources: all **109** now take `RetentionInDays` from `!Ref LogRetentionDays`. `HttpApiDispatcherLogGroup` was the only one that hardcoded `30`, and the same PR changed it, so the same gate enforces retention with no exemptions at all. An earlier revision of this entry reported the retention count as though it were the encryption count, which is why both are still stated separately and labelled. **Scope:** these counts are for the three core templates only. Across every template in the repository that declares `AWSTemplateFormatVersion` outside `workshop/` there are **158** log groups, of which **26** set no `KmsKeyId` — the two here plus 24 in the `feature-platform/` stacks, the customer-deployable `samples/lambda-hook-inference/` hook stacks and the copy-me scaffolding, tracked as a follow-up in **issue #972**. The core-stack scope is the right one for this entry, because those 24 belong to optional or sample stacks a deployer opts into; the wider numbers are recorded here so the smaller ones are not read as solution-wide. **Pending — do not read as present:** replacing the ten hand-copied denylists with an import of the canonical list, so there is one list to extend, is tracked in **issue #921**. Until that merges, adding a key to the canonical list does **not** protect these ten resolvers. |
 
 ## 4. Security Controls Summary
 
@@ -277,7 +351,10 @@ flowchart TD
 |---------|---------------|-------------------|
 | **IAM protection** | Restrict Cognito admin API access | AUTH.T01 |
 | **Token management** | Short-lived tokens, secure storage | AUTH.T02, AUTH.T05, AUTH.T10 |
-| **Resolver auth** | Per-operation `cognito:groups` checks inside every resolver Lambda (the API Gateway authorizer only authenticates) | AUTH.T03, AUTH.T08 |
+| **Resolver auth** | Per-operation `cognito:groups` checks inside every resolver Lambda (the API Gateway authorizer only authenticates) | AUTH.T03, AUTH.T08, AUTH.T16 |
+| **Dispatcher-side group check** | `ddb_direct._REQUIRED_GROUPS` enforces groups for the 11 in-process handlers before dispatch (restoring what the AppSync schema directive used to gate) | AUTH.T16 |
+| **Claim normalization** | `api_adapter._coerce_groups` turns the REST authorizer's comma-joined `cognito:groups` string back into a list before any check reads it | AUTH.T03, AUTH.T16 |
+| **Log redaction** | `idp_common.utils.log_sanitizer` denylist applied to logged payloads (ten resolvers still carry narrower copies — issue #921) | AUTH.T15 |
 | **Object-level authorization** | Owner-scoped keys / `ownerSub`-vs-caller checks on user-owned resources (chat sessions, agent jobs) | AUTH.T09 |
 | **Central input-shape validation** | Dispatcher validates `arguments` against a schema-derived spec (`validation.py`); rejects unknown/missing/wrong-typed args with 400 | AUTH.T12 |
 | **Config-version scope** | `allowedConfigVersions` enforced in scope-aware resolvers; resolver IAM roles granted UsersTable GSI Query | AUTH.T07 |
@@ -288,7 +365,7 @@ flowchart TD
 | **Automated authorization testing** | `make api-test-static` (static scan of op↔schema↔expectations drift + missing checks, **including Lambda Function URL routes — S6-S9**) and `make api-test` (live multi-role + scoped-user + token-negative + **IDOR + token-lifecycle + deleted-resource + input-validation + TLS** suites, with an auditable report); known gaps tracked as WARN so real regressions fail the gate | AUTH.T03, AUTH.T07, AUTH.T08, AUTH.T09, AUTH.T10, AUTH.T11, AUTH.T12, AUTH.T14 |
 | **Transport security** | API Gateway/CloudFront TLS 1.2+ minimum, no cleartext HTTP | AUTH.T11 |
 | **Cognito config** | Self-signup off unless `AllowedSignUpEmailDomain` is set (then domain-restricted), strong passwords, email verification | AUTH.T04 |
-| **Defense-in-depth** | `@aws_cognito_user_pools` schema directives in addition to resolver checks | AUTH.T03, AUTH.T08 |
+| **Schema-vs-code drift detection** | The `@aws_cognito_user_pools` directives in `schema.graphql` are **not** a runtime control — nothing enforces them now that AppSync is gone. What *is* a control is `make api-test-static`: check **S2** asserts each directive's `cognito_groups` matches `scripts/api_rbac_expectations.yaml`, and check **S3** asserts the manifest's `enforced_in` source actually contains an enforcement pattern. A directive that disagrees with the code therefore fails the gate instead of quietly reading as protection | AUTH.T03, AUTH.T08 |
 | **Audit logging** | CloudTrail for Cognito, CloudWatch for API Gateway + resolver Lambdas | All |
 | **CSP headers** | Content Security Policy in CloudFront | AUTH.T02 |
 | **Stack isolation** | Separate Cognito pools per deployment | AUTH.T06 |

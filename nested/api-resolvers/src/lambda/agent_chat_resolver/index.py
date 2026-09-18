@@ -15,6 +15,7 @@ from datetime import datetime
 
 import boto3
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 # Configure logging
 logger = logging.getLogger()
@@ -75,40 +76,6 @@ def _forwarded_identity(event):
     return {"claims": {"cognito:groups": list(groups)}}
 
 
-# --- inline log sanitizer ---------------------------------------------------
-# Minimal inline redactor. Kept here rather than importing from idp_common to
-# avoid adding a Lambda Layer dependency to this resolver. If this file grows
-# to need idp_common anyway, promote to
-# `from idp_common.utils.log_sanitizer import sanitize_event_for_logging`.
-_LOG_SENSITIVE_KEYS = (
-    "password",
-    "secret",
-    "token",
-    "authorization",
-    "apikey",
-    "api_key",
-    "cookie",
-    "credential",
-    "claims",
-    "identity",
-)
-
-
-def _sanitize_for_log(obj):
-    """Deep-copy `obj` redacting values whose keys match the denylist."""
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            if isinstance(k, str) and any(s in k.lower() for s in _LOG_SENSITIVE_KEYS):
-                out[k] = "***REDACTED***" if v is not None else None
-            else:
-                out[k] = _sanitize_for_log(v)
-        return out
-    if isinstance(obj, list):
-        return [_sanitize_for_log(v) for v in obj]
-    return obj
-
-
 def handler(event, context):
     """
     Handle agent chat message requests from AppSync.
@@ -127,7 +94,9 @@ def handler(event, context):
     Returns:
         AgentChatMessage with role, content, timestamp, isProcessing, and sessionId
     """
-    logger.info(f"Received agent chat event: {json.dumps(_sanitize_for_log(event))}")
+    logger.info(
+        f"Received agent chat event: {json.dumps(sanitize_event_for_logging(event))}"
+    )
 
     # Defense-in-depth RBAC: Reviewer and Annotator are both excluded from Agent
     # Chat. Raise so the dispatcher maps it to 403/Unauthorized (not an opaque 500

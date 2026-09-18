@@ -80,16 +80,43 @@ def _make_users_table():
 
 @pytest.fixture
 def mod(monkeypatch):
+    """The handler module, imported with moto already active.
+
+    The mock is started HERE rather than with a `@mock_aws` decorator on each
+    test, because pytest sets fixtures up *before* it enters the decorated test
+    function: a decorator would leave this import — and anything it constructs —
+    outside the mock. That is not hypothetical. `handler.py` used to bind
+    `boto3.resource("dynamodb")` at module scope, and with an assume-role profile
+    in the ambient environment botocore deferred the `sts:AssumeRole` to the first
+    signed request, which happened inside the mock; moto served it, registered the
+    minted `ASIA…` key in its IAM backend, and thereafter resolved the caller's
+    account from that key instead of its own default. The DynamoDB query was then
+    routed to a lazily created, empty backend for that account while the tables
+    lived under moto's default account — so the FIRST DynamoDB test in the file
+    failed with `ResourceNotFoundException` and every later one passed, because
+    starting the next mock resets moto's IAM backend.
+
+    The ambient credentials are also replaced with static fakes and `AWS_PROFILE`
+    is removed, so this suite cannot resolve a real credential provider chain
+    whatever the developer's shell is set to.
+    """
     monkeypatch.setenv("AUDIT_TABLE_NAME", _AUDIT_TABLE)
     monkeypatch.setenv("MAPPING_TABLE_NAME", _MAPPING_TABLE)
     monkeypatch.setenv("USERS_TABLE_NAME", _USERS_TABLE)
     monkeypatch.setenv("MAIN_STACK_NAME", "IDP")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
-    sys.path.insert(0, str(_HANDLER_DIR))
-    sys.modules.pop("handler", None)
-    m = importlib.import_module("handler")
-    sys.path.remove(str(_HANDLER_DIR))
-    return m
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    with mock_aws():
+        sys.path.insert(0, str(_HANDLER_DIR))
+        sys.modules.pop("handler", None)
+        m = importlib.import_module("handler")
+        sys.path.remove(str(_HANDLER_DIR))
+        yield m
+        sys.modules.pop("handler", None)
 
 
 def _get(mod, path, qs=None, *, email="admin@x", groups="[Admin]"):
@@ -106,14 +133,12 @@ def _get(mod, path, qs=None, *, email="admin@x", groups="[Admin]"):
     return mod.lambda_handler(event, None)
 
 
-@mock_aws
 def test_config_route(mod):
     resp = _get(mod, "/config")
     assert resp["statusCode"] == 200
     assert json.loads(resp["body"])["feature"] == "pii-anonymizer"
 
 
-@mock_aws
 def test_report_list_and_aggregate(mod):
     table = _make_table()
     _make_users_table()
@@ -144,7 +169,6 @@ def test_report_list_and_aggregate(mod):
     assert body["rows"][0]["documentId"] == "b.pdf"
 
 
-@mock_aws
 def test_report_list_rbac_filters_scoped_user(mod):
     """A non-admin scoped to one config version sees only that version's rows."""
     table = _make_table()
@@ -177,7 +201,6 @@ def test_report_list_rbac_filters_scoped_user(mod):
     assert body["totalPiiRedacted"] == 1
 
 
-@mock_aws
 def test_report_list_fails_closed_on_scope_error(mod):
     """If the UsersTable scope lookup fails, a non-admin gets an EMPTY list."""
     table = _make_table()  # users table intentionally NOT created
@@ -194,7 +217,6 @@ def test_report_list_fails_closed_on_scope_error(mod):
     assert json.loads(resp["body"])["total"] == 0
 
 
-@mock_aws
 def test_report_detail(mod):
     table = _make_table()
     _make_users_table()
@@ -212,7 +234,6 @@ def test_report_detail(mod):
     assert json.loads(resp["body"])["redactedKey"] == "_pii_redacted/sub/dir/doc.pdf"
 
 
-@mock_aws
 def test_report_detail_rbac_denied(mod):
     """A scoped non-admin cannot read a row for a version outside their scope."""
     table = _make_table()
@@ -232,7 +253,6 @@ def test_report_detail_rbac_denied(mod):
     assert resp["statusCode"] == 403
 
 
-@mock_aws
 def test_report_detail_404(mod):
     _make_table()
     _make_users_table()
@@ -240,7 +260,6 @@ def test_report_detail_404(mod):
     assert resp["statusCode"] == 404
 
 
-@mock_aws
 def test_bad_window(mod):
     _make_table()
     _make_users_table()
@@ -280,7 +299,6 @@ def _seed_mapping_doc(audit_table, mapping_table, doc_id, original_version):
     )
 
 
-@mock_aws
 def test_mapping_denied_for_out_of_scope_user(mod):
     audit = _make_table()
     _make_users_table()
@@ -293,7 +311,6 @@ def test_mapping_denied_for_out_of_scope_user(mod):
     assert resp["statusCode"] == 403
 
 
-@mock_aws
 def test_mapping_allowed_for_in_scope_user(mod):
     audit = _make_table()
     _make_users_table()
@@ -306,7 +323,6 @@ def test_mapping_allowed_for_in_scope_user(mod):
     assert json.loads(resp["body"])["mapping"]["John Smith"] == "Jane Doe"
 
 
-@mock_aws
 def test_mapping_allowed_for_admin(mod):
     audit = _make_table()
     _make_users_table()
@@ -319,7 +335,6 @@ def test_mapping_allowed_for_admin(mod):
     assert resp["statusCode"] == 200
 
 
-@mock_aws
 def test_mapping_fails_closed_on_scope_error(mod):
     """UsersTable lookup failure must DENY the mapping (403), never allow."""
     audit = _make_table()  # users table intentionally NOT created
@@ -328,7 +343,6 @@ def test_mapping_fails_closed_on_scope_error(mod):
     assert resp["statusCode"] == 403
 
 
-@mock_aws
 def test_mapping_404_when_not_stored(mod):
     audit = _make_table()
     _make_users_table()

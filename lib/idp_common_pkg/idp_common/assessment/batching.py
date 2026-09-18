@@ -66,6 +66,44 @@ _BBOX_GEOMETRY_MULTIPLIER_FALLBACK = 3.0
 # retries, but we still prefer to avoid). See plan "Lambda timeout & resume".
 _DEADLINE_SAFETY_RESERVE_SECONDS = 90.0
 
+# --- Confidence-coverage shortfall thresholds (#901 item 3) -------------------
+# ``audit_explainability`` knows exactly how many extracted list rows carry a real
+# confidence score. When materially fewer rows are scored than were extracted, the
+# document is still returned (extraction is correct and paid for) but its
+# confidence surface can no longer be used for HITL triage — so say so out loud
+# instead of reporting plain success, which is what happened in #901 (coverage fell
+# to ~24% of the leaves a smaller-shard run produced, with the document reporting
+# success and no issue at all).
+#
+# Why 5% for "materially short": reconciliation pads the assessment to exactly one
+# entry per extracted row, so a run whose model scored every row lands at 0%
+# shortfall. The threshold is not 0 because the ladder ALREADY reports small
+# residual shortfalls precisely (``assessment_incomplete`` names the exact row
+# count), and a 1-2 row gap on an 800-row table is that issue's job, not a second
+# document-level alarm — 5% is the point where a reader should stop trusting the
+# confidence surface as a whole rather than a few rows in it.
+#
+# Why 25% for error severity: at a quarter of the rows unscored the surface is no
+# longer a usable sample of the document — the #901 run was ~76% unscored. Below
+# that it is a warning: coverage is degraded but the scored majority is still
+# informative.
+#
+# Why an ABSOLUTE floor on the error rung as well as the fraction: a fraction alone
+# makes short lists fire hardest. One unscored row in a four-row list is 25%, and an
+# error renders the section red ("Incomplete") in the Sections panel — so a shipped
+# two-entry list attribute (e.g. ENDORSEMENTS in lending-package-sample) with a
+# single ``None`` confidence leaf would present as an error-severity document
+# defect. Error severity is reserved for a shortfall that is large in ABSOLUTE rows
+# of unreviewable data, not merely large as a proportion of a tiny list: below the
+# floor the same shortfall is still reported, as a warning ("Degraded"), and the
+# ladder's own ``assessment_incomplete`` still names the exact rows. 10 unscored
+# rows is more data than a reviewer can be assumed to spot-check by hand, and it is
+# ~1% of the #901 shape (912 of 1,200 unscored), so the case the guard exists for is
+# unaffected.
+_COVERAGE_SHORTFALL_WARNING_FRACTION = 0.05
+_COVERAGE_SHORTFALL_ERROR_FRACTION = 0.25
+_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS = 10
+
 
 def _deadline_allows(deadline_epoch: float | None, estimated_seconds: float) -> bool:
     """True if ``estimated_seconds`` of work fits before ``deadline_epoch`` minus
@@ -705,12 +743,127 @@ def _new_split_stats() -> dict[str, Any]:
         # A stronger model can't fix a schema mismatch, so escalation is futile —
         # see _schema_field_mismatch_reason / _retry_missing_rows.
         "schema_mismatch_fields": [],
+        # #894 terminal condition: list field(s) where the model STILL truncated
+        # its response with exactly ONE row in the call. There is no smaller batch
+        # than one row, so halving cannot converge and re-running the same call is
+        # pure waste — the ladder gives up for that field instead of spending the
+        # remaining rungs on it, and reports the real cause.
+        # See _record_oversized_row / _assess_slice_adaptive.
+        "oversized_row_fields": [],
+        "oversized_row_model": None,  # model that truncated on a single row
+        "oversized_row_output_cap": None,  # that model's max output tokens
+        "oversized_row_chars": None,  # approx serialized size of the offending row
+        "oversized_row_class": None,  # document class the row belongs to
     }
 
 
 def _record_min_batch(stats: dict[str, Any], size: int) -> None:
     cur = stats.get("min_batch_size_used")
     stats["min_batch_size_used"] = size if cur is None else min(cur, size)
+
+
+def _record_oversized_row(
+    stats: dict[str, Any],
+    *,
+    big_field: str,
+    row: Any,
+    model_id: str | None,
+) -> None:
+    """Record the #894 terminal condition: a SINGLE row still truncated the model.
+
+    The adaptive splitter halves a truncating batch, which converges only while a
+    smaller batch can fit. When a call carrying exactly ONE row still comes back
+    with ``stopReason=max_tokens``, that row's own confidence output exceeds the
+    model's max-output-token cap and **no batch size can work** — the row itself is
+    too big (the observed case: a multi-instance wrapper makes one "row" a whole
+    bank statement carrying a 100-row inner ``Transactions`` list, so the sizer's
+    ``cols=2 per_row~80`` estimate is off by two orders of magnitude; see #894).
+
+    Recording it here lets the ladder skip the futile same-model retry rung and lets
+    :func:`build_assessment_issues` report the ACTUAL cause with the numbers an
+    operator needs: the model, its output cap, the field, and the row's approximate
+    serialized size.
+
+    The ``logger.error`` fires **once per field per section** (the first time the
+    condition is recorded for that field). Every row of a long list can hit it — one
+    probe produced 81 identical error lines — and the message is a diagnosis of the
+    field, not of the row, so repeating it only buries everything else in the log.
+    """
+    fields = stats.setdefault("oversized_row_fields", [])
+    first_for_field = big_field not in fields
+    if first_for_field:
+        fields.append(big_field)
+
+    try:
+        row_chars = len(json.dumps(row, default=str))
+    except Exception:  # noqa: BLE001 - unserializable row → size unknown
+        row_chars = None
+    if row_chars is not None:
+        prev_chars = stats.get("oversized_row_chars")
+        stats["oversized_row_chars"] = (
+            row_chars if prev_chars is None else max(int(prev_chars), row_chars)
+        )
+
+    output_cap: int | None = None
+    if model_id:
+        try:
+            from idp_common.bedrock.model_utils import get_model_max_output_tokens
+
+            output_cap = get_model_max_output_tokens(model_id)
+        except Exception:  # noqa: BLE001 - unknown model → cap unknown
+            output_cap = None
+        # Keep the model with the LARGEST known cap that still truncated: if the
+        # escalation model (bigger cap) also failed on one row, naming it is far
+        # more actionable than naming the small primary.
+        prev_cap = stats.get("oversized_row_output_cap") or 0
+        if not stats.get("oversized_row_model") or (output_cap or 0) > prev_cap:
+            stats["oversized_row_model"] = model_id
+            stats["oversized_row_output_cap"] = output_cap
+
+    if not first_for_field:
+        # Already diagnosed for this field — see the docstring. Keep a cheap trace
+        # for anyone counting how many rows hit it.
+        logger.debug(
+            "Assessment: another single-row truncation on '%s' (~%s chars).",
+            big_field,
+            row_chars if row_chars is not None else "unknown",
+        )
+        return
+
+    logger.error(
+        "Assessment giving up on '%s': the model (%s, max output tokens %s) "
+        "truncated its response with a SINGLE row in the call (~%s chars "
+        "serialized). No smaller batch exists, so shrinking/retrying cannot help. "
+        "Fix: use a confidence model with a larger output budget, or reduce the "
+        "size of each list item (e.g. avoid wrapping a class that already contains "
+        "a long inner list in a multi-instance list) — not a smaller batch size. "
+        "(Logged once per field; further single-row truncations on '%s' are at "
+        "DEBUG.)",
+        big_field,
+        model_id or "(unknown)",
+        output_cap if output_cap else "unknown",
+        row_chars if row_chars is not None else "unknown",
+        big_field,
+    )
+
+
+def _oversized_row_summary(stats: dict[str, Any]) -> str:
+    """One-line, actionable summary of the #894 terminal condition for reports."""
+    fields = ", ".join(f"'{f}'" for f in (stats.get("oversized_row_fields") or []))
+    cap = stats.get("oversized_row_output_cap")
+    chars = stats.get("oversized_row_chars")
+    cls = stats.get("oversized_row_class")
+    return (
+        f"⚠ Row too large to score (retries stopped): {fields}"
+        + (f" of class '{cls}'" if cls else "")
+        + f" — confidence model {stats.get('oversized_row_model') or '(unknown)'} "
+        f"(max output tokens {cap if cap else 'unknown'}) truncated with a single "
+        f"row in the call"
+        + (f" (~{chars} chars serialized)" if chars else "")
+        + ". No batch size can fit one row, so shrinking was abandoned; use a "
+        "confidence model with a larger output budget or make each list item "
+        "smaller."
+    )
 
 
 def split_stats_are_notable(stats: dict[str, Any] | None) -> bool:
@@ -729,6 +882,7 @@ def split_stats_are_notable(stats: dict[str, Any] | None) -> bool:
         or stats.get("escalation_rounds")
         or stats.get("rows_recovered_by_escalation")
         or stats.get("schema_mismatch_fields")
+        or stats.get("oversized_row_fields")
     )
 
 
@@ -784,6 +938,33 @@ def merge_split_stats(
             if fld not in merged_mismatch:
                 merged_mismatch.append(fld)
     merged["schema_mismatch_fields"] = merged_mismatch
+    # #894: union the oversized-row fields; keep the LARGEST known output cap that
+    # still truncated (the strongest evidence: "even a model with cap N could not
+    # score one row") and the biggest offending row seen.
+    merged_oversized: list[str] = []
+    for src in (a.get("oversized_row_fields"), b.get("oversized_row_fields")):
+        for fld in src or []:
+            if fld not in merged_oversized:
+                merged_oversized.append(fld)
+    merged["oversized_row_fields"] = merged_oversized
+    caps = [
+        (src.get("oversized_row_output_cap") or 0, src)
+        for src in (a, b)
+        if src.get("oversized_row_model")
+    ]
+    if caps:
+        _, worst = max(caps, key=lambda pair: pair[0])
+        merged["oversized_row_model"] = worst.get("oversized_row_model")
+        merged["oversized_row_output_cap"] = worst.get("oversized_row_output_cap")
+    chars = [
+        v
+        for v in (a.get("oversized_row_chars"), b.get("oversized_row_chars"))
+        if v is not None
+    ]
+    merged["oversized_row_chars"] = max(chars) if chars else None
+    merged["oversized_row_class"] = a.get("oversized_row_class") or b.get(
+        "oversized_row_class"
+    )
     # Batch counts sum across shards; concurrency takes the max any shard used.
     bc = [v for v in (a.get("batch_count"), b.get("batch_count")) if v is not None]
     merged["batch_count"] = sum(bc) if bc else None
@@ -827,6 +1008,8 @@ def format_split_stats_report(stats: dict[str, Any] | None) -> str:
             "extraction returned a list for attribute(s) the class schema does not "
             "define as arrays; fix the schema/extraction prompt."
         )
+    if stats.get("oversized_row_fields"):
+        lines.append("  - " + _oversized_row_summary(stats))
     if stats.get("deadline_reached"):
         lines.append(
             "  - ⏱ Self-healing stopped early: Lambda wall-clock budget reached "
@@ -861,6 +1044,12 @@ def build_assessment_issues(
       not define as an array; the enhancer collapsed it so no model can score its
       rows. Takes precedence — the true fix is upstream (schema/extraction), not a
       stronger confidence model.
+    - else ``oversized_row_fields`` set AND rows unscored → ``assessment_row_too_large``
+      (**error**, #894): the model truncated with a single row in the call, so the
+      row's own confidence output exceeds its output cap and NO batch size can fit
+      it. Reported ahead of the generic incomplete rung because the generic message
+      ("rows could not be scored") sends the operator to shrink the batch size,
+      which is the one remedy that provably cannot work here.
     - else ``unrecoverable_rows > 0`` → ``assessment_incomplete`` (**error**): rows
       are still unscored after the full self-healing ladder.
     - else ``deadline_reached`` → ``assessment_deadline_reached`` (**warning**):
@@ -953,6 +1142,49 @@ def build_assessment_issues(
             )
         ]
 
+    # #894: next precedence — a row whose OWN confidence output exceeds the model's
+    # cap. The ladder stopped instead of retrying, and the generic
+    # "rows could not be scored" message would send the operator to shrink
+    # ``list_batch_size``, which cannot help (the batch was already one row).
+    oversized_fields = list(stats.get("oversized_row_fields") or [])
+    if oversized_fields and unrecoverable > 0:
+        fields_str = ", ".join(f"'{f}'" for f in oversized_fields)
+        cap = stats.get("oversized_row_output_cap")
+        chars = stats.get("oversized_row_chars")
+        cls = stats.get("oversized_row_class")
+        oversized_model = stats.get("oversized_row_model") or confidence_model
+        return [
+            ProcessingIssue(
+                stage="assessment",
+                severity="error",
+                code="assessment_row_too_large",
+                message=(
+                    f"{unrecoverable} row(s) of {fields_str}"
+                    + (f" in class '{cls}'" if cls else "")
+                    + " have no confidence score: confidence model "
+                    f"{oversized_model or '(unknown)'} (max output tokens "
+                    f"{cap if cap else 'unknown'}) truncated its response with a "
+                    "SINGLE row in the call"
+                    + (f" (~{chars} chars serialized)" if chars else "")
+                    + ", so no batch size can fit one row and batch shrinking was "
+                    "abandoned rather than retried. Fix: choose a confidence model "
+                    "with a larger output budget, or make each list item smaller "
+                    "(e.g. do not wrap a class that already contains a long inner "
+                    "list in a multi-instance list) — reducing "
+                    "extraction.confidence.list_batch_size cannot help."
+                ),
+                root_cause=(
+                    (root_cause + "; " if root_cause else "")
+                    + f"single row of {fields_str} exceeds the confidence model's "
+                    f"output budget (cap {cap if cap else 'unknown'} tokens"
+                    + (f", row ~{chars} chars" if chars else "")
+                    + ")"
+                ),
+                section_id=section_id,
+                details=dict(stats),
+            )
+        ]
+
     if unrecoverable > 0:
         chain = f" after escalation to {escalation_model}" if escalation_model else ""
         return [
@@ -1029,12 +1261,39 @@ def build_assessment_issues(
     ]
 
 
+def _ladder_reported_error(ladder_issues: list[Any] | None) -> bool:
+    """True when ``build_assessment_issues`` already emitted an **error** issue.
+
+    Used to suppress the coverage rung: the ladder's error rungs
+    (``assessment_schema_mismatch``, ``assessment_row_too_large``,
+    ``assessment_incomplete``) describe the SAME unscored rows *with a cause
+    attached*, so emitting the coverage issue as well double-counts
+    ``ProcessingIssueCount`` and can state a second, different row count. It also
+    breaks the schema-mismatch rung's deliberate "emitted alone" contract, and would
+    append "the extracted values themselves are unaffected" directly beneath a
+    diagnosis that says extraction produced off-schema data.
+
+    Accepts ``ProcessingIssue`` objects, plain dicts, or bare code/severity-less
+    values, so either composition site can pass whatever it has.
+    """
+    for issue in ladder_issues or []:
+        severity = (
+            issue.get("severity")
+            if isinstance(issue, dict)
+            else getattr(issue, "severity", None)
+        )
+        if str(severity or "").lower() == "error":
+            return True
+    return False
+
+
 def audit_explainability(
     assessment: dict[str, Any] | None,
     extraction_results: dict[str, Any] | None,
     *,
     geometry_mode: str | None = None,
     section_id: str | None = None,
+    ladder_issues: list[Any] | None = None,
 ) -> tuple[dict[str, list[int]], list[Any]]:
     """Verify every extracted value has correctly-structured explainability.
 
@@ -1048,11 +1307,28 @@ def audit_explainability(
       geometry block (``bbox``/``geometry``) — flagged as a *warning*, not an
       error, since geometry is advisory enrichment.
     - Confidence values are within [0, 1].
+    - **Coverage (#901 item 3):** the share of extracted list rows that actually
+      carry a confidence. A materially short section emits
+      ``assessment_coverage_incomplete`` — ``warning`` past
+      ``_COVERAGE_SHORTFALL_WARNING_FRACTION``, ``error`` only past
+      ``_COVERAGE_SHORTFALL_ERROR_FRACTION`` **and**
+      ``_COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS`` absolute unscored rows (a
+      fraction alone makes a one-row gap in a four-row list an error) — so partial
+      coverage is visible instead of the section reporting unqualified success. This
+      is a *symptom* report computed from the final data; it deliberately makes no
+      claim about the cause.
+
+      Pass ``ladder_issues`` (the return of :func:`build_assessment_issues` for the
+      same section) to suppress this rung when the ladder already reported an
+      error-severity issue: that issue covers the same rows *with* a cause, so both
+      would double-count ``ProcessingIssueCount``. Callers that compose
+      ``build_assessment_issues(...) + audit_issues`` should always pass it.
 
     Returns ``(gaps, issues)`` where ``gaps`` maps ``field -> [missing row idx]``
     (fed back into the ladder once by the caller) and ``issues`` is a list of
     ``ProcessingIssue`` for anything structurally wrong that is NOT just a missing
-    confidence (those are represented by the ladder's own split_stats issue).
+    confidence (those are represented by the ladder's own split_stats issue) plus
+    the coverage-shortfall issue described above.
     """
     from idp_common.models import ProcessingIssue
 
@@ -1138,6 +1414,82 @@ def audit_explainability(
                 details={"missing_geometry_leaves": missing_geometry_rows},
             )
         )
+
+    # Coverage shortfall (#901 item 3): make PARTIAL confidence coverage visible.
+    # The per-field gaps above are computed anyway but were previously discarded by
+    # every caller, so a section could come back with a fraction of its rows scored
+    # and still report unqualified success. Thresholds and their rationale live on
+    # _COVERAGE_SHORTFALL_* above.
+    #
+    # Suppressed entirely when the ladder already emitted an error for this section (see
+    # ``ladder_issues``): that issue is the same shortfall with a cause attached, and
+    # emitting both double-counts ProcessingIssueCount with two counts that can
+    # legitimately disagree (``unrecoverable_rows`` tracks only the largest list
+    # field; this audit counts every list field).
+    total_list_rows = sum(
+        len(v) for v in extraction_results.values() if isinstance(v, list)
+    )
+    unscored_list_rows = sum(len(idxs) for idxs in gaps.values())
+    if total_list_rows and not _ladder_reported_error(ladder_issues):
+        shortfall = unscored_list_rows / total_list_rows
+        if shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION:
+            scored = total_list_rows - unscored_list_rows
+            # Error severity needs BOTH a large proportion and a large absolute
+            # number of unscored rows — see _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS.
+            severity = (
+                "error"
+                if (
+                    shortfall >= _COVERAGE_SHORTFALL_ERROR_FRACTION
+                    and unscored_list_rows
+                    >= _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+                )
+                else "warning"
+            )
+            worst = sorted(gaps.items(), key=lambda kv: -len(kv[1]))[:3]
+            worst_str = ", ".join(f"'{f}' ({len(idxs)} row(s))" for f, idxs in worst)
+            # No row scored at all is a different statement from partial coverage:
+            # "covers only part of this section" is false at zero, and claiming the
+            # extracted data is fine is a claim this audit cannot make when nothing
+            # was scored (the cause may be upstream of confidence entirely).
+            if scored == 0:
+                message = (
+                    f"None of the {total_list_rows} extracted list row(s) carry a "
+                    f"confidence score ({worst_str}), so this section has no "
+                    "confidence surface at all and confidence-based review (HITL "
+                    "thresholds) does not apply to any of it. The extracted values "
+                    "themselves were kept; treat every row as unverified."
+                )
+            else:
+                message = (
+                    f"Only {scored} of {total_list_rows} extracted list row(s) "
+                    f"({(1 - shortfall):.0%}) carry a confidence score; "
+                    f"{unscored_list_rows} row(s) are unscored ({worst_str}). "
+                    "The extracted values themselves are unaffected, but "
+                    "confidence-based review (HITL thresholds) covers only part "
+                    "of this section — treat unscored rows as unverified."
+                )
+            issues.append(
+                ProcessingIssue(
+                    stage="assessment",
+                    severity=severity,
+                    code="assessment_coverage_incomplete",
+                    message=message,
+                    root_cause=(
+                        f"{unscored_list_rows}/{total_list_rows} list rows have no "
+                        "confidence after the self-healing ladder finished"
+                    ),
+                    section_id=section_id,
+                    details={
+                        "expected_rows": total_list_rows,
+                        "scored_rows": scored,
+                        "unscored_rows": unscored_list_rows,
+                        "unscored_fraction": round(shortfall, 4),
+                        "unscored_rows_by_field": {
+                            f: len(idxs) for f, idxs in gaps.items()
+                        },
+                    },
+                )
+            )
     return gaps, issues
 
 
@@ -1151,6 +1503,7 @@ def _assess_slice_adaptive(
     stats: dict[str, Any],
     min_slice: int = 1,
     deadline_epoch: float | None = None,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """Assess ``rows`` for ``big_field`` and, if the model TRUNCATES the response
     (``AssessmentCoreResult.truncated``), recursively halve the slice and retry
@@ -1173,6 +1526,14 @@ def _assess_slice_adaptive(
     truncated slice's best-effort scores rather than risk a hard task timeout.
     No-op when ``deadline_epoch`` is None (local / no context).
 
+    **Terminal condition (#894):** when the call carries exactly ONE row and the
+    response STILL truncates, halving has nowhere left to go — that single row's
+    confidence output does not fit the model's cap, so no batch size can work. The
+    condition is recorded via :func:`_record_oversized_row` (which also names
+    ``model_id`` and its output cap in the log) and the caller's retry rung is
+    skipped, instead of spending further rungs re-running the same impossible call
+    and then reporting a generic "rows could not be scored".
+
     Returns ``{"rows": [per-row assessment...], "scalars": {enhanced non-big
     fields}, "alerts": [...], "metering": {...}, "duration": float}`` where
     ``rows`` is index-aligned to the input ``rows``.
@@ -1182,11 +1543,19 @@ def _assess_slice_adaptive(
     core = one_call(slice_results)
     _record_min_batch(stats, len(rows))
 
-    should_split = (
-        getattr(core, "truncated", False) and len(rows) > min_slice and len(rows) > 1
-    )
-    if getattr(core, "truncated", False):
+    truncated = bool(getattr(core, "truncated", False))
+    should_split = truncated and len(rows) > min_slice and len(rows) > 1
+    if truncated:
         stats["truncated_calls"] += 1
+
+    # #894 terminal condition: one row in the call and it STILL truncated. Halving
+    # is exhausted and re-running is futile — record the real cause (row too large
+    # for this model's output cap) so the caller skips the retry rung and the
+    # operator gets an actionable message instead of "shrink the batch size".
+    if truncated and len(rows) == 1:
+        _record_oversized_row(
+            stats, big_field=big_field, row=rows[0], model_id=model_id
+        )
 
     # Wall-clock guard: a split doubles the number of sequential calls, so stop
     # recursing when the two halves (each ~ one model call) wouldn't fit before the
@@ -1242,6 +1611,7 @@ def _assess_slice_adaptive(
         stats=stats,
         min_slice=min_slice,
         deadline_epoch=deadline_epoch,
+        model_id=model_id,
     )
     right = _assess_slice_adaptive(
         one_call,
@@ -1252,6 +1622,7 @@ def _assess_slice_adaptive(
         stats=stats,
         min_slice=min_slice,
         deadline_epoch=deadline_epoch,
+        model_id=model_id,
     )
     # The truncated parent call still consumed real output tokens (and wall
     # time) before we decided to split — fold its metering/duration in so cost
@@ -1336,6 +1707,13 @@ def assess_results_batched(
       it to a single default leaf that no model can turn into per-row scores — so
       both retry and escalation are SKIPPED for that field (recorded in
       ``schema_mismatch_fields``) instead of wasting a large-model call.
+    - **Oversized-row terminal condition (#894):** if the model still truncates
+      with a SINGLE row in the call, no batch size can fit that row — halving is
+      abandoned, the same-model retry rung is skipped, escalation is capped at one
+      round, and the cause is recorded in ``oversized_row_fields`` (surfaced as
+      ``assessment_row_too_large``). Previously the ladder spent every remaining rung
+      re-running the impossible call and then reported a generic
+      ``assessment_incomplete``, whose remedy (a smaller batch) cannot work.
 
     Returns ``{"assessment", "alerts", "metering", "parsing_succeeded",
     "duration_seconds", "split_stats"}``. Falls back to a single call (still
@@ -1452,6 +1830,7 @@ def assess_results_batched(
                     max_escalation_rounds=max_escalation_rounds,
                     deadline_epoch=deadline_epoch,
                     class_schema=class_schema,
+                    model_id=confidence_model_id,
                 )
             )
             duration_seconds += dur
@@ -1460,6 +1839,12 @@ def assess_results_batched(
                     merged_assessment.get(big), extraction_results.get(big)
                 )
             )
+        # #894: name the class in the oversized-row report/issue (the ladder itself
+        # only knows the field), so the operator can find the offending class in
+        # config without cross-referencing the section id.
+        if split_stats.get("oversized_row_fields"):
+            split_stats["oversized_row_class"] = class_label
+
         # Alert surface (upstream #813): row indexes in per-core alerts are LOCAL
         # to the slice each core was handed, so accumulating them yields paths
         # like transactions[6] for the merged list's row 16 — mislabeled, and
@@ -1518,6 +1903,7 @@ def assess_results_batched(
             reconcile=reconcile_assessment_to_data,
             stats=stats,
             deadline_epoch=deadline_epoch,
+            model_id=confidence_model_id,
         )
 
     # Concurrency (item 4): a single confidence call over a large list is slow,
@@ -1613,6 +1999,28 @@ def assess_results_batched(
                     "escalation_model"
                 ):
                     split_stats["escalation_model"] = cs["escalation_model"]
+                # #894: an oversized-row terminal condition discovered INSIDE a
+                # worker must survive the join, or the post-join retry rung would
+                # still fire on the impossible rows and the reported issue would be
+                # the generic "incomplete" one instead of the real cause.
+                _oversized = split_stats.setdefault("oversized_row_fields", [])
+                for fld in cs.get("oversized_row_fields") or []:
+                    if fld not in _oversized:
+                        _oversized.append(fld)
+                _cs_cap = cs.get("oversized_row_output_cap") or 0
+                if cs.get("oversized_row_model") and (
+                    not split_stats.get("oversized_row_model")
+                    or _cs_cap > (split_stats.get("oversized_row_output_cap") or 0)
+                ):
+                    split_stats["oversized_row_model"] = cs["oversized_row_model"]
+                    split_stats["oversized_row_output_cap"] = cs.get(
+                        "oversized_row_output_cap"
+                    )
+                if cs.get("oversized_row_chars") is not None:
+                    split_stats["oversized_row_chars"] = max(
+                        int(split_stats.get("oversized_row_chars") or 0),
+                        int(cs["oversized_row_chars"]),
+                    )
                 cs_min = cs.get("min_batch_size_used")
                 if cs_min is not None:
                     _record_min_batch(split_stats, cs_min)
@@ -1648,6 +2056,7 @@ def assess_results_batched(
         max_escalation_rounds=max_escalation_rounds,
         deadline_epoch=deadline_epoch,
         class_schema=class_schema,
+        model_id=confidence_model_id,
     )
     duration_seconds += dur
 
@@ -1655,6 +2064,11 @@ def assess_results_batched(
     split_stats["unrecoverable_rows"] = len(
         _missing_row_indices(merged_assessment.get(big_field), rows)
     )
+
+    # #894: name the class in the oversized-row report/issue (see the single-call
+    # branch above).
+    if split_stats.get("oversized_row_fields"):
+        split_stats["oversized_row_class"] = class_label
 
     # Alert surface regeneration — see the identical block on the single-call
     # branch above for the full rationale (upstream #813): per-core alert row
@@ -1688,6 +2102,7 @@ def _splice_missing_rows(
     stats: dict[str, Any],
     recovery_counter: str,
     deadline_epoch: float | None = None,
+    model_id: str | None = None,
 ) -> tuple[dict[str, Any], float, bool]:
     """One recovery pass over the ``missing`` indices with ``call``.
 
@@ -1711,6 +2126,7 @@ def _splice_missing_rows(
                 reconcile=reconcile_assessment_to_data,
                 stats=stats,
                 deadline_epoch=deadline_epoch,
+                model_id=model_id,
             )
         except Exception as e:  # noqa: BLE001 - retry is best-effort
             logger.warning("Missing-row recovery call failed: %s", e)
@@ -1746,6 +2162,7 @@ def _retry_missing_rows(
     max_escalation_rounds: int = 0,
     deadline_epoch: float | None = None,
     class_schema: dict[str, Any] | None = None,
+    model_id: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], float]:
     """Re-assess ONLY the list rows the model left unscored, splicing real scores
     back by index so large-list confidence coverage reaches 100% (not just null
@@ -1761,6 +2178,13 @@ def _retry_missing_rows(
     reason is recorded in ``split_stats['schema_mismatch_fields']``, and the rows
     are left as-is (surfaced by the caller as a schema-mismatch issue, not a futile
     escalation).
+
+    **Oversized-row guard (#894):** likewise, when the adaptive splitter already
+    truncated with a SINGLE row of ``big_field`` in the call
+    (``split_stats['oversized_row_fields']``), the same-model retry rung is skipped
+    outright and escalation is capped at ONE round. Retrying cannot converge — the
+    batch was already one row — and each futile round costs a full model call (on a
+    batching shape, 8 rows at batch 4, this halves the primary calls 28 → 14).
 
     The self-healing ladder, cheapest-first:
     1. **Same-model retry** — up to ``max_retries`` rounds on ``one_call`` (each
@@ -1809,8 +2233,37 @@ def _retry_missing_rows(
         )
         return merged_assessment, merged_alerts, merged_metering, added_duration
 
+    # #894 oversized-row guard: the first pass already proved the model truncates
+    # with a SINGLE row of this field in the call, so every same-model retry round
+    # would re-run the identical impossible call (each ~60s) and then bisect it again,
+    # ending in the same unscored rows plus a misleading "shrink the batch" remedy.
+    # Skip rung 1 entirely and allow at most ONE escalation round: a model with a
+    # bigger output cap is the only remedy that can legitimately succeed, and one
+    # round is enough to find out (a round that recovers nothing stops the ladder).
+    oversized = big_field in (stats.get("oversized_row_fields") or [])
+    retry_rounds = max_retries
+    escalation_rounds_allowed = max_escalation_rounds
+    if oversized:
+        retry_rounds = 0
+        escalation_rounds_allowed = min(max_escalation_rounds, 1)
+        logger.error(
+            "assess_results_batched: NOT retrying '%s' on %s — a single row already "
+            "truncated the model's output, so no smaller batch exists and retrying "
+            "cannot converge. %s",
+            big_field,
+            model_id or "the configured confidence model",
+            (
+                f"Trying at most one escalation round on a stronger model "
+                f"({escalation_model})."
+                if escalation_one_call is not None
+                and escalation_model
+                and escalation_rounds_allowed
+                else "Leaving the rows unscored and reporting the root cause."
+            ),
+        )
+
     # Rung 1: same-model retry rounds.
-    for _round in range(max_retries):
+    for _round in range(retry_rounds):
         missing = _missing_row_indices(merged_assessment.get(big_field), rows)
         if not missing:
             break
@@ -1833,8 +2286,20 @@ def _retry_missing_rows(
             stats=stats,
             recovery_counter="rows_recovered_by_retry",
             deadline_epoch=deadline_epoch,
+            model_id=model_id,
         )
         added_duration += dur
+        # #894: the retry itself can be the first place a slice bisects down to one
+        # row and still truncates. Stop this rung as soon as that is known instead
+        # of spending the remaining rounds on the same impossible call.
+        if big_field in (stats.get("oversized_row_fields") or []):
+            logger.error(
+                "assess_results_batched: stopping retries for '%s' — a single row "
+                "still truncated the model's output; no smaller batch exists.",
+                big_field,
+            )
+            escalation_rounds_allowed = min(escalation_rounds_allowed, 1)
+            break
         if not recovered_any:
             logger.info("Missing-row retry made no progress; stopping retries.")
             break
@@ -1843,9 +2308,13 @@ def _retry_missing_rows(
     # with a bigger output cap does not truncate on the residual rows that a
     # small-cap model (Nova Lite, 10K) kept dropping — this is the rung that
     # fixes the investigated failure.
-    if escalation_one_call is not None and escalation_model and max_escalation_rounds:
+    if (
+        escalation_one_call is not None
+        and escalation_model
+        and escalation_rounds_allowed
+    ):
         esc_batch = escalation_batch_size or batch_size
-        for _eround in range(max_escalation_rounds):
+        for _eround in range(escalation_rounds_allowed):
             missing = _missing_row_indices(merged_assessment.get(big_field), rows)
             if not missing:
                 break
@@ -1873,7 +2342,7 @@ def _retry_missing_rows(
                 big_field,
                 escalation_model,
                 _eround + 1,
-                max_escalation_rounds,
+                escalation_rounds_allowed,
             )
             stats["escalation_model"] = escalation_model
             stats["escalation_rounds"] += 1
@@ -1890,6 +2359,7 @@ def _retry_missing_rows(
                 stats=stats,
                 recovery_counter="rows_recovered_by_escalation",
                 deadline_epoch=deadline_epoch,
+                model_id=escalation_model,
             )
             added_duration += dur
             if not recovered_any:

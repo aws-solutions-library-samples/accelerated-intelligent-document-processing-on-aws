@@ -51,13 +51,80 @@ For issues not covered by the Error Analyzer, use the manual troubleshooting ste
 | **Classification returns "other"** | Review document class definitions. Consider adding more detailed class descriptions or adding few-shot examples.                     |
 | **Extraction missing fields**      | Review attribute descriptions and prompt engineering. Check if fields are present but in an unusual format or location.              |
 
+### Confidence (Assessment) Failures
+
+Confidence scoring runs as its own step after extraction. Two failure shapes have
+distinct symptoms and distinct fixes.
+
+**The confidence model truncates its response at every batch size, down to a single
+row.** No batch size can fit that row, so shrinking cannot converge. The ladder now
+stops as soon as a **single-row** call truncates and reports
+`assessment_row_too_large` (error severity) on the section, naming the confidence
+model, its output-token cap, the list field and class, and the offending row's
+approximate serialized size. Look for that issue in the section's **Status** column
+or **Processing Report** tab. Before this, the section reported the generic
+`assessment_incomplete`, which points at `list_batch_size` — the one setting that
+cannot help here.
+
+The known trigger is a class marked `x-aws-idp-multi-instance: true` whose instance
+carries a long inner list — a 100-row bank statement, for example. The wrapper makes
+the *instance* array the outer list, so one row of that list is a whole document
+instance, and the batch sizer (which measures only the outer row's columns, logging
+`cols=2 per_row~80`) derives a batch size that is wrong by orders of magnitude.
+⚠️ **That sizing bug is not fixed** — it is tracked as open issue
+[#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894),
+so such a class still cannot be fully assessed; what it now gets is an actionable
+message naming the real cause.
+
+⚠️ If your symptom is instead **the document stuck in `ASSESSING` with the Assessment
+Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**
+— the symptom originally reported on #894 — note that this guard is not known to fix
+it. The cause of that timeout has not been established: the same-model retry rung
+already stopped on no progress before this change, and the ladder's wall-clock
+deadline guard was already in place in the release where the timeouts were observed.
+Attach your Assessment Lambda log (the per-call timings and `stopReason` lines) to
+#894. Until #894 is fixed, either point that class at a large-output-cap confidence model
+(`extraction.confidence.escalation_model`, or the per-class
+`x-aws-idp-confidence-escalation-model`), or restructure so the long list is its own
+class rather than a field inside a multi-instance instance.
+
+**`ValidationException: Input is too long for requested model.` from the Assessment
+step.** This is deterministic — retrying sends the identical oversized request — and
+it used to fail the whole document, discarding extraction that had already completed
+and been paid for. The step now **degrades** instead: the extracted data is
+returned, the document succeeds, and the missing confidence is recorded as an
+error-severity `assessment_failed_confidence_unavailable` issue on the section.
+Because that section has no confidence values, HITL confidence routing and the UI
+threshold signals do not apply to it — the processing issue is the signal. Find it in
+the **Status** column of the Sections panel; this one is written to the section
+record only, not into the section's `result.json`, so it does not appear in the
+Processing Report tab. Transient
+failures (throttling, read timeouts) are unaffected and still retry. To get
+confidence back, reduce the confidence request's size: `geometry.mode: ocr_only`,
+a lower `extraction.confidence.list_batch_size`, or Advanced (agentic) extraction,
+which shards the confidence pass. Automatically re-batching an oversized confidence
+input so the pass succeeds rather than degrades remains open as part of
+[#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901).
+
+**Some rows scored, most not, and nothing complained.** Sections whose scored rows
+fall materially short of the extracted rows now emit
+`assessment_coverage_incomplete` — a warning past 5% of rows unscored, an error at
+25% or more **and** at least 10 unscored rows (a proportion alone would make one
+unscored row in a four-row list an error) — carrying the expected/scored/unscored
+counts and a per-field breakdown. The extracted values themselves are unaffected;
+treat it as "do not trust this section's confidence surface as a whole". It is
+suppressed when the self-healing ladder already reported an error for the same
+section (`assessment_incomplete`, `assessment_row_too_large`,
+`assessment_schema_mismatch`), because that issue describes the same unscored rows
+with a cause attached.
+
 ### Web UI Access Issues
 
 | Issue                                | Resolution                                                                                                            |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | **Cannot login to Web UI**           | Verify Cognito user status and permissions in AWS Console. Check email for temporary credentials if first-time login. |
 | **Web UI loads but shows errors**    | Check browser console for specific error messages. Verify API endpoints are accessible.                               |
-| **Cannot see document history**      | Verify AWS AppSync API permissions. Check CloudWatch Logs for API errors.                                             |
+| **Cannot see document history**      | Check the dispatcher Lambda's CloudWatch Logs for the failing operation. A 403 means a resolver group check rejected your role (see [rbac.md](./rbac.md)); a 401 means the Cognito token was rejected.  |
 | **Configuration changes not saving** | Check browser console for validation errors. Verify that the configuration Lambda function has correct permissions.   |
 
 ### Model and Service Issues

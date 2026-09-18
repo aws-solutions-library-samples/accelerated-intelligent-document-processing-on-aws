@@ -71,7 +71,9 @@ const { messages, isLoading, waitingForResponse, error, sendMessage, clearError 
 const config = {
   agentType: 'idp-help', // Agent type identifier
   mutation: SEND_IDP_HELP_MESSAGE, // GraphQL mutation
-  subscription: ON_IDP_HELP_MESSAGE_UPDATE, // GraphQL subscription
+  subscription: ON_IDP_HELP_MESSAGE_UPDATE, // still accepted, but inert: the REST
+                                            // transport returns a no-op handle, so
+                                            // replies arrive by streaming or polling
   method: 'chat', // Request method
 };
 ```
@@ -183,7 +185,7 @@ flowchart TD
     E --> H[Unified Response Handler]
     F --> H
     G --> H
-    H --> I[GraphQL Subscription: onAgentMessageUpdate]
+    H --> I[Lambda Function URL token stream, or 2s polling where unavailable]
     I --> A
 ```
 

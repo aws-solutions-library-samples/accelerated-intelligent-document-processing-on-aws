@@ -1559,21 +1559,23 @@ class AssessmentService:
             # Completeness gate (1.3) + structured issues (1.4): audit the final
             # assessment for coverage/structure, then translate the ladder's
             # split_stats + audit findings into user-surfacing ProcessingIssues.
+            # Ladder issues FIRST: the audit's coverage rung is suppressed when the
+            # ladder already reported an error for this section (same unscored rows,
+            # but with a cause attached), so it needs them as input.
+            ladder_issues = build_assessment_issues(
+                batched_split_stats,
+                section_id=section_id,
+                confidence_model=confidence_cfg.model,
+                geometry_mode=geometry_mode,
+            )
             _gaps, audit_issues = audit_explainability(
                 enhanced_assessment_data,
                 extraction_results,
                 geometry_mode=geometry_mode,
                 section_id=section_id,
+                ladder_issues=ladder_issues,
             )
-            processing_issues = (
-                build_assessment_issues(
-                    batched_split_stats,
-                    section_id=section_id,
-                    confidence_model=confidence_cfg.model,
-                    geometry_mode=geometry_mode,
-                )
-                + audit_issues
-            )
+            processing_issues = ladder_issues + audit_issues
             # MERGE, do not replace. Extraction already wrote its own issues here
             # (extraction_incomplete, extraction_validation_failed, ...); this step
             # owns only the assessment-stage ones. Replacing the list dropped

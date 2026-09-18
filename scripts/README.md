@@ -117,14 +117,18 @@ python scripts/discover_model_limits.py --verbose
 
 ### API RBAC / Auth Test (`test_api_rbac.py`)
 
-Drives the deployed REST API (the `/op/<field>` dispatcher that replaced
-AppSync) as each Cognito group — **Admin, Author, Viewer, Reviewer** — plus
+Drives the deployed REST API (the `/op/<field>` dispatcher that took over when
+AppSync was removed) as each Cognito group — **Admin, Author, Viewer, Reviewer** — plus
 unauthenticated, and asserts the authorization outcome of every UI operation
-against the AppSync schema baseline.
+against the schema baseline in `nested/api-resolvers/src/api/schema.graphql`.
+That schema is no longer served by anything — AppSync was removed — but it is
+retained because its per-field `@aws_cognito_user_pools` directives remain the
+declared source of truth for which Cognito groups may call which operation.
 
-**Why:** Under AppSync, `@aws_cognito_user_pools(cognito_groups:[...])` schema
-directives gated operations *before* the resolver ran. The REST API Gateway
-transport uses a Cognito authorizer that only *authenticates*, so each resolver
+**Why:** The UI used to talk to AppSync, where `@aws_cognito_user_pools(cognito_groups:[...])`
+schema directives gated operations *before* the resolver ran. The API Gateway
+REST transport that replaced it uses a Cognito authorizer that only
+*authenticates*, so each resolver
 (and the dispatcher's `ddb_direct` module) must re-enforce the group check
 itself. A `curl`/`idp-cli` smoke test with an admin identity does **not**
 exercise per-role RBAC, so group regressions (a Viewer reaching an Admin-only
@@ -154,7 +158,7 @@ python3 scripts/test_api_rbac.py --stack-name IDP1 --region us-west-2 --teardown
 - After any change to a UI-facing resolver, the dispatcher, `ddb_direct`, or the
   REST client's argument mapping.
 - Before merging changes to `nested/api-resolvers/` — to confirm RBAC parity with
-  the AppSync schema is preserved.
+  the `schema.graphql` baseline is preserved.
 - When adding a new operation: add it to `READ_OPS`/`MUTATION_OPS` with its
   required groups (mirroring the directive in `schema.graphql`).
 
