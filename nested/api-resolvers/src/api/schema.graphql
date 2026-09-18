@@ -1927,7 +1927,7 @@ type Query @aws_cognito_user_pools @aws_iam {
   # Test Studio queries - Admin, Author only
   getTestRun(testRunId: String!): TestRun
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
-  getTestRuns(timePeriodHours: Int, startDateTime: AWSDateTime, endDateTime: AWSDateTime): [TestRun]
+  getTestRuns(timePeriodHours: Int, startDateTime: AWSDateTime, endDateTime: AWSDateTime, maxItems: Int): [TestRun]
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   getTestRunStatus(testRunId: String!): TestRunStatus
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])

@@ -771,16 +771,18 @@ def compare_with_flags() -> Dict[str, Any]:
 #         gated leaf verdict Stickler emits contributes to section and
 #         document counts. Fixes both the parent-vs-children contradiction
 #         and the section-metric inflation on list-heavy documents.
-#   3.0 — Stickler 1.0 upgrade (idp v0.6.9-dev). ``HungarianMatcher.calculate_metrics``
-#         now reports a paired-but-weak match as a false discovery instead of
-#         a false negative (upstream #289), so per-attribute row counts in
-#         ``_stickler_counts`` — and everything derived from them (F1,
-#         precision, recall, accuracy) — shift on any structured-list
-#         evaluation. Also adds two new ``AttributeEvaluationResult`` keys:
-#         ``inference_source`` and ``inference_why``, populated from
-#         Stickler 1.0's ``spec.explain()`` (source: ``"configured"`` /
-#         ``"auto-inferred"``). Comparing a 2.0-scored run against a
-#         3.0-scored one in Test Studio would read the delta as a config
-#         effect; the aggregation Lambda's version-mismatch warning surfaces
-#         the drift.
+#   3.0 — Stickler 1.0 upgrade (idp v0.6.9-dev). Two new
+#         ``AttributeEvaluationResult`` keys: ``inference_source`` and
+#         ``inference_why``, populated from Stickler 1.0's ``spec.explain()``
+#         (source: ``"configured"`` / ``"auto-inferred"``). The Stickler 1.0
+#         change to ``HungarianMatcher.calculate_metrics`` — paired-but-weak
+#         match now reports FD instead of FN (upstream #289) — is scoped to
+#         Stickler's own per-class metrics; IDP's ``_stickler_counts`` is
+#         derived leaf-by-leaf from row-level ``field_comparisons``, so the
+#         section goldens are unchanged. Behavior can still drift on
+#         auto-generated / un-annotated schemas where comparator inference
+#         picks a different class than 0.5.0 would have (see
+#         ``mapper._add_evaluation_extensions_recursive`` removal); the
+#         aggregation Lambda's version-mismatch warning surfaces both
+#         cases.
 STICKLER_RESULT_VERSION = "3.0"

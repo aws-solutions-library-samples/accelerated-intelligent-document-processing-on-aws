@@ -256,11 +256,14 @@ all = [
   "pandas==2.2.3",
   # Discovery/clustering module deps — before Stickler 1.0 these were pulled
   # transitively via ``stickler-eval==0.5.0``; 1.0 dropped scikit-learn as a
-  # runtime dep and scoped scipy to its ``semantic`` extra, so
-  # ``idp_common[all]`` would otherwise stop being sufficient to run
-  # ``idp_common.discovery.clustering_service`` and ``discovery_agent``.
+  # runtime dep, scoped scipy to its ``semantic`` extra, and removed jinja2
+  # entirely, so ``idp_common[all]`` would otherwise stop being sufficient
+  # to run ``idp_common.discovery.clustering_service`` and
+  # ``discovery_agent`` (the latter has a module-level ``from jinja2 import
+  # Environment, FileSystemLoader``).
   "scikit-learn>=1.5.0",
   "scipy>=1.14.0",
+  "jinja2>=3.1.0",
   "requests==2.33.0",
   "pyarrow==23.0.1",
   "openpyxl==3.1.5",

@@ -1,7 +1,20 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useEffect } from 'react';
-import { Table, Button, SpaceBetween, ButtonDropdown, Pagination, Box, TextFilter, Flashbar, Badge } from '@cloudscape-design/components';
+import {
+  Table,
+  Button,
+  SpaceBetween,
+  ButtonDropdown,
+  Pagination,
+  Box,
+  TextFilter,
+  Flashbar,
+  Badge,
+  CollectionPreferences,
+  FormField,
+  Select,
+} from '@cloudscape-design/components';
 import type { IconProps } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { generateClient } from '../../api/client-shim';
@@ -116,6 +129,19 @@ const TextCell = ({ text }: { text: string }): React.JSX.Element => (
 );
 
 const TIME_PERIOD_STORAGE_KEY = 'testResultsTimePeriodHours';
+const PREFERENCES_STORAGE_KEY = 'testResultsPreferences';
+
+// Server-side hard ceiling on getTestRuns (must match
+// ``_GET_TEST_RUNS_ABSOLUTE_MAX`` in the resolver). If a user chooses a
+// pageSize × pages product above this, we still cap the request here so
+// the UI accurately signals what the server will honor.
+const MAX_ITEMS_CEILING = 100;
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50];
+const NUM_PAGES_OPTIONS = [1, 2, 5, 10];
+
+const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_NUM_PAGES = 10; // 10 x 10 = 100, matches the historical cap
 
 const TestResultsList = ({
   timePeriodHours,
@@ -137,7 +163,19 @@ const TestResultsList = ({
   const [customDateRange, setCustomDateRange] = useState<DateRange | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [abortLoading, setAbortLoading] = useState(false);
-  const [pageSize, setPageSize] = useState(10);
+  // Persisted display preferences: pageSize (client-side rows per page)
+  // and numPages (how many pages worth of data to fetch). Their product,
+  // clamped at MAX_ITEMS_CEILING, is sent to the server as ``maxItems``.
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const [numPages, setNumPages] = useState<number>(DEFAULT_NUM_PAGES);
+  // The server caps ``getTestRuns`` at MAX_ITEMS_CEILING rows (see
+  // ``_GET_TEST_RUNS_ABSOLUTE_MAX`` in
+  // ``nested/api-resolvers/src/lambda/test_results_resolver/index.py``).
+  // Surfacing it here so an operator whose window has more runs sees a
+  // "narrow your range" hint rather than silently wondering where an
+  // older run went.
+  const [truncated, setTruncated] = useState(false);
+  const maxItems = Math.min(MAX_ITEMS_CEILING, pageSize * numPages);
 
   // Load saved time period from localStorage on mount
   useEffect(() => {
@@ -146,6 +184,20 @@ const TestResultsList = ({
       const parsedPeriod = JSON.parse(savedTimePeriod);
       if (parsedPeriod !== timePeriodHours) {
         setTimePeriodHours(parsedPeriod);
+      }
+    }
+    const savedPrefs = localStorage.getItem(PREFERENCES_STORAGE_KEY);
+    if (savedPrefs) {
+      try {
+        const parsed = JSON.parse(savedPrefs);
+        if (typeof parsed.pageSize === 'number' && PAGE_SIZE_OPTIONS.includes(parsed.pageSize)) {
+          setPageSize(parsed.pageSize);
+        }
+        if (typeof parsed.numPages === 'number' && NUM_PAGES_OPTIONS.includes(parsed.numPages)) {
+          setNumPages(parsed.numPages);
+        }
+      } catch {
+        // Ignore malformed prefs — fall back to defaults.
       }
     }
   }, []);
@@ -217,14 +269,19 @@ const TestResultsList = ({
     try {
       setLoading(true);
       const variables = customDateRange
-        ? { startDateTime: customDateRange.startDateTime, endDateTime: customDateRange.endDateTime }
-        : { timePeriodHours };
+        ? { startDateTime: customDateRange.startDateTime, endDateTime: customDateRange.endDateTime, maxItems }
+        : { timePeriodHours, maxItems };
       const result = (await client.graphql({
         query: getTestRuns,
         variables,
       })) as GqlResult;
 
       const completedRuns = result.data.getTestRuns || [];
+      // Resolver returns at most ``maxItems`` rows (server clamps to
+      // MAX_ITEMS_CEILING). If we received exactly the requested count,
+      // there may be older runs the user can't see without either
+      // narrowing the date range or raising the preferences.
+      setTruncated(completedRuns.length >= maxItems);
 
       // Add active test runs with progress
       const activeRunsWithProgress = activeTestRuns.map((run) => ({
@@ -263,7 +320,7 @@ const TestResultsList = ({
 
   useEffect(() => {
     fetchTestRuns();
-  }, [timePeriodHours, activeTestRuns, customDateRange]);
+  }, [timePeriodHours, activeTestRuns, customDateRange, maxItems]);
 
   const downloadToExcel = () => {
     // Convert test runs data to CSV format
@@ -401,6 +458,22 @@ const TestResultsList = ({
           ]}
         />
       )}
+      {truncated && (
+        <Flashbar
+          items={[
+            {
+              type: 'info',
+              header: `Showing the ${maxItems} most recent test runs`,
+              content:
+                maxItems >= MAX_ITEMS_CEILING
+                  ? `The selected time range contains more than ${MAX_ITEMS_CEILING} completed test runs. The server returns at most ${MAX_ITEMS_CEILING} — narrow the date range to see older runs.`
+                  : `You configured ${maxItems} rows in preferences (${numPages} pages × ${pageSize}). Raise page size or page count in preferences (max ${MAX_ITEMS_CEILING}), or narrow the date range, to see more.`,
+              dismissible: true,
+              onDismiss: () => setTruncated(false),
+            },
+          ]}
+        />
+      )}
       <TableHeader
         title={`Test Results (${testRuns.length})`}
         actionButtons={
@@ -527,14 +600,42 @@ const TestResultsList = ({
           />
         }
         preferences={
-          <Button
-            variant="icon"
-            iconName="settings"
-            ariaLabel="Page size settings"
-            onClick={() => {
-              if (pageSize === 10) setPageSize(20);
-              else if (pageSize === 20) setPageSize(50);
-              else setPageSize(10);
+          <CollectionPreferences
+            title="Preferences"
+            confirmLabel="Confirm"
+            cancelLabel="Cancel"
+            preferences={{ pageSize, custom: numPages }}
+            pageSizePreference={{
+              title: 'Rows per page',
+              options: PAGE_SIZE_OPTIONS.map((v) => ({ value: v, label: `${v} rows` })),
+            }}
+            customPreference={(customValue: number, setCustomValue) => (
+              <FormField
+                label="Number of pages to fetch"
+                description={`Sends maxItems = rows × pages to the server (capped at ${MAX_ITEMS_CEILING}). Narrow the date range if you need to see runs older than the fetched window.`}
+              >
+                <Select
+                  selectedOption={{
+                    value: String(customValue),
+                    label: `${customValue} pages`,
+                  }}
+                  options={NUM_PAGES_OPTIONS.map((v) => ({ value: String(v), label: `${v} pages` }))}
+                  onChange={({ detail }) => setCustomValue(Number(detail.selectedOption.value))}
+                />
+              </FormField>
+            )}
+            onConfirm={({ detail }) => {
+              // ``preferences.custom = numPages`` is seeded above, so
+              // detail.custom is guaranteed to be present. Validate the
+              // value against NUM_PAGES_OPTIONS anyway — a Cloudscape
+              // version bump or a stale localStorage read shouldn't be
+              // able to slip an out-of-range value into the setting.
+              const nextPageSize = detail.pageSize ?? pageSize;
+              const rawCustom = (detail as { custom: number }).custom;
+              const nextNumPages = NUM_PAGES_OPTIONS.includes(rawCustom) ? rawCustom : DEFAULT_NUM_PAGES;
+              setPageSize(nextPageSize);
+              setNumPages(nextNumPages);
+              localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify({ pageSize: nextPageSize, numPages: nextNumPages }));
             }}
           />
         }

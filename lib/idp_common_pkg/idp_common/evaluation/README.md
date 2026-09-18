@@ -81,6 +81,24 @@ The cross-Lambda `results.json` contract (S3 key template, `compare_with`
 flag set, result-version stamp) is formalized in `contract.py` — bump
 `STICKLER_RESULT_VERSION` when the raw Stickler blob shape changes.
 
+Every `AttributeEvaluationResult` in `results.json` carries two provenance
+keys sourced from Stickler 1.0's `spec.explain()` (added at
+`STICKLER_RESULT_VERSION=3.0`):
+
+- `inference_source` — `"configured"` if the operator supplied
+  `x-aws-idp-evaluation-method` for the leaf, `"auto-inferred"` if
+  Stickler's inference picked the comparator (root-schema
+  `x-aws-stickler-infer-unspecified: true`).
+- `inference_why` — Stickler's decision trace as a list of short strings
+  (`type:str → LevenshteinComparator@0.7`,
+  `name-token:invoice_id → ExactComparator@1.0`, …), for a container this
+  is the concatenation of every descendant leaf's trace.
+
+The Test Studio "Compare Test Runs" resolver diffs these keys to render
+the Comparator Changes panel; if you add a third source class in the
+future, extend `stickler_backend/results.py::_label` at the same time so
+the panel doesn't fall through to "auto-inferred".
+
 The IDP evaluation service provides an abstraction layer through `SticklerConfigMapper` that:
 
 - Translates IDP evaluation extensions (`x-aws-idp-evaluation-*`) to Stickler format

@@ -16,7 +16,7 @@ The GenAIIDP solution includes a built-in evaluation framework to assess the acc
 ## Enhanced Reporting
 
 The evaluation framework runs on the pinned `stickler-eval` release
-(currently 0.5.0 — see `stickler_version.STICKLER_VERSION` for the resolved
+(currently 1.0.0 — see `stickler_version.STICKLER_VERSION` for the resolved
 version). Reports include confidence calibration metrics:
 
 - **📊 Confidence Calibration Metrics** - ECE (Expected Calibration Error), Brier score, and AUROC analyze how well-calibrated confidence predictions are

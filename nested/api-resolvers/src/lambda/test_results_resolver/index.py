@@ -8,6 +8,7 @@ import math
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -209,6 +210,11 @@ def handler(event, context):
         start_date_time = args.get("startDateTime")
         end_date_time = args.get("endDateTime")
         time_period_hours = args.get("timePeriodHours", 2)
+        # Caller-supplied max — clamped to [1, _GET_TEST_RUNS_ABSOLUTE_MAX]
+        # in ``get_test_runs``. Default matches _GET_TEST_RUNS_ABSOLUTE_MAX
+        # so pre-existing callers (that don't pass maxItems) keep the
+        # historical shape of "up to 100 recent runs in the range".
+        max_items = args.get("maxItems")
 
         if start_date_time and end_date_time:
             start_iso, end_iso = start_date_time, end_date_time
@@ -218,8 +224,11 @@ def handler(event, context):
                 datetime.utcnow() - timedelta(hours=time_period_hours)
             ).isoformat() + "Z"
 
-        logger.info(f"Processing getTestRuns request: {start_iso} → {end_iso}")
-        return get_test_runs(start_iso, end_iso)
+        logger.info(
+            f"Processing getTestRuns request: {start_iso} → {end_iso} "
+            f"(maxItems={max_items})"
+        )
+        return get_test_runs(start_iso, end_iso, max_items=max_items)
     elif field_name == "getTestRun":
         test_run_id = event["arguments"]["testRunId"]
         logger.info(f"Processing getTestRun request for test run: {test_run_id}")
@@ -546,16 +555,23 @@ def float_to_decimal(obj):
 def _iter_completed_doc_keys(test_run_id, limit=5):
     """Yield up to ``limit`` completed ``ObjectKey`` values for a test run.
 
-    Uses the same source of truth as the aggregation Lambda
-    (``patterns/unified/src/test_execution_aggregation_function/index.py``):
-    scan ``doc#{test_run_id}`` items, filter ``EvaluationStatus ==
-    "COMPLETED"``, and return each item's ``ObjectKey`` — which is the
-    FULL S3 key (``{test_run_id}/{file_name}``), not the bare file name
-    that ``testrun#`` metadata's ``Files`` list holds.
+    Reads the testrun's ``Files`` list from ``testrun#{id}`` metadata and
+    probes each candidate document with ``BatchGetItem`` on the
+    ``doc#{test_run_id}/{file_name}`` PK. The doc row's ``ObjectKey`` is
+    ``{test_run_id}/{file_name}``, matching the naming used everywhere else
+    in this file (see ``_count_completed_documents``), so the panel's S3
+    key template (``{ObjectKey}/evaluation/results.json``) resolves.
 
-    Using ``Files`` (the initial approach) built ``{file_name}/evaluation/
-    results.json`` paths that 404 for every run, silently blanking the
-    Comparator Changes panel 100% of the time.
+    Previously this ran an unbounded paginated ``Scan`` with client-side
+    ``begins_with(PK, "doc#{run_id}")`` filter, then discarded all but
+    ``limit`` results. On a mature tracking table (tens of thousands of
+    doc rows) each Scan exceeded the 29s API Gateway dispatcher timeout
+    and returned 504 for the whole Compare Test Runs page. The docstring
+    that ruled out ``Files`` claimed it "built ``{file_name}/evaluation/
+    results.json`` paths that 404" — that was a missing ``{test_run_id}/``
+    prefix in the first attempt, not a property of ``Files`` itself.
+    Sorting the ``Files`` list also gives the determinism the Scan
+    pagination was added to guarantee.
     """
     # Use the low-level boto3 CLIENT (documented thread-safe), not the
     # shared module-level ``dynamodb`` RESOURCE. AWS docs explicitly say
@@ -574,47 +590,67 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
         )
         return
 
-    # Collect ALL completed doc keys, then sort deterministically before
-    # returning — DynamoDB Scan makes no order guarantee, so two runs of the
-    # same test set could otherwise sample different documents (in a
-    # multi-class run, even different classes), and the diff would report
-    # every attribute as one-sided schema-shape drift purely because Scan
-    # returned items in different orders.
-    collected: list[str] = []
-    exclusive_start_key = None
-    while True:
-        scan_kwargs = {
-            "TableName": table_name,
-            "FilterExpression": "begins_with(PK, :pk_prefix)",
-            "ExpressionAttributeValues": {
-                ":pk_prefix": {"S": f"doc#{test_run_id}"}
+    try:
+        meta_response = ddb_client.get_item(
+            TableName=table_name,
+            Key={
+                "PK": {"S": f"testrun#{test_run_id}"},
+                "SK": {"S": "metadata"},
             },
-        }
-        if exclusive_start_key is not None:
-            scan_kwargs["ExclusiveStartKey"] = exclusive_start_key
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not read testrun#{test_run_id} metadata: {e}. "
+            f"Comparator diff will be empty for this run."
+        )
+        return
+
+    files_attr = meta_response.get("Item", {}).get("Files", {})
+    files = [entry.get("S") for entry in files_attr.get("L", []) if entry.get("S")]
+    if not files:
+        return
+
+    # Sorted iteration gives deterministic candidate ordering — two runs of
+    # the same test set otherwise probe documents in different orders and
+    # the Comparator Changes panel could pick different-shape samples.
+    doc_keys = [f"{test_run_id}/{file_name}" for file_name in sorted(files)]
+
+    # BatchGetItem in 100-key chunks. Small runs (~5-10 docs) resolve in a
+    # single call; large runs still terminate in one round trip plus any
+    # UnprocessedKeys retries, versus the Scan path which paginated the
+    # entire tracking table.
+    yielded = 0
+    for i in range(0, len(doc_keys), 100):
+        if yielded >= limit:
+            return
+        batch = doc_keys[i : i + 100]
+        keys = [{"PK": {"S": f"doc#{dk}"}, "SK": {"S": "none"}} for dk in batch]
         try:
-            response = ddb_client.scan(**scan_kwargs)
+            response = ddb_client.batch_get_item(
+                RequestItems={table_name: {"Keys": keys}}
+            )
         except Exception as e:
             logger.warning(
-                f"DynamoDB scan for doc#{test_run_id} failed: {e}. "
-                f"Comparator diff will be empty for this run."
+                f"BatchGetItem for doc#{test_run_id}/* failed: {e}. "
+                f"Comparator diff may be short for this run."
             )
             return
-        for item in response.get("Items", []):
-            # Low-level Scan returns typed AttributeValue dicts (``{"S": ...}``);
-            # unwrap the two keys we consult.
+        # Preserve the sorted batch order — batch_get_item does not
+        # guarantee response order.
+        by_object_key = {}
+        for item in response.get("Responses", {}).get(table_name, []):
             eval_status = item.get("EvaluationStatus", {}).get("S")
             if eval_status != "COMPLETED":
                 continue
             doc_key = item.get("ObjectKey", {}).get("S")
             if isinstance(doc_key, str) and doc_key:
-                collected.append(doc_key)
-        exclusive_start_key = response.get("LastEvaluatedKey")
-        if not exclusive_start_key:
-            break
-
-    for doc_key in sorted(collected)[:limit]:
-        yield doc_key
+                by_object_key[doc_key] = doc_key
+        for doc_key in batch:
+            if yielded >= limit:
+                return
+            if doc_key in by_object_key:
+                yield doc_key
+                yielded += 1
 
 
 def _load_sample_attribute_methods(test_run_id):
@@ -649,9 +685,11 @@ def _load_sample_attribute_methods(test_run_id):
     # evaluation critical path). If the template shape ever changes, this
     # string and the constant in ``contract.py`` must move together.
     for doc_key in _iter_completed_doc_keys(test_run_id, limit=5):
-        key = f"{doc_key}/evaluation/results.json"
+        results_s3_key = f"{doc_key}/evaluation/results.json"
         try:
-            body = s3.get_object(Bucket=output_bucket, Key=key)["Body"].read()
+            body = s3.get_object(Bucket=output_bucket, Key=results_s3_key)[
+                "Body"
+            ].read()
             eval_data = json.loads(body)
         except Exception as e:  # noqa: BLE001
             # Broad ``except`` matches the "returns {} on any read/parse
@@ -661,7 +699,8 @@ def _load_sample_attribute_methods(test_run_id):
             # the entire compare_test_runs response on a transient S3 hiccup.
             # The panel is a UI nicety, it must never break the parent request.
             logger.warning(
-                f"results.json not readable at s3://{output_bucket}/{key}: {e}"
+                f"results.json not readable at "
+                f"s3://{output_bucket}/{results_s3_key}: {e}"
             )
             continue
 
@@ -692,13 +731,13 @@ def _load_sample_attribute_methods(test_run_id):
                 name = attr.get("name")
                 if not name:
                     continue
-                key = f"{document_class}.{name}" if document_class else name
+                attr_key = f"{document_class}.{name}" if document_class else name
                 # ``comparator_type`` is Stickler's class name (e.g.
                 # ``FuzzyComparator``); ``evaluation_method`` is the display
                 # string. Prefer the class name for the diff key so two runs
                 # that differ only in the threshold-suffix format still compare
                 # equal on comparator identity.
-                methods[key] = {
+                methods[attr_key] = {
                     "comparator": attr.get("comparator_type")
                     or attr.get("evaluation_method"),
                     "threshold": attr.get("evaluation_threshold"),
@@ -710,8 +749,8 @@ def _load_sample_attribute_methods(test_run_id):
         # Zero attributes on a parseable file — likely a section-excluded doc
         # or a shape drift. Try the next candidate rather than returning empty.
         logger.info(
-            f"results.json at s3://{output_bucket}/{key} parsed but had no "
-            f"attributes; trying next candidate"
+            f"results.json at s3://{output_bucket}/{results_s3_key} parsed but "
+            f"had no attributes; trying next candidate"
         )
 
     return {}
@@ -737,7 +776,9 @@ def _build_comparator_diff(runs_methods):
 
     diff_rows = []
     for attr in sorted(all_attrs):
-        entries = {run_id: methods.get(attr) for run_id, methods in runs_methods.items()}
+        entries = {
+            run_id: methods.get(attr) for run_id, methods in runs_methods.items()
+        }
         # Compare on the three-key signature that drives the panel. ``why`` is
         # informational (rendered in a tooltip) and can vary in phrasing without
         # implying a real difference — omit from the diff decision.
@@ -776,8 +817,6 @@ def compare_test_runs(test_run_ids):
     # invocation. Bounded to the number of runs (typically 2-4). Isolated
     # from the sequential critical path so a slow probe on run A doesn't
     # block starting run B's probe.
-    from concurrent.futures import ThreadPoolExecutor
-
     with ThreadPoolExecutor(max_workers=max(1, min(4, len(test_run_ids)))) as pool:
         methods_futures = {
             trid: pool.submit(_load_sample_attribute_methods, trid)
@@ -1093,12 +1132,83 @@ def get_test_results(test_run_id):
         }
 
 
-def _query_test_runs_from_gsi(table, start_iso, end_iso):
+def _batch_get_test_run_items(keys, table_name):
+    """BatchGetItem for testrun metadata rows, with UnprocessedKeys retry.
+
+    Sits behind ``_query_test_runs_from_gsi`` on the ``getTestRuns`` path.
+    ``max_items`` (100) matches DynamoDB's per-call
+    BatchGetItem cap, so this always fits in a single round trip — no
+    parallelism needed. ``UnprocessedKeys`` are re-issued with capped
+    exponential backoff rather than dropped; the pre-cap code returned
+    partial results silently under throttling, making the list appear
+    shorter than it actually was.
+    """
+    if not keys:
+        return []
+    if len(keys) > 100:
+        # BatchGetItem hard limit — shouldn't happen with the caller cap,
+        # but guard so a future caller change is a loud AssertionError
+        # rather than a partial silent read.
+        raise AssertionError(
+            f"_batch_get_test_run_items called with {len(keys)} keys; "
+            f"DynamoDB BatchGetItem caps at 100 per call."
+        )
+
+    ddb_client = dynamodb.meta.client
+    collected = []
+    pending = {"Keys": keys}
+    for attempt in range(6):
+        try:
+            response = ddb_client.batch_get_item(RequestItems={table_name: pending})
+        except ClientError as exc:
+            logger.warning(
+                f"BatchGetItem for {len(pending.get('Keys', []))} testrun "
+                f"keys failed: {exc}. Returning partial results."
+            )
+            return collected
+        collected.extend(response.get("Responses", {}).get(table_name, []))
+        pending = response.get("UnprocessedKeys", {}).get(table_name)
+        if not pending or not pending.get("Keys"):
+            return collected
+        time.sleep(min(0.05 * (2**attempt), 0.5))
+    logger.warning(
+        f"BatchGetItem still has {len(pending.get('Keys', []))} unprocessed "
+        f"testrun keys after 6 attempts; dropping them from this list render"
+    )
+    return collected
+
+
+# Absolute ceiling on the number of testruns ``getTestRuns`` will return in
+# a single call. The REST dispatcher enforces a 20s read timeout against
+# every resolver (http_api_dispatcher/index.py:63); hydrating every testrun
+# in the range via BatchGetItem grows linearly with the count and started
+# missing that ceiling on mature stacks (~500 rows -> ~20s+). The GSI is
+# sorted newest first, so returning the N most recent covers the common
+# "what happened recently" UI need. Users who want an older run narrow
+# the date range; the underlying pagination substrate (LastEvaluatedKey
+# on the GSI Query) is still there for the follow-up TestRunConnection
+# API. Callers may pass a smaller ``maxItems`` to fetch fewer rows and
+# render faster — the value is clamped to ``[1, this ceiling]`` in
+# ``get_test_runs``.
+#
+# 100 matches DynamoDB's BatchGetItem max per call, so the hydrate step
+# is guaranteed to fit in a single round trip regardless of table load.
+# Raising this without redesigning the hydrate step (single-batch today)
+# reintroduces the throttle-amplification problem we just removed.
+_GET_TEST_RUNS_ABSOLUTE_MAX = 100
+
+
+def _query_test_runs_from_gsi(table, start_iso, end_iso, max_items):
     """Query test runs from TypeDateIndex GSI instead of scanning the full table.
 
     Uses GSI to find testrun keys efficiently, then BatchGetItem for full records
     (GSI projection doesn't include all fields like Context, ConfigVersion, etc.).
     Falls back to scan if GSI query returns no results (backfill may not be complete).
+
+    Capped at ``max_items`` — see the module-level comment for
+    why. The GSI's ``ScanIndexForward=False`` guarantees the cap keeps the
+    NEWEST N runs in the range, which is what the UI list view wants by
+    default.
     """
     from boto3.dynamodb.conditions import Key
 
@@ -1109,31 +1219,35 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso):
         & Key("InitialEventTime").between(start_iso, end_iso),
         "ScanIndexForward": False,  # Newest first
         "ProjectionExpression": "PK, SK",
+        "Limit": max_items,
     }
 
     try:
-        while True:
+        # The Limit caps DDB's own page size, so on a busy index DDB may
+        # return a short first page with a LastEvaluatedKey — we still
+        # need to paginate until we have max_items items
+        # or run out of range. Never fetch past the cap.
+        while len(gsi_items) < max_items:
             response = table.query(**query_kwargs)
             gsi_items.extend(response.get("Items", []))
-
             if "LastEvaluatedKey" not in response:
                 break
             query_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+            query_kwargs["Limit"] = max_items - len(gsi_items)
 
-        logger.info(f"GSI query returned {len(gsi_items)} test run keys")
+        # Never yield more than the cap; sorted newest-first by the GSI.
+        gsi_items = gsi_items[:max_items]
+        logger.info(
+            f"GSI query returned {len(gsi_items)} test run keys (capped at {max_items})"
+        )
 
-        # If GSI returned results, fetch full records via BatchGetItem
+        # If GSI returned results, fetch full records via BatchGetItem.
+        # With the cap, this is guaranteed to fit in a single BatchGetItem
+        # call (100 keys max per call).
         if gsi_items:
-            items = []
             keys = [{"PK": item["PK"], "SK": item["SK"]} for item in gsi_items]
             table_name = table.table_name
-            # DynamoDB BatchGetItem supports max 100 keys per call
-            for i in range(0, len(keys), 100):
-                batch_keys = keys[i : i + 100]
-                batch_response = boto3.resource("dynamodb").batch_get_item(
-                    RequestItems={table_name: {"Keys": batch_keys}}
-                )
-                items.extend(batch_response.get("Responses", {}).get(table_name, []))
+            items = _batch_get_test_run_items(keys, table_name)
             logger.info(f"BatchGetItem returned {len(items)} full test run records")
             return items
 
@@ -1145,7 +1259,10 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso):
     except Exception as e:
         logger.warning(f"GSI query failed, falling back to scan: {e}")
 
-    # Fallback scan
+    # Fallback scan — same cap applies. DDB Scan with FilterExpression pays
+    # RCU for every row read (not just the filtered survivors), so an
+    # uncapped fallback on a large tracking table is even more expensive
+    # than the GSI path we are protecting.
     items = []
     scan_kwargs = {
         "FilterExpression": "begins_with(PK, :pk) AND SK = :sk AND CreatedAt >= :start AND CreatedAt <= :end",
@@ -1155,17 +1272,20 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso):
             ":start": start_iso,
             ":end": end_iso,
         },
+        "Limit": max_items,
     }
 
-    while True:
+    while len(items) < max_items:
         response = table.scan(**scan_kwargs)
         items.extend(response.get("Items", []))
-
         if "LastEvaluatedKey" not in response:
             break
         scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
-    logger.info(f"Fallback scan returned {len(items)} test runs")
+    items = items[:max_items]
+    logger.info(
+        f"Fallback scan returned {len(items)} test runs (capped at {max_items})"
+    )
     return items
 
 
@@ -1210,12 +1330,32 @@ def _build_test_run_list(items):
     return test_runs
 
 
-def get_test_runs(start_iso, end_iso):
-    """Get list of test runs within a date range"""
+def get_test_runs(start_iso, end_iso, max_items=None):
+    """Get list of test runs within a date range.
+
+    ``max_items`` is a caller-driven cap; clamped to
+    ``[1, _GET_TEST_RUNS_ABSOLUTE_MAX]``. ``None`` (or omitted) uses the
+    server default (also ``_GET_TEST_RUNS_ABSOLUTE_MAX``) so untouched
+    callers keep the historical shape.
+    """
     table = dynamodb.Table(os.environ["TRACKING_TABLE"])  # type: ignore[attr-defined]
 
-    logger.info(f"Fetching test runs between: {start_iso} and {end_iso}")
-    items = _query_test_runs_from_gsi(table, start_iso, end_iso)
+    if max_items is None:
+        effective_max = _GET_TEST_RUNS_ABSOLUTE_MAX
+    else:
+        try:
+            requested = int(max_items)
+        except (TypeError, ValueError):
+            requested = _GET_TEST_RUNS_ABSOLUTE_MAX
+        # Clamp — never below 1, never above the server's own hard ceiling
+        # (which is bounded by BatchGetItem's per-call limit).
+        effective_max = max(1, min(_GET_TEST_RUNS_ABSOLUTE_MAX, requested))
+
+    logger.info(
+        f"Fetching test runs between: {start_iso} and {end_iso} "
+        f"(effective_max={effective_max})"
+    )
+    items = _query_test_runs_from_gsi(table, start_iso, end_iso, effective_max)
     logger.info(f"Test runs found: {len(items)}")
 
     return _build_test_run_list(items)

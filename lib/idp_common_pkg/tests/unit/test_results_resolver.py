@@ -282,39 +282,55 @@ def test_build_comparator_diff_needs_two_runs():
 
 @pytest.mark.unit
 def test_iter_completed_doc_keys_is_deterministic():
-    """DDB Scan makes no order guarantee. Two calls from the same test set
-    that end up sampling different documents produce section counts that
-    disagree, and the panel renders every attribute as one-sided schema-
-    shape drift purely because Scan returned items in different orders.
-    ``_iter_completed_doc_keys`` MUST sort the collected doc keys before
-    yielding so a repeated call under the same table state picks the same
-    doc every time — and so two runs of the same test set converge on
-    the same representative document.
+    """Sample-doc selection must be deterministic so two runs of the same
+    test set converge on the same representative document (otherwise the
+    Comparator Changes panel reports one-sided drift purely because the
+    sampler picked differently-shaped docs).
+
+    Implementation reads ``Files`` from ``testrun#{id}`` metadata and
+    ``batch_get_item``s the ``doc#{run_id}/{file_name}`` rows — the
+    earlier unbounded ``Scan`` version exceeded the 29s API Gateway
+    ceiling on mature tracking tables. The ``Files`` list is sorted
+    before iteration to give the same determinism the Scan version
+    obtained by sorting Scan results.
     """
-    # ``_iter_completed_doc_keys`` now uses the low-level boto3 CLIENT
-    # (thread-safe under fanout) rather than the module-level resource,
-    # so the Scan response comes back as typed AttributeValue dicts.
     fake_client = Mock()
-    fake_client.scan.return_value = {
-        # Deliberate reverse-lex order to prove sorting kicks in
-        "Items": [
-            {
-                "ObjectKey": {"S": "runid/zeta.pdf"},
-                "EvaluationStatus": {"S": "COMPLETED"},
-            },
-            {
-                "ObjectKey": {"S": "runid/alpha.pdf"},
-                "EvaluationStatus": {"S": "COMPLETED"},
-            },
-            {
-                "ObjectKey": {"S": "runid/mu.pdf"},
-                "EvaluationStatus": {"S": "COMPLETED"},
-            },
-            {
-                "ObjectKey": {"S": "runid/skip-me.pdf"},
-                "EvaluationStatus": {"S": "FAILED"},
-            },
-        ],
+    # testrun#{id} metadata read — ``Files`` in reverse-lex order to prove
+    # the sampler sorts before iterating
+    fake_client.get_item.return_value = {
+        "Item": {
+            "Files": {
+                "L": [
+                    {"S": "zeta.pdf"},
+                    {"S": "alpha.pdf"},
+                    {"S": "mu.pdf"},
+                    {"S": "skip-me.pdf"},
+                ]
+            }
+        }
+    }
+    # doc# BatchGetItem — one entry is FAILED and must be skipped
+    fake_client.batch_get_item.return_value = {
+        "Responses": {
+            "T": [
+                {
+                    "ObjectKey": {"S": "runid/alpha.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/mu.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/skip-me.pdf"},
+                    "EvaluationStatus": {"S": "FAILED"},
+                },
+                {
+                    "ObjectKey": {"S": "runid/zeta.pdf"},
+                    "EvaluationStatus": {"S": "COMPLETED"},
+                },
+            ]
+        }
     }
     with (
         patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
@@ -325,6 +341,80 @@ def test_iter_completed_doc_keys_is_deterministic():
         "Sample doc selection must be lexicographically deterministic so "
         "two runs of the same test set pick the same representative doc"
     )
+
+
+@pytest.mark.unit
+def test_batch_get_test_run_items_retries_unprocessed_keys():
+    """``getTestRuns`` was timing out at the AppSync 20s resolver ceiling
+    on any stack that had accumulated a few hundred test runs, because the
+    per-batch BatchGetItem loop was sequential AND dropped
+    ``UnprocessedKeys`` silently. The retry loop must re-issue unprocessed
+    keys until they resolve (or the retry budget is exhausted) — otherwise
+    a throttled batch under load returns a shorter test-run list than the
+    GSI actually contains.
+    """
+    responses = [
+        {
+            "Responses": {"T": [{"PK": {"S": "testrun#a"}}]},
+            "UnprocessedKeys": {
+                "T": {"Keys": [{"PK": {"S": "testrun#b"}, "SK": {"S": "metadata"}}]}
+            },
+        },
+        {
+            "Responses": {"T": [{"PK": {"S": "testrun#b"}}]},
+            "UnprocessedKeys": {},
+        },
+    ]
+    fake_client = Mock()
+    fake_client.batch_get_item.side_effect = responses
+    with patch.object(index.dynamodb.meta, "client", fake_client):
+        keys = [
+            {"PK": {"S": "testrun#a"}, "SK": {"S": "metadata"}},
+            {"PK": {"S": "testrun#b"}, "SK": {"S": "metadata"}},
+        ]
+        items = index._batch_get_test_run_items(keys, "T")
+    assert fake_client.batch_get_item.call_count == 2, (
+        "UnprocessedKeys must be re-issued rather than silently dropped"
+    )
+    assert {item["PK"]["S"] for item in items} == {"testrun#a", "testrun#b"}
+
+
+@pytest.mark.unit
+def test_get_test_runs_clamps_max_items():
+    """``getTestRuns`` accepts a caller-supplied ``maxItems`` and must
+    clamp it to the server-side hard ceiling. Passing a huge value must
+    not translate into 500-key BatchGetItem requests that reintroduce
+    the throttle-amplification we removed; passing 0 or negative must
+    become at least 1 (a zero-limit DDB Query is a no-op that still
+    burns an invocation).
+    """
+    fake_table = Mock()
+    fake_table.table_name = "T"
+    fake_table.query.return_value = {"Items": []}
+    fake_table.scan.return_value = {"Items": []}
+    ceiling = index._GET_TEST_RUNS_ABSOLUTE_MAX
+
+    with (
+        patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
+        patch.object(index.dynamodb, "Table", return_value=fake_table),
+    ):
+        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=999)
+        # First Query's Limit is the clamped value, not the raw 999.
+        assert fake_table.query.call_args.kwargs["Limit"] == ceiling
+
+        fake_table.query.reset_mock()
+        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=0)
+        assert fake_table.query.call_args.kwargs["Limit"] == 1
+
+        fake_table.query.reset_mock()
+        # None means "use the server default".
+        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items=None)
+        assert fake_table.query.call_args.kwargs["Limit"] == ceiling
+
+        fake_table.query.reset_mock()
+        # Malformed strings fall back to the ceiling (defensive).
+        index.get_test_runs("2026-01-01T00:00:00Z", "2026-01-08T00:00:00Z", max_items="not-a-number")
+        assert fake_table.query.call_args.kwargs["Limit"] == ceiling
 
 
 @pytest.mark.unit
