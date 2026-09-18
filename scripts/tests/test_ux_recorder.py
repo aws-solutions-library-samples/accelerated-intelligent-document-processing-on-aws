@@ -810,7 +810,7 @@ class FakeScreencast:
         self.stopped = True
 
 
-def _recorder(tmp_path):
+def _recorder(tmp_path, kind: str = "review"):
     out_dir = tmp_path / "ux-recordings"
     session_dir = out_dir / "stack-20260911-120000"
     session_dir.mkdir(parents=True)
@@ -822,6 +822,16 @@ def _recorder(tmp_path):
         "started": 1000.0,
         "say": "Hello.",
     }
+    if kind == "demo":
+        meta.update(
+            {
+                "kind": "demo",
+                "persona": None,
+                "flows": [],
+                "title": "Editing test sets in place",
+                "subtitle": ["Version 0.6.9"],
+            }
+        )
     (session_dir / "session.json").write_text(json.dumps(meta))
     recorder_cli.write_current(
         out_dir, {"session_dir": str(session_dir), "socket": meta["socket"], "pid": 1}
@@ -980,7 +990,7 @@ class TestCliPlumbing:
         assert len(recorder_cli.socket_path_for(datetime.now(), 99999)) < 100
 
 
-def _make_session(tmp_path: Path, with_narration: bool) -> Path:
+def _make_session(tmp_path: Path, with_narration: bool, kind: str = "review") -> Path:
     from PIL import Image
 
     session_dir = tmp_path / "stack-20260911-120000"
@@ -1037,13 +1047,35 @@ def _make_session(tmp_path: Path, with_narration: bool) -> Path:
         "frame_count": 4,
         "frame_bytes": 1,
     }
-    (session_dir / "timeline.json").write_text(json.dumps(timeline))
-    (session_dir / "review.md").write_text(
-        render.review_skeleton("stack", "Admin", "2026-09-11", ["5.1"]).replace(
-            "Findings                                    (ranked; suggestion, not a demand)\n  \n",
-            "Findings                                    (ranked; suggestion, not a demand)\n  5.1  Button unclear → label it\n",
+    if kind == "demo":
+        timeline["session"].update(
+            {
+                "kind": "demo",
+                "persona": None,
+                "flows": [],
+                "title": "Editing test sets in place",
+                "subtitle": ["Version 0.6.9"],
+            }
         )
-    )
+    (session_dir / "timeline.json").write_text(json.dumps(timeline))
+    if kind == "demo":
+        (session_dir / "demo.md").write_text(
+            render.demo_skeleton(
+                "Editing test sets in place", "2026-09-11", ["Version 0.6.9"]
+            ).replace(
+                "Key takeaways                               (3-5 lines; these become the end card)\n  \n",
+                "Key takeaways                               (3-5 lines; these become the end card)\n"
+                "  Remove documents without rebuilding the set\n"
+                "  Add from a zip, a bucket pattern or generation\n",
+            )
+        )
+    else:
+        (session_dir / "review.md").write_text(
+            render.review_skeleton("stack", "Admin", "2026-09-11", ["5.1"]).replace(
+                "Findings                                    (ranked; suggestion, not a demand)\n  \n",
+                "Findings                                    (ranked; suggestion, not a demand)\n  5.1  Button unclear → label it\n",
+            )
+        )
     return session_dir
 
 
@@ -1137,3 +1169,181 @@ class TestRenderEndToEnd:
         )["streams"]
         assert not [s for s in info if s["codec_type"] == "subtitle"]
         assert not (session_dir / "cards").exists()
+
+
+@pytest.mark.unit
+class TestDemoKind:
+    """A product demo shares the recorder; only the cards, the sheet and the
+    output names differ. These pin that a demo never reads as a UX review."""
+
+    DEMO_SHEET = (
+        "🎬  Demo — Editing test sets in place, 2026-09-11\nVersion 0.6.9\n\n"
+        "Storyboard\n  1. Open the set\n\n"
+        "Key takeaways                               (3-5 lines)\n"
+        "  Remove documents without rebuilding the set\n"
+        "  Add from a zip or a bucket pattern\n\n"
+        "Fixtures\n  lending_package.pdf\n"
+    )
+
+    def test_takeaways_are_read_from_the_demo_sheet(self):
+        assert render.takeaways_from_demo(self.DEMO_SHEET) == [
+            "Remove documents without rebuilding the set",
+            "Add from a zip or a bucket pattern",
+        ]
+        assert render.findings_from_review(self.DEMO_SHEET) == []
+
+    def test_kind_defaults_to_review_and_rejects_unknown_values(self):
+        assert render.session_kind({}) == "review"
+        assert render.session_kind({"kind": "demo"}) == "demo"
+        assert render.session_kind({"kind": "trailer"}) == "review"
+
+    def test_names_follow_the_kind(self):
+        assert render.report_file("demo") == "demo.md"
+        assert render.report_file("review") == "review.md"
+        assert render.output_stem("demo") == "demo"
+        assert render.end_card_label("demo") == "Takeaways"
+        assert render.end_card_label("review") == "Findings"
+
+    def test_demo_skeleton_carries_title_subtitle_and_chapter_markers(self):
+        sheet = render.demo_skeleton(
+            "Editing test sets", "2026-09-11", ["Version 0.6.9"]
+        )
+        assert sheet.startswith(
+            "🎬  Demo — Editing test sets, 2026-09-11\nVersion 0.6.9\n"
+        )
+        for heading in ("Storyboard", "Key takeaways", "Fixtures", "Not shown"):
+            assert f"\n{heading}" in sheet
+        assert render.CHAPTERS_BEGIN in sheet and render.CHAPTERS_END in sheet
+        assert "UX review" not in sheet and "Findings" not in sheet
+
+    def test_end_card_is_labelled_takeaways_for_a_demo(self):
+        events = [
+            render.Event(seq=0, t=0.0, type="start", label="Start"),
+            render.Event(seq=1, t=5.0, type="stop"),
+        ]
+        frames = [render.Frame(1, 0.0, "f1.jpg"), render.Frame(2, 5.0, "f2.jpg")]
+        segs = render.build_segments(
+            events,
+            frames,
+            {},
+            render.PacingConfig(),
+            "cards/title.jpg",
+            "cards/end.jpg",
+            end_label="Takeaways",
+        )
+        assert [s.label for s in segs] == ["Title", "Start", "Takeaways"]
+
+    def test_a_demo_recording_writes_demo_md_and_stamps_the_kind(self, tmp_path):
+        rec, session_dir, _ = _recorder(tmp_path, kind="demo")
+        rec.begin()
+        assert rec.handle_command({"cmd": "mark", "label": "Open", "say": "We open."})[
+            "ok"
+        ]
+        assert rec.handle_command({"cmd": "stop", "say": "Done."})["ok"]
+        timeline = json.loads((session_dir / "timeline.json").read_text())
+        session = timeline["session"]
+        assert session["kind"] == "demo"
+        assert session["title"] == "Editing test sets in place"
+        assert session["subtitle"] == ["Version 0.6.9"]
+        sheet = (session_dir / "demo.md").read_text()
+        assert sheet.startswith("🎬  Demo — Editing test sets in place, ")
+        assert "Version 0.6.9" in sheet
+        assert not (session_dir / "review.md").exists()
+
+    def test_a_review_recording_still_stamps_review_and_no_title(self, tmp_path):
+        rec, session_dir, _ = _recorder(tmp_path)
+        rec.begin()
+        assert rec.handle_command({"cmd": "stop"})["ok"]
+        session = json.loads((session_dir / "timeline.json").read_text())["session"]
+        assert session["kind"] == "review" and session["title"] is None
+        assert (session_dir / "review.md").exists()
+
+    def test_finalize_from_disk_keeps_the_demo_kind(self, tmp_path):
+        rec, session_dir, _ = _recorder(tmp_path, kind="demo")
+        rec.begin()
+        rec.handle_command({"cmd": "mark", "label": "Open", "say": "We open."})
+        (session_dir / "timeline.json").unlink(missing_ok=True)
+        timeline = recorder_cli.finalize_from_disk(session_dir)
+        assert timeline["session"]["kind"] == "demo"
+        assert (session_dir / "demo.md").exists()
+
+    def test_start_refuses_a_demo_without_a_title_and_a_review_without_persona(self):
+        parser = recorder_cli.build_parser()
+        demo = parser.parse_args(["start", "--kind", "demo", "--stack", "s"])
+        assert recorder_cli.cmd_start(demo) == 2
+        review = parser.parse_args(["start", "--stack", "s"])
+        assert recorder_cli.cmd_start(review) == 2
+        ok = parser.parse_args(
+            [
+                "start",
+                "--kind",
+                "demo",
+                "--stack",
+                "s",
+                "--title",
+                "Editing test sets",
+                "--subtitle",
+                "Version 0.6.9",
+            ]
+        )
+        assert ok.kind == "demo" and ok.persona is None
+        assert ok.subtitle == ["Version 0.6.9"]
+
+    def test_demo_session_dirs_are_named_after_the_title(self):
+        from datetime import datetime
+
+        name = recorder_cli.session_dir_name(
+            recorder_cli.demo_session_seed("Editing test sets: in place!"),
+            datetime(2026, 9, 18, 10, 0, 0),
+        )
+        assert name == "demo-Editing-test-sets--in-place-20260918-100000"
+        assert "/" not in name and ":" not in name
+
+    def test_stop_hint_names_the_demo_sheet(self, tmp_path):
+        rec, session_dir, _ = _recorder(tmp_path, kind="demo")
+        assert recorder_cli._session_meta(session_dir)["kind"] == "demo"
+        assert (
+            render.report_file(
+                render.session_kind(recorder_cli._session_meta(session_dir))
+            )
+            == "demo.md"
+        )
+        assert recorder_cli._session_meta(tmp_path / "missing") == {}
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not (HAS_FFMPEG and HAS_PIL), reason="needs ffmpeg and Pillow")
+class TestDemoRenderEndToEnd:
+    def test_dry_run_of_a_demo_writes_demo_names_and_a_takeaways_chapter(
+        self, tmp_path
+    ):
+        session_dir = _make_session(tmp_path, with_narration=True, kind="demo")
+        out = render.render_session(
+            session_dir, render.RenderOptions(dry_run=True), log=lambda m: None
+        )
+        assert out is None
+        assert (session_dir / "demo.srt").exists()
+        assert not (session_dir / "review.srt").exists()
+        assert (session_dir / "cards" / "title.jpg").exists()
+        assert (session_dir / "cards" / "end.jpg").exists()
+        plan = json.loads((session_dir / "segments.json").read_text())
+        labels = [s["label"] for s in plan["segments"]]
+        assert labels[0] == "Title" and labels[-1] == "Takeaways"
+        assert "Findings" not in labels
+
+    def test_full_render_of_a_demo_writes_demo_mp4_and_chapters_into_demo_md(
+        self, tmp_path
+    ):
+        session_dir = _make_session(tmp_path, with_narration=True, kind="demo")
+        client = _fake_polly_client(tmp_path)
+        out = render.render_session(
+            session_dir,
+            render.RenderOptions(),
+            log=lambda m: None,
+            client_factory=lambda region: client,
+        )
+        assert out is not None and out.name == "demo.mp4" and out.exists()
+        assert not (session_dir / "review.mp4").exists()
+        sheet = (session_dir / "demo.md").read_text()
+        assert "00:00  Title" in sheet and "Takeaways" in sheet
+        assert "Remove documents without rebuilding the set" in sheet

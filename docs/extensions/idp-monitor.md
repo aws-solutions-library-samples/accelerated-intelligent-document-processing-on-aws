@@ -3,95 +3,68 @@ title: "IDP Monitor"
 ---
 # IDP Monitor
 
-**IDP Monitor** is an operations dashboard for your IDP Accelerator deployment. It shows what your document pipeline is doing right now and what it has cost you, on one screen inside the IDP web UI: document volume and status, per-stage latency, failures with error categories, throttling, low-confidence documents, the human review queue, and cost broken down by document type, pipeline stage, configuration version and model. An AI Assistant answers plain-language questions about the same data, assembles a view of the relevant widgets on the fly, and can run those questions on a schedule and notify you with the results.
+**IDP Monitor** is an AI-powered operations dashboard for your IDP Accelerator deployment. An AI Assistant answers plain-language questions about your pipeline — failures, cost, throughput, latency — by translating them into SQL against your reporting data and assembling a live dashboard view on the fly. Scheduled Agents run those same questions automatically on a cron you choose and notify you with the results. Underneath the AI layer, a library of configurable widgets shows what your document pipeline is doing right now and what it has cost you, on one screen inside the IDP web UI.
 
 ## What it does
 
-Once an IDP Accelerator pipeline is in production, the questions change. Is throughput keeping up? Which document type is failing, and why? What did yesterday cost, and which configuration version or model drove it? Which documents came back with low confidence and are waiting for human review? Answering these from raw CloudWatch logs, Step Functions histories and reporting tables is slow, and it gets slower as volume grows. IDP Monitor puts the answers on one screen, built from a library of widgets you can turn on and arrange per dashboard.
+Once an IDP Accelerator pipeline is in production, the questions change. Is throughput keeping up? Which document type is failing, and why? What did yesterday cost, and which configuration version or model drove it? Which documents came back with low confidence and are waiting for human review? Answering these from raw CloudWatch logs, Step Functions histories and reporting tables is slow, and it gets slower as volume grows. IDP Monitor puts the answers on one screen — ask a question in plain language and get an instant answer with the relevant widgets, or browse the dashboard directly.
 
-**Operations widgets**
+## AI Assistant and Insights
 
-- **Key metrics** — documents processed, success rate, total cost, and cost per document for the selected window
-- **Document status** — in-progress documents right now, plus completed and failed volume over time
-- **Latency** — processing time per pipeline stage with P50 / P90 / P99 percentiles
-- **Failures** — recent failures with error category, error message, and a link to the document
-- **Throttle events** — service throttling and rate-limit events across Amazon Bedrock, Amazon Textract, AWS Lambda and Amazon DynamoDB, with severity
-- **Confidence alerts** — documents whose extraction confidence fell below your threshold
-- **Human-in-the-loop** — the size and age of the human review queue
-- **Concurrency** — workflow concurrency and capacity utilization
-- **Document types** — classification distribution, including documents that mix several types
-- **Configuration context** — which pipeline configuration versions produced the documents in the window, so you can correlate a change in behaviour with a configuration deployment
+An **AI Assistant** panel opens from the toolbar. Ask a plain-language question:
 
-**Cost widgets**
+- *What failed last week?*
+- *Show me cost by document type for the last 30 days.*
+- *Compare throughput this week vs last week.*
 
-- **Cost trends** — spend over time
-- **Cost distribution** — by document type, by pipeline stage (OCR, classification, extraction, assessment, and so on), and by configuration version
-- **Control-plane cost** — what the pipeline's own Lambda functions and control-plane agents cost, separately from per-document inference
-- **Most expensive documents** — a ranked list you can open document by document
-
-Every chart drills down to the documents behind it. Click a slice of the document-type chart, a bar in the cost distribution, or a row in the failures table to open the matching documents in a detail view.
-
-## How it works
-
-IDP Monitor installs into your existing IDP Accelerator stack as an extension. It deploys a small HTTP API and a Lambda function that read the stack's own data:
-
-- **Amazon Athena** over the accelerator's [reporting database](../reporting-database.md) for everything historical: volume, latency, cost, token usage and document-type distribution. Queries run against hourly and daily rollup tables rather than the raw metering records, so the dashboard stays fast at high document volumes without adding load to your processing path.
-- **Amazon DynamoDB** (the accelerator's tracking table) for in-flight state and recent failures.
-- **Amazon CloudWatch** metrics and **AWS X-Ray** traces for throttling, concurrency and per-stage latency.
-- **Amazon Bedrock** for the AI Summary widget and the AI Assistant.
-
-The API is protected by the same Amazon Cognito user pool as the rest of the IDP web UI, so anyone who can sign in to your accelerator can open the Monitoring page. Everything runs inside your own AWS account and Region against your own stack's data. No document content, metrics or configuration leaves it.
-
-## Dashboards
-
-IDP Monitor ships with five built-in dashboards. **Dashboard** is a combined operations-and-cost view. **Daily Operations** and **Daily Cost** default to the last 24 hours; **Monthly Operations** and **Monthly Cost** default to the last 30 days. Each opens as a tab on the Monitoring page.
-
-For any dashboard you can:
-
-- change the **time range** with presets from the last hour to the last 30 days, or pick a custom start and end
-- turn individual **widgets** on or off and reorder them
-- set an **auto-refresh interval**, or refresh on demand
-- choose the **AI Summary** settings for that dashboard only (see below)
-
-Views you build yourself, and views the AI Assistant assembles for you, can be saved as named dashboards of your own. Dashboard settings are stored per user in the browser and in a versioned configuration store (see [Configuration versions](#configuration-versions)).
-
-## AI Summary
-
-Each dashboard can include a collapsible **AI Summary** widget. When you expand it, the backend gathers the current window's metrics from Athena, CloudWatch and DynamoDB in parallel and asks an Amazon Bedrock model for a short health narrative: a handful of insights grouped into categories such as failures, cost, throughput and health, each grounded in a specific number from the dashboard.
-
-The widget is collapsed by default and no Bedrock call is made until you expand it, so a dashboard you never expand costs nothing extra. Per dashboard you can set the **model**, the **creativity level**, **custom instructions** for what to emphasise, the **summary categories** to organise around, and the **minimum and maximum number of insights**. Pressing **Refresh** regenerates the summary along with the widgets.
-
-## AI Assistant and AI Insights
-
-The **AI Assistant** panel turns the dashboard into a conversation. Ask a question in plain language, for example:
-
-- *Why did cost go up last week?*
-- *Which document types are throttling right now?*
-- *Show me failures for W-2 forms in the last 24 hours.*
-- *How much did the `v12` configuration cost per page compared with `v11`?*
-
-A purpose-built analytics agent running on Amazon Bedrock translates the question into SQL against your Athena reporting tables, answers in text, and returns a layout directive: the one to five dashboard widgets most relevant to the question, and a time range if the question implied one. The Monitoring page renders that layout in an **AI Insights** tab, with the answer at the top, live widgets underneath, and suggested follow-up questions you can click. If you like the view, save it as a dashboard of your own.
+A purpose-built analytics agent translates the question into SQL against your Athena reporting tables, answers in text, and assembles a layout: one to five dashboard widgets relevant to the question, plus charts or tables the agent generates on the fly. The result appears in an **AI Insights** tab with the answer at the top, live widgets underneath, and suggested follow-up questions you can click. If you like the view, save it as a dashboard of your own. When the assistant detects a scheduling intent ("every Monday morning, summarise last week's failures"), it shows a confirmation card and you can create the schedule directly from the chat.
 
 The agent only selects and arranges widgets that already exist; it does not invent charts or numbers. It has read-only access to the reporting database and cannot change your pipeline configuration.
 
-## Scheduled agents and notifications
+## Scheduled Agents and Notifications
 
-Any question you can ask the AI Assistant can also be run on a schedule. When the assistant recognises a scheduling intent ("every Monday morning, summarise last week's failures"), it shows a confirmation card with the parsed schedule, and you can create the schedule from there, run the question once instead, or open the **Scheduled Agents** page to adjust the details.
+Any question you can ask the AI Assistant can also be run on a schedule. The **Scheduled Agents** page shows a table of your schedules with actions: activate or pause, run immediately, edit, or delete. Start from a preset — Daily Health Report, Failure Analysis (every 4 hours), Weekly Cost Report, Hourly Throughput Check, Confidence Monitoring (weekdays), or Daily Volume Summary — or write your own question with a custom cron expression. Each schedule becomes an Amazon EventBridge rule in your account. When it fires, the agent runs the question, stores the result, and raises an in-app notification.
 
-On the Scheduled Agents page you can also start from a preset (Daily Health Report, Weekly Cost Report, Hourly Throughput Check, Daily Volume Summary), pick a cron preset such as daily at 9 AM UTC or weekly on Monday, or enter your own cron expression. Each schedule becomes an Amazon EventBridge rule in your account. When it fires, the agent runs the question, stores the result in the accelerator's reporting bucket, and raises an in-app notification. The **notification bell** in the Monitoring page shows unread results; open one to read the answer and the view it produced. Each schedule keeps a run history, and you can run a schedule immediately, pause it, or delete it at any time. There is a per-user limit on the number of active schedules.
+A **notification bell** in the toolbar shows a badge with the unread count. Open it to see results from scheduled agents; click a result to read the answer and the dashboard view it produced. Notifications can be marked read, deleted, or cleared in bulk. Each schedule keeps a run history, and you can trigger an immediate run at any time. Scheduled agents and notifications are gated by a feature toggle in Settings.
 
-## Configuration versions
+## Dashboard Widgets
 
-Dashboard configuration (which widgets are enabled, default time ranges, refresh intervals, AI Summary settings) is stored as numbered versions in a DynamoDB table owned by the extension. Every version has a visibility:
+IDP Monitor ships with a library of widgets you can turn on and arrange per dashboard.
 
-- **Private** versions are visible only to the user who created them.
-- **Global** versions are visible to everyone who can sign in, so a team can share a curated setup.
+**Operations widgets**
 
-Each user chooses their own active version; the shipped default (`v1`) is the fallback for anyone who has not picked one. From the **Settings** page you can create a version from the current state, edit or delete versions you have access to, activate one, and **compare** any two versions side by side. If the **Export / Import** option is enabled, configurations can also be exported to and imported from JSON files, which is the simplest way to move a dashboard setup between environments.
+- **AI Summary** — the top widget on every built-in dashboard; generates severity-ranked recommendation cards from the current data window, each linking to the relevant widget. Per dashboard you can set the model, creativity level, custom instructions, and the number of insights.
+- **Key Metrics** — four KPI tiles: documents processed with success rate, total pages with pages per document, Bedrock tokens (input and output), and total cost with cost per document and cost per page
+- **Document Status** — in-progress documents right now, plus completed and failed volume over time
+- **Processing Speed** — processing time per pipeline stage with P50 and P90 percentiles
+- **Service Performance** — per-service latency and error rates across the pipeline
+- **Document Failures** — recent failures with error category, error message, and a link to the document
+- **Throttle events** — service throttling and rate-limit events across Amazon Bedrock, Amazon Textract, AWS Lambda and Amazon DynamoDB, with severity
+- **Confidence Alerts** — documents whose extraction confidence fell below your threshold
+- **Human-in-the-Loop** — the size and age of the human review queue
+- **Workflows** — workflow concurrency and capacity utilization
+- **Document Distribution** — classification distribution, including documents that mix several types
+- **Configuration Context** — which pipeline configuration versions produced the documents in the window, so you can correlate a change in behaviour with a configuration deployment
 
-## Relationship to the built-in monitoring
+**Cost widgets**
 
-The IDP Accelerator already ships a CloudWatch dashboard and alarms for its own Lambda functions and workflows; see [Monitoring](../monitoring.md). IDP Monitor does not replace that. It adds the document-centric view (which document types, which configuration versions, which documents, at what cost) that CloudWatch service metrics cannot give you, and it puts that view inside the IDP web UI next to the documents themselves. Both read from the same underlying data, and the [reporting database](../reporting-database.md) that IDP Monitor queries is the same one available to you through Athena.
+- **Cost Trends** — spend over time
+- **Cost Distribution** — by document type and by configuration version
+- **Pipeline Stage Cost** — cost broken down by pipeline stage (OCR, classification, extraction, assessment, and so on)
+- **Service Cost** — what the pipeline's own Lambda functions and control-plane agents cost, separately from per-document inference
+- **High-Cost Documents** — a ranked list you can open document by document
+
+Click a slice of the document-type chart or a row in the failures table to open the matching documents in a detail view.
+
+## Dashboards
+
+IDP Monitor ships with five built-in dashboards. **Dashboard** is a combined operations-and-cost view. **Daily Operations** and **Daily Cost** default to the last 24 hours; **Monthly Operations** and **Monthly Cost** default to the last 30 days. Each opens as a tab on the Monitoring page. You can create additional dashboards from Settings — pick widgets, set a default time range and refresh interval, and configure the AI Summary per dashboard. You can also save a dashboard directly from the AI Assistant: ask a question, and if you like the widget layout it assembles, click **Save Dashboard** to keep it. Saved dashboards appear in a toolbar dropdown for quick access.
+
+On any dashboard you can:
+
+- change the **time range** with presets from the last two hours to the last 30 days, or pick a custom start and end
+- **refresh** manually or set an auto-refresh interval per dashboard
+- open the **AI Assistant** to ask a question about the data you are looking at
 
 ## Availability
 

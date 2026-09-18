@@ -4,8 +4,11 @@
 """
 ux_recorder_render.py
 
-Turns a recorded UX-review session (frames + timeline + narration text) into a
-narrated, captioned mp4. The pure functions here — pause handling, segmenting,
+Turns a recorded session (frames + timeline + narration text) into a narrated,
+captioned mp4. A session is either a UX review (``review.mp4``, end card lists the
+report's Findings) or a product demo (``demo.mp4``, end card lists the Key
+takeaways); the recorder stamps the kind into the timeline and everything else
+below is shared. The pure functions here — pause handling, segmenting,
 time remapping, concat lists, SRT cues, Polly text splitting — are what the unit
 tests pin; the ffmpeg, Polly and Pillow calls are thin wrappers around them.
 
@@ -33,7 +36,7 @@ Why the subtitle track cannot be "off by default"
 The MP4 muxer enables the first track of each kind whatever disposition is asked
 for, so an embedded track is always offered as enabled; whether it is drawn is the
 player's choice and its menu toggles it (QuickTime View → Subtitles, VLC Subtitle
-menu). ``--no-captions`` leaves the track out; ``review.srt`` is written either way.
+menu). ``--no-captions`` leaves the track out; the ``.srt`` is written either way.
 
 Why captions are derived rather than measured
 ---------------------------------------------
@@ -78,6 +81,8 @@ from xml.sax.saxutils import escape as xml_escape
 
 CHAPTERS_BEGIN = "<!-- ux-recorder:chapters -->"
 CHAPTERS_END = "<!-- /ux-recorder:chapters -->"
+KINDS = ("review", "demo")
+DEMO_FOOTER = "GenAI IDP Accelerator"
 POLLY_TEXT_LIMIT = 2800
 SRT_CUE_GAP = 0.08
 SILENT_WARNING_SECONDS = 6.0
@@ -301,7 +306,11 @@ def _footage_segment(
 
 
 def _card_segment(
-    kind: str, file: str, narration: tuple[str, float] | None, cfg: PacingConfig
+    kind: str,
+    file: str,
+    narration: tuple[str, float] | None,
+    cfg: PacingConfig,
+    end_label: str = "Findings",
 ) -> Segment:
     text, narr_dur = narration if narration else (None, 0.0)
     base = cfg.card_seconds + (1.0 if kind == "end" else 0.0)
@@ -309,7 +318,7 @@ def _card_segment(
     return Segment(
         index=0,
         kind=kind,
-        label="Title" if kind == "title" else "Findings",
+        label="Title" if kind == "title" else end_label,
         files=[file],
         durations=[total],
         narration=text,
@@ -326,6 +335,7 @@ def build_segments(
     cfg: PacingConfig,
     title_file: str | None = None,
     end_file: str | None = None,
+    end_label: str = "Findings",
 ) -> list[Segment]:
     """Lay the recording out as paced segments in output order."""
     ordered = sorted(events, key=lambda e: (e.t, e.seq))
@@ -362,7 +372,9 @@ def build_segments(
         segments.append(_footage_segment(event, inside, b0, b1, line, cfg))
 
     if end_file:
-        segments.append(_card_segment("end", end_file, stop_narration, cfg))
+        segments.append(
+            _card_segment("end", end_file, stop_narration, cfg, end_label=end_label)
+        )
 
     running = 0.0
     for index, segment in enumerate(segments):
@@ -539,22 +551,49 @@ def estimate_duration(text: str) -> float:
     return round(words / WORDS_PER_SECOND_ESTIMATE + 0.3, 2) if words else 0.0
 
 
-def findings_from_review(markdown: str) -> list[str]:
-    """The indented entries under the 'Findings' heading of a review report."""
-    findings: list[str] = []
+def entries_under(markdown: str, heading: str) -> list[str]:
+    """The indented entries under the first line starting with ``heading``."""
+    entries: list[str] = []
     capturing = False
     for line in markdown.splitlines():
         stripped = line.strip()
         if not capturing:
-            if stripped.lower().startswith("findings"):
+            if stripped.lower().startswith(heading.lower()):
                 capturing = True
             continue
         if not stripped:
             continue
         if not line[0].isspace():
             break
-        findings.append(stripped)
-    return findings
+        entries.append(stripped)
+    return entries
+
+
+def findings_from_review(markdown: str) -> list[str]:
+    """The indented entries under the 'Findings' heading of a review report."""
+    return entries_under(markdown, "findings")
+
+
+def takeaways_from_demo(markdown: str) -> list[str]:
+    """The indented entries under the 'Key takeaways' heading of a demo sheet."""
+    return entries_under(markdown, "key takeaways")
+
+
+def session_kind(meta: dict[str, Any]) -> str:
+    kind = str(meta.get("kind") or "review")
+    return kind if kind in KINDS else "review"
+
+
+def report_file(kind: str) -> str:
+    return "demo.md" if kind == "demo" else "review.md"
+
+
+def output_stem(kind: str) -> str:
+    return "demo" if kind == "demo" else "review"
+
+
+def end_card_label(kind: str) -> str:
+    return "Takeaways" if kind == "demo" else "Findings"
 
 
 def _finding_headline(finding: str) -> str:
@@ -744,6 +783,29 @@ def review_skeleton(stack: str, persona: str, date: str, flows: list[str]) -> st
         "  \n"
         "\n"
         "Not covered\n"
+        "  \n"
+        "\n"
+        "Chapters\n"
+        f"{CHAPTERS_BEGIN}\n{CHAPTERS_END}\n"
+    )
+
+
+def demo_skeleton(title: str, date: str, lines: list[str]) -> str:
+    detail = "".join(f"{line}\n" for line in lines)
+    return (
+        f"🎬  Demo — {title}, {date}\n"
+        f"{detail}"
+        "\n"
+        "Storyboard\n"
+        "  \n"
+        "\n"
+        "Key takeaways                               (3-5 lines; these become the end card)\n"
+        "  \n"
+        "\n"
+        "Fixtures\n"
+        "  \n"
+        "\n"
+        "Not shown\n"
         "  \n"
         "\n"
         "Chapters\n"
@@ -1127,13 +1189,16 @@ def render_session(
     log: Callable[[str], None] = print,
     client_factory: Callable[[str], Any] = polly_client,
 ) -> Path | None:
-    """Render ``review.mp4`` (and review.srt, segments.json) for a session."""
+    """Render the mp4 (plus .srt and segments.json) for a review or demo session."""
     session_dir = Path(session_dir)
     timeline, events, frames = load_session(session_dir)
     events, frames, paused = apply_pauses(events, frames)
     if not frames:
         raise SystemExit("no frames outside paused intervals; nothing to render")
     meta = timeline.get("session", {})
+    kind = session_kind(meta)
+    stem = output_stem(kind)
+    report_path = session_dir / report_file(kind)
     cfg = opts.pacing
     render_dir = session_dir / "render"
     render_dir.mkdir(exist_ok=True)
@@ -1204,45 +1269,75 @@ def render_session(
             date = datetime.fromtimestamp(
                 float(meta.get("started", frames[0].t))
             ).strftime("%Y-%m-%d")
-            flows = meta.get("flows") or []
-            title_lines = [f"Persona: {meta.get('persona', '?')}", f"Date: {date}"]
-            if flows:
-                title_lines.append("Flows: " + ", ".join(flows))
-            render_card(
-                width,
-                height,
-                f"UX review — {meta.get('stack', 'stack')}",
-                title_lines,
-                session_dir / "cards" / "title.jpg",
-                footer="GenAI IDP Accelerator",
+            report_text = (
+                report_path.read_text(encoding="utf-8") if report_path.exists() else ""
             )
-            review_path = session_dir / "review.md"
-            findings = (
-                findings_from_review(review_path.read_text(encoding="utf-8"))
-                if review_path.exists()
-                else []
-            )
-            body = [f"• {_finding_headline(f)}" for f in findings[:8]] or [
-                "Findings: see review.md"
-            ]
-            render_card(
-                width,
-                height,
-                "Findings"
-                if len(findings) <= 8
-                else f"Findings (first 8 of {len(findings)})",
-                body,
-                session_dir / "cards" / "end.jpg",
-                footer="Suggestions, not demands — details and the rest in review.md",
-                dense=len(body) > 4,
-            )
+            if kind == "demo":
+                title_lines = list(meta.get("subtitle") or [])
+                render_card(
+                    width,
+                    height,
+                    str(meta.get("title") or "Demo"),
+                    title_lines,
+                    session_dir / "cards" / "title.jpg",
+                    footer=DEMO_FOOTER,
+                )
+                takeaways = takeaways_from_demo(report_text)
+                body = [f"• {t}" for t in takeaways[:5]] or [
+                    "Key takeaways: see demo.md"
+                ]
+                render_card(
+                    width,
+                    height,
+                    "Key takeaways",
+                    body,
+                    session_dir / "cards" / "end.jpg",
+                    footer=DEMO_FOOTER,
+                    dense=len(body) > 4,
+                )
+            else:
+                flows = meta.get("flows") or []
+                title_lines = [f"Persona: {meta.get('persona', '?')}", f"Date: {date}"]
+                if flows:
+                    title_lines.append("Flows: " + ", ".join(flows))
+                render_card(
+                    width,
+                    height,
+                    f"UX review — {meta.get('stack', 'stack')}",
+                    title_lines,
+                    session_dir / "cards" / "title.jpg",
+                    footer="GenAI IDP Accelerator",
+                )
+                findings = findings_from_review(report_text)
+                body = [f"• {_finding_headline(f)}" for f in findings[:8]] or [
+                    "Findings: see review.md"
+                ]
+                render_card(
+                    width,
+                    height,
+                    "Findings"
+                    if len(findings) <= 8
+                    else f"Findings (first 8 of {len(findings)})",
+                    body,
+                    session_dir / "cards" / "end.jpg",
+                    footer="Suggestions, not demands — details and the rest in review.md",
+                    dense=len(body) > 4,
+                )
 
             title_file = "cards/title.jpg"
             end_file = "cards/end.jpg"
         except ImportError:
             log("Pillow not installed; rendering without title/end cards")
 
-    segments = build_segments(events, frames, narration, cfg, title_file, end_file)
+    segments = build_segments(
+        events,
+        frames,
+        narration,
+        cfg,
+        title_file,
+        end_file,
+        end_label=end_card_label(kind),
+    )
     (session_dir / "segments.json").write_text(
         json.dumps(
             {
@@ -1258,7 +1353,7 @@ def render_session(
     )
 
     srt_text = build_srt(segments)
-    srt_path = session_dir / "review.srt"
+    srt_path = session_dir / f"{stem}.srt"
     srt_path.write_text(srt_text, encoding="utf-8")
 
     sequence = frame_sequence(segments, cfg.fps)
@@ -1293,7 +1388,7 @@ def render_session(
     audio_list = render_dir / "audio.txt"
     audio_list.write_text(audio_concat_list(wavs), encoding="utf-8")
 
-    out = session_dir / "review.mp4"
+    out = session_dir / f"{stem}.mp4"
     encode = ffmpeg_argv(
         sequence_pattern,
         str(audio_list),
@@ -1334,11 +1429,10 @@ def render_session(
     subprocess.run(encode, check=True)
     shutil.rmtree(seq_dir, ignore_errors=True)
 
-    review_path = session_dir / "review.md"
-    if review_path.exists():
-        review_path.write_text(
+    if report_path.exists():
+        report_path.write_text(
             replace_chapters(
-                review_path.read_text(encoding="utf-8"), chapters_block(segments)
+                report_path.read_text(encoding="utf-8"), chapters_block(segments)
             ),
             encoding="utf-8",
         )
