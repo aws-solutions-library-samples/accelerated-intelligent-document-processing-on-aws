@@ -516,6 +516,8 @@ test-circuit-breaker: ## Run only circuit breaker tests
 api-test-static: ## Static RBAC/authorization scan of all API operations (no AWS; CI-safe)
 	@echo "Running static API RBAC scan..."
 	$(PYTHON) scripts/sdlc/scan_api_rbac.py $(if $(STRICT),--strict,)
+	@echo "Checking the dispatcher's required-groups manifest against the expectations file..."
+	$(PYTHON) scripts/sdlc/generate_api_rbac_manifest.py --check
 
 ##@ Stack tests (stacktest-*: run against / deploy a live stack, manual)
 # One family for every test that exercises a REAL deployed stack (as opposed to

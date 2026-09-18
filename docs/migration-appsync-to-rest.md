@@ -31,7 +31,7 @@ AppSync gave us four things the replacement has to preserve:
 | GraphQL **queries** & **mutations** (request/response) | API Gateway **REST API** → single **dispatcher Lambda** at `POST /op/{field}` |
 | GraphQL **subscriptions** (server push) | **UI polling** of DynamoDB-backed state (the source of truth) |
 | Real-time **chat token streaming** (mutation → subscription fan-out) | **Lambda Function URL** with `RESPONSE_STREAM`, read directly by the browser |
-| **Auth + RBAC** (`@aws_cognito_user_pools(cognito_groups)`) | Cognito **User Pools authorizer** (authN) + **per-resolver group checks** (authZ) |
+| **Auth + RBAC** (`@aws_cognito_user_pools(cognito_groups)`) | Cognito **User Pools authorizer** (authN) + **default-deny group check in the dispatcher**, then **per-resolver group checks** (authZ) |
 
 The guiding principle: **keep the UI's call shape and the resolvers' event shape
 unchanged**, so the change is a transport swap rather than an application rewrite.
@@ -162,10 +162,38 @@ rejected by AppSync itself.
 
 **Under the REST API**, the Cognito User Pools authorizer only
 **authenticates** (is this a valid signed-in user?). It does **not** read the
-schema's group directives. Therefore **authorization (RBAC) must be re-enforced
-inside each resolver** (and inside `ddb_direct`). The migration preserves parity
-as follows:
+schema's group directives. Authorization is therefore re-enforced **in the
+dispatcher and again inside each resolver** (and inside `ddb_direct`). The
+migration preserves parity as follows:
 
+- **The dispatcher denies by default.** Before it routes anything, the dispatcher
+  checks the caller's groups — taken from the verified JWT claim, never from the
+  request body — against the operation's required groups, and returns **403** if
+  they do not match. **An operation with no entry in that manifest is denied**, so
+  a newly added operation is closed until its groups are declared rather than open
+  until someone remembers a check. That restores the AppSync property this
+  transport had otherwise lost: under AppSync a field the caller's groups did not
+  satisfy was rejected at the API layer, and a field with no directive was not
+  reachable by a lower-privilege caller by accident.
+  - The manifest is **generated from `scripts/api_rbac_expectations.yaml`** by
+    [`scripts/sdlc/generate_api_rbac_manifest.py`](../scripts/sdlc/generate_api_rbac_manifest.py)
+    into `api_rbac_manifest.json`, committed in the dispatcher's CodeUri (so SAM
+    bundles it) and read with stdlib `json`. That YAML is already the single
+    source of truth `scan_api_rbac.py` validates (it fails if a routable
+    operation has no entry, or an entry names no routable operation) and already
+    what the live harness asserts per group, so the dispatcher enforces the same
+    policy CI checks rather than a second hand-maintained copy of it. Drift is
+    guarded by `generate_api_rbac_manifest.py --check` (run from
+    `make api-test-static`) and a unit test.
+  - It **fails closed**: an unreadable or unrecognised manifest denies every
+    operation rather than waving requests through. (`validation.py`, next
+    section, deliberately fails *open* on its own errors — an input-shape bug
+    must not 500 the API, while an authorization layer that cannot read its
+    policy has nothing left to enforce.)
+  - It is a **floor, not a replacement** for the resolver checks below, which
+    remain in place: only the resolver can enforce per-object scope (config
+    version, test set, record ownership), and removing its check would make a
+    regression in either layer invisible.
 - **`cognito:groups` is restored to a list.** The API Gateway authorizer
   flattens the groups claim (e.g. the string `"[Admin Author]"` or a
   comma-joined form) where AppSync delivered a JSON list. `api_adapter`
@@ -352,7 +380,7 @@ x86_64 layer, or set it to pin a version).
 | Subscriptions | Server push | UI polling of DynamoDB (source of truth) | Same data; +≤1 interval latency |
 | Chat streaming | mutation → subscription | Lambda Function URL `RESPONSE_STREAM` | Same events, true streaming |
 | AuthN | Cognito (AppSync) | Cognito User Pools authorizer | Equivalent |
-| AuthZ / RBAC | schema `cognito_groups` directive | per-resolver group check (+ `ddb_direct`) | Enforced; verified by `test_api_rbac.py` |
+| AuthZ / RBAC | schema `cognito_groups` directive, enforced at the API layer | default-deny manifest check in the dispatcher **+** per-resolver group check (+ `ddb_direct`) | Enforced at both layers, unmapped = denied; verified by `test_api_rbac.py` |
 | Input-shape validation | GraphQL schema (types/non-null/enums) | dispatcher validates against a schema-derived spec (`validation.py`) | Restored centrally; drift-guarded |
 | Availability | not GovCloud / FedRAMP | GovCloud/FedRAMP-eligible services only | **Improved** |
 | Private + WAF | not supported | REST API PRIVATE + WAFv2 | **Improved** |

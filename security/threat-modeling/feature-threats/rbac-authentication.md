@@ -98,13 +98,13 @@ flowchart TD
 |-----------|-------|
 | **Threat ID** | AUTH.T03 |
 | **Category** | STRIDE: Elevation of Privilege |
-| **Description** | Because all authorization now lives in the resolver Lambdas (the API Gateway authorizer only authenticates), any resolver missing a server-side group check lets a lower-privilege authenticated user perform a restricted operation by calling `POST /op/{field}` directly. |
+| **Description** | The API Gateway authorizer only authenticates, so when authorization lived *solely* in the resolver Lambdas any resolver missing a server-side group check let a lower-privilege authenticated user perform a restricted operation by calling `POST /op/{field}` directly — and a newly added operation was open unless someone remembered to add a check. |
 | **Attack Vector** | Call the REST API `POST /op/{field}` directly with a valid low-privilege JWT, targeting operations whose resolver omits (or misconfigures) the `cognito:groups` check — bypassing all UI-level restrictions. |
 | **Impact** | Unauthorized configuration changes, document access, or processing operations |
 | **Likelihood** | Medium |
 | **Severity** | High |
 | **Affected Components** | Resolver Lambdas, `http_api_dispatcher`, `ddb_direct` handlers |
-| **Mitigations** | Comprehensive resolver-level authorization for every operation; **automated per-operation authorization testing** — a static scan and a live multi-role harness (`make api-test`, see §5) that fail on any missing/incorrect check and track known gaps; defense-in-depth `@aws_cognito_user_pools` schema directives; security review of new operations. |
+| **Mitigations** | **The dispatcher denies by default.** `http_api_dispatcher/authz.py` checks the caller's groups — read from the verified JWT claim, never the request body — against `api_rbac_manifest.json` before routing, and a field with **no entry** is refused with 403: an operation whose required groups were never declared is closed rather than open, so a forgotten resolver check is no longer an open endpoint. The manifest is generated from `scripts/api_rbac_expectations.yaml` (`scripts/sdlc/generate_api_rbac_manifest.py`), the same file the static scan and the live harness already assert against, so there is no second list to keep in step; it fails closed if unreadable. Resolver-level authorization for every operation remains in place on top of it — the dispatcher enforces the field-level floor, the resolver enforces per-object scope. Plus **automated per-operation authorization testing** — a static scan (including a manifest drift guard) and a live multi-role harness (`make api-test`, see §5) that fail on any missing/incorrect check and track known gaps; defense-in-depth `@aws_cognito_user_pools` schema directives; security review of new operations. |
 
 ### AUTH.T04: Cognito User Pool Misconfiguration
 
@@ -174,7 +174,7 @@ flowchart TD
 | **Likelihood** | Medium |
 | **Severity** | High |
 | **Affected Components** | `schema.graphql`, resolver Lambdas |
-| **Mitigations** | Server-side group checks are the source of truth; schema directives are defense-in-depth only. The **static scan in `make api-test-static`** flags `@aws_auth`-only / directive-vs-code drift and fails when an operation lacks a documented server-side check; new operations must add a resolver check plus an expectations entry. The feature-platform ops that formerly relied on the silently-ignored `@aws_auth` directive (tracked as GAP-06) now declare `@aws_cognito_user_pools(cognito_groups:["Admin"])` matching their resolver enforcement. |
+| **Mitigations** | Server-side group checks are the source of truth; schema directives are defense-in-depth only. Since the dispatcher **denies by default** (AUTH.T03), an operation protected by a directive alone is no longer open: with no entry in the generated required-groups manifest it is refused for every caller, so the failure mode is a visible 403 rather than a silent bypass. The **static scan in `make api-test-static`** flags `@aws_auth`-only / directive-vs-code drift and fails when an operation lacks a documented server-side check; new operations must add a resolver check plus an expectations entry. The feature-platform ops that formerly relied on the silently-ignored `@aws_auth` directive (tracked as GAP-06) now declare `@aws_cognito_user_pools(cognito_groups:["Admin"])` matching their resolver enforcement. |
 
 ### AUTH.T12: Missing Input-Shape Validation (Type Confusion via Lost Schema Validation)
 
@@ -252,7 +252,8 @@ flowchart TD
 |---------|---------------|-------------------|
 | **IAM protection** | Restrict Cognito admin API access | AUTH.T01 |
 | **Token management** | Short-lived tokens, secure storage | AUTH.T02, AUTH.T05, AUTH.T10 |
-| **Resolver auth** | Per-operation `cognito:groups` checks inside every resolver Lambda (the API Gateway authorizer only authenticates) | AUTH.T03, AUTH.T08 |
+| **Dispatcher default-deny** | `authz.py` enforces a generated per-operation required-groups manifest before routing; a field with no entry is refused (403), so an undeclared operation is closed rather than open | AUTH.T03, AUTH.T08 |
+| **Resolver auth** | Per-operation `cognito:groups` checks inside every resolver Lambda, on top of the dispatcher floor (the API Gateway authorizer only authenticates) | AUTH.T03, AUTH.T08 |
 | **Object-level authorization** | Owner-scoped keys / `ownerSub`-vs-caller checks on user-owned resources (chat sessions, agent jobs) | AUTH.T09 |
 | **Central input-shape validation** | Dispatcher validates `arguments` against a schema-derived spec (`validation.py`); rejects unknown/missing/wrong-typed args with 400 | AUTH.T12 |
 | **Config-version scope** | `allowedConfigVersions` enforced in scope-aware resolvers; resolver IAM roles granted UsersTable GSI Query | AUTH.T07 |

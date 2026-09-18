@@ -77,7 +77,7 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make validate-buildspec` | malformed CodeBuild buildspecs — otherwise a deploy-time failure |
 | `make codegen-check` | generated GraphQL types drifting from the schema |
 | `make typecheck` · `make typecheck-pr` | `basedpyright`; CI checks only files the PR changed |
-| `make api-test-static` | an API operation added without authorization — see [layer 6](#6-live-stack-tiers-manual) for the live half |
+| `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual) for the live half |
 | `python3 scripts/check_first_party_deps.py` | a first-party package installed by bare name, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
 | `python3 scripts/sdlc/validate_service_role_permissions.py` | the CloudFormation service role missing a permission the templates need |
 
