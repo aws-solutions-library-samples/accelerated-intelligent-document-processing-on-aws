@@ -1,5 +1,10 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+# Floor matches the `test` extra below: 78.1.1 is where CVE-2025-47273
+# (setuptools PackageIndex path traversal) is fixed. This was the only one of the
+# five first-party distributions with an unfloored build requirement, so a build
+# here could resolve an arbitrarily old setuptools while the same file pinned a
+# floor for the test path.
+requires = ["setuptools>=78.1.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -216,6 +221,20 @@ test = [
   "genson==1.3.0",
   "numpy>=1.26,<3",
   "build==1.3.0",
+  # scripts/tests/test_package_discovery.py imports setuptools directly (its
+  # package finders and read_configuration) to check the packaging policy. No
+  # first-party pyproject declared it outside build-system.requires, which pip
+  # provisions only for the build backend, so the suite silently depended on an
+  # ambient install. Floor is the security floor (CVE-2025-47273 path traversal
+  # is fixed in 78.1.1); the APIs used are much older than that.
+  "setuptools>=78.1.1",
+  # scripts/tests/test_xray_annotations.py calls the real
+  # aws_xray_sdk Segment offline to assert which annotation keys and values the
+  # SDK keeps rather than silently drops. Already declared in the `docs_service`
+  # extra, but that one is not in `all`, so the test suite would have skipped the
+  # behavioural layer in CI (which installs `[all,dev,test]`). Same floor as
+  # docs_service; no new third-party surface.
+  "aws-xray-sdk>=2.14.0",
   "z3-solver==4.15.4.0",                  # Required for Z3 engine validation tests (pinned - newer versions require building from source)
 ]
 
