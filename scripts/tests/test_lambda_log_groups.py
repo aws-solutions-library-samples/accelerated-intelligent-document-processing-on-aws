@@ -293,7 +293,16 @@ def _resolves_exactly_to(target: Any, candidates: set[str]) -> bool:
     return False
 
 
-def _check_rule_1(rel_path: str, doc: dict, exempt: set[str]) -> list[str]:
+def _check_rule_1(doc: dict, exempt: set[str]) -> list[str]:
+    """Rule 1's problems for one parsed template.
+
+    Takes no ``rel_path``: it used to, and never read it — every entry returned
+    here names the *resource*, and both callers prepend the template themselves.
+    The synthetic caller had to invent a ``"<synthetic>"`` placeholder to satisfy
+    the signature, which is the clearest sign the argument was vestigial. Now
+    symmetric with ``_check_rule_2``, ``_check_rule_3`` and ``_check_rule_4``,
+    which have always taken just the document.
+    """
     resources = doc.get("Resources", {}) or {}
     log_groups = set(_log_groups(resources))
     problems = []
@@ -377,9 +386,7 @@ def _check_rule_4(doc: dict, exempt: set[str]) -> list[str]:
 @pytest.mark.parametrize("rel_path", TEMPLATES)
 def test_every_lambda_declares_a_real_log_group(rel_path: str) -> None:
     """Rule 1 (#826): LoggingConfig present AND resolving to a real group."""
-    problems = _check_rule_1(
-        rel_path, _load(rel_path), CUSTOM_RESOURCE_ONLY.get(rel_path, set())
-    )
+    problems = _check_rule_1(_load(rel_path), CUSTOM_RESOURCE_ONLY.get(rel_path, set()))
     assert not problems, (
         f"{rel_path}: Lambda(s) would fall back to Lambda's auto-created "
         f"/aws/lambda/<fn> group, which has NO retention, so their logs are "
@@ -423,19 +430,84 @@ def test_log_group_condition_matches_its_function(rel_path: str) -> None:
     )
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize("rel_path", sorted(CUSTOM_RESOURCE_ONLY))
-def test_exemptions_are_really_custom_resource_only(rel_path: str) -> None:
-    """The exemption list is verified, not trusted.
+def custom_resource_only_violation(rel_path: str, name: str) -> str | None:
+    """Why Lambda ``name`` in ``rel_path`` is NOT custom-resource-only, else None.
 
     An exempt function must be reachable only during a stack operation: a
     ``ServiceToken`` target in this template, or an install hook whose ARN is
     exported via a direct ``GetAtt`` on that function. It must also have no
     event source of any kind.
+
+    Public, and it loads the template itself, because
+    ``test_log_group_encryption.py`` reuses it to justify that gate's *own*
+    exemption list rather than keeping a second copy of this reasoning that
+    could drift from it. Loading by ``rel_path`` is deliberate: every helper
+    here keys on the long intrinsic form (``Fn::GetAtt``) because that is what
+    this module's loader emits, and a document parsed by a loader that
+    preserves the short form (``!GetAtt``) would resolve no references at all
+    and make every function look unjustified. Taking a pre-parsed document
+    would make that silent; taking a path cannot.
+
+    Structural and not airtight: it proves the function is reachable only
+    through a stack operation as far as *this template* declares, which is the
+    strongest statement a template-only check can make.
     """
     doc = _load(rel_path)
     resources = doc.get("Resources", {}) or {}
     outputs = doc.get("Outputs", {}) or {}
+
+    if name not in resources:
+        return f"{name}: not a resource in {rel_path}"
+
+    # (a) ServiceToken target of a custom resource in this template.
+    is_service_token = any(
+        name
+        in _referenced_logical_ids((body.get("Properties") or {}).get("ServiceToken"))
+        for body in resources.values()
+        if isinstance(body, dict)
+    )
+
+    # (b) Install hook: ARN exported via a DIRECT GetAtt on this function,
+    # not merely a string that mentions it.
+    is_exported_hook = False
+    for output in outputs.values():
+        if not isinstance(output, dict) or not output.get("Export"):
+            continue
+        value = output.get("Value")
+        if isinstance(value, dict) and value.get("Fn::GetAtt"):
+            attr = value["Fn::GetAtt"]
+            target = attr.split(".")[0] if isinstance(attr, str) else str(attr[0])
+            if target == name:
+                is_exported_hook = True
+
+    # (c) No event source of any kind.
+    properties = resources[name].get("Properties") or {}
+    event_sources = []
+    if properties.get("Events"):
+        event_sources.append("SAM Events")
+    for other, body in resources.items():
+        if not isinstance(body, dict) or other == name:
+            continue
+        kind = body.get("Type")
+        if kind in {
+            "AWS::Lambda::EventSourceMapping",
+            "AWS::Lambda::Permission",
+            "AWS::Events::Rule",
+            "AWS::ApiGateway::Method",
+            "AWS::ApiGatewayV2::Integration",
+        } and name in _referenced_logical_ids(body.get("Properties")):
+            event_sources.append(f"{other} ({kind})")
+
+    if event_sources or not (is_service_token or is_exported_hook):
+        return f"{name}: event_sources={event_sources or None}"
+    return None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rel_path", sorted(CUSTOM_RESOURCE_ONLY))
+def test_exemptions_are_really_custom_resource_only(rel_path: str) -> None:
+    """The exemption list is verified, not trusted."""
+    resources = _load(rel_path).get("Resources", {}) or {}
 
     unjustified = []
     for name in sorted(CUSTOM_RESOURCE_ONLY[rel_path]):
@@ -443,50 +515,9 @@ def test_exemptions_are_really_custom_resource_only(rel_path: str) -> None:
             f"{rel_path}: CUSTOM_RESOURCE_ONLY names {name!r}, which no longer "
             f"exists. Remove the stale entry."
         )
-
-        # (a) ServiceToken target of a custom resource in this template.
-        is_service_token = any(
-            name
-            in _referenced_logical_ids(
-                (body.get("Properties") or {}).get("ServiceToken")
-            )
-            for body in resources.values()
-            if isinstance(body, dict)
-        )
-
-        # (b) Install hook: ARN exported via a DIRECT GetAtt on this function,
-        # not merely a string that mentions it.
-        is_exported_hook = False
-        for output in outputs.values():
-            if not isinstance(output, dict) or not output.get("Export"):
-                continue
-            value = output.get("Value")
-            if isinstance(value, dict) and value.get("Fn::GetAtt"):
-                attr = value["Fn::GetAtt"]
-                target = attr.split(".")[0] if isinstance(attr, str) else str(attr[0])
-                if target == name:
-                    is_exported_hook = True
-
-        # (c) No event source of any kind.
-        properties = resources[name].get("Properties") or {}
-        event_sources = []
-        if properties.get("Events"):
-            event_sources.append("SAM Events")
-        for other, body in resources.items():
-            if not isinstance(body, dict) or other == name:
-                continue
-            kind = body.get("Type")
-            if kind in {
-                "AWS::Lambda::EventSourceMapping",
-                "AWS::Lambda::Permission",
-                "AWS::Events::Rule",
-                "AWS::ApiGateway::Method",
-                "AWS::ApiGatewayV2::Integration",
-            } and name in _referenced_logical_ids(body.get("Properties")):
-                event_sources.append(f"{other} ({kind})")
-
-        if event_sources or not (is_service_token or is_exported_hook):
-            unjustified.append(f"{name}: event_sources={event_sources or None}")
+        violation = custom_resource_only_violation(rel_path, name)
+        if violation:
+            unjustified.append(violation)
 
     assert not unjustified, (
         f"{rel_path}: listed in CUSTOM_RESOURCE_ONLY but not custom-resource-only "
@@ -515,7 +546,7 @@ def _rules(text: str, exempt: set[str] | None = None):
     doc = _load_text(text)
     exempt = exempt or set()
     return {
-        1: _check_rule_1("<synthetic>", doc, exempt),
+        1: _check_rule_1(doc, exempt),
         2: _check_rule_2(doc),
         3: _check_rule_3(doc),
         4: _check_rule_4(doc, exempt),
@@ -728,12 +759,17 @@ Outputs:
         path.unlink()
 
 
-def _walk_yaml(pattern: str, root: Path):
+def walk_yaml(pattern: str, root: Path):
     """Yield repo files matching ``pattern``, pruning heavy directories.
 
     ``Path.rglob`` descends into ``.aws-sam``, ``node_modules`` and friends and
     then discards the results, which cost about 22 seconds — a third of the whole
     ``scripts/tests`` run. Pruning during the walk makes it near-instant.
+
+    Public because ``test_log_group_encryption.py``'s own discovery sweep reuses
+    it; the pruning list is the part worth having in one place, since a directory
+    missing from it costs seconds rather than correctness and so would never be
+    noticed in a second copy.
     """
     import fnmatch
     import os
@@ -776,7 +812,7 @@ def _discover_unlisted_templates(root: Path | None = None) -> list[str]:
     }
     unlisted = []
     for pattern in ("*.yaml", "*.yml"):
-        for path in _walk_yaml(pattern, root):
+        for path in walk_yaml(pattern, root):
             # The meta-tests below write synthetic probe templates INSIDE the repo
             # and delete them in a `finally`. Skip them, for two reasons: under a
             # parallel run (`pytest -n auto`) this sweep otherwise sees another
