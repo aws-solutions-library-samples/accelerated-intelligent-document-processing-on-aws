@@ -55,10 +55,16 @@ The one shape that still passes through is an event whose ``identity`` is
 explicitly ``None``. Across this repository that is the established marker for a
 service-to-service invocation gated by IAM on the function ARN rather than by
 Cognito groups (``idp_common.testset_scope.is_direct_invoke``,
-``_enforce_agent_chat_groups`` in ``src/lambda/agent_chat_processor``): it asserts
-no groups, so there is nothing to forge, and the group gates downstream treat it
-as ungrouped. Refusing it would break those backend paths, and rewriting an
-asserted identity to ``None`` instead of refusing it would be worse than either —
+``_enforce_agent_chat_groups`` in ``src/lambda/agent_chat_processor``). Be precise
+about what those consumers do with it: they do **not** evaluate it as an ungrouped
+caller, they skip the Cognito group check altogether, because IAM on the function
+ARN is the control instead. On the dispatcher path that is bounded — the
+group-scoped operations in ``api_rbac_manifest.json`` deny a groupless caller, and
+the ``IAM_ONLY`` ones deny outright — but the operations declared ``ANY`` do not
+check groups at all (issue #979). So the thing an invocation could assert here is
+the *absence* of an identity, not a group list. It is still passed through:
+refusing it would break those backend paths, and rewriting a refused assertion to
+``None`` instead would be worse than either —
 it would promote a caller's failed assertion into the trusted-backend marker.
 """
 
@@ -164,7 +170,11 @@ def _verified_claims(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     This is the ONLY trustworthy source of ``cognito:groups`` on the API path: API
     Gateway's Cognito authorizer validates the token and writes the claims into
-    the request context, which a caller cannot reach from the request body.
+    the request context, which a caller cannot reach from the request body. That
+    holds for a caller arriving through the gateway. A principal invoking this
+    function directly builds the whole payload, request context included, so for
+    that caller nothing here establishes provenance -- the control on that path is
+    IAM on the function ARN, not this function.
 
     Both authorizer shapes are read, because both occur: a REST API's Lambda proxy
     integration (payload format 1.0, which is what this solution deploys) puts
@@ -316,7 +326,10 @@ def normalize_event(event: Dict[str, Any]) -> Dict[str, Any]:
 
     * ``identity`` is explicitly ``None`` and no verified claims accompany it —
       the IAM-gated service-to-service invocation. Passed through unchanged; it
-      asserts no groups, and every group gate downstream reads that as ungrouped.
+      asserts no groups. Note what the consumers do with that: a group-scoped
+      operation denies it, while an operation declared ``ANY`` and several
+      resolver-level checks skip the Cognito check entirely rather than failing
+      it, IAM on the function ARN being the control on that path.
     * Verified claims are present — they win, the identity is rebuilt from them,
       and the asserted object is refused if it contradicts them
       (:func:`_refuse_if_contradicts_verified`).
