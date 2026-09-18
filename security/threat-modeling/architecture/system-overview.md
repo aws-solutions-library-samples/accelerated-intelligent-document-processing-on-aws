@@ -101,7 +101,7 @@ flowchart TD
 | Component | Service | Purpose |
 |-----------|---------|---------|
 | **Input/Output Storage** | Amazon S3 (13 buckets) | Document upload, processing output, configuration, reporting, test sets, evaluation baseline, Web UI assets |
-| **Document Queue** | Amazon SQS (16 queues incl. DLQs) | Decouples ingestion from processing; manages throughput |
+| **Document Queue** | Amazon SQS (17 queues incl. DLQs) | Decouples ingestion from processing; manages throughput |
 | **Event Routing** | Amazon EventBridge | S3 events → Lambda, Step Functions status tracking |
 | **Workflow Orchestration** | AWS Step Functions (4 state machines) | Multi-step document processing, agentic shard Distributed Map |
 | **Document Tracking** | Amazon DynamoDB (12 tables) | Documents, Configuration, Users, Metering, ChatSessions, ChatMessages, Agents, TestSets, etc. |
@@ -276,15 +276,18 @@ table.
 | WAFv2 (optional) | IP allow-list, default-block WebACL on the REST stage | No authn/authz. Not associated with the chat Function URL |
 | API Gateway resource policy | When `ApiGatewayVisibility=PRIVATE`, restricts to the VPC interface endpoint | No user authz |
 | Cognito authorizer (`COGNITO_USER_POOLS`) | **Authenticates** the ID token; 401 on missing/invalid/expired | **No group evaluation.** It cannot do per-operation authorization, because every operation shares one route |
-| Dispatcher (`http_api_dispatcher`) | Normalizes the event, validates argument shape (400), routes to a resolver Lambda or an in-process handler, maps denials to 403 | **No default deny.** A field it knows how to resolve is forwarded whether or not the target enforces anything (AUTH.T14). Its 403 mapping keys partly on error-message prefixes, so a reworded exception can change an HTTP status. Default-deny and removal of the prefix dependency are pending in **issue #928** |
+| Dispatcher (`http_api_dispatcher`) | Normalizes the event, validates argument shape (400), routes to a resolver Lambda or an in-process handler, maps denials to 403 | **No default deny.** A field it knows how to resolve is forwarded whether or not the target enforces anything (AUTH.T16). Its 403 mapping keys partly on error-message prefixes, so a reworded exception can change an HTTP status. Default-deny and removal of the prefix dependency are pending in **issue #928** |
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `cognito:groups`, `allowedConfigVersions` scope, and per-object ownership** | Nothing forces a check to exist or to be spelled consistently; three hand-written conventions coexist across resolvers |
 
 **118 operations** are routable at v0.6.9 — 40 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, roughly 55 more aliased onto shared
-resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Their
-required-group distribution:
+`/${StackName}/http-api/field-function-map`, **68** aliased onto shared
+resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
+three sets sum to 119, not 118, because one field (`getCircuitBreakerStatus`)
+appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
+union is 118, which is exactly the number of entries in
+`scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
@@ -334,9 +337,12 @@ and do **not** inherit the resolver authorization model:
 When `WebUIHosting=APIGateway`, two further methods (`GET /` and `GET /{proxy+}`)
 serve the SPA from S3 with `AuthorizationType: NONE`. That is deliberate: they
 serve public static assets, and the WAF plus the endpoint policy are the only
-controls that apply to them. They are allow-listed explicitly in the static
-scan, so a *third* unauthenticated method cannot be added without the gate
-noticing.
+controls that apply to them. Together with the CORS `OPTIONS` method
+(`HttpApiOptionsMethod`), which is also `AuthorizationType: NONE`, that makes
+**three** unauthenticated methods out of the REST API's four — the fourth,
+`POST /op/{field}`, is the only `COGNITO_USER_POOLS` one. All three are
+allow-listed explicitly in check **S5** of the static scan, so a *fourth*
+unauthenticated method cannot be added without the gate noticing.
 
 CORS is wildcard-origin on both the REST route and the Function URL. Because
 credentials travel in headers (bearer token or SigV4) and `AllowCredentials` is
@@ -436,7 +442,7 @@ otherwise take it as broader assurance than it is. Both RBAC suites drive
 transport** — a regression on the paths described in §5.2 would not be detected
 (CHAT.T03, CHAT.T06). And the static suite asserts each operation against the
 expectations manifest; it does not assert that an operation *has* an entry, which
-is the AUTH.T14 gap that **issue #928** addresses.
+is the AUTH.T16 gap that **issue #928** addresses.
 
 See [`security/README.md`](../../README.md) for how to run each, and
 `security/threat-modeling/README.md` for how this corpus is kept current

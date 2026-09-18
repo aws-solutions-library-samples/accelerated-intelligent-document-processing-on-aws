@@ -103,7 +103,7 @@ and mapped to the specific threats they address.
 | **CORS** | `AllowCredentials: false`, SigV4 in headers, no cookies |
 | **Group authorization** | **NOT ENFORCED** — the Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them (open gap, CHAT.T03; fix **pending in issue #920**) |
 | **Session ownership** | **NOT ENFORCED** on this transport (open gap, CHAT.T03; fix **pending in issue #920**) |
-| **Caller identity** | The value the handler derives from the request context is the assumed-role **session name**, not a verified Cognito `sub`; on `/chat/agent` a body-supplied `callerSub` takes precedence over it (CHAT.T06, **pending in issue #920**) |
+| **Caller identity** | The value the handler derives from the request context is the assumed-role **session name**, not a verified Cognito `sub`; on `/chat/agent` a body-supplied `callerSub` takes precedence over it (CHAT.T06). That session name is also the **same for every user** of the deployment, because the Identity Pool's enhanced flow picks it and one authenticated role is shared by all groups — so the remedy is a verified subject (an ID token presented alongside the signed request), not a reordering. **Issue #920** / PR #954 addresses the precedence and leaves the verified subject outstanding |
 | **Rate limiting** | Lambda concurrency only — **not** covered by API Gateway throttling or the WAF WebACL |
 | **Automated testing** | **None** — `make api-test` drives `POST /op/{field}` only |
 
@@ -169,10 +169,10 @@ bound to it, which is stronger than earlier revisions of this document described
 | Resource | Encryption |
 |----------|-----------|
 | S3 buckets | 11 of 13 use the stack's KMS **customer-managed key**; `LoggingBucket` and `WebUIBucket` use `AES256` (they hold access logs and public static assets). All 13 additionally carry a bucket policy denying any request where `aws:SecureTransport` is false |
-| SQS queues and DLQs | All 18 set `KmsMasterKeyId` to the stack CMK — **not** SSE-SQS |
+| SQS queues and DLQs | All **17** (16 in `template.yaml`, 1 in `patterns/unified/template.yaml`) set `KmsMasterKeyId` to the stack CMK — **not** SSE-SQS. None falls back to SSE-SQS |
 | DynamoDB tables | All 12 set `SSESpecification` with `SSEType: KMS` and the stack CMK — **not** the AWS-owned default key |
 | OpenSearch Serverless | Encryption at rest (AWS-managed) |
-| CloudWatch Logs | 108 of the 109 log groups declared in the three templates set `KmsKeyId` to the stack CMK. The exceptions are `HttpApiDispatcherLogGroup` — the group for the component every UI API request passes through — and two custom-resource groups that handle no request data. See AUTH.T15 |
+| CloudWatch Logs | **106 of the 109** log groups declared in the three templates (56 + 33 + 20) set `KmsKeyId` to the stack CMK. The three exceptions are `HttpApiDispatcherLogGroup` — the group for the component every UI API request passes through — and the `StacknameCheckFunction` and `ReadPreviousIDPPatternFunction` custom-resource groups, which handle no request data. See AUTH.T15 |
 
 > **Two residual notes on the key itself.** Its key policy grants the account
 > root `kms:*` and sets no `kms:ViaService` condition, so the key is usable by any

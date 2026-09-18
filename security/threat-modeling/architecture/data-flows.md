@@ -305,7 +305,7 @@ for a field that has no entry. Its 403 mapping also keys partly on error-message
 prefixes, so a reworded exception can change an HTTP status. A default-deny gate
 and the removal of that prefix dependency are **pending in issue #928**; until
 then the manifest plus `make api-test-static` is what stands in for a default
-deny. See AUTH.T14.
+deny. See AUTH.T16.
 
 Two mechanical details are load-bearing when reading resolver code: the REST
 authorizer places claims at `requestContext.authorizer.claims` and flattens
@@ -456,7 +456,7 @@ sequenceDiagram
 | Authorization granularity | **Only** `lambda:InvokeFunctionUrl` on the shared `CognitoAuthorizedRole` — the role is common to **all five RBAC groups** (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish Admin from Reviewer |
 | Group (RBAC) enforcement | **None on this path.** The Admin/Author/Viewer restriction on `sendAgentChatMessage` is enforced in the *resolver*, not here. Fix **pending in issue #920** |
 | Session ownership | **Not enforced.** Neither streaming processor performs the `ownerSub`-vs-caller check the resolver path does. Fix **pending in issue #920** |
-| Caller identity available | Weaker than the diagram suggests: the value derived from the request context is the assumed-role **session name**, and on `/chat/agent` a body-supplied `callerSub` takes precedence over it. Establishing a trustworthy identity is part of **issue #920** — see CHAT.T06 |
+| Caller identity available | Weaker than the diagram suggests: the value derived from the request context is the assumed-role **session name**, and on `/chat/agent` a body-supplied `callerSub` takes precedence over it. That session name is the same for every user of the deployment, so no per-user identity exists on this transport at all. **Issue #920** (PR #954) removes the precedence problem but does not create one — establishing a verified subject is still outstanding; see CHAT.T06 |
 | CORS | `AllowOrigins: "*"`, `AllowCredentials: false` (safe: SigV4 in headers, no cookies) |
 | Covered by `make api-test` | **No** — the harness drives `POST /op/{field}` only |
 | Covered by the WAF / stage throttling | **No** — the WebACL is associated with the REST API stage; Lambda concurrency is the bound here |

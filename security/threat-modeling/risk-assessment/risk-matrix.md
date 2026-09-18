@@ -74,7 +74,7 @@
 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T08 | Silently-Ignored Schema Authorization Directives | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T09 | Insecure Direct Object Reference (IDOR / BOLA) | **6** | Authentication/RBAC | Mitigated |
-| AUTH.T14 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | **6** | Authentication/RBAC | Partially Mitigated (fix pending, #928) |
+| AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | **6** | Authentication/RBAC | Partially Mitigated (fix pending, #928) |
 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | **6** | Companion Chat | **Open** (fix pending, #920) |
 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | **6** | Feature Platform | Partially Mitigated |
 | HOOK.T06 | Preprocessing Hook Operates on the Raw Source Document and Can Halt or Replace It | **6** | Lambda Hooks | Mitigated |
@@ -253,7 +253,7 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** (fix pending, #920) |
 | 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Open** (fix pending, #919) |
 | 12 | UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | 6 | **Open** |
-| 13 | AUTH.T14 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
+| 13 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
 | 14 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
 
 ## 5. Recommendations
@@ -271,8 +271,12 @@ effort-to-value:
    identity, which would silently neuter an ownership check that reads it.
    Then extend the automated harness to cover this transport — today
    `make api-test` drives `POST /op/{field}` only, so a regression here is
-   undetectable. Tracked in **issue #920**; until that change merges neither
-   check exists, so both threats stay *Open* here.
+   undetectable. Tracked in **issue #920**, implemented in part by PR #954 —
+   which rejects a contradicting client-supplied identity but cannot supply a
+   per-user one on this transport, so both threats stay *Open* here even after it
+   merges. The prerequisite neither issue currently covers is a **verified
+   subject**: the browser presenting its Cognito ID token alongside the signed
+   request.
 2. **Presigned read key scoping (UI.T06)** — derive the permitted key prefix
    from the caller's identity/scope instead of trusting the supplied `s3Uri`,
    and make the bucket allow-list fail **closed** when its env vars are unset.
@@ -289,7 +293,7 @@ effort-to-value:
    manipulation actions, narrow the service wildcards to the resources the stack
    creates, and add trust-policy conditions, so the role is a delegation rather
    than an administrator alias. Tracked in **issue #927**.
-6. **Default deny at the dispatcher (AUTH.T14)** — reject a field with no recorded
+6. **Default deny at the dispatcher (AUTH.T16)** — reject a field with no recorded
    authorization expectation instead of forwarding it, and stop keying the 403
    mapping on error-message prefixes. Tracked in **issue #928**. This is the
    structural fix behind items 1–3: each of those is an instance of a check that

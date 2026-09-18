@@ -132,10 +132,41 @@ class TestReleasesBehind:
         # unusual but it is not a currency problem.
         assert gate.releases_behind("0.6.8", "0.6.7", RELEASES) == 0
 
-    def test_unknown_version_is_an_error_not_a_pass(self, gate):
-        # A typo'd or invented version must not silently read as current.
-        with pytest.raises(ValueError):
-            gate.releases_behind("0.9.9", CURRENT, RELEASES)
+    def test_unknown_older_version_is_an_error_not_a_pass(self, gate):
+        # A typo'd or invented version that predates the newest release heading
+        # must not silently read as current. It is reported as its own condition
+        # — a CHANGELOG gap — rather than as staleness, because the remedy
+        # differs: add the heading, or fix the row.
+        with pytest.raises(gate.ReviewedVersionNotReleased) as excinfo:
+            gate.releases_behind("0.6.4", CURRENT, RELEASES)
+        message = str(excinfo.value)
+        assert "no '## [0.6.4]' heading" in message
+        assert "release heading to CHANGELOG.md" in message
+
+    def test_version_bumped_before_the_release_heading_lands(self, gate):
+        """Ordinary release-commit ordering, previously a hard failure.
+
+        The release cycle bumps ``VERSION`` to ``0.6.10.dev1`` in one commit and
+        adds the ``## [0.6.9]`` heading in another. Between the two, the reviewed
+        version (0.6.9) is in neither the CHANGELOG nor ``VERSION``. That used to
+        raise, printing a message about CHANGELOG parsing when nothing was wrong
+        with the threat model at all. It is now measured on a timeline spanning
+        both endpoints: one release behind, which is inside the threshold.
+        """
+        behind = gate.releases_behind("0.6.9", "0.6.10", RELEASES)
+        assert behind == 1
+        assert behind <= gate.MAX_RELEASES_BEHIND
+
+    def test_skipped_release_never_gets_a_heading(self, gate):
+        """The second ordering: ``VERSION`` jumps 0.6.9.dev3 -> 0.7.0.dev1 and
+        ``## [0.6.9]`` is never added, so the reviewed release has no heading
+        permanently rather than temporarily. Same reasoning — a missing heading is
+        a release-notes gap, and failing the currency gate for it would name the
+        wrong remedy.
+        """
+        behind = gate.releases_behind("0.6.9", "0.7.0", RELEASES)
+        assert behind == 1
+        assert behind <= gate.MAX_RELEASES_BEHIND
 
 
 @pytest.mark.unit
@@ -194,6 +225,30 @@ class TestEndToEnd:
         assert "system-overview.md" in message
         assert "build_threat_model.py" in message
         assert "make check-threat-model-currency" in message
+
+    def test_per_document_staleness_is_advisory_only(self, gate):
+        """The corpus deliberately does not claim uniform freshness: most
+        documents were carried forward at the release they were last verified
+        against, and bumping them wholesale would assert reviews that did not
+        happen. So per-document distance is *reported* and must never fail the
+        build — the exit code depends solely on the README's field.
+        """
+        releases = gate.released_versions(
+            (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        )
+        current = gate.normalize((REPO_ROOT / "VERSION").read_text(encoding="utf-8"))
+        stale = gate.stale_documents(current, releases)
+        assert stale, "expected carried-forward documents to be reported"
+        assert all(behind > gate.MAX_RELEASES_BEHIND for _, _, behind in stale)
+
+        result = subprocess.run(
+            [sys.executable, str(GATE)],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "advisory only" in result.stdout
 
 
 @pytest.mark.unit

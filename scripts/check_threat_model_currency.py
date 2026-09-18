@@ -31,13 +31,33 @@ to six: each individual slip looks reasonable. One release means the re-review i
 due during the cycle that follows the release it describes, and the branch only
 goes red if a whole release ships without it.
 
-This is deliberately a gate that can only be cleared by doing the work. Bumping
-the field without re-reviewing makes the model *wrong* rather than *stale*, which
-is worse, so the failure message says so and names where to start.
+**What this gate can and cannot enforce.** It is a reminder, not a proof. It reads
+three files (``VERSION``, ``CHANGELOG.md`` and the model's README) and extracts one
+value, so the minimum way to clear it is a one-line edit to that row plus a
+regenerate — no re-review required. That is deliberate: there is no mechanical test
+for "this prose accurately describes the current architecture", and a gate that
+pretended otherwise would just be a worse reminder. Bumping the field without
+re-reviewing makes the model *wrong* rather than *stale*, which is worse, so the
+failure message says so and names where to start.
+
+What keeps the honest path cheaper than the dishonest one is visibility rather than
+enforcement. The reviewed version is carried into the generated Threat Composer
+export, which is regenerated and diff-checked by the same ``make lint-cicd`` run, so
+a bump-without-review produces a commit whose entire diff is one metadata line in
+the README and the matching line in the export — and nothing else. A silent bypass
+is possible; an invisible one is not, because "claims to have reviewed a release and
+changed no threat entry" is exactly the shape a reviewer notices.
+
+The gate also prints an **advisory** list of corpus documents whose own
+``Applies to release`` row is more than ``MAX_RELEASES_BEHIND`` behind ``VERSION``.
+That list never affects the exit code. The model deliberately does not claim uniform
+freshness — a blanket version bump would assert reviews that did not happen — so
+per-document staleness is reported to make that policy auditable, not enforced.
 
 Exit codes:
     0 — the threat model is current (at most one release behind)
-    1 — it is too far behind, or the recorded version cannot be interpreted
+    1 — it is too far behind, or the recorded version cannot be interpreted, or the
+        reviewed release has no ``## [X.Y.Z]`` heading in ``CHANGELOG.md``
     2 — a required file is missing or unparseable
 """
 
@@ -66,6 +86,11 @@ _FIELD_RE = re.compile(
 )
 _RELEASE_HEADING_RE = re.compile(r"^## \[(\d+\.\d+\.\d+)\]", re.MULTILINE)
 
+#: Each corpus document's own currency marker, reported advisory-only.
+_APPLIES_RE = re.compile(
+    r"^\|\s*\*\*Applies to release\*\*\s*\|\s*(?P<value>[^|]+?)\s*\|", re.MULTILINE
+)
+
 
 def normalize(version: str) -> str:
     """Reduce a version string to its ``X.Y.Z`` release identity.
@@ -89,28 +114,91 @@ def released_versions(changelog_text: str) -> list[str]:
     return list(reversed(_RELEASE_HEADING_RE.findall(changelog_text)))
 
 
+class ReviewedVersionNotReleased(ValueError):
+    """The reviewed version has no ``## [X.Y.Z]`` heading in ``CHANGELOG.md``.
+
+    A distinct condition from "the model is stale", and with a distinct remedy:
+    the CHANGELOG is missing a release heading, or the README row names a version
+    that never shipped. Raised only when the reviewed version is *older* than the
+    newest heading, because a version newer than every heading is the ordinary
+    state of an in-progress release cycle rather than an error — see
+    ``releases_behind``.
+    """
+
+
+def _release_key(version: str) -> tuple[int, ...]:
+    """Sort key for an ``X.Y.Z`` release identity."""
+    return tuple(int(part) for part in version.split("."))
+
+
 def releases_behind(reviewed: str, current: str, releases: list[str]) -> int:
     """How many releases the reviewed version is behind the current one.
 
     ``current`` is normally the in-development version and so absent from
     ``releases``; it is treated as sitting one place past the newest release.
-    A reviewed version equal to ``current``, or newer than every release, is
-    zero behind. Negative distances are clamped to 0 — a model reviewed against
-    something newer than ``VERSION`` is not stale.
+    A reviewed version equal to ``current`` is zero behind, and negative
+    distances are clamped to 0 — a model reviewed against something newer than
+    ``VERSION`` is not stale.
+
+    A reviewed version that is *newer than every heading* in ``CHANGELOG.md`` is
+    measured, not rejected. Two ordinary release-commit orderings produce exactly
+    that state and neither is a problem with the threat model: ``VERSION`` being
+    bumped to the next ``.devN`` before the previous release's ``## [X.Y.Z]``
+    heading lands, and a skipped release whose heading is never added at all.
+    Both are handled by measuring on a timeline that includes both endpoints, so
+    the distance stays honest even when the CHANGELOG has a gap.
+
+    A reviewed version *older* than the newest heading but absent from it is a
+    different matter — a missing heading or a typo — and raises
+    :class:`ReviewedVersionNotReleased`.
     """
     if reviewed == current:
         return 0
 
     index = {version: position for position, version in enumerate(releases)}
-    current_position = index.get(current, len(releases))
 
-    if reviewed not in index:
-        raise ValueError(
-            f"{reviewed!r} is neither a release in CHANGELOG.md nor the current "
-            f"VERSION ({current})"
-        )
+    if reviewed in index:
+        current_position = index.get(current, len(releases))
+        return max(0, current_position - index[reviewed])
 
-    return max(0, current_position - index[reviewed])
+    newest = releases[-1] if releases else None
+    if newest is None or _release_key(reviewed) > _release_key(newest):
+        timeline = sorted({*releases, reviewed, current}, key=_release_key)
+        return max(0, timeline.index(current) - timeline.index(reviewed))
+
+    raise ReviewedVersionNotReleased(
+        f"the threat model records {FIELD_LABEL}: {reviewed}, but CHANGELOG.md has "
+        f"no '## [{reviewed}]' heading and {reviewed} is older than its newest "
+        f"release ({newest}). VERSION is {current}. This is a release-notes gap, "
+        f"not a stale threat model, and the remedy is one of two edits: add the "
+        f"'## [{reviewed}]' release heading to CHANGELOG.md if that release "
+        f"shipped, or correct the version in the README row if it names a release "
+        f"that never did."
+    )
+
+
+def stale_documents(
+    current: str, releases: list[str], limit: int = MAX_RELEASES_BEHIND
+) -> list[tuple[str, str, int]]:
+    """Corpus documents whose ``Applies to release`` row is more than ``limit`` behind.
+
+    Advisory only — the caller must not let this affect the exit code. A document
+    without the row, or with one this module cannot interpret, is skipped rather
+    than reported: this is a visibility aid, not a second gate.
+    """
+    stale: list[tuple[str, str, int]] = []
+    for path in sorted(THREAT_MODEL_README.parent.rglob("*.md")):
+        match = _APPLIES_RE.search(path.read_text(encoding="utf-8"))
+        if not match:
+            continue
+        try:
+            applies = normalize(match.group("value"))
+            behind = releases_behind(applies, current, releases)
+        except ValueError:
+            continue
+        if behind > limit:
+            stale.append((str(path.relative_to(REPO_ROOT)), applies, behind))
+    return stale
 
 
 def read_reviewed_version(readme_text: str) -> str:
@@ -168,9 +256,27 @@ def main() -> int:
         reviewed = read_reviewed_version(THREAT_MODEL_README.read_text(encoding="utf-8"))
         releases = released_versions(CHANGELOG.read_text(encoding="utf-8"))
         behind = releases_behind(reviewed, current, releases)
+    except ReviewedVersionNotReleased as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+
+    stale = stale_documents(current, releases)
+    if stale:
+        print(
+            f"note: {len(stale)} threat-model document(s) are more than "
+            f"{MAX_RELEASES_BEHIND} release(s) behind VERSION {current} — advisory "
+            f"only, not a failure. The corpus does not claim uniform freshness; see "
+            f'"What \'reviewed\' covers" in '
+            f"{THREAT_MODEL_README.relative_to(REPO_ROOT)}."
+        )
+        for document, applies, distance in stale:
+            print(
+                f"        {document} — last verified against {applies}, "
+                f"{distance} behind"
+            )
 
     if behind > MAX_RELEASES_BEHIND:
         position = releases.index(reviewed) if reviewed in releases else len(releases)

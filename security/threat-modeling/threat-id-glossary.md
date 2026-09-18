@@ -115,8 +115,18 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | AUTH.T11 | Weak transport security (TLS downgrade / cleartext) | ID, Tampering | 3 (Medium) |
 | AUTH.T12 | Missing input-shape validation (type confusion via lost schema validation) | Tampering, DoS | 3 (Medium) |
 | AUTH.T13 | Group assignment from a user-writable attribute (external IdP mapping) | Spoofing, EoP | 4 (Medium) |
-| AUTH.T14 | Authorization is opt-in per resolver — no default deny at the dispatcher | EoP | 6 (High) |
 | AUTH.T15 | Authentication material in resolver logs (divergent redaction denylists) | ID | 4 (Medium) |
+| AUTH.T16 | Authorization is opt-in per resolver — no default deny at the dispatcher | EoP | 6 (High) |
+
+> **`AUTH.T14` is reserved and deliberately absent from this table.** It is
+> assigned, in a change under review at the time of writing, to "alternate entry
+> path bypassing an operation's group check (streaming Function URL)", and that
+> identifier is already referenced from that change's code comments and from
+> `scripts/api_rbac_expectations.yaml` (GAP-07). The threat that this document
+> originally numbered `AUTH.T14` — authorization being opt-in per resolver — was
+> renumbered to `AUTH.T16` here so the two do not collide. A threat identifier is
+> this model's primary key; two threats sharing one is worse than a gap in the
+> sequence.
 
 ### SDK — SDK/CLI (5 threats)
 

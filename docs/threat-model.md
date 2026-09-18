@@ -58,7 +58,7 @@ table exists so that a green CI run is not mistaken for full coverage.
 
 ## How to read a threat entry
 
-Each threat has a stable identifier (`AUTH.T14`, `CHAT.T03`, `SELL.T02`), a STRIDE
+Each threat has a stable identifier (`AUTH.T16`, `CHAT.T03`, `SELL.T02`), a STRIDE
 category, a likelihood × severity risk score, and a status. The status is the field
 to read carefully:
 
@@ -77,10 +77,23 @@ the strength of it. A threat model that counts intentions as controls is more
 dangerous than one that is merely out of date, because it reads as assurance.
 
 And the corpus does not claim uniform freshness. Each document records the release
-it was last verified against, and the model's README names which documents were
-re-derived from source in the most recent review and which were carried forward.
-A blanket version bump across every document would assert a review that did not
-happen.
+it was last verified against in an **Applies to release** row, and those rows fall
+into three categories rather than two. Of the 23 documents that carry the row, six
+were **re-derived from source** in the most recent review — the two architecture
+documents and the four feature-threat documents the README names. Six more read the
+same release because they are **regenerated or reconciled from those sources**
+rather than independently re-verified: the risk matrix, the STRIDE analysis, the
+threat-ID glossary, the executive summary, the implementation guide and the README
+itself are summaries whose content is derived from the per-surface documents, so
+they move whenever those move. The remaining eleven were **carried forward** and
+still name the older release they were last verified against (ten at v0.6.3, one at
+v0.6.5.dev1); their counts and cross-references were reconciled, but their threat
+entries were not re-checked against code.
+
+The distinction matters when reading a status column. A derived summary is exactly
+as current as the sources it was regenerated from, and no more; a carried-forward
+document is as current as its own row says. A blanket version bump across every
+document would erase that difference and assert a review that did not happen.
 
 ## Staying current
 
@@ -101,9 +114,9 @@ One release is the threshold for a specific reason. Zero would fail the build th
 moment `VERSION` is bumped to the next development version — which happens at the
 *start* of a cycle, before there is anything to review. Two or more is how this
 model reached roughly six releases behind the architecture it described, including
-a period when it still documented an AWS AppSync GraphQL API that had been replaced
-by API Gateway. One release means the gate fires once per release cycle, at a point
-where there is real change to look at.
+a period when it still documented an AWS AppSync GraphQL API that had been removed
+several releases earlier in favour of API Gateway. One release means the gate fires
+once per release cycle, at a point where there is real change to look at.
 
 When it fires, the fix is a review: re-derive the architecture documents from the
 templates and state machine, read the `CHANGELOG.md` entries since the recorded

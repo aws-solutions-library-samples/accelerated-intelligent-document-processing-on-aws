@@ -123,8 +123,10 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T11": (3, "Mitigated"),
     "AUTH.T12": (3, "Mitigated"),
     "AUTH.T13": (4, "Partially Mitigated"),
-    "AUTH.T14": (6, "Partially Mitigated"),
     "AUTH.T15": (4, "Partially Mitigated"),
+    # AUTH.T14 is reserved for a threat added by a separate in-review change
+    # (streaming Function URL group check); see threat-id-glossary.md.
+    "AUTH.T16": (6, "Partially Mitigated"),
     # SDK / CLI
     "SDK.T01": (6, "Partially Mitigated"),
     "SDK.T02": (6, "Partially Mitigated"),

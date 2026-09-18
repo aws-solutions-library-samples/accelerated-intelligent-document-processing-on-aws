@@ -82,10 +82,16 @@ API-Gateway/GovCloud hosting mode) was closed in v0.6.x. All six are code/config
 changes; see [risk-matrix §5](../risk-assessment/risk-matrix.md#5-recommendations).
 
 **Four of the six have a change in flight, and none of those changes has merged.**
-CHAT.T03 and CHAT.T06 are addressed by **issue #920**, HOOK.T07 by **issue #919**
-and SDK.T05 by **issue #927**; two Partially Mitigated threats depend on **issue
-#928** (a default-deny gate at the API dispatcher, AUTH.T14) and **issue #921**
-(consistent log redaction, AUTH.T15). Read every one of those as *pending*: the
+CHAT.T03 and CHAT.T06 are **partly** addressed by **issue #920** (PR #954) —
+partly, because that change makes a contradicting client-supplied identifier a
+403 but cannot establish a per-user identity on the streaming transport at all,
+so both threats stay Open after it merges; HOOK.T07 is addressed by **issue
+#919** and SDK.T05 by **issue #927**; two Partially Mitigated threats depend on
+**issue #928** (a default-deny gate at the API dispatcher, AUTH.T16) and **issue
+#921** (consistent log redaction, AUTH.T15). Read every one of those as
+*pending*, and read #920 as *partial even once merged* — see
+[companion-chat CHAT.T06](../feature-threats/companion-chat.md#chatt06-caller-identity-on-the-streaming-transport-is-not-a-verified-subject)
+for the accounting. The
 status columns in this model deliberately do not credit an unmerged fix, because a
 threat model that counts intentions as controls is worse than one that is merely
 out of date.
@@ -120,20 +126,24 @@ The harness is doing work the platform is not: the dispatcher itself does not
 default-deny — it resolves any field it can map, and the one dispatcher-level
 group check does not deny a field it has no entry for — so the manifest and the
 harness are what stand in for a gateway rule. Adding a default deny is **pending
-in issue #928** (AUTH.T14).
+in issue #928** (AUTH.T16).
 
 ## 5. Recommendations
 
 ### Immediate (Partially Mitigated Critical/High Risks)
 
-1. **Close the chat streaming authorization gaps (CHAT.T03, CHAT.T06)** — enforce
-   session ownership and the RBAC group on the Lambda Function URL transport, and
-   stop trusting a body-supplied `callerSub` on `/chat/agent` (**issue #920**,
-   pending)
+1. **Close the chat streaming authorization gaps (CHAT.T03, CHAT.T06)** — first
+   establish a *verified* subject on the Lambda Function URL transport (the
+   browser presenting its Cognito ID token alongside the signed request), because
+   the identifier available today is a pool-wide constant rather than a per-user
+   value; only then can session ownership and the RBAC group be enforced there.
+   **Issue #920** (PR #954) is a partial step, not a closure — it rejects a
+   contradicting client-supplied `callerSub` but does not create a per-user
+   identity
 2. **Narrow the deployment service role (SDK.T05)** — the shipped role can
    manipulate permissions boundaries and holds broad service wildcards, so
    possession of it is close to possession of the account (**issue #927**, pending)
-3. **Default-deny at the API dispatcher (AUTH.T14)** — reject a field with no
+3. **Default-deny at the API dispatcher (AUTH.T16)** — reject a field with no
    recorded authorization expectation rather than forwarding it, and stop deriving
    the 403 status from error-message text (**issue #928**, pending)
 4. **Make hook failure containment uniform (HOOK.T07)** — `onError: fail` is
