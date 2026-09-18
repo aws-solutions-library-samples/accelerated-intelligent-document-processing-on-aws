@@ -121,8 +121,14 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 > **`AUTH.T14` is reserved and deliberately absent from this table.** It is
 > assigned, in a change under review at the time of writing, to "alternate entry
 > path bypassing an operation's group check (streaming Function URL)", and that
-> identifier is already referenced from that change's code comments and from
-> `scripts/api_rbac_expectations.yaml` (GAP-07). The threat that this document
+> identifier is already referenced from that change's CHANGELOG entry, from
+> `.claude/skills/api-rbac-test.md` and from a comment in
+> `scripts/api_rbac_expectations.yaml`, in each case next to the corresponding
+> coverage-gap id `GAP-07`. (Measured on that branch: those are the only three
+> occurrences outside this directory. Its *code* comments name `GAP-07` rather
+> than the threat id, so an earlier claim here that the identifier was
+> referenced from code comments was wrong and is withdrawn.) The threat that
+> this document
 > originally numbered `AUTH.T14` — authorization being opt-in per resolver — was
 > renumbered to `AUTH.T16` here so the two do not collide. A threat identifier is
 > this model's primary key; two threats sharing one is worse than a gap in the
