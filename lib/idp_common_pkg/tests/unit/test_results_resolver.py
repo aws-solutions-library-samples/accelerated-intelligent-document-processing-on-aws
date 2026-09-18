@@ -334,7 +334,7 @@ def test_iter_completed_doc_keys_is_deterministic():
     }
     with (
         patch.dict(os.environ, {"TRACKING_TABLE": "T"}),
-        patch.object(index.boto3, "client", return_value=fake_client),
+        patch.object(index.dynamodb.meta, "client", fake_client),
     ):
         keys = list(index._iter_completed_doc_keys("runid", limit=3))
     assert keys == ["runid/alpha.pdf", "runid/mu.pdf", "runid/zeta.pdf"], (

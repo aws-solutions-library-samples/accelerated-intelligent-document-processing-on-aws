@@ -573,15 +573,14 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
     Sorting the ``Files`` list also gives the determinism the Scan
     pagination was added to guarantee.
     """
-    # Use the low-level boto3 CLIENT (documented thread-safe), not the
-    # shared module-level ``dynamodb`` RESOURCE. AWS docs explicitly say
-    # "Resources are not thread safe. These specific resources should not
-    # be shared across threads or processes." ``compare_test_runs`` fans
-    # this call out across up to 4 threads simultaneously, so sharing the
-    # module-level resource-backed Table would be a real race hazard.
-    # Clients marshal each request independently.
+    # boto3 clients are documented thread-safe, so reuse the client hanging
+    # off the module-level ``dynamodb`` resource rather than constructing a
+    # fresh one on every invocation. Under ``compare_test_runs``' up-to-4
+    # ThreadPoolExecutor fanout, per-call construction was 4 fresh
+    # credential-resolution + session-init cycles per compare, wasted for
+    # what boto3 already caches per client instance.
     try:
-        ddb_client = boto3.client("dynamodb")
+        ddb_client = dynamodb.meta.client
         table_name = os.environ["TRACKING_TABLE"]
     except Exception as e:
         logger.warning(
@@ -616,29 +615,44 @@ def _iter_completed_doc_keys(test_run_id, limit=5):
     doc_keys = [f"{test_run_id}/{file_name}" for file_name in sorted(files)]
 
     # BatchGetItem in 100-key chunks. Small runs (~5-10 docs) resolve in a
-    # single call; large runs still terminate in one round trip plus any
-    # UnprocessedKeys retries, versus the Scan path which paginated the
-    # entire tracking table.
+    # single call. UnprocessedKeys are re-issued with capped exponential
+    # backoff — under throttling the pre-retry code silently omitted
+    # completed docs, which meant two identical compare_test_runs calls
+    # could pick different-shape sample docs and report false schema
+    # drift on the panel.
     yielded = 0
     for i in range(0, len(doc_keys), 100):
         if yielded >= limit:
             return
         batch = doc_keys[i : i + 100]
-        keys = [{"PK": {"S": f"doc#{dk}"}, "SK": {"S": "none"}} for dk in batch]
-        try:
-            response = ddb_client.batch_get_item(
-                RequestItems={table_name: {"Keys": keys}}
-            )
-        except Exception as e:
+        collected_items = []
+        pending = {
+            "Keys": [{"PK": {"S": f"doc#{dk}"}, "SK": {"S": "none"}} for dk in batch]
+        }
+        for attempt in range(6):
+            try:
+                response = ddb_client.batch_get_item(RequestItems={table_name: pending})
+            except Exception as e:
+                logger.warning(
+                    f"BatchGetItem for doc#{test_run_id}/* failed: {e}. "
+                    f"Comparator diff may be short for this run."
+                )
+                return
+            collected_items.extend(response.get("Responses", {}).get(table_name, []))
+            pending = response.get("UnprocessedKeys", {}).get(table_name)
+            if not pending or not pending.get("Keys"):
+                break
+            time.sleep(min(0.05 * (2**attempt), 0.5))
+        else:
             logger.warning(
-                f"BatchGetItem for doc#{test_run_id}/* failed: {e}. "
-                f"Comparator diff may be short for this run."
+                f"BatchGetItem for doc#{test_run_id}/* still had "
+                f"{len(pending.get('Keys', []))} unprocessed keys after 6 "
+                f"attempts; sample may be incomplete."
             )
-            return
         # Preserve the sorted batch order — batch_get_item does not
         # guarantee response order.
         by_object_key = {}
-        for item in response.get("Responses", {}).get(table_name, []):
+        for item in collected_items:
             eval_status = item.get("EvaluationStatus", {}).get("S")
             if eval_status != "COMPLETED":
                 continue
@@ -1160,7 +1174,14 @@ def _batch_get_test_run_items(keys, table_name):
     for attempt in range(6):
         try:
             response = ddb_client.batch_get_item(RequestItems={table_name: pending})
-        except ClientError as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Broadened from ``ClientError`` — ``ReadTimeoutError`` is a
+            # ``BotoCoreError`` subclass and NOT a ``ClientError``, so a
+            # transient network hiccup would otherwise 500 the entire
+            # getTestRuns response instead of returning the partial list.
+            # The list render must never fault on a subset failure —
+            # matches the "swallow anything transient" contract in
+            # ``_load_sample_attribute_methods``.
             logger.warning(
                 f"BatchGetItem for {len(pending.get('Keys', []))} testrun "
                 f"keys failed: {exc}. Returning partial results."
@@ -1281,6 +1302,11 @@ def _query_test_runs_from_gsi(table, start_iso, end_iso, max_items):
         if "LastEvaluatedKey" not in response:
             break
         scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+        # Shrink Limit on each iteration so a heavily-filtered Scan on
+        # subsequent pages does not burn ~max_items worth of RCU when
+        # we only need (max_items - already_collected) more rows. Matches
+        # the GSI path above.
+        scan_kwargs["Limit"] = max_items - len(items)
 
     items = items[:max_items]
     logger.info(
