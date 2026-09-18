@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 import time
 from collections.abc import Iterator
@@ -1214,15 +1213,30 @@ def build_assessment_issues(
         # not a different model), so the cause has to travel with the issue an
         # operator actually sees. See the note on this ladder's ordering above.
         timed_out = bool(stats.get("deadline_reached"))
-        budget = (
-            " Recovery stopped early to stay inside the Lambda time budget, so "
-            "these rows were not attempted rather than proven unscorable: allow "
-            "more time (a larger Assessment Lambda timeout) or reduce the work per "
-            "section (lower extraction.confidence.list_batch_size, or smaller "
-            "sections)."
-            if timed_out
-            else ""
-        )
+        # Two different causes reach this rung with the deadline flag set, and they
+        # have opposite remedies, so do not give one message for both. If nothing
+        # truncated, the rows simply ran out of budget and more time helps. If a call
+        # DID truncate, the rows were attempted and the model could not fit them --
+        # saying they "were not attempted" would be false, and more time would not
+        # help; a smaller batch or a larger-output model is the fix.
+        truncated_any = bool(stats.get("truncated_calls"))
+        if timed_out and not truncated_any:
+            budget = (
+                " Recovery stopped early to stay inside the Lambda time budget, so "
+                "the rows still unscored were not re-attempted rather than proven "
+                "unscorable: allow more time (a larger Assessment Lambda timeout) "
+                "or reduce the work per section (lower "
+                "extraction.confidence.list_batch_size, or smaller sections)."
+            )
+        elif timed_out:
+            budget = (
+                " The model truncated its response on these rows AND recovery then "
+                "stopped early to stay inside the Lambda time budget, so both apply:"
+                " lower extraction.confidence.list_batch_size or use a confidence "
+                "model with a larger output budget, and allow more Lambda time."
+            )
+        else:
+            budget = ""
         return [
             ProcessingIssue(
                 stage="assessment",
@@ -1247,9 +1261,10 @@ def build_assessment_issues(
                 code="assessment_deadline_reached",
                 message=(
                     "Confidence self-healing stopped early to stay within the "
-                    "Lambda time budget. Every extracted row is scored, so this "
-                    "section is unaffected; a later one may not be, because the "
-                    "budget is per Lambda invocation."
+                    "Lambda time budget. Every row of the batched list field is "
+                    "scored, so no row is known to be missing a score; a later "
+                    "section may fare worse, because the budget is per Lambda "
+                    "invocation."
                 ),
                 root_cause=root_cause or "wall-clock budget reached",
                 section_id=section_id,
@@ -2141,7 +2156,7 @@ def _splice_missing_rows(
     recovery_counter: str,
     deadline_epoch: float | None = None,
     model_id: str | None = None,
-) -> tuple[dict[str, Any], float, bool]:
+) -> tuple[dict[str, Any], float, bool, bool]:
     """One recovery pass over the ``missing`` indices with ``call``.
 
     Chunks the missing indices by ``batch_size``, runs each chunk through the
@@ -2149,12 +2164,23 @@ def _splice_missing_rows(
     recovered real scores back by original index. Increments ``stats`` under
     ``recovery_counter`` (``rows_recovered_by_retry`` for the same-model retry,
     ``rows_recovered_by_escalation`` for the stronger-model round). Best-effort:
-    a failed call keeps the placeholder. Returns
-    ``(merged_metering, added_duration, recovered_any)``."""
+    a failed call keeps the placeholder.
+
+    Returns ``(merged_metering, added_duration, recovered_any, stopped_early)``.
+    ``stopped_early`` is True only when THIS pass hit the wall-clock guard below.
+    The caller must not infer that from ``stats['deadline_reached']``: that flag is
+    sticky and shared — the bisection guard sets it, and it is OR-merged out of
+    concurrent workers before this function is ever called — so reading it would
+    stop a rung that had budget, which is the defect this guard exists to avoid.
+    """
     added_duration = 0.0
     recovered_any = False
-    # Measured seconds for the last call in THIS pass, used to price the next one.
-    # None until a chunk completes; only ever raises the estimate, never lowers it.
+    stopped_early = False
+    # Measured seconds for the last CHUNK in this pass, used to price the next one.
+    # For a chunk that bisected this is the whole recursion subtree, not one call, so
+    # it over-prices the next chunk -- deliberately: it is floored, never lowered, so
+    # the estimate is conservative in the safe direction. None until a chunk
+    # completes.
     measured_call_seconds: float | None = None
     for start in range(0, len(missing), batch_size):
         idx_chunk = missing[start : start + batch_size]
@@ -2163,15 +2189,22 @@ def _splice_missing_rows(
         # the CHUNK COUNT: with 800s left it refuses any round past 11 chunks however
         # fast the model is, which for a 200-row list at the token-aware batch size
         # of 4 threw away recovery that measurably took under a second. Pricing ONE
-        # call and stopping mid-pass bounds the wall clock exactly, keeps every row
-        # the budget did cover, and applies identically to the retry and escalation
-        # rungs -- both reach the model through here -- so the cheap rung can no
-        # longer be refused while the slower, dearer one proceeds.
+        # call and stopping mid-pass keeps every row the budget did cover and applies
+        # identically to the retry and escalation rungs -- both reach the model
+        # through here -- so the cheap rung can no longer be refused while the
+        # slower, dearer one proceeds.
+        #
+        # This bounds RECOVERY, not the whole invocation. Two overruns remain, both
+        # pre-existing: a chunk that bisects makes one unchecked call per pending
+        # sibling, so it can finish roughly (bisection depth x one call) past the
+        # deadline; and the INITIAL batch pass consults no deadline at all. The
+        # second is the larger term for the 900s timeouts #894 reports.
         est_call_seconds = max(
             measured_call_seconds or 0.0, _ESTIMATED_MODEL_CALL_SECONDS
         )
         if not _deadline_allows(deadline_epoch, est_call_seconds):
             stats["deadline_reached"] = True
+            stopped_early = True
             logger.warning(
                 "assess_results_batched: stopping '%s' recovery with %d row(s) "
                 "still unscored - the next call, estimated at %.0fs, would exceed "
@@ -2207,7 +2240,7 @@ def _splice_missing_rows(
                 merged_assessment[big_field][orig_i] = retry_rows[local_i]
                 recovered_any = True
                 stats[recovery_counter] += 1
-    return merged_metering, added_duration, recovered_any
+    return merged_metering, added_duration, recovered_any, stopped_early
 
 
 def _retry_missing_rows(
@@ -2263,11 +2296,15 @@ def _retry_missing_rows(
 
     **Wall-clock guard (1.5, extended by #958):** ``deadline_epoch`` (absolute epoch
     seconds, from the Lambda ``context.get_remaining_time_in_millis()``) bounds
-    **both** rungs — before each round, retry or escalation, the ladder checks that
-    the round's estimated cost (chunks × ``_ESTIMATED_MODEL_CALL_SECONDS``) fits in
-    remaining time minus a safety reserve; if not it stops, sets
-    ``deadline_reached`` in stats, and keeps what was recovered rather than risk a
-    hard Lambda timeout. No-op when ``deadline_epoch`` is None.
+    **both** rungs, and the check is per model CALL, not per round: before each chunk
+    ``_splice_missing_rows`` prices one call at ``_ESTIMATED_MODEL_CALL_SECONDS`` (or
+    the last measured duration, whichever is larger) and stops the pass if it will
+    not fit in remaining time minus the safety reserve, keeping every row already
+    recovered. Escalation additionally checks that ONE call fits before starting a
+    round, so a round that cannot begin is not counted as one. Pricing a whole round
+    up front — chunks × 60s — is what this deliberately does NOT do: that caps chunk
+    count rather than bounding time, and measurably refused recovery that completed
+    in a fraction of the budget. No-op when ``deadline_epoch`` is None.
 
     The retry rung was unguarded until #958: it stopped only after
     ``max_retries`` rounds or on a round that recovered nothing, so a sequence of
@@ -2351,7 +2388,7 @@ def _retry_missing_rows(
             big_field,
             _round + 1,
         )
-        merged_metering, dur, recovered_any = _splice_missing_rows(
+        merged_metering, dur, recovered_any, stopped_early = _splice_missing_rows(
             one_call,
             rows=rows,
             base_results=base_results,
@@ -2367,11 +2404,14 @@ def _retry_missing_rows(
             model_id=model_id,
         )
         added_duration += dur
-        # The per-chunk guard stopped this pass mid-way, so the budget is spent:
-        # start no further round. (Another round would make no model call — its
-        # first chunk would hit the same guard — but it would log a misleading
-        # "retrying N rows" line first.)
-        if stats.get("deadline_reached"):
+        # THIS pass hit the wall-clock guard, so the budget is spent: start no
+        # further round. Deliberately not ``stats["deadline_reached"]`` — that flag
+        # is sticky and shared (the bisection guard sets it, and it is OR-merged out
+        # of concurrent workers before this function is called), so reading it would
+        # end the rung after one round whenever anything earlier had tripped it, even
+        # while the per-chunk guard was permitting every call it made. That is the
+        # same "refuse work the budget allows" mistake the per-chunk check replaced.
+        if stopped_early:
             break
         # #894: the retry itself can be the first place a slice bisects down to one
         # row and still truncates. Stop this rung as soon as that is known instead
@@ -2402,22 +2442,25 @@ def _retry_missing_rows(
             missing = _missing_row_indices(merged_assessment.get(big_field), rows)
             if not missing:
                 break
-            # Wall-clock guard: estimate this escalation round's cost (number of
-            # chunks × _ESTIMATED_MODEL_CALL_SECONDS — no measurement is used here,
-            # because the escalation model is a different, slower model than the one
-            # whose durations were observed on the rungs above) and stop if it won't
-            # fit in the Lambda's remaining time minus the safety reserve.
-            n_chunks = math.ceil(len(missing) / max(1, esc_batch))
-            est_round_seconds = n_chunks * _ESTIMATED_MODEL_CALL_SECONDS
-            if not _deadline_allows(deadline_epoch, est_round_seconds):
+            # Wall-clock guard, priced at ONE call rather than the whole round.
+            # _splice_missing_rows below applies the same check per chunk (#958), so
+            # this only decides whether the round can START — which it has to, or the
+            # escalation_model/escalation_rounds stats below would record a round
+            # that never made a call. It must NOT be priced at chunks × 60s the way
+            # it used to be: that could only refuse work the per-chunk guard would
+            # have allowed, and measured on 200 rows with 800s remaining it refused
+            # escalation outright and left all 200 rows unscored, where the same run
+            # with no deadline recovered every one of them. Escalation is the rung
+            # that actually fixes small-output-cap truncation, so refusing it on a
+            # worst-case estimate was the costliest instance of that mistake.
+            if not _deadline_allows(deadline_epoch, _ESTIMATED_MODEL_CALL_SECONDS):
                 stats["deadline_reached"] = True
                 logger.warning(
-                    "assess_results_batched: skipping escalation of %d '%s' rows "
-                    "— estimated %.0fs would exceed the Lambda time budget; "
-                    "stopping self-healing and flagging deadline_reached.",
+                    "assess_results_batched: skipping escalation of %d '%s' rows — "
+                    "not even one call fits in the Lambda time budget; stopping "
+                    "self-healing and flagging deadline_reached.",
                     len(missing),
                     big_field,
-                    est_round_seconds,
                 )
                 break
             logger.warning(
@@ -2431,7 +2474,7 @@ def _retry_missing_rows(
             )
             stats["escalation_model"] = escalation_model
             stats["escalation_rounds"] += 1
-            merged_metering, dur, recovered_any = _splice_missing_rows(
+            merged_metering, dur, recovered_any, _esc_stopped = _splice_missing_rows(
                 escalation_one_call,
                 rows=rows,
                 base_results=base_results,

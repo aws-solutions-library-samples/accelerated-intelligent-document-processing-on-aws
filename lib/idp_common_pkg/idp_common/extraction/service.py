@@ -7334,8 +7334,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         ``deadline_epoch`` (absolute epoch seconds, from the shard Lambda's
         ``context.get_remaining_time_in_millis()``) bounds the in-shard confidence
         self-healing ladder so a truncation-retry storm on a small-cap confidence
-        model stops (with an ``assessment_deadline_reached`` warning, keeping
-        recovered rows) instead of running the shard Lambda into its 900s wall.
+        model stops -- keeping every row already recovered, and reporting
+        ``assessment_incomplete`` with the time budget named if any row is still
+        unscored (``assessment_deadline_reached`` only when coverage completed
+        anyway) -- instead of running the shard Lambda into its 900s wall.
         """
         import asyncio as _asyncio
 

@@ -442,20 +442,22 @@ class PartialProgressService:
         self,
         list_field: str,
         scored_per_call: int = 1,
-        sleep_seconds: float = 0.0,
+        clock: dict | None = None,
+        seconds_per_call: float = 0.0,
     ):
         self.list_field = list_field
         self.scored_per_call = scored_per_call
-        self.sleep_seconds = sleep_seconds
+        # Optional driven clock: a {"now": float} dict the test also patches
+        # `mod.time.time` to read, so a call costs time deterministically.
+        self.clock = clock
+        self.seconds_per_call = seconds_per_call
         self.primary_calls: list[int] = []
 
     def assess_results(self, **kw):
-        import time as _time
-
         rows = kw["extraction_results"].get(self.list_field, [])
         self.primary_calls.append(len(rows))
-        if self.sleep_seconds:
-            _time.sleep(self.sleep_seconds)
+        if self.clock is not None and self.seconds_per_call:
+            self.clock["now"] += self.seconds_per_call
         scored = [
             {"amount": {"confidence": 0.9 if i < self.scored_per_call else None}}
             for i in range(len(rows))
@@ -564,16 +566,24 @@ def test_a_large_list_with_ample_time_recovers_exactly_as_with_no_deadline():
 def test_a_mid_pass_stop_keeps_the_rows_it_already_recovered(monkeypatch):
     """Stopping is per chunk, so the rows already spliced back are kept.
 
-    The constants are scaled down so the budget can run out *during* a pass in a
-    unit test: each call sleeps, and the reserve plus per-call estimate are set
-    small enough that the first few chunks fit and a later one does not.
+    The clock is DRIVEN rather than slept on: ``_deadline_allows`` reads
+    ``time.time`` from this module, so a fake counter that advances one call-time per
+    model call makes the budget expire at an exact, reproducible chunk. An earlier
+    version of this test slept instead, and failed 20 runs out of 20 under CPU load
+    when executed alone — the initial pass consumed the whole budget before the retry
+    rung ran.
     """
-    import time as _time
+    monkeypatch.setattr(mod, "_ESTIMATED_MODEL_CALL_SECONDS", 1.0)
+    monkeypatch.setattr(mod, "_DEADLINE_SAFETY_RESERVE_SECONDS", 0.0)
 
-    monkeypatch.setattr(mod, "_ESTIMATED_MODEL_CALL_SECONDS", 0.02)
-    monkeypatch.setattr(mod, "_DEADLINE_SAFETY_RESERVE_SECONDS", 0.02)
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
 
-    svc = PartialProgressService("transactions", sleep_seconds=0.02)
+    # 40 rows at batch 4 → 10 chunks in the initial pass, then retry rounds. Advance
+    # the fake clock one call-time per call, and allow 14 calls' worth of budget: the
+    # initial pass spends 10, so the retry pass gets 4 chunks and is stopped on its
+    # fifth — mid-pass, with rows both recovered and outstanding.
+    svc = PartialProgressService("transactions", clock=clock, seconds_per_call=1.0)
     result = assess_results_batched(
         svc,
         class_label="bank-statement",
@@ -585,7 +595,7 @@ def test_a_mid_pass_stop_keeps_the_rows_it_already_recovered(monkeypatch):
         confidence_model_id=NOVA_LITE,
         geometry_mode="llm_grounded",
         escalation_enabled=False,
-        deadline_epoch=_time.time() + 0.25,
+        deadline_epoch=clock["now"] + 14.0,
     )
 
     stats = result["split_stats"]
@@ -600,6 +610,83 @@ def test_a_mid_pass_stop_keeps_the_rows_it_already_recovered(monkeypatch):
         if r.get("amount", {}).get("confidence") is not None
     ]
     assert len(scored) == 40 - stats["unrecoverable_rows"]
+
+
+class TruncatesOnceThenPartial:
+    """Truncates the FIRST call with a long duration, then makes partial progress.
+
+    The long first call trips the bisection guard, which sets ``deadline_reached`` on
+    the shared stats accumulator. Every later call is fast and fits comfortably. So
+    the flag is already True when the retry rung starts, while the per-chunk guard is
+    permitting every call it makes.
+    """
+
+    def __init__(self, list_field: str, first_call_seconds: float = 750.0):
+        self.list_field = list_field
+        self.first_call_seconds = first_call_seconds
+        self.calls = 0
+
+    def assess_results(self, **kw):
+        rows = kw["extraction_results"].get(self.list_field, [])
+        self.calls += 1
+        if self.calls == 1:
+            return AssessmentCoreResult(
+                enhanced_assessment={
+                    k: {"confidence": 0.5} for k in kw["extraction_results"]
+                },
+                parsing_succeeded=False,
+                truncated=True,
+                duration_seconds=self.first_call_seconds,
+                metering={"Assessment/bedrock/model": {"outputTokens": 9999}},
+            )
+        scored = [
+            {"amount": {"confidence": 0.9 if i < 1 else None}} for i in range(len(rows))
+        ]
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                self.list_field: scored,
+                "account_holder": {"confidence": 0.95},
+            },
+            parsing_succeeded=True,
+            truncated=False,
+            duration_seconds=0.01,
+            metering={"Assessment/bedrock/model": {"outputTokens": 100}},
+        )
+
+
+def test_an_earlier_deadline_flag_does_not_end_the_retry_rung():
+    """``deadline_reached`` is sticky and shared, so the rung must not read it.
+
+    The bisection guard sets that flag, and it is OR-merged out of concurrent workers
+    before ``_retry_missing_rows`` is called. A rung that stopped on the flag would
+    therefore run exactly one round whenever anything earlier had tripped it — even
+    while its own per-chunk guard was permitting every call — which is the same
+    "refuse work the budget allows" defect the per-chunk check was introduced to fix.
+    The rung must key off whether THIS pass stopped early.
+    """
+    import time as _time
+
+    svc = TruncatesOnceThenPartial("transactions")
+    result = assess_results_batched(
+        svc,
+        class_label="bank-statement",
+        extraction_results={"transactions": _rows(12), "account_holder": "Jane Doe"},
+        document_text="...",
+        page_images=[],
+        batch_size=4,
+        max_retries=4,
+        confidence_model_id=NOVA_LITE,
+        geometry_mode="llm_grounded",
+        escalation_enabled=False,
+        deadline_epoch=_time.time() + 800.0,
+    )
+
+    stats = result["split_stats"]
+    # The long first call tripped the bisection guard...
+    assert stats["deadline_reached"] is True
+    # ...but the retry rung still ran its rounds and recovered more than the single
+    # round a sticky-flag break would have allowed.
+    assert stats["rows_recovered_by_retry"] > 3
 
 
 def test_a_deadline_stop_with_rows_outstanding_names_the_budget_in_the_issue():
@@ -622,7 +709,7 @@ def test_a_deadline_stop_with_rows_outstanding_names_the_budget_in_the_issue():
     ]
     message = issues[0].message
     assert "Lambda time budget" in message
-    assert "not attempted" in message
+    assert "not re-attempted" in message
     # The remedy must be time/work, not "use a different model".
     assert "list_batch_size" in message
 
