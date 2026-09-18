@@ -77,6 +77,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Circuit Breaker](./circuit-breaker.md) - Automatic protection from cascading failures during Bedrock outages
 - [Cross-Account Bedrock](./cross-account-bedrock.md) - Route all Bedrock invocations through a centralized hub account via STS AssumeRole
 - [Cost Calculator](./cost-calculator.md) - Framework for estimating solution costs
+- [Release Runbook](./release-runbook.md) - Publishing a release to the three public S3 regions: preconditions, ordered steps, failure and recovery paths, what is not automated, post-release verification
 
 ## Planning & Security
 

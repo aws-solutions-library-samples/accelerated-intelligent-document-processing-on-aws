@@ -30,6 +30,8 @@ SPDX-License-Identifier: MIT-0
     - [Python Development](#python-development)
     - [Planning \& Operations](#planning--operations)
   - [Contributing](#contributing)
+  - [Project Governance](#project-governance)
+  - [Security](#security)
   - [License](#license)
 
 ## Introduction
@@ -198,7 +200,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [Knowledge Base](./docs/knowledge-base.md) - Document knowledge base query feature
 - [Monitoring](./docs/monitoring.md) - Monitoring and logging capabilities
 - [IDP Accelerator Help Chat Bot](./docs/code-intelligence.md) - Chat bot for asking question about the IDP code base and features
-- [MCP Integration](./docs/mcp-integration.md) - Model Context Protocol integration for external applications like Amazon Quick Suite
+- [MCP Integration](./docs/mcp-server.md) - Model Context Protocol integration for external applications like Amazon Quick Suite
 - [Reporting Database](./docs/reporting-database.md) - Analytics database for evaluation metrics and metering data
 - [Troubleshooting](./docs/troubleshooting.md) - Troubleshooting and performance guides
 
@@ -238,6 +240,32 @@ Please refer to our [Contributing Guide](./CONTRIBUTING.md) for detailed informa
 - Issue reporting guidelines
 
 Thank you to everyone who has contributed to making this project better!
+
+## Project Governance
+
+How this project is run is written down, so you can predict what will happen to an
+issue or a pull request before you open one:
+
+- **[GOVERNANCE.md](./GOVERNANCE.md)** — who decides, how a change gets accepted,
+  the `develop`/`main` branch model, the release cadence, this repository's
+  relationship to the CDK and Terraform ports, and the governance questions that
+  are genuinely not defined yet.
+- **[MAINTAINERS.md](./MAINTAINERS.md)** — who maintains which subsystem, derived
+  from the commit history rather than assigned.
+- **[.github/CODEOWNERS](./.github/CODEOWNERS)** — the machine-readable form of
+  that ownership, which is what routes review requests.
+- **[ROADMAP.md](./ROADMAP.md)** — direction, priorities and explicit non-goals.
+  Themes rather than dates, and worth reading before proposing a large feature.
+
+## Security
+
+**Do not open a public issue for anything exploitable.** Report it privately to AWS
+Security via [HackerOne](https://hackerone.com/aws_vdp) or
+[aws-security@amazon.com](mailto:aws-security@amazon.com). Hardening suggestions
+and non-exploitable findings are welcome as public issues.
+[SECURITY.md](./SECURITY.md) has the full policy, including which versions are
+supported, and [`security/`](./security/README.md) holds the threat model and the
+curated per-release security test results.
 
 ## License
 
