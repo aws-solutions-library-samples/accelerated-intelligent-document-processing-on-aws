@@ -40,7 +40,26 @@ _HOOK_FUNCTION_ARN = os.environ.get("HOOK_FUNCTION_ARN", "")
 _USERS_TABLE = os.environ.get("USERS_TABLE_NAME", "")
 _WINDOW_RE = re.compile(r"^(\d+)([hdw])$")
 
-_dynamodb = boto3.resource("dynamodb")
+# Built on first use, NOT at import. `boto3.resource(...)` at module scope
+# resolves credentials and constructs a client while the module is still being
+# imported, which is the wrong moment twice over. In Lambda it moves credential
+# resolution into cold-start init, where a failure surfaces as an import error
+# rather than as a handled invocation error. In tests it binds before any mock
+# the test installs — pytest sets fixtures up *before* entering a
+# `@mock_aws`-decorated test function — which made this suite depend on both test
+# order and the developer's ambient AWS profile (see tests/test_handler.py::mod).
+# Behaviour in Lambda is unchanged: the container is reused across invocations,
+# so the resource is still created at most once per container, just on the first
+# invocation instead of at init.
+_dynamodb: Any = None
+
+
+def _ddb() -> Any:
+    """The DynamoDB resource for this container, created on first use."""
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb")
+    return _dynamodb
 
 
 class ScopeLookupError(Exception):
@@ -85,7 +104,7 @@ def _caller_allowed_versions(email: str) -> Optional[list]:
     try:
         from boto3.dynamodb.conditions import Key as _Key
 
-        table = _dynamodb.Table(_USERS_TABLE)
+        table = _ddb().Table(_USERS_TABLE)
         resp = table.query(
             IndexName="EmailIndex", KeyConditionExpression=_Key("email").eq(email)
         )
@@ -135,7 +154,7 @@ def _to_plain(value: Any) -> Any:
 def _list_report(since: Optional[datetime]) -> List[Dict[str, Any]]:
     if not _AUDIT_TABLE:
         raise RuntimeError("AUDIT_TABLE_NAME env var is not set")
-    table = _dynamodb.Table(_AUDIT_TABLE)
+    table = _ddb().Table(_AUDIT_TABLE)
     since_iso = since.isoformat().replace("+00:00", "Z") if since is not None else None
 
     items: List[Dict[str, Any]] = []
@@ -159,7 +178,7 @@ def _list_report(since: Optional[datetime]) -> List[Dict[str, Any]]:
 
 
 def _get_row(doc_id: str) -> Optional[Dict[str, Any]]:
-    table = _dynamodb.Table(_AUDIT_TABLE)
+    table = _ddb().Table(_AUDIT_TABLE)
     item = table.get_item(Key={"documentId": doc_id}).get("Item")
     return _to_plain(item) if item else None
 
@@ -171,7 +190,8 @@ def _read_mapping(doc_id: str) -> Optional[Dict[str, Any]]:
         return None
     try:
         item = (
-            _dynamodb.Table(_MAPPING_TABLE)
+            _ddb()
+            .Table(_MAPPING_TABLE)
             .get_item(Key={"documentId": doc_id})
             .get("Item")
         )
