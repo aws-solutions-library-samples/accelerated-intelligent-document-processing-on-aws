@@ -44,6 +44,29 @@ describe('isAuthorizationError', () => {
     expect(isAuthorizationError(undefined)).toBe(false);
   });
 
+  it('does not read a server-side S3 denial as the caller lacking a role', () => {
+    // get_file_contents_resolver wraps an unexpected ClientError as
+    // `Error accessing S3: <message>`, and S3's message when the LAMBDA's role, the
+    // bucket policy or the KMS key denies is literally "Access Denied". That
+    // resolver has no @api_resolver wrapper, so it arrives as HTTP 500 /
+    // errorType "InternalError" with the message intact. Telling the user to ask an
+    // administrator for a role would be confidently wrong about a server defect no
+    // role can fix.
+    expect(
+      isAuthorizationError({
+        errors: [{ message: 'Error accessing S3: Access Denied', errorType: 'InternalError' }],
+      }),
+    ).toBe(false);
+  });
+
+  it('still recognises the in-band config-scope denial, which has no errorType', () => {
+    // The configuration and sync resolvers report an out-of-scope configuration
+    // version as HTTP 200 with a message beginning "Access denied:". That wording
+    // is the only thing identifying it, so the substring arm must stay live where
+    // no error type is stated.
+    expect(isAuthorizationError({ errors: [{ message: 'Access denied: version out of scope' }] })).toBe(true);
+  });
+
   it('does not match a message that merely mentions the word', () => {
     // The prefix test is deliberate: a document whose CONTENT contains the word
     // must not turn a 500 into a permissions message.

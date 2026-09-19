@@ -628,7 +628,8 @@ def curate_rbac_static(stdout_path: Path | None) -> tuple[str, dict]:
             "every `groups:` value is a list of real "
             "Cognito group names or one of `ANY` / `ANY_GROUP` / `IAM_ONLY`, and "
             "every gap id is defined in the register — an unrecognised policy "
-            "sentinel fails rather than defaulting to the permissive branch",
+            "sentinel fails rather than being read by the later checks as the "
+            "most permissive branch they have",
         ),
         (
             "S1",

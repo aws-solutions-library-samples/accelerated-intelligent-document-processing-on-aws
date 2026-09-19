@@ -24,8 +24,17 @@ import { getMyProfile } from '../graphql/generated';
  * role look like no role at all.
  */
 
-/** Cognito groups this app understands. Keep in sync with the roles above. */
-const APP_GROUPS = ['Admin', 'Author', 'Reviewer', 'Annotator', 'Viewer'];
+/**
+ * Cognito groups this app understands — every `AWS::Cognito::UserPoolGroup` in
+ * `template.yaml`.
+ *
+ * ⚠️ Not cosmetic. `hasNoRole` is computed from this list and gates the whole
+ * application, so a group missing here is locked out of a UI the server would let
+ * it use: the dispatcher's manifest is generated from the template, so a new group
+ * is granted the `ANY_GROUP` operations the moment it exists. Exported so
+ * `__tests__/use-user-role.appGroups.test.ts` can assert it against the template.
+ */
+export const APP_GROUPS = ['Admin', 'Author', 'Reviewer', 'Annotator', 'Viewer'];
 
 /** The scope half of the profile — the only part this hook reads. */
 interface ProfileScope {
@@ -124,13 +133,35 @@ interface UserRoleReturn {
    * set, the user pool allows self-registration and the new user is in no group
    * until an administrator assigns one.
    *
-   * It matters because the API refuses such a caller the document reads
-   * (`listDocuments`, `getDocument`, `getFileContents`, …) with 403: the server is
-   * the authority, and this flag only lets the UI say so once and clearly instead
-   * of failing operation by operation. Always false while `loading`, so a
-   * mid-flight session never renders as "no access".
+   * It matters because the API refuses such a caller the eleven operations
+   * declared `ANY_GROUP` in `scripts/api_rbac_expectations.yaml` — the
+   * document-content reads and three mutations — with 403. Not every operation:
+   * 15 remain `ANY` (the caller's own profile, enumeration, platform and
+   * feature-catalog reads), which is why this flag gates the app rather than
+   * being consulted per call. The server is the authority either way; the flag
+   * only lets the UI say once and clearly what it would otherwise discover one
+   * failing page at a time.
+   *
+   * It requires a **successful** read of the session, not merely a finished one.
+   * False while `loading`, and false when `sessionError` is set — "I could not
+   * find out what your groups are" is a different statement from "you have none",
+   * and only one of them is the user's problem to act on.
    */
   hasNoRole: boolean;
+  /**
+   * The auth session could not be read, so the caller's groups are unknown.
+   *
+   * Distinct from `hasNoRole` because the remedies are opposite: this one is
+   * usually transient and clears on a reload, and telling its victim to go and
+   * ask an administrator for a role sends a perfectly entitled Admin to someone
+   * with nothing to fix. `api/auth-session.ts` documents the live case — two
+   * byte-identical `GetCredentialsForIdentity` calls in the same second, one 200
+   * and one `400 NotAuthorizedException: Invalid login token` on a valid token —
+   * and since that module shares one in-flight promise across ~15 consumers, a
+   * single rejection reaches every one of them. This effect has an empty
+   * dependency array, so nothing retries it for the life of the mount.
+   */
+  sessionError: boolean;
   loading: boolean;
 }
 
@@ -138,6 +169,7 @@ const useUserRole = (): UserRoleReturn => {
   const [groups, setGroups] = useState<string[]>([]);
   const [allowedConfigVersions, setAllowedConfigVersions] = useState<string[] | null>(null);
   const [allowedTestSets, setAllowedTestSets] = useState<string[] | null>(null);
+  const [sessionError, setSessionError] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -183,7 +215,15 @@ const useUserRole = (): UserRoleReturn => {
           }
         }
       } catch (error) {
+        // The only statement in the `try` above that can reach here is
+        // `fetchSharedAuthSession()` — everything after it is null-safe or has its
+        // own inner catch. So this means "the caller's groups are UNKNOWN", not
+        // "the caller has none", and the two must not be conflated: `hasNoRole`
+        // now drives a full-screen message telling the user to ask an
+        // administrator for a role, which is the wrong thing to say to an Admin
+        // whose session read lost a race at Cognito.
         console.error('Error fetching user role:', error);
+        setSessionError(true);
         setGroups([]);
       } finally {
         setLoading(false);
@@ -210,8 +250,17 @@ const useUserRole = (): UserRoleReturn => {
   // Membership of APP_GROUPS, not `groups.length`: an unrecognised group name
   // grants nothing in this app, so it must not read as a role. Gated on
   // `!loading` so the flag is never true merely because the session has not
-  // resolved yet.
-  const hasNoRole = !loading && !groups.some((g) => APP_GROUPS.includes(g));
+  // resolved yet, and on `!sessionError` so a failed read is never reported as an
+  // empty one — see the `sessionError` note above.
+  //
+  // ⚠️ Because this gates the whole application, APP_GROUPS must list every group
+  // `template.yaml` creates. A sixth `AWS::Cognito::UserPoolGroup` omitted here
+  // would be granted the `ANY_GROUP` operations by the server (the dispatcher's
+  // manifest is generated from the template) and then be shown "your account has
+  // not been granted access yet" by this flag — worse than the pre-existing
+  // fall-through to the Viewer navigation. `use-user-role.appGroups.test.ts`
+  // asserts the list against the template so that cannot happen silently.
+  const hasNoRole = !loading && !sessionError && !groups.some((g) => APP_GROUPS.includes(g));
 
   return {
     groups,
@@ -231,6 +280,7 @@ const useUserRole = (): UserRoleReturn => {
     allowedConfigVersions,
     allowedTestSets,
     hasNoRole,
+    sessionError,
     loading,
   };
 };

@@ -90,14 +90,49 @@ describe('useUserRole hasNoRole', () => {
     expect(result.current.hasNoRole).toBe(false);
   });
 
-  it('is true when the session cannot be read at all', async () => {
-    // The hook's own catch sets groups to [] and stops loading. There is no role,
-    // and saying so is better than mounting an app whose every call 403s.
-    fetchSharedAuthSession.mockRejectedValue(new Error('no session'));
+  it('is never true at any point during a grouped user’s load', async () => {
+    // The property that actually matters and that the "false while loading" case
+    // above cannot see: `setGroups` and `setLoading(false)` are separated by an
+    // await (the profile fetch), so they land in different renders. If the order
+    // were ever inverted there would be one render with loading false and groups
+    // still empty — a flash of the full-screen "no access" message for an entitled
+    // user. So record EVERY rendered value rather than sampling the settled one.
+    fetchSharedAuthSession.mockResolvedValue(sessionWithGroups(['Viewer']));
+    const seen: boolean[] = [];
+
+    const { result } = renderHook(() => {
+      const role = useUserRole();
+      seen.push(role.hasNoRole);
+      return role;
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(result.current.groups).toEqual(['Viewer']));
+    expect(seen.length).toBeGreaterThan(1); // more than the initial render
+    expect(seen).not.toContain(true);
+  });
+
+  it('reports a failed session read as sessionError, not as having no role', async () => {
+    // `api/auth-session.ts` documents this live: a `400 NotAuthorizedException` on a
+    // valid token, shared by every consumer of the one in-flight promise. Telling an
+    // Admin to go and ask an administrator for a role sends them to someone with
+    // nothing to fix, and nothing retries this effect for the life of the mount.
+    fetchSharedAuthSession.mockRejectedValue(new Error('NotAuthorizedException'));
 
     const { result } = renderHook(() => useUserRole());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.sessionError).toBe(true);
+    expect(result.current.hasNoRole).toBe(false);
+  });
+
+  it('does not set sessionError when the groups are genuinely absent', async () => {
+    fetchSharedAuthSession.mockResolvedValue(sessionWithGroups(undefined));
+
+    const { result } = renderHook(() => useUserRole());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.sessionError).toBe(false);
     expect(result.current.hasNoRole).toBe(true);
   });
 });

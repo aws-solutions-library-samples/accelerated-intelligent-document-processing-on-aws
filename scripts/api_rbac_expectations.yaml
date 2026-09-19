@@ -1000,6 +1000,17 @@ operations:
 #                        the two must declare the same groups
 #       enforced_in:     the processor this route invokes, which must carry the
 #                        group check for a group-restricted route
+#       transport_enforces:
+#                        what this transport can ACTUALLY apply, declared only
+#                        when it is weaker than `groups`. `groups` is the policy
+#                        and must equal the equivalent_op's — one user action has
+#                        one policy — so without this key the only way to keep
+#                        S9's equivalent_op comparison quiet was to weaken the
+#                        declared policy, and then the real divergence appeared
+#                        nowhere. With it, S9 emits a finding naming the gap
+#                        (WARN, FAIL under --strict) and requires a
+#                        residual_gap/known_gap id, so the divergence is reported
+#                        by the check that measures it rather than declared away.
 #       known_gap:       GAP-NN, as for operations above — downgrades a
 #                        mismatch on this route from FAIL to WARN
 #       residual_gap:    GAP-NN listed in the register for auditability that
@@ -1026,6 +1037,7 @@ function_url_endpoints:
     routes:
       POST /chat/document:
         groups: ANY_GROUP
+        transport_enforces: ANY
         ownership: true
         equivalent_op: sendChatDocumentMessage
         enforced_in: src/lambda/chat_with_document_processor/index.py

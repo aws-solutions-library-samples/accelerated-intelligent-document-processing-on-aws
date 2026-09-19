@@ -28,12 +28,11 @@ so an authorization defect on them was invisible to the gate. S6-S9 cover them.
 
 CHECKS
 ------
-  S0  Declaration integrity — every `groups:` value is a list of group names or
-      one of the three known policy sentinels (`ANY`, `ANY_GROUP`, `IAM_ONLY`),
-      and every `known_gap:`/`residual_gap:` id is defined in the register (in
-      both directions). An unrecognised sentinel is a FAIL, never a default:
-      every other check treats a string policy it does not know as the
-      most-permissive branch it has, so a typo would read as "open".
+  S0  Declaration integrity — every `groups:` value is a list of real Cognito
+      group names or one of the three known policy sentinels (`ANY`, `ANY_GROUP`,
+      `IAM_ONLY`), and every `known_gap:`/`residual_gap:` id is defined in the
+      register (in both directions). An unrecognised sentinel is a FAIL, never a
+      default.
   S1  Manifest completeness — every routable op has an expectations entry, and
       every expectations entry maps to a real op (no stale rows).
   S2  Schema <-> expectations consistency — cognito_groups directives in
@@ -66,6 +65,10 @@ CHECKS
   S9  Function URL downstream enforcement — a route declared with a group list
       must have a recognized group-enforcement pattern (and those group names)
       in the processor it invokes, and must agree with the equivalent REST op.
+      A route whose transport cannot apply its declared policy says so with
+      `transport_enforces:`, which produces a finding naming the divergence
+      (WARN, FAIL under --strict) and requires a gap id — so aligning the
+      declared policy cannot make the real divergence disappear from the report.
 
 EXIT CODES
 ----------
@@ -111,11 +114,21 @@ ALLOWED_UNAUTH_METHODS = {
 #              resolved to the concrete names by generate_api_rbac_manifest.py
 #   IAM_ONLY   backend/IAM principals only; every Cognito caller is rejected
 #
-# S0 exists because the rest of this scanner cannot be relied on to notice a
-# typo. S2 would compare a set of the string's CHARACTERS against the schema
-# directive, and S3's `else` branch — written for ANY — would accept no resolver
-# enforcement at all. So an unrecognised policy string would read as the most
-# permissive answer available, which is the one thing it must never do.
+# WHAT S0 IS AND IS NOT FOR. Without it, THIS SCANNER would not notice a typo:
+# S2 compares a set of the string's CHARACTERS against the schema directive, and
+# S3's `else` branch — written for ANY — accepts no resolver enforcement at all,
+# so `groups: ANYGROUP` scans at 0 FAIL. It does not follow that such a typo could
+# reach a deployment: `make api-test-static` runs
+# generate_api_rbac_manifest.py --check straight afterwards, and the generator
+# rejects an unknown sentinel with exit 2, so the manifest the dispatcher enforces
+# could never contain one. There is no case today that S0 catches and nothing else
+# does.
+#
+# It is here for two narrower reasons. The scanner is run on its own (and its JSON
+# output is published as a security artifact), so it should be self-sufficient
+# rather than sound only when a second command happens to follow it. And the
+# generator reads `operations:` only — a function_url_endpoints route policy never
+# passes through it, so a typo in one is caught by S0 alone.
 POLICY_ANY = "ANY"
 POLICY_ANY_GROUP = "ANY_GROUP"
 POLICY_IAM_ONLY = "IAM_ONLY"
@@ -182,6 +195,7 @@ ROUTE_POLICY_KEYS = frozenset(
         "ownership",
         "equivalent_op",
         "enforced_in",
+        "transport_enforces",
         "known_gap",
         "residual_gap",
         "note",
@@ -1178,6 +1192,54 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                                     f"{enforced_in} has a group check but does "
                                     f"not name {missing} — declared groups "
                                     f"{groups}")
+            # --- S9: declared policy vs what the transport can enforce -----
+            # `groups` is the route's POLICY and must equal the equivalent REST
+            # operation's — one user action, one policy. `transport_enforces` is
+            # what this transport is actually able to apply, declared only when it
+            # is weaker. Without the distinction the two were conflated, and
+            # aligning the policy to satisfy the `equivalent_op` comparison made
+            # the divergence vanish from the report even though it is true of the
+            # deployment. This surfaces it as a finding from the check that
+            # measures it, at the same level as the accepted-risk register: WARN
+            # normally, FAIL under --strict, which is how "prove this is fixed"
+            # works everywhere else here.
+            declared_floor = rc.get("groups")
+            enforceable = rc.get("transport_enforces")
+            if enforceable is not None:
+                if enforceable == declared_floor:
+                    findings.append(
+                        Finding(
+                            "S9", "FAIL",
+                            f"route declares transport_enforces {enforceable!r}, "
+                            "which equals its groups — remove the key rather than "
+                            "asserting a divergence that does not exist",
+                            route,
+                        )
+                    )
+                elif not rc.get("residual_gap") and not rc.get("known_gap"):
+                    findings.append(
+                        Finding(
+                            "S9", "FAIL",
+                            f"route enforces only {enforceable!r} but declares "
+                            f"{declared_floor!r}, with no residual_gap/known_gap "
+                            "naming the limitation — an unrecorded gap between the "
+                            "declared policy and the enforced one",
+                            route,
+                        )
+                    )
+                else:
+                    gid = rc.get("residual_gap") or rc.get("known_gap")
+                    findings.append(
+                        Finding(
+                            "S9", "FAIL" if strict else "WARN",
+                            f"route declares {declared_floor!r} but this transport "
+                            f"can only enforce {enforceable!r}, so a caller the "
+                            "declared policy would refuse is not refused here "
+                            f"[{gid}]",
+                            route,
+                        )
+                    )
+
             # The two entry paths to one operation must agree on the policy.
             equivalent = rc.get("equivalent_op")
             if equivalent:

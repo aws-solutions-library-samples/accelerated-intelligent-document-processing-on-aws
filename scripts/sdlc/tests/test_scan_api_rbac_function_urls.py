@@ -331,13 +331,16 @@ def test_fixture_baseline_is_clean(tmp_path):
 
 # --- S0: the policy vocabulary -----------------------------------------------
 #
-# S0 exists because every other check reads an unrecognised `groups:` string as
-# the most permissive branch it has: S2 compares a set of the string's characters
-# against the schema directive, and S3's `else` branch — written for `ANY` —
-# accepts a resolver with no enforcement at all. So a typo would read as "open".
-# These drive `run_checks` over a tree that CONTAINS the typo, for the reason
-# given above `_GOOD_APP`: asserting on a re-implemented predicate here would
-# stay green if the S0 block were deleted.
+# Without S0 THIS SCANNER reads an unrecognised `groups:` string as the most
+# permissive branch it has: S2 compares a set of the string's characters against
+# the schema directive, and S3's `else` branch — written for `ANY` — accepts a
+# resolver with no enforcement at all, so `groups: ANYGROUP` scans at 0 FAIL. The
+# generator's --check, which `make api-test-static` runs immediately afterwards,
+# does reject it (exit 2) for an `operations:` entry — so S0's own coverage is the
+# scanner being sound on its own plus the route policies, which the generator never
+# reads. These drive `run_checks` over a tree that CONTAINS the typo, for the reason
+# given above `_GOOD_APP`: asserting on a re-implemented predicate here would stay
+# green if the S0 block were deleted.
 
 
 def _with_operation(tmp_path: Path, entry: str) -> Path:
@@ -412,6 +415,83 @@ def test_s0_is_not_downgraded_by_a_known_gap(tmp_path):
         tmp_path, "    groups: EVERYONE\n    known_gap: GAP-99\n"
     )
     assert _fails(repo, "S0"), "a known_gap must not downgrade an S0 finding"
+
+
+# --- S9: declared policy vs what the transport can enforce -------------------
+#
+# `groups` is the route's policy and S9 requires it to equal the equivalent REST
+# operation's. `transport_enforces` records that this transport cannot apply it.
+# Without the key the only way to satisfy the equivalent_op comparison was to
+# weaken the declared policy, which made the true divergence vanish from the
+# report — so the point of these is that declaring the divergence PRODUCES a
+# finding rather than removing one.
+
+
+def _route(extra: str) -> str:
+    return (
+        "        groups: [Admin, Author, Viewer]\n"
+        "        enforced_in: src/lambda/proc/index.py\n"
+        "        equivalent_op: someOp\n" + extra
+    )
+
+
+def _with_route_and_op(tmp_path: Path, extra: str) -> Path:
+    """A fixture whose route has an `equivalent_op` declaring the same groups."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = _make_fixture(tmp_path, route_policy=_route(extra))
+    path = repo / "scripts" / "api_rbac_expectations.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "operations: {}\n",
+            "operations:\n"
+            "  someOp:\n"
+            "    groups: [Admin, Author, Viewer]\n"
+            "    kind: read\n"
+            "    enforced_in: src/lambda/proc/index.py\n",
+        )
+    )
+    return repo
+
+
+@pytest.mark.unit
+def test_s9_reports_a_transport_that_cannot_enforce_the_declared_policy(tmp_path):
+    repo = _with_route_and_op(
+        tmp_path, "        transport_enforces: ANY\n        residual_gap: GAP-99\n"
+    )
+    messages = [
+        f.message
+        for f in scanner.run_checks(strict=False, repo=repo)
+        if f.check == "S9"
+    ]
+    assert any("can only enforce 'ANY'" in m for m in messages), messages
+    # WARN normally so the gate stays green on a recorded limitation, FAIL under
+    # --strict so the scan can be used to verify it has been closed.
+    assert _levels(repo, "S9") == ["WARN"]
+    assert _levels(repo, "S9", strict=True) == ["FAIL"]
+
+
+@pytest.mark.unit
+def test_s9_requires_a_gap_id_for_an_unenforceable_declared_policy(tmp_path):
+    """Recording the divergence is not optional — otherwise it is just a comment."""
+    repo = _with_route_and_op(tmp_path, "        transport_enforces: ANY\n")
+    assert any("no residual_gap/known_gap" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_s9_rejects_a_transport_enforces_that_asserts_no_divergence(tmp_path):
+    """The key means "weaker than `groups`"; equal to it is noise that reads as rigour."""
+    repo = _with_route_and_op(
+        tmp_path,
+        "        transport_enforces: [Admin, Author, Viewer]\n"
+        "        residual_gap: GAP-99\n",
+    )
+    assert any("equals its groups" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_s9_is_silent_when_the_transport_can_enforce_the_policy(tmp_path):
+    repo = _with_route_and_op(tmp_path, "")
+    assert not [f for f in scanner.run_checks(strict=False, repo=repo) if f.check == "S9"]
 
 
 @pytest.mark.unit

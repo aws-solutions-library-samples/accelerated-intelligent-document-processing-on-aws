@@ -63,14 +63,34 @@ export function extractGraphQLErrorMessage(err: unknown): string {
 }
 
 /**
- * True when the API refused the call for lack of permission.
+ * True when the API refused the call because the CALLER lacks permission.
  *
  * The REST client throws the dispatcher's body verbatim and discards the HTTP
- * status, so `errorType: "Unauthorized"` is the only reliable signal — the same
- * marker the dispatcher sets for both its own group check and a resolver's
- * `PermissionError`. The message-substring arm is a fallback for the resolvers that
- * still raise a bare error whose text begins `Unauthorized`/`Forbidden`.
+ * status, so `errorType: "Unauthorized"` is the only reliable signal — the marker
+ * the dispatcher sets both for its own group check and for a resolver's
+ * `PermissionError`.
+ *
+ * Two things about the message arm, which is a fallback for resolvers that raise a
+ * bare error and rely on the dispatcher's message-prefix mapping.
+ *
+ * ⚠️ The `access denied` substring is **load-bearing** and must not be removed: the
+ * configuration and sync resolvers report an out-of-scope configuration version
+ * **in band**, as HTTP 200 with a body whose message begins "Access denied:", and
+ * that wording is the only thing identifying it.
+ *
+ * ⚠️ But the same substring also matches a **server-side** IAM failure.
+ * `get_file_contents_resolver` wraps any unexpected `ClientError` as
+ * `Error accessing S3: <message>`, and S3's message for a denial by the *Lambda's*
+ * role, the bucket policy or the KMS key is literally "Access Denied". That
+ * resolver has no `@api_resolver` wrapper, so it surfaces as HTTP 500 with
+ * `errorType: "InternalError"` and the message intact — and telling the user to
+ * ask an administrator for a role would be confidently wrong about a server defect
+ * no role can fix. So the message arm is skipped when the envelope names an error
+ * type that is not an authorization one: an explicit type is better evidence than
+ * a substring of prose.
  */
+const AUTH_ERROR_TYPES = new Set(['Unauthorized', 'Forbidden']);
+
 export function isAuthorizationError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const envelope = err as {
@@ -80,7 +100,13 @@ export function isAuthorizationError(err: unknown): boolean {
   };
   const candidates = [...(Array.isArray(envelope.errors) ? envelope.errors : []), envelope];
   return candidates.some((e) => {
-    if (e?.errorType === 'Unauthorized' || e?.errorType === 'Forbidden') return true;
+    // Only `Unauthorized` is emitted by the backend today; `Forbidden` is carried
+    // for the dispatcher's documented message-prefix contract, not because
+    // anything sets it.
+    if (e?.errorType && AUTH_ERROR_TYPES.has(e.errorType)) return true;
+    // A stated non-authorization type wins over the prose. `InternalError` is the
+    // case that matters (see above); any other explicit type is equally not ours.
+    if (e?.errorType) return false;
     const text = (e?.message ?? '').toLowerCase();
     return text.startsWith('unauthorized') || text.startsWith('forbidden') || text.includes('access denied');
   });

@@ -291,14 +291,23 @@ union is 118, which is exactly the number of entries in
 | Required groups | Ops |
 |---|---|
 | Admin + Author | 40 |
-| Any authenticated user | 26 |
 | Admin only | 21 |
 | Admin + Author + Viewer | 15 |
+| Any authenticated user, group or no group (`ANY`) | 15 |
+| Any assigned group, whichever one (`ANY_GROUP`) | 11 |
 | Admin + Annotator + Author | 7 |
 | Admin + Annotator + Reviewer | 4 |
 | Admin + Reviewer | 2 |
 | Admin + Annotator + Author + Viewer | 1 |
 | IAM/backend only (Cognito callers rejected) | 2 |
+
+`ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
+group added there joins those 11 without an edit per operation; what they refuse is a
+caller an administrator has not placed in any group, which domain-scoped self-signup
+produces. ⚠️ That is a check on the **API**. `CognitoIdentityPoolSetRole` attaches one
+`authenticated` role with no `RoleMappings`, and it grants `s3:GetObject` and
+`s3:ListBucket` on the document buckets to every authenticated user irrespective of
+group, so the object bytes are not behind this distribution (see UI.T06 and AUTH.T03).
 
 Beyond the group check, **13** operations verify config-version scope, **4** filter
 their result rows by it, and **8** verify per-object ownership.

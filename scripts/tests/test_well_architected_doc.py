@@ -646,7 +646,24 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
         "other {n} are not",
         f"{len(unnarrowed)} ANY operations carry no ownership or scope key at all.",
     )
-    # The read surface a customer most needs to see named.
+    # The same count again, in the wording the Security review checklist uses.
+    # `_assert_count_phrase` is strict, so EVERY occurrence of this phrase has to
+    # carry the same number — the checklist row and the pillar prose cannot
+    # disagree. They did: the row said 17 long after the pillar said 11, and no
+    # phrase template matched the row, so changing that 17 to any other number left
+    # the suite green.
+    _assert_count_phrase(
+        len(unnarrowed),
+        "{n} `groups: ANY` operations",
+        f"{len(unnarrowed)} ANY operations carry no ownership or scope key; the "
+        "Security review checklist has to state the same number as the pillar text.",
+    )
+    # The read surface a customer most needs to see named, IF it is still reachable
+    # by any authenticated caller. All four now require an assigned group, so every
+    # branch below is currently skipped — the loop is DORMANT, not a passing check,
+    # and asserting anything unconditionally here would be asserting the opposite of
+    # what the page now says. It is kept because widening any of the four back to
+    # `ANY` must re-impose the naming requirement rather than pass silently.
     for name in (
         "getDocument",
         "getFileContents",
@@ -658,6 +675,58 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
                 f"{name} is reachable by any authenticated user with no further check "
                 "and is not named on the page."
             )
+    # And the sentinel that makes them not-ANY has to be explained where a reader
+    # meets the counts, or "101 require group membership" is an unexplained jump.
+    if any_group:
+        _assert_phrase(
+            "ANY_GROUP",
+            f"{len(any_group)} operations are declared ANY_GROUP; the page states a "
+            "group-restricted count that includes them, so it must name the policy.",
+        )
+
+
+@pytest.mark.unit
+def test_review_checklists_state_no_number_of_their_own() -> None:
+    """A count in a review checklist must also appear in the pillar prose.
+
+    Every other guard here works by matching a phrase template, and the six
+    ``### Review checklist`` tables match none of them — so a count in a checklist
+    row was unverifiable by construction, and the Security one duly went stale by
+    six while the prose sixty lines above it was correct. Changing that row's number
+    to anything at all left the suite green.
+
+    Rather than write a template per row, which would rot the same way, this asserts
+    the structural property the checklists actually have: they summarise facts the
+    pillars state, so a number appearing **only** in a checklist is a number nothing
+    measured. Adding a genuinely checklist-only figure means stating it in the prose
+    too, which is where the other guards can see it.
+    """
+    text = _doc()
+    sections = re.findall(r"^### Review checklist$(.*?)(?=^#{2,3} |\Z)", text, re.S | re.M)
+    # Floor check: a heading rename would otherwise make this pass vacuously.
+    assert len(sections) >= 5, (
+        f"found {len(sections)} '### Review checklist' sections; the heading must "
+        "have been renamed, and this guard now checks nothing"
+    )
+
+    joined = "\n".join(sections)
+    prose = text
+    for section in sections:
+        prose = prose.replace(section, "")
+
+    # Bare integers only: skip anything inside a version, a decimal, a percentage or
+    # an identifier, none of which is a measured count.
+    number = r"(?<![\w.\-])(\d{1,4})(?![\w.%\-])"
+    stated = {int(m) for m in re.findall(number, joined)}
+    orphans = sorted(
+        n for n in stated if not re.search(rf"(?<![\w.\-]){n}(?![\w.%\-])", prose)
+    )
+    assert not orphans, (
+        f"the review checklists state {orphans} and nothing in the pillar text does.\n"
+        "A checklist is a summary of facts stated above it, so a number that appears "
+        "only there is unmeasured — and no other guard in this file can see it. "
+        "State it in the pillar prose (where a count phrase is checked) or drop it."
+    )
 
 
 @pytest.mark.unit

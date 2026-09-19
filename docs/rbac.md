@@ -326,6 +326,28 @@ may read any document a Viewer can see, and `getFileContents` bounds itself with
 bucket allowlist rather than a per-document scope. If your documents must be
 private to their submitter or to a tenant, group membership is the wrong axis.
 
+⚠️ **The group floor gates the API, not the S3 buckets, and the UI reads S3
+directly.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a **single**
+`authenticated` role with **no `RoleMappings`**, so group membership plays no part
+in which role a signed-in user assumes. That role, `CognitoAuthorizedRole`, grants
+`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input, Output and
+Configuration buckets plus `kms:Decrypt` on the customer-managed key — to **every**
+authenticated user, including one in no group. This is the production read path, not
+a theoretical one: `FileViewer` defaults to `presignVia = 'client'`, and the page
+thumbnails, the page-image viewer and the document export all sign S3 GETs in the
+browser with those credentials. And two operations that remain `ANY`,
+`listDocumentsDateHour` and `listDocumentsDateShard`, return raw tracking-index rows
+that carry `ObjectKey` — so a caller can enumerate keys through an `ANY` operation
+and fetch the bytes without calling the API at all.
+
+So the accurate statement of what `ANY_GROUP` buys is: **those eleven API
+operations** now refuse a caller in no group. The document bytes are not yet behind
+a group check, and putting them there means either group-scoped Identity Pool
+`RoleMappings` or narrowing that role and routing every read through a resolver —
+a change to the document-viewing data path. `UI.T06` in the threat model covers the
+key-scoping half of this; the part that needs no resolver at all, and that "any
+authenticated user" includes a user in **none**, is recorded here.
+
 ⚠️ **This layer gates the REST route only.** Chat streaming is served by a Lambda
 Function URL that reaches the chat processors directly, without the dispatcher, and
 that transport forwards no `cognito:groups` claim at all. So
@@ -564,9 +586,9 @@ Admins can create users with any of the four roles via the User Management page.
 To add a new role:
 1. Add a `AWS::Cognito::UserPoolGroup` in `template.yaml`
 2. Add the group name to relevant `@aws_cognito_user_pools(cognito_groups: [...])` directives in `schema.graphql` (do **not** use `@aws_auth` — see Layer 1 warning), and update the corresponding server-side group check in the resolver Lambda
-3. Add the group to the affected operations in `scripts/api_rbac_expectations.yaml` and regenerate the dispatcher manifest (`python3 scripts/sdlc/generate_api_rbac_manifest.py`) — otherwise Layer 0 denies the new role even where the resolver allows it
+3. Add the group to the affected operations in `scripts/api_rbac_expectations.yaml` and regenerate the dispatcher manifest (`python3 scripts/sdlc/generate_api_rbac_manifest.py`) — otherwise Layer 0 denies the new role even where the resolver allows it. The operations declared `ANY_GROUP` need **no** edit: the generator resolves that sentinel against the `AWS::Cognito::UserPoolGroup` resources, so the new group is granted them by step 1 alone
 4. Update the `VALID_PERSONAS` dict in `src/lambda/user_management/index.py`
-5. Add role detection in `src/ui/src/hooks/use-user-role.ts`
+5. **Add the group name to `APP_GROUPS`** in `src/ui/src/hooks/use-user-role.ts`, then add its role detection there. ⚠️ `APP_GROUPS` is not cosmetic: `hasNoRole` is computed from it and gates the **whole application**, so a group the server has just granted the `ANY_GROUP` operations (step 3) but that is missing here would be shown "your account has not been granted access yet" and reach nothing. `src/ui/src/hooks/__tests__/use-user-role.appGroups.test.ts` fails when the list and `template.yaml` disagree, so this cannot be missed silently
 6. Add navigation items in `src/ui/src/components/genaiidp-layout/navigation.tsx`
 7. Pass the new group as an environment variable to the UserManagement Lambda
 

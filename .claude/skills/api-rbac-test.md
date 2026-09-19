@@ -249,7 +249,7 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 > saying why that is the intended answer for it; they are enumeration, platform,
 > profile and feature-catalog reads.
 
-### The three policies — pick the weakest one that is still correct
+### The four policies — pick the weakest one that is still correct
 
 | Declare | Means | Use for |
 |---|---|---|
@@ -266,7 +266,17 @@ the "fix applied to the instance and not the class" defect this repo keeps hitti
 The `schema.graphql` directive *does* have to name them all, because GraphQL cannot
 express "any group"; check **S2** fails until it does, which is the intended way to
 be told a group was added. Check **S0** rejects an unrecognised sentinel outright,
-because S2 would otherwise compare a set of its *characters* and S3 would accept a
-resolver with no check at all — a typo would read as "open". `authz.py` never sees
-`ANY_GROUP`: it is expanded before the manifest is written, and an unexpanded one
-there means a broken build and is treated as one (deny-all).
+because the *scanner alone* would not notice one — S2 would compare a set of its
+*characters* and S3 would accept a resolver with no check at all. (`make
+api-test-static` would still fail, one command later, on the generator's `--check`;
+S0 is what makes the scanner sound on its own and what covers a Function-URL route
+policy, which the generator never reads.) `authz.py` never sees `ANY_GROUP`: it is
+expanded before the manifest is written, and an unexpanded one there means a broken
+build and is treated as one (deny-all).
+
+⚠️ **A group floor is not the whole control.** It gates the REST API. The Identity
+Pool attaches one `authenticated` role with no role mappings, so every signed-in
+user — group or no group — holds `s3:GetObject`/`ListBucket` on the document
+buckets, and the UI reads them directly by default. Do not describe an `ANY_GROUP`
+operation as making document content unreachable; it makes that *operation*
+unreachable. See the residuals in `docs/rbac.md` and AUTH.T03.

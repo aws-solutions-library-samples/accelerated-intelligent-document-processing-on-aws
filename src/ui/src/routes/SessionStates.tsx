@@ -68,23 +68,32 @@ export const SessionError = ({ onRetry }: { onRetry?: () => void }): React.JSX.E
  *
  * It is not a security control. The server already denied the request; this only
  * explains the denial once, in the words the user needs, instead of eleven times in
- * the words the dispatcher used.
+ * the words the dispatcher used. It is reached only after a SUCCESSFUL read of the
+ * session — a failed read renders `SessionError` above, because "I could not find
+ * out what your groups are" must not be reported as "you have none".
+ *
+ * The copy does not name the User Management page as the place the role comes from,
+ * because on a deployment that federates sign-in the Cognito pre-token trigger maps
+ * the external provider's groups into the app's and **overrides** the claim, so a
+ * group assigned by hand there is removed again at the next fresh sign-in. Naming
+ * "an administrator" covers both, and the second sentence says where to look.
  */
 export const NoRoleAssigned = ({ onSignOut }: { onSignOut?: () => void }): React.JSX.Element => (
   <Box padding="xxl">
     <Alert
       type="info"
+      statusIconAriaLabel="Info"
       header="Your account has not been granted access yet"
       action={
         <SpaceBetween direction="horizontal" size="xs">
-          <Button onClick={() => window.location.reload()}>Reload the page</Button>
           {onSignOut && <Button onClick={onSignOut}>Sign out</Button>}
+          <Button onClick={() => window.location.reload()}>Reload the page</Button>
         </SpaceBetween>
       }
     >
-      Your sign-in worked, but an administrator has not assigned your account a role yet, so there is nothing you can view. Ask an
-      administrator to assign you one — Admin, Author, Reviewer, Annotator or Viewer — from the User Management page. Reload this page once
-      they have.
+      Your sign-in worked, but your account has not been given a role yet, so there is nothing for you to view. Ask an administrator to
+      grant you one — Admin, Author, Reviewer, Annotator or Viewer. If your organization signs you in through its own identity provider, the
+      role comes from your group membership there rather than from this application. Reload this page once it has been granted.
     </Alert>
   </Box>
 );
