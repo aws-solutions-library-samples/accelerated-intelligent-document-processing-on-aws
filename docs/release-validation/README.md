@@ -17,7 +17,7 @@ This directory covers **validating** a release. For the procedure that **publish
 
 | Release | Verdict | Record |
 |---------|---------|--------|
-| **v0.6.9** | ✅ Ship — 11 of 12 tiers pass (UX review NOT RUN, no browser available); **7 findings, 5 in this release's own new code or the tooling it broke** — including a service role that could not deploy the solution at all, found and fixed here | [v0.6.9.md](./v0.6.9.md) |
+| **v0.6.9** | ✅ Ship — 11 of 12 tiers pass (UX review NOT RUN, no browser available); 2 findings in the solution, both fixed — including the optional deployment role being unable to create the solution's first nested stack, found and fixed here | [v0.6.9.md](./v0.6.9.md) |
 | **v0.6.8** | ✅ Ship — 18 of 18 tiers pass (typecheck baseline unchanged); 4 findings, none in shipped product code — one account quota, three test-tooling (two false-red gates, one unrepeatable test) | [v0.6.8.md](./v0.6.8.md) |
 | **v0.6.6** | ✅ Ship — 14 of 14 tiers pass; 3 findings, none in shipped product code | [v0.6.6.md](./v0.6.6.md) |
 
