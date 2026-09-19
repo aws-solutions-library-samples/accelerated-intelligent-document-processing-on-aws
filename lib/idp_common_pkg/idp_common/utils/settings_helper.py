@@ -8,6 +8,7 @@ dependencies on other nested stacks.
 
 import json
 import os
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -35,6 +36,13 @@ _CACHE_TTL_SECONDS = 300  # 5 minute cache
 # ``get_settings`` call and cached for the life of the process, exactly as before.
 _ssm_client: Optional[Any] = None
 
+# ``boto3.client()`` is not documented as thread-safe, and several callers of this
+# module fan work out across a ThreadPoolExecutor, so two threads can reach a cold
+# process together. The lock makes construction happen exactly once; the read
+# outside it is the usual double-checked pattern and is safe because the only
+# transition is None -> client.
+_ssm_client_lock = threading.Lock()
+
 
 def _get_ssm_client() -> Any:
     """Return the process-wide SSM client, constructing it on first use.
@@ -44,7 +52,9 @@ def _get_ssm_client() -> Any:
     """
     global _ssm_client
     if _ssm_client is None:
-        _ssm_client = boto3.client("ssm")
+        with _ssm_client_lock:
+            if _ssm_client is None:
+                _ssm_client = boto3.client("ssm")
     return _ssm_client
 
 
@@ -90,9 +100,12 @@ def get_settings(
 
     try:
         response = _get_ssm_client().get_parameter(Name=param_name)
-        _settings_cache = json.loads(response["Parameter"]["Value"])
+        # Bound to a local first so the return type is the declared dict rather
+        # than the module global's Optional.
+        settings: Dict[str, Any] = json.loads(response["Parameter"]["Value"])
+        _settings_cache = settings
         _cache_timestamp = current_time
-        return _settings_cache
+        return settings
     except ClientError as e:
         # If parameter doesn't exist yet (during initial deployment), return empty dict
         if e.response["Error"]["Code"] == "ParameterNotFound":

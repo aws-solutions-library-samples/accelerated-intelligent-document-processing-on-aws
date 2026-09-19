@@ -107,8 +107,9 @@ LAYER_ENTRY_POINTS = [
     "make security-results",
 ]
 
-# Targets the page cites that live in a package Makefile, not the root one.
-PACKAGE_TARGETS = {"test-unit", "test-cicd"}
+# Targets the page cites that live in a package Makefile, not the root one. They are
+# still checked to exist — in lib/idp_common_pkg/Makefile — rather than waved through.
+PACKAGE_TARGETS = {"test-unit", "test-cicd", "test-integration"}
 
 # The page section that discloses the suites `make test` does not run. Located by
 # heading so the table can be found without hardcoding a line number; renaming the

@@ -3,34 +3,49 @@
 
 """Assert the offline test suites do not depend on an ambient AWS environment.
 
-``make test-packages-cicd`` is the recipe both CIs use to run the package and
-per-Lambda suites, and every suite it runs is offline by contract: no AWS call, no
-credentials, no region. Nothing checked that contract, and the way it broke is
-invisible on the machine where the code is written. A Lambda handler builds its
-boto3 client at module scope — which is correct, because the runtime always sets
-``AWS_REGION`` and a warm invocation then reuses the client — and the suite that
-imports the handler inherits a region requirement. A developer machine satisfies it
-from the shared AWS config file without anyone noticing; a CI runner has no such
-file and no ``AWS_*`` variables, so botocore raises ``NoRegionError``. Three suites
-were in that state, and the workaround was to pin ``AWS_DEFAULT_REGION`` on their
-recipe lines, which fixed the symptom in the caller and left every future suite
-free to inherit the same trap (#988).
+``make test-packages-cicd`` and ``make test-cicd -C lib/idp_common_pkg`` are the two
+recipes both CIs use to run this repository's offline suites, and every suite they
+run is offline by contract: no AWS call, no credentials, no region. Nothing checked
+that contract, and both ways it broke are invisible on the machine where the code is
+written, because a developer machine has AWS sources a CI runner does not.
 
-The control that replaces those pins is in the Makefile: ``HERMETIC_AWS`` strips
-the AWS environment from every pytest invocation in the recipe, so the local run is
-the CI run and a suite that needs a region fails for everyone, immediately. This
-file is what keeps that control honest, and everything it asserts is DERIVED from
-the Makefile at test time rather than restated here:
+A Lambda handler builds its boto3 client at module scope — which is correct, because
+the runtime always sets ``AWS_REGION`` and a warm invocation then reuses the client —
+and the suite that imports the handler inherits the handler's requirements:
 
-* the wrapper is parsed out of the Makefile and its effect is **measured** — a
-  subprocess launched under it must be unable to resolve a region. A stripping
-  wrapper that has silently stopped stripping turns the whole gate into a no-op,
-  and that is precisely the "control that exists but is never consulted" failure
-  this repository keeps rediscovering;
-* every pytest invocation in the recipe is checked to go through the wrapper, so a
+* **a region.** A developer machine satisfies it from the shared AWS config file
+  without anyone noticing; a runner has no such file and no ``AWS_*`` variables, so
+  botocore raises ``NoRegionError`` during collection. Three suites were in that
+  state, and the workaround was to pin ``AWS_DEFAULT_REGION`` on their recipe lines,
+  which fixed the symptom in the caller and left every future suite free to inherit
+  the same trap (#988);
+* **credentials.** botocore freezes the session's credentials object into a client
+  when the client is constructed, so a client built at import time with none
+  resolvable can never sign, however many credentials appear later. A developer box
+  on EC2 resolves them from the instance metadata service; a runner cannot reach it.
+  Five tests in ``lib/idp_common_pkg`` failed on CI only, for exactly that reason.
+
+The control that replaces the pins is ``HERMETIC_AWS`` in ``make/hermetic_aws.mk``,
+included by both Makefiles so there is one definition rather than a copy per
+consumer. It strips the AWS environment from every pytest invocation in both
+recipes, so the local run is the CI run and a suite that needs a region or
+credentials fails for everyone, immediately. This file is what keeps that control
+honest, and everything it asserts is DERIVED from those makefiles at test time
+rather than restated here:
+
+* the wrapper is parsed out of ``make/hermetic_aws.mk`` and its effect is
+  **measured**: a subprocess launched under it must be unable to resolve either a
+  region or credentials. The probe environment is deliberately *polluted* first —
+  supplying both through every source, including a real shared config file — because
+  a probe built from the ambient environment measures nothing on a runner, where
+  there was never anything to strip. A stripping wrapper that has silently stopped
+  stripping turns the whole gate into a no-op, and that is precisely the "control
+  that exists but is never consulted" failure this repository keeps rediscovering;
+* every pytest invocation in both recipes is checked to go through the wrapper, so a
   line added later without it fails here rather than in six months on a runner;
-* every invocation the recipe names is then collected under that stripped
-  environment, which is what actually catches the defect class in a new suite.
+* every invocation ``test-packages-cicd`` names is then collected under that
+  stripped environment, which is what actually catches the defect class in a new
+  suite.
 
 Scope of the collection probe, stated plainly because it is not total. Collecting a
 suite executes its ``conftest.py`` and imports its test modules, so it catches a
@@ -50,6 +65,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -57,6 +73,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
 RECIPE_TARGET = "test-packages-cicd"
+# The wrapper lives in its own file because two Makefiles include it: this one's
+# recipe and lib/idp_common_pkg's unit targets, which CI invokes separately as
+# `make test-cicd -C lib/idp_common_pkg`. One definition, two consumers.
+WRAPPER_MAKEFILE = REPO_ROOT / "make" / "hermetic_aws.mk"
+LIBRARY_MAKEFILE = REPO_ROOT / "lib" / "idp_common_pkg" / "Makefile"
+# The idp_common_pkg targets that must run hermetically, and the one that must
+# not: test-integration needs the machine's real credentials and region.
+LIBRARY_HERMETIC_TARGETS = ("test-unit", "test-unit-cicd")
+LIBRARY_NON_HERMETIC_TARGET = "test-integration"
 WRAPPER_VAR = "HERMETIC_AWS"
 PYTEST_VAR = "PYTEST_HERMETIC"
 
@@ -73,6 +98,33 @@ OPTIONS_TAKING_A_VALUE = {"-m", "-k", "-p", "-o", "-n", "--deselect", "--ignore"
 # one. Nothing is called on the client — construction alone is where the region is
 # resolved.
 PROBE_SERVICE = "ssm"
+
+# Values the probes put INTO the environment before the wrapper runs, so that the
+# wrapper has something to take away. See _polluted_env.
+SENTINEL_REGION = "eu-west-3"
+SENTINEL_VALUE = "hermetic-probe-sentinel"
+_SHARED_CONFIG_DIR: str | None = None
+
+# The floor the wrapper must keep removing. This is deliberately a MINIMUM rather
+# than a copy of the definition: adding a variable to the wrapper needs no change
+# here, and removing one of these is the regression that put five tests on CI-only
+# failure and three suites on a pinned region (#988). The region and credential
+# names are also measured directly by the two probes below; the remaining three
+# cannot be measured safely (a regressed wrapper would try a network credential
+# fetch), so for them this floor is the whole check.
+REQUIRED_UNSET_FLOOR = {
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_ROLE_ARN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+}
+REQUIRED_ASSIGNED_FLOOR = {"AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"}
 
 pytestmark = pytest.mark.unit
 
@@ -94,74 +146,28 @@ def _logical_lines(text: str) -> list[str]:
 
 
 def _variable_definition(name: str) -> str:
-    """The right-hand side of a ``name := ...`` assignment in the Makefile."""
+    """The right-hand side of a ``name := ...`` assignment in the wrapper file."""
     pattern = re.compile(rf"^{re.escape(name)}\s*:?=\s*(.*)$")
-    for line in _logical_lines(MAKEFILE.read_text(encoding="utf-8")):
+    for line in _logical_lines(WRAPPER_MAKEFILE.read_text(encoding="utf-8")):
         match = pattern.match(line)
         if match:
             return match.group(1).strip()
     raise AssertionError(
-        f"the Makefile no longer defines {name}. It is the wrapper that strips the "
-        "AWS environment from the offline suites; if it was renamed, update this "
-        "test, and if it was removed, the suites are back to depending on whatever "
-        "region the machine happens to provide (#988)."
+        f"{WRAPPER_MAKEFILE.relative_to(REPO_ROOT)} no longer defines {name}. It is "
+        "the wrapper that strips the AWS environment from the offline suites; if it "
+        "was renamed, update this test, and if it was removed, the suites are back "
+        "to depending on whatever region and credentials the machine happens to "
+        "provide (#988)."
     )
 
 
-def _hermetic_spec() -> tuple[list[str], dict[str, str]]:
-    """Parse the wrapper into (variables it unsets, variables it assigns).
-
-    Deriving this from the Makefile rather than keeping a copy is the point: the
-    environment this test probes suites under is, by construction, the environment
-    the recipe runs them in.
-    """
-    tokens = shlex.split(_variable_definition(WRAPPER_VAR))
-    assert tokens and tokens[0] == "env", (
-        f"{WRAPPER_VAR} is expected to be an `env` invocation so that it can both "
-        f"unset and assign variables; got {tokens[:1]}"
-    )
-    unset: list[str] = []
-    assigned: dict[str, str] = {}
-    rest = tokens[1:]
-    index = 0
-    while index < len(rest):
-        token = rest[index]
-        if token == "-u":
-            index += 1
-            assert index < len(rest), f"trailing `-u` in {WRAPPER_VAR}"
-            unset.append(rest[index])
-        elif token.startswith("-u"):
-            unset.append(token[2:])
-        elif "=" in token:
-            key, _, value = token.partition("=")
-            assigned[key] = value
-        else:
-            raise AssertionError(
-                f"unrecognised token {token!r} in {WRAPPER_VAR}. This test builds "
-                "the probe environment from that definition, so it must stay a "
-                "plain list of `-u NAME` and `NAME=VALUE` items."
-            )
-        index += 1
-    return unset, assigned
-
-
-def _sanitized_env() -> dict[str, str]:
-    """This process's environment, put through the Makefile's wrapper."""
-    unset, assigned = _hermetic_spec()
-    env = dict(os.environ)
-    for name in unset:
-        env.pop(name, None)
-    env.update(assigned)
-    return env
-
-
-def _recipe_body() -> list[str]:
-    """The tab-indented lines of the test-packages-cicd recipe, continuations joined."""
-    lines = MAKEFILE.read_text(encoding="utf-8").splitlines()
-    starts = [i for i, ln in enumerate(lines) if ln.startswith(RECIPE_TARGET + ":")]
+def _recipe_lines(makefile: Path, target: str) -> list[str]:
+    """The tab-indented lines of one target's recipe, continuations joined."""
+    lines = makefile.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln.startswith(target + ":")]
     assert len(starts) == 1, (
-        f"expected exactly one '{RECIPE_TARGET}:' rule in the Makefile, "
-        f"found {len(starts)}"
+        f"expected exactly one '{target}:' rule in "
+        f"{makefile.relative_to(REPO_ROOT)}, found {len(starts)}"
     )
     body: list[str] = []
     for ln in lines[starts[0] + 1 :]:
@@ -171,11 +177,124 @@ def _recipe_body() -> list[str]:
             continue
         else:
             break
-    assert body, f"parsed an empty recipe body for {RECIPE_TARGET}"
+    assert body, (
+        f"parsed an empty recipe body for {target} in "
+        f"{makefile.relative_to(REPO_ROOT)}"
+    )
     return [ln for ln in _logical_lines("\n".join(body)) if ln.strip()]
 
 
-def _command_lines() -> list[str]:
+def _hermetic_spec() -> tuple[list[str], dict[str, str]]:
+    """Parse the wrapper into (variables it unsets, variables it assigns).
+
+    Deriving this from the Makefile rather than keeping a copy is the point: the
+    environment this test probes suites under is, by construction, the environment
+    the recipe runs them in.
+    """
+    # The loop variable below is a shell word, deliberately not named ``token``:
+    # bandit's B105 reads any ``token == "..."`` comparison as a hardcoded
+    # credential check and reports it HIGH, which gates the SRT job. Nothing here
+    # is a secret — the wrapper contains only variable names — so the name is the
+    # thing to change rather than the finding the thing to suppress. ``word`` is
+    # also the more accurate name next to ``AWS_SESSION_TOKEN``, which IS a
+    # credential and appears a few lines away in the Makefile this parses.
+    words = shlex.split(_variable_definition(WRAPPER_VAR))
+    assert words and words[0] == "env", (
+        f"{WRAPPER_VAR} is expected to be an `env` invocation so that it can both "
+        f"unset and assign variables; got {words[:1]}"
+    )
+    unset: list[str] = []
+    assigned: dict[str, str] = {}
+    rest = words[1:]
+    index = 0
+    while index < len(rest):
+        word = rest[index]
+        if word == "-u":
+            index += 1
+            assert index < len(rest), f"trailing `-u` in {WRAPPER_VAR}"
+            unset.append(rest[index])
+        elif word.startswith("-u"):
+            unset.append(word[2:])
+        elif "=" in word:
+            key, _, value = word.partition("=")
+            assigned[key] = value
+        else:
+            raise AssertionError(
+                f"unrecognised token {word!r} in {WRAPPER_VAR}. This test builds "
+                "the probe environment from that definition, so it must stay a "
+                "plain list of `-u NAME` and `NAME=VALUE` items."
+            )
+        index += 1
+    return unset, assigned
+
+
+def _shared_config_supplying_a_region() -> str:
+    """Path to a throwaway AWS config file that names a region and credentials.
+
+    The wrapper neutralises the shared config file by assignment rather than by
+    unsetting, and that half of it can only be measured if the base environment
+    actually points at a file with something in it.
+    """
+    global _SHARED_CONFIG_DIR
+    if _SHARED_CONFIG_DIR is None:
+        _SHARED_CONFIG_DIR = tempfile.mkdtemp(prefix="hermetic-probe-")
+        path = Path(_SHARED_CONFIG_DIR) / "config"
+        path.write_text(
+            "[default]\n"
+            f"region = {SENTINEL_REGION}\n"
+            f"aws_access_key_id = {SENTINEL_VALUE}\n"
+            f"aws_secret_access_key = {SENTINEL_VALUE}\n",
+            encoding="utf-8",
+        )
+    return str(Path(_SHARED_CONFIG_DIR) / "config")
+
+
+def _polluted_env() -> dict[str, str]:
+    """An environment with every AWS source the wrapper claims to remove PRESENT.
+
+    This is what makes the probes below a measurement rather than a coincidence. A
+    CI runner sets no ``AWS_*`` variable and has no shared config file, so a wrapper
+    that quietly stopped unsetting ``AWS_REGION`` would still leave no region behind
+    and a probe built from the ambient environment would still pass. Confirmed by
+    mutation: dropping ``-u AWS_REGION`` from the wrapper is undetectable unless the
+    probe supplies a region for it to remove.
+
+    Only the region and credential sources are populated. The role, web-identity
+    and container-credential variables are left alone on purpose: pointing them at
+    a sentinel would make a regressed wrapper attempt a network credential fetch
+    and hang rather than fail. Those names are held to a floor instead, by
+    ``test_wrapper_still_removes_the_sources_that_matter``.
+    """
+    env = dict(os.environ)
+    env["AWS_REGION"] = SENTINEL_REGION
+    env["AWS_DEFAULT_REGION"] = SENTINEL_REGION
+    env["AWS_ACCESS_KEY_ID"] = SENTINEL_VALUE
+    env["AWS_SECRET_ACCESS_KEY"] = SENTINEL_VALUE
+    env["AWS_SESSION_TOKEN"] = SENTINEL_VALUE
+    env.pop("AWS_PROFILE", None)
+    config = _shared_config_supplying_a_region()
+    env["AWS_CONFIG_FILE"] = config
+    env["AWS_SHARED_CREDENTIALS_FILE"] = config
+    env.pop("AWS_EC2_METADATA_DISABLED", None)
+    return env
+
+
+def _sanitized_env() -> dict[str, str]:
+    """The polluted environment above, put through the Makefile's wrapper."""
+    unset, assigned = _hermetic_spec()
+    env = _polluted_env()
+    for name in unset:
+        env.pop(name, None)
+    env.update(assigned)
+    return env
+
+
+def _recipe_body() -> list[str]:
+    """The tab-indented lines of the test-packages-cicd recipe, continuations joined."""
+    return _recipe_lines(MAKEFILE, RECIPE_TARGET)
+
+
+def _runnable(lines: list[str]) -> list[str]:
     """Recipe lines that run something, with progress echoes and comments dropped.
 
     A path named in an ``@echo`` message or an ``@#`` comment must not be able to
@@ -183,9 +302,13 @@ def _command_lines() -> list[str]:
     """
     return [
         ln
-        for ln in _recipe_body()
+        for ln in lines
         if not ln.lstrip("@").startswith("#") and not ln.startswith("@echo")
     ]
+
+
+def _command_lines() -> list[str]:
+    return _runnable(_recipe_body())
 
 
 def _pytest_invocations() -> list[tuple[str, list[str]]]:
@@ -213,14 +336,14 @@ def _target_paths(args: list[str]) -> list[str]:
     """The test paths in a pytest argument list, with option values excluded."""
     paths: list[str] = []
     skip_next = False
-    for token in args:
+    for arg in args:
         if skip_next:
             skip_next = False
             continue
-        if token.startswith("-"):
-            skip_next = token in OPTIONS_TAKING_A_VALUE
+        if arg.startswith("-"):
+            skip_next = arg in OPTIONS_TAKING_A_VALUE
             continue
-        paths.append(token)
+        paths.append(arg)
     return paths
 
 
@@ -252,15 +375,40 @@ def test_wrapper_definition_is_parseable_and_not_empty():
     )
 
 
+def test_wrapper_still_removes_the_sources_that_matter():
+    """A floor on the variable list, for the three the probes cannot measure.
+
+    ``AWS_ROLE_ARN``, ``AWS_WEB_IDENTITY_TOKEN_FILE`` and the two container
+    credential URIs cannot be probed safely — a wrapper that stopped removing them
+    would send the probe off to fetch credentials over the network — so removing
+    one of them would otherwise be silent.
+    """
+    unset, assigned = _hermetic_spec()
+    missing_unset = REQUIRED_UNSET_FLOOR - set(unset)
+    assert not missing_unset, (
+        f"{WRAPPER_VAR} no longer unsets {sorted(missing_unset)}. Each of these is "
+        "a source botocore will use to resolve a region or credentials, so a suite "
+        "in a gated recipe would again inherit whatever the machine provides (#988)."
+    )
+    missing_assigned = REQUIRED_ASSIGNED_FLOOR - set(assigned)
+    assert not missing_assigned, (
+        f"{WRAPPER_VAR} no longer neutralises {sorted(missing_assigned)}. Unsetting "
+        "cannot reach the shared AWS config file; only pointing these at an empty "
+        "path can, and that file is the source that makes a developer machine "
+        "disagree with a CI runner."
+    )
+
+
 def test_wrapper_really_leaves_no_resolvable_region():
     """Measure the wrapper rather than trusting its variable list.
 
     This is the check that keeps the gate from becoming decorative. If someone
     drops ``AWS_CONFIG_FILE`` from the wrapper, or a future botocore grows another
     region source, the collection probe below would keep passing while no longer
-    proving anything — on a developer machine, which is where it would be noticed.
-    So the probe environment is verified empirically: a client built under it must
-    fail to resolve a region.
+    proving anything. The probe environment is therefore built by ``_polluted_env``,
+    which supplies a region through all three sources — the two variables and a real
+    shared config file — before the wrapper runs, and then requires that no region
+    survives.
     """
     probe = (
         "import boto3\n"
@@ -287,6 +435,47 @@ def test_wrapper_really_leaves_no_resolvable_region():
         "removing every source botocore consults. Until that is fixed, the "
         "collection probe in this file proves nothing and the offline suites can "
         "again depend on the machine they run on. See #988."
+    )
+
+
+def test_wrapper_really_leaves_no_resolvable_credentials():
+    """The second half, and the one a region probe cannot see.
+
+    botocore freezes the session's credentials object into a client when the client
+    is constructed, so a client a suite builds at import time is stuck with whatever
+    was resolvable at that instant — for the life of the process, however many
+    credentials appear afterwards. A suite that quietly took its credentials from a
+    developer box's instance metadata service therefore passed locally and could not
+    sign anything on a runner, which is how five tests in ``lib/idp_common_pkg``
+    failed on CI only. This probe supplies credentials through the variables AND the
+    shared credentials file and requires that none survive the wrapper. A region IS
+    supplied, so a ``NoRegionError`` cannot masquerade as success here.
+    """
+    probe = (
+        "import boto3\n"
+        "creds = boto3.Session(region_name='us-east-1').get_credentials()\n"
+        "print('NONE' if creds is None else 'RESOLVED '"
+        " + (creds.access_key or '<empty>'))\n"
+    )
+    env = _sanitized_env()
+    env["AWS_DEFAULT_REGION"] = "us-east-1"
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"the credentials probe itself failed to run: {result.stderr[-2000:]}"
+    )
+    assert result.stdout.strip() == "NONE", (
+        f"under $({WRAPPER_VAR}) botocore still resolved credentials "
+        f"(probe said {result.stdout.strip()!r}), so the wrapper is no longer "
+        "removing every credential source. A suite in a gated recipe can then sign "
+        "real requests against whichever account the developer is signed in to, and "
+        "a suite that depends on ambient credentials passes here and fails on a "
+        "runner. See #988."
     )
 
 
@@ -348,6 +537,81 @@ def test_every_pytest_invocation_goes_through_the_wrapper():
         "which is what a CI runner gives the suite. Without it the suite is tested "
         "under an environment no runner has, and a module-scope boto3 client can "
         "reach CI undetected (#988)."
+    )
+
+
+def test_both_makefiles_include_the_one_wrapper_definition():
+    """Two consumers, one definition — or the second one drifts silently.
+
+    ``make test-cicd -C lib/idp_common_pkg`` is a separate make invocation from the
+    root Makefile, so it cannot see a variable defined there. Copying the wrapper
+    into it would give the repository two versions of "what a CI runner supplies",
+    and the copy that stopped being updated would be the one gating a suite.
+    """
+    assert WRAPPER_MAKEFILE.exists(), (
+        f"{WRAPPER_MAKEFILE.relative_to(REPO_ROOT)} is gone. It holds the single "
+        f"definition of {WRAPPER_VAR}, included by both the root Makefile and "
+        "lib/idp_common_pkg/Makefile."
+    )
+    for makefile in (MAKEFILE, LIBRARY_MAKEFILE):
+        text = makefile.read_text(encoding="utf-8")
+        assert "make/hermetic_aws.mk" in text, (
+            f"{makefile.relative_to(REPO_ROOT)} no longer includes "
+            f"make/hermetic_aws.mk, so its {PYTEST_VAR} is either undefined — "
+            "which silently runs pytest with no arguments at all — or a private "
+            "copy that can drift from the shared one."
+        )
+        assert f"{WRAPPER_VAR} :=" not in text and f"{WRAPPER_VAR}:=" not in text, (
+            f"{makefile.relative_to(REPO_ROOT)} defines {WRAPPER_VAR} itself "
+            "instead of including the shared definition."
+        )
+
+
+@pytest.mark.parametrize("target", LIBRARY_HERMETIC_TARGETS)
+def test_library_unit_targets_run_hermetically(target: str):
+    """The idp_common_pkg unit suite is gated by its own make target, not by
+    test-packages-cicd, so it needs the wrapper applied there too.
+
+    It was not, and the consequence was the mirror image of #988's region case: the
+    suite resolved AWS *credentials* from the EC2 instance metadata service on a
+    developer box and from nothing at all on a runner. botocore freezes the
+    session's credentials into a client at construction, so a client a test module
+    built at import time was frozen unusable on CI only — five tests failed there
+    and passed everywhere else.
+    """
+    lines = _runnable(_recipe_lines(LIBRARY_MAKEFILE, target))
+    # A wrapped line says `$(PYTEST_HERMETIC)` and never the word "pytest", so both
+    # spellings count as "runs pytest" — otherwise a correctly wrapped recipe would
+    # look like a recipe that runs no tests at all.
+    pytest_lines = [ln for ln in lines if "pytest" in ln or f"$({PYTEST_VAR})" in ln]
+    assert pytest_lines, (
+        f"{target} in {LIBRARY_MAKEFILE.relative_to(REPO_ROOT)} runs no pytest "
+        "command, so this check has nothing to assert against"
+    )
+    unwrapped = [ln for ln in pytest_lines if f"$({PYTEST_VAR})" not in ln]
+    assert not unwrapped, (
+        f"these {target} lines run pytest without $({PYTEST_VAR}):\n  "
+        + "\n  ".join(unwrapped)
+        + f"\n\nUse $({PYTEST_VAR}) instead of $(PYTHON) -m pytest, so the suite "
+        "runs with the ambient AWS region, credentials and profile removed — the "
+        "environment a CI runner actually has (#988)."
+    )
+
+
+def test_library_integration_target_keeps_the_real_aws_environment():
+    """The inverse assertion, so the wrapper is not applied where it would break.
+
+    ``test-integration`` calls real AWS. Stripping its credentials would turn a
+    working integration run into an authentication error, so the next person
+    tempted to apply the wrapper uniformly finds out here.
+    """
+    lines = _runnable(_recipe_lines(LIBRARY_MAKEFILE, LIBRARY_NON_HERMETIC_TARGET))
+    wrapped = [ln for ln in lines if f"$({PYTEST_VAR})" in ln]
+    assert not wrapped, (
+        f"{LIBRARY_NON_HERMETIC_TARGET} runs through $({PYTEST_VAR}):\n  "
+        + "\n  ".join(wrapped)
+        + "\n\nIntegration tests need the machine's real credentials and region; "
+        "the wrapper removes both."
     )
 
 

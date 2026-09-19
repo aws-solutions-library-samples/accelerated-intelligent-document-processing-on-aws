@@ -21,41 +21,11 @@ else
   PIP := $(CURDIR)/$(VENV_DIR)/bin/pip
 endif
 
-# Neutralise every source botocore consults for a region, credentials or a
-# profile, so the offline suites run the way a CI runner runs them.
-#
-# The suites under test-packages-cicd are offline by contract: no AWS call, no
-# credentials. Nothing enforced that, and a suite that happened to need a region
-# — because the handler it imports builds a boto3 client at module scope — passed
-# on a developer machine and failed in CI, because the developer machine supplies
-# a region from the shared AWS config file and the runner supplies nothing. Three
-# suites were in that state (#988). They were fixed in the suites themselves, by
-# pinning a region in their own conftest.py; this wrapper is what keeps the next
-# one from reaching CI undetected, by making the local run equal the CI run
-# instead of being weaker than it.
-#
-# Two kinds of neutralisation are needed, because botocore has two sources. The
-# `-u` list removes the environment variables. Pointing AWS_CONFIG_FILE and
-# AWS_SHARED_CREDENTIALS_FILE at an empty file removes the shared config file,
-# which no amount of unsetting can reach and which is the source that makes a
-# developer machine disagree with CI. Disabling the instance metadata service
-# stops a credential lookup from stalling when these run on EC2.
-#
-# Removing the credentials as well as the region is deliberate: a suite here that
-# reaches a real AWS endpoint should fail loudly rather than quietly transact
-# against whichever account the developer happens to be signed in to.
-#
-# scripts/tests/test_offline_suites_are_hermetic.py parses this definition out of
-# the Makefile and asserts both that it still works and that every pytest
-# invocation in the recipe still goes through it.
-HERMETIC_AWS := env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_PROFILE \
-	-u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
-	-u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE \
-	-u AWS_CONTAINER_CREDENTIALS_FULL_URI \
-	-u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
-	AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
-	AWS_EC2_METADATA_DISABLED=true
-PYTEST_HERMETIC := $(HERMETIC_AWS) $(PYTHON) -m pytest
+# HERMETIC_AWS / PYTEST_HERMETIC — the AWS environment a CI runner has, stripped
+# of everything a developer machine adds. Defined once and shared with
+# lib/idp_common_pkg/Makefile, which includes the same file; see the comment there
+# for why each source has to be neutralised and which failures it prevents.
+include make/hermetic_aws.mk
 
 # idp-cli invocation — uses `python -m idp_cli.cli` so it works whether or not
 # the virtualenv is activated (picks up $(PYTHON) which prefers .venv).

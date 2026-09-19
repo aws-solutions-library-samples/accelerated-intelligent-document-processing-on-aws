@@ -1,6 +1,14 @@
 # Accept PYTHON from parent Makefile, or auto-detect
 PYTHON ?= $(shell command -v python3 2>/dev/null || pyenv which python 2>/dev/null || echo python)
 
+# HERMETIC_AWS / PYTEST_HERMETIC, shared with the repository-root Makefile so
+# there is one definition of "the AWS environment a CI runner has". Resolved
+# relative to THIS file rather than the working directory, so it works under
+# `make -C lib/idp_common_pkg` (which is how CI invokes this) and from anywhere
+# else. The unit targets below go through it; test-integration deliberately does
+# not, because it needs the machine's real credentials and region.
+include $(dir $(lastword $(MAKEFILE_LIST)))../../make/hermetic_aws.mk
+
 .PHONY: test test-cicd clean
 
 test: test-unit
@@ -10,7 +18,7 @@ test: test-unit
 # `unit`-only filter silently skipped ~800+ of them. `not integration` matches
 # pytest.ini's default and the rest of the repo's suites.
 test-unit:
-	$(PYTHON) -m pytest -m "not integration" --ignore=idp_common/agents/testing
+	$(PYTEST_HERMETIC) -m "not integration" --ignore=idp_common/agents/testing
 
 test-integration:
 	$(PYTHON) -m pytest -m "integration" --ignore=idp_common/agents/testing
@@ -25,7 +33,7 @@ test-cicd: test-unit-cicd
 # PYTEST_ARGS lets CI pass `-n auto` (pytest-xdist) to parallelize across cores.
 test-unit-cicd:
 	@if [ -z "$(SKIP_INSTALL)" ]; then pip install -e ".[test]"; else echo "SKIP_INSTALL set — using pre-installed deps"; fi
-	$(PYTHON) -m pytest -m "not integration" --ignore=idp_common/agents/testing $(PYTEST_ARGS) --cov=idp_common --cov-report=xml:test-reports/coverage.xml --cov-report=term --junitxml=test-reports/test-results.xml tests/
+	$(PYTEST_HERMETIC) -m "not integration" --ignore=idp_common/agents/testing $(PYTEST_ARGS) --cov=idp_common --cov-report=xml:test-reports/coverage.xml --cov-report=term --junitxml=test-reports/test-results.xml tests/
 
 clean:
 	rm -rf .pytest_cache
