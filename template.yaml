@@ -7953,6 +7953,14 @@ Resources:
   # the same topic is the cheaper answer, and only applies at all when the
   # circuit breaker is enabled (it defaults to off).
   #
+  # One more cause with the same signature, and the correlation above does NOT
+  # separate it: a sustained failure to READ the breaker's state also refuses
+  # admission without deleting messages (queue_processor/index.py
+  # check_circuit_breaker, ERROR_TRANSIENT), and it emits no Bedrock error
+  # metrics, so BedrockServiceOutageAlarm stays CLEAR and the runbook above reads
+  # it as a wedge. The CircuitBreakerCheckFailed metric is what distinguishes it,
+  # and the AlarmDescription names it.
+  #
   # FILL(m2, 0) is load-bearing, not defensive. SQS publishes
   # NumberOfMessagesDeleted only when deletions occur, so the totally stalled
   # case — the one this alarm exists for — produces NO datapoint. Without FILL
@@ -7963,7 +7971,7 @@ Resources:
   DocumentQueueStalledAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when the oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — i.e. the queue is not draining at all, rather than merely deep. Check the Workflow Concurrency Counter widget on the dashboard (a counter pinned at MaxConcurrentWorkflows with no running executions is a leaked slot; ConcurrencyCounterDriftAlarm covers that case), whether the QueueProcessor event-source mapping is enabled, and QueueProcessor errors and throttles. If BedrockServiceOutageAlarm is also active this is a circuit-breaker pause, not a wedge: the paused processor holds messages without deleting them, so this alarm fires too and clears on its own when the breaker closes. If executions ARE running and simply take longer than 30 minutes each, this is a capacity shortfall rather than a wedge: raise MaxConcurrentWorkflows, or raise QueueStalledAgeThresholdSeconds to accept it."
+      AlarmDescription: !Sub "Alert when the oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — i.e. the queue is not draining at all, rather than merely deep. Check the Workflow Concurrency Counter widget on the dashboard (a counter pinned at MaxConcurrentWorkflows with no running executions is a leaked slot; ConcurrencyCounterDriftAlarm covers that case), whether the QueueProcessor event-source mapping is enabled, and QueueProcessor errors and throttles. If BedrockServiceOutageAlarm is also active this is a circuit-breaker pause, not a wedge: the paused processor holds messages without deleting them, so this alarm fires too and clears on its own when the breaker closes. With CircuitBreakerEnabled=true, check the CircuitBreakerCheckFailed metric (dimension Classification=TRANSIENT) even when BedrockServiceOutageAlarm is CLEAR: a sustained failure to READ the breaker's state also holds messages without deleting them, and it produces no Bedrock error metrics at all, so it looks like a wedge. Its cause is the ConcurrencyTable, not the processor. If executions ARE running and simply take longer than 30 minutes each, this is a capacity shortfall rather than a wedge: raise MaxConcurrentWorkflows, or raise QueueStalledAgeThresholdSeconds to accept it."
       Metrics:
         - Id: e1
           Label: QueueStalled

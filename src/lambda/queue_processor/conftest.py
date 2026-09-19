@@ -34,13 +34,22 @@ from pathlib import Path
 #: Dotted name -> path, relative to the checkout root, of every ``idp_common``
 #: module the handler imports that must be the REAL implementation here.
 #:
-#: ``transient_errors`` is loaded for the same reasons as the sanitizer, and one
-#: more: ``check_circuit_breaker``'s decision on a failed DynamoDB read IS this
-#: classifier's verdict, so a ``MagicMock`` in its place would make the tests
-#: that assert the transient/terminal split pass whichever way the real
-#: classifier judges the error. It pulls in ``bedrock_utils`` for the retryable
-#: vocabulary, which is why that module is listed FIRST — loading it registers
-#: the dotted name, and ``transient_errors``'s own
+#: ``transient_errors`` is here because ``check_circuit_breaker``'s decision on a
+#: failed DynamoDB read IS this classifier's verdict, so the tests that assert the
+#: transient/terminal split have to exercise the real one. Registration is what
+#: makes the import work at all: the suite replaces ``idp_common`` with a
+#: ``MagicMock``, a mock parent is not a package, and
+#: ``from idp_common.utils.transient_errors import ...`` therefore fails with
+#: ``'idp_common' is not a package`` unless the leaf is already in
+#: ``sys.modules`` under its dotted name. Substituting a mock leaf does not make
+#: these tests pass quietly either — a ``MagicMock`` call returns a truthy value,
+#: so every error would read transient and the terminal cases would fail loudly.
+#: Neither failure mode is subtle; the real module is loaded because the verdict
+#: under test is the real module's.
+#:
+#: ``transient_errors`` pulls in ``bedrock_utils`` for the retryable vocabulary,
+#: which is why that module is listed FIRST — loading it registers the dotted
+#: name, and ``transient_errors``'s own
 #: ``from idp_common.utils.bedrock_utils import ...`` then resolves out of
 #: ``sys.modules`` without the stubbed ``idp_common`` parent being consulted.
 #: Both are stdlib + botocore only, so loading them costs nothing.

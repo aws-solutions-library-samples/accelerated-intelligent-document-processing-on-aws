@@ -833,6 +833,29 @@ def check_circuit_breaker() -> tuple[bool, str]:
     to be gone on the next delivery, and a 300 s push would add five minutes of
     latency to every document in flight for a fault that lasted milliseconds.
 
+    **That 8 hours is not fresh headroom.** The 500 deliveries are the SAME
+    budget a message spends waiting at the concurrency gate (see
+    ``DocumentQueue``'s ``RedrivePolicy``), so a refusal here consumes a
+    delivery that a saturated stack may also need. And because this path leaves
+    visibility at 60 s while the ``OPEN`` path pushes it to
+    ``RECOVERY_TIMEOUT_SECONDS`` (300 s by default, ~41 h of budget), transient
+    refusals spend it about five times faster than an outage pause does. Both
+    are still comfortably clear of a real DynamoDB blip; a fault lasting hours,
+    under a queue already deep from a saturated gate, is where the two add up.
+
+    **The classifier is conservative in the admitting direction**, and that is
+    worth knowing when reading an incident. Several genuinely transient
+    transport failures are judged terminal — ``botocore.exceptions.SSLError``, a
+    bare botocore ``ConnectionError``, an opaque ``HTTPClientError``, and the
+    ``Throttling`` / ``ThrottledException`` / ``RequestThrottled`` /
+    ``InternalFailure`` code spellings (DynamoDB itself returns
+    ``ThrottlingException`` and ``ProvisionedThroughputExceededException``, which
+    ARE recognised) — so they take the admitting branch. Widening the shared
+    vocabulary in ``idp_common.utils.transient_errors`` to cover them would
+    change retry behaviour for every task handler that consults it, which is not
+    this function's call to make. The bound below is what makes it tolerable:
+    unless the fault is single-shot, ``update_counter`` fails the message anyway.
+
     A *terminal* failure — ``AccessDeniedException``, ``ResourceNotFoundException``,
     a malformed request — **allows admission**, loudly. It cannot be retried
     away, so refusing would refuse every message on every poll for as long as

@@ -40,12 +40,34 @@ the two halves have opposite best answers:
 | Read failure | Admission | Why |
 |---|---|---|
 | **Transient** — throttling, read timeout, dropped connection, DynamoDB 5xx | **Blocked**, as if the breaker were OPEN | Refusing costs almost nothing: the message returns to `DocumentQueue` and has `maxReceiveCount` 500 against a 60 s visibility timeout, roughly 8 hours of retries, before anything reaches the dead-letter queue. Admitting would mean a DynamoDB blip coinciding with a Bedrock outage switches the breaker off. |
-| **Terminal** — access denied, table missing, malformed request | **Allowed**, with an `ERROR` log and a metric | A retry cannot fix it, so blocking would block every message on every poll until someone intervened, draining the entire backlog into the dead-letter queue while the pipeline is otherwise healthy. The breaker bounds spend and throttling during a Bedrock outage, so losing that protection is the smaller harm. |
+| **Terminal** — access denied, table missing, malformed request | **Allowed**, with an `ERROR` log and a metric | A retry cannot fix it, so blocking would block every message on every poll until someone intervened, and that is the wrong trade for a control that bounds spend rather than correctness. |
 
 An error the classifier does not recognise is treated as terminal. Either outcome
 emits `CircuitBreakerCheckFailed` (see [Observability](#observability)); alarm on
 the `TERMINAL` dimension if you rely on the breaker, because that is the state in
 which it is protecting nothing.
+
+**What "allowed" does and does not mean on the terminal branch.** For the two
+faults named above — access denied, and a missing table — documents do *not* get
+through. The Queue Processor increments the same ConcurrencyTable counter a few
+lines later, that write fails for the same reason, and the message is returned to
+the queue there instead; if the fault persists, the backlog reaches the
+dead-letter queue either way and needs a redrive. So the terminal branch is not a
+promise that work keeps flowing. What it buys is the narrower case: a fault
+specific to *reading* the breaker record — a permissions boundary or a
+scoped-down policy that allows `UpdateItem` but not `GetItem` — where the
+pipeline is genuinely healthy and only the breaker is broken. Blocking in that
+case would stall a working stack to protect nothing.
+
+Two consequences for reading an incident. The ~8-hour retry budget is the **same**
+500 deliveries a message spends waiting at the concurrency gate, and this path
+leaves visibility at 60 s rather than pushing it to
+`CircuitBreakerRecoveryTimeoutSeconds` the way an OPEN pause does, so it consumes
+that budget roughly five times faster. And the classifier errs toward admitting:
+some real transport failures (TLS errors, an opaque HTTP client error, and
+throttling codes spelled differently from DynamoDB's own) are judged terminal, so
+they take the allowing branch and are then caught by the counter write described
+above.
 
 Neither applies unless you set `CircuitBreakerEnabled=true`. On the default the
 Queue Processor never reads the record at all.
