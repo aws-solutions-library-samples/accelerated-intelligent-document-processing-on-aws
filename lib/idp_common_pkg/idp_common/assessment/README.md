@@ -533,28 +533,52 @@ reachable only when a later rung went on to score every row anyway. As defense i
 via the per-shard S3 persistence and the Assessment step's "skip if
 `explainability_info` already present" short-circuit.
 
-### What to alarm on when the pass fails outright
+### What to alarm on when a section ends up with no confidence at all
 
-The rungs above degrade *within* a successful pass. When the pass fails
-**deterministically** — the confidence model rejecting the input outright, most
-often `ValidationException: Input is too long for requested model.` — the
-Assessment Lambda does not fail the document either: it keeps the extraction and
-records an error-severity `assessment_failed_confidence_unavailable` issue on the
-section (`degrade_section_to_no_confidence` in
-`patterns/unified/src/assessment_function/index.py`, issue #901).
+The rungs above degrade *within* a successful pass. A section can also come out
+of this module with **no confidence scores whatsoever**, and there are two ways
+that happens. Both live in `assessment/degradation.py`, and both leave the same
+trace, by construction rather than by convention:
+
+| Cause | Entry point | Issue code |
+|---|---|---|
+| The pass ran and failed **deterministically** — the confidence model rejecting the input outright, most often `ValidationException: Input is too long for requested model.` (#901) | `degrade_section_to_no_confidence`, called from the Assessment Lambda's non-transient branch | `assessment_failed_confidence_unavailable` |
+| The pass **never ran**: the section had no `extraction_result_uri`, no `page_ids`, or an extraction result whose `inference_result` was empty (#1006) | `skip_section_no_confidence`, called from `process_document_section`'s early returns | `assessment_skipped_confidence_unavailable` |
+
+Neither fails the document. For the first that is #901's deliberate trade — the
+extraction already succeeded and was already paid for, so losing the advisory
+half must not discard it. For the second there is nothing to fail *over*: the
+confidence model was never called.
 
 That has an observability consequence worth knowing when reading this module's
 behaviour operationally. Because such a document **completes**, a systemic
-confidence failure moves none of the failure alarms — no failed executions, no
+confidence gap moves none of the failure alarms — no failed executions, no
 DLQ messages — and `ProcessingIssueCount` is a DynamoDB attribute rather than a
-metric, so nothing aggregates it. The Lambda therefore publishes
-`AssessmentConfidenceUnavailable` (value 1 per degraded section) into the parent
-stack's metric namespace on that path, and the parent template alarms on ten or
-more in fifteen minutes — deliberately on volume, because one degraded section is
-an expected outcome of the guard and a steady stream is not (issue #996). The
-metric put is wrapped in its own `try`: this path exists to avoid failing a
-document whose extraction succeeded, so a lost telemetry point is the cheaper
-failure. See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
+metric, so nothing aggregates it. Both paths therefore publish
+`AssessmentConfidenceUnavailable` (value 1 per section) into the parent stack's
+metric namespace, and the parent template alarms on ten or more in fifteen
+minutes — deliberately on volume, because one such section is an expected outcome
+and a steady stream is not (issue #996). **The metric does not distinguish the two
+causes**, because the alarm's question is whether sections are coming back without
+confidence; the issue `code` and `root_cause` on the section are what separate
+them for whoever opens the document.
+
+Two details that are load-bearing rather than tidy. The metric put is wrapped in
+its own `try`: these paths exist to avoid failing a document whose extraction
+succeeded, so a lost telemetry point is the cheaper failure. And appending to
+`document.errors` is **not** a substitute for the issue —
+`processresults_function` reads a section document's `errors` only inside its
+`Status.FAILED` branch, so on a completing document nothing reads it, which is
+exactly how the skip paths stayed silent before #1006.
+
+Two returns from `process_document_section` deliberately record nothing: a
+section whose class is **excluded** (extraction never ran, so no confidence is
+missing) and a configuration with `extraction.confidence.enabled: false`. Both
+occur on healthy documents, and counting either would breach the alarm's
+threshold on throughput alone. A `section_id` that is not in the document, or a
+document with no sections, **raises** instead: there is no section on which to
+record anything, so a quiet return would leave the caller with no signal at all.
+See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
 
 ## Prompt Template Placeholders
 

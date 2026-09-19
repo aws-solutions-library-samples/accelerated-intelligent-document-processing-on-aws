@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from idp_common import bedrock, image, metrics, s3, utils
+from idp_common.assessment.degradation import skip_section_no_confidence
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
     SCHEMA_DESCRIPTION,
@@ -1323,6 +1324,32 @@ class AssessmentService:
 
         Returns:
             Document: Updated Document object with assessment results appended to extraction results
+
+        Raises:
+            ValueError: if the document or the requested section is missing, i.e.
+                the call cannot be carried out at all.
+
+        **Every return without confidence scores leaves a trace (#1006).** A
+        section can finish this method with no confidence for three reasons other
+        than a failure: no extraction result to assess, no pages, or an
+        extraction result whose ``inference_result`` is empty. Each used to
+        append to ``document.errors`` and return, which is not a signal —
+        ``processresults_function`` reads a section document's ``errors`` only
+        inside its ``Status.FAILED`` branch, so on a document that completes the
+        list is never read, no ``ProcessingIssue`` was recorded, and
+        ``AssessmentConfidenceUnavailable`` was never published. Those paths now
+        call ``skip_section_no_confidence``, so a section without confidence
+        looks the same to the Sections panel and to
+        ``AssessmentConfidenceUnavailableAlarm`` however it got there.
+
+        The cases where nothing *can* be recorded on a section — no document, a
+        document with no sections, or a ``section_id`` the document does not
+        contain — raise instead: there is no section to carry an issue, and a
+        caller asking for a section that is not there has a bug that should
+        surface rather than resolve to a document which completed without
+        confidence. (The Assessment Lambda already raises for a missing section
+        before calling this, so that only changes what direct library callers
+        see.)
         """
         # Check if confidence assessment is enabled (v0.6: extraction.confidence)
         enabled = self.config.extraction.confidence.enabled
@@ -1332,13 +1359,10 @@ class AssessmentService:
 
         # Validate input document
         if not document:
-            logger.error("No document provided")
-            return document
+            raise ValueError("No document provided for assessment")
 
         if not document.sections:
-            logger.error("Document has no sections to process")
-            document.errors.append("Document has no sections to process")
-            return document
+            raise ValueError("Document has no sections to process")
 
         # Find the section with the given ID
         section = None
@@ -1348,10 +1372,7 @@ class AssessmentService:
                 break
 
         if not section:
-            error_msg = f"Section {section_id} not found in document"
-            logger.error(error_msg)
-            document.errors.append(error_msg)
-            return document
+            raise ValueError(f"Section {section_id} not found in document")
 
         # Short-circuit: skip sections whose class is marked as excluded
         # (e.g., static instruction pages). No extraction ran, so no
@@ -1372,6 +1393,17 @@ class AssessmentService:
             error_msg = f"Section {section_id} has no extraction results to assess"
             logger.error(error_msg)
             document.errors.append(error_msg)
+            skip_section_no_confidence(
+                document,
+                section_id,
+                "No extraction result was written for this section, so there was "
+                "nothing to assess.",
+                remedy=(
+                    "Check the Extraction step for this section — a section "
+                    "reaching assessment without an extraction result means "
+                    "extraction did not complete for it."
+                ),
+            )
             return document
 
         # Extract information about the section
@@ -1382,6 +1414,16 @@ class AssessmentService:
             error_msg = f"Section {section_id} has no page IDs"
             logger.error(error_msg)
             document.errors.append(error_msg)
+            skip_section_no_confidence(
+                document,
+                section_id,
+                "The section lists no page IDs, so there was no document text or "
+                "page image to assess its extracted values against.",
+                remedy=(
+                    "Check the Classification step's section boundaries for this "
+                    "document — a section with no pages is malformed."
+                ),
+            )
             return document
 
         # Sort pages by page number
@@ -1402,9 +1444,23 @@ class AssessmentService:
             extraction_data = s3.get_json_content(section.extraction_result_uri)
             extraction_results = extraction_data.get("inference_result", {})
 
-            # Skip assessment if no extraction results found
+            # Skip assessment if no extraction results found. Nothing was
+            # extracted for this section, so there is nothing to score — but the
+            # section still comes back without confidence, which is what the
+            # recorded issue and the metric report. This one used to return
+            # silently, with not even a line in ``document.errors``.
             if not extraction_results:
                 logger.warning(f"No extraction results found for section {section_id}")
+                skip_section_no_confidence(
+                    document,
+                    section_id,
+                    "The section's extraction result has an empty "
+                    "inference_result, so there were no values to assess.",
+                    remedy=(
+                        "Check the Extraction step for this section — an empty "
+                        "inference_result means extraction returned no fields."
+                    ),
+                )
                 return document
 
             t1 = time.time()
@@ -1684,14 +1740,15 @@ class AssessmentService:
         """
         logger.info(f"Starting assessment for document {document.id}")
 
+        # Every section goes through process_document_section, including one with
+        # no extraction result. Filtering those out here logged a warning and
+        # nothing else, so a section left without confidence was reported on this
+        # entry point and not on that one — the same silence #1006 closed inside
+        # process_document_section, one level up. The skip is that method's
+        # decision to make, and it records it.
         for section in document.sections:
-            if section.extraction_result_uri:
-                logger.info(f"Assessing section {section.section_id}")
-                document = self.process_document_section(document, section.section_id)
-            else:
-                logger.warning(
-                    f"Section {section.section_id} has no extraction results to assess"
-                )
+            logger.info(f"Assessing section {section.section_id}")
+            document = self.process_document_section(document, section.section_id)
 
         logger.info(f"Completed assessment for document {document.id}")
         return document

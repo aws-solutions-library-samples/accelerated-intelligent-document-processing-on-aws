@@ -1455,12 +1455,18 @@ extraction:
 > whose input limit every section exceeds, a revoked `bedrock:InvokeModel` grant, a
 > model id not enabled in the region — produces no failed executions and moves none
 > of the failure alarms. Each degrade therefore publishes
-> `AssessmentConfidenceUnavailable` to the stack's own metric namespace, and
-> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen minutes —
-> on volume, not on the first occurrence, since one degraded section is an expected
-> outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)).
+> `AssessmentConfidenceUnavailable` to the stack's own metric namespace. So does a
+> section that reached the Assessment step with **nothing to assess** — no
+> extraction result, no pages, or an empty `inference_result` — which records
+> `assessment_skipped_confidence_unavailable` instead and is likewise invisible in
+> the document's own status. The metric covers both, because the alarm's question is
+> whether sections are coming back without confidence; the issue code says which
+> happened. `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
+> minutes — on volume, not on the first occurrence, since one such section is an
+> expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
+> [#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
 > See [Monitoring](./monitoring.md#confidence-assessment-degraded) for the metric,
-> the alarm and the three causes worth checking first.
+> the alarm and the four causes worth checking first.
 >
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
