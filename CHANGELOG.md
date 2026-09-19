@@ -3,7 +3,7 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
-## [Unreleased]
+## [0.6.9]
 
 ### Added
 
@@ -88,6 +88,11 @@ SPDX-License-Identifier: MIT-0
 - **`idp-cli` output meant for a program is no longer rendered as terminal output** ([#905](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/905)). Nine machine-readable paths — `config-revisions --json`, `status --format json`, the YAML `config-download` and `config-create` print, and the schemas from `discover`, `discover-multidoc` and `bootstrap` — went through Rich, which prefixed an ANSI escape wherever styling is on (so `| jq` failed at character 0), hard-wrapped at the console width *in a redirected file*, and read `[...]` inside a string value as markup. All nine now write the payload to stdout unchanged, and `status`, `config-download` and `bootstrap` send their progress and headers to stderr so redirecting stdout yields the payload alone. One behaviour change: `status --show-details --format json` no longer renders the matching-documents table. `discover` and `discover-multidoc` still interleave a heading with their payload — use `--output` with those two. See [IDP CLI](docs/idp-cli.md#machine-readable-output).
 
 - **The documentation no longer says the Web UI talks to AWS AppSync** ([#929](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/929)). AppSync was removed in 0.6.0 and replaced by an API Gateway REST API with a dispatcher Lambda, but 172 lines across 47 documents still presented the GraphQL endpoint, its subscriptions and the renamed parameters as things a deployment has, so a reader following those pages looked for an endpoint no stack has had for nine releases. Every mention was triaged rather than replaced wholesale, since prose describing the former architecture and identifiers deliberately keeping the old name are both correct; `docs/architecture.md` is rewritten around the real request path and now also documents the three extension mechanisms the codebase has. A build gate keeps it that way, failing if a document presents a retired service — or a retired mechanism, such as status updates arriving "via GraphQL subscriptions" — as current.
+
+## Templates
+   - us-west-2: `https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/idp-main_0.6.9.yaml`
+   - us-east-1: `https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main_0.6.9.yaml`
+   - eu-central-1: `https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main_0.6.9.yaml`
 
 ## [0.6.8]
 
