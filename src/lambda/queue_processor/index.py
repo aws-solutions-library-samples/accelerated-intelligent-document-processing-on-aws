@@ -18,6 +18,7 @@ from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+from idp_common.utils.transient_errors import is_transient_error
 
 patch_all()
 
@@ -40,6 +41,22 @@ CIRCUIT_BREAKER_ID = "circuit_breaker"
 CIRCUIT_BREAKER_ENABLED = (
     os.environ.get("CIRCUIT_BREAKER_ENABLED", "false").lower() == "true"
 )
+# The three states the circuit-breaker manager writes to the ConcurrencyTable
+# (src/lambda/circuit_breaker_manager/index.py), plus the three this function
+# reports when it never got as far as reading one. Named because the admission
+# decision for each is asserted from this exact set in
+# test_check_circuit_breaker.py: a new state that nobody decided about fails
+# that test rather than inheriting whichever branch it happens to fall into.
+CB_STATE_CLOSED = "CLOSED"
+CB_STATE_OPEN = "OPEN"
+CB_STATE_HALF_OPEN = "HALF_OPEN"
+CB_STATE_DISABLED = "DISABLED"
+#: The state read failed with something a retry can fix (throttle, timeout,
+#: dropped connection, 5xx). Admission is REFUSED — see check_circuit_breaker.
+CB_STATE_ERROR_TRANSIENT = "ERROR_TRANSIENT"
+#: The state read failed with something a retry cannot fix (access denied, table
+#: gone, malformed request). Admission is ALLOWED — see check_circuit_breaker.
+CB_STATE_ERROR_TERMINAL = "ERROR_TERMINAL"
 DOCUMENT_QUEUE_URL = os.environ.get("DOCUMENT_QUEUE_URL", "")
 RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("RECOVERY_TIMEOUT_SECONDS", "300"))
 # How long a suspected counter leak must persist across two independent samples
@@ -762,17 +779,91 @@ def _emit_counter_active_metric(active: int) -> None:
         logger.warning(f"Could not emit concurrency counter metric: {e}")
 
 
+def _emit_circuit_breaker_check_failure(classification: str) -> None:
+    """Record that the breaker's state could not be read, and how it was judged.
+
+    Both outcomes of a failed read are a degradation an operator has to be able
+    to see. ``TERMINAL`` in particular means the breaker is **not protecting
+    anything** while the stack keeps admitting work, and nothing else in the
+    system would say so: the manager Lambda publishes only on transitions it
+    makes, and a read that never reached the table is not a transition.
+    ``PutMetricData`` needs no resource permissions and the function already
+    holds it for the counter metrics, so this costs no IAM change.
+    """
+    try:
+        boto3.client("cloudwatch").put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": "CircuitBreakerCheckFailed",
+                    "Dimensions": [
+                        {"Name": "Classification", "Value": classification}
+                    ],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit circuit breaker check-failure metric: {e}")
+
+
 def check_circuit_breaker() -> tuple[bool, str]:
     """
     Check if the circuit breaker allows new workflows.
 
+    **A failed state read is split by whether a retry can fix it** (issue #934,
+    item 4), because the two halves have opposite best answers and answering
+    both the same way is wrong either way round.
+
+    A *transient* failure — throttling, a read timeout, a dropped connection, a
+    DynamoDB 5xx — **refuses admission**. Refusing is nearly free here: the
+    message is reported as a batch item failure, reappears on
+    ``DocumentQueue.VisibilityTimeout`` (60 s) and has ``maxReceiveCount`` 500
+    to spend, so the queue absorbs roughly 8 hours of this before anything
+    reaches ``DocumentQueueDLQ`` — two orders of magnitude more than a DynamoDB
+    blip lasts. It is also self-limiting in the one case that matters:
+    ConcurrencyTable throttling is caused by this function's own admission rate,
+    and a throttle is most likely during exactly the kind of wide service event
+    the breaker exists for. Admitting work here is the failure mode being chosen
+    against: a breaker that a coincident DynamoDB blip switches off is not a
+    breaker. Visibility is deliberately NOT extended the way the ``OPEN`` path
+    extends it — that exists because a Bedrock outage lasts as long as
+    ``RECOVERY_TIMEOUT_SECONDS``, whereas a transient read failure is expected
+    to be gone on the next delivery, and a 300 s push would add five minutes of
+    latency to every document in flight for a fault that lasted milliseconds.
+
+    A *terminal* failure — ``AccessDeniedException``, ``ResourceNotFoundException``,
+    a malformed request — **allows admission**, loudly. It cannot be retried
+    away, so refusing would refuse every message on every poll for as long as
+    the misconfiguration lasts: the entire backlog burns its 500 deliveries and
+    lands in the dead-letter queue, needing a manual redrive, while the pipeline
+    is otherwise healthy. That converts a monitoring degradation into guaranteed
+    stalled work, and the breaker guards spend and throttling during a Bedrock
+    outage rather than any correctness or security property, so it is the wrong
+    trade. The degradation is reported instead — an ``ERROR`` log and the
+    ``CircuitBreakerCheckFailed`` metric, dimension ``Classification=TERMINAL``.
+    An exception the classifier does not recognise is treated as terminal.
+
+    Note that a terminal ConcurrencyTable fault does not actually let work
+    through: ``update_counter`` runs a few lines later on the same table and
+    re-raises anything that is not a conditional-check failure, so the message
+    fails there instead. The case this branch really keeps alive is a fault
+    specific to *this read* — a permissions boundary or scoped-down policy that
+    allows ``UpdateItem`` and not ``GetItem``, say.
+
+    Nothing here runs on a default deployment: ``CircuitBreakerEnabled``
+    defaults to ``"false"``, which makes ``CIRCUIT_BREAKER_ENABLED`` false and
+    returns before the table is touched at all.
+
     Returns:
         Tuple of (allowed: bool, state: str)
         - allowed: True if workflows should proceed, False if blocked
-        - state: Current circuit breaker state (CLOSED, OPEN, HALF_OPEN, DISABLED, ERROR)
+        - state: CLOSED, OPEN, HALF_OPEN, DISABLED, ERROR_TRANSIENT or
+          ERROR_TERMINAL
     """
     if not CIRCUIT_BREAKER_ENABLED:
-        return True, "DISABLED"
+        return True, CB_STATE_DISABLED
 
     try:
         response = concurrency_table.get_item(
@@ -783,26 +874,44 @@ def check_circuit_breaker() -> tuple[bool, str]:
         item = response.get("Item")
 
         if not item:
-            return True, "CLOSED"
+            return True, CB_STATE_CLOSED
 
-        state = item.get("state", "CLOSED")
+        state = item.get("state", CB_STATE_CLOSED)
 
-        if state == "OPEN":
+        if state == CB_STATE_OPEN:
             logger.warning("Circuit breaker is OPEN - blocking new workflows")
             return False, state
-        elif state == "HALF_OPEN":
+        elif state == CB_STATE_HALF_OPEN:
             logger.info("Circuit breaker is HALF_OPEN - allowing probe traffic")
             return True, state
 
         return True, state
 
     except (ClientError, BotoCoreError) as e:
-        # BotoCoreError (connect/timeout/endpoint) bypasses ClientError.
-        # Matches the round-16 hardening applied to sibling helpers
-        # (_count_running_executions, _put_drift_sample) — a transient
-        # DynamoDB blip must fail-open (return True) rather than raise.
-        logger.error(f"Error checking circuit breaker: {e}")
-        return True, "ERROR"
+        # BotoCoreError (connect/timeout/endpoint) bypasses ClientError, and
+        # both are classified by the same shared helper the pipeline's task
+        # handlers use, so DynamoDB's transient codes do not have to be
+        # enumerated a second time here.
+        if is_transient_error(e):
+            logger.error(
+                f"Could not read circuit breaker state ({e}). Treating as a "
+                f"transient fault and REFUSING admission; the message returns "
+                f"to DocumentQueue and retries.",
+                exc_info=True,
+            )
+            _emit_circuit_breaker_check_failure("TRANSIENT")
+            return False, CB_STATE_ERROR_TRANSIENT
+
+        logger.error(
+            f"Could not read circuit breaker state ({e}), and the failure is "
+            f"not retryable. The circuit breaker is NOT protecting this stack "
+            f"until it is fixed; admitting work anyway rather than sending the "
+            f"whole backlog to the dead-letter queue. Check the queue "
+            f"processor's DynamoDB permissions on the ConcurrencyTable.",
+            exc_info=True,
+        )
+        _emit_circuit_breaker_check_failure("TERMINAL")
+        return True, CB_STATE_ERROR_TERMINAL
 
 
 def extend_visibility_for_outage(receipt_handle: str) -> None:
@@ -1065,7 +1174,10 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             logger.warning(
                 f"Circuit breaker {cb_state} for {object_key} - message will retry later"
             )
-            if cb_state == "OPEN" and receipt_handle:
+            # Only the OPEN state gets its visibility pushed out: that outage
+            # is expected to last RECOVERY_TIMEOUT_SECONDS. A transient
+            # state-read failure should come back on the next 60 s delivery.
+            if cb_state == CB_STATE_OPEN and receipt_handle:
                 extend_visibility_for_outage(receipt_handle)
             return False, message_id
 

@@ -31,6 +31,25 @@ The circuit breaker short-circuits that cycle by refusing to start new workflows
 | **OPEN** | Bedrock unavailable. Queue Processor returns messages to SQS for retry. |
 | **HALF_OPEN** | Testing recovery. Limited traffic allowed through. First successful workflow closes the breaker; first new alarm reopens it. |
 
+### When the state cannot be read
+
+The Queue Processor reads the state from DynamoDB once per message. If that read
+fails, what it does next depends on whether a retry could fix the failure, because
+the two halves have opposite best answers:
+
+| Read failure | Admission | Why |
+|---|---|---|
+| **Transient** — throttling, read timeout, dropped connection, DynamoDB 5xx | **Blocked**, as if the breaker were OPEN | Refusing costs almost nothing: the message returns to `DocumentQueue` and has `maxReceiveCount` 500 against a 60 s visibility timeout, roughly 8 hours of retries, before anything reaches the dead-letter queue. Admitting would mean a DynamoDB blip coinciding with a Bedrock outage switches the breaker off. |
+| **Terminal** — access denied, table missing, malformed request | **Allowed**, with an `ERROR` log and a metric | A retry cannot fix it, so blocking would block every message on every poll until someone intervened, draining the entire backlog into the dead-letter queue while the pipeline is otherwise healthy. The breaker bounds spend and throttling during a Bedrock outage, so losing that protection is the smaller harm. |
+
+An error the classifier does not recognise is treated as terminal. Either outcome
+emits `CircuitBreakerCheckFailed` (see [Observability](#observability)); alarm on
+the `TERMINAL` dimension if you rely on the breaker, because that is the state in
+which it is protecting nothing.
+
+Neither applies unless you set `CircuitBreakerEnabled=true`. On the default the
+Queue Processor never reads the record at all.
+
 ### Transitions
 
 ```
@@ -216,5 +235,11 @@ CloudWatch metrics emitted by the circuit breaker (under the stack namespace):
 - `CircuitBreakerOpened` — incremented each time the breaker transitions to OPEN
 - `CircuitBreakerHalfOpen` — incremented on transition to HALF_OPEN
 - `CircuitBreakerClosed` — incremented on transition to CLOSED
+- `CircuitBreakerCheckFailed` — the Queue Processor could not read the breaker's
+  state, dimension `Classification` = `TRANSIENT` (admission was blocked) or
+  `TERMINAL` (admission was allowed and the breaker is protecting nothing until
+  the cause is fixed). No other signal reports this: the manager Lambda publishes
+  only on transitions it makes, and a read that never reached the table is not a
+  transition.
 
 The `AlertsTopic` receives SNS notifications on every state transition so operators can subscribe email, SMS, or PagerDuty endpoints.
