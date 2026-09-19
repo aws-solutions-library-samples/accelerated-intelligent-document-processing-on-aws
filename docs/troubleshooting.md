@@ -115,6 +115,27 @@ which shards the confidence pass. Automatically re-batching an oversized confide
 input so the pass succeeds rather than degrades remains open as part of
 [#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901).
 
+**`assessment_skipped_confidence_unavailable` on a section.** The sibling of the
+issue above, and it means something different: the confidence model was never
+called, because the section carried nothing to assess — no extraction result was
+written for it, it lists no page IDs, or its extraction result has an empty
+`inference_result`. The consequence for the section is the same (no confidence
+values, so no HITL confidence routing and no UI threshold signals), but the
+confidence model and its context window are not the place to look. The issue's
+`root_cause` names what was missing and which stage to check: **Extraction** for a
+missing or empty result, **Classification** for a section with no pages. Like the
+issue above it is written to the section record only, so look in the **Status**
+column of the Sections panel rather than the Processing Report tab.
+
+One case deliberately reports **nothing**: a class with no attributes to extract.
+Extraction skips the model for those and flags its stub
+`skipped_due_to_empty_attributes`, which covers a section classified
+`unclassified` — a blank page, a page whose classification errored, or a
+deployment with no document types configured — as well as a class authored without
+attributes. Those sections are normal — the same situation as an excluded class,
+reached by a different route — so neither an issue nor a metric point is recorded
+for them.
+
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit
 `assessment_coverage_incomplete` — a warning past 5% of rows unscored, an error at

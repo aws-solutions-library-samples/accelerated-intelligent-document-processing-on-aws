@@ -155,7 +155,13 @@ class TestNothingToAssessIsRecorded:
         self, mock_put_metric, mock_get_json_content, service
     ):
         """The one path that returned in complete silence — not even a line in
-        ``document.errors``."""
+        ``document.errors``.
+
+        This is the **genuine** empty result: the class has a schema, extraction
+        ran, and the model returned no fields anyway. The section's values have no
+        confidence, so it is reported. Contrast
+        ``TestDeliberateSilence.test_extraction_produced_no_fields_by_design``.
+        """
         mock_get_json_content.return_value = {
             "document_class": {"type": "invoice"},
             "inference_result": {},
@@ -246,12 +252,14 @@ class TestNothingToRecordOnRaises:
 
 @pytest.mark.unit
 class TestDeliberateSilence:
-    """Two paths must NOT report a missing confidence score.
+    """Three paths must NOT report a missing confidence score.
 
-    Both are expected outcomes of configuration rather than of a section that
-    should have been scored, and both occur on healthy documents — emitting the
-    metric for either would breach the alarm's volume threshold on throughput
-    alone and make it useless for its actual purpose.
+    Each is an expected outcome for a section no extraction was attempted on,
+    rather than a section that should have been scored and was not. All three
+    occur on **healthy** documents, so reporting any of them would put a red
+    indicator in the Sections panel on documents their owner considers normal and
+    — because every report also publishes the metric — would breach the alarm's
+    volume threshold on ordinary throughput, making it useless for its purpose.
     """
 
     @patch("idp_common.metrics.put_metric")
@@ -274,6 +282,61 @@ class TestDeliberateSilence:
         document.sections[0].exclusion_reason = "excluded_class"
 
         result = service.process_document_section(document, "1")
+
+        assert not _skip_issues(result)
+        assert CONFIDENCE_UNAVAILABLE_METRIC not in [
+            call.args[0] for call in mock_put_metric.call_args_list
+        ]
+
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_extraction_produced_no_fields_by_design(
+        self, mock_put_metric, mock_get_json_content, service
+    ):
+        """A class with no attributes is an ordinary outcome, not a gap.
+
+        ``ExtractionService`` skips the LLM for a class whose effective schema is
+        empty and writes a stub flagged ``skipped_due_to_empty_attributes``. That
+        is reached routinely, not only by a hand-authored attribute-less class:
+        classification labels a blank page, a page whose classification errored
+        after retries, and every page of a deployment with no document types
+        configured as ``"unclassified"``, and no class of that name exists in
+        config. A single cover sheet in an otherwise normal document lands here, so
+        reporting it would mean an error-severity issue and a metric point per
+        cover sheet — twelve such documents in fifteen minutes would page the
+        on-call for a healthy fleet at the default threshold of ten.
+        """
+        mock_get_json_content.return_value = {
+            "document_class": {"type": "unclassified"},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": True,
+                "skipped_due_to_empty_attributes": True,
+            },
+        }
+
+        result = service.process_document_section(_document(), "1")
+
+        assert not _skip_issues(result)
+        assert CONFIDENCE_UNAVAILABLE_METRIC not in [
+            call.args[0] for call in mock_put_metric.call_args_list
+        ]
+
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_excluded_class_stub_read_from_s3(
+        self, mock_put_metric, mock_get_json_content, service
+    ):
+        """The excluded-class stub is recognised even when the section object has
+        lost its ``excluded`` flag — a document reassessed under a configuration
+        that no longer marks the class excluded reads the old stub."""
+        mock_get_json_content.return_value = {
+            "status": "skipped_excluded_class",
+            "excluded": True,
+            "exclusion_reason": "instruction_pages",
+        }
+
+        result = service.process_document_section(_document(), "1")
 
         assert not _skip_issues(result)
         assert CONFIDENCE_UNAVAILABLE_METRIC not in [

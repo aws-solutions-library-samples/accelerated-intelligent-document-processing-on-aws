@@ -571,13 +571,31 @@ succeeded, so a lost telemetry point is the cheaper failure. And appending to
 `Status.FAILED` branch, so on a completing document nothing reads it, which is
 exactly how the skip paths stayed silent before #1006.
 
-Two returns from `process_document_section` deliberately record nothing: a
-section whose class is **excluded** (extraction never ran, so no confidence is
-missing) and a configuration with `extraction.confidence.enabled: false`. Both
-occur on healthy documents, and counting either would breach the alarm's
-threshold on throughput alone. A `section_id` that is not in the document, or a
-document with no sections, **raises** instead: there is no section on which to
-record anything, so a quiet return would leave the caller with no signal at all.
+Three returns from `process_document_section` deliberately record nothing, and
+getting that set right is what keeps the alarm's volume threshold meaningful:
+
+- a section whose class is **excluded** — extraction never ran, so no confidence
+  is missing;
+- a section whose extraction result is flagged `skipped_due_to_empty_attributes`,
+  i.e. a class with **no attributes to extract**. `ExtractionService` skips the
+  model for those (`_handle_empty_schema`) and still sets
+  `extraction_result_uri`, so the stub arrives here with an empty
+  `inference_result` and is indistinguishable from a real gap without the flag.
+  It is reached routinely rather than only by a hand-authored attribute-less
+  class: classification emits `"unclassified"` for a blank page, for a page whose
+  classification errored after retries, and for everything when no document types
+  are configured, and no class of that name exists in config, so its effective
+  schema is `{}`. One cover sheet in an otherwise normal document lands here, and
+  a dozen such documents in fifteen minutes would clear the default threshold on
+  their own;
+- a configuration with `extraction.confidence.enabled: false`.
+
+An empty `inference_result` **without** that flag is still reported: the class had
+a schema, the model returned nothing, and those values now have no confidence.
+
+A `section_id` that is not in the document, or a document with no sections,
+**raises** instead: there is no section on which to record anything, so a quiet
+return would leave the caller with no signal at all.
 See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
 
 ## Prompt Template Placeholders

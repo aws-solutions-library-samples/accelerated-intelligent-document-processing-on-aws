@@ -41,6 +41,50 @@ from idp_common.utils import extract_json_from_text, repair_truncated_json
 logger = logging.getLogger(__name__)
 
 
+def _extraction_declared_no_fields(extraction_data: Dict[str, Any]) -> bool:
+    """True when extraction wrote an empty ``inference_result`` deliberately.
+
+    An empty result has two very different meanings, and only one of them is a
+    missing confidence surface worth reporting:
+
+    * **The class has no attributes to extract.** ``ExtractionService`` skips the
+      LLM entirely for such a class and writes a stub carrying
+      ``metadata.skipped_due_to_empty_attributes`` (``_handle_empty_schema``).
+      This is reached routinely, not only by a user authoring an attribute-less
+      class in the schema editor: classification emits ``"unclassified"`` for a
+      blank page, for a page whose classification errored after retries, and when
+      no document types are configured at all, and no class of that name exists in
+      config, so its effective schema is ``{}``. A one-page cover sheet in an
+      otherwise normal document reaches exactly this state.
+    * **The class does have a schema and the model returned nothing anyway.** That
+      is a real gap — the section's values, whatever they should have been, now
+      have no confidence — and it is reported.
+
+    Treating the first as a gap would put an error-severity issue (a red
+    indicator in the Sections panel) on documents their owner considers normal,
+    and — because every one of them also publishes
+    ``AssessmentConfidenceUnavailable`` — would page the on-call for a healthy
+    fleet: a dozen documents each with one unclassifiable page clears the default
+    threshold of ten in fifteen minutes on its own. An alarm that fires on healthy
+    throughput is one operators turn off, which would cost the signal #996 exists
+    to provide.
+
+    So this returns silently instead, exactly as an **excluded** section does a
+    few lines earlier in ``process_document_section``. The two are the same
+    situation — a section for which no extraction was ever attempted — reached by
+    different routes, and the fact is already recorded where it belongs, in
+    extraction's own result metadata. ``skipped_excluded_class`` is matched here
+    too, for the case where the stub is read but the section object has lost its
+    ``excluded`` flag (a document reassessed under a later configuration).
+    """
+    if not isinstance(extraction_data, dict):
+        return False
+    metadata = extraction_data.get("metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("skipped_due_to_empty_attributes"):
+        return True
+    return extraction_data.get("status") == "skipped_excluded_class"
+
+
 def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
     """
     Safely convert a value to float, handling strings and None values.
@@ -1449,7 +1493,21 @@ class AssessmentService:
             # section still comes back without confidence, which is what the
             # recorded issue and the metric report. This one used to return
             # silently, with not even a line in ``document.errors``.
+            #
+            # Except when extraction wrote the empty result ON PURPOSE, which is
+            # an ordinary outcome and not a gap — see
+            # ``_extraction_declared_no_fields``.
             if not extraction_results:
+                if _extraction_declared_no_fields(extraction_data):
+                    logger.info(
+                        "Assessment skipped for section %s: extraction produced no "
+                        "fields by design (class %s has no attributes to extract), "
+                        "so there is no confidence to report as missing.",
+                        section_id,
+                        class_label,
+                    )
+                    return document
+
                 logger.warning(f"No extraction results found for section {section_id}")
                 skip_section_no_confidence(
                     document,

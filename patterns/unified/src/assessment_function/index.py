@@ -113,7 +113,6 @@ def check_document_for_throttling_errors(document):
     return False, None
 
 
-
 @xray_recorder.capture("assessment_function")
 def handler(event, context):
     """Assess one section. See ``_handle``.

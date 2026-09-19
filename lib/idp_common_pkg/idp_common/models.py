@@ -151,7 +151,11 @@ class ProcessingIssue:
             degraded), or ``"info"`` (auto-recovered but worth noting).
         code: Stable machine code, e.g. ``"assessment_incomplete"``,
             ``"assessment_recovered_with_retries"``,
-            ``"assessment_deadline_reached"``, ``"extraction_incomplete"``.
+            ``"assessment_deadline_reached"``, ``"extraction_incomplete"``,
+            ``"assessment_failed_confidence_unavailable"`` (the confidence pass
+            ran and failed deterministically) or
+            ``"assessment_skipped_confidence_unavailable"`` (it never ran — the
+            section had nothing to assess).
         message: User-friendly one-liner.
         root_cause: Technical detail — model, output cap, rows affected, geometry
             mode, escalation chain tried.

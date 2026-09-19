@@ -243,6 +243,15 @@ coverage by confidence-based review. It is recorded as an error-severity
 `assessment_skipped_confidence_unavailable` issue on the section
 ([#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
 
+Not every empty result is that, though. A class with **no attributes to extract**
+makes extraction skip the model deliberately and write an empty result flagged as
+such, and that is an everyday occurrence rather than a gap: a page classified
+`unclassified` — a blank page, a page whose classification errored, or any page in
+a deployment with no document types configured — has no class in configuration and
+therefore no attributes. Those sections report nothing at all, exactly as an
+[excluded class](./classification.md) does, because an error indicator and an
+alarm data point per blank page would make both useless.
+
 That is the right trade for one section, and it creates a monitoring gap for the
 fleet ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)):
 a **systemic** confidence failure no longer fails documents, so it no longer
@@ -263,12 +272,14 @@ One metric in the stack's own namespace (`<StackName>`):
   and the answer is yes either way. The section's issue code is what tells the two
   apart once you open the document, and they point at different remedies — the
   confidence model for a failure, whatever produced the section for a skip.
-  Nothing is published when confidence assessment is switched off in
-  configuration, or for a section whose class is excluded: both are expected on
-  healthy documents, so counting them would breach the alarm's threshold on
-  throughput alone. **No data therefore means every section that should have been
-  scored was scored** — give or take a confidence pass that failed transiently and
-  succeeded on retry.
+  Nothing is published for a section no extraction was attempted on — one whose
+  class is **excluded**, and one whose class has **no attributes to extract**,
+  which is what a page classified `unclassified` gets — nor when confidence
+  assessment is switched off in configuration. All three are expected on healthy
+  documents (a single blank page or cover sheet produces the second), so counting
+  them would breach the alarm's threshold on ordinary throughput. **No data
+  therefore means every section that should have been scored was scored** — give
+  or take a confidence pass that failed transiently and succeeded on retry.
 
 One alarm publishes to `AlertsTopic`:
 
