@@ -692,8 +692,13 @@ operations:
     enforced_in: src/lambda/chat_with_document_processor/index.py
     args: { sessionId: "__nope__", prompt: "hi" }
     note: >
-      scope enforced in the downstream processor Lambda, not the resolver;
-      allowed-role call skipped (would start chat processing)
+      scope enforced in the downstream processor Lambda, not the resolver, from
+      the verified claims the resolver forwards as `identity`; every failure to
+      evaluate it denies the turn. The live scope suite does not reach this op —
+      it is skip_allowed, because an allowed-role call would start chat
+      processing — so the enforcement is covered by the processor's own unit
+      suite (src/lambda/chat_with_document_processor/tests/), including a check
+      that the index it queries is one template.yaml declares.
   queryKnowledgeBase:
     groups: ANY
     kind: read
@@ -916,9 +921,17 @@ function_url_endpoints:
         ownership: true
         equivalent_op: sendChatDocumentMessage
         enforced_in: src/lambda/chat_with_document_processor/index.py
+        residual_gap: GAP-07
         note: >
-          same processor and the same allowedConfigVersions scope check as the
-          REST path; the processor denies a turn it cannot attribute to a caller
+          the same processor as the REST path, carrying the same
+          allowedConfigVersions scope check, but that check does not apply to
+          callers arriving this way: it resolves the caller from the verified
+          claims an invoking transport supplies, and this one can supply none
+          (GAP-07). The route forwards an explicit null identity, the processor
+          stands the check down and logs that it did so per turn. On the
+          dispatcher path the same code denies a turn whose scope cannot be
+          evaluated for any reason. Both halves close together when the endpoint
+          verifies an ID token.
       POST /chat/agent:
         groups: [Admin, Author, Viewer]
         equivalent_op: sendAgentChatMessage
@@ -992,10 +1005,19 @@ known_gaps:
       is wider than that one check, though: NEITHER streaming route obtains a
       per-user identity from the transport. That also leaves the
       allowedConfigVersions scope lookup in
-      src/lambda/chat_with_document_processor/index.py (the caller-scope
-      resolution around lines 239-291) without a verified per-user subject to
-      resolve, so it falls back rather than failing closed. Both halves close
-      together when the endpoint verifies an ID token.
+      src/lambda/chat_with_document_processor/index.py
+      (_allowed_config_versions_for_event) with no verified subject to resolve,
+      so Chat-with-Document turns arriving on this transport are NOT restricted
+      by allowedConfigVersions. The route forwards an explicit null identity,
+      which is the same signal an IAM-authorized backend invocation carries, and
+      the processor stands the check down and logs that it did so on every turn
+      rather than appearing to have consulted the UsersTable. Enforcing the check
+      against the request body's self-asserted identity instead would not be a
+      control: the caller it would restrict is the same caller that chooses the
+      value. Both halves close together when the endpoint verifies an ID token —
+      at which point _caller_identity() returning real claims (which must include
+      `email`, the only identifier that joins to a UsersTable row) turns both on
+      with no further change on this path.
 
       RESIDUAL — the transport principal's session name is undocumented. The
       identity resolution in src/lambda/chat_stream_processor/sse.py has to

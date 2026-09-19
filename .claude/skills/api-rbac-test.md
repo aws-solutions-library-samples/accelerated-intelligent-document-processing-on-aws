@@ -17,6 +17,17 @@ complementary layers that share one source of truth:
 > (config-version scope silently failing open because a resolver was missing a
 > `dynamodb:Query` IAM grant). Treat a hard fail as real until proven otherwise.
 
+> ⚠️ **"Every operation" is true of the group check, not of the scope check.** The
+> dynamic scope suite exercises `getConfigVersion`, `getConfigVersions` and
+> `listDocuments`. Ops marked `skip_allowed:` in the expectations file are called
+> only in their *denied* role, because an allowed-role call would start real work —
+> `sendChatDocumentMessage` starts a chat turn — so their scope enforcement is not
+> reached here and is covered by that component's own unit suite instead. The
+> static scan's **S4** is a grep: it asserts the `enforced_in` file mentions
+> `allowedConfigVersions`, which a file containing a broken lookup also does.
+> Neither layer would have caught issue #970, where the lookup named a DynamoDB
+> index no template declares.
+
 ### Mandatory security-focused test cases (AppSec checklist)
 
 `make api-test` covers the AppSec "Minimum Mandatory Security Focused Test Cases
@@ -102,6 +113,18 @@ processors **directly** — no dispatcher, no resolver. Consequences:
 - A request-body `callerSub` is a **fallback only** — the transport-verified
   principal wins, and a body value that *contradicts* it is refused (403), not
   silently preferred. Both routes go through one helper so they cannot drift.
+  It is nonetheless the **effective** identity on this transport, because the
+  verified value is that pool-wide constant, so it must not be used as an
+  authorization key. Both processors read `identity` for that instead, and this
+  route can only report it as `None`.
+- **`allowedConfigVersions` is therefore not enforced on `POST /chat/document`.**
+  The processor resolves the caller from verified claims and denies a turn whose
+  scope it cannot evaluate; with no claims to resolve from, it stands the check
+  down and logs that it did so once per turn rather than appearing to have
+  consulted the UsersTable. The REST path through the dispatcher does enforce it.
+  Both halves of GAP-07 close when this endpoint verifies a Cognito ID token —
+  and the claims it then returns must include `email`, which is the only
+  identifier that joins a Cognito principal to a UsersTable row.
 
 Declare every Function URL and route in the **`function_url_endpoints:`** section
 of `scripts/api_rbac_expectations.yaml`. The scanner's Function-URL checks:

@@ -203,7 +203,7 @@ privilege-escalation bug.
 | Layer | Enforcement |
 |-------|-------------|
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
-| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents |
+| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. ⚠️ Applies to turns that reach the processor through the REST API; chat streamed from the Lambda Function URL is **not** restricted by `allowedConfigVersions` — see [Known Limitations](#known-limitations) |
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
 | **Revision Operations** (server-side) | All five `*ConfigProfileRevision*` operations reject out-of-scope profiles before doing any work |
@@ -406,7 +406,7 @@ enforcement itself is Layer 2.
 | `getTestRun`, `getTestRuns`, `getTestRunStatus`, `compareTestRuns`, `getTestSets`, `validateTestFileName` | Admin, Author |
 | `listFinetuningJobs`, `getFinetuningJob`, `validateTestSetForFinetuning`, `listAvailableModels` | All authenticated (UI limited to Admin, Author) |
 | `queryKnowledgeBase` | All authenticated |
-| `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | All authenticated; resolver enforces per-session ownership and processor enforces `allowedConfigVersions` scope on the target document |
+| `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | All authenticated; resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document (a scope it cannot evaluate denies the turn). The streaming Function URL route reaches the same processor but forwards no verified caller, so the scope check stands down there — see [Known Limitations](#known-limitations) |
 | `listUsers` | All authenticated (non-admin sees only self in resolver) |
 | `getMyProfile` | All authenticated |
 
@@ -523,6 +523,7 @@ To add a new role:
 
 ## Known Limitations
 
+- **Document Chat streamed from the Lambda Function URL** is not restricted by `allowedConfigVersions`. In commercial regions the browser streams chat tokens directly from a Lambda Function URL signed with Cognito Identity Pool credentials. That transport forwards no Cognito claims — its SigV4 principal is a session name shared by every user of the pool, so it proves *a* signed-in user is calling but not which one — and the processor will not key an authorization decision to the caller-supplied identity in the request body, because the caller it would restrict is the one choosing the value. The route therefore reports an explicitly unverified caller, and the processor logs, once per turn, that it did not enforce the scope. The check does apply to turns that arrive through the REST API (the path GovCloud deployments use, since Function URLs are unavailable there). Closing this needs the streaming endpoint to verify a Cognito ID token; tracked as `GAP-07` in `scripts/api_rbac_expectations.yaml` and [issue #920](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/920).
 - **Knowledge Base queries** do not currently enforce config-version scope. KB results may include documents from out-of-scope config versions.
 - **Agent Companion Chat** analytics queries (Athena) do not filter by config-version scope.
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.

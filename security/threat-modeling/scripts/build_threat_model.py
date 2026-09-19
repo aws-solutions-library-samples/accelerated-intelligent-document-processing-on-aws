@@ -116,7 +116,12 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T04": (3, "Mitigated"),
     "AUTH.T05": (3, "Mitigated"),
     "AUTH.T06": (2, "Mitigated"),
-    "AUTH.T07": (6, "Mitigated"),
+    # Two consumers fail closed (the pii-anonymizer feature API and
+    # chat_with_document_processor); the four scope-aware resolvers still read a
+    # failed lookup as "unrestricted", and Chat-with-Document is unrestricted on
+    # the streaming transport, which forwards no verified caller (GAP-07). Both
+    # are written out in the entry's Residual risk field.
+    "AUTH.T07": (6, "Partially Mitigated"),
     "AUTH.T08": (6, "Mitigated"),
     "AUTH.T09": (6, "Mitigated"),
     "AUTH.T10": (3, "Accepted"),

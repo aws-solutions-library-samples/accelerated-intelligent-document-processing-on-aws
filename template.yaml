@@ -9259,9 +9259,13 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
-            # RBAC scope enforcement — processor queries UsersTable.SubIndex
-            # to fetch the caller's `allowedConfigVersions` and rejects
-            # chats against documents outside that scope.
+            # RBAC scope enforcement — the processor queries the UsersTable
+            # EmailIndex GSI for the caller's `allowedConfigVersions` and rejects
+            # chats against documents outside that scope. Email is the join key:
+            # the table's own PK/SK are USER#<userId>, a uuid4 unrelated to the
+            # Cognito sub. The caller is taken from the verified claims the
+            # dispatcher's resolver forwards; the query failing for any reason
+            # (including a missing grant here) DENIES the turn.
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -9828,7 +9832,14 @@ Resources:
               Condition:
                 StringLike:
                   "aws:ResourceTag/idp:feature-id": "*"
-            # RBAC scope enforcement — query UsersTable.SubIndex.
+            # RBAC scope enforcement — query the UsersTable EmailIndex GSI for the
+            # caller's `allowedConfigVersions`. Retained for this function because
+            # it runs the same Chat-with-Document processor code, but on THIS
+            # transport the check stands down and the grant goes unused: a Function
+            # URL forwards no Cognito claims, so there is no verified per-user
+            # caller to resolve a scope for (GAP-07 in
+            # scripts/api_rbac_expectations.yaml). It becomes live the moment that
+            # endpoint verifies an ID token, with no IAM change needed.
             - Effect: Allow
               Action:
                 - dynamodb:Query

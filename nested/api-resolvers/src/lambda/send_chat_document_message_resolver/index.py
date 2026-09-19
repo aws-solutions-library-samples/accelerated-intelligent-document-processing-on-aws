@@ -22,7 +22,9 @@ RBAC:
     the session owner in DynamoDB. Subsequent calls for the same session from a
     different user will be rejected (prevents session hijacking).
   * The processor enforces ``allowedConfigVersions`` scope before calling
-    Bedrock — see ``chat_with_document_processor``.
+    Bedrock, resolved from the verified claims this resolver forwards as
+    ``identity`` — see ``_forwarded_identity`` here and
+    ``_allowed_config_versions_for_event`` in ``chat_with_document_processor``.
 
 Mirrors the pattern used by the ``agent_chat_resolver`` Lambda.
 """
@@ -81,6 +83,35 @@ def _caller_sub(event: dict) -> str:
         return str(sub)
     # Fallback to username (older integrations)
     return str(identity.get("username") or "")
+
+
+def _forwarded_identity(event: dict) -> dict | None:
+    """Minimal ``identity`` to pass to the processor, or ``None`` if there is none.
+
+    The processor resolves the caller's ``allowedConfigVersions`` itself, so it
+    needs the caller's email — the only identifier that joins a Cognito principal
+    to a UsersTable row. Forward ONLY that claim: the processor logs its event, so
+    the rest of the identity object (tokens, source IP, group list it does not
+    read) does not belong in its log group. Mirrors ``_forwarded_identity`` in
+    ``agent_chat_resolver``, which forwards only the group claim for the same
+    reason.
+
+    The claims here are the ones API Gateway's Cognito authorizer verified —
+    ``idp_common.api_adapter.normalize_event`` rebuilds ``identity`` from them and
+    refuses an event that asserts a contradicting one.
+
+    Returns ``None`` for an identity-less invocation (a direct
+    ``lambda:InvokeFunction``, gated by IAM on the function ARN). That is the
+    signal the processor reads to stand its scope check down; it is deliberately
+    distinct from omitting the key, which the processor treats as a wiring
+    regression and denies.
+    """
+    identity = event.get("identity")
+    if identity is None:
+        return None
+    claims = identity.get("claims") or {}
+    email = claims.get("email") or identity.get("username") or ""
+    return {"claims": {"email": str(email)}}
 
 
 def _check_session_ownership(session_id: str, caller_sub: str) -> None:
@@ -195,7 +226,14 @@ def handler(event, _context):  # noqa: ANN001
                     "prompt": prompt,
                     "s3Uri": s3_uri,
                     "modelId": ui_model_id,
-                    "callerSub": caller,
+                    # The claims the caller was authenticated with, so the
+                    # processor resolves their config-version scope from an
+                    # identity a transport verified rather than from anything the
+                    # request body asserted. The key must be present even when it
+                    # is null: the processor denies a turn whose event carries no
+                    # `identity` key at all, so a wiring regression here fails
+                    # closed instead of quietly disabling the check.
+                    "identity": _forwarded_identity(event),
                 }
             ).encode("utf-8"),
         )
