@@ -20,6 +20,7 @@ from idp_common.config.constants import (
     DEFAULT_VERSION,
     RESERVED_VERSION_NAMES,
 )
+from idp_common.config.hook_reachability import InertGatingHookError
 from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, PricingConfig
 from idp_common.config_scope import scope_allows
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
@@ -490,6 +491,20 @@ def handler(event, context):
             return handle_generate_rule_json(rule_description.strip())
         else:
             raise Exception(f"Unsupported operation: {operation}")
+    except InertGatingHookError as e:
+        # A deliberate refusal, not a fault: the configuration registers an
+        # `onError: fail` pipeline hook at a point its processing mode can never
+        # reach, so the gate could not work (#982). Reported as a ValidationError
+        # with the message verbatim — falling through to the generic handler below
+        # would label it "UnexpectedError", which reads to an admin as a product bug
+        # rather than as the specific thing they have to change. Listed before the
+        # JSONDecodeError clause because both are ValueError subclasses and the
+        # first matching clause wins.
+        logger.error(f"Pipeline-hook reachability refusal: {e}")
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
     except ValidationError as e:
         # Pydantic validation error - return structured error for UI
         logger.error(f"Configuration validation error: {e}")

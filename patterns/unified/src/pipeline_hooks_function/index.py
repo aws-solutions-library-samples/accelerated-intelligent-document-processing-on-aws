@@ -443,9 +443,10 @@ def _normalize_hook(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _load_config_payload(table: Any, version: str) -> Dict[str, Any]:
     """The whole Config#<version> payload as a plain dict ({} if unreadable).
 
-    One GetItem serves both the hooks for the point being dispatched AND the
-    unreachable-hook audit at `preprocessing` (see
-    :func:`_unreachable_hook_report`), so adding that audit costs no extra read.
+    One GetItem. The `preprocessing` invocation makes two calls here — one for its
+    own hooks via :func:`_read_hooks_from_config` and one for the unreachable-hook
+    audit, which needs sections that read does not cover (see
+    :func:`_unreachable_hook_report`). Every other hook point makes one.
     """
     try:
         resp = table.get_item(Key={"Configuration": f"Config#{version}"})
@@ -515,20 +516,25 @@ def _coerce_bool(raw: Any) -> Optional[bool]:
     return None
 
 
-def _resolve_use_bda(document: Any, config_payload: Dict[str, Any]) -> Optional[bool]:
+def _resolve_use_bda(document: Any) -> Optional[bool]:
     """Which branch RouteByProcessingMode will take, or None if undeterminable.
 
-    The document payload is preferred because it is the value the Choice itself
-    reads (`$.document.use_bda`, injected by the queue processor from the
-    resolved config), so it is the branch this execution will actually take even
-    if the config row changed since. The config is the fallback for a document
-    queued without it.
+    Read from the DOCUMENT and nowhere else, because `$.document.use_bda` is the
+    path the Choice itself switches on (the queue processor injects it from the
+    resolved config), so it is the branch this execution will take even if the
+    config row has changed since.
+
+    The configuration is deliberately NOT a fallback. With the key absent from the
+    document the Choice cannot select the BDA branch — it takes `Default`, and if
+    the unresolvable path fails the execution outright then no branch runs at all —
+    so a config row saying `use_bda: true` would name hooks as unreachable that are
+    in fact about to run. That is the wrong answer in the only situation the
+    fallback could apply to (a hand-started execution or a redrive), so `None` and
+    silence is the honest result.
     """
     if isinstance(document, dict):
-        from_document = _coerce_bool(document.get("use_bda"))
-        if from_document is not None:
-            return from_document
-    return _coerce_bool(config_payload.get("use_bda"))
+        return _coerce_bool(document.get("use_bda"))
+    return None
 
 
 def _unreachable_hook_report(
@@ -554,11 +560,11 @@ def _unreachable_hook_report(
     Empty when the branch reaches every point, when no hooks are registered at an
     unreachable one, or when the processing mode could not be determined.
     """
-    use_bda = _resolve_use_bda(document, config_payload)
+    use_bda = _resolve_use_bda(document)
     if use_bda is None:
         logger.info(
-            "Could not determine use_bda from the document or the configuration; "
-            "skipping the unreachable-hook audit"
+            "The document carries no use_bda, so the branch this execution will "
+            "take is not knowable here; skipping the unreachable-hook audit"
         )
         return []
     mode = "bda" if use_bda else "pipeline"

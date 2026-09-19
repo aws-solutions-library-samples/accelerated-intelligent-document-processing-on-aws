@@ -488,9 +488,19 @@ looking healthy:
 
 | When | What happens |
 |---|---|
-| A feature stack registers a hook (`registerFeatureHooks`) while the active config has `use_bda: true` | **`onError: fail` is refused** — the registration errors and the feature stack's install fails, naming the point and the remedies. Any other policy is accepted with a warning on the response and in the install log. |
-| A configuration with `use_bda: true` and such a hook is saved (Configuration UI, `updateConfiguration`, `idp-cli config-upload` / `config-validate`) | Same split: a `fail` registration is **rejected**, an advisory one is a warning. An already-stored configuration in that shape still loads — the check is at the write boundary, not on read. |
-| Every document, at runtime | The `preprocessing` dispatch — the one invocation ahead of the routing decision, so it happens in both modes — lists every hook the chosen branch will not reach at `$.HookResults.preprocessing.Payload.unreachableHooks`, and logs each one. It reads the mode from the document, so a `use_bda` flip made *after* the hook was registered is caught here. |
+| A feature stack registers a hook (`registerFeatureHooks`) while the active config has `use_bda: true` | **`onError: fail` is refused** — the registration errors and the feature stack's install fails, naming the point and the remedies. Any other policy is accepted with a warning on the response and in the install log. A hook registered `enabled: false` is not a gate anywhere, so it is not refused. |
+| A feature installs a hook inside its **config preset** (`applyFeatureConfigPreset`) — the path both bundled extensions use, so that the hook travels with the classes it belongs to | Same split, judged against the preset merged over the host default: a `fail` registration at an unreachable point fails the install, an advisory one warns. |
+| A configuration is saved through the Configuration UI / `updateConfiguration`, or validated by `idp-cli config-validate` / `config-upload` | Same split. The save-time check is scoped to **what the write changes** — the hook registration for that point, or `use_bda` itself. Editing an unrelated field does not fail because of a hook that was already stored, and the automated BDA blueprint↔class synchronisation (which sends only `classes`) is unaffected. |
+| Every document, at runtime | The `preprocessing` dispatch — the one invocation ahead of the routing decision, so it happens in both modes — lists every hook the chosen branch will not reach at `$.HookResults.preprocessing.Payload.unreachableHooks`, and logs each one. It reads the mode from the **document**, the same value the routing Choice switches on, so a `use_bda` flip made *after* the hook was registered is caught here. |
+
+Two write paths are deliberately outside the refusal, and the runtime report is
+what covers them: **resetting a profile to `default`** (reset is the escape hatch
+from a bad version, so refusing it would wedge an admin whose `default` carries the
+hook, and the copy introduces nothing that was not already stored), and the
+**`CustomConfigPath` custom resource** at stack create/update, where a refusal
+would fail the deployment. A configuration already stored in this shape also still
+*loads* — the checks are write-time, because failing to deserialize a stored record
+would break every Lambda that reads the configuration.
 
 `unreachableHooks` in the execution history looks like this — one entry per hook,
 naming the hook, the point, its policy and the branch that skipped it:
@@ -503,9 +513,11 @@ naming the hook, the point, its policy and the branch that skipped it:
 
 If you are relying on a hook to **gate** the pipeline (PII redaction, a
 compliance check), register it at `preprocessing`, which runs in both modes ahead
-of the routing decision. Mapping the three points onto BDA's own output
-boundaries — so that a `postOcr` hook could run against BDA's OCR output — needs a
-semantics decision per point and remains open under
+of the routing decision. To keep a hook in the configuration without it gating
+anything in this mode, set `enabled: false` on it — the least drastic of the
+remedies, and editable in the View/Edit Configuration UI. Mapping the three points
+onto BDA's own output boundaries — so that a `postOcr` hook could run against BDA's
+OCR output — needs a semantics decision per point and remains open under
 [#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
 
 **Inert by default** — hooks are stored inline in the active configuration

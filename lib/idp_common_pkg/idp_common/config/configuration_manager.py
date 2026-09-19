@@ -1333,6 +1333,15 @@ class ConfigurationManager:
             config_dict = migrate_config(config_dict)
 
         # === Reset to default ===
+        #
+        # Deliberately NOT subject to _reject_inert_gating_hooks. This copies the
+        # `default` row verbatim; if that row carries an inert gating hook (#982),
+        # refusing the reset would wedge the admin — reset is the escape hatch from
+        # a bad version, there is no in-UI way to edit `default` except through a
+        # save that would itself be refused, and the copy introduces nothing that
+        # was not already stored. The dispatcher's runtime audit still reports the
+        # hook on every document. Covered by
+        # tests/unit/config/test_hook_reachability.py.
         if reset_to_default:
             logger.info(f"Resetting version {version} to default")
             default_config = self.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
@@ -1356,7 +1365,7 @@ class ConfigurationManager:
         if save_as_default:
             # Frontend sends the complete config to become the new default
             config = IDPConfig(**config_dict)
-            self._reject_inert_gating_hooks(config)
+            self._reject_inert_gating_hooks(config, config_dict)
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
                 config,
@@ -1390,7 +1399,7 @@ class ConfigurationManager:
                 deep_update(full_dict, config_dict)
                 # Validate
                 full_config = IDPConfig(**full_dict)
-                self._reject_inert_gating_hooks(full_config)
+                self._reject_inert_gating_hooks(full_config, config_dict)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     full_config,
@@ -1403,7 +1412,7 @@ class ConfigurationManager:
             else:
                 # No default available, try to save as-is
                 config = IDPConfig(**config_dict)
-                self._reject_inert_gating_hooks(config)
+                self._reject_inert_gating_hooks(config, config_dict)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     config,
@@ -1449,7 +1458,7 @@ class ConfigurationManager:
 
         # Validate and save the full config
         updated_config = IDPConfig(**current_dict)
-        self._reject_inert_gating_hooks(updated_config)
+        self._reject_inert_gating_hooks(updated_config, config_dict)
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
             updated_config,
@@ -1465,8 +1474,10 @@ class ConfigurationManager:
     # ===== Private Methods =====
 
     @staticmethod
-    def _reject_inert_gating_hooks(config: IDPConfig) -> None:
-        """Refuse to save a config whose `onError: fail` hook can never fire.
+    def _reject_inert_gating_hooks(
+        config: IDPConfig, delta: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Refuse a write that registers an `onError: fail` hook that can never fire.
 
         Three hook points — postOcr, postClassification, postExtraction — exist
         only on the Pipeline branch of the state machine, so with
@@ -1476,12 +1487,19 @@ class ConfigurationManager:
         hook, and the execution history shows nothing, because the dispatcher was
         never called.
 
+        `config` is the fully merged configuration about to be stored; `delta` is
+        what this write actually asked to change. The refusal is scoped to the
+        delta — see `hook_reachability.delta_touches_hook_registration` for why
+        that matters, including the BDA class-sync callers that would otherwise be
+        refused over a hook they never mentioned. Passing no delta checks
+        everything, which suits a caller that supplies a whole configuration.
+
         Raised only for the GATING policy. An advisory hook (`continue` /
         `skip-remaining`) is logged and saved — a config may legitimately carry an
         observing hook for a mode it will be switched to later — and the
         dispatcher repeats the whole audit at runtime into
-        `$.HookResults.preprocessing`, which is what covers a `use_bda` flip made
-        after the hook was registered.
+        `$.HookResults.preprocessing`, which is what covers both a `use_bda` flip
+        and a hook that was already stored when this check arrived.
 
         This is the WRITE boundary only. It is deliberately NOT an IDPConfig
         validator: a record already in the table with this shape (written by an
@@ -1489,18 +1507,11 @@ class ConfigurationManager:
         directly) must still LOAD, or every Lambda that reads the configuration
         would start failing on upgrade.
         """
-        from .hook_reachability import unreachable_hook_registrations
+        from .hook_reachability import reject_inert_gating_hooks
 
-        findings = unreachable_hook_registrations(config.model_dump(mode="python"))
-        gating = [f for f in findings if f["gating"]]
-        for finding in findings:
-            if not finding["gating"]:
-                logger.warning(finding["message"])
-        if gating:
-            raise ValueError(
-                "Configuration rejected: "
-                + "; ".join(f["message"] for f in gating)
-            )
+        reject_inert_gating_hooks(
+            config.model_dump(mode="python"), delta, log=logger
+        )
 
     def _get_full_config_for_version(self, version: str) -> Optional[IDPConfig]:
         """

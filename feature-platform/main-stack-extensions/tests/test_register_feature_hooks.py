@@ -565,6 +565,27 @@ def test_gating_hook_at_a_shared_point_is_accepted_in_bda_mode(
     assert "warnings" not in result
 
 
+def test_a_disabled_gating_hook_at_an_unreachable_point_registers(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The least drastic remedy the refusal offers has to actually work.
+
+    The dispatcher skips a disabled entry in every mode, so it gates nothing and
+    there is nothing to refuse — and the refusal message tells the author to do
+    exactly this when the hook is not wanted under BDA.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_active()
+    disabled = {**_OCR_POINT_HOOK, "enabled": False}
+
+    result = mod.handler(_register_event("pii-redactor", [disabled]), None)
+
+    assert result["hookCount"] == 1
+    assert "warnings" not in result
+    row = _table().get_item(Key={"Configuration": "Config#zz-bda-v1"})["Item"]
+    assert row["ocr"]["postHook"][0]["enabled"] is False
+
+
 def test_registration_is_unchanged_when_the_mode_is_not_recorded(
     monkeypatch, configuration_table, load_lambda
 ):

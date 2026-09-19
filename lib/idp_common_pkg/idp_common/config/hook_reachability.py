@@ -55,6 +55,53 @@ FLAT_HOOK_POINTS = frozenset({"preprocessing", "postprocessing"})
 # fails, which a hook that never runs cannot deliver.
 GATING_ON_ERROR = "fail"
 
+# Keys that make a flat section (`preprocessing`/`postprocessing`) a registration
+# rather than an unrelated edit. `args` is excluded on purpose: a feature's config
+# preset ships args with no ARN, which is not yet a hook.
+FLAT_HOOK_REGISTRATION_KEYS = frozenset({"arn", "onError", "enabled", "featureId"})
+
+
+class InertGatingHookError(ValueError):
+    """A write would register an `onError: fail` hook that can never fire.
+
+    A distinct type so the API resolvers can report it as the validation refusal
+    it is, rather than as an unexpected server error — an admin reading
+    "unexpected error" concludes the product is broken, when in fact there is a
+    specific thing for them to fix. Subclasses ValueError so existing callers that
+    catch that keep working.
+    """
+
+
+def delta_touches_hook_registration(delta: Dict[str, Any], point: str) -> bool:
+    """True when an incoming config change actually writes `point`'s hook or mode.
+
+    `handle_update_custom_configuration` merges a DELTA onto the stored config, so
+    a finding on the merged result says nothing about what this write did: a
+    pre-existing inert hook would otherwise fail every later save of an unrelated
+    field. Worse, three of that function's five callers are BDA blueprint↔class
+    synchronisation (`idp_common.bda.bda_blueprint_service`), which sends
+    ``{"classes": [...]}``, runs only in BDA mode — precisely the population that
+    can hold an inert gating hook — and swallows exceptions, so a refusal there
+    would silently skip the class sync and leave a log line as the only evidence.
+    That is the failure shape this check exists to remove, one layer up.
+
+    So the refusal is scoped to writes that are ABOUT the hook: the delta carries
+    `use_bda` (the mode itself is changing, which can make an existing hook inert),
+    or it carries the hook registration for that point — `postHook` for a post-step
+    point, or one of :data:`FLAT_HOOK_REGISTRATION_KEYS` for a flat one. Editing
+    another field of the same section (say `ocr.image.dpi`) does not count.
+    """
+    if not isinstance(delta, dict):
+        return False
+    if "use_bda" in delta:
+        return True
+    section = delta.get(HOOK_POINT_TO_SECTION.get(point, ""))
+    if not isinstance(section, dict):
+        return False
+    if point in FLAT_HOOK_POINTS:
+        return bool(FLAT_HOOK_REGISTRATION_KEYS & set(section))
+    return "postHook" in section
+
 
 def _coerce_bool(raw: Any) -> Optional[bool]:
     """A config flag as a bool, or None when it is not a boolean at all.
@@ -95,6 +142,44 @@ def _registered_hooks(config: Dict[str, Any], point: str) -> List[Dict[str, Any]
             continue
         hooks.append(entry)
     return hooks
+
+
+def reject_inert_gating_hooks(
+    config: Dict[str, Any],
+    delta: Optional[Dict[str, Any]] = None,
+    *,
+    log: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Raise on a gating registration that can never fire; return the advisory ones.
+
+    The single implementation of the write-boundary rule, shared by every path that
+    stores a configuration: `ConfigurationManager.handle_update_custom_configuration`
+    (the `updateConfiguration` mutation), and the feature platform's
+    `applyFeatureConfigPreset`, which writes a feature's bundled preset as its own
+    config version and is the path both bundled extensions actually use.
+
+    `config` is the fully merged configuration about to be stored. `delta` is what
+    the caller asked to change; findings outside it are dropped (see
+    :func:`delta_touches_hook_registration`). Passing None checks everything.
+
+    Raises :class:`InertGatingHookError` when a surviving finding is gating.
+    Advisory findings are logged through `log` if given and returned.
+    """
+    findings = unreachable_hook_registrations(config)
+    if delta is not None:
+        findings = [
+            f for f in findings if delta_touches_hook_registration(delta, f["point"])
+        ]
+    advisory = [f for f in findings if not f["gating"]]
+    gating = [f for f in findings if f["gating"]]
+    if log is not None:
+        for finding in advisory:
+            log.warning(finding["message"])
+    if gating:
+        raise InertGatingHookError(
+            "Configuration rejected: " + "; ".join(f["message"] for f in gating)
+        )
+    return advisory
 
 
 def unreachable_hook_registrations(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -140,13 +225,14 @@ def unreachable_hook_registrations(config: Dict[str, Any]) -> List[Dict[str, Any
                         f"never invoked"
                         + (
                             " and its onError=fail policy cannot gate the "
-                            "document. Register it at 'preprocessing' (the one "
-                            "point both modes reach), set onError to "
-                            "'continue'/'skip-remaining' if it is advisory, or "
-                            "set use_bda=false."
+                            "document. Disable the hook (enabled: false) if it is "
+                            "not wanted in this mode, register it at "
+                            "'preprocessing' (the one point both modes reach), set "
+                            "onError to 'continue'/'skip-remaining' if it is "
+                            "advisory, or set use_bda=false."
                             if gating
                             else ". Register it at 'preprocessing' if it needs to "
-                            "run in this mode."
+                            "run in this mode, or disable it (enabled: false)."
                         )
                     ),
                 }

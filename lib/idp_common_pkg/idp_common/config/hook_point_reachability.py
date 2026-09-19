@@ -7,12 +7,13 @@ GENERATED FILE — do not edit. Regenerate with:
 
     python3 scripts/generate_hook_point_reachability.py
 
-Derived by walking patterns/unified/statemachine/workflow.asl.json from
-`PreprocessingHook` down each side of the `RouteByProcessingMode` Choice
-(`$.document.use_bda BooleanEquals true` -> `BDA_CheckExistingData`; Default ->
-`OCRStep`), blocking re-entry to the Choice and descending into any Map
-or Parallel. A hook point ahead of the Choice runs in both modes and so appears
-under both.
+Derived from patterns/unified/statemachine/workflow.asl.json. Each mode's set is
+the walk from the state machine's `StartAt` with the OTHER branch of the
+`RouteByProcessingMode` Choice (`$.document.use_bda BooleanEquals true`
+-> `BDA_CheckExistingData`; Default -> `OCRStep`)
+blocked, descending into any Map or Parallel. So a hook point ahead of the Choice
+is reported under BOTH modes, which is what a caller asking "does this mode reach
+this point?" needs.
 
 #   postClassification   bda=NO   pipeline=yes
 #   postExtraction       bda=NO   pipeline=yes

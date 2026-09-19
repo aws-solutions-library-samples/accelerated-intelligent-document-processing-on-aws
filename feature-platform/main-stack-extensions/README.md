@@ -89,10 +89,20 @@ So a registration at one of them while the active configuration sets
 With `onError: fail` that registration is **refused** (a `ValueError`, which fails
 the feature stack's install): the policy declares a gate, and a hook that cannot
 run cannot gate. Any other policy is advisory, so it registers and the response
-carries a `warnings` entry, which the calling custom resource logs. The point-mode
-table comes from `lambdas/register_feature_hooks/hook_point_reachability.py`,
-generated from the state machine definition by
-`scripts/generate_hook_point_reachability.py`.
+carries a `warnings` entry, which the calling custom resource logs. A hook
+registered `enabled: false` is skipped by the dispatcher in every mode, so it is
+not a gate anywhere and not refused. The point-mode table comes from
+`lambdas/register_feature_hooks/hook_point_reachability.py`, generated from the
+state machine definition by `scripts/generate_hook_point_reachability.py`.
+
+`applyFeatureConfigPreset` applies the same rule, because a feature can ship its
+hook **inside its config preset** rather than calling `registerFeatureHooks` — and
+both bundled extensions do exactly that, so the hook travels with the classes it
+belongs to and activating the version brings both. It judges the preset merged over
+the host default, and the preset is the delta: a preset that says nothing about
+hooks is unaffected by a hook already stored in `Config#default`. The shared
+implementation is `idp_common.config.hook_reachability.reject_inert_gating_hooks`,
+which the `updateConfiguration` mutation uses too.
 
 Registration time cannot be the whole check, because `use_bda` can change after a
 hook is registered — the dispatcher repeats the audit on every document and

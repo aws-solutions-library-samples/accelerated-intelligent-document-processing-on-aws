@@ -1936,11 +1936,14 @@ def test_reachable_hooks_are_never_reported_in_pipeline_mode(monkeypatch):
     assert "unreachableHooks" not in out
 
 
-def test_audit_uses_the_config_when_the_document_carries_no_use_bda(monkeypatch):
-    """A document queued without the control field still gets audited.
+def test_the_mode_is_read_from_the_document_and_never_from_the_config(monkeypatch):
+    """A config saying `use_bda: true` must NOT make the audit speak.
 
-    The config row stores its values STRINGIFIED, so reading `"true"` rather than
-    a bool is the normal case there, not an edge case.
+    `RouteByProcessingMode` switches on `$.document.use_bda`. With that key absent
+    the Choice cannot select the BDA branch, so every hook point is in fact about to
+    be reached, and consulting the config row — which a hand-started execution or a
+    redrive can easily disagree with — could only produce a report naming hooks that
+    will run. Silence is the only correct answer here.
     """
     monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
     mod = _reload()
@@ -1949,11 +1952,11 @@ def test_audit_uses_the_config_when_the_document_carries_no_use_bda(monkeypatch)
     out = mod.lambda_handler(
         {"hookPoint": "preprocessing", "document": {"id": "d1"}}, None
     )
-    assert [e["hookPoint"] for e in out["unreachableHooks"]] == ["postOcr"]
+    assert "unreachableHooks" not in out
 
 
-def test_audit_is_silent_when_the_processing_mode_cannot_be_determined(monkeypatch):
-    """Guessing the mode would name the wrong hooks as inert, so say nothing."""
+def test_audit_is_silent_when_the_document_carries_no_mode(monkeypatch):
+    """Same rule with nothing in the config either — no basis, no report."""
     monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
     mod = _reload()
     _audit_env(monkeypatch, mod, _GATING_OCR_HOOK_CONFIG)
@@ -1962,6 +1965,20 @@ def test_audit_is_silent_when_the_processing_mode_cannot_be_determined(monkeypat
         {"hookPoint": "preprocessing", "document": {"id": "d1"}}, None
     )
     assert "unreachableHooks" not in out
+
+
+def test_a_stringified_document_flag_is_understood(monkeypatch):
+    """The queue processor injects a real bool, but a redrive or a hand-built
+    input can carry the string form; the branch it selects is the same."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    _audit_env(monkeypatch, mod, _GATING_OCR_HOOK_CONFIG)
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1", "use_bda": "true"}},
+        None,
+    )
+    assert [e["hookPoint"] for e in out["unreachableHooks"]] == ["postOcr"]
 
 
 def test_audit_runs_only_at_preprocessing(monkeypatch):

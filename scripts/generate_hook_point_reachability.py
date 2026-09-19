@@ -167,45 +167,64 @@ def reachable(
     return reached
 
 
+def _is_bda_rule(choice: dict[str, Any]) -> bool:
+    """True for the Choice rule that sends `use_bda: true` documents to BDA.
+
+    The COMPARATOR and its value are part of the match, not just the variable.
+    Matching on the variable alone would read an inverted router
+    (`BooleanEquals: false -> OCRStep`) as "this rule is the BDA branch", label the
+    Pipeline branch "bda", and hand the BDA mode all seven hook points — silently
+    reopening #982 with a green generator.
+    """
+    return (
+        choice.get("Variable") == ROUTER_VARIABLE
+        and choice.get("BooleanEquals") is True
+    )
+
+
 def find_router(states: dict[str, Any]) -> str:
-    """The Choice state that selects the processing mode."""
+    """The Choice state that routes on `use_bda` being true."""
     for name, state in states.items():
         if state.get("Type") != "Choice":
             continue
-        if any(
-            choice.get("Variable") == ROUTER_VARIABLE
-            for choice in state.get("Choices") or []
-        ):
+        if any(_is_bda_rule(choice) for choice in state.get("Choices") or []):
             return name
     raise SystemExit(
-        f"no Choice state switches on {ROUTER_VARIABLE!r}; the processing-mode "
-        f"router moved or was renamed and the reachability table cannot be derived"
+        f"no Choice state has a rule `{ROUTER_VARIABLE} BooleanEquals true`; the "
+        f"processing-mode router moved, was renamed, or was rewritten with a "
+        f"different comparator, and the reachability table cannot be derived"
     )
 
 
 def derive(asl: dict[str, Any]) -> dict[str, Any]:
     """The reachability table: hook states and hook points, per processing mode.
 
-    A hook point ahead of the router (today `preprocessing`, which is `StartAt`)
-    runs in BOTH modes, so it is folded into both mode entries rather than
-    reported separately — callers ask "does this mode reach this point?" and that
-    is the answer for either mode.
+    A mode's scope is the walk from `StartAt` with the OTHER branch's entry state
+    blocked. That phrasing answers the question every consumer actually asks — "does
+    this mode reach this point?" — rather than the narrower "what is reachable from
+    the branch entry", which by construction excludes everything upstream of the
+    Choice and would report `preprocessing` as unreachable in both modes.
+
+    It is also the only phrasing that survives an edge back into a pre-router state
+    (a `Catch` on a branch state routing to `PreprocessingHook`, say). Defining
+    "always run" by SUBTRACTION — from `StartAt` minus the branches, or minus the
+    router's own reachable set — empties on such an edge, which would drop
+    `preprocessing` from both modes and make the consumers refuse a gating hook at
+    the one point that always runs. `always_states` is reported for the generated
+    module's documentation and is computed by blocking the router itself.
     """
     states = asl["States"]
     router = find_router(states)
     hooks = hook_states(asl)
     bda_entry = next(
-        choice["Next"]
-        for choice in states[router]["Choices"]
-        if choice.get("Variable") == ROUTER_VARIABLE
+        choice["Next"] for choice in states[router]["Choices"] if _is_bda_rule(choice)
     )
     pipeline_entry = states[router]["Default"]
+    start = asl["StartAt"]
 
-    block = frozenset({router})
-    from_start = reachable(states, asl["StartAt"])
-    from_bda = reachable(states, bda_entry, blocked=block)
-    from_pipeline = reachable(states, pipeline_entry, blocked=block)
-    pre_router = from_start - from_bda - from_pipeline
+    always_scope = reachable(states, start, blocked=frozenset({router}))
+    bda_scope = reachable(states, start, blocked=frozenset({pipeline_entry}))
+    pipeline_scope = reachable(states, start, blocked=frozenset({bda_entry}))
 
     def state_names(scope: set[str]) -> list[str]:
         return sorted(name for name in hooks if name in scope)
@@ -213,16 +232,17 @@ def derive(asl: dict[str, Any]) -> dict[str, Any]:
     def points(scope: set[str]) -> set[str]:
         return {point for name, point in hooks.items() if name in scope}
 
-    bda_states = state_names(pre_router | from_bda)
-    pipeline_states = state_names(pre_router | from_pipeline)
     return {
         "router": router,
         "entries": {"bda": bda_entry, "pipeline": pipeline_entry},
-        "always_states": state_names(pre_router),
-        "states_by_mode": {"bda": bda_states, "pipeline": pipeline_states},
+        "always_states": state_names(always_scope),
+        "states_by_mode": {
+            "bda": state_names(bda_scope),
+            "pipeline": state_names(pipeline_scope),
+        },
         "points_by_mode": {
-            "bda": sorted(points(pre_router | from_bda)),
-            "pipeline": sorted(points(pre_router | from_pipeline)),
+            "bda": sorted(points(bda_scope)),
+            "pipeline": sorted(points(pipeline_scope)),
         },
         "all_points": sorted(set(hooks.values())),
     }
@@ -261,12 +281,13 @@ GENERATED FILE — do not edit. Regenerate with:
 
     python3 scripts/generate_hook_point_reachability.py
 
-Derived by walking patterns/unified/statemachine/workflow.asl.json from
-`{table["always_states"][0] if table["always_states"] else "StartAt"}` down each side of the `{router}` Choice
-(`{ROUTER_VARIABLE} BooleanEquals true` -> `{bda_entry}`; Default ->
-`{pipeline_entry}`), blocking re-entry to the Choice and descending into any Map
-or Parallel. A hook point ahead of the Choice runs in both modes and so appears
-under both.
+Derived from patterns/unified/statemachine/workflow.asl.json. Each mode's set is
+the walk from the state machine's `StartAt` with the OTHER branch of the
+`{router}` Choice (`{ROUTER_VARIABLE} BooleanEquals true`
+-> `{bda_entry}`; Default -> `{pipeline_entry}`)
+blocked, descending into any Map or Parallel. So a hook point ahead of the Choice
+is reported under BOTH modes, which is what a caller asking "does this mode reach
+this point?" needs.
 
 {rows}
 

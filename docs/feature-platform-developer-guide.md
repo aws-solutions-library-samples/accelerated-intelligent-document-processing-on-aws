@@ -465,13 +465,17 @@ Pipeline branch (`OCRStep`) additionally reaches `PostOcrHook`,
 those three points, so nothing raises `HookFatalError` and no catcher fires.
 
 Because nothing runs at those points, nothing there can report the problem
-either, so the host does it from the two places that do run:
-`registerFeatureHooks` **refuses** an `onError: fail` registration at a point the
-active configuration's mode cannot reach (advisory policies are accepted with a
-warning), and the `preprocessing` dispatch — ahead of the routing Choice, in both
-modes — lists every unreachable registered hook at
-`$.HookResults.preprocessing.Payload.unreachableHooks`, which is what covers a
-`use_bda` flip made after the hook was registered.
+either, so the host does it from the places that do run. Both hook-install paths
+**refuse** an `onError: fail` registration at a point the target configuration's
+mode cannot reach — `registerFeatureHooks`, and `applyFeatureConfigPreset` for a
+hook shipped inside a config preset (the path the bundled extensions use) — while
+an advisory policy is accepted with a warning, and a hook registered
+`enabled: false` is left alone because it gates nothing anywhere. The
+`preprocessing` dispatch — ahead of the routing Choice, in both modes — then lists
+every unreachable registered hook at
+`$.HookResults.preprocessing.Payload.unreachableHooks`, reading the mode from the
+document rather than the config, which is what covers a `use_bda` flip made after
+the hook was registered.
 
 The reachability table all three consumers read is GENERATED from the state
 machine definition by `scripts/generate_hook_point_reachability.py` into

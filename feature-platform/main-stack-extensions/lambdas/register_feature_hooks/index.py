@@ -255,6 +255,11 @@ def _check_reachability(
         point = h["point"]
         if point not in unreachable:
             continue
+        if not h["enabled"]:
+            # The dispatcher skips a disabled entry in every mode, so it is not a
+            # gate anywhere and there is nothing to refuse. This is also the least
+            # drastic of the remedies the refusal below offers, so it has to work.
+            continue
         detail = (
             f"hook point {point!r} does not exist in the {mode} processing mode "
             f"of the active configuration (use_bda={use_bda}), so a hook "
@@ -264,10 +269,11 @@ def _check_reachability(
             raise ValueError(
                 f"Refusing to register {feature_id!r} at {point!r} with "
                 f"onError='fail': {detail}, and its fail policy therefore cannot "
-                f"gate anything. Register the hook at 'preprocessing' (the one "
-                f"point both processing modes reach), or set onError to "
-                f"'continue'/'skip-remaining' if it is advisory, or activate a "
-                f"configuration with use_bda=false."
+                f"gate anything. Ordered from least to most drastic: register the "
+                f"hook with enabled=false if it is not wanted in this mode, move it "
+                f"to 'preprocessing' (the one point both processing modes reach), "
+                f"set onError to 'continue'/'skip-remaining' if it is advisory, or "
+                f"activate a configuration with use_bda=false."
             )
         message = (
             f"Hook {feature_id} registered at {point} will NOT run: {detail}. "

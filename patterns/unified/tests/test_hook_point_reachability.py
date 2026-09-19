@@ -187,6 +187,52 @@ def test_every_committed_copy_of_the_generated_table_is_current(target):
 
 
 @pytest.mark.unit
+def test_a_back_edge_into_a_pre_router_state_keeps_preprocessing_in_both_modes():
+    """"Ahead of the router" must be defined against the ROUTER, not the branches.
+
+    Defining it as "reachable from StartAt minus reachable from either branch"
+    collapses the moment any state inside a branch routes back to a pre-router state
+    — a `Catch` on `OCRStep` sending a failure to `PreprocessingHook`, say. That
+    would empty the always-run set, drop `preprocessing` from both modes' point sets,
+    and make the consumers refuse a gating hook at the one point that always runs:
+    exactly the PII-redaction registration the docs tell authors to use.
+    """
+    asl = GEN.load_asl()
+    asl["States"]["OCRStep"].setdefault("Catch", []).insert(
+        0, {"ErrorEquals": ["States.Timeout"], "Next": "PreprocessingHook"}
+    )
+
+    table = GEN.derive(asl)
+
+    assert table["always_states"] == EXPECTED_ALWAYS
+    assert "preprocessing" in table["points_by_mode"]["bda"]
+    assert "preprocessing" in table["points_by_mode"]["pipeline"]
+
+
+@pytest.mark.unit
+def test_an_inverted_router_is_refused_rather_than_silently_relabelled():
+    """The comparator is part of the match, not just the variable.
+
+    Matching on `Variable` alone would read `BooleanEquals: false -> OCRStep` as the
+    BDA rule, swap the two labels, and hand BDA mode all seven points — reopening
+    #982 with a green generator and green consumers.
+    """
+    asl = GEN.load_asl()
+    router = asl["States"][TABLE["router"]]
+    router["Choices"] = [
+        {
+            "Variable": GEN.ROUTER_VARIABLE,
+            "BooleanEquals": False,
+            "Next": TABLE["entries"]["pipeline"],
+        }
+    ]
+    router["Default"] = TABLE["entries"]["bda"]
+
+    with pytest.raises(SystemExit, match="BooleanEquals true"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
 def test_the_generated_helper_answers_the_question_consumers_ask():
     """Load the committed dispatcher copy and check its two exported helpers."""
     path = (
