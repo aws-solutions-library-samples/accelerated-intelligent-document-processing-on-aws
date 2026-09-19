@@ -185,18 +185,43 @@ class TestResolverUIPath:
         assert forwarded == {"claims": {"email": _CALLER_EMAIL}}
 
     @pytest.mark.unit
-    def test_forwarded_identity_falls_back_to_username_without_an_email_claim(self):
-        """``identity.username`` is the email under the dispatcher's adapter.
+    def test_forwarded_identity_substitutes_nothing_for_a_missing_email_claim(self):
+        """No ``email`` claim must forward an empty email, so the processor denies.
 
-        A token with no ``email`` claim still yields a principal name there, and
-        using it keeps the lookup resolvable rather than denying the turn.
+        The adapter fills ``identity.username`` from ``cognito:username`` or the
+        ``sub`` when there is no ``email`` claim, so a fallback to it can forward a
+        value that is not an email address. The processor would then query
+        ``EmailIndex`` with an identifier no user row carries, get an empty page,
+        and read it as "this caller has no restriction" — an unresolvable caller
+        silently promoted to an unrestricted one. Forwarding an empty string makes
+        the processor raise and deny instead.
         """
         import index
 
         forwarded = index._forwarded_identity(
-            {"identity": {"username": _CALLER_EMAIL, "claims": {"sub": "caller-sub"}}}
+            {
+                "identity": {
+                    "username": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+                    "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+                    "claims": {
+                        "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+                        "username": "someone",
+                        "cognito:groups": ["Author"],
+                    },
+                }
+            }
         )
-        assert forwarded == {"claims": {"email": _CALLER_EMAIL}}
+        assert forwarded == {"claims": {"email": ""}}
+        # And NOT None: an identity that exists but carries no email is not the
+        # same as no identity, which the processor reads as "stand the check down".
+        assert forwarded is not None
+
+    @pytest.mark.unit
+    def test_forwarded_identity_ignores_a_non_dict_identity(self):
+        """Mirrors the guard ``_caller_sub`` already carries on the same field."""
+        import index
+
+        assert index._forwarded_identity({"identity": "not-a-dict"}) is None
 
     @pytest.mark.unit
     def test_missing_s3uri_raises(self):

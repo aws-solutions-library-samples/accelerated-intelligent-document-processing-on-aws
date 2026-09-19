@@ -580,15 +580,69 @@ class TestProcessorScopeFailsClosed:
         assert err[0]["isProcessing"] is False
 
     @pytest.mark.unit
-    def test_identity_without_an_email_denies(self):
+    @pytest.mark.parametrize(
+        "identity",
+        [
+            {"claims": {"cognito:groups": ["Viewer"]}},
+            # Claims carrying every identifier EXCEPT an email. This is the shape
+            # to hold the line on: each of these is a real Cognito identifier, and
+            # substituting one would query EmailIndex with a value no user row
+            # carries — an empty page, which reads as "unrestricted". Denying is
+            # the only safe reading, so no fallback may be added.
+            {
+                "claims": {
+                    "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+                    "cognito:username": "federated_d47cb94a",
+                    "username": "federated_d47cb94a",
+                },
+                "username": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+                "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+            },
+            {"claims": {"email": ""}},
+            {"claims": {}},
+            # Present but empty. Distinct from `identity: None`, and must NOT
+            # collapse into it: `if identity is None` broadened to `if not
+            # identity` would stand the check down on this input.
+            {},
+        ],
+        ids=["groups-only", "every-id-but-email", "empty-email", "no-claims", "empty"],
+    )
+    def test_identity_without_an_email_denies(self, identity):
         import index
 
-        result, _publishes, bedrock, _users = _run_scope_turn(
-            index, {"identity": {"claims": {"cognito:groups": ["Viewer"]}}}
+        result, _publishes, bedrock, users_table = _run_scope_turn(
+            index, {"identity": identity}
         )
 
         assert result == {"ok": False, "reason": "scope_unavailable"}
         bedrock.converse_stream.assert_not_called()
+        # And it denies *before* querying, so no substituted identifier is ever
+        # put to the index.
+        users_table.query.assert_not_called()
+
+    @pytest.mark.unit
+    def test_caller_email_reads_only_the_email_claim(self):
+        """Guard the absence of a fallback directly, at the resolution point.
+
+        The parametrized handler cases above prove the outcome; this names the
+        rule, so a diff that reintroduces ``or claims["sub"]`` fails against the
+        rule rather than only against one of its consequences.
+        """
+        import index
+
+        assert index._caller_email({"claims": {"email": "a@example.com"}}) == (
+            "a@example.com"
+        )
+        assert (
+            index._caller_email(
+                {
+                    "claims": {"sub": "a-uuid", "cognito:username": "a-name"},
+                    "username": "another-name",
+                    "sub": "a-uuid",
+                }
+            )
+            == ""
+        )
 
     @pytest.mark.unit
     def test_absent_identity_key_denies(self):
@@ -725,10 +779,15 @@ class TestProcessorScopeFailsClosed:
     def test_lookup_has_no_unrestricted_on_failure_path(self):
         """Source guard: the lookup's ``except`` must raise, never return None.
 
-        The behavioural tests above would catch a fail-open reintroduced in the
-        exception handler. This catches one reintroduced in a branch they do not
-        reach, and it names the shape to look for so a reviewer reading a future
-        diff knows what the rule is.
+        ⚠️ This is documentation with an assertion attached, **not** the control
+        that stops the fail-open coming back. It reads one function's exception
+        handlers, so it is defeated by any rewrite that moves the swallow
+        elsewhere — a ``contextlib.suppress``, a raising decoy handler beside a
+        returning one, or lifting the query into a helper. Both of those were
+        demonstrated against it. ``test_any_dynamodb_failure_denies`` is the real
+        control, because it asserts the outcome regardless of how the code is
+        shaped; this one exists to state the rule in the place a future diff will
+        be read.
         """
         import ast
         import inspect

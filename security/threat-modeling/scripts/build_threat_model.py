@@ -117,10 +117,12 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T05": (3, "Mitigated"),
     "AUTH.T06": (2, "Mitigated"),
     # Two consumers fail closed (the pii-anonymizer feature API and
-    # chat_with_document_processor); the four scope-aware resolvers still read a
-    # failed lookup as "unrestricted", and Chat-with-Document is unrestricted on
-    # the streaming transport, which forwards no verified caller (GAP-07). Both
-    # are written out in the entry's Residual risk field.
+    # chat_with_document_processor). Five scope-aware resolvers still read a
+    # failed lookup as "unrestricted"; the scope is keyed on an email that can
+    # diverge from the row; nothing constrains which identifier a claims set
+    # yields; and Chat-with-Document is unrestricted on the streaming transport,
+    # which forwards no verified caller (GAP-07). All four are written out in the
+    # entry's Residual risk field.
     "AUTH.T07": (6, "Partially Mitigated"),
     "AUTH.T08": (6, "Mitigated"),
     "AUTH.T09": (6, "Mitigated"),
@@ -327,6 +329,121 @@ def build() -> dict[str, object]:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Prose counts vs the export
+# --------------------------------------------------------------------------- #
+# The corpus repeats its own tallies in prose and in summary tables across a dozen
+# documents, and the export is the only place they are computed. Nothing compared
+# the two, so they drifted by hand: the export carried 99 threats while four
+# documents said 98, and the "Partially Mitigated" tally was a release behind in
+# three of them. Every one of those was written by someone who had just read the
+# generated numbers.
+#
+# So `--check` now reads the prose back. The files are listed explicitly rather
+# than discovered, because adding a document that states a count should be a
+# visible decision; `scripts/tests/` has no bearing on it either way.
+_COUNTED_DOCS = (
+    "README.md",
+    "threat-id-glossary.md",
+    "risk-assessment/risk-matrix.md",
+    "deliverables/executive-summary.md",
+    "deliverables/implementation-guide.md",
+    "threat-analysis/stride-analysis.md",
+    "../../docs/threat-model.md",
+)
+
+# Every way the corpus writes the total. Each pattern must capture the number in
+# group 1, and must be specific enough that an unrelated figure cannot match it.
+_TOTAL_PATTERNS = (
+    r"\|\s*\*\*Total Threats\*\*\s*\|\s*(\d+)\s*\|",
+    r"\|\s*\*\*Total Threats Identified\*\*\s*\|\s*(\d+)\s*\|",
+    r"\|\s*\*\*Total Threat IDs\*\*\s*\|\s*(\d+)\s*\|",
+    r"\|\s*\*\*Total threats identified\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|",
+    r"\|\s*Threats identified\s*\|\s*\*\*(\d+)\*\*\s*\|",
+    r"pie title Risk Distribution \((\d+) Threats\)",
+    r"All (\d+) threat IDs",
+    r"\*\*(\d+) threats\*\* across",
+    r"mitigate the (\d+) identified threats",
+    r"holding (\d+) identifiers in their head",
+    r"sum to more than (\d+) because",
+)
+
+# Status and risk-band tallies, in the row shapes the corpus uses:
+#   | **Mitigated** | 62 | ... |
+#   | Mitigated | 62 (63%) |
+#   | **Open** (real gap, needs work) | **6** | **6%** |
+#
+# The label must fill its whole cell, bar an optional bold wrapper and an optional
+# parenthetical gloss. A looser `[^|]*` tail matched the register row "| KB.T03 |
+# OpenSearch Serverless Data Exposure | **2** |" as a claim that there are 2
+# `Open` threats — a status label is a prefix of ordinary prose, so the anchor at
+# the closing pipe is what makes this readable at all.
+_TALLY_ROW = r"\|\s*\*{{0,2}}{label}\*{{0,2}}(?:\s*\([^)|]*\))?\s*\|\s*\*{{0,2}}(\d+)"
+
+# A line recording a DELTA is history, not a current count, and must not be read
+# as one — the revision table is full of "93 → 98 threats".
+_HISTORY_MARKERS = ("→", "->", "fell ", "behind the export")
+
+
+def _iter_counted_docs():
+    for rel in _COUNTED_DOCS:
+        path = (ROOT / rel).resolve()
+        if path.is_file():
+            yield path
+
+
+def check_prose_counts(doc: dict[str, object]) -> list[str]:
+    """Every count the corpus states in prose, compared with the export.
+
+    Returns a list of human-readable mismatches; empty means consistent.
+    """
+    total = int(doc["threatCount"])  # pyright: ignore[reportArgumentType]
+    risk: dict[str, int] = doc["riskDistribution"]  # pyright: ignore[reportAssignmentType]
+    status: dict[str, int] = doc["mitigationStatus"]  # pyright: ignore[reportAssignmentType]
+    band_labels = {
+        "Critical": (r"Critical risk \(8–9\)", r"Critical risk \(score 8-9\)"),
+        "High": (r"High risk \(6–7\)", r"High risk \(score 6-7\)"),
+        "Medium": (r"Medium risk \(3–5\)", r"Medium risk \(score 3-5\)"),
+        "Low": (r"Low risk \(1–2\)", r"Low risk \(score 1-2\)"),
+    }
+    problems: list[str] = []
+
+    repo = ROOT.parent.parent
+    for path in _iter_counted_docs():
+        rel = path.relative_to(repo)
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if any(marker in line for marker in _HISTORY_MARKERS):
+                continue
+            for pattern in _TOTAL_PATTERNS:
+                for found in re.finditer(pattern, line):
+                    if int(found.group(1)) != total:
+                        problems.append(
+                            f"{rel}:{lineno}: states {found.group(1)} threats, "
+                            f"export has {total}"
+                        )
+            for label, expected in status.items():
+                for found in re.finditer(
+                    _TALLY_ROW.format(label=re.escape(label)), line, re.IGNORECASE
+                ):
+                    if int(found.group(1)) != expected:
+                        problems.append(
+                            f"{rel}:{lineno}: states {found.group(1)} "
+                            f"{label!r}, export has {expected}"
+                        )
+            for band_name, labels in band_labels.items():
+                expected = risk.get(band_name, 0)
+                for label in labels:
+                    for found in re.finditer(
+                        _TALLY_ROW.format(label=label), line, re.IGNORECASE
+                    ):
+                        if int(found.group(1)) != expected:
+                            problems.append(
+                                f"{rel}:{lineno}: states {found.group(1)} "
+                                f"{band_name} threats, export has {expected}"
+                            )
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -344,7 +461,21 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+        prose = check_prose_counts(doc)
+        if prose:
+            print(
+                "prose counts disagree with the generated export — fix the "
+                "documents, not the export:",
+                file=sys.stderr,
+            )
+            for problem in prose:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
         print(f"threat model export is current ({doc['threatCount']} threats)")
+        print(
+            f"  prose counts consistent across "
+            f"{len(list(_iter_counted_docs()))} document(s)"
+        )
         return 0
     OUT.write_text(rendered)
     print(f"wrote {OUT.relative_to(ROOT.parent)}: {doc['threatCount']} threats")

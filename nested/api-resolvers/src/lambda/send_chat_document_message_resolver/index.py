@@ -105,13 +105,23 @@ def _forwarded_identity(event: dict) -> dict | None:
     signal the processor reads to stand its scope check down; it is deliberately
     distinct from omitting the key, which the processor treats as a wiring
     regression and denies.
+
+    ⚠️ **The ``email`` claim is forwarded or nothing is.** There is deliberately
+    no fallback to another field when the claim is absent: the alternatives the
+    adapter would offer — ``identity.username``, ``cognito:username``, the
+    ``sub`` — are not email addresses for every caller, and an identifier that is
+    not an email matches no UsersTable row. The lookup would then return an empty
+    page, which means "this user has no restriction". Forwarding an empty string
+    instead makes the processor raise and **deny**, which is what a caller whose
+    scope cannot be resolved is owed. An identity that is present but carries no
+    email is therefore NOT the same as no identity at all, and must not collapse
+    into it.
     """
     identity = event.get("identity")
-    if identity is None:
+    if identity is None or not isinstance(identity, dict):
         return None
     claims = identity.get("claims") or {}
-    email = claims.get("email") or identity.get("username") or ""
-    return {"claims": {"email": str(email)}}
+    return {"claims": {"email": str(claims.get("email") or "")}}
 
 
 def _check_session_ownership(session_id: str, caller_sub: str) -> None:

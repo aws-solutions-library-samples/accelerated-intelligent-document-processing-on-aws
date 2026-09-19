@@ -20,7 +20,7 @@ data storage/analytics.
 
 > **How to read this document.** It is deliberately **category-level**: rows are
 > phrased as threat *classes* rather than as the numbered threat entries, so a
-> reader can scan a STRIDE category without holding 98 identifiers in their head.
+> reader can scan a STRIDE category without holding 99 identifiers in their head.
 > The authoritative per-threat record — identifier, score, status, and whether a
 > mitigation is present or pending — is the
 > [risk register](../risk-assessment/risk-matrix.md), which is derived from the

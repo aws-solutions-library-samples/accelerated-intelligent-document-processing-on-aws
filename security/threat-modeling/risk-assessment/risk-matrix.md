@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 | **Total Threats Identified** | 99 |
@@ -129,6 +129,7 @@
 | AUTH.T10 | Token Lifecycle — Post-Logout Token Reuse (Stateless JWT) | **3** | Authentication/RBAC | Accepted |
 | AUTH.T11 | Weak Transport Security (TLS downgrade / cleartext) | **3** | Authentication/RBAC | Mitigated |
 | AUTH.T12 | Missing Input-Shape Validation (Type Confusion via Lost Schema Validation) | **3** | Authentication/RBAC | Mitigated |
+| AUTH.T14 | Alternate Entry Path Bypassing an Operation's Group Check (Streaming Function URL) | **3** | Authentication/RBAC | Partially Mitigated |
 | BDA.T03 | BDA Project Configuration Tampering | **3** | BDA Mode | Mitigated |
 | CHAT.T02 | Conversation Session Hijacking | **3** | Companion Chat | Mitigated |
 | CHAT.T04 | Conversation History Data Exposure | **3** | Companion Chat | Mitigated |
@@ -170,10 +171,10 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (98 Threats)
+pie title Risk Distribution (99 Threats)
     "Critical (8-9)" : 9
     "High (6-7)" : 31
-    "Medium (3-5)" : 43
+    "Medium (3-5)" : 44
     "Low (1-2)" : 15
 ```
 
@@ -205,12 +206,12 @@ than the threat total.
 
 | STRIDE Category | Threats | Highest Risk |
 |----------------|---------|--------------|
-| **Spoofing** | 15 | Critical |
+| **Spoofing** | 16 | Critical |
 | **Tampering** | 39 | Critical |
 | **Repudiation** | 4 | High |
 | **Information Disclosure** | 38 | Critical |
 | **Denial of Service** | 17 | High |
-| **Elevation of Privilege** | 31 | Critical |
+| **Elevation of Privilege** | 32 | Critical |
 
 ### Mitigation Status
 
@@ -321,10 +322,18 @@ effort-to-value:
    denylists so a token-bearing field cannot be logged by one copy of the code
    after being suppressed in another. Tracked in **issue #921** — pending, so the
    weaker denylist is what applies today
-9. **Config-version scope fail-open (AUTH.T07)**: converge the four scope-aware
-   resolvers on the fail-closed contract the pii-anonymizer feature API and
-   `chat_with_document_processor` already use, so a lookup that cannot be
-   evaluated denies instead of reading as "unrestricted". Separately,
+9. **Config-version scope fail-open (AUTH.T07)**: converge the **five**
+   scope-aware resolvers (`configuration_resolver`,
+   `get_stepfunction_execution_resolver`, `reprocess_document_resolver`,
+   `sync_bda_idp_resolver`, `list_documents_*_resolver`) on the fail-closed
+   contract the pii-anonymizer feature API and `chat_with_document_processor`
+   already use, so a lookup that cannot be evaluated denies instead of reading as
+   "unrestricted". Apply the same rule at `idp_common.api_adapter`, which decides
+   which identifier the scope is resolved *by* and today substitutes another
+   principal name when a claims set carries no `email` — a substituted identifier
+   matches no user row, which a fail-open consumer reads as unrestricted. Key the
+   scope on the immutable Cognito `sub` rather than the email it can diverge from
+   (see [`docs/external-idp.md`](../../../docs/external-idp.md)). Separately,
    Chat-with-Document is unrestricted on the streaming transport because a Lambda
    Function URL forwards no verified per-user caller — that half closes with
    GAP-07 / **issue #920**, the same ID-token verification CHAT.T03 needs

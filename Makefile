@@ -233,15 +233,23 @@ check-data-plane-tags: ## Enforce idp:plane=data on the whitelisted data-plane L
 	@$(PYTHON) scripts/check_data_plane_tags.py || \
 		(echo -e "$(RED)ERROR: Data-plane Lambda tag check failed!$(NC)" && exit 1)
 
-check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release behind VERSION, or its export is stale
+check-threat-model-currency: ## Fail if security/threat-modeling/ is >1 release behind VERSION, its export is stale, or a document's stated counts disagree with the export
 	@$(PYTHON) scripts/check_threat_model_currency.py || \
 		(echo -e "$(RED)ERROR: Threat model is overdue for re-review!$(NC)" && exit 1)
 	@# The Threat Composer export is generated from the Markdown corpus. It fell
 	@# silently out of sync before (an added threat with no STATUS entry made it
 	@# unbuildable), so the same target verifies it rebuilds byte-identical.
+	@#
+	@# --check ALSO reads the corpus's prose tallies back and compares them with the
+	@# generated ones. The export is where the counts are computed and a dozen
+	@# documents restate them, and nothing compared the two: the export carried 99
+	@# threats while four documents said 98, and three were a release behind on the
+	@# status tally. Every one of those was written by someone who had just read the
+	@# generated numbers, which is why this has to be a gate and not a habit.
 	@$(PYTHON) security/threat-modeling/scripts/build_threat_model.py --check || \
-		(echo -e "$(RED)ERROR: threat-model.tc.json is stale — regenerate with$(NC)" && \
-		 echo -e "$(YELLOW)  python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && exit 1)
+		(echo -e "$(RED)ERROR: threat-model.tc.json is stale, or a document's counts disagree with it$(NC)" && \
+		 echo -e "$(YELLOW)  regenerate: python3 security/threat-modeling/scripts/build_threat_model.py$(NC)" && \
+		 echo -e "$(YELLOW)  a count mismatch is fixed in the DOCUMENT, not the export$(NC)" && exit 1)
 
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \

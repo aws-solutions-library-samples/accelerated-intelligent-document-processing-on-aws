@@ -257,11 +257,23 @@ def _caller_email(identity: dict) -> str:
     ``uuid4`` minted by ``user_management`` and unrelated to the Cognito ``sub``;
     the Cognito account's username *is* the email; and no ``sub`` attribute is
     stored on the table at all. So there is no key a ``GetItem`` could be built
-    from, and ``EmailIndex`` is the join — which is also how the six other
-    consumers of the same ``allowedConfigVersions`` data resolve it.
+    from, and ``EmailIndex`` is the join — which is also how every other consumer
+    of the same ``allowedConfigVersions`` data resolves it.
+
+    ⚠️ **Only the ``email`` claim is read — there is deliberately no fallback to
+    another field.** Every alternative identifier a claims set might carry (a
+    ``sub``, a ``cognito:username``, a username the adapter substituted for a
+    missing email) is not an email address for every caller, and querying
+    ``EmailIndex`` with one matches no row. An empty page is indistinguishable
+    from "this user has no restriction", so a fallback would convert an
+    unresolvable caller into an *unrestricted* one — silently, and precisely for
+    the callers whose claims are least like the ones this was tested against.
+    Returning the empty string instead makes the lookup raise, and the turn is
+    denied. Fail-closed is the whole contract here; a substituted identifier is
+    not a cheaper way to satisfy it.
     """
     claims = identity.get("claims") or {}
-    return str(claims.get("email") or identity.get("username") or "")
+    return str(claims.get("email") or "")
 
 
 def _get_user_allowed_config_versions(caller_email: str) -> list[str] | None:

@@ -89,7 +89,7 @@ Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 | config library | `pytest config_library/test_config_library.py -q` | 114 pass |
 | pipeline-hooks | `cd lib/idp_common_pkg && pytest tests/unit/lambdas/test_pipeline_hooks_dispatcher.py -q` | 6 pass |
 | capacity Lambda | `cd src/lambda/calculate_capacity && pytest -q` | 33 pass |
-| chat-with-document | `cd src/lambda/chat_with_document_processor && pytest tests -q` | 34 pass |
+| chat-with-document | `cd src/lambda/chat_with_document_processor && pytest tests -q` | 39 pass |
 | chat-stream | `cd src/lambda/chat_stream_processor && pytest tests -q` | 32 pass |
 
 ## There is no standing failure set — green means green
