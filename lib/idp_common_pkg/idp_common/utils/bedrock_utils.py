@@ -81,8 +81,32 @@ _LAMBDA_DEADLINE_EPOCH: ContextVar[float | None] = ContextVar(
 # Seconds of the remaining budget left unspent when clamping, so a sleep does not
 # end exactly at the wall with no room for the attempt that follows it. This is a
 # floor on usefulness, not a guarantee: an agent call can legitimately take minutes
-# (read_timeout is 600s), so no reserve can promise the next attempt completes.
+# (up to AGENT_READ_TIMEOUT_SECONDS), so no reserve can promise the next attempt
+# completes.
 _DEADLINE_RESERVE_SECONDS = 30.0
+
+# ---------------------------------------------------------------------------
+# The shard invocation's time budget, in one place because its three parts are
+# only correct relative to each other (#1014).
+#
+#     AGENT_READ_TIMEOUT_SECONDS + AGENT_MAX_TOTAL_BACKOFF_SECONDS
+#         < LAMBDA_MAX_TIMEOUT_SECONDS
+#
+# One stalled Bedrock request plus the whole backoff allowance must still leave
+# room for the work. At the previous read timeout of 600 s that sum was exactly
+# 900 and left none: a shard died on the wall clock, Step Functions read the
+# resulting ``Sandbox.Timedout`` as DETERMINISTIC (one attempt, by design —
+# #917), so the transient blip a retry would have cleared became the one failure
+# not retried, and ``ExtractionShardMap`` — which tolerates no shard failures —
+# discarded the sibling shards that had already succeeded along with it.
+#
+# These live here rather than in ``extraction.agentic_idp`` because
+# ``extraction.runtime`` needs them too and is deliberately importable without
+# the strands-backed agentic stack.
+LAMBDA_MAX_TIMEOUT_SECONDS = 900.0
+AGENT_READ_TIMEOUT_SECONDS = 180.0
+AGENT_MAX_BACKOFF_SECONDS = 60.0
+AGENT_MAX_TOTAL_BACKOFF_SECONDS = 300.0
 
 
 def set_lambda_deadline_epoch(deadline_epoch: float | None) -> None:

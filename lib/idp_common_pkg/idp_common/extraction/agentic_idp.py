@@ -55,6 +55,9 @@ from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.topk_resolver import resolve_candidates
 from idp_common.utils.bedrock_utils import (
+    AGENT_MAX_BACKOFF_SECONDS,
+    AGENT_MAX_TOTAL_BACKOFF_SECONDS,
+    AGENT_READ_TIMEOUT_SECONDS,
     async_exponential_backoff_retry,
 )
 from idp_common.utils.strands_agent_tools.todo_list import (
@@ -1114,16 +1117,22 @@ ROW COUNT VALIDATION:
 # Lambda deadline (``utils.bedrock_utils.set_lambda_deadline_epoch``), so on a
 # short-remaining invocation it gives up sooner than either constant implies.
 # ``max_retries=50`` is left alone: the real bound is time, not attempts.
-_AGENT_MAX_BACKOFF_SECONDS = 60
-_AGENT_MAX_TOTAL_BACKOFF_SECONDS = 300
+#
+# The third part of the same budget — how long ONE request may stall before
+# botocore gives up and this ladder gets its turn — is
+# ``AGENT_READ_TIMEOUT_SECONDS``. All three are defined together in
+# ``utils.bedrock_utils`` because they are only correct relative to each other and
+# to the function's Lambda timeout; see the comment there, and
+# ``tests/unit/extraction/test_shard_timeout_budget.py``, which asserts the
+# inequality so this cannot regress into a comment nobody re-checks (#1014).
 
 
 @async_exponential_backoff_retry(
     max_retries=50,
     initial_delay=5,
-    max_delay=_AGENT_MAX_BACKOFF_SECONDS,
+    max_delay=AGENT_MAX_BACKOFF_SECONDS,
     jitter=0.5,
-    max_total_delay=_AGENT_MAX_TOTAL_BACKOFF_SECONDS,
+    max_total_delay=AGENT_MAX_TOTAL_BACKOFF_SECONDS,
 )
 async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
     return await agent.invoke_async(input)
@@ -1900,7 +1909,7 @@ async def concurrent_structured_output_async(
     context: str = "Extraction",
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     max_tokens: int | None = None,
     checkpoint_callback: Any | None = None,
     custom_instruction: str | None = None,
@@ -1994,7 +2003,7 @@ async def structured_output_async(
     context: str = "Extraction",
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     max_tokens: int | None = None,
     checkpoint_callback: Any | None = None,
     checkpoint_buffer_data: dict[str, Any] | None = None,
@@ -2416,7 +2425,7 @@ def structured_output(
     config: IDPConfig = IDPConfig(),
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     checkpoint_callback: Any | None = None,
     checkpoint_buffer_data: dict[str, Any] | None = None,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,

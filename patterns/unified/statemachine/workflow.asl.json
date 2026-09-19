@@ -620,6 +620,17 @@
               "shard_index.$": "$$.Map.Item.Value.shard_index"
             },
             "MaxConcurrency": 5,
+            "Retry": [
+              {
+                "Comment": "One retry of the WHOLE Map. The Map declares no ToleratedFailurePercentage, so Step Functions' default of 0 applies and a single failed shard fails the Map - discarding the output of the shards that SUCCEEDED, which is strictly worse for that document than not sharding at all (#1014). Retrying is cheap and not a re-run from scratch: per-shard results are persisted to S3 and only incomplete shards re-infer, which is what that persistence was built for and what nothing could use while the Map had no retrier. Deliberately NOT a higher tolerance: accepting a partial extraction would ship silent data loss, which is worse than failing. MaxAttempts 1 because a deterministic shard failure (a bad schema, an over-cap request) reproduces, so it costs one extra Map pass and no more.",
+                "ErrorEquals": [
+                  "States.ExceedToleratedFailureThreshold"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 1,
+                "BackoffRate": 1.0
+              }
+            ],
             "ResultPath": "$.ShardResults",
             "Next": "ExtractionMergeStep"
           },

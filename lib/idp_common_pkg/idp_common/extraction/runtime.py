@@ -37,6 +37,7 @@ from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from idp_common.config.models import IDPConfig
+from idp_common.utils.bedrock_utils import AGENT_READ_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -435,7 +436,7 @@ async def extract_one_shard(
     context: str = "Extraction",
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     max_tokens: int | None = None,
     checkpoint_callback: Any | None = None,
     custom_instruction: str | None = None,
@@ -745,7 +746,7 @@ class ExtractionRuntime(abc.ABC):
         context: str = "Extraction",
         max_retries: int = 7,
         connect_timeout: float = 10.0,
-        read_timeout: float = 600.0,
+        read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
         max_tokens: int | None = None,
         checkpoint_callback: Any | None = None,
         custom_instruction: str | None = None,
@@ -782,7 +783,7 @@ class InProcessRuntime(ExtractionRuntime):
         context: str = "Extraction",
         max_retries: int = 7,
         connect_timeout: float = 10.0,
-        read_timeout: float = 600.0,
+        read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
         max_tokens: int | None = None,
         checkpoint_callback: Any | None = None,
         custom_instruction: str | None = None,
