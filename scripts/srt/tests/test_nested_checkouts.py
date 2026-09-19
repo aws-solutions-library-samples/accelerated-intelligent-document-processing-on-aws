@@ -9,6 +9,7 @@ orphaned-copy case (a directory under `.claude/worktrees/` that git no longer
 lists still costs the scanner exactly as much as a registered one).
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,39 @@ def _git(*args, cwd):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
+def _commit(*args, cwd):
+    """Commit in a throwaway fixture repo, immune to the developer's git config.
+
+    `--no-verify` and an empty global/system config are both required, and for
+    different reasons. A managed developer machine may install a global
+    `pre-commit`/`commit-msg` hook that rejects any commit whose author email is not
+    an approved one — and this fixture deliberately uses a placeholder. That made all
+    eight tests in this file error at setup on a corporate desktop while passing in
+    CI, which is the worst distribution for a failure: nobody who could fix it sees
+    it, and everybody who runs `make test` locally sees a red gate with no bearing on
+    their change. Passing `-c user.email=...` does not help, because the objection is
+    to the value rather than to where it was configured. Emptying the config files as
+    well keeps a global `commit.gpgsign`, `core.hooksPath` or commit template out of a
+    fixture that is not trying to test any of them.
+    """
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    subprocess.run(
+        ["git", "commit", "--no-verify", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+
+
 @pytest.fixture
 def repo(tmp_path):
     """A committed git repo with no nested checkouts."""
@@ -40,7 +74,7 @@ def repo(tmp_path):
     _git("config", "user.name", "t", cwd=root)
     (root / "a.txt").write_text("x\n")
     _git("add", ".", cwd=root)
-    _git("commit", "-qm", "init", cwd=root)
+    _commit("-qm", "init", cwd=root)
     return root
 
 

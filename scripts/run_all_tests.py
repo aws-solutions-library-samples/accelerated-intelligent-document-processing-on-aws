@@ -158,17 +158,17 @@ RUN_ROOTS = [
     # Run the sdlc/tests subdir specifically — the parent `scripts` root stays
     # quarantined because a bare `pytest scripts` mis-collects test_api_rbac.py.
     "scripts/sdlc/tests",
-    # General scripts/ unit tests (e.g. check_data_plane_tags, run-registry
-    # tests). Run the tests/ subdir specifically for the same "mis-collect
-    # from scripts root" reason as scripts/sdlc/tests above.
+    # General scripts/ unit tests: the check_data_plane_tags and run-registry
+    # tests, and the repo-script gates (the Python arn:aws: partition checker).
+    # Run the tests/ subdir specifically for the same "mis-collect from scripts
+    # root" reason as scripts/sdlc/tests above. Listed ONCE — it was registered
+    # twice, under two comments, when the second set of gates was added, which
+    # ran the whole 1,000-test suite twice per `make test` (~3.5 min each) and
+    # printed the root twice in the failed-roots summary.
     "scripts/tests",
     # Dependency-vulnerability gate (dep_audit.py) unit tests. Registered as a
     # subdir for the same reason as scripts/sdlc/tests above.
     "scripts/security/tests",
-    # Repo-script gates (the Python arn:aws: partition checker). Same reason as
-    # the two above: the parent `scripts` root stays quarantined, so a new test
-    # dir under it is invisible to this gate unless registered here.
-    "scripts/tests",
     # SRT gate helpers (ci_paths.py) plus the guard that keeps gitignored
     # build-artifact paths out of the committed scripts/srt/issues.json baseline.
     # Same registration reason as the three above.
