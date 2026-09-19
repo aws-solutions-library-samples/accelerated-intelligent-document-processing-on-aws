@@ -228,10 +228,91 @@ def test_an_unrelated_edit_to_the_same_section_is_not_refused():
         # filled in at install — so it is not a registration.
         ({"preprocessing": {"args": []}}, "preprocessing", False),
         ({}, "postOcr", False),
+        # A NULL value is not "nothing": the manager reads it as "restore this field
+        # from Config#default" and copies the default's whole section in, `postHook`
+        # included. Both halves therefore test key PRESENCE, not a value shape.
+        ({"ocr": None}, "postOcr", True),
+        ({"preprocessing": None}, "preprocessing", True),
+        ({"use_bda": None}, "postOcr", True),
+        # A null section for a DIFFERENT point still says nothing about this one.
+        ({"summarization": None}, "postOcr", False),
     ],
 )
 def test_delta_touches_hook_registration(delta, point, expected):
     assert delta_touches_hook_registration(delta, point) is expected
+
+
+def test_restore_from_default_of_a_hook_section_is_refused():
+    """`{"ocr": null}` installs the default's hook, so it is a hook write.
+
+    `_apply_deltas_with_default_restore` copies `Config#default`'s whole `ocr` block
+    into the target when the delta's value is null — `postHook` and all. Against a
+    `use_bda: true` profile that installs exactly the inert `onError: fail` gate at
+    `postOcr` that #982 is about. Refusing the literal spelling while allowing the
+    restore spelling would be a hole in the shape the backend documents as
+    supported, reachable by the actor the check protects from themselves.
+    """
+    with pytest.raises(InertGatingHookError, match="postOcr"):
+        ConfigurationManager._reject_inert_gating_hooks(
+            IDPConfig(**_config(True)), {"ocr": None}
+        )
+
+
+def test_restore_from_default_of_an_unrelated_section_is_not_refused():
+    ConfigurationManager._reject_inert_gating_hooks(
+        IDPConfig(**_config(True)), {"summarization": None}
+    )
+
+
+def _stub_manager(default_config, current_config, saved):
+    """A ConfigurationManager with only the I/O stubbed.
+
+    `_apply_deltas_with_default_restore` runs for real, since the restore semantics
+    are what is under test.
+    """
+    manager = ConfigurationManager.__new__(ConfigurationManager)
+    manager.get_configuration = lambda *a, **k: default_config
+    manager._get_full_config_for_version = lambda version: current_config
+    manager._read_record = lambda *a, **k: None
+    manager.save_configuration = lambda config_type, config, **k: saved.update(
+        config=config, kwargs=k
+    )
+    return manager
+
+
+def test_the_update_mutation_refuses_a_restore_that_installs_the_defaults_hook():
+    """End to end through the real entry point, not just the predicate.
+
+    A `default` in Pipeline mode may legitimately hold an `onError: fail` hook at
+    `postOcr`. Saving `{"ocr": null}` against a `use_bda: true` profile copies that
+    hook into the profile, where it can never fire — so this write, and not some
+    earlier one, is what creates the inert gate.
+    """
+    saved = {}
+    manager = _stub_manager(
+        default_config=IDPConfig(**_config(False)),  # hook lives in Pipeline default
+        current_config=IDPConfig(use_bda=True),  # profile has the mode, not the hook
+        saved=saved,
+    )
+
+    with pytest.raises(InertGatingHookError, match="postOcr"):
+        manager.handle_update_custom_configuration({"ocr": None}, version="P")
+    assert saved == {}, "the row must not be written when the save is refused"
+
+
+def test_the_update_mutation_allows_a_restore_of_an_unrelated_section():
+    saved = {}
+    manager = _stub_manager(
+        default_config=IDPConfig(**_config(False)),
+        current_config=IDPConfig(use_bda=True),
+        saved=saved,
+    )
+
+    assert (
+        manager.handle_update_custom_configuration({"summarization": None}, version="P")
+        is True
+    )
+    assert saved["config"].use_bda is True
 
 
 def test_reject_returns_advisory_findings_instead_of_raising():
@@ -240,23 +321,41 @@ def test_reject_returns_advisory_findings_instead_of_raising():
     assert advisory[0]["gating"] is False
 
 
-def test_reset_to_default_is_deliberately_not_checked():
+def test_reset_to_default_succeeds_even_when_default_holds_an_inert_gate():
     """Resetting a version to `default` is exempt, and that is on purpose.
 
     Reset is the escape hatch from a bad version; if the `default` row carries an
     inert gating hook, refusing the reset wedges the admin with no in-UI way out,
     and the copy introduces nothing that was not already stored. The runtime audit
-    still reports the hook on every document. Asserted against the source so the
-    exemption cannot be removed silently.
-    """
-    import inspect
+    still reports the hook on every document.
 
-    source = inspect.getsource(ConfigurationManager.handle_update_custom_configuration)
-    reset_branch = source.split("if reset_to_default:", 1)[1].split(
-        "if save_as_default:", 1
-    )[0]
-    assert "_reject_inert_gating_hooks" not in reset_branch
-    assert "Deliberately NOT subject to _reject_inert_gating_hooks" in source
+    Asserted behaviourally — the write goes through and carries the hook — rather
+    than by reading the source for a comment, so rewording, extracting or reordering
+    the branch cannot fail this for the wrong reason.
+    """
+    default = IDPConfig(**_config(True))
+    manager = ConfigurationManager.__new__(ConfigurationManager)
+    saved = {}
+
+    def _get_configuration(config_type, version=None, **kwargs):
+        return default
+
+    def _save_configuration(config_type, config, version=None, **kwargs):
+        saved["version"] = version
+        saved["config"] = config
+
+    manager.get_configuration = _get_configuration
+    manager.save_configuration = _save_configuration
+
+    assert (
+        manager.handle_update_custom_configuration(
+            {"resetToDefault": True}, version="P"
+        )
+        is True
+    )
+    assert saved["version"] == "P"
+    assert saved["config"].use_bda is True
+    assert saved["config"].ocr.postHook[0].onError == "fail"
 
 
 def test_a_stored_config_in_this_shape_still_loads():

@@ -90,12 +90,27 @@ def delta_touches_hook_registration(delta: Dict[str, Any], point: str) -> bool:
     or it carries the hook registration for that point — `postHook` for a post-step
     point, or one of :data:`FLAT_HOOK_REGISTRATION_KEYS` for a flat one. Editing
     another field of the same section (say `ocr.image.dpi`) does not count.
+
+    Both halves test KEY PRESENCE, not a value shape, because a `None` value is not
+    "nothing" in this API: `ConfigurationManager._apply_deltas_with_default_restore`
+    reads it as "restore this field from `Config#default`" and copies the default's
+    whole section into the target — `postHook` and all. So `{"ocr": None}` registers
+    whatever hook the default carries, which is a hook write by any other name, and
+    against a `use_bda: true` profile it can install exactly the inert gate this
+    check exists to refuse. Treating a null section as untouched would let the same
+    registration through in a shape the backend documents as supported, while
+    refusing it when spelled out literally.
     """
     if not isinstance(delta, dict):
         return False
     if "use_bda" in delta:
         return True
-    section = delta.get(HOOK_POINT_TO_SECTION.get(point, ""))
+    key = HOOK_POINT_TO_SECTION.get(point, "")
+    if key not in delta:
+        return False
+    section = delta[key]
+    if section is None:
+        return True
     if not isinstance(section, dict):
         return False
     if point in FLAT_HOOK_POINTS:

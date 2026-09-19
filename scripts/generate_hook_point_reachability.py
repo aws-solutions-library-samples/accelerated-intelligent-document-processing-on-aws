@@ -183,17 +183,36 @@ def _is_bda_rule(choice: dict[str, Any]) -> bool:
 
 
 def find_router(states: dict[str, Any]) -> str:
-    """The Choice state that routes on `use_bda` being true."""
-    for name, state in states.items():
-        if state.get("Type") != "Choice":
-            continue
-        if any(_is_bda_rule(choice) for choice in state.get("Choices") or []):
-            return name
-    raise SystemExit(
-        f"no Choice state has a rule `{ROUTER_VARIABLE} BooleanEquals true`; the "
-        f"processing-mode router moved, was renamed, or was rewritten with a "
-        f"different comparator, and the reachability table cannot be derived"
-    )
+    """The one Choice state that routes on `use_bda` being true.
+
+    Uniqueness is asserted, not assumed. Taking the first match would let a SECOND
+    such Choice — "run this extra step only in BDA mode" is a plausible edit — be
+    adopted as the router if it happened to be ordered first, and its two sides are
+    not the processing-mode branches: the table would then hand BDA mode the three
+    step-specific points and reopen #982 by a different door than the comparator
+    check closes.
+    """
+    matches = [
+        name
+        for name, state in states.items()
+        if state.get("Type") == "Choice"
+        and any(_is_bda_rule(choice) for choice in state.get("Choices") or [])
+    ]
+    if not matches:
+        raise SystemExit(
+            f"no Choice state has a rule `{ROUTER_VARIABLE} BooleanEquals true`; the "
+            f"processing-mode router moved, was renamed, or was rewritten with a "
+            f"different comparator, and the reachability table cannot be derived"
+        )
+    if len(matches) > 1:
+        raise SystemExit(
+            f"{len(matches)} Choice states switch on `{ROUTER_VARIABLE} "
+            f"BooleanEquals true` ({', '.join(sorted(matches))}); the processing-mode "
+            f"router is ambiguous, so which branch a hook point belongs to cannot be "
+            f"derived. If one of these is a mode-gated step rather than the router, "
+            f"give it a distinguishable shape (or teach this script which is which)."
+        )
+    return matches[0]
 
 
 def derive(asl: dict[str, Any]) -> dict[str, Any]:
@@ -210,8 +229,13 @@ def derive(asl: dict[str, Any]) -> dict[str, Any]:
     "always run" by SUBTRACTION — from `StartAt` minus the branches, or minus the
     router's own reachable set — empties on such an edge, which would drop
     `preprocessing` from both modes and make the consumers refuse a gating hook at
-    the one point that always runs. `always_states` is reported for the generated
-    module's documentation and is computed by blocking the router itself.
+    the one point that always runs.
+
+    `always_states` does not feed `render()` — the generated module needs only the
+    per-mode sets. It is derived here (by blocking the router itself) because it is
+    the claim the docs make about `preprocessing` being the one point both modes
+    execute, and `patterns/unified/tests/test_hook_point_reachability.py` asserts it
+    against this graph.
     """
     states = asl["States"]
     router = find_router(states)
@@ -219,6 +243,17 @@ def derive(asl: dict[str, Any]) -> dict[str, Any]:
     bda_entry = next(
         choice["Next"] for choice in states[router]["Choices"] if _is_bda_rule(choice)
     )
+    # The Pipeline branch is the router's Default. A router rewritten with an
+    # explicit `BooleanEquals: false` rule and no Default is legal ASL, and a bare
+    # KeyError here would say nothing about what to do; the table genuinely cannot be
+    # derived without knowing where the non-BDA documents go.
+    if not isinstance(states[router].get("Default"), str):
+        raise SystemExit(
+            f"the processing-mode router {router} has no string `Default`, so the "
+            f"Pipeline branch entry is unknown. If the router now names both branches "
+            f"with explicit rules, teach this script to read the non-BDA rule instead "
+            f"of Default."
+        )
     pipeline_entry = states[router]["Default"]
     start = asl["StartAt"]
 

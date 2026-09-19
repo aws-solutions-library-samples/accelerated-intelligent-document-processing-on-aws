@@ -705,6 +705,13 @@ class ConfigurationManager:
         *new* revision, so the state being replaced remains inspectable. Returns
         the new revision number.
 
+        Not subject to `_reject_inert_gating_hooks` (#982), for the same reason
+        reset-to-default is not: the whole revision body is restored atomically, so
+        `use_bda` and any pipeline hook travel together and no combination is created
+        that was not once live in this profile. Refusing would also make a revision
+        unrestorable with no way to edit it first. The dispatcher's runtime audit
+        still reports an inert hook on every document.
+
         Raises:
             ValueError: If the revision is not retained or is unreadable
         """

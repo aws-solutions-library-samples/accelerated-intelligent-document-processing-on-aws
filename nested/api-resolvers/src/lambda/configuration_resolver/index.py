@@ -497,9 +497,9 @@ def handler(event, context):
         # reach, so the gate could not work (#982). Reported as a ValidationError
         # with the message verbatim — falling through to the generic handler below
         # would label it "UnexpectedError", which reads to an admin as a product bug
-        # rather than as the specific thing they have to change. Listed before the
-        # JSONDecodeError clause because both are ValueError subclasses and the
-        # first matching clause wins.
+        # rather than as the specific thing they have to change. It is a ValueError
+        # subclass, and so a SIBLING of json.JSONDecodeError rather than a parent or
+        # child of it, so neither clause can shadow the other whatever the order.
         logger.error(f"Pipeline-hook reachability refusal: {e}")
         return {
             "success": False,

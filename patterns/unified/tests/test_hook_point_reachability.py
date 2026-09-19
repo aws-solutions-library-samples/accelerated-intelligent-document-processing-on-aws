@@ -233,6 +233,48 @@ def test_an_inverted_router_is_refused_rather_than_silently_relabelled():
 
 
 @pytest.mark.unit
+def test_a_second_mode_switching_choice_is_refused_rather_than_adopted():
+    """Uniqueness of the router is asserted, not assumed.
+
+    "Run this extra step only in BDA mode" is a plausible future edit, and it adds a
+    second Choice switching on the same variable with the same comparator. Taking the
+    first match would adopt it as the router if it were ordered earlier — and its two
+    sides are not the processing-mode branches, so the table would hand BDA mode the
+    three step-specific points and reopen #982 by a different door than the
+    comparator assertion closes.
+    """
+    asl = GEN.load_asl()
+    asl["States"]["ExtraBdaOnlyGate"] = {
+        "Type": "Choice",
+        "Choices": [
+            {
+                "Variable": GEN.ROUTER_VARIABLE,
+                "BooleanEquals": True,
+                "Next": TABLE["entries"]["bda"],
+            }
+        ],
+        "Default": TABLE["entries"]["pipeline"],
+    }
+
+    with pytest.raises(SystemExit, match="router is ambiguous"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
+def test_a_router_without_a_default_reports_what_is_missing():
+    """A Choice with only explicit rules and no `Default` is legal ASL.
+
+    The Pipeline branch is read from `Default`, so without it the table genuinely
+    cannot be derived — but a bare KeyError would say nothing about what to do.
+    """
+    asl = GEN.load_asl()
+    del asl["States"][TABLE["router"]]["Default"]
+
+    with pytest.raises(SystemExit, match="no string `Default`"):
+        GEN.derive(asl)
+
+
+@pytest.mark.unit
 def test_the_generated_helper_answers_the_question_consumers_ask():
     """Load the committed dispatcher copy and check its two exported helpers."""
     path = (

@@ -523,6 +523,57 @@ def test_a_preset_that_says_nothing_about_hooks_is_unaffected_by_a_stored_one(
     assert result["configVersionName"] == "sample-health-insurance-review"
 
 
+def test_a_self_contradictory_preset_is_refused_on_the_sparse_path_too(
+    monkeypatch, configuration_table, load_lambda
+):
+    """No `Config#default` to merge with is not a reason to skip the check.
+
+    With the default unreadable, `_merge_over_default` returns None and the preset is
+    written raw by `_write_sparse`. A preset that sets `use_bda: true` AND registers
+    an `onError: fail` hook at `postOcr` is determinable from the preset alone — no
+    host default needed — so losing that case to the fallback would leave the docs
+    claiming a check this path does not make.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    # No Config#default row is seeded, so the merge path is unavailable.
+    preset = {
+        "use_bda": True,
+        "ocr": {
+            "postHook": [
+                {
+                    "featureId": "pii-redactor",
+                    "arn": _HOOK_ARN,
+                    "onError": "fail",
+                    "enabled": True,
+                }
+            ]
+        },
+    }
+
+    with pytest.raises(ValueError, match="postOcr"):
+        mod.handler(
+            make_appsync_event(
+                "applyFeatureConfigPreset",
+                {"input": _apply_input(config=json.dumps(preset))},
+            ),
+            None,
+        )
+    assert _get_row("sample-health-insurance-review") is None
+
+
+def test_a_sparse_preset_without_a_mode_is_still_installable(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The ordinary sparse install: no `use_bda` in the preset and no default to
+    read means no basis to judge reachability, and the install proceeds."""
+    mod = _preload(monkeypatch, load_lambda)
+    result = mod.handler(
+        make_appsync_event("applyFeatureConfigPreset", {"input": _apply_input()}),
+        None,
+    )
+    assert result["configVersionName"] == "sample-health-insurance-review"
+
+
 def test_a_preset_registering_at_preprocessing_installs_in_bda_mode(
     monkeypatch, configuration_table, load_lambda
 ):

@@ -324,9 +324,13 @@ class TestInertGatingHookRefusal:
         assert result["error"]["message"] == message
 
     def test_a_json_decode_error_still_reports_as_itself(self, manager):
-        """Both are ValueError subclasses and the first matching clause wins, so
-        the new one must not shadow the JSON handler."""
-        manager.handle_update_custom_configuration.side_effect = ValueError("other")
+        """The refusal clause must not swallow a malformed payload.
+
+        `InertGatingHookError` and `json.JSONDecodeError` are sibling ValueError
+        subclasses, so neither can catch the other — this pins the outcome rather
+        than the clause order. Malformed JSON fails in the handler's own `json.loads`
+        before the manager is called, which is why the manager is left un-stubbed.
+        """
         result = index.handler(
             _event(
                 "updateConfiguration",
@@ -336,3 +340,4 @@ class TestInertGatingHookRefusal:
         )
         assert result["success"] is False
         assert result["error"]["type"] == "JSONDecodeError"
+        manager.handle_update_custom_configuration.assert_not_called()

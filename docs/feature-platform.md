@@ -493,14 +493,21 @@ looking healthy:
 | A configuration is saved through the Configuration UI / `updateConfiguration`, or validated by `idp-cli config-validate` / `config-upload` | Same split. The save-time check is scoped to **what the write changes** — the hook registration for that point, or `use_bda` itself. Editing an unrelated field does not fail because of a hook that was already stored, and the automated BDA blueprint↔class synchronisation (which sends only `classes`) is unaffected. |
 | Every document, at runtime | The `preprocessing` dispatch — the one invocation ahead of the routing decision, so it happens in both modes — lists every hook the chosen branch will not reach at `$.HookResults.preprocessing.Payload.unreachableHooks`, and logs each one. It reads the mode from the **document**, the same value the routing Choice switches on, so a `use_bda` flip made *after* the hook was registered is caught here. |
 
-Two write paths are deliberately outside the refusal, and the runtime report is
-what covers them: **resetting a profile to `default`** (reset is the escape hatch
-from a bad version, so refusing it would wedge an admin whose `default` carries the
-hook, and the copy introduces nothing that was not already stored), and the
-**`CustomConfigPath` custom resource** at stack create/update, where a refusal
-would fail the deployment. A configuration already stored in this shape also still
-*loads* — the checks are write-time, because failing to deserialize a stored record
-would break every Lambda that reads the configuration.
+Three write paths are deliberately outside the refusal, and the runtime report is
+what covers them. **Resetting a profile to `default`** and **restoring a profile
+revision** both replay a configuration that was already stored as a whole, so
+`use_bda` and the hook travel together and no new combination is created; refusing
+either would also make the escape hatch unusable — there is no way to edit a
+`default` row or a stored revision before replaying it. The **`CustomConfigPath`
+custom resource** at stack create/update is the third, where a refusal would fail
+the deployment. A configuration already stored in this shape also still *loads* —
+the checks are write-time, because failing to deserialize a stored record would
+break every Lambda that reads the configuration.
+
+One write form that is **not** exempt, because it is a hook registration in
+disguise: a delta of `{"ocr": null}` means "restore this section from `default`",
+which copies the default's `postHook` list into the profile. That is judged like any
+other hook write.
 
 `unreachableHooks` in the execution history looks like this — one entry per hook,
 naming the hook, the point, its policy and the branch that skipped it:
