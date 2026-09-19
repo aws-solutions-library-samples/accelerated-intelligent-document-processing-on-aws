@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -29,7 +28,12 @@ from boto3.dynamodb.conditions import Key
 # handler directory is already on the path) and when another suite loads this
 # module by file path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config_scope import scope_allows  # noqa: E402
+from config_scope import (  # noqa: E402
+    ScopeLookupError,
+    caller_email_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 
 # Same story for the log redactor: byte-identical copy of
 # idp_common/utils/log_sanitizer.py, kept in step by
@@ -201,12 +205,18 @@ def _deserialize_next_token(token: str):
 # ---------------------------------------------------------------------------
 
 def _get_caller_identity(event):
-    """Extract caller's Cognito groups, username, and email from AppSync event identity."""
+    """Extract caller's Cognito groups, username, and email from the event identity.
+
+    ``email`` is the config-version scope lookup key, so it comes from the
+    ``email`` claim alone — see ``caller_email_from_claims`` in the vendored
+    ``config_scope``. ``username`` keeps its fallback chain because it is not a
+    scope key: it matches ``HITLReviewOwner`` for the reviewer-only view.
+    """
     identity = event.get("identity", {})
     claims = identity.get("claims", {})
     groups = claims.get("cognito:groups", [])
     username = claims.get("cognito:username", "") or claims.get("sub", "")
-    email = claims.get("email", "") or identity.get("username", "") or username
+    email = caller_email_from_claims(claims)
 
     if isinstance(groups, str):
         groups = [groups]
@@ -228,34 +238,43 @@ def _is_reviewer_only(caller):
 
 
 def _get_user_allowed_config_versions(caller_email):
-    """Look up user's allowedConfigVersions from UsersTable with caching."""
-    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
-    if not users_table_name:
+    """The caller's allowedConfigVersions, or None if unrestricted.
+
+    Thin wrapper over the shared fail-closed lookup in ``config_scope`` so every
+    consumer of this rule resolves it identically. Raises ``ScopeLookupError``
+    when the scope cannot be evaluated; the caller must deny.
+    """
+    return resolve_allowed_config_versions(
+        caller_email,
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=dynamodb,
+        cache=_user_scope_cache,
+        cache_ttl=_USER_SCOPE_CACHE_TTL,
+    )
+
+
+def _caller_scope_or_deny(caller):
+    """The caller's config-version scope for one request, or a denial.
+
+    Admins are unrestricted and never looked up. For everyone else this fails
+    CLOSED: a scope that cannot be *evaluated* (no UsersTable wired, no email
+    claim on the verified identity, a failed DynamoDB query) is not a caller
+    without restrictions, and reading it as one hands every document in the
+    deployment to a caller entitled to a subset (AUTH.T07).
+    """
+    if caller["is_admin"]:
         return None
-
-    now = time.time()
-    cached = _user_scope_cache.get(caller_email)
-    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
-        return cached["scope"]
-
     try:
-        users_table = dynamodb.Table(users_table_name)
-        response = users_table.query(
-            IndexName="EmailIndex",
-            KeyConditionExpression=Key("email").eq(caller_email),
+        return _get_user_allowed_config_versions(caller["email"])
+    except ScopeLookupError as e:
+        logger.error(
+            "Denying listDocumentsByDateRange: config-version scope "
+            "unresolved: %s",
+            e,
         )
-        items = response.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            result = list(scope) if scope and len(scope) > 0 else None
-        else:
-            result = None
-    except Exception as e:
-        logger.warning(f"Failed to look up user scope for {caller_email}: {e}")
-        result = None
-
-    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
-    return result
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
 
 
 def _should_include_document(doc, caller, reviewer_only, allowed_versions):
@@ -284,7 +303,13 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
             hitl_triggered is True
             or hitl_status in ("PendingReview", "InProgress", "ReviewInProgress")
         )
-        owner_is_me = hitl_owner in (reviewer_id, reviewer_email)
+        # Only non-empty identifiers can match an owner. `reviewer_email` comes
+        # from the `email` claim alone and may legitimately be absent, and an
+        # unowned document carries `HITLReviewOwner == ""` — so comparing the two
+        # empties would read "nobody owns it" as "I own it".
+        owner_is_me = bool(hitl_owner) and hitl_owner in (
+            v for v in (reviewer_id, reviewer_email) if v
+        )
 
         if not hitl_active:
             return False
@@ -326,6 +351,14 @@ def handler(event, context):
 
     table_name = os.environ["TRACKING_TABLE_NAME"]
     table = dynamodb.Table(table_name)
+
+    # RBAC: resolve the caller and their config-version scope BEFORE reading any
+    # shard. A caller whose scope cannot be evaluated is denied, and there is no
+    # point iterating partitions for a request that will be refused.
+    caller = _get_caller_identity(event)
+    reviewer_only = _is_reviewer_only(caller)
+    allowed_versions = _caller_scope_or_deny(caller)
+    logger.info(f"Caller groups: {caller['groups']}, reviewer_only: {reviewer_only}")
 
     # Generate all shard partition keys for the range
     shard_pairs = _shard_pks_for_range(start_dt, end_dt)
@@ -378,15 +411,6 @@ def handler(event, context):
         result_next_token = None
 
     logger.info(f"Collected {len(collected_entries)} list entries")
-
-    # RBAC: Get caller identity and scope
-    caller = _get_caller_identity(event)
-    reviewer_only = _is_reviewer_only(caller)
-    allowed_versions = None
-    if not caller["is_admin"]:
-        allowed_versions = _get_user_allowed_config_versions(caller["email"])
-
-    logger.info(f"Caller groups: {caller['groups']}, reviewer_only: {reviewer_only}")
 
     # Extract ObjectKeys from list entries
     object_keys = [entry.get("ObjectKey") for entry in collected_entries if entry.get("ObjectKey")]

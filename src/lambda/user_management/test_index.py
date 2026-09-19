@@ -270,6 +270,58 @@ class TestMissingCognitoSync:
         assert remaining == []
 
 
+class TestOwnProfileLookupKey:
+    """`getMyProfile` finds the caller's row by the `email` claim, and only that.
+
+    The row's key is a `uuid4` minted in `create_user`, so email is the only
+    identifier that joins a Cognito principal to it. A substituted identifier does
+    not find the row by another route: it matches nothing, or — where the
+    substitute happens to be another account's address — the wrong row. So a
+    claims set with no email is answered from the verified Cognito groups, with no
+    query issued and no scope attributed.
+    """
+
+    def _event(self, claims, username=None):
+        identity = {"claims": claims}
+        if username is not None:
+            identity["username"] = username
+        return {"info": {"fieldName": "getMyProfile"}, "identity": identity}
+
+    def test_the_email_claim_is_the_lookup_key(self, users_table):
+        index = _load_index()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))
+
+        profile = index.get_my_profile(
+            self._event({"email": "annotator@example.com", "sub": "irrelevant"})
+        )
+
+        assert profile["userId"] == "u-1"
+        assert profile["allowedTestSets"] == [
+            "w2-synth-freelance-misclassified"
+        ]
+
+    @pytest.mark.parametrize(
+        "claims,username",
+        [
+            ({"sub": "abc-123", "cognito:username": "annotator@example.com"}, None),
+            ({"sub": "abc-123"}, "annotator@example.com"),
+            ({"email": ""}, "annotator@example.com"),
+        ],
+    )
+    def test_a_substitute_identifier_is_not_used_as_the_key(
+        self, users_table, claims, username
+    ):
+        """Each of these would have matched the stored row via the old chain."""
+        index = _load_index()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))
+
+        profile = index.get_my_profile(self._event(claims, username))
+
+        assert profile["userId"] != "u-1"
+        assert "allowedTestSets" not in profile
+        assert "allowedConfigVersions" not in profile
+
+
 def test_module_imports_without_aws(monkeypatch):
     """Cold-start safety: import must not require live AWS."""
     monkeypatch.setattr(boto3, "resource", MagicMock())

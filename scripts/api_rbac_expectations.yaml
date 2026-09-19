@@ -34,6 +34,15 @@
 #                  allowed_config_versions) to appear in enforced_in.
 #   scope_filtered: true -> op returns lists row-filtered by the caller's
 #                  allowedConfigVersions / reviewer status instead of 403.
+#   scope_enforced_in: OPTIONAL function name, for a scope_checked/scope_filtered
+#                  op whose module has no dispatch S4 can find on the op's name.
+#                  S4 reads only the code THIS op can reach — its dispatch branch
+#                  plus the module-level functions that branch calls — because
+#                  grepping the whole file let `getDocumentCount` declare
+#                  `scope_filtered: true` while enforcing nothing, satisfied by
+#                  `listDocuments` in the same module. S4 FAILs (rather than
+#                  passing quietly) when the entry point cannot be determined and
+#                  the file serves more than one declared op.
 #   ownership:     true  -> ANY-auth op further scoped to caller's own records
 #                  (chat sessions, agent jobs).
 #   schema_groups: set only when the code INTENTIONALLY enforces different
@@ -87,6 +96,10 @@ operations:
     scope_filtered: true
     enforced_in: nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py
     args: {}
+    note: >-
+      The header figure beside listDocuments, so it carries the same two filters
+      (config-version scope, reviewer-only) from the same helpers. A count is data:
+      an unfiltered one reports how many documents exist outside the caller's scope.
   listDocumentsDateHour:
     groups: ANY
     kind: read

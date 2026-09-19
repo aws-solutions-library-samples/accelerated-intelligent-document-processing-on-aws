@@ -198,11 +198,39 @@ dependency-free), so they vendor that file verbatim; a unit test fails if the co
 drift, because a scope matcher that differs between call sites is a
 privilege-escalation bug.
 
+### Resolving *whose* Scope — the Lookup Fails Closed
+
+Matching is only half the rule. The other half is finding the caller's row, and it
+obeys two rules of its own, in `resolve_allowed_config_versions` in the same module:
+
+- **The lookup key is the `email` claim, and nothing else.** Email is the only
+  identifier that joins a Cognito principal to a UsersTable row: the row's key is a
+  `uuid4` minted by user management and unrelated to the Cognito `sub`, and no `sub`
+  attribute is stored on the table. So a caller whose verified claims carry no
+  `email` cannot be looked up at all, and is **denied** — substituting another
+  identifier would query an email-keyed index with a value that matches no row,
+  which is indistinguishable from "this user has no restriction".
+- **A lookup that cannot answer denies.** No UsersTable wired, no email claim, or a
+  DynamoDB query that fails (a missing IAM grant, a throttle) all refuse the
+  request. "Cannot evaluate" is not "unrestricted": reading it as such would switch
+  the control off precisely on the drift the control exists to survive.
+
+An **empty page still means unrestricted**, which is the first matching rule above
+and must stay that way — most users have no scope row.
+
+Every consumer resolves the scope through that one function rather than its own
+copy, and `scripts/tests/test_scope_lookup_fail_closed.py` fails if a new one
+derives the key from anything but the `email` claim, or reads a caught lookup
+failure as unrestricted. Two artifacts state the rule locally instead of importing
+it, because they ship without an `idp_common` layer: the user-management Lambda and
+the PII-anonymizer feature API. The same gate covers both.
+
 ### Scope Enforcement Points
 
 | Layer | Enforcement |
 |-------|-------------|
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
+| **Document Count** (server-side) | `getDocumentCount` — the header figure beside that list — applies the same two filters, from the same helpers, so it cannot report documents the list does not show |
 | **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents |
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |

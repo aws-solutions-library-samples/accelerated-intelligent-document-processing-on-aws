@@ -4,14 +4,17 @@
 import json
 import logging
 import os
-import time
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import boto3
-from boto3.dynamodb.conditions import Key as DDBKey
 
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    resolve_allowed_config_versions,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Configure detailed logging
@@ -87,52 +90,34 @@ def _require_execution_in_this_stack(execution_arn: str) -> None:
 
 
 def _get_caller_info(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract the caller's email and groups from the resolver event identity."""
+    """Extract the caller's email and groups from the resolver event identity.
+
+    The email is the config-version scope lookup key, so it comes from the
+    ``email`` claim alone — see ``caller_email_from_claims``.
+    """
     identity = event.get("identity") or {}
     claims = identity.get("claims") or {}
     groups = claims.get("cognito:groups", [])
     if isinstance(groups, str):
         groups = [groups]
-    username = claims.get("cognito:username", "") or claims.get("sub", "")
-    email = claims.get("email", "") or identity.get("username", "") or username
+    email = caller_email_from_claims(claims)
     return {"email": email, "groups": groups, "is_admin": "Admin" in groups}
 
 
 def _get_user_allowed_config_versions(caller_email: str) -> Optional[List[str]]:
-    """Look up the caller's allowedConfigVersions from UsersTable, with caching.
+    """The caller's allowedConfigVersions, or None for an unrestricted caller.
 
-    Returns None for an unrestricted caller. Mirrors the lookup in
-    configuration_resolver, including its fail-open behaviour on a failed
-    lookup (tracked as AUTH.T07) so a scoped caller is treated consistently
-    across resolvers rather than being blocked here and allowed there.
+    Thin wrapper over the shared fail-closed lookup, so this resolver and every
+    other consumer of ``allowedConfigVersions`` resolve it identically. Raises
+    ``ScopeLookupError`` when the scope cannot be evaluated; the caller denies.
     """
-    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
-    if not users_table_name or not caller_email:
-        return None
-
-    now = time.time()
-    cached = _user_scope_cache.get(caller_email)
-    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
-        return cached["scope"]
-
-    try:
-        users_table = _dynamodb.Table(users_table_name)
-        response = users_table.query(
-            IndexName="EmailIndex",
-            KeyConditionExpression=DDBKey("email").eq(caller_email),
-        )
-        items = response.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            result = list(scope) if scope and len(scope) > 0 else None
-        else:
-            result = None
-    except Exception as e:
-        logger.warning(f"Failed to look up caller scope for {caller_email}: {e}")
-        result = None
-
-    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
-    return result
+    return resolve_allowed_config_versions(
+        caller_email,
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_dynamodb,
+        cache=_user_scope_cache,
+        cache_ttl=_USER_SCOPE_CACHE_TTL,
+    )
 
 
 def _config_version_of_execution(execution_response: Dict[str, Any]) -> Optional[str]:
@@ -168,7 +153,18 @@ def _enforce_config_version_scope(
     if caller["is_admin"]:
         return
 
-    allowed = _get_user_allowed_config_versions(caller["email"])
+    # Fails CLOSED. A scope that cannot be *evaluated* (no UsersTable wired, no
+    # email claim on the verified identity, a failed DynamoDB query) is not a
+    # caller without restrictions, and reading it as one would serve the
+    # execution input and step history — which name the document and the S3
+    # location of its full state — to a caller entitled to neither (AUTH.T07).
+    try:
+        allowed = _get_user_allowed_config_versions(caller["email"])
+    except ScopeLookupError as e:
+        logger.error("Denying getStepFunctionExecution: %s", e)
+        raise _unauthorized(
+            "Your configuration scope could not be verified"
+        ) from e
     if allowed is None:
         return
 
@@ -891,8 +887,13 @@ def find_step_name_for_failure_event(
         logger.debug(
             "Searching for any running step that might be associated with this failure"
         )
-        for step_key, step_id in event_id_to_step.items():
-            if step_key and step_id:
+        # `event_id_to_step` maps an event id to a step KEY, so unpack it in that
+        # order: the loop previously named the id `step_key` and returned it,
+        # which handed the caller an int where it matches `step_map` keys and
+        # names by equality — so this last-resort correlation could never
+        # succeed, and a failure went unattributed to any step.
+        for event_id, step_key in event_id_to_step.items():
+            if event_id and step_key:
                 logger.debug(f"Found potential step key {step_key}")
                 return step_key
 

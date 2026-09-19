@@ -357,3 +357,68 @@ def test_mapping_404_when_not_stored(mod):
     )
     resp = _get(mod, "/report/doc5.pdf/mapping", email="admin@x", groups="[Admin]")
     assert resp["statusCode"] == 404
+
+
+# ---- The scope lookup key comes from the `email` claim, and nothing else ----
+#
+# The lookup is a UsersTable EmailIndex query, and email is the only identifier
+# that joins a Cognito principal to a row there. Substituting another identifier
+# when the claim is absent looks harmless and is not: an identifier that is not an
+# email matches no row, an empty page means "this user has no restriction", and so
+# an *unresolvable* caller becomes an *unrestricted* one — on the route that
+# reveals the re-identification mapping, and with no AWS fault required.
+#
+# `test_mapping_fails_closed_on_scope_error` above covers the other half (a lookup
+# that errors). An empty page is still deliberately unrestricted, which
+# `test_report_list_and_aggregate` relies on.
+
+
+def _get_with_claims(mod, path, claims):
+    event = {
+        "rawPath": path,
+        "queryStringParameters": {},
+        "requestContext": {
+            "http": {"method": "GET"},
+            "authorizer": {"jwt": {"claims": claims}},
+        },
+    }
+    return mod.lambda_handler(event, None)
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        # Every Cognito identifier EXCEPT an email.
+        {
+            "sub": "11111111-2222-3333-4444-555555555555",
+            "cognito:username": "viewer",
+            "username": "viewer",
+            "cognito:groups": "[Viewer]",
+        },
+        {"email": "", "cognito:groups": "[Viewer]"},
+        {"cognito:groups": "[Viewer]"},
+    ],
+)
+def test_mapping_denied_when_the_claims_carry_no_email(mod, claims):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc6.pdf", "secret-v1")
+
+    resp = _get_with_claims(mod, "/report/doc6.pdf/mapping", claims)
+
+    assert resp["statusCode"] == 403
+
+
+def test_the_scope_key_is_the_email_claim_alone(mod):
+    """No substitute identifier is accepted, whatever else the claims carry."""
+    event_claims = {
+        "email": "a@example.com",
+        "cognito:username": "other",
+        "sub": "11111111-2222-3333-4444-555555555555",
+    }
+    event = {"requestContext": {"authorizer": {"jwt": {"claims": event_claims}}}}
+
+    assert mod._caller_email(event) == "a@example.com"
+
+    del event_claims["email"]
+    assert mod._caller_email(event) == ""

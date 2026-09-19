@@ -77,8 +77,30 @@ def _caller_claims(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _caller_email(event: Dict[str, Any]) -> str:
-    c = _caller_claims(event)
-    return c.get("email") or c.get("cognito:username") or c.get("sub") or ""
+    """The caller's email, from the ``email`` claim and nothing else.
+
+    The value is the key of a ``UsersTable`` ``EmailIndex`` query, and email is
+    the only identifier that joins a Cognito principal to a row there — the row's
+    key is a ``uuid4`` unrelated to the Cognito ``sub``, and no ``sub`` attribute
+    is stored on the table at all.
+
+    ⚠️ **There is deliberately no fallback to another claim.** A ``sub`` or a
+    ``cognito:username`` is not an email address for every caller, so querying an
+    email-keyed index with one matches no row — and an empty page is
+    indistinguishable from "this user has no restriction". A fallback therefore
+    converts an *unresolvable* caller into an *unrestricted* one, with no AWS
+    fault required, on the route that reveals the PII re-identification mapping.
+    Returning the empty string instead makes ``_caller_allowed_versions`` raise,
+    and the request is denied.
+
+    This mirrors ``caller_email_from_claims`` in the host's
+    ``idp_common.config_scope``, which is the canonical statement of the rule.
+    The logic is restated here rather than imported because this extension ships
+    as its own stack with no ``idp_common`` layer; the shared static gate in
+    ``scripts/tests/test_scope_lookup_fail_closed.py`` covers this file so the
+    two cannot drift.
+    """
+    return str(_caller_claims(event).get("email") or "").strip()
 
 
 def _caller_groups(event: Dict[str, Any]) -> list:
@@ -237,12 +259,28 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
             return _response(400, {"error": str(exc)})
         since = datetime.now(timezone.utc) - window if window else None
         # RBAC: scope the list to config versions the caller may see. A scope
-        # lookup failure denies (empty list) rather than leaking all rows.
+        # lookup failure denies — the caller is shown an empty report rather than
+        # every row. The denial is *returned here*, not encoded as an empty
+        # `allowed` list for `_visible_to` to interpret: an empty list means
+        # "nothing matches" only as long as that function keeps reading `None`
+        # (and not any falsy value) as unrestricted, which is one refactor away
+        # from turning this denial into the opposite.
         try:
             allowed = _caller_allowed_versions(_caller_email(event))
         except ScopeLookupError:
             logger.warning("Scope lookup failed for report list — returning empty")
-            allowed = []
+            return _response(
+                200,
+                {
+                    "rows": [],
+                    "total": 0,
+                    "totalPiiRedacted": 0,
+                    "window": qs.get("window") or "all",
+                    "asOf": datetime.now(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                },
+            )
         try:
             rows = [r for r in _list_report(since) if _visible_to(r, is_admin, allowed)]
         except Exception as exc:  # noqa: BLE001

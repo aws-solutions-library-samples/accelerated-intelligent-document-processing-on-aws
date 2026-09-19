@@ -357,14 +357,14 @@ sequenceDiagram
     Disp->>Lambda: Dispatch
     Lambda->>Lambda: Enforce Admin/Author group
     Lambda->>Users: Query allowedConfigVersions for caller
-    Note over Lambda,Users: Resolver role MUST have UsersTable<br/>Query/GetItem or the lookup fails OPEN (AUTH.T07)
+    Note over Lambda,Users: Resolver role MUST have UsersTable<br/>Query/GetItem or the request is DENIED (AUTH.T07)
     Lambda->>Lambda: Validate config schema + migrate v0.5->v0.6
     Lambda->>S3: Write config YAML
     Lambda->>DDB: Update config version record
     Lambda-->>Browser: Confirmation
 ```
 
-**Security note**: Configuration includes model IDs, prompts, extraction schemas, and processing parameters. Malicious configuration could influence all subsequent document processing (PM.T06). The config-version scope lookup previously failed **open** on an IAM gap — fixed in v0.6.0 and now regression-gated (AUTH.T07).
+**Security note**: Configuration includes model IDs, prompts, extraction schemas, and processing parameters. Malicious configuration could influence all subsequent document processing (PM.T06). The config-version scope lookup **fails closed**: a missing IAM grant, an unwired UsersTable or a claims set carrying no `email` all refuse the request rather than reading as "this caller has no restriction". An *empty page* — no UsersTable row for the caller — still means unrestricted, which is the opt-in-scoping default. One shared implementation enforces this for every consumer, gated at the class by `scripts/tests/test_scope_lookup_fail_closed.py` (AUTH.T07).
 
 ### 3.4 Document Upload Flow (UI)
 

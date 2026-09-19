@@ -5,10 +5,8 @@ import json
 import logging
 import os
 import re
-import time
 
 import boto3
-from boto3.dynamodb.conditions import Key as DDBKey
 from pydantic import ValidationError
 
 from idp_common.config.configuration_manager import ConfigurationManager
@@ -21,7 +19,12 @@ from idp_common.config.constants import (
     RESERVED_VERSION_NAMES,
 )
 from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, PricingConfig
-from idp_common.config_scope import scope_allows
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -42,12 +45,18 @@ _rule_translator = None
 
 
 def _get_caller_info(event):
-    """Extract caller's email and groups from AppSync event identity."""
+    """Extract caller's email and groups from the resolver event identity.
+
+    ``email`` is the config-version scope lookup key and comes from the ``email``
+    claim alone — see ``caller_email_from_claims``. ``username`` keeps its
+    fallback chain because it is not a scope key; it is only logged and used for
+    display.
+    """
     identity = event.get("identity", {})
     claims = identity.get("claims", {})
     groups = claims.get("cognito:groups", [])
     username = claims.get("cognito:username", "") or claims.get("sub", "")
-    email = claims.get("email", "") or identity.get("username", "") or username
+    email = caller_email_from_claims(claims)
     if isinstance(groups, str):
         groups = [groups]
     return {
@@ -157,34 +166,19 @@ def _enforce_operation_group(operation, caller):
 
 
 def _get_user_allowed_config_versions(caller_email):
-    """Look up user's allowedConfigVersions from UsersTable with caching."""
-    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
-    if not users_table_name:
-        return None
+    """The caller's ``allowedConfigVersions``, or None for unrestricted.
 
-    now = time.time()
-    cached = _user_scope_cache.get(caller_email)
-    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
-        return cached["scope"]
-
-    try:
-        users_table = _dynamodb.Table(users_table_name)
-        response = users_table.query(
-            IndexName="EmailIndex",
-            KeyConditionExpression=DDBKey("email").eq(caller_email),
-        )
-        items = response.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            result = list(scope) if scope and len(scope) > 0 else None
-        else:
-            result = None
-    except Exception as e:
-        logger.warning(f"Failed to look up user scope for {caller_email}: {e}")
-        result = None
-
-    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
-    return result
+    Thin wrapper over the shared fail-closed lookup so every consumer of this
+    rule resolves it identically. Raises ``ScopeLookupError`` when the scope
+    cannot be evaluated — the caller must deny, never fall back to unrestricted.
+    """
+    return resolve_allowed_config_versions(
+        caller_email,
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_dynamodb,
+        cache=_user_scope_cache,
+        cache_ttl=_USER_SCOPE_CACHE_TTL,
+    )
 
 
 def validate_version_name(name):
@@ -252,7 +246,22 @@ def handler(event, context):
     _enforce_operation_group(operation, caller)
     allowed_versions = None
     if not caller["is_admin"]:
-        allowed_versions = _get_user_allowed_config_versions(caller["email"])
+        # Fails CLOSED. A scope that cannot be *evaluated* — no UsersTable wired,
+        # no email claim on the verified identity, a DynamoDB query that fails —
+        # is not the same as a caller with no restriction, and must not be read as
+        # one (AUTH.T07). Denying here costs a non-admin caller an error on this
+        # one request; the alternative silently serves every configuration profile
+        # in the deployment to a caller entitled to a subset.
+        try:
+            allowed_versions = _get_user_allowed_config_versions(caller["email"])
+        except ScopeLookupError as e:
+            logger.error(
+                f"Denying '{operation}': config-version scope could not be "
+                f"resolved: {e}"
+            )
+            raise PermissionError(
+                "Unauthorized: your configuration scope could not be verified"
+            ) from e
         logger.info(
             f"Config scope for {caller['email']}: {allowed_versions or 'unrestricted'}"
         )

@@ -4,13 +4,16 @@
 import json
 import logging
 import os
-import time
 from datetime import datetime, timedelta, timezone
 
 import boto3
-from boto3.dynamodb.conditions import Key as DDBKey
 from idp_common.docs_service import create_document_service
-from idp_common.config_scope import scope_allows
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.document_versions import delete_current_output_objects
 
 # Import IDP Common modules
@@ -42,14 +45,19 @@ _USER_SCOPE_CACHE_TTL = 60  # seconds
 
 
 def _get_caller_info(event):
-    """Extract caller's email and groups from AppSync event identity."""
+    """Extract caller's email and groups from the resolver event identity.
+
+    ``email`` is the config-version scope lookup key and comes from the ``email``
+    claim alone — see ``caller_email_from_claims``. ``username`` keeps its
+    fallback chain: it is not a scope key.
+    """
     identity = event.get("identity") or {}
     claims = identity.get("claims") or {}
     groups = claims.get("cognito:groups") or []
     if isinstance(groups, str):
         groups = [groups]
     username = claims.get("cognito:username") or claims.get("sub") or ""
-    email = claims.get("email") or identity.get("username") or username
+    email = caller_email_from_claims(claims)
     return {
         "email": email,
         "username": username,
@@ -59,31 +67,19 @@ def _get_caller_info(event):
 
 
 def _get_user_allowed_config_versions(caller_email):
-    """Look up the caller's `allowedConfigVersions` from UsersTable (TTL-cached)."""
-    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
-    if not users_table_name or not caller_email:
-        return None
-    now = time.time()
-    cached = _user_scope_cache.get(caller_email)
-    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
-        return cached["scope"]
-    try:
-        users_table = _dynamodb.Table(users_table_name)
-        resp = users_table.query(
-            IndexName="EmailIndex",
-            KeyConditionExpression=DDBKey("email").eq(caller_email),
-        )
-        items = resp.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            result = list(scope) if scope and len(scope) > 0 else None
-        else:
-            result = None
-    except Exception as e:
-        logger.warning(f"Failed to look up user scope for {caller_email}: {e}")
-        result = None
-    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
-    return result
+    """The caller's `allowedConfigVersions`, or None for an unrestricted caller.
+
+    Thin wrapper over the shared fail-closed lookup so every consumer of this
+    rule resolves it identically. Raises `ScopeLookupError` when the scope cannot
+    be evaluated; the caller must deny rather than proceed unrestricted.
+    """
+    return resolve_allowed_config_versions(
+        caller_email,
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_dynamodb,
+        cache=_user_scope_cache,
+        cache_ttl=_USER_SCOPE_CACHE_TTL,
+    )
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
@@ -206,7 +202,22 @@ def handler(event, context):
         # user / pre-RBAC deployments).
         if version:
             if not caller["is_admin"]:
-                allowed_versions = _get_user_allowed_config_versions(caller["email"])
+                # Fails CLOSED: a scope that cannot be *evaluated* is not a
+                # caller without restrictions (AUTH.T07).
+                try:
+                    allowed_versions = _get_user_allowed_config_versions(
+                        caller["email"]
+                    )
+                except ScopeLookupError as e:
+                    logger.error(
+                        "Denying reprocessDocument: config-version scope could "
+                        "not be resolved: %s",
+                        e,
+                    )
+                    raise PermissionError(
+                        "Unauthorized: your configuration scope could not be "
+                        "verified"
+                    ) from e
                 if not scope_allows(allowed_versions, version):
                     logger.warning(
                         "Rejecting reprocessDocument: caller %s is scoped to %s "
