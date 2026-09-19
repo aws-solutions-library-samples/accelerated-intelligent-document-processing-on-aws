@@ -425,6 +425,12 @@ For more information about the GenAI IDP Accelerator:
 
 The repository includes a recorder that turns a browser session against a deployed stack into a narrated, captioned mp4 with title, chapter and takeaway cards — see the [UX review and demo recorder](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/README.md#ux-review-and-demo-recorder-ux_recorderpy) in `scripts/README.md`. Videos on this page are attached as GitHub assets: drag the mp4 into a comment on a pull request or issue in this repository, then paste the resulting `https://github.com/user-attachments/assets/...` URL into the entry. Record against a disposable stack with the shipped sample documents; a recording shows whatever is on screen, unredacted.
 
+
+
+https://github.com/user-attachments/assets/dc5c9397-8648-4a71-9d58-f9c98b7d7e24
+
+
+
 ## Feedback
 
 If you have questions about any of these features or suggestions for new demo videos, please:
