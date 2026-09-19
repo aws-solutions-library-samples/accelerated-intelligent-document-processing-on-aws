@@ -58,6 +58,7 @@ import {
 } from '../../constants/schemaConstants';
 import { designationProblem } from '../../utils/idpSchemaExtensions';
 import { availableEvaluationMethods, isStructuredArrayAttribute } from './utils/evaluationMethods';
+import { refAttributeUpdates } from './utils/schemaHelpers';
 
 interface SchemaAttribute {
   type?: string;
@@ -868,25 +869,17 @@ const SchemaInspector = ({
                     }
                     onChange={({ detail }) => {
                       if (detail.selectedOption.value) {
-                        const updates: Record<string, unknown> = { ...selectedAttribute, $ref: detail.selectedOption.value };
-                        // Remove inline object properties as they conflict with $ref
-                        delete updates.properties;
-                        delete updates.required;
-                        delete updates.minProperties;
-                        delete updates.maxProperties;
-                        delete updates.additionalProperties;
-                        // Note: Keep type as 'object' for UI purposes, but it won't be exported in the final schema
-                        if (!updates.type) {
-                          updates.type = 'object';
-                        }
-                        onUpdate(updates);
+                        // One shared shape for "this attribute references a class", so that
+                        // picking a class here and picking one in the Add Attribute modal
+                        // produce the same JSON (#957). `type` goes with the inline-object
+                        // keywords: the referenced `$defs` entry declares the type, and
+                        // keeping `type: 'object'` here would mask the real type of a
+                        // reference to a non-object definition.
+                        onUpdate(refAttributeUpdates(detail.selectedOption.value));
                       } else {
-                        const updates: Record<string, unknown> = { ...selectedAttribute, $ref: undefined };
-                        // Restore type to object when removing $ref
-                        if (!updates.type) {
-                          updates.type = 'object';
-                        }
-                        onUpdate(updates);
+                        // Dropping the reference leaves the attribute with nothing declaring
+                        // its type, so it goes back to being an inline object.
+                        onUpdate({ $ref: undefined, type: selectedAttribute.type || 'object' });
                       }
                     }}
                     options={[

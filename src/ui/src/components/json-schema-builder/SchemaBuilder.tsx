@@ -24,6 +24,7 @@ import SchemaInspector from './SchemaInspector';
 import SchemaPreviewTabs from './SchemaPreviewTabs';
 import StandardClassCatalog from './StandardClassCatalog';
 import { formatTypeBadge, DocumentTypeBadge } from './utils/badgeHelpers';
+import { refAttributeUpdates } from './utils/schemaHelpers';
 
 interface SchemaClass {
   id: string;
@@ -244,11 +245,9 @@ const SchemaBuilder = ({
       // If object or array and a reference class is selected, add $ref
       if (newAttributeReferenceClass && newAttributeReferenceClass.value) {
         if (newAttributeType.value === 'object') {
-          updates.$ref = `#/$defs/${newAttributeReferenceClass.value}`;
-          // Remove schema keywords that conflict with $ref
-          updates.type = undefined;
-          updates.properties = undefined;
-          updates.required = undefined;
+          // Same shape the inspector's "Reference Existing Class" picker writes, so
+          // the two routes to a reference cannot drift apart again (#957).
+          Object.assign(updates, refAttributeUpdates(`#/$defs/${newAttributeReferenceClass.value}`));
         } else if (newAttributeType.value === 'array') {
           updates.items = { $ref: `#/$defs/${newAttributeReferenceClass.value}` };
         }
