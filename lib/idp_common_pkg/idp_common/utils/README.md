@@ -86,20 +86,36 @@ except Exception as e:
 
 ### The shard invocation's time budget (`bedrock_utils`)
 
-Four module constants in `bedrock_utils` are only correct **relative to each other**,
+These module constants in `bedrock_utils` are only correct **relative to each other**,
 so they are defined together rather than at the call sites that use them:
 
 | Constant | Value | Bounds |
 |---|---|---|
 | `LAMBDA_MAX_TIMEOUT_SECONDS` | 900 | The shard function's `Timeout`, which is also Lambda's maximum |
-| `AGENT_READ_TIMEOUT_SECONDS` | 180 | One Bedrock request stalling with no response, before botocore gives up |
-| `AGENT_MAX_TOTAL_BACKOFF_SECONDS` | 300 | Total sleep the retry ladder may spend across all attempts |
+| `AGENT_READ_TIMEOUT_SECONDS` | 180 | One socket read on the **streamed** agentic call — time to first event, then each inter-event gap |
+| `CONFIDENCE_READ_TIMEOUT_SECONDS` | 300 | One **non-streamed** `converse` in `bedrock/client.py`, which bounds the whole response |
+| `BOTOCORE_TOTAL_MAX_ATTEMPTS` | 1 | How many times botocore may attempt a call, and therefore the multiplier on both timeouts above |
+| `AGENT_MAX_TOTAL_BACKOFF_SECONDS` | 90 | Total sleep the retry ladder may spend across all attempts |
 | `AGENT_MAX_BACKOFF_SECONDS` | 60 | A single sleep |
 
-The invariant is `AGENT_READ_TIMEOUT_SECONDS + AGENT_MAX_TOTAL_BACKOFF_SECONDS <
-LAMBDA_MAX_TIMEOUT_SECONDS`, with room left over for the work itself: one stalled
-request plus the whole backoff allowance must still leave the shard time to produce a
-result. When it does not, the shard is killed by the Lambda timeout instead of
+The invariant is
+
+```
+BOTOCORE_TOTAL_MAX_ATTEMPTS * (AGENT_READ_TIMEOUT_SECONDS + CONFIDENCE_READ_TIMEOUT_SECONDS)
+    + AGENT_MAX_TOTAL_BACKOFF_SECONDS
+    + <room for the work>
+<= LAMBDA_MAX_TIMEOUT_SECONDS
+```
+
+A shard invocation can stall on **two** Bedrock clients, not one. The streamed agentic
+call is always there; the non-streamed one runs inside the same invocation whenever
+confidence is in `separate` mode, because `ExtractionService._build_assess_runner` hands
+`extract_one_shard` a closure over `AssessmentService.assess_results`. (In `integrated`
+mode the extraction agent emits confidence inline, so only the streamed term applies —
+but the budget has to hold for both.) 180 + 300 + 90 = 570 leaves 330 s for the work,
+which is the floor the test enforces: enough for one complete call of the slowest kind.
+
+When the inequality fails, the shard is killed by the Lambda timeout instead of
 returning, Step Functions reports `Sandbox.Timedout`, and that is classified
 **deterministic** with one attempt — so the transient failure a retry would have
 cleared becomes the one that is not retried, and `ExtractionShardMap`, which tolerates
@@ -109,17 +125,40 @@ This is the same shape as the `max_delay=1800`-inside-a-900-second-function erro
 comments in that module describe, one layer down: in the boto3 client config rather
 than the retry decorator.
 
-They live here, not in `extraction.agentic_idp`, because `extraction.runtime` needs
-them too and is deliberately importable without the strands-backed agentic stack.
-`AGENT_READ_TIMEOUT_SECONDS` is the default of every `read_timeout` parameter on both
-modules — a constant the callers do not read would satisfy the arithmetic and change
-nothing.
+⚠️ **`total_max_attempts`, never `max_attempts`.** In *client config* botocore's
+`max_attempts` means max **retries** and is normalised to `total_max_attempts =
+max_attempts + 1` (`botocore.args.ClientArgsCreator._compute_retry_max_attempts` says
+so in its own comment). So `max_attempts=1` permits **two** attempts — one doubling of
+the read timeout — and `max_attempts=7` permits **eight**. `total_max_attempts` passes
+through verbatim and takes precedence, so it is the only spelling that means what it
+says; the constant is named after that key on purpose. This matters because botocore
+treats a read timeout as transient (`ReadTimeoutError` subclasses `HTTPClientError`,
+which its `TransientRetryableChecker` lists) and retries it *inside the call*, where
+neither the application ladder nor the deadline check can observe it.
 
-`tests/unit/extraction/test_shard_timeout_budget.py` asserts the inequality, that both
-modules take their default from the constant, that the deployed function's `Timeout`
-still matches the assumed ceiling, and — on a simulated clock — that a shard meeting an
-injected `ReadTimeoutError` returns it as a transient error with a full read-timeout
-window still left to retry in.
+The constants live here, not in `extraction.agentic_idp`, because `extraction.runtime`
+and `bedrock.client` need them too and both are deliberately importable without the
+strands-backed agentic stack. `AGENT_READ_TIMEOUT_SECONDS` is the default of every
+`read_timeout` parameter in the extraction modules — a constant the callers do not read
+would satisfy the arithmetic and change nothing.
+
+`tests/unit/extraction/test_shard_timeout_budget.py` asserts the whole inequality; that
+both extraction modules take their default from the constant; that **both clients'
+resolved botocore configurations** carry the budget's timeout and attempt count (read
+off the live client, because a source scan cannot see botocore's normalisation); that
+the deployed function's `Timeout` still matches the assumed ceiling; and — on a
+simulated clock — that a shard meeting an injected `ReadTimeoutError` returns it as a
+transient error with a full read-timeout window still left to retry in.
+
+⚠️ **One exposure these constants do not bound.** `bedrock/client.py`'s
+`_invoke_with_retry` has its own application-level ladder — `max_retries` attempts,
+backing off `initial_backoff` doubling to `max_backoff` — and unlike
+`invoke_agent_with_retry` it never calls `get_lambda_deadline_epoch`, so it can overrun
+an invocation by itself whatever the arithmetic says. The inequality bounds one stalled
+call per client, not that ladder. Making it deadline-aware changes behaviour for every
+non-agentic path, so it is tracked separately; the test above pins its numbers and its
+nominal worst case, and fails if either moves or if the ladder gains a deadline check
+that makes the caveat obsolete.
 
 Note what a reserve cannot promise. `clamp_sleep_to_budgets` keeps
 `_DEADLINE_RESERVE_SECONDS` of the remaining budget unspent so a sleep does not end

@@ -75,9 +75,11 @@ once at most. The per-invocation time budget that keeps a stall recoverable — 
 Bedrock read timeout, the retry backoff allowance and the function timeout — is in
 [configuration.md](configuration.md#sharded-extraction-the-shard-map-and-the-budget-inside-one-shard).
 The load-sensitive case is a long-running configuration: advanced extraction with
-**integrated** confidence does extraction and confidence scoring in one invocation, so
+**integrated** confidence does extraction and confidence scoring in one inference, so
 its exposure to a stall is several times that of **separate** confidence over the same
-document.
+document. `separate` confidence in advanced mode is not exempt for a different reason —
+it runs a second, non-streamed Bedrock call inside the same shard invocation, which is
+the largest single stall the invocation has to absorb.
 
 ### Confidence (Assessment) Failures
 

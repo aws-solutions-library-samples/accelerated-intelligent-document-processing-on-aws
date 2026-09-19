@@ -26,6 +26,16 @@ from botocore.exceptions import (
 )
 from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
+# The shard invocation's time budget. Imported rather than restated because this
+# client's read timeout is one of its terms, and a term written in two places is
+# exactly how the budget stopped adding up (#1014). ``utils.bedrock_utils`` pulls in
+# only botocore and an optional strands type, so this does not widen the import
+# surface of a module that lean Lambda extras depend on.
+from idp_common.utils.bedrock_utils import (
+    BOTOCORE_TOTAL_MAX_ATTEMPTS,
+    CONFIDENCE_READ_TIMEOUT_SECONDS,
+)
+
 from .model_utils import (
     LONG_CONTEXT_SUFFIX,
     get_model_max_output_tokens,
@@ -653,9 +663,31 @@ class BedrockClient:
     @property
     def client(self):
         """Lazy-loaded Bedrock client."""
+        # ``read_timeout`` is generous because ``converse`` here is NON-streaming:
+        # it bounds the whole response, not a gap between events, so a large
+        # extraction or assessment inference legitimately occupies it. That makes it
+        # the LARGEST single stall a shard invocation can absorb — in ``separate``
+        # confidence mode this client runs inside the 900 s shard Lambda — so the
+        # value is named in the shard time budget rather than written here (#1014).
+        #
+        # The attempt count is pinned to one. botocore treats a read timeout as
+        # transient and retries it itself, and with no ``retries`` override this
+        # client ran in legacy mode, whose default multiplied the timeout above by
+        # five inside ONE call to ``_invoke_with_retry`` — which already has its own
+        # ladder over exactly the same errors. Two stacked retry layers is what put
+        # 600 + 300 = 900 s inside a 900 s function in the first place.
+        #
+        # Spelled ``total_max_attempts``: in client config botocore's
+        # ``max_attempts`` is a RETRY count and is normalised to that key plus one,
+        # so ``max_attempts=1`` would still permit two attempts and two read
+        # timeouts. See the note in ``utils.bedrock_utils``.
         config = Config(
             connect_timeout=10,
-            read_timeout=300,  # allow plenty of time for large extraction or assessment inferences
+            read_timeout=CONFIDENCE_READ_TIMEOUT_SECONDS,
+            retries={
+                "total_max_attempts": BOTOCORE_TOTAL_MAX_ATTEMPTS,
+                "mode": "standard",
+            },
         )
         if self._client is None:
             self._client = get_bedrock_session(self.region).client(
@@ -692,10 +724,19 @@ class BedrockClient:
             # surfaces as an error inside the caller, which can log it and fail
             # the page cleanly. A hook is expected to keep its own timeout (and
             # therefore its internal retry budget) below this.
+            #
+            # ``total_max_attempts``, not ``max_attempts``: the latter is a RETRY
+            # count in client config and normalises to one more than it says, so
+            # ``max_attempts=1`` permitted a SECOND 840 s invocation — 1,680 s inside
+            # a 900 s caller, re-running the hook's paid work, which is precisely
+            # what this block exists to prevent.
             config = Config(
                 connect_timeout=10,
                 read_timeout=840,
-                retries={"max_attempts": 1, "mode": "standard"},
+                retries={
+                    "total_max_attempts": BOTOCORE_TOTAL_MAX_ATTEMPTS,
+                    "mode": "standard",
+                },
                 # OCR fans pages out across worker threads that share this
                 # client; the default pool of 10 would serialize them.
                 max_pool_connections=50,

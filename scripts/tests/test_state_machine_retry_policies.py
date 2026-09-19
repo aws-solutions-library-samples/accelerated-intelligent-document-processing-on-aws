@@ -200,8 +200,70 @@ def test_timeout_retrier_is_single_attempt(definition, task):
             "deterministic timeout fails identically on every attempt, so this "
             "burns attempts x the function timeout of a concurrency slot before "
             "failing (#917). Give the timeout codes their own retrier with "
-            "MaxAttempts 1, as EvaluationStep does — do NOT shorten the ladder "
+            'MaxAttempts 1, as EvaluationStep does — do NOT shorten the ladder '
             "the throttles share."
+        )
+
+
+#: The error Step Functions raises when a Map exceeds its failure tolerance. A Map
+#: retrier on this code re-runs the failed iterations — and with them each failed
+#: iteration's OWN retry ladder — so it multiplies a timeout just as a task-level
+#: timeout retrier does, one level of indirection away.
+MAP_FAILURE_ERRORS = frozenset({"States.ExceedToleratedFailureThreshold"})
+
+
+def _map_states(definition: dict[str, Any]) -> dict[str, dict]:
+    return {n: s for n, s in _walk(definition["States"]) if s.get("Type") == "Map"}
+
+
+MAP_STATES = sorted(_map_states(_DEFINITION))
+
+
+def test_map_enumeration_is_not_vacuous(definition):
+    """The Map gate below must actually have Maps to check."""
+    maps = _map_states(definition)
+    assert len(maps) >= 3, f"only found {len(maps)} Map states: {sorted(maps)}"
+    assert "ProcessSections/ExtractionShardMap" in maps, (
+        "the nested shard Map is not being enumerated, so the only Map in this "
+        "definition that retries a failure threshold is exempt from the rule below"
+    )
+
+
+@pytest.mark.parametrize("map_state", MAP_STATES)
+def test_map_retrier_does_not_multiply_a_timeout(definition, map_state):
+    """#917's rule reaches Map scope, where the cost is a whole ladder, not one try.
+
+    ``test_timeout_retrier_is_single_attempt`` is parametrized over Lambda tasks, so
+    a *Map*-level retrier was outside it — and a Map retrier is the more expensive
+    of the two. Retrying a Map re-runs its failed iterations, and each of those
+    re-runs the iteration's own ``Retry`` ladder from the start. ``MaxAttempts: 1``
+    on ``ExtractionShardMap`` therefore does not cost one extra invocation: a shard
+    that hit ``Sandbox.Timedout`` costs two more 900 s invocations (its own
+    single-attempt timeout retrier included), and a shard failing on the transient
+    ladder replays all eight attempts and their 2,550 s of backoff.
+
+    That trade is deliberate and is documented on the retrier itself — the
+    alternative is discarding the completed shards of a document. What must not
+    happen is the count creeping above one, where a deterministic shard failure
+    would multiply whole ladders. Wildcards count too, since they match the timeout
+    codes.
+    """
+    state = _map_states(definition)[map_state]
+    for retrier in state.get("Retry", []):
+        errors = frozenset(retrier["ErrorEquals"])
+        matched = (
+            (errors & TIMEOUT_ERRORS)
+            | (errors & WILDCARD_ERRORS)
+            | (errors & MAP_FAILURE_ERRORS)
+        )
+        if not matched:
+            continue
+        attempts = retrier.get("MaxAttempts", 3)  # ASL default
+        assert attempts <= 1, (
+            f"Map {map_state} retries {sorted(matched)} {attempts} times. Each "
+            "attempt re-runs every failed iteration's OWN retry ladder, so this is "
+            f"{attempts} x (the iteration's full ladder), not {attempts} extra "
+            "invocations. One is the ceiling (#917, #1014)."
         )
 
 
@@ -350,9 +412,7 @@ def _shape_of_path(path: str) -> Shape:
     serialized document has no ``document`` key (asserted separately below). That is
     what makes an alternating ``{document: ...}`` / bare-document envelope checkable.
     """
-    return (
-        Shape(absent=frozenset({"document"})) if _leaf(path) == "document" else UNKNOWN
-    )
+    return Shape(absent=frozenset({"document"})) if _leaf(path) == "document" else UNKNOWN
 
 
 def _param_keys(block: dict[str, Any]) -> frozenset[str]:
@@ -393,10 +453,17 @@ def _referenced_keys(state: dict[str, Any]) -> set[str]:
     # ``States.Runtime``, masking whatever actually broke. They hold either a bare
     # JSONPath or an intrinsic-function call, so the paths are matched by pattern
     # rather than by parsing the intrinsic.
+    #
+    # The ``(?<!\$)`` is load-bearing. Without it the pattern matches the ``$.Xxx``
+    # SUBSTRING inside a ``$$.Xxx`` context-object reference — ``$$.Execution.Name``
+    # would be read as a reference to an input key ``Execution`` — so a Fail state
+    # naming the execution in its cause, which is a natural thing to do, would be
+    # reported as reading a key nothing produces. It also makes
+    # ``_first_segment``'s own ``$$`` guard reachable rather than dead.
     for field in ("CausePath", "ErrorPath"):
         value = state.get(field)
         if isinstance(value, str):
-            for match in re.finditer(r"\$\.[A-Za-z0-9_\[\]]+", value):
+            for match in re.finditer(r"(?<!\$)\$\.[A-Za-z0-9_\[\]]+", value):
                 keys.add(_first_segment(match.group(0)) or "")
     # ``OutputPath`` is deliberately absent: it filters the state's RESULT (after
     # ResultPath), not its input, so ``"OutputPath": "$.Payload"`` refers to a
@@ -413,11 +480,7 @@ def _result_shape(state: dict[str, Any], incoming: Shape) -> Shape:
             return Shape(_param_keys(state["Parameters"]), closed=True)
         if "Result" in state:
             result = state["Result"]
-            return (
-                Shape(frozenset(result), closed=True)
-                if isinstance(result, dict)
-                else UNKNOWN
-            )
+            return Shape(frozenset(result), closed=True) if isinstance(result, dict) else UNKNOWN
         if "InputPath" in state:
             return _shape_of_path(state["InputPath"])
         return incoming
@@ -466,9 +529,7 @@ def _edges(state: dict[str, Any]) -> list[tuple[str, str, Shape | None]]:
     return out
 
 
-def _analyze(
-    states: dict[str, Any], seed: Shape, scope: str, findings: list[str]
-) -> None:
+def _analyze(states: dict[str, Any], seed: Shape, scope: str, findings: list[str]) -> None:
     """Propagate shapes to a fixed point, checking every edge as it is taken."""
     start = states["StartAt"] if "StartAt" in states else None
     scope_states: dict[str, Any] = states["States"] if "States" in states else states
@@ -525,6 +586,16 @@ def test_state_input_keys_are_producible(definition):
     This is the general form of #918: it does not know the name
     ``RecordEvaluationFailure``, only that a Catch with ``ResultPath: null`` hands its
     target the input it received, and that a bare document has no ``document`` key.
+
+    ⚠️ It also covers a ``Fail`` state's ``CausePath``/``ErrorPath``, and that half
+    of the coverage is **shared with another suite**: ``patterns/unified/tests/
+    test_workflow_hook_fatal_catch.py::
+    test_causepath_fail_states_only_read_paths_their_catchers_guarantee`` checks that
+    the catcher files the error output where the cause looks for it, while the check
+    here is what catches a cause reading an input key nothing on the path produces —
+    a ``$.sectionId`` typo for ``$.section_id``, say. Neither is redundant and
+    neither subsumes the other; dropping either leaves the other silently weaker,
+    and both failure modes surface as a ``States.Runtime`` that masks the real error.
     """
     findings: list[str] = []
     # The execution starts as {"document": ...}; more keys may be present, so open.

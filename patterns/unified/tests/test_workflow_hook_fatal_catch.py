@@ -490,11 +490,17 @@ def _keys_read_by(fail_state: dict) -> set[str]:
     Both fields hold either a bare JSONPath or an intrinsic-function call, so the
     paths are extracted by pattern rather than by parsing the intrinsic. A bare `$`
     contributes no key: reading the whole input can never be unsatisfiable.
+
+    The `(?<!\\$)` is load-bearing. Without it the pattern matches the `$.Xxx`
+    SUBSTRING inside a `$$.Xxx` context-object reference, so a cause naming
+    `$$.Execution.Name` — a natural thing for an operator-facing Fail state — would
+    be read as a reference to an input key `Execution` that no catcher provides. It
+    also makes `_root_key`'s own `$$` guard reachable instead of dead code.
     """
     keys: set[str] = set()
     for field in ("CausePath", "ErrorPath"):
         for match in re.finditer(
-            r"\$\.[A-Za-z0-9_\[\]]+", str(fail_state.get(field, ""))
+            r"(?<!\$)\$\.[A-Za-z0-9_\[\]]+", str(fail_state.get(field, ""))
         ):
             key = _root_key(match.group(0))
             if key:
@@ -534,6 +540,15 @@ def test_causepath_fail_states_only_read_paths_their_catchers_guarantee():
     `States.ALL` is refused for all of them regardless of paths: it widens the
     caught error to shapes whose contents are not guaranteed, which is the
     condition that produced the `States.Runtime` masking in the first place.
+
+    ⚠️ **This is one half of the invariant.** It checks that the catcher files the
+    error output where the cause looks for it. It does NOT check that an input key
+    the cause reads — `$.section_id` — exists on every path reaching the state; that
+    is `scripts/tests/test_state_machine_retry_policies.py::
+    test_state_input_keys_are_producible`, whose `CausePath` / `ErrorPath` coverage
+    is what makes a `$.sectionId` typo or a `$.totally_bogus_key` fail. Removing
+    either half halves the protection, and each failure mode ends the same way: a
+    `States.Runtime` that masks the real error. Keep both.
     """
     assert len(CAUSEPATH_FAIL_STATES) >= 3, (
         f"expected at least the 3 CausePath-bearing Fail states, found "
@@ -593,7 +608,7 @@ def test_causepath_fail_states_only_read_paths_their_catchers_guarantee():
                 )
     assert not offenders, (
         "a CausePath-bearing Fail state is fed by a catcher that does not "
-        f"guarantee what it reads:\n  " + "\n  ".join(offenders) + "\nEither give "
+        "guarantee what it reads:\n  " + "\n  ".join(offenders) + "\nEither give "
         "the catcher a ResultPath that matches what the Cause reads, or use a "
         "static Cause at that Fail state."
     )

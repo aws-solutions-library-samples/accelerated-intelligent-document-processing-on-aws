@@ -614,9 +614,22 @@ confidence scoring, not evaluation, not the UI — can tell that anything is gon
 **The Map itself is retried once.** Every shard persists its own result to S3 as soon
 as it finishes, and a shard whose result is already there loads it instead of
 re-inferring. So retrying the Map re-runs only the shards that did not complete,
-which is what that persistence exists for. One attempt and no more: a shard that
-failed deterministically — a schema it cannot satisfy, a request over the model's cap
-— fails the same way on the second pass.
+which is what that persistence exists for.
+
+Be clear about what that retry costs, because it is not one extra invocation. For a
+shard that completed it costs nothing. For the shard that failed, the second Map pass
+re-runs `ShardExtractionStep`'s **entire** retry ladder from the start:
+
+| The failed shard hit | One Map pass | With the retry |
+|---|---|---|
+| `Sandbox.Timedout` (single-attempt timeout retrier) | 2 × 900 s | **4 × 900 s** |
+| a transient error (8 attempts, 10 s at 2× = 2,550 s of backoff) | up to 9 × 900 s + 2,550 s | that again, bounded only by `WorkflowExecutionTimeoutSeconds` (21,600 s by default) |
+
+That trade is deliberate: one duplicated ladder is worth not discarding a document's
+completed shards. It is also why the count is one and stays one — at two or more, a
+deterministic shard failure multiplies whole ladders rather than attempts.
+`scripts/tests/test_state_machine_retry_policies.py` holds Map-level retriers to the
+same single-attempt rule as the Lambda task states.
 
 **A failed Map names the section and the cause.** The `Catch` on
 `ExtractionShardMap` routes to a `Fail` state, so the execution reports
@@ -628,30 +641,47 @@ rather than on the parent execution. The catcher names that one error rather tha
 `States.ALL`, because the Map's other failure modes (`States.DataLimitExceeded`,
 `States.Runtime`) already report a specific and differently-actionable condition.
 
-Inside one shard, three durations draw on the same invocation and only add up if they
-are chosen together:
+Inside one shard, several durations draw on the same invocation and only add up if
+they are chosen together:
 
 | | Value | What it bounds |
 |---|---|---|
-| Bedrock client `read_timeout` | 180 s | How long **one** request may stall with no response before botocore gives up |
-| Retry backoff allowance | 300 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
+| Agentic `read_timeout` | 180 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
+| Confidence `read_timeout` | 300 s | One **non-streamed** `converse`, which bounds the whole response rather than a gap, so it is legitimately larger. Inside the shard invocation whenever confidence runs in `separate` mode |
+| botocore attempts per call | 1 | botocore retries a read timeout *itself*, multiplying either timeout above inside a single call, where no deadline check can see it |
+| Retry backoff allowance | 90 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
 | Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
 
-One stalled request plus the entire backoff allowance has to leave working time
-behind it, and at 180 s it leaves 420 s. A stall then surfaces as a `ReadTimeoutError`
-with most of the invocation still available, the ladder retries inside the same
-invocation, and the shard returns a result. The alternative is that the invocation is
-killed at 900 s: Step Functions reports that as `Sandbox.Timedout`, which is
-deterministic and retried once (see above), so the transient blip a retry would have
+The worst case is a stall on **each** client plus the whole backoff allowance —
+180 + 300 + 90 = 570 s — which leaves 330 s for the work itself. A stall then surfaces
+as a `ReadTimeoutError` with most of the invocation still available, the ladder retries
+inside the same invocation, and the shard returns a result. The alternative is that the
+invocation is killed at 900 s: Step Functions reports that as `Sandbox.Timedout`, which
+is deterministic and retried once (see above), so the transient blip a retry would have
 cleared becomes the failure that is not retried.
 
-A legitimately slow single request is therefore cut off and retried rather than waited
-out. Observed per-call latency is far below the ceiling — a 3,200-row document
-completes in about 408 s spread over many calls — so this affects stalls rather than
-slow work. The three numbers live together in
-`idp_common.utils.bedrock_utils`, and
+**Why `read_timeout` can be this short.** The agentic path streams, so 180 s is not a
+cap on how long a generation may take — it is how long the socket may go completely
+silent. A healthy long generation emits deltas continuously and never approaches it;
+three minutes of no traffic at all is a stall by definition. Observed per-call latency
+is far below the ceiling in any case: a 3,200-row document completes in about 408 s
+spread over many calls. The confidence call is **not** streamed, which is exactly why
+its timeout is larger and why it has to be counted separately.
+
+The numbers live together in `idp_common.utils.bedrock_utils`, and
 `lib/idp_common_pkg/tests/unit/extraction/test_shard_timeout_budget.py` asserts the
-relationship between them along with the Map's `Retry`, `Catch` and zero tolerance.
+whole inequality — reading the resolved client configurations, not the source, so
+botocore's own attempt count is inside the bound — along with the Map's `Retry`,
+`Catch` and zero tolerance.
+
+⚠️ **One exposure the arithmetic above does not close.** The `BedrockClient` used for
+the non-streamed call has its own retry ladder (7 attempts, backing off 2 s doubling to
+300 s) which does not consult the invocation deadline, so on the separate-confidence
+shard path it can overrun an invocation by itself regardless of the table above. The
+budget bounds one stalled call per client, not that ladder. Making it deadline-aware
+changes behaviour for every non-agentic step — classification, simple extraction,
+summarization, assessment — so it is tracked separately; the test above pins its
+numbers so the exposure cannot drift unnoticed.
 
 ### Concurrency Control
 
