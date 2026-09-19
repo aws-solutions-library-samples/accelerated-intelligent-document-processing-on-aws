@@ -110,6 +110,7 @@ def up(region: str) -> int:
         ("ExternalIdPAdminGroupName", "IdP-Admins"),
         ("ExternalIdPAuthorGroupName", "IdP-Authors"),
         ("ExternalIdPReviewerGroupName", "IdP-Reviewers"),
+        ("ExternalIdPAnnotatorGroupName", "IdP-Annotators"),
         ("ExternalIdPViewerGroupName", "IdP-Viewers"),
     ):
         print(f"    ParameterKey={key},ParameterValue={value}")

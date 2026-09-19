@@ -44,7 +44,7 @@ TEMPLATE = REPO_ROOT / "template.yaml"
 IDP_NAME = "TestOkta"
 ADMIN_IDP_GROUP = "IdP-Admins"
 VIEWER_IDP_GROUP = "IdP-Viewers"
-COGNITO_GROUPS = ["Admin", "Author", "Reviewer", "Viewer"]
+COGNITO_GROUPS = ["Admin", "Author", "Reviewer", "Annotator", "Viewer"]
 
 NATIVE_USER = "native-user@example.invalid"
 FED_USER = "fed-user@example.invalid"
@@ -309,6 +309,7 @@ def main() -> int:
                             "ADMIN_GROUP_NAME": ADMIN_IDP_GROUP,
                             "AUTHOR_GROUP_NAME": "IdP-Authors",
                             "REVIEWER_GROUP_NAME": "IdP-Reviewers",
+                            "ANNOTATOR_GROUP_NAME": "IdP-Annotators",
                             "VIEWER_GROUP_NAME": VIEWER_IDP_GROUP,
                             "EXTERNAL_IDP_NAME": IDP_NAME,
                         }
@@ -390,6 +391,7 @@ def main() -> int:
                     "ADMIN_GROUP_NAME": ADMIN_IDP_GROUP,
                     "AUTHOR_GROUP_NAME": "IdP-Authors",
                     "REVIEWER_GROUP_NAME": "IdP-Reviewers",
+                    "ANNOTATOR_GROUP_NAME": "IdP-Annotators",
                     "VIEWER_GROUP_NAME": VIEWER_IDP_GROUP,
                     "EXTERNAL_IDP_NAME": "SomeOtherIdP",
                 }
