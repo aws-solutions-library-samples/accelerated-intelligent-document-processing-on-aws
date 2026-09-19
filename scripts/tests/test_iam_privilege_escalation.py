@@ -109,10 +109,14 @@ DEPLOYMENT_ROLE_TEMPLATES: dict[str, str] = {
     ),
 }
 
-# `scratch/` is the repo's gitignored local-work directory; it can hold whole git
-# worktrees (scratch/wt-*/), i.e. full copies of every template under a path the
-# exemption list does not know. The v0.6.8 release validation failed both rules
-# on two such worktrees. Same set as the sibling gate in test_lambda_log_groups.py.
+# `scratch/` and `.claude/` are the repo's gitignored local-work directories, and both
+# hold whole git worktrees (`scratch/wt-*/`, `.claude/worktrees/agent-*/`) — full copies
+# of every template under a path the exemption list does not know. The v0.6.8 release
+# validation failed both rules on two worktrees under `scratch/`; the 0.6.9 validation
+# then failed 157 assertions across four gates on 74 worktrees under `.claude/`, which
+# is why both names are here. Same set as the sibling gates in
+# test_lambda_log_groups.py, test_log_group_encryption.py and
+# test_api_adapter_identity_provenance.py; keep the four in step.
 PRUNED_DIRS = frozenset(
     {
         ".aws-sam",
@@ -123,6 +127,7 @@ PRUNED_DIRS = frozenset(
         ".git",
         "__pycache__",
         "scratch",
+        ".claude",
     }
 )
 

@@ -55,6 +55,16 @@ _HANDLES_REFUSAL = frozenset(
 
 # Directories with no deployed code in them: vendored dependencies, build output,
 # and the UI's node modules. A hit in one of these says nothing about what runs.
+# `scratch/` and `.claude/` are gitignored local work, and both routinely hold whole
+# copies of this tree: `scratch/` collects verification worktrees and mutation-test
+# mutants (`scratch/p806_verify/mutants/*/idp_common/api_adapter.py`), and
+# `.claude/worktrees/` is where the assistant's agent worktrees live. A copy under
+# either describes nothing that ships, but it parses like a consumer, so scanning
+# them turns local debris into a red gate — 19 mutants failed this rule on the
+# maintainer's tree, and 157 failures across four sibling gates came from
+# `.claude/worktrees/`. Same reasoning and same names as the sets in
+# test_iam_privilege_escalation.py, test_lambda_log_groups.py and
+# test_log_group_encryption.py; keep the four in step.
 _SKIP_DIR_PARTS = frozenset(
     {
         ".git",
@@ -65,6 +75,8 @@ _SKIP_DIR_PARTS = frozenset(
         "dist",
         "__pycache__",
         "site-packages",
+        "scratch",
+        ".claude",
     }
 )
 

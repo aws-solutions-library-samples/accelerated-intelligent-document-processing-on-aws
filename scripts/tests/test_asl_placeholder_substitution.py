@@ -62,6 +62,13 @@ _SKIP_DIRS = frozenset(
         "dist",
         "node_modules",
         "workshop",
+        # Gitignored local work, which routinely holds whole copies of this tree
+        # (`scratch/wt-*/`, `.claude/worktrees/agent-*/`). A copy parses like a
+        # substitution site but ships nothing: 150 of this gate's assertions failed
+        # on 74 agent worktrees during the 0.6.9 validation. The names are asserted
+        # to match the sibling gates by test_repo_walk_guards_prune_local_work.py.
+        "scratch",
+        ".claude",
     }
 )
 

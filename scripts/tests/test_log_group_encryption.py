@@ -491,8 +491,9 @@ def _discover_log_group_templates(root: Path | None = None) -> list[str]:
     """
     root = root or REPO_ROOT
     walk_yaml = _sibling_module().walk_yaml
-    # `scratch/` is the repo's gitignored local-work directory and can hold whole
-    # git worktrees, i.e. full copies of every template.
+    # `scratch/` and `.claude/` are the repo's gitignored local-work directories and
+    # both hold whole git worktrees (`.claude/worktrees/agent-*/`), i.e. full copies
+    # of every template. Keep in step with the sibling gates.
     skip_dirs = {
         ".aws-sam",
         "node_modules",
@@ -501,6 +502,7 @@ def _discover_log_group_templates(root: Path | None = None) -> list[str]:
         "dist",
         ".git",
         "scratch",
+        ".claude",
     }
     found = []
     for pattern in ("*.yaml", "*.yml"):
