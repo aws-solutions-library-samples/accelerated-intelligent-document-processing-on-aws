@@ -18,9 +18,11 @@ import argparse
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import uuid
 
 import yaml
 
@@ -694,9 +696,19 @@ def main():
             f"docs this suite names), or check the doc id for a typo."
         )
 
+    # The directory name carries the suite and a random suffix, and creation is
+    # NOT idempotent, because a stamp resolved to the second is not unique and
+    # sharing this directory silently destroys results. `runmap.json` is rewritten
+    # after every launch, so two suites starting in the same second overwrite each
+    # other continuously and the last writer wins: eight concurrent lanes cost
+    # seven suites' runmaps (~700 runs) and the mapping from run id to cell, doc
+    # and repeat exists nowhere else (#1016). exist_ok=False turns that into an
+    # immediate, loud failure. The suite in the name also makes a results tree
+    # readable without opening every file.
     run_stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    outdir = os.path.join(RESULTS, f"run-{run_stamp}")
-    os.makedirs(outdir, exist_ok=True)
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", a.suite).strip("-").lower()
+    outdir = os.path.join(RESULTS, f"run-{run_stamp}-{slug}-{uuid.uuid4().hex[:6]}")
+    os.makedirs(outdir, exist_ok=False)
 
     # 1. register test sets (unique docs)
     for d in set(doc_ids):
@@ -729,9 +741,28 @@ def main():
     inflight = []
     expected_docs = {}  # run_id -> documents the run must finish (1, or n)
 
-    def poll_done(rid):
-        st = lib.poll_run(res["tracking_table"], rid)
-        return run_complete(st, expected_docs.get(rid, 1))
+    # Runs observed terminal once are never re-polled: the scan below narrows as
+    # the suite progresses, and a completed run cannot un-complete.
+    settled = set()
+
+    def prune_pending(ids):
+        """Return the ids of `ids` that are NOT finished, in ONE table pass.
+
+        Resolving runs one at a time meant a full table scan per run per check
+        (#1016). Batching them is what makes the in-flight cap cheap enough to
+        actually govern concurrency rather than being the bottleneck itself.
+        """
+        live = [i for i in ids if i and i not in settled]
+        if not live:
+            return []
+        stats = lib.poll_runs(res["tracking_table"], live)
+        still = []
+        for rid in live:
+            if run_complete(stats[rid], expected_docs.get(rid, 1)):
+                settled.add(rid)
+            else:
+                still.append(rid)
+        return still
 
     def _write_runmap():
         json.dump(
@@ -778,10 +809,10 @@ def main():
     # synthetic runs drain behind them.
     for c, d, rep in ref_pairs:
         spec = ref_launchable[d]["spec"]
-        inflight = [x for x in inflight if not poll_done(x)]
+        inflight = prune_pending(inflight)
         while len(inflight) >= a.max_inflight:
             time.sleep(a.poll_interval)
-            inflight = [x for x in inflight if not poll_done(x)]
+            inflight = prune_pending(inflight)
         assert_stack_unchanged(a.stack, stack_expected, len(runmap))
         ctx = f"bench-{c['cell']}-{d}-r{rep}"
         n = int(spec.get("n", 1))
@@ -821,10 +852,10 @@ def main():
         # while a 30-run suite degraded to 8 min/run, and raising --max-inflight
         # barely helped because the CHECK was the bottleneck, not the concurrency.
         # A 171-run grid would have polled ~14,000 times to launch its last run.
-        inflight = [x for x in inflight if not poll_done(x)]
+        inflight = prune_pending(inflight)
         while len(inflight) >= a.max_inflight:
             time.sleep(a.poll_interval)
-            inflight = [x for x in inflight if not poll_done(x)]
+            inflight = prune_pending(inflight)
         assert_stack_unchanged(a.stack, stack_expected, len(runmap))
         ctx = f"bench-{c['cell']}-{d}-r{rep}"
         rid = launch(a.stack, f"bench-{d}", c["version"], ctx)
@@ -847,9 +878,7 @@ def main():
     print("draining...")
     deadline = time.time() + a.timeout_min * 60
     while time.time() < deadline:
-        pending = [
-            r["run_id"] for r in runmap if r["run_id"] and not poll_done(r["run_id"])
-        ]
+        pending = prune_pending([r["run_id"] for r in runmap if r["run_id"]])
         if not pending:
             break
         print(f"  {len(pending)} runs pending...")
