@@ -31,9 +31,13 @@ in the released changelog:
   feature added this cycle later needed a fix this cycle, the user upgrading from
   the last release never saw the bug — so the fix is invisible to them. Fold the
   fix silently into the feature's entry (or drop it) rather than listing it.
-  - *Example:* an entry like "X no longer gets stuck in PENDING after the
-    AppSync→REST migration" is pointless when the AppSync→REST migration is
-    itself still Unreleased — the user never had the old AppSync path. Remove it.
+  - *Example, from the 0.6.0 cycle:* while the AppSync→REST transport migration
+    was itself sitting in `[Unreleased]`, an entry like "X no longer gets stuck
+    in PENDING after the AppSync→REST migration" was pointless — nobody
+    upgrading to 0.6.0 had ever run the half-migrated code. It was removed and
+    folded into the migration entry. (That migration shipped in 0.6.0 and AppSync
+    is no longer part of the architecture; the example is here for the shape of
+    the reasoning, not because anything about it is still pending.)
 - **Collapse a feature that was added then reworked** into a single entry
   describing the final shipped behavior. The intermediate states never shipped.
 - **Merge duplicate/overlapping entries** about the same feature into one.

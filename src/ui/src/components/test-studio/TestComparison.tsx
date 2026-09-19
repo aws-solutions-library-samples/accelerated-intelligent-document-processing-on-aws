@@ -282,10 +282,17 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   const downloadToCsv = () => {
     if (!comparisonData || !comparisonData.metrics) return;
 
+    // Filter out ``_``-prefixed sentinel keys (server plants ``_comparator_diff``
+    // in the metrics payload) BEFORE the status check. Relying on the status
+    // check alone worked incidentally (arrays don't have ``.status``) but
+    // diverged from ``hasIncompleteRuns`` above which filters by key —
+    // making a future refactor that adds a ``.status`` to any sentinel array
+    // silently break the CSV export. See the assertion in the server's
+    // ``compare_test_runs`` that enforces this key namespace convention.
     const completeTestRuns: Record<string, Record<string, unknown>> = Object.fromEntries(
-      Object.entries(comparisonData.metrics).filter(
-        ([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE',
-      ),
+      Object.entries(comparisonData.metrics)
+        .filter(([key]) => !key.startsWith('_'))
+        .filter(([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE'),
     );
 
     // Create headers
@@ -793,10 +800,14 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   const downloadToJson = () => {
     if (!comparisonData?.metrics) return;
 
+    // Same ``_``-prefix guard as ``downloadToCsv`` — parity is load-bearing:
+    // both consumers walk ``comparisonData.metrics`` and both must filter
+    // sentinel keys (``_comparator_diff``) before the status check. See the
+    // longer comment in ``downloadToCsv``.
     const completeTestRuns: Record<string, Record<string, unknown>> = Object.fromEntries(
-      Object.entries(comparisonData.metrics).filter(
-        ([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE',
-      ),
+      Object.entries(comparisonData.metrics)
+        .filter(([key]) => !key.startsWith('_'))
+        .filter(([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE'),
     );
 
     // Create JSON structure matching the UI sections
@@ -986,18 +997,55 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   console.log('Comparison data structure:', comparisonData);
   console.log('Metrics structure:', comparisonData.metrics);
 
-  // Filter out incomplete test runs (include COMPLETE and PARTIAL_COMPLETE)
+  // Filter out incomplete test runs (include COMPLETE and PARTIAL_COMPLETE).
+  // Also strip ``_``-prefixed sentinel keys — this dict feeds the
+  // Comparator-Changes panel column layout, the ``fieldMetrics`` export,
+  // and the same-test-set check below; leaking the ``_comparator_diff``
+  // sentinel into any of them would corrupt the render. Matches the
+  // filter shape used by ``hasIncompleteRuns`` and the two downloaders.
   const completeTestRuns = comparisonData.metrics
     ? Object.fromEntries(
-        Object.entries(comparisonData.metrics).filter(
-          ([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE',
-        ),
+        Object.entries(comparisonData.metrics)
+          .filter(([key]) => !key.startsWith('_'))
+          .filter(([, testRun]) => testRun.status === 'COMPLETE' || testRun.status === 'PARTIAL_COMPLETE'),
       )
     : {};
 
+  // Sentinel keys planted by the resolver (e.g. ``_comparator_diff``) live in
+  // the metrics payload alongside real test-run entries but carry no
+  // ``status`` field. Filter them by key prefix before checking run
+  // completeness — otherwise ``undefined !== 'COMPLETE'`` is true and
+  // would spuriously flag "incomplete runs" whenever the diff sentinel is
+  // present.
   const hasIncompleteRuns = comparisonData.metrics
-    ? Object.values(comparisonData.metrics).some((testRun) => testRun.status !== 'COMPLETE' && testRun.status !== 'PARTIAL_COMPLETE')
+    ? Object.entries(comparisonData.metrics)
+        .filter(([key]) => !key.startsWith('_'))
+        .some(([, testRun]) => testRun.status !== 'COMPLETE' && testRun.status !== 'PARTIAL_COMPLETE')
     : false;
+
+  // Comparator Changes payload planted by the resolver at
+  // ``metrics._comparator_diff``. When two runs applied the same comparator +
+  // threshold + source to every attribute, this is an empty array and the
+  // panel is hidden.
+  const comparatorDiff = ((comparisonData.metrics as Record<string, unknown> | undefined)?._comparator_diff ?? []) as Array<{
+    attribute: string;
+    entries: Record<string, { comparator?: string; threshold?: number; source?: string; why?: string[] } | null>;
+  }>;
+
+  // Same guard as the per-field metrics panel further down (line ~1810):
+  // per-attribute comparison across DIFFERENT test sets is meaningless
+  // because the two schemas are unrelated, so the diff would just enumerate
+  // every attribute as one-sided "schema-shape drift". Only surface the
+  // panel when EVERY run has a defined, non-empty testSetName AND all
+  // runs share the same one. A previous version filtered undefined
+  // testSetNames out before the size check, so a run with a missing
+  // testSetName merged with a run that had one collapsed to size 1 and
+  // spuriously rendered the panel.
+  const comparatorDiffTestSetNamesRaw = Object.values(completeTestRuns).map((run) => (run.testSetName as string | undefined) ?? '');
+  const comparatorDiffSameTestSet =
+    comparatorDiffTestSetNamesRaw.length > 0 &&
+    comparatorDiffTestSetNamesRaw.every((n) => n !== '') &&
+    new Set(comparatorDiffTestSetNamesRaw).size === 1;
 
   const downloadButton = (
     <ButtonDropdown
@@ -1396,6 +1444,71 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
               );
             })()}
           </Container>
+
+          {/* Comparator Changes panel — surfaces attributes whose applied
+              comparator, threshold or source ("configured" vs
+              "auto-inferred") differs between runs. Hidden when nothing
+              differs so it doesn't add noise to the common case.
+              Rendered right after Configuration Comparison because it
+              reflects a downstream effect of config changes on Stickler's
+              per-field decisions — the same "what changed between runs"
+              theme, just at the comparator layer. */}
+          {comparatorDiff.length > 0 && comparatorDiffSameTestSet && (
+            <Container
+              header={
+                <Header
+                  variant="h3"
+                  description="Attributes whose applied comparator, threshold or provenance differs between runs. Source: 'configured' means the operator's x-aws-idp-evaluation-method won; 'auto-inferred' means Stickler picked from the field type and name-token."
+                >
+                  Comparator Changes
+                </Header>
+              }
+            >
+              <Table<{
+                attribute: string;
+                entries: Record<string, { comparator?: string; threshold?: number; source?: string; why?: string[] } | null>;
+              }>
+                resizableColumns
+                wrapLines={preferences.wrapLines}
+                variant="embedded"
+                items={comparatorDiff}
+                columnDefinitions={[
+                  {
+                    id: 'attribute',
+                    header: 'Attribute',
+                    cell: (item) => String(item.attribute),
+                    width: 260,
+                  },
+                  ...Object.keys(completeTestRuns).map((testRunId) => ({
+                    id: testRunId,
+                    header: createTestRunHeader(testRunId, true),
+                    cell: (item: {
+                      entries: Record<string, { comparator?: string; threshold?: number; source?: string; why?: string[] } | null>;
+                    }) => {
+                      const entry = item.entries?.[testRunId];
+                      if (!entry) return <Box color="text-status-inactive">—</Box>;
+                      const method = entry.comparator ?? 'unknown';
+                      const threshold =
+                        entry.threshold !== undefined && entry.threshold !== null ? ` @ ${Number(entry.threshold).toFixed(2)}` : '';
+                      const source = entry.source ? ` (${entry.source})` : '';
+                      // Tooltip carries Stickler's decision trace (``why``)
+                      // for auto-inferred rows; ``title`` is the lightest-
+                      // weight native tooltip and doesn't need a Popover
+                      // dependency for what is at most a two-line trace.
+                      const why = Array.isArray(entry.why) ? entry.why.join('\n') : '';
+                      return (
+                        <span title={why || undefined}>
+                          {method}
+                          {threshold}
+                          <span style={{ color: '#687078' }}>{source}</span>
+                        </span>
+                      );
+                    },
+                  })),
+                ]}
+              />
+            </Container>
+          )}
 
           {/* Average Accuracy and Split Metrics Comparison */}
           <Container header={<Header variant="h3">Average Accuracy and Split Metrics Comparison</Header>}>

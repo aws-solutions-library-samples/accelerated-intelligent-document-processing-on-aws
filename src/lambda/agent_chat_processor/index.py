@@ -22,6 +22,7 @@ import botocore.exceptions
 from idp_common.agents.analytics import get_analytics_config
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Import Bedrock error handling
 try:
@@ -44,6 +45,68 @@ logger = logging.getLogger(__name__)
 _CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 _CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
 _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
+
+# Agent Chat is available to Admin/Author/Viewer. This deployment declares FIVE
+# Cognito groups (Admin, Annotator, Author, Reviewer, Viewer — see the
+# AWS::Cognito::UserPoolGroup resources in template.yaml), so the excluded set is
+# Reviewer AND Annotator. Must stay equal to _AGENT_CHAT_GROUPS in the
+# agent_chat_resolver — the two enforce the same operation on two different entry
+# paths.
+_AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
+
+
+def _caller_in_groups(event, allowed):
+    """Defense-in-depth RBAC check against the caller's Cognito groups.
+
+    Same idiom as ``_caller_in_groups`` in the agent_chat_resolver, so the two
+    entry paths to Agent Chat read the caller's groups the same way.
+
+    A caller whose groups are known always carries a non-None ``identity``;
+    invocations that carry none are IAM-gated backend calls and are handled by
+    ``_enforce_agent_chat_groups`` rather than here.
+    """
+    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    return bool(set(allowed).intersection(groups))
+
+
+def _enforce_agent_chat_groups(event):
+    """Reject a caller who is not in a group permitted to use Agent Chat.
+
+    The resolver in front of the dispatcher path already applies this check; this
+    is the same gate applied where the work actually happens, so an invocation
+    that arrives by another route is subject to it too.
+
+    ``PermissionError`` is raised for consistency with the resolver, but note
+    where the HTTP 403 on the dispatcher path actually comes from: it is the
+    *resolver's own* ``PermissionError``. The dispatcher invokes the resolver
+    synchronously and reads ``errorType`` out of the invoke response
+    (``nested/api-resolvers/src/lambda/http_api_dispatcher/index.py``), so only
+    an exception from the resolver reaches that mapping. The resolver in turn
+    invokes THIS function with ``InvocationType="Event"``, and an async
+    invocation returns no payload to inspect — by the time this runs the client
+    already holds the resolver's 200. An exception raised here is therefore
+    logged, retried by Lambda, and never seen by the caller.
+
+    The same is true on the streaming path, for a different reason: see
+    ``_enforce_groups_or_403`` in src/lambda/chat_stream_processor/app.py, which
+    applies this gate synchronously in the route so a denial can still become a
+    real 403 before the response is committed. This copy of the check remains the
+    last line of defence for any invocation that reaches the function directly.
+
+    Invocations with no ``identity`` are not group-checked: they are the backend
+    paths (a direct ``lambda:InvokeFunction``, and the streaming Function URL,
+    whose transport forwards no Cognito group claim — see ``_caller_identity`` in
+    src/lambda/chat_stream_processor/app.py). Those are gated by IAM instead.
+    """
+    if event.get("identity") is None:
+        return
+    if not _caller_in_groups(event, _AGENT_CHAT_GROUPS):
+        logger.warning("Rejecting agent chat: caller is not in an authorized group")
+        raise PermissionError(
+            "Unauthorized: Agent Chat requires Admin, Author or Viewer group"
+        )
 
 
 def _persist_chat_turn(
@@ -881,8 +944,22 @@ def handler(event, context):
     is_cold_start = _lambda_invocation_count == 1
     
     logger.info(f"Lambda invocation #{_lambda_invocation_count} ({'COLD START' if is_cold_start else 'WARM'})")
-    logger.info(f"Received agent chat processor event: {json.dumps(event)}")
-    
+    # Redacted, not raw: this event carries the user's chat prompt, the caller's
+    # Cognito `sub` and the caller's group list, and the log group is readable by
+    # anyone with CloudWatch Logs access — a wider audience than the people
+    # entitled to read a given user's conversation. The sanitizer keeps the shape
+    # of the event, which is what diagnosing a failed turn actually needs.
+    logger.info(
+        f"Received agent chat processor event: "
+        f"{json.dumps(sanitize_event_for_logging(event))}"
+    )
+
+    # Authorize before any work. Deliberately outside the try/except below: that
+    # handler converts an exception into a 200-with-error-body stream frame plus a
+    # 500 return, which would turn a denial into an application error. Raising
+    # PermissionError here matches the resolver so the dispatcher maps it to 403.
+    _enforce_agent_chat_groups(event)
+
     try:
         # Use cached boto3 session for warm Lambda containers (significant performance improvement)
         session = get_cached_boto3_session()

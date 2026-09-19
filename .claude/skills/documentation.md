@@ -88,6 +88,28 @@ Update for ALL user-facing changes. Format:
 - Bug fix description
 ```
 
+## State what is true now — never what a previous draft said
+
+A document is read as current fact. Its own editing history is in git and is of no
+use to a reader, so **never write doc-about-doc commentary**: "an earlier version of
+this guide got this wrong", "this page previously quoted −78%", "**Correction.** This
+section previously claimed…", "that claim was false and is withdrawn", "four
+corrections from review". When you fix a page, fix it — do not annotate it.
+
+Keep the substance, drop the retraction framing. "This page previously quoted a −78%
+saving; the figure was withdrawn" becomes "**Why there is no percentage here.** A
+figure would have to come from the cost report, which at the time of the run priced
+cache reads by substring match…". A withdrawn recommendation becomes a plain
+"⚠️ Do **not** do X, because …".
+
+What *is* legitimate is **product** history a reader acts on — "`--log-level INFO`
+is now honoured; it used to be silently treated as unset", a rename, an
+upgrade-visible behaviour change, and `CHANGELOG.md` entries generally — plus
+caveats about a **measurement instrument** and corrections to an **external**
+artifact (an AWS doc, a GitHub issue) the reader will also read. The test is whose
+history it is: the product's, or this file's. See the fuller rule with examples in
+`CLAUDE.md` ("Documentation states what is true now").
+
 ## Cross-Referencing
 Link between docs using relative paths:
 ```markdown
@@ -179,11 +201,25 @@ Filename map (`.cline` → `.claude`): `backend.md`→`backend-lambda.md`,
 `pr-review.md`→`pr-review.md`, `changelog.md`→`prepare-changelog.md`,
 `release.md`→`cut-release-changelog.md`, `srt.md`→`srt-security-scan.md`,
 `dependabot.md`→`dependabot-prs.md`. Newer skills keep the same name on both
-sides (e.g. `release-validation.md`, `curate-security-results.md`, `ux-test.md`).
+sides (e.g. `release-validation.md`, `curate-security-results.md`, `ux-test.md`,
+`repo-quality-review.md`, `product-demo.md`).
 
 When **adding** a new skill: create it in `.claude/skills/`, then add a symlink
 from the desired `.cline/skills/` name to it
 (`ln -s ../../.claude/skills/<name>.md .cline/skills/<name>.md`).
+
+**Deliberately Claude-only skills are allowed, but the reason has to be written
+down.** Some skills drive live AWS stacks and are not something Cline is set up to
+run, so they have no `.cline` entry on purpose. An unexplained absence is
+indistinguishable from an oversight, so `scripts/tests/test_repo_quality_review_skill.py`
+requires every `.claude/skills/*.md` to either have a `.cline` symlink or a row in that
+file's `CLINE_EXEMPT` table giving the reason in one line. Add the row, not the symlink,
+when the skill genuinely should not be visible to Cline — and never add a symlink merely
+to make the test pass, because whether Cline should see a skill is a judgement about
+that assistant's capabilities. The converse also holds: do not keep a row whose stated
+reason does not actually apply to the skill. If the exemption you are relying on is
+"drives a live stack" and the skill does not, that is not a reason, and the choice is a
+different reason or a symlink.
 
 > **Portability caveat:** Git stores these as symlinks (mode 120000). On clones
 > with `core.symlinks=false` (notably some Windows setups) they materialize as

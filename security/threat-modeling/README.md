@@ -4,14 +4,23 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 3.1 |
-| **Last Updated** | 2026-08-20 |
-| **Applies to release** | v0.6.5.dev1 |
+| **Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
+| **Last reviewed against version** | 0.6.9 |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
 | **Architecture** | Unified (Pipeline + BDA modes), API Gateway REST transport |
 | **Methodology** | STRIDE |
-| **Total Threats** | 93 |
+| **Total Threats** | 98 |
 | **Classification** | Internal |
+
+> **`Last reviewed against version` is a gated field.** It records the release
+> whose architecture and code this model was last read against — not the release
+> it was last *edited* in. `make check-threat-model-currency` (run from
+> `make lint-cicd`, so both CI systems execute it) fails the build when that
+> value falls more than one release behind the repository's `VERSION`. Bumping
+> the field is the *last* step of a re-review, never a way to clear the gate:
+> see "Maintaining This Threat Model" below.
 
 ## Overview
 
@@ -21,14 +30,14 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 | Metric | Value |
 |--------|-------|
-| Threats identified | **93** |
-| Critical risk (8–9) | 8 |
-| High risk (6–7) | 29 |
-| Medium risk (3–5) | 41 |
+| Threats identified | **98** |
+| Critical risk (8–9) | 9 |
+| High risk (6–7) | 31 |
+| Medium risk (3–5) | 43 |
 | Low risk (1–2) | 15 |
-| Mitigated | 63 (68%) |
-| Partially mitigated | 22 (24%) |
-| Open (real gap, needs work) | **4 (4%)** |
+| Mitigated | 63 (64%) |
+| Partially mitigated | 25 (26%) |
+| Open (real gap, needs work) | **6 (6%)** |
 | Accepted risk | 4 (4%) |
 
 > **Counts are generated, not hand-maintained.** `deliverables/threat-model.tc.json`
@@ -42,21 +51,54 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 ### Open items requiring action
 
-The four **Open** threats are gaps with no effective control today:
+The six **Open** threats are gaps with no effective control today. Four of them
+have a fix in flight; that fix is **not** a control until its change merges, so
+the status here stays *Open* and the issue number is recorded instead. Note the
+distinction in the last column: "closes it" and "partial" are different claims,
+and a threat model that reports an in-flight change as a resolution is making the
+same mistake as one that reports an intention as a control.
 
-| ID | Threat | Where |
-|----|--------|-------|
-| CHAT.T03 | Chat streaming Function URL enforces neither RBAC group nor session ownership | [companion-chat.md](feature-threats/companion-chat.md) |
-| CHAT.T06 | `/chat/agent` trusts a client-supplied `callerSub` over the SigV4 identity | [companion-chat.md](feature-threats/companion-chat.md) |
-| UI.T06 | Presigned read URLs are bucket-scoped, not key-scoped; callable by any authenticated user | [web-ui.md](feature-threats/web-ui.md) |
-| JOB.T02 | Jobs API is outside the automated authorization test harness | [jobs-api.md](feature-threats/jobs-api.md) |
+| ID | Threat | Fix in flight | Where |
+|----|--------|---------------|-------|
+| CHAT.T03 | Chat streaming Function URL enforces neither RBAC group nor session ownership | **issue #920** / PR #954 — **partial, does not close it**: no per-user identity and no group claim on this transport, so the remainder stays open (`GAP-07`) | [companion-chat.md](feature-threats/companion-chat.md) |
+| CHAT.T06 | `/chat/agent` prefers a client-supplied `callerSub` over the SigV4-derived one | **issue #920** / PR #954 — **partial**: one shared resolver now 403s a contradicting body value, but the body value is still the effective identity when the transport value is the pool-wide session name | [companion-chat.md](feature-threats/companion-chat.md) |
+| HOOK.T07 | `onError: fail` does not halt the workflow at six of the seven hook points | **issue #919** (pending) | [lambda-hooks.md](feature-threats/lambda-hooks.md) |
+| SDK.T05 | The shipped CloudFormation deployment service role reaches account administrator | **issue #927** (pending) | [sdk-cli.md](feature-threats/sdk-cli.md) |
+| UI.T06 | Presigned read URLs are bucket-scoped, not key-scoped; callable by any authenticated user | — | [web-ui.md](feature-threats/web-ui.md) |
+| JOB.T02 | Jobs API is outside the automated authorization test harness | — | [jobs-api.md](feature-threats/jobs-api.md) |
+
+Two further threats are **Partially Mitigated** with the remainder of their
+mitigation in flight, and are called out here because the partial state is easy
+to over-read: **AUTH.T16** (authorization is opt-in per resolver — there is no
+default deny at the dispatcher; **issue #928**) and **AUTH.T15** (divergent
+log-redaction denylists across vendored copies; **issue #921**).
+
+### What "reviewed" covers in v3.2
+
+A threat model that claims to have been re-reviewed should say how deeply. In
+this pass the following documents were re-derived from the templates and source
+rather than edited in place, and their **Applies to release** rows read v0.6.9:
+[`architecture/system-overview.md`](architecture/system-overview.md),
+[`architecture/data-flows.md`](architecture/data-flows.md),
+[`feature-threats/rbac-authentication.md`](feature-threats/rbac-authentication.md),
+[`feature-threats/companion-chat.md`](feature-threats/companion-chat.md),
+[`feature-threats/lambda-hooks.md`](feature-threats/lambda-hooks.md) and
+[`feature-threats/sdk-cli.md`](feature-threats/sdk-cli.md).
+
+The remaining documents were **carried forward**: their content was reconciled
+for counts, cross-references and any claim contradicted by the six documents
+above, but their threat entries were not individually re-verified against source
+in this pass, and their **Applies to release** rows still read the release they
+were last verified against. That is deliberate — a blanket version bump across
+all 24 documents would assert a review that did not happen, which is the failure
+mode the currency gate exists to prevent.
 
 ## Directory Structure
 
 ```
 security/threat-modeling/
 ├── README.md                                    ← You are here
-├── threat-id-glossary.md                        ← All 83 threat IDs with cross-references
+├── threat-id-glossary.md                        ← All 98 threat IDs with cross-references
 │
 ├── architecture/                                ← System architecture & data flows
 │   ├── system-overview.md                       ← Unified architecture, components, trust boundaries
@@ -130,7 +172,7 @@ security/threat-modeling/
 ### Cross-Cutting Analysis
 - **[STRIDE Analysis](threat-analysis/stride-analysis.md)** — Full STRIDE across all components
 - **[Risk Matrix](risk-assessment/risk-matrix.md)** — Complete risk register with scoring and recommendations
-- **[Threat ID Glossary](threat-id-glossary.md)** — All 83 threat IDs with quick reference
+- **[Threat ID Glossary](threat-id-glossary.md)** — All 98 threat IDs with quick reference
 
 ### Implementation & Testing
 - **[Implementation Guide](deliverables/implementation-guide.md)** — Security controls, configuration, and checklists
@@ -148,9 +190,9 @@ security/threat-modeling/
 | CHAT | Companion Chat | 6 | Very High (9) | [companion-chat.md](feature-threats/companion-chat.md) |
 | MCP | MCP Integration | 6 | Critical (8) | [mcp-integration.md](feature-threats/mcp-integration.md) |
 | KB | Knowledge Base | 4 | High (6) | [knowledge-base.md](feature-threats/knowledge-base.md) |
-| AUTH | Authentication/RBAC | 12 | High (6) | [rbac-authentication.md](feature-threats/rbac-authentication.md) |
-| SDK | SDK/CLI | 4 | High (6) | [sdk-cli.md](feature-threats/sdk-cli.md) |
-| HOOK | Lambda Hooks | 6 | Critical (8) | [lambda-hooks.md](feature-threats/lambda-hooks.md) |
+| AUTH | Authentication/RBAC | 15 | High (6) | [rbac-authentication.md](feature-threats/rbac-authentication.md) |
+| SDK | SDK/CLI | 5 | Critical (8) | [sdk-cli.md](feature-threats/sdk-cli.md) |
+| HOOK | Lambda Hooks | 7 | Critical (8) | [lambda-hooks.md](feature-threats/lambda-hooks.md) |
 | UI | Web UI | 7 | High (6) | [web-ui.md](feature-threats/web-ui.md) |
 | RPT | Reporting/Analytics | 8 | High (6) | [reporting-analytics.md](feature-threats/reporting-analytics.md) |
 | FEAT | Feature Platform | 4 | Critical (8) | [feature-platform.md](feature-threats/feature-platform.md) |
@@ -168,13 +210,20 @@ security/threat-modeling/
 | 4 | MCP.T01 | Data exfiltration via MCP tools | 8 | Partially Mitigated |
 | 5 | HOOK.T02 | Data exfiltration via post-processing hook | 8 | Partially Mitigated |
 | 6 | FEAT.T01 | Feature UI bundle executes unsandboxed in host origin | 8 | Partially Mitigated |
-| 7 | CHAT.T03 | Chat streaming Function URL — no group / ownership check | 6 | **Open** |
-| 8 | UI.T06 | Presigned read URLs bucket-scoped, not key-scoped | 6 | **Open** |
+| 7 | SDK.T05 | Deployment service role reaches account administrator | 8 | **Open** (fix pending, #927) |
+| 8 | CHAT.T03 | Chat streaming Function URL — no group / ownership check | 6 | **Open** (fix pending, #920) |
+| 9 | UI.T06 | Presigned read URLs bucket-scoped, not key-scoped | 6 | **Open** |
+| 10 | AUTH.T16 | No default deny at the dispatcher; authorization is opt-in per resolver | 6 | Partially Mitigated (#928) |
+| 11 | HOOK.T07 | `onError: fail` is not terminal at six of seven hook points | 6 | **Open** (fix pending, #919) |
 
 ## Maintaining This Threat Model
 
+### Adding or editing a threat
+
 1. **Add or edit the threat in its feature/architecture Markdown document** — the
    `### <ID>: <Title>` heading followed by the attribute table is the parsed unit.
+   Watch the table syntax: a row missing its trailing `|` is silently skipped by
+   the parser.
 2. **Add the ID to [`threat-id-glossary.md`](threat-id-glossary.md)** and to the
    `STATUS` table in [`scripts/build_threat_model.py`](scripts/build_threat_model.py)
    (risk score + mitigation status).
@@ -182,13 +231,55 @@ security/threat-modeling/
    It fails loudly on a duplicate ID or on drift between the corpus and `STATUS`.
 4. **Update this README's counts** from the script's output.
 
-Consider wiring `build_threat_model.py --check` into CI so the export cannot
-silently fall behind the corpus again.
+Steps 2 and 3 are now gated. `build_threat_model.py --check` runs from
+`make check-threat-model-currency`, which `make lint-cicd` calls, so both CI
+systems verify the committed export still rebuilds byte-identical. This was
+recommended here for two releases and not done, and the export duly broke:
+AUTH.T13 was added to the corpus with no `STATUS` entry, and every run of the
+builder exited on drift until v3.2 repaired it.
+
+### Re-reviewing for currency
+
+The whole corpus describes a moving system, so it has a shelf life. The
+`Last reviewed against version` field in the Document Information table above
+records the release the model was last *read against*.
+`make check-threat-model-currency` fails when that value is more than one release
+behind the repository's `VERSION`.
+
+One release is the threshold because zero would red-line `develop` the moment
+`VERSION` is bumped to the next `.devN` — which happens at the *start* of a
+development cycle, before there is anything to review — while two or more is how
+this model came to be six releases stale in the first place. One release means
+the gate fires exactly once per release cycle, at a point where there is real
+change to review.
+
+When it fires, the remedy is a review, not an edit:
+
+1. Re-derive [`architecture/system-overview.md`](architecture/system-overview.md)
+   and [`architecture/data-flows.md`](architecture/data-flows.md) from
+   `template.yaml`, `nested/api-resolvers/template.yaml`,
+   `patterns/unified/statemachine/workflow.asl.json` and
+   `scripts/api_rbac_expectations.yaml` — read the templates, do not patch the
+   prose.
+2. Check the `CHANGELOG.md` entries for the releases since the recorded version
+   for new entry points, new trust boundaries, and controls that were removed or
+   replaced. A removed control that a threat still credits is the most damaging
+   kind of staleness, because the document then reads as assurance.
+3. Update the affected threat entries, the `STATUS` table, and the counts, and
+   regenerate the export.
+4. **Only then** set `Last reviewed against version` to the current `VERSION` and
+   add a Version History row saying which documents were re-verified and which
+   were carried forward.
+
+Editing the field alone will clear the gate and is the one thing not to do: it
+converts a stale-documentation signal into a silent false assurance, which is
+strictly worse than the red build.
 
 ## Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.2 | 2026-09-17 | **Currency refresh for v0.6.9, and a gate so the next drift is caught.** Re-derived from source: [`system-overview.md`](architecture/system-overview.md) and [`data-flows.md`](architecture/data-flows.md) (five Cognito groups not four; 118 routable operations not 97, with a corrected group distribution; the dispatcher's lack of a default deny; per-bucket encryption and the TLS-deny bucket policies in place of "SSE-S3 / SSE-KMS"; the concurrency admission-control mechanism; deployment-time privilege as trust boundary TB7), plus [`rbac-authentication.md`](feature-threats/rbac-authentication.md), [`companion-chat.md`](feature-threats/companion-chat.md), [`lambda-hooks.md`](feature-threats/lambda-hooks.md) and [`sdk-cli.md`](feature-threats/sdk-cli.md). Added **AUTH.T16** (no default deny at the dispatcher; authorization is opt-in per resolver), **AUTH.T15** (divergent log-redaction denylists), **HOOK.T07** (`onError: fail` is terminal at one of seven hook points) and **SDK.T05** (the shipped deployment service role reaches account administrator). Corrected two over-claims: CHAT.T03's "the caller's Cognito `sub` is derived from the SigV4 identity" (it is an assumed-role session name) and the hook docs' unqualified "`onError: fail` is terminal". Mitigations that depend on an unmerged change are marked **pending** with their issue number (#919, #920, #921, #927, #928) rather than described as present. Metadata is no longer hardcoded in the builder — it is read from this table, which had drifted (export said 3.0/v0.6.3 while this file said 3.1/v0.6.5.dev1) — and a new `Last reviewed against version` field is gated by `make check-threat-model-currency` in both CI systems. Not every document was re-verified; see "What 'reviewed' covers in v3.2". **The dispatcher default-deny threat was first drafted as `AUTH.T14` and renumbered to `AUTH.T16` before publication**, because a concurrent in-review change (PR #954) had already assigned `AUTH.T14` to a different threat — an alternate entry path bypassing an operation's group check on the streaming Function URL — and referenced that identifier from its CHANGELOG entry, from `.claude/skills/api-rbac-test.md` and from a comment in `scripts/api_rbac_expectations.yaml`, in each case beside the coverage-gap id `GAP-07`. (Measured on that branch, those three are the only occurrences outside `security/threat-modeling/`; its code comments name `GAP-07` rather than the threat id.) `AUTH.T14` is therefore **reserved**, not vacant; see the note under the AUTH table in [`threat-id-glossary.md`](threat-id-glossary.md). Three measured counts were corrected in this pass as well (106 of 109 log groups carry `KmsKeyId`, not 108; 17 SQS queues, not 16 or 18; 68 field aliases, not "roughly 55"), and CHAT.T06's recommendation was **withdrawn and replaced** — see that entry. 93 → 98 threats. |
 | 3.1 | 2026-08-20 | **Seller Entitlement Service.** Added the `SELL` prefix and [`feature-threats/seller-entitlement-service.md`](feature-threats/seller-entitlement-service.md) (**SELL.T01–T10**) — the first threat set whose protected assets belong to the **seller** (token signing key, customer roster, revenue) rather than the deploying customer, and whose caller is a semi-trusted, internet-reachable buyer account. A separate prefix rather than more `FEAT.*` threats because the trust boundary and the asset owner both differ. Six findings from the accompanying security review were fixed in the same change (crash on hostile input, product-existence oracle, unused KMS grant, missing token `kid`, unbounded body parse, allow-list free-tier mislabelling), plus a reserved-concurrency control. 83 → 93 threats. |
 | 3.0 | 2026-07-28 | **AppSec review for v0.6.x.** Corrected controls credited to deleted machinery: UI.T03 (AppSync GraphQL query-depth/introspection limits → REST dispatcher reality), CHAT.T03 (AppSync subscription filters → Lambda Function URL, with newly-identified missing group/ownership checks), UI.T01 CSP (documented `unsafe-inline`/`unsafe-eval` and `https:` script-src as *not* an anti-XSS control). Removed A2I/SageMaker from the HITL flow and trust boundary TB4 (HITL is now a built-in UI portal); removed the AppSync API layer from `system-overview.md`; rewrote all five AppSync sequence diagrams in `data-flows.md`. Added 19 threats for previously-unmodeled surfaces: **FEAT.T01–T04** (Feature Platform / third-party UI bundles in the host origin), **JOB.T01–T03** (Jobs API M2M OAuth realm), **PII.T01–T05** (preprocessing hook + PII redaction), **HOOK.T06** (preprocessing hook power), **PM.T08** (OpenAI GPT-5.x via `bedrock-mantle`), **UI.T06** (presigned-read key scoping), **UI.T07** (CSP divergence by hosting mode), **CHAT.T06** (client-supplied caller identity), **RPT.T07** (ground-truth editor), **RPT.T08** (document version retention). Reconciled counts across all documents (62/64/58 → **83**) and made the JSON export **generated** rather than hand-maintained. 64 → 83 threats. |
 | 2.1 | 2026-07-13 | RBAC doc updated to REST-dispatcher architecture (AppSync removed); added AUTH.T07 (config-version scope bypass / fail-open scope lookup) and AUTH.T08 (silently-ignored schema auth directives); documented the automated authorization test harness (`make api-test` / `make api-test-static`) as a control; 62 → 64 threats. **Note:** this update covered `rbac-authentication.md` and the glossary only — the remaining 18 documents were left at v2.0, which v3.0 corrects. |

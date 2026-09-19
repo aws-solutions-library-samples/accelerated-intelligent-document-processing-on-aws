@@ -69,9 +69,22 @@ make cfn-lint-warnings
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered — `make check-arn-partitions` still uses hardcoded globs and
-misses `nested/`, `samples/`, `notebooks/`, `scripts/` and `iam-roles/`. It runs
-from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets match.
+without being covered. `make check-arn-partitions` now uses the **same** discovery
+(`scripts/discover_templates.sh cfn`, `Makefile:234`) and both targets fail outright
+if it returns nothing, so the two gates see the same set — 30 templates today. The
+hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
+and `iam-roles/` is gone; that directory list survives only as the historical note in
+the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
+(`Makefile:226`) skips any discovered template whose path starts with
+`scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
+cross-account principal by construction — so the ARN gate's real coverage is
+"every template found by content, less that prefix" — 26 of the 30. `cfn-lint`
+exempts nothing at **path** scope: no template is skipped. It does exempt specific
+*rules*, which is a different axis — it runs with `--ignore-checks
+$(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
+suppressed at resource scope on three layer resources in `template.yaml`. Both
+targets run from `lint`, `fastlint` **and** `lint-cicd`, so local and CI gate sets
+match.
 
 It fails on **errors only**: ~112 pre-existing warnings (empty-string parameter
 defaults, unreachable `Fn::If` branches) would otherwise have to be suppressed
@@ -125,11 +138,76 @@ nothing checked.
 
 ⚠️ **Two asymmetries remain by design.** GitLab runs `code_checks` on **every
 push** as well as MRs; GitHub's workflows are `pull_request`-only, so a direct push
-to `develop` runs nothing on GitHub. And being visible is not being blocking —
-each check must also be a required status check on `develop` in branch-protection
-settings.
+to `develop` runs nothing on GitHub.
+
+### Visible is not blocking — `make check-branch-protection`
+
+Parity between the two CIs only means both *run* the gates. Whether a red gate can
+actually stop a merge is a **repository setting**, not anything in this tree, and
+today it does not: `develop` has no branch protection at all, so every gate above
+is advisory. A pull request can be merged with all checks red.
+
+Do not take that on trust from this file — measure it:
+
+```bash
+make check-branch-protection          # reads the live setting via the GitHub API
+```
+
+The command derives the expected required-check list by **parsing**
+`.github/workflows/*.yml` for job names (a hardcoded inventory would drift the
+moment a job is renamed), then asserts against the live API that protection is on,
+that every check a PR produces is required, that stale approvals are dismissed,
+that force-push and deletion are blocked, that an approving review is required,
+and that `enforce_admins` is on. It also reports which contexts must stay
+advisory: `build-docs.yml` and `generate-dep-manifest.yml` are path-filtered, and
+`Test Results` is an action-created check run behind an `if:`, so requiring any of
+them would leave a check pending forever and block every merge.
+
+Three things about what it reads. All eight shared gates are *steps* in one job
+(`developer_tests`), so they are **one** requireable context sharing one red mark,
+not three and not eight. It reads classic branch protection **and** rulesets,
+because a branch can be governed entirely by a ruleset while the classic endpoint
+reports nothing. And it separates "not protected" from "cannot see": the classic
+endpoint needs repository admin and answers 404 without it, so `GET
+.../branches/<branch>` (readable with `pull`) is cross-checked, and `--json`
+reports `protected: null` rather than `false` when the answer is genuinely
+unknown.
+
+It is **opt-in and non-blocking on purpose**: it needs network access and a token
+(`pull` suffices for a verified answer and for the required-check comparison, which
+comes from the nested `protection.required_status_checks` object on
+`GET .../branches/<branch>`; `administration:read` is what the other five
+assertions need, and without it those five are reported **unread** rather than
+satisfied), and it reports "not protected" until
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
+is closed — enabling protection needs repository **admin**, which no contributor
+and no CI token here has. In `lint-cicd` it would red-line every branch for a
+condition nobody in the tree can fix, so it is in neither `lint-cicd` nor
+`test_ci_gate_parity.py`'s `SHARED_GATES`. With no token or no network it exits 0
+with an explanation; `--fail-on-skip` turns that into an error, which is how it
+should be run once #933 closes and it becomes a required, blocking gate.
 
 ### Testing
+
+**Every test layer and tier in this repo — what it proves, its `make` entry point,
+whether either CI runs it, and where its results are recorded — is mapped in
+[docs/testing.md](docs/testing.md)** (published). That page is a map of tiers, not an
+index of test functions: there are thousands of those across hundreds of test modules,
+and a method added inside a suite that already runs correctly needs no page edit.
+`scripts/tests/test_testing_doc.py` enforces the **mechanical** part of that — every
+`stacktest-*` and `transform-deploy-test-*` target and each layer's named entry point
+appears on the page, every `make` target and link the page cites resolves, every
+directory holding a `test_*.py` is registered in `scripts/run_all_tests.py`, and every
+suite that registry excludes from `make test` is named on the page, in both
+directions. What each tier *proves*, whether either CI runs it, and where its results
+are recorded are prose and are **not** checked — do not read a green gate as
+confirming those. It also fails if this paragraph, or any other document pointing at
+the page, goes back to promising per-method coverage in one of the literal phrasings it
+matches (a paraphrase would get past it), because the previous wording did and nothing
+noticed ([#986](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/986)).
+The per-tier procedures stay in
+`.claude/skills/`, listed in the skill table below; pipeline-internal detail stays in
+`scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
 ```bash
 # Run all tests (idp_common_pkg + idp_cli + srt security scan)
@@ -170,8 +248,9 @@ make srt-fix       # Interactive fix mode
 - SRT runs on every push and MR in GitLab CI (`srt_security_review`, `fast_checks`)
   **and** on every GitHub pull request (`.github/workflows/security-checks.yml`).
   A change merged on GitHub used to skip it entirely — see the note in that
-  workflow. ⚠️ Being visible is not being blocking: the check must also be a
-  required status check on `develop` in branch-protection settings.
+  workflow. ⚠️ Being visible is not being blocking: run
+  `make check-branch-protection` to see whether this check is actually required
+  on `develop` (it is not, yet — issue #933).
 - Does not run on feature branch pushes to avoid blocking development
 - Pipeline fails if high-priority security findings are detected
 - Provides security gate before code is merged to `develop`
@@ -258,7 +337,7 @@ The solution uses a modular architecture with the main template (`template.yaml`
 - CloudWatch Alarms and Dashboard
 - Web UI Infrastructure (CloudFront, S3 for static assets, CodeBuild)
 - Authentication (Cognito User Pool, Identity Pool)
-- AppSync GraphQL API (for UI-backend communication)
+- API Gateway REST API + dispatcher Lambda (for UI-backend communication)
 
 **Unified Pattern Stack** (`patterns/unified/template.yaml`) - Processing resources:
 - Step Functions State Machine (BDA branch + Pipeline branch + shared tail)
@@ -347,7 +426,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
   - `pip install -e "lib/idp_common_pkg[extraction]"` - Extraction support (includes optional agentic mode with deterministic table parsing tool)
   - `pip install -e "lib/idp_common_pkg[evaluation]"` - Evaluation support
   - `pip install -e "lib/idp_common_pkg[all]"` - everything
-- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, AppSync integration, Reporting, BDA integration
+- Components: OCR, Classification, Extraction (supports traditional and agentic modes with intelligent table parsing), Evaluation, Summarization, API adapter (`idp_common.api_adapter`, the REST dispatcher's resolver-event adapter), Reporting, BDA integration
 - Configuration management via DynamoDB
 - Document models and data structures
 - Extraction features:
@@ -371,7 +450,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
 - Vite build system
 - Node.js 22.12+ and npm required
 - Authentication via AWS Amplify v6 and Cognito
-- Real-time document status via AppSync GraphQL subscriptions
+- Document status via REST polling of the tracking table (`src/ui/src/hooks/use-polling.ts`); chat tokens stream from a Lambda Function URL
 - Location: `src/ui/`
 
 ## Configuration System
@@ -414,6 +493,49 @@ Custom configurations override selected pattern presets when specified.
 - Create feature branches with prefixes: `feature/`, `fix/`, `docs/`
 - PRs should target `develop` branch
 
+### Commit messages and PR descriptions are published text
+
+This repository is public, and both are effectively permanent: a merged commit
+message cannot be edited, and force-pushing a branch does **not** retract one —
+GitHub keeps a merged PR's commits and its "Files changed" view independently of
+any branch, so the only remedy is a GitHub Support request. Write both as if they
+were a published document, because they are.
+
+- **Keep internal-only references out.** Corporate email addresses, hostnames that
+  resolve only on the internal network, and internal review or ticket identifiers
+  mean nothing to a reader of this repository and do not belong in its history.
+  A `PreToolUse` hook blocks the common cases before the command runs — see below.
+- **Write at summary altitude.** Say what the change accomplishes and why, not an
+  inventory of the individual strings it touched. "Trim the governance docs to
+  community-facing guidance" is the right altitude for a documentation cleanup; the
+  line-by-line detail belongs in the diff, which is where a reader will look for
+  it and where it stays accurate.
+- **Third-party and personal information is not ours to publish.** Contributor
+  names, contribution metrics or rankings, and individual repository permissions
+  should not appear on someone else's behalf.
+- **Exploitable security findings go through the channel in `SECURITY.md`,** which
+  is private for a reason. A commit message, roadmap entry or changelog line is a
+  public disclosure.
+- **Facts that rot get dated or left out.** "As of today" counts, live permission
+  tables and in-flight PR states are stale within a week.
+
+`.claude/skills/code-review.md` carries the same points as a pre-submit checklist.
+
+#### The `check-commit-text` hook
+
+`.claude/settings.json` registers a `PreToolUse` hook on `Bash` that runs
+`scripts/hooks/check_commit_text.py`. It inspects `git commit`, `git tag`,
+`gh pr create`, `gh pr edit`, `gh pr comment`, `gh issue create` and `gh release
+create` invocations — including heredoc and `-m` bodies, which appear in the
+command text — and denies the call when it finds an internal address, hostname or
+identifier, naming what it matched.
+
+It is deliberately narrow — it matches the mechanical cases and leaves the altitude
+judgment above to you. The patterns live in the script itself rather than being
+restated here. If it blocks a string that is legitimately public, add that string
+to the allowlist in the script with a comment saying why, rather than loosening the
+pattern. Run its tests with `make test-hooks`.
+
 ## Important Implementation Details
 
 ### Pattern-2 Container Deployment
@@ -430,7 +552,10 @@ Ensure Docker is running and you have ECR permissions when building Pattern-2.
 The codebase maintains GovCloud compatibility:
 - Use `arn:${AWS::Partition}:` instead of hardcoded `arn:aws:`
 - Use `${AWS::URLSuffix}` instead of hardcoded `amazonaws.com`
-- Validation enforced via `make check-arn-partitions`
+- Validation enforced via `make check-arn-partitions`, which runs in `lint`,
+  `fastlint` and `lint-cicd` (so both CIs) over every template discovered by
+  content, except those under `scripts/sdlc/cfn/` — see the `ARN_PARTITION_EXEMPT`
+  note above
 
 ### Nested Stacks
 
@@ -465,6 +590,9 @@ Testing samples available in `samples/`:
 - `scripts/sdlc/validate_buildspec.py` - Validates CodeBuild buildspec files
 - `scripts/sdlc/validate_service_role_permissions.py` - Verifies IAM service role permissions
 - `scripts/sdlc/typecheck_pr_changes.py` - Type checks only changed files in PRs
+- `scripts/sdlc/check_branch_protection.py` - Checks that `develop`'s required
+  status checks match the jobs the workflows actually run (`make
+  check-branch-protection`; opt-in, read-only GitHub API, see issue #933)
 
 ## AWS Access for Live Troubleshooting
 
@@ -515,7 +643,7 @@ Request access to these models in Amazon Bedrock before deployment:
 - Amazon SQS
 - Amazon DynamoDB
 - Amazon CloudWatch
-- AWS AppSync
+- Amazon API Gateway (UI ⇄ backend REST API; optionally the UI's S3-proxy host)
 - Amazon Cognito
 - Amazon CloudFront
 - Amazon EventBridge
@@ -563,11 +691,14 @@ that domain:
 | `.claude/skills/curate-security-results.md` | Publishing a public-safe, auditable snapshot of the four security tests (SRT, ZAP DAST, RBAC static/dynamic) into `security/test-results/<version>/` via `scripts/security/curate_results.py` |
 | `.claude/skills/api-rbac-test.md` | Verifying API authorization (Cognito groups + config-version scope) via `make api-test` / `make api-test-static`; adding a new API operation |
 | `.claude/skills/live-auth-checks.md` | Changing the Cognito pre-token IdP group-mapping trigger, `getStepFunctionExecution`, or `UserPoolClient` attribute permissions — `make live-auth-checks` (throwaway resources, no stack) and `make verify-idp-federation` (a real federated sign-in via a throwaway OIDC provider). Includes the Cognito behaviours the docs get wrong |
-| `.claude/skills/ux-test.md` | Browser-driven UX testing of the web UI against a live stack (`make ux-test`) — functional pass/fail per flow **plus** usability findings. The only test layer here that opens a browser; flows live in `scripts/ux_flows.yaml` |
+| `.claude/skills/ux-test.md` | Browser-driven UX testing of the web UI against a live stack (`make ux-test`) — functional pass/fail per flow **plus** usability findings. The only test layer here that opens a browser; flows live in `scripts/ux_flows.yaml`. Optionally **recorded** as a narrated, captioned mp4 via `scripts/ux_recorder.py` (Polly generative voice, idle time compressed) |
+| `.claude/skills/product-demo.md` | Recording a **product demo video** of changelog entries, a PR/MR or a named feature against a live stack, for the team or `docs/demo-videos.md`. Proposes three storyboards, records the one the user picks with `scripts/ux_recorder.py start --kind demo` (narrated, captioned mp4 ending on a Key-takeaways card), drafts the docs entry; confirmed storyboards live in `scripts/demo_storyboards.yaml`. Sibling of `ux-test.md`: that one judges the UI, this one shows it |
 | `.claude/skills/run-stack-tests.md` | Running the deploy-variant stack-tests (`make stacktest-*`: ZAP DAST, Jobs API, WAF, APIGateway hosting variants) manually against a live stack — they no longer run automatically in CI. Includes VPC auto-discovery + confirm for the VPC-requiring ones |
 | `.claude/skills/transform-deploy-test.md` | Deploy-testing the `--headless` / `--govcloud` template **transforms** (`make transform-deploy-test-*`) — the only tier that deploys a transformed template and processes a real document. Includes the commercial-vs-GovCloud caveat you must report |
 | `.claude/skills/pr-review.md` | Reviewing an external GitHub PR or GitLab MR at a URL (e.g. `review <url>`) |
+| `.claude/skills/repo-quality-review.md` | Holistic **whole-repository** quality review, re-runnable as periodic QA ("review the whole repo", "how healthy is this codebase?") — ten dimensions fanned out one subagent each, the offline measurement commands that produce the baseline numbers, and the two recurring defect classes (a control that exists but is never consulted; a fix applied to the instance and not the class). Read-only by construction; needs the Agent tool authorized explicitly |
 | `.claude/skills/dependabot-prs.md` | Triaging Dependabot PRs — retarget to `develop`, per-PR risk assessment, redundancy check vs develop, merge-if-safe, mandatory post-merge test validation |
+| `.claude/skills/sync-pii-anonymizer.md` | Re-syncing the **vendored** copy of `awslabs/pii-anonymizer` at `feature-platform/pii-anonymizer/hook/vendor/` after upstream fixes a bug or adds a feature — diff against the commit pinned in `PROVENANCE.md`, re-copy only the documented document closure via `resync.sh` (never audio, handlers, infra or observability), chase newly-added intra-project imports that grow the closure, then verify nothing excluded leaked in |
 | `.claude/skills/create-hf-dataset-pr.md` | Contributing a data/label correction to an external HuggingFace dataset via a community PR (parquet key-order gotcha, verification, review artifacts) |
 | `.claude/skills/testing-qa.md` | Writing tests, pytest patterns, moto, conftest setup |
 | `.claude/skills/release-validation.md` | **Validating a published release end to end in one request** ("validate the 0.6.8 release") — every live tier (security snapshot, deploy variants, `--headless`/`--govcloud` transforms, in-place upgrade, release benchmark A/B) plus the offline battery; writes `docs/release-validation/v<X>.md`, `security/test-results/<X>/` and the benchmark audit, and opens the two PRs. The umbrella over the per-tier skills below |
@@ -598,6 +729,46 @@ Adding a selectable Bedrock model touches many files (template enums,
 `update_configuration`, UI dropdown, the bedrock client, IAM, **both doc
 tiers**, and `CHANGELOG.md`). Follow the checklist in
 `.claude/skills/documentation.md` so none are missed.
+
+### Documentation states what is true now, not what a previous draft said
+
+Every document in this repository is read as a statement of current fact. A reader
+needs to know what is true; they have no use for the editing history of the page
+they are reading, and git already records it. So **do not write doc-about-doc
+commentary**:
+
+- ❌ "Two clarifications that the older version of this guide got wrong:"
+- ❌ "This page previously quoted a −78% cost saving."
+- ❌ "**Correction.** This section previously claimed EC2 access was limited."
+- ❌ "An earlier draft of this document claimed it did. That claim was false."
+- ❌ "An earlier revision of this entry recommended exactly that; it is withdrawn."
+
+Write the true statement instead, and keep whatever substance the retraction
+carried by reframing it as guidance:
+
+- ✅ "Two things the table above does not make obvious:"
+- ✅ "**Why there is no percentage here.** A figure would have to come from the
+  cost report, which at the time of the run priced cache reads by substring
+  match …"
+- ✅ "`ec2:*` is the whole grant, and it is not narrowed to a VPC-only action list,
+  because …"
+- ✅ "**Detection numbers alone cannot establish data loss.** … is the conclusion
+  they invite, and it is wrong: counting the extracted rows gives 0 missing."
+- ✅ "⚠️ Do **not** prefer the SigV4-derived value: it is a pool-wide constant, so …"
+
+The distinction that matters is **whose** history it is:
+
+| Legitimate — keep | Not legitimate — rewrite |
+|---|---|
+| **Product/behaviour history** a reader acts on: "`--log-level INFO` is now honoured; it used to be silently treated as unset", "renamed from *Configuration Versions*", upgrade-visible changes, `CHANGELOG.md` entries | The document's own drafts, revisions and mistakes: "this page previously said", "an earlier draft claimed", "that was wrong and is withdrawn" |
+| A **measurement or instrument** caveat: "an earlier version of the sweep shared cache state between points, so re-measure with identical calls" | Self-narration about the writing or review process: "four corrections from review", "it took a fourth look to catch" |
+| A correction to an **external** artifact a reader will also read — an AWS doc, a GitHub issue, an upstream changelog | A correction to this repository's own prose, stated as a correction |
+
+Two exceptions, both deliberate ledgers rather than prose: the threat model's
+revision table in `security/threat-modeling/README.md` (an audit artifact for a
+versioned security deliverable) and the withdrawn-findings table in
+`.claude/skills/repo-quality-review.md` (whose whole purpose is to stop the next
+review re-reporting a non-defect). Keep those; do not add a third.
 
 ### Reviewing External PRs / MRs
 

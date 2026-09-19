@@ -9,6 +9,7 @@ service tier information from model ID suffixes.
 """
 
 import logging
+import math
 import os
 import re
 import time
@@ -75,6 +76,59 @@ def parse_model_id(model_id: str) -> Tuple[str, Optional[str]]:
 
     # Last part is not a valid tier, return as-is
     return model_id, None
+
+
+# The suffix that selects Anthropic's 1M-token context beta. Like a service-tier
+# suffix (``:flex``, ``:priority``), it is stripped before Bedrock is called —
+# ``parse_model_id`` removes a tier and passes it as ``converse_params
+# ["serviceTier"]``, while this one is replaced by the ``context-1m-2025-08-07``
+# beta header. What separates them is pricing, not the wire format: a service
+# tier re-prices *every* request made in it (flex 0.5x, priority 1.75x) and has
+# its own ``config_library/pricing.yaml`` entries, whereas the 1M window carries
+# no price difference at all.
+LONG_CONTEXT_SUFFIX = ":1m"
+
+
+def metering_model_id(model_id: str) -> str:
+    """
+    Reduce a configured model ID to the identity that should appear in a
+    metering key (and therefore drive cost reporting).
+
+    A suffix belongs in a metering key only when it names a different price. A
+    service tier does: ``:flex`` and ``:priority`` are priced differently per
+    token for the whole request, and they have their own
+    ``config_library/pricing.yaml`` entries, so they are kept.
+
+    ``:1m`` does not. It opts the request into the 1M-token context window, which
+    Anthropic prices at the standard per-token rates on Claude 4.6 and later —
+    the only models the suffix is offered on here — so there is no second rate for
+    the key to select (see the long-context note in ``config_library/pricing.yaml``
+    for the citation). The suffix is also not sent to Bedrock: the client removes
+    it and passes the ``context-1m-2025-08-07`` beta header, so a key that carries
+    it names something that was never invoked. Collapsing it keeps one price per
+    model instead of two entries holding identical rates, and stops a premium rate
+    card being reintroduced under a key nothing invoked — which is exactly the
+    defect in issue #899, where ``:1m`` entries carried a flat 2x input / 1.5x
+    output premium (the rate card of the earlier Sonnet 4 / 4.5 1M beta, which
+    never applied to these models) and overstated every reported cost on them.
+
+    Examples:
+        >>> metering_model_id("us.anthropic.claude-sonnet-5:1m")
+        'us.anthropic.claude-sonnet-5'
+
+        >>> metering_model_id("us.amazon.nova-2-lite-v1:0:flex")
+        'us.amazon.nova-2-lite-v1:0:flex'
+
+    Args:
+        model_id: The configured model ID, possibly with a ``:1m`` suffix
+
+    Returns:
+        The model ID to use in the metering key. Anything else (including an
+        empty value or an ARN) is returned unchanged.
+    """
+    if model_id and model_id.endswith(LONG_CONTEXT_SUFFIX):
+        return model_id[: -len(LONG_CONTEXT_SUFFIX)]
+    return model_id
 
 
 def resolve_model_id_from_arn(model_id: str) -> str:
@@ -421,6 +475,62 @@ def get_model_max_input_tokens(model_id: str) -> int:
         "model_config_limits.yaml. Supported families: Claude, Amazon Nova, "
         "OpenAI GPT-5.x."
     )
+
+
+# --- Image (vision) token estimation ----------------------------------------
+# Claude sees an image as 28x28-pixel patches, so it costs
+# ceil(w/28) * ceil(h/28) visual tokens — but only AFTER being downscaled to the
+# model's resolution tier, which caps the cost: 4,784 tokens (2,576 px long edge)
+# on the high-resolution tier, 1,568 (1,568 px long edge) on every earlier model.
+# Measured for one 2550x3301 page on us.anthropic.claude-sonnet-5: 4,761 real
+# input tokens, against the 11,223 the older (w*h)/750 estimate predicted. That
+# 2.4x over-statement is what made an image-heavy extraction request look like a
+# context-window overflow when the real failure was a per-image dimension
+# rejection (#994), so the cap matters to the diagnosis, not just to accuracy.
+_VISUAL_TOKEN_PATCH_PX = 28
+_HIGH_RES_VISUAL_TOKEN_CAP = 4784
+_STANDARD_VISUAL_TOKEN_CAP = 1568
+# High resolution is "Claude 4.7 and later": Opus 4.7/4.8, Opus 5, Sonnet 5.
+# Sonnet 4.6, Haiku 4.5 and the 3.x family are standard tier.
+# Deliberately a separate statement of the model set from
+# client._CLAUDE_4_7_BASE_NAMES, not a derivation of it: "rejects sampling
+# parameters" and "tokenizes images on the high-resolution tier" are different
+# properties that coincide today. A parity test fails if the two ever disagree, so
+# a model added to one must be considered for the other rather than silently
+# inheriting a default (#994). The pattern is a substring search so it matches
+# region prefixes (``us.``), the ``:1m`` suffix and inference-profile ARNs alike.
+_HIGH_RES_MODEL_PATTERN = re.compile(r"claude-(opus-4-[78]|opus-5|sonnet-5)", re.I)
+# Non-Claude families tokenize images differently (Nova budgets by payload size,
+# not patches), so they keep the deliberately generous legacy figure: this
+# estimate only drives a warning and a failure message, and over-stating is the
+# safe direction there.
+_LEGACY_IMAGE_PIXELS_PER_TOKEN = 750
+
+
+def visual_token_cap_for_model(model_id: Optional[str]) -> int:
+    """Maximum visual tokens one image can cost on ``model_id``."""
+    if model_id and _HIGH_RES_MODEL_PATTERN.search(model_id):
+        return _HIGH_RES_VISUAL_TOKEN_CAP
+    return _STANDARD_VISUAL_TOKEN_CAP
+
+
+def estimate_image_tokens(
+    width: int, height: int, model_id: Optional[str] = None
+) -> int:
+    """Estimate the input tokens one ``width`` x ``height`` image costs.
+
+    For Claude, patch math capped at the model's resolution tier (see the
+    constants above). For other families, the legacy (w*h)/750 figure — no
+    published patch equivalent, and over-stating is harmless here.
+    """
+    if width <= 0 or height <= 0:
+        return 1
+    if not model_id or "claude" not in model_id.lower():
+        return max(1, int(width * height / _LEGACY_IMAGE_PIXELS_PER_TOKEN))
+    patches = math.ceil(width / _VISUAL_TOKEN_PATCH_PX) * math.ceil(
+        height / _VISUAL_TOKEN_PATCH_PX
+    )
+    return max(1, min(patches, visual_token_cap_for_model(model_id)))
 
 
 # Bedrock's ValidationException for an over-limit maxTokens request states the

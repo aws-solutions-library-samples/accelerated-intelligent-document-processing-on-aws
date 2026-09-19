@@ -14,7 +14,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Architecture](./architecture.md) - Detailed component architecture and data flow
 - [Quick Start](./quick-start.md) - Cold-start configuration authoring for new deployments (chat widget + `idp-cli bootstrap`)
 - [Deployment](./deployment.md) - Build, publish, deploy, and test instructions
-- [Headless Deployment](./headless-deployment.md) - Backend-only deployment (no UI/AppSync/Cognito/WAF) — for API-only / pipeline integrations in Commercial regions or GovCloud
+- [Headless Deployment](./headless-deployment.md) - Backend-only deployment (no Web UI, no UI REST API, no Cognito, no WAF) — for API-only / pipeline integrations in Commercial regions or GovCloud
 - [Configuration](./configuration.md) - Configuration and customization options
 - [Configuration Profiles](./configuration-profiles.md) - Managing multiple named configurations and their revision history
 - [IDP Configuration Best Practices](./idp-configuration-best-practices.md) - Guidelines for effective configuration design
@@ -46,6 +46,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 ## Evaluation & Testing
 
+- [Testing](./testing.md) - Every test layer and tier in this repo, what it proves, and whether CI runs it
 - [Evaluation Framework](./evaluation.md) - Accuracy assessment system powered by Stickler
 - [Evaluation Enhanced Reporting](./evaluation-enhanced-reporting.md) - Advanced evaluation reports with field-level comparisons
 - [Test Studio](./test-studio.md) - Interactive testing with curated datasets
@@ -76,10 +77,12 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Circuit Breaker](./circuit-breaker.md) - Automatic protection from cascading failures during Bedrock outages
 - [Cross-Account Bedrock](./cross-account-bedrock.md) - Route all Bedrock invocations through a centralized hub account via STS AssumeRole
 - [Cost Calculator](./cost-calculator.md) - Framework for estimating solution costs
+- [Release Runbook](./release-runbook.md) - Publishing a release to the three public S3 regions: preconditions, ordered steps, failure and recovery paths, what is not automated, post-release verification
 
 ## Planning & Security
 
-- [Well-Architected Framework Assessment](./well-architected.md) - Analysis based on AWS Well-Architected Framework
+- [Threat Model](./threat-model.md) - STRIDE threat model: trust boundaries, controls in place, residual risks and open items, and the currency gate that keeps it from going stale
+- [Well-Architected Framework Review](./well-architected.md) - What the solution implements per pillar, plus a checklist template you fill in for your own deployment
 - [AWS Services & IAM Roles](./aws-services-and-roles.md) - AWS services used and IAM role requirements
 - [API Gateway Hosting](./apigateway-hosting.md) - Serve the full Web UI from the existing API Gateway REST API (S3 proxy), within a VPC when combined with `ApiGatewayVisibility=PRIVATE` (alternative to CloudFront)
 - [GovCloud Deployment](./govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)

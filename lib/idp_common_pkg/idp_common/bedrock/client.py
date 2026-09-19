@@ -27,7 +27,9 @@ from botocore.exceptions import (
 from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
 from .model_utils import (
+    LONG_CONTEXT_SUFFIX,
     get_model_max_output_tokens,
+    metering_model_id,
     parse_max_tokens_limit_from_error,
     parse_model_id,
     resolve_model_id_from_arn,
@@ -103,8 +105,17 @@ DEFAULT_MAX_BACKOFF = 300  # 5 minutes
 #
 # NOTE: This set is consulted by BOTH the traditional Bedrock invocation path
 # (this file's BedrockClient.invoke_model) AND the agentic extraction path
-# (idp_common/extraction/agentic_idp.py::_get_inference_params). When adding
-# a new Claude 4.7+ variant here, no other code changes are required.
+# (idp_common/extraction/agentic_idp.py::_get_inference_params).
+#
+# ⚠️ One other place must be decided at the same time, deliberately rather than by
+# default: model_utils._HIGH_RES_MODEL_PATTERN, which says whether a model uses
+# Claude's high-resolution vision tier (a 4,784-token per-image cap) or the
+# standard one (1,568). The two sets happen to be identical today, but they are
+# DIFFERENT properties — a future model could reject sampling parameters and still
+# tokenize on the standard tier, or the reverse — so neither derives from the
+# other. tests/unit/bedrock/test_visual_token_estimate.py fails when they diverge,
+# which forces the decision instead of letting a new name inherit whichever answer
+# happens to be the default (#994).
 _CLAUDE_4_7_BASE_NAMES = {
     "anthropic.claude-opus-4-7",
     "anthropic.claude-opus-4-8",
@@ -194,6 +205,44 @@ def _strip_region_and_1m(model_id: str) -> str:
     if base.endswith(":1m"):
         base = base[:-3]
     return base
+
+
+def lambda_hook_metering_name(lambda_arn: str) -> str:
+    """Reduce a Lambda hook reference to the bare function name for metering.
+
+    The metering key for a Lambda hook is ``{context}/lambda_hook/{name}`` and
+    ``name`` MUST be the bare function name, because that is the only part that
+    is stable enough to be a pricing key. ``model_lambda_hook_arn`` is normally
+    configured as a full ARN (every example in docs/lambda-hook-inference.md is),
+    and an ARN embeds the account id and region — so a pricing entry keyed on one
+    could never ship as a default, and would break on redeploy to another
+    account. Worse, an ARN delimits the function name with ``:``, not ``/``, so
+    the ``/``-suffix walk in ``reporting.save_reporting_data._get_unit_cost``
+    could never reach it: both shipped hook rows resolved to "unpriced" (see
+    GitHub issue #926 / PR #952).
+
+    Accepts, and returns the bare function name for, all four configurable
+    forms: a full ARN, a full ARN with an alias or version suffix
+    (``...:function:name:PROD``), an already-bare function name, and a bare
+    ``name:alias`` / ``name:version`` partial reference.
+
+    That last form is why the ``:``-split runs unconditionally rather than only
+    inside the ``:function:`` branch. Lambda accepts ``GENAIIDP-hook:PROD`` as an
+    invocation target and nothing in ``model_lambda_hook_arn``'s documentation
+    forbids configuring it, but it carries no ``:function:`` to key off — so it
+    used to pass through whole and produce the key
+    ``.../lambda_hook/GENAIIDP-hook:PROD``, which the '/'-only suffix walk cannot
+    split and which therefore resolved to NULL with an UNPRICED warning. The
+    unconditional split is safe because a Lambda function name may not contain a
+    colon, so there is no legal name for it to truncate.
+    """
+    name = lambda_arn
+    if ":function:" in name:
+        # Drop everything up to and including ':function:'.
+        name = name.split(":function:")[-1]
+    # Drop any alias/version qualifier. Applies to both an ARN-derived name and a
+    # bare 'name:alias' partial reference.
+    return name.split(":")[0]
 
 
 def is_claude_effort_model(model_id: str) -> bool:
@@ -1438,10 +1487,13 @@ class BedrockClient:
                         ", ".join(ASTRA_EFFORT_LEVELS),
                     )
 
-        # Add 1M context headers if needed
+        # Add 1M context headers if needed. ``:1m`` is not a model ID Bedrock
+        # knows, so it is replaced by the beta header here; metering_model_id()
+        # removes the same suffix for the metering key below, which keeps the key
+        # naming exactly what was invoked.
         use_model_id = model_id
-        if model_id and model_id.endswith(":1m"):
-            use_model_id = model_id[:-3]  # Remove ':1m'
+        if model_id and model_id.endswith(LONG_CONTEXT_SUFFIX):
+            use_model_id = metering_model_id(model_id)
             if additional_model_fields is None:
                 additional_model_fields = {}
             additional_model_fields["anthropic_beta"] = ["context-1m-2025-08-07"]
@@ -1480,6 +1532,18 @@ class BedrockClient:
         # Get guardrail configuration if available
         guardrail_config = self.get_guardrail_config()
 
+        # Enforce Bedrock's many-image dimension cap (#994). This is the only
+        # point that sees the WHOLE request, and the cap binds on the request's
+        # image count — a 29-page section whose pages are each individually
+        # legal fails as a whole — so the per-image guard at
+        # prepare_bedrock_image_attachment structurally cannot catch it. Covers
+        # every service that goes through this client (classification,
+        # assessment, summarization, OCR, evaluation, few-shot examples); the
+        # extraction page-image pool is additionally clamped at load time so the
+        # reduction is recorded in section metadata and reaches the Strands
+        # agentic path, which does not route through here.
+        messages = self._fit_request_images(messages)
+
         # Build converse parameters
         converse_params: Dict[str, Any] = {
             "modelId": use_model_id,
@@ -1517,6 +1581,49 @@ class BedrockClient:
         )
 
         return result
+
+    @staticmethod
+    def _fit_request_images(messages: Any) -> Any:
+        """Downscale this request's images to Bedrock's many-image cap (#994).
+
+        Delegates to ``idp_common.image.fit_images_in_request``, which is a
+        no-op unless the request carries more than 20 image/document blocks.
+        Imported lazily: Pillow is not in the ``[core]`` extra, and an install
+        without it cannot be attaching images in the first place. Never raises —
+        the guard exists to stop a request failing, so it must not become a new
+        way for one to fail.
+
+        Returns the message list to send, which is a COPY whenever an image was
+        actually downscaled. ``invoke_model`` is frequently handed the caller's
+        own ``content`` list (when no ``<<CACHEPOINT>>`` tag is present,
+        ``processed_content is content``), so fitting in place would rewrite the
+        caller's block dicts — permanently downscaling, say, a cached few-shot
+        example image or a page-image list a later pass reuses at a point where
+        the tighter cap does not apply. ``deepcopy`` is cheap here: it treats
+        ``bytes`` and ``str`` as atomic, so only the dict/list spine is
+        duplicated, not the image payloads. The count is taken first so a request
+        under the threshold — the overwhelming majority — copies nothing.
+        """
+        try:
+            from idp_common import image
+        except ImportError:
+            return messages
+        try:
+            counted = image.count_request_image_blocks(messages)
+            if (
+                image.max_dimension_for_image_count(counted)
+                >= image.BEDROCK_IMAGE_MAX_DIMENSION
+            ):
+                return messages
+            candidate = copy.deepcopy(messages)
+            return candidate if image.fit_images_in_request(candidate) else messages
+        except Exception as e:  # noqa: BLE001 - best-effort guard
+            logger.warning(
+                "Skipped the Bedrock many-image dimension fit (%s); sending the "
+                "request unchanged.",
+                e,
+            )
+            return messages
 
     @staticmethod
     def _apply_max_tokens_limit(converse_params: Dict[str, Any], limit: int) -> bool:
@@ -1646,11 +1753,14 @@ class BedrockClient:
             # returns structured members too (e.g. ``cacheDetails``, a list of
             # per-TTL cache-write breakdowns) and metering values are summed
             # (merge_metering_data) and priced (save_reporting_data) as numbers.
+            # The key names what was actually invoked, so a ``:1m`` suffix is
+            # dropped (metering_model_id) — it is a beta header, not a model, and
+            # the 1M context window it selects is priced at the standard rates.
             usage = response.get("usage", {})
             response_with_metering = {
                 "response": response,
                 "metering": {
-                    f"{context}/bedrock/{model_id}": {
+                    f"{context}/bedrock/{metering_model_id(model_id)}": {
                         **numeric_usage(usage),
                         "requests": 1,
                     }
@@ -2375,12 +2485,14 @@ class BedrockClient:
                 "Configure the Lambda function ARN in the configuration."
             )
 
-        # Validate Lambda function name starts with GENAIIDP-
-        # Extract function name from ARN (last segment after ':function:')
+        # Validate Lambda function name starts with GENAIIDP-.
+        # The ARN -> function-name parse is lambda_hook_metering_name's, not a
+        # second copy of it: two copies of one rule is how the UI's copy of the
+        # pricing lookup drifted from the backend's (see PR #952). The
+        # ':function:' guard is kept so this validation's scope is unchanged — a
+        # bare function name is still not checked here.
         if ":function:" in lambda_arn:
-            func_name_part = lambda_arn.split(":function:")[-1]
-            # Handle alias/version suffix (function:name:alias)
-            func_name = func_name_part.split(":")[0]
+            func_name = lambda_hook_metering_name(lambda_arn)
             if not func_name.startswith("GENAIIDP-"):
                 raise ValueError(
                     f"Lambda function name must start with 'GENAIIDP-'. "
@@ -2704,7 +2816,12 @@ class BedrockClient:
             response_with_metering = {
                 "response": response_payload,
                 "metering": {
-                    f"{context}/lambda_hook/{lambda_arn}": {
+                    # Keyed on the bare FUNCTION NAME, never the raw ARN: an ARN
+                    # embeds account id and region, so no shipped pricing entry
+                    # could ever match it, and its ':function:' delimiter is not
+                    # a '/' so the pricing suffix walk cannot split it either.
+                    # See lambda_hook_metering_name.
+                    f"{context}/lambda_hook/{lambda_hook_metering_name(lambda_arn)}": {
                         **numeric_usage(usage),
                         "requests": 1,
                     }

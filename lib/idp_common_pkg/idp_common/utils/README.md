@@ -14,6 +14,8 @@ The Utils module provides common utility functions used across the IDP pipeline.
 | `merge_metering_data(existing, new)` | Merge token usage / metering dictionaries (sums numeric values) |
 | `get_bedrock_region()` | Get the AWS region for Bedrock API calls |
 | `extract_structured_data_from_text(text)` | Extract JSON or YAML structured data from LLM response text |
+| `sanitize_event_for_logging(event)` | Deep-copy an event with denylisted keys redacted and long content-field strings truncated, for safe `logger` output. ⚠️ **Has vendored copies — see below** |
+| `scrub_jwts_in_string(text)` | Replace anything JWT-shaped in free-form text with `***REDACTED***` (not applied by `sanitize_event_for_logging`) |
 
 ## Usage
 
@@ -59,6 +61,19 @@ a retry loop's chained attempts or a swallowed transient error cannot make an
 unrelated deterministic failure look transient); message markers are limited to
 transport text (`Read timed out`, `Connection reset`, ...).
 
+One exception cuts the other way. `DETERMINISTIC_MESSAGE_MARKERS` lists message text
+that marks a **reproducible** outcome even though the error *code* carrying it is
+transient, and it is evaluated **first** for each node — ahead of the `ClientError`
+code lookup, the exception-type check and the class-name lookup — so it beats the
+verdict those would give. The only entry today is Bedrock's `Model produced invalid
+sequence as part of ToolUse` (#895): `modelStreamErrorException` stays transient as a
+code, because `ConverseStream` genuinely does break mid-stream for transport reasons,
+but a model that emits a malformed `toolUse` block emits it again on attempt 8 (the
+shard retrier's `MaxAttempts`). `is_model_tool_use_sequence_error(exc)` is the matching
+predicate, used by `extraction/agentic_idp.py` to raise `ModelInvalidToolUseSequence`
+with the model id and the remedies. Keep the tuple narrow: text that merely sounds deterministic
+("invalid request", "unsupported") also appears inside genuinely transient wrappers.
+
 ```python
 from idp_common.utils.transient_errors import raise_if_transient
 
@@ -79,3 +94,56 @@ data, format_type = extract_structured_data_from_text(llm_response_text)
 # data: parsed dict/list
 # format_type: "json" or "yaml"
 ```
+
+### Log redaction (`log_sanitizer`) — has vendored copies
+
+```python
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+
+logger.info("Invoked with: %s", json.dumps(sanitize_event_for_logging(event)))
+```
+
+Returns a deep copy — the caller's object is never mutated — in which any key
+whose name matches `_DEFAULT_DENY_KEY_SUBSTRINGS` (case-insensitive substring, at
+any nesting depth) becomes `"***REDACTED***"`, and a string held directly under a
+content-shaped key (`prompt`, `text`, `content`, `extracted_text`, …) is capped at
+500 characters. It never raises: a non-dict input is returned unchanged, and an
+object that cannot be deep-copied comes back as `"<uncopyable Foo>"`.
+
+It is a **denylist**, so a newly added sensitive API field is not protected until
+its name is added to `_DEFAULT_DENY_KEY_SUBSTRINGS` (or passed as
+`extra_deny_keys=`). That is a deliberate trade: an allowlist would redact the
+argument and field *names* operators need to read a log at all.
+
+⚠️ **`log_sanitizer.py` is the one file in this package with committed copies
+elsewhere in the repo, and editing it is not a one-file change.** Lambda functions
+under both `nested/api-resolvers/src/lambda/` and `src/lambda/` carry no
+`idp-common` layer. SAM packages each function from its own `CodeUri` directory, so
+they can reach neither this library nor a sibling function's directory at runtime —
+and attaching the base layer (Pillow, pypdfium2, requests: tens of MB) to a handful
+of tiny resolvers and custom resources to reach a stdlib-only module is the wrong
+trade. So each of them holds a **byte-identical** copy as `log_sanitizer.py` and
+imports it as a top-level sibling module. The count is deliberately not quoted
+here: it changes whenever a layer-free function starts logging its event, and the
+authoritative answer is whatever `scripts/sync_resolver_log_sanitizer.sh` reports
+on its last line.
+
+The contract:
+
+1. **Edit only this file.** Never edit a copy.
+2. Then run **`scripts/sync_resolver_log_sanitizer.sh`**, which rewrites every
+   copy. It derives its destinations from the handler sources — a directory is a
+   destination because a file in it imports the sibling `log_sanitizer` module — so
+   there is no target list to keep in step.
+3. `scripts/tests/test_resolver_log_sanitizer.py` is a **blocking** test. It fails
+   if any copy differs by one byte, if a function imports the sibling module
+   without holding a copy (or holds an unused one), if a function imports the
+   canonical module while its CloudFormation function declares no `IDPCommon*Layer`
+   (an ImportError at cold start), if the sync script stops scanning the same
+   Lambda trees the test does, if any handler hand-rolls a local key list again, or
+   if any handler under either tree logs its whole invocation event without passing
+   it through `sanitize_event_for_logging`.
+
+Keep this file `ruff format`-clean and stdlib-only. Adding a third-party import
+would break every layer-free copy at cold start, and a formatting difference
+between this file and a copy breaks byte-identity.

@@ -13,6 +13,7 @@ import argparse
 import copy
 import os
 import sys
+import typing
 
 import yaml
 
@@ -20,6 +21,7 @@ BENCH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(BENCH)
 sys.path.insert(0, os.path.join(REPO, "lib", "idp_common_pkg"))
 from idp_common.config.merge_utils import merge_config_with_defaults  # noqa: E402
+from idp_common.config.models import IDPConfig  # noqa: E402
 
 CFG_MATRIX = os.path.join(BENCH, "matrices", "config_matrix.yaml")
 OUT = os.path.join(BENCH, "corpus", "configs")
@@ -74,6 +76,45 @@ def override_slug(overrides):
     return "__" + "-".join(parts)
 
 
+def _model_leaf_exists(dotted):
+    """Does ``dotted`` name a real field of the IDPConfig model tree?
+
+    ``set_path`` creates missing dicts, so a mistyped axis path does not fail —
+    it writes a key nothing reads, and the arm silently becomes a duplicate of
+    its own control. That happened to `extraction.agentic.lazy_images` (the real
+    field is `extraction.agentic.table_parsing.lazy_images`): a 12-run arm scored
+    as "no effect" when the knob had never been set. So the path is checked
+    against the config models before it is written.
+
+    Returns ``None`` when the path cannot be checked (it descends into a
+    free-form subtree such as a dict or Any), and a reason string when the leaf
+    is definitely wrong.
+    """
+    from pydantic import BaseModel
+
+    def as_model(annotation):
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return annotation
+        for arg in typing.get_args(annotation) or ():  # Optional[X] / X | None
+            if isinstance(arg, type) and issubclass(arg, BaseModel):
+                return arg
+        return None
+
+    parts = dotted.split(".")
+    model = IDPConfig
+    for part in parts[:-1]:
+        field = model.model_fields.get(part)
+        if field is None:
+            return f"{dotted!r}: {model.__name__} has no field {part!r}"
+        sub = as_model(field.annotation)
+        if sub is None:
+            return None  # free-form subtree; nothing to check against
+        model = sub
+    if parts[-1] not in model.model_fields:
+        return f"{dotted!r}: {model.__name__} has no field {parts[-1]!r}"
+    return None
+
+
 def set_path(cfg, dotted, value):
     """Set a dotted config path, creating dicts as needed. Special-cases the
     knobs whose real shape differs from a plain scalar."""
@@ -96,6 +137,9 @@ def set_path(cfg, dotted, value):
                 else:
                     doc_class[key] = value
         return
+    bad = _model_leaf_exists(dotted)
+    if bad:
+        raise SystemExit(f"axis path does not exist in IDPConfig — {bad}")
     parts = dotted.split(".")
     node = cfg
     for p in parts[:-1]:

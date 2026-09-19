@@ -4,14 +4,17 @@
 The solution uses **nested CloudFormation stacks** via AWS SAM:
 
 ```
-template.yaml (Main Stack — ~349 KB)
-├── patterns/unified/template.yaml (Unified Pattern — ~218 KB)
-├── nested/api-resolvers/ (REST API + resolver Lambdas; also serves the Web UI
-│                          as an S3 proxy when WebUIHosting=APIGateway — the
-│                          API-Gateway alternative to CloudFront)
+template.yaml (Main Stack — ~584 KB)
+├── patterns/unified/template.yaml (Unified Pattern — ~364 KB)
+├── nested/api-resolvers/ (logical id APIRESOLVERSTACK — the API Gateway REST API
+│                          the UI calls, its dispatcher Lambda, and the resolver
+│                          Lambdas; also serves the Web UI as an S3 proxy when
+│                          WebUIHosting=APIGateway — the API-Gateway alternative
+│                          to CloudFront)
 ├── nested/bedrockkb/ (Bedrock Knowledge Base)
-├── nested/bda-lending-project/ (BDA resources)
-└── nested/multi-doc-discovery/ (Discovery pipeline)
+├── nested/multi-doc-discovery/ (Discovery pipeline)
+└── feature-platform/main-stack-extensions/ (FeaturePlatformStack, conditional on
+                            EnableFeaturePlatform)
 ```
 
 ## Main Stack (`template.yaml`)
@@ -23,7 +26,11 @@ Contains pattern-agnostic resources:
 - CloudWatch Alarms + Dashboard
 - Web UI (CloudFront, S3 static hosting, CodeBuild)
 - Authentication (Cognito User Pool + Identity Pool)
-- AppSync GraphQL API (UI ↔ backend communication)
+- API Gateway REST API + dispatcher Lambda (UI ↔ backend communication) — these
+  live in the `nested/api-resolvers/` stack (logical id `APIRESOLVERSTACK`),
+  which the main stack wires up. There is **no AppSync**: zero
+  `AWS::AppSync::*` resources exist in any template. See
+  `docs/migration-appsync-to-rest.md`.
 
 ## Key Parameters
 - `AdminEmail`, `AllowedSignUpEmailDomain`
@@ -104,10 +111,12 @@ MyFunction:
         LOG_LEVEL: !Ref LogLevel
         METRIC_NAMESPACE: !Ref MetricNamespace
         STACK_NAME: !Ref "AWS::StackName"
-    # VPC conditional (for private AppSync deployments)
+    # VPC conditional (private-API deployments — ApiGatewayVisibility=PRIVATE in
+    # template.yaml, passed to the nested stack as UsePrivateApi=true, which
+    # defines the IsPrivateApi condition)
     VpcConfig:
       !If
-        - IsPrivateAppSync
+        - IsPrivateApi
         - SecurityGroupIds: [!Ref LambdaSecurityGroup]
           SubnetIds: !Ref PrivateSubnetIds
         - !Ref "AWS::NoValue"
@@ -255,11 +264,26 @@ IAM role, update BOTH in the same PR:**
    (service tables + deployment/runtime role scopes).
 2. **`iam-roles/cloudformation-management/`** — the example CloudFormation
    service role. Its `IDP-Cloudformation-Service-Role.yaml` is a *real
-   deployable policy* (a flat list of `service:*` grants) and its `README.md`
-   documents that list service-by-service. A new top-level AWS service usually
-   means a new `service:*` line in the YAML **and** a new row in the README
+   deployable policy* and its `README.md` documents it service-by-service. A new
+   top-level AWS service usually means a new `service:*` line in the
+   `IDPAcceleratorPermissions` policy **and** a new row in the README
    tables/accordions. (This README is repo-only by design — it is NOT published
    to the Starlight doc site; do not move it into `docs/`.)
+
+   ⚠️ **The IAM half of that template is not a flat wildcard list and must not
+   become one** (see
+   [#927](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/927)).
+   `iam:CreateRole` and the other role-mutating actions are scoped to the
+   `ManagedStackNamePrefix` name pattern and conditioned on
+   `iam:PermissionsBoundary`; `iam:PassRole` is scoped and carries
+   `iam:PassedToService`; four explicit `Deny` statements stop the boundary being
+   stripped, the boundary policy being edited, the service role editing itself,
+   and IAM user/access-key creation. `scripts/sdlc/validate_service_role_permissions.py`
+   now **fails** on an IAM write granted on `Resource: "*"` without a boundary
+   condition, and on a `PassRole` without `iam:PassedToService` — run it after any
+   edit to that file. Note also that the IAM `Null` condition operator must be
+   written quoted (`'Null':`): unquoted, YAML resolves the key to the null scalar
+   and the rendered policy is invalid.
 
 Triggers that REQUIRE a doc update:
 - A new `AWS::IAM::Role` / `AWS::IAM::ManagedPolicy`, or a new service principal.

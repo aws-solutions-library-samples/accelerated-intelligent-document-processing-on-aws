@@ -1689,6 +1689,7 @@ export type QueryGetTestRunStatusArgs = {
 
 export type QueryGetTestRunsArgs = {
   endDateTime?: InputMaybe<Scalars['AWSDateTime']['input']>;
+  maxItems?: InputMaybe<Scalars['Int']['input']>;
   startDateTime?: InputMaybe<Scalars['AWSDateTime']['input']>;
   timePeriodHours?: InputMaybe<Scalars['Int']['input']>;
 };

@@ -2553,3 +2553,94 @@ class TestPerFieldAccuracyIntervals:
         assert index._with_accuracy_intervals(None) == {}
         out = index._with_accuracy_intervals({"weird": "not a dict"})
         assert out["weird"] == "not a dict"
+
+
+@pytest.mark.unit
+class TestAggregationConsumesRealStickler10Output:
+    """The evaluation service's ``STICKLER_RESULT_VERSION`` bumped 2.0 → 3.0
+    on the Stickler 1.0 upgrade. Section goldens verify Stickler's own
+    per-section output shape didn't drift for IDP's uses. This class covers
+    the DOWNSTREAM consumer that reads those blobs — the aggregation
+    Lambda — against a real 1.0-shaped ``field_comparisons`` payload
+    produced by running Stickler 1.0 against an AggregateObject schema.
+
+    Without this, the "no drift" argument for the aggregation Lambda
+    rests on manual code inspection rather than an executable assertion.
+    The list_leaves_wrong_items_kept golden is the right fixture: it has
+    Hungarian-paired items where every item was matched but leaves inside
+    the matched items are wrong (the case Stickler's item-level rollup
+    hides but IDP's row-level counting surfaces — issue #625).
+    """
+
+    GOLDEN_PATH = os.path.join(
+        os.path.dirname(__file__),
+        "evaluation",
+        "fixtures",
+        "section_goldens",
+        "list_leaves_wrong_items_kept.golden.json",
+    )
+
+    def _load_golden(self):
+        with open(self.GOLDEN_PATH) as f:
+            return json.load(f)
+
+    def test_field_comparisons_are_1_0_shaped(self, mock_env):
+        """Fixture guard: the golden's ``field_comparisons`` rows carry
+        the fields the aggregation Lambda reads (``field_path``, ``match``,
+        ``expected_value``, ``actual_value``). If Stickler drops one of
+        these keys in a future release, this test flags the shape drift
+        before it silently zeroes the aggregation output.
+        """
+        golden = self._load_golden()
+        rows = golden["stickler_comparison_result"]["field_comparisons"]
+        assert rows, "golden must have field_comparisons rows"
+        for row in rows:
+            assert "field_path" in row
+            assert "match" in row
+            # ``expected_value`` and ``actual_value`` are read by the
+            # aggregation's classification-error collector; ``match`` is
+            # read by ``_run_level_row_aggregates``.
+            assert "expected_value" in row
+            assert "actual_value" in row
+
+    def test_aggregation_matches_section_goldens_counts(self, mock_env):
+        """The whole point of the migration: the aggregation Lambda's
+        row-level counts over Stickler 1.0's ``field_comparisons`` must
+        reproduce the section golden's ``metrics._stickler_counts`` —
+        which was rebased on 1.0 and pins the "no drift" invariant. If
+        Stickler 1.0 emits a different row shape or classification, the
+        aggregation would see different counts and this assertion breaks
+        the build rather than shipping a silent metric regression.
+        """
+        index = import_test_module()
+        golden = self._load_golden()
+        rows = golden["stickler_comparison_result"]["field_comparisons"]
+        expected_counts = golden["metrics"]["_stickler_counts"]
+
+        # Feed the golden's rows through the aggregation Lambda's
+        # row-level counter as a single-document run. This is exactly
+        # what happens end-to-end — the aggregation reads each doc's
+        # ``stickler_comparison_result.field_comparisons`` and computes
+        # top-level counts by classifying every leaf verdict.
+        docs = [
+            {
+                "_idp_source": {"doc_key": "d", "section_id": "s"},
+                "field_comparisons": rows,
+            }
+        ]
+        top, _ = index._run_level_row_aggregates(docs)
+
+        # The section-golden counter and the aggregation Lambda's counter
+        # implement the SAME classification rule (row-level, not
+        # Hungarian-rollup). They must agree on tp/fd/fp/fa/fn for the
+        # same field_comparisons input.
+        assert top["tp"] == expected_counts["tp"], (
+            f"tp mismatch: golden says {expected_counts['tp']}, "
+            f"aggregation says {top['tp']}"
+        )
+        assert top["fd"] == expected_counts["fd"], (
+            f"fd mismatch: golden says {expected_counts['fd']}, "
+            f"aggregation says {top['fd']}"
+        )
+        assert top["fn"] == expected_counts["fn"]
+        assert top["fa"] == expected_counts["fa"]

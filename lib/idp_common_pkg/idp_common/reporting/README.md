@@ -137,10 +137,77 @@ reporter = SaveReportingData(
 ### Cost Calculation Process
 
 1. **Configuration Loading**: Pricing data is loaded from the config dictionary and cached for performance
-2. **Service/Unit Matching**: System attempts exact match for service_api/unit combinations
-3. **Fuzzy Matching**: If exact match fails, uses partial matching for common patterns
+2. **Service Matching**: The pricing key is resolved by **exact** match on `service_api`, then on progressively shorter `/`-delimited suffixes of it (longest wins). This is the same rule the benchmark harness uses (`benchmarks/harness/lib.py::price_metering`), so a benchmark cost and a reported cost for the same metering map agree.
+3. **Unit Matching**: The unit name is matched **exactly** within the resolved entry
 4. **Cost Calculation**: `estimated_cost = value × unit_cost` for each metering record
-5. **Fallback Handling**: Missing pricing defaults to $0.0 with warning logs
+5. **Miss Handling**: Two different misses, two different outcomes:
+   - *Unit absent from an entry that exists* → `$0.00`. The unit is not chargeable for that service. `pricing.yaml` omits units that do not apply, and every Bedrock call meters `totalTokens` and `requests`, which Bedrock does not charge for.
+   - *No entry for `service_api` at all* → **unpriced**: `_get_unit_cost` returns `None` and both `unit_cost` and `estimated_cost` are written as SQL `NULL`, with a `WARNING` naming the service. `SUM()` ignores NULLs exactly as it would zeros, so totals are unchanged, but the gap is queryable (`WHERE unit_cost IS NULL`) instead of masquerading as something free.
+
+> **There is no fuzzy/substring matching.** It was removed in GitHub issue #926.
+> It had accepted a pricing key that was merely a substring of the requested
+> model id (or the reverse) and a unit name that was merely a substring of the
+> requested unit — and because `inputTokens` is the first unit in every pricing
+> row, `cacheReadInputTokens` bound to it, pricing cache reads at the **fresh
+> input** rate: up to 10x their real cost, always in the expensive direction.
+> The fallback ran only when the exact lookup found nothing, so a model with a
+> complete pricing entry was never mispriced; a model with no entry, or an entry
+> missing `cacheReadInputTokens`, was.
+> `tests/unit/reporting/test_pricing_lookup.py` pins the rates by hand and
+> asserts every selectable model has an exact pricing entry.
+
+### One rate per unit: pricing sees sums, never single requests
+
+Step 4 prices an **aggregate**. By the time `save_metering_data` runs, every call
+made on a document has been merged by `idp_common.utils.merge_metering_data`,
+which adds values per (metering key, unit); the Athena rollups
+(`src/lambda/data_mart_rollup`), the Web UI document cost table, the benchmark
+harness and the Test Studio results resolver all sum further, across documents
+and hours. So a metering value is "all input tokens this step spent on this
+model", and nothing downstream can recover how many requests produced it or how
+large the largest one was.
+
+That matters for any model whose price depends on the size of an individual
+request. One model offered here has such a band: **OpenAI GPT-6 Astra**, whose
+input above 272,000 tokens per request costs roughly double (see
+`docs/openai-models.md`). It is priced at its standard rate throughout, which
+under-reports a genuinely oversized request and is correct for everything else.
+
+Claude's `:1m` variants are **not** such a case, though they were treated as one
+until v0.6.9: the 1M context window is priced at the model's standard rates, so
+there is only one rate to report. See the long-context note in
+`config_library/pricing.yaml` and `docs/cost-calculator.md`.
+
+**Where banding could and could not be implemented.** Not here, and not anywhere
+downstream of `merge_metering_data()` — a threshold applied to these sums would be
+wrong rather than approximate, since ten 30K-token calls sum to 300K and would be
+charged a premium none of them incurred. It *would* be implementable at the
+emission site: `BedrockClient._invoke_with_retry` in `bedrock/client.py` builds
+the metering key with that one request's `usage` dict already in a local variable,
+and `merge_metering_data` merges strictly by key string, so emitting long calls
+under a premium-rated key and short calls under the base key would be exactly
+correct — not approximate — and would need no change here. The exception is the
+Strands agentic path (`extraction/agentic_idp.py`), which sees only
+`response.metrics.accumulated_usage` — a running sum with no per-call breakdown —
+so banding there would need new per-call instrumentation (a `stream_async` /
+`ModelStopReason.usage` reader or a model-call hook; both idioms are already used
+in `agents/common/`).
+
+Two consequences for this module's callers:
+
+- **Metering keys name the model that was invoked**, so they carry no `:1m`
+  suffix — `idp_common.bedrock.model_utils.metering_model_id` strips it at the
+  two emission sites (`bedrock/client.py`, `extraction/agentic_idp.py`), the same
+  way the client strips it before calling Bedrock. A service-tier suffix
+  (`:flex`, `:priority`) is kept, because it re-prices every request made in it
+  and has its own pricing entry.
+- **`:1m` pricing entries are retained anyway**, at the base model's rates, so
+  that a `:1m` key still resolves to an exact price rather than falling through to
+  the substring match or to $0.0. Such keys still arrive from metering written
+  before the change and, for the agent-cost path, from the Athena rollups, which
+  build the key from the raw configured model ID. (The entries are also the
+  model-ID list configuration validation accepts; see
+  `idp_common.config.merge_utils._load_valid_bedrock_models`.)
 
 ### Enhanced Metering Schema
 
@@ -179,7 +246,9 @@ Retrieves the unit cost for a specific service API and unit combination.
 - `service_api`: The service identifier (e.g., "bedrock/us.anthropic.claude-3-sonnet-20240229-v1:0")
 - `unit`: The unit of measurement (e.g., "inputTokens", "pages")
 
-**Returns**: Unit cost in USD, or 0.0 if not found
+**Returns**: Unit cost in USD; `0.0` if the entry exists but does not list that
+unit (not chargeable); `None` if there is no entry for `service_api` at all
+(**unpriced** — the caller records NULL). Never returns a related model's price.
 
 **Example**:
 ```python

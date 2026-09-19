@@ -40,8 +40,22 @@ def _make_queue(mod):
     return url
 
 
-def _make_host_table():
-    ddb = boto3.resource("dynamodb", region_name="us-west-2")
+def _mocked_dynamodb(mod):
+    """A DynamoDB resource built inside the mock, bound onto the handler.
+
+    ``handler`` creates ``_dynamodb`` at import, which the ``mod`` fixture does
+    during setup — before the test's ``@mock_aws`` starts. moto only intercepts
+    clients created while it is active, so that one keeps the real endpoint and the
+    handler's scans and updates go to the live account (a table created here is
+    then invisible to it, which is how this was noticed). Rebinding it is the same
+    thing ``_make_queue`` does for ``_sqs``.
+    """
+    mod._dynamodb = boto3.resource("dynamodb", region_name="us-west-2")
+    return mod._dynamodb
+
+
+def _make_host_table(mod):
+    ddb = _mocked_dynamodb(mod)
     ddb.create_table(
         TableName=_HOST_TABLE,
         BillingMode="PAY_PER_REQUEST",
@@ -129,7 +143,7 @@ class TestRbac:
     @mock_aws
     def test_author_can_generate(self, mod):
         _make_queue(mod)
-        _make_host_table()
+        _make_host_table(mod)
         resp = _post(
             mod,
             "/generate",
@@ -140,9 +154,8 @@ class TestRbac:
         assert json.loads(resp["body"])["jobId"]
 
 
-def _make_tracking_table():
-    ddb = boto3.resource("dynamodb", region_name="us-west-2")
-    return ddb.create_table(
+def _make_tracking_table(mod):
+    return _mocked_dynamodb(mod).create_table(
         TableName=_TRACKING_TABLE,
         BillingMode="PAY_PER_REQUEST",
         AttributeDefinitions=[{"AttributeName": "jobId", "AttributeType": "S"}],
@@ -167,7 +180,7 @@ class TestReapDeadJobs:
 
     @mock_aws
     def test_a_job_with_a_stale_heartbeat_is_failed(self, mod):
-        table = _make_tracking_table()
+        table = _make_tracking_table(mod)
         table.put_item(
             Item={
                 "jobId": "j1",
@@ -186,7 +199,7 @@ class TestReapDeadJobs:
     @mock_aws
     def test_a_recent_heartbeat_is_left_running(self, mod):
         """A long stage that completes no documents still pulses; it is alive."""
-        table = _make_tracking_table()
+        table = _make_tracking_table(mod)
         table.put_item(
             Item={"jobId": "j1", "status": "IN_PROGRESS", "heartbeatAt": _iso(2)}
         )
@@ -198,7 +211,7 @@ class TestReapDeadJobs:
     @mock_aws
     def test_a_job_with_no_heartbeat_is_left_alone(self, mod):
         """Jobs predating heartbeating must not be presumed dead."""
-        table = _make_tracking_table()
+        table = _make_tracking_table(mod)
         table.put_item(Item={"jobId": "j1", "status": "IN_PROGRESS"})
 
         mod.lambda_handler({"rawPath": "/jobs", "httpMethod": "GET"}, None)
@@ -207,7 +220,7 @@ class TestReapDeadJobs:
 
     @mock_aws
     def test_a_completed_job_is_never_touched(self, mod):
-        table = _make_tracking_table()
+        table = _make_tracking_table(mod)
         table.put_item(
             Item={
                 "jobId": "j1",
@@ -222,7 +235,7 @@ class TestReapDeadJobs:
 
     @mock_aws
     def test_an_unparseable_heartbeat_is_not_treated_as_dead(self, mod):
-        table = _make_tracking_table()
+        table = _make_tracking_table(mod)
         table.put_item(
             Item={"jobId": "j1", "status": "IN_PROGRESS", "heartbeatAt": "not-a-date"}
         )

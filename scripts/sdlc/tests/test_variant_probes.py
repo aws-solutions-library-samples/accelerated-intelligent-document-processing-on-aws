@@ -63,6 +63,9 @@ _TEST_VPC_ENV = {
 }
 
 
+_STUB_BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/stub-PermissionsBoundary"
+
+
 def _set_test_vpc_env(monkeypatch):
     for k, v in _TEST_VPC_ENV.items():
         monkeypatch.setenv(k, v)
@@ -81,14 +84,14 @@ def _stub_lifecycle(cbd, monkeypatch, *, deploy_status="CREATE_COMPLETE"):
     """
     calls = {"iam": [], "commands": [], "cleanup": [], "cf_events": []}
 
-    # Probes call create_iam_resources(stack_name, create_boundary=False) and
-    # deploy with an EMPTY boundary ARN, so the stub accepts the kwarg and
-    # returns "" for the boundary.
+    # Probes call create_iam_resources(stack_name, shared_boundary=True) and must
+    # deploy with the SAME non-empty boundary ARN the service role was created
+    # with — that role only permits iam:CreateRole for roles carrying it.
     monkeypatch.setattr(
         cbd,
         "create_iam_resources",
-        lambda stack_name, create_boundary=True: (
-            calls["iam"].append(stack_name) or ("role-arn", "")
+        lambda stack_name, shared_boundary=False: (
+            calls["iam"].append(stack_name) or ("role-arn", _STUB_BOUNDARY_ARN)
         ),
     )
     monkeypatch.setattr(cbd, "generate_stack_name", lambda: "idp-0101-000000")
@@ -230,13 +233,12 @@ def test_probe_happy_path_deploys_validates_cleans_up(cbd, monkeypatch):
     assert validated == ["idp-0101-000000-apigw"]
     # cleanup ALWAYS runs (finally)
     assert calls["cleanup"] == ["idp-0101-000000-apigw"]
-    # deploy command carried the probe's extra params + an EMPTY boundary
-    # (probes deploy without a permissions boundary — only the primary suite
-    # creates+tests one).
+    # Deploy command carried the probe's extra params + the boundary ARN the
+    # service role was created with. An empty value here would be denied on the
+    # deploy's first iam:CreateRole, since that grant is conditioned on the role
+    # carrying exactly this boundary.
     deploy_cmd = next(c for c in calls["commands"] if "idp-cli deploy" in c)
-    assert "PermissionsBoundaryArn=," in deploy_cmd or deploy_cmd.rstrip('"').endswith(
-        "PermissionsBoundaryArn="
-    )
+    assert f"PermissionsBoundaryArn={_STUB_BOUNDARY_ARN}" in deploy_cmd
     assert "WebUIHosting=APIGateway" in deploy_cmd
     assert "ApiGatewayVisibility=GLOBAL" in deploy_cmd
     assert "--stack-name idp-0101-000000-apigw" in deploy_cmd
@@ -310,7 +312,7 @@ def test_probe_iam_failure_still_cleans_up(cbd, monkeypatch):
     monkeypatch.setattr(
         cbd,
         "create_iam_resources",
-        lambda stack_name, create_boundary=True: (None, None),
+        lambda stack_name, shared_boundary=False: (None, None),
     )
 
     probe = _make_probe(cbd)
@@ -1130,11 +1132,25 @@ def test_create_iam_resources_uses_adaptive_retry_clients(cbd, monkeypatch):
 
         exceptions = type("E", (), {"AlreadyExistsException": Exception})()
 
+    class _NoSuchEntity(Exception):
+        pass
+
     class _Iam:
+        def get_policy(self, **k):
+            # Boundary does not exist yet, so create_policy runs.
+            raise _NoSuchEntity()
+
         def create_policy(self, **k):
             return {}
 
-        exceptions = type("E", (), {"EntityAlreadyExistsException": Exception})()
+        exceptions = type(
+            "E",
+            (),
+            {
+                "EntityAlreadyExistsException": Exception,
+                "NoSuchEntityException": _NoSuchEntity,
+            },
+        )()
 
     class _Sts:
         def get_caller_identity(self):

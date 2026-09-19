@@ -117,6 +117,36 @@ class HeadlessTemplateTransformer:
             "ExternalIdPGroupMappingFunctionLogGroup",
             "ExternalIdPGroupMappingCognitoPolicy",
             "ExternalIdPGroupMappingPermission",
+            # Email subscription of AdminEmail to AlertsTopic (#922). Not a
+            # Cognito resource, but it is keyed to the same removed parameter:
+            # AdminEmail is stripped below, and a resource left Ref'ing a deleted
+            # parameter is a HARD template error at validate time.
+            #
+            # Listing it here is belt-and-braces rather than strictly required:
+            # stripping its guard condition (ShouldSubscribeAdminToAlerts, in the
+            # condition set further down) already drops the resource, and that
+            # entry IS load-bearing — removing it alone fails
+            # test_headless_transform_leaves_no_unresolved_parameter_reference and
+            # the headless cfn-lint test. Naming the resource explicitly keeps the
+            # removal correct if the guard is ever changed or dropped.
+            #
+            # The topic and EVERY alarm stay -- no count is stated here on
+            # purpose, because the earlier version of this comment said "all 12
+            # alarms" and template.yaml has since grown more; a number restated
+            # in a comment nothing derives is a number that goes stale silently.
+            #
+            # So a headless deployment ships alarms wired to a topic with no
+            # subscriber. That is a DECIDED accepted gap, not an oversight: an
+            # optional AlertsEmail parameter was considered and rejected (issue
+            # #984) because headless operators are automating and mostly attach a
+            # pager, chat webhook or existing operational topic through their own
+            # IaC. The obligation that replaces it is documentation -- subscribing
+            # to the SNSAlertsTopicARN output is called out as a REQUIRED
+            # post-deploy step in docs/headless-deployment.md,
+            # docs/monitoring.md and docs/govcloud-operations.md, and
+            # test_headless_alert_delivery_is_documented asserts all three still
+            # say so, because "we documented it" is the whole mitigation here.
+            "AlertsTopicAdminEmailSubscription",
         }
 
         self.waf_resources: Set[str] = {
@@ -203,7 +233,12 @@ class HeadlessTemplateTransformer:
             "DiscoveryBucket",
             "DiscoveryBucketPolicy",
             "DiscoveryDLQ",
+            # The TLS-only deny policies for the two queues, on the same footing
+            # as DiscoveryBucketPolicy above: each names its queue via Ref and
+            # Fn::GetAtt, so leaving it behind dangles on a removed resource.
+            "DiscoveryDLQPolicy",
             "DiscoveryQueue",
+            "DiscoveryQueuePolicy",
             "DiscoveryTrackingTable",
             "DiscoveryProcessorFunction",
             "DiscoveryProcessorFunctionLogGroup",
@@ -336,6 +371,9 @@ class HeadlessTemplateTransformer:
             # CloudFormation rejects the whole template at validate/create time,
             # so every headless deploy failed before creating a single resource.
             "SuppressAdminInvite",
+            # Same failure mode: guards AlertsTopicAdminEmailSubscription and
+            # reads both AdminEmail and SuppressAdminInvite, all removed here.
+            "ShouldSubscribeAdminToAlerts",
         }
 
         # ---- Rules to remove ----

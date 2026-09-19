@@ -268,7 +268,10 @@ The activity is surfaced for visibility (only when a run actually had to shrink)
 - **`metadata.assessment_batch_split_stats`** on the section result — a dict with
   `truncated_calls`, `splits`, `min_batch_size_used`, `rows_recovered_by_retry`,
   `unrecoverable_rows`, `derived_batch_size`, `configured_batch_size`,
-  `escalation_model`, `escalation_rounds`, and `rows_recovered_by_escalation`.
+  `escalation_model`, `escalation_rounds`, and `rows_recovered_by_escalation`,
+  plus `oversized_row_fields` / `oversized_row_model` /
+  `oversized_row_output_cap` / `oversized_row_chars` / `oversized_row_class` when
+  the give-up guard below fired.
 - An **`⚠ Assessment Batch Splitting`** block in the agentic extraction
   **processing report**.
 
@@ -362,6 +365,53 @@ honoring a threshold declared on the `$defs` definition instead of the property
 is a change to threshold *inheritance* and belongs with `threshold_resolver`'s
 rules.
 
+**Oversized-row guard (give up instead of retrying, [#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894)).**
+Halving a truncated batch converges only while a *smaller* batch can fit. If the
+model still returns `stopReason=max_tokens` with a **single row** in the call,
+that one row's confidence output exceeds the model's cap and **no batch size can
+work**. The ladder now stops there: it records the terminal condition in
+`split_stats["oversized_row_fields"]` (with the model, its output cap, the
+offending row's approximate serialized size and the class), **skips the same-model
+retry rung entirely**, allows at most **one** escalation round (a bigger output
+cap is the only remedy that can legitimately succeed), and emits
+`assessment_row_too_large` (**error**).
+
+Before this guard there was no terminal condition for that case: the ladder kept
+re-running the impossible call through the retry rounds and the bisection tree, and
+the section ended up reporting the generic `assessment_incomplete`. Measured on a
+shape that batches (8 rows at batch 4) the guard halves the primary calls, 28 → 14;
+32 rows go 112 → 56, and with escalation 42 → 28 total. On the single-outer-row shape
+#894 reports, `len(rows) <= batch_size` means `assess_results_batched` takes its
+`if not list_fields:` branch and calls the model directly, so
+`_assess_slice_adaptive` is not reached on the first pass and the pre-rung skip
+cannot fire; the condition is detected inside the first retry round instead. The call
+count there is unchanged (2 before, 2 after) and the gain is purely diagnostic.
+
+The observed trigger is a class marked `x-aws-idp-multi-instance: true`: the wrapper
+makes the *instance list* the outer list field, so one "row" is a whole document
+instance carrying its own long inner list (a 100-row `Transactions` table). The
+sizer reports that row as `cols=2 per_row~80` and derives a 12-row batch, which is
+wrong by orders of magnitude — **that sizing bug is not fixed** and #894 stays open
+for it.
+
+⚠️ **The 900s timeout reported on #894 is not explained by this loop.** The observed
+failure was an Assessment Lambda hitting its 900s wall three times
+(`Sandbox.Timedout` x3) after a 45s extraction, with the document stuck in
+`ASSESSING`. This guard is not known to fix that, and it should not be cited as its
+resolution: `_retry_missing_rows` already broke on no progress (both the retry and
+escalation rungs), and the wall-clock deadline guard plus its threading from
+`context.get_remaining_time_in_millis()` in the Assessment Lambda were already
+present in the release where those timeouts were observed.
+
+The one ladder path that the wall-clock guard did **not** cover — the most concrete
+lead on that timeout — has since been closed (#958): the same-model retry **round**
+loop had no round-level deadline check, only the escalation loop and further
+bisection did, so a sequence of rounds that each recovered *something* while never
+bisecting was bounded only by `max_retries`, at a real model call per round. All
+three rungs now consult the deadline before starting work. Whether that was the
+cause of the observed 900s timeouts is still **not established** — no reproduction
+exists — so #894 remains open for it, and for the batch sizer.
+
 > This is an **extraction/schema** defect surfaced at assessment time — note that
 > traditional (non-agentic) extraction has no schema-validation step, and even the
 > agentic `validation` gate won't catch *extra* attributes unless the class schema
@@ -379,18 +429,62 @@ without reading raw metadata. Severity ladder:
 | Condition | code | severity |
 |-----------|------|----------|
 | List extracted for a non-array/off-schema attribute (retry+escalation skipped) | `assessment_schema_mismatch` | **error** |
+| A single row still truncated the model — no batch size can fit it (#894) | `assessment_row_too_large` | **error** |
 | Rows still unscored after the full ladder | `assessment_incomplete` | **error** |
-| Wall-clock guard cut escalation short | `assessment_deadline_reached` | **warning** |
+| Wall-clock guard stopped recovery, but every row ended up scored anyway | `assessment_deadline_reached` | **warning** |
+| Wall-clock guard stopped recovery with rows still unscored | `assessment_incomplete` (message names the time budget) | **error** |
 | Healed, but needed shrinking/escalation | `assessment_recovered_with_retries` | **info** |
 
 `assessment_schema_mismatch` takes precedence over `assessment_incomplete`: when
 both fire, the schema mismatch is the true root cause and is emitted alone.
+`assessment_row_too_large` ranks next for the same reason — the generic "rows could
+not be scored" message sends an operator to shrink `list_batch_size`, which is the
+one remedy that provably cannot work when the batch was already a single row.
 
 A **completeness gate** (`audit_explainability`) runs after the ladder on both
 the standalone and in-shard paths: it confirms every extracted value has a real
 (non-null), in-range confidence and — when `geometry.mode != "off"` — a bounding
 box, emitting `assessment_confidence_out_of_range` / `assessment_geometry_incomplete`
-for anything structurally wrong. Issues are attached to each `Section`
+for anything structurally wrong.
+
+It also reports **partial coverage**
+([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)
+item 3). The gate already computed which rows carry no confidence, but every
+caller discarded that, so a section could return a fraction of its rows scored and
+still report unqualified success (one run scored 1,146 leaves where 5-page shards
+scored 4,807 — ~24% coverage, no issue raised; the *reason* coverage fell rather
+than failing was never established, and this issue makes no claim about it). When
+unscored rows exceed **5%** of the extracted list rows the gate emits
+`assessment_coverage_incomplete` — **warning** up to 25% unscored, **error** at or
+above 25% **and** at least **10 unscored rows** — carrying `expected_rows`,
+`scored_rows`, `unscored_rows` and a per-field breakdown.
+
+Three deliberate choices in those thresholds:
+
+- **5%, not 0%.** Reconciliation pads one assessment entry per extracted row, so a
+  run whose model scored every row lands at 0% — but note that no stored artifact
+  measures confidence coverage across a corpus, so "healthy runs sit at 0%" is a
+  property of the code path, not something measured here. `_row_confidence_missing`'s
+  own docstring records a healthy three-record pay statement that reported 100% of
+  rows unscored, because a single `None` leaf marks a whole row unscored; that class
+  of false positive is what the absolute floor below limits. Small residual
+  shortfalls are also already named precisely by `assessment_incomplete`.
+- **An absolute floor of 10 unscored rows on the error rung.** A fraction alone makes
+  short lists fire hardest: one unscored row in a four-row list is 25%, and an error
+  renders the section red ("Incomplete") in the Sections panel. Short list attributes
+  are ordinary (a two-entry `ENDORSEMENTS` array in `lending-package-sample`). Below
+  the floor the shortfall is still reported, as a warning.
+- **Suppressed when the ladder already reported an error.** `build_assessment_issues`
+  and this gate run on the same section, and the ladder's error rungs describe the
+  same unscored rows *with a cause attached*. Emitting both doubles
+  `ProcessingIssueCount` with two counts that can legitimately disagree
+  (`unrecoverable_rows` tracks only the largest list field; this gate counts every
+  list field), and it would break `assessment_schema_mismatch`'s "emitted alone"
+  contract by appending a coverage note under it. Callers pass the ladder's issues in
+  as `audit_explainability(..., ladder_issues=...)`; a `warning`/`info` ladder issue
+  does not suppress it.
+
+Issues are attached to each `Section`
 (`section.processing_issues`), rolled up to `Document.processing_issue_count`,
 and rendered in the extraction processing report.
 
@@ -399,15 +493,68 @@ and rendered in the extraction processing report.
 The escalation ladder adds sequential model calls inside the 900s
 Extraction/Assessment Lambdas. To avoid a hard timeout, both handlers thread the
 Lambda's `context.get_remaining_time_in_millis()` down as an absolute
-`deadline_epoch`; before starting a **new escalation round** the ladder checks
-the estimated round cost fits in the remaining time minus a 90s safety reserve.
-If not, it stops, keeps what was recovered, and flags `deadline_reached` (→
-`assessment_deadline_reached` warning) — converting a would-be timeout into a
-soft, flagged, complete document. As defense in depth, the Step Functions
+`deadline_epoch`. Every path that can spend a model call consults it, and all of
+them price a call at `_ESTIMATED_MODEL_CALL_SECONDS` (60s) or the last measured
+duration, whichever is larger, against the remaining time minus a 90s safety
+reserve:
+
+| Where | Granularity | Added |
+|---|---|---|
+| Further bisection of a truncated slice (`_assess_slice_adaptive`) | per split | 1.5 |
+| Every recovery call, retry **and** escalation (`_splice_missing_rows`) | **per chunk** | #958 |
+| Before an escalation *round* (`_retry_missing_rows` rung 2) | per round | 1.5 |
+
+When a check fails the ladder stops, keeps everything already recovered, and sets
+`deadline_reached` — converting a would-be timeout into a soft, flagged, complete
+document.
+
+The retry rung was the last to be covered: until #958 it stopped only after
+`max_retries` rounds or on a round that recovered nothing, so rounds that each made
+partial progress were unbounded in wall-clock terms. Note **why that check is per
+chunk and not per round.** A round-level check has to price a whole round before
+making any of its calls, and the only safe price is a worst case — chunks × 60s.
+That is not a bound on time, it is a cap on chunk COUNT: with 800s remaining it
+refuses any round past 11 chunks however fast the model actually is, which for a
+200-row list at a token-aware batch size of 4 discarded recovery that measurably
+took under a second and turned a clean section into an error-severity
+`assessment_incomplete`. Pricing one call at a time bounds the wall clock exactly,
+keeps every row the budget did cover, and treats both rungs alike — before #958 the
+cheap same-model rung could be refused while the slower, dearer escalation rung
+proceeded, because the two sized their chunks differently.
+
+**What an operator sees.** With rows still unscored the section reports
+`assessment_incomplete` (**error**) whose message names the time budget and its
+remedy — more Lambda time, or less work per section. It does **not** report
+`assessment_deadline_reached`: that rung sits below `assessment_incomplete` in the
+severity ladder and the guard only fires while rows are missing, so the warning is
+reachable only when a later rung went on to score every row anyway. As defense in depth, the Step Functions
 `ExtractionStep`/`AssessmentStep`/`ShardExtractionStep` retry sets include
 `States.Timeout` / `Lambda.Unknown`, so a genuine timeout is retried and resumes
 via the per-shard S3 persistence and the Assessment step's "skip if
 `explainability_info` already present" short-circuit.
+
+### What to alarm on when the pass fails outright
+
+The rungs above degrade *within* a successful pass. When the pass fails
+**deterministically** — the confidence model rejecting the input outright, most
+often `ValidationException: Input is too long for requested model.` — the
+Assessment Lambda does not fail the document either: it keeps the extraction and
+records an error-severity `assessment_failed_confidence_unavailable` issue on the
+section (`degrade_section_to_no_confidence` in
+`patterns/unified/src/assessment_function/index.py`, issue #901).
+
+That has an observability consequence worth knowing when reading this module's
+behaviour operationally. Because such a document **completes**, a systemic
+confidence failure moves none of the failure alarms — no failed executions, no
+DLQ messages — and `ProcessingIssueCount` is a DynamoDB attribute rather than a
+metric, so nothing aggregates it. The Lambda therefore publishes
+`AssessmentConfidenceUnavailable` (value 1 per degraded section) into the parent
+stack's metric namespace on that path, and the parent template alarms on ten or
+more in fifteen minutes — deliberately on volume, because one degraded section is
+an expected outcome of the guard and a steady stream is not (issue #996). The
+metric put is wrapped in its own `try`: this path exists to avoid failing a
+document whose extraction succeeded, so a lost telemetry point is the cheaper
+failure. See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
 
 ## Prompt Template Placeholders
 

@@ -70,6 +70,36 @@ export const formatUnitCostUsd = (value: number): string => {
   return `$${trimTrailingZeros(value.toFixed(places))}`;
 };
 
+/**
+ * The two cost cells for one metering row, from the row's unit price and its
+ * estimated cost.
+ *
+ * There are three states here and they must not be collapsed to two:
+ *
+ *  - `unitCost === null` => genuinely UNPRICED. Nothing in the pricing table
+ *    covers this service, so this row's cost is unknown and the run total is an
+ *    understatement. Labelled 'Not priced' in BOTH columns.
+ *  - `unitCost === 0` with `cost === 0` => metered but NOT CHARGEABLE. Rows like
+ *    `totalTokens` and `requests` are counts; nothing is billed. Labelled '—'.
+ *  - `unitCost > 0` => a real charge, formatted as money.
+ *
+ * The null test has to come FIRST. A null `unit_cost` implies a null
+ * `estimated_cost`, which the caller's `|| 0` turns into 0, so a single
+ * `cost === 0 && (unitCost === null || unitCost === 0)` test swallowed the
+ * unpriced case into the not-chargeable one: 'Not priced' was unreachable and an
+ * unpriced service read as free — the exact reading GitHub issue #926 set out to
+ * eliminate. This lives here rather than inline in the table's JSX so that
+ * ordering is directly testable.
+ */
+export const costCellLabels = (unitCost: number | null, cost: number): { unitCost: string; estimatedCost: string } => {
+  if (unitCost === null) return { unitCost: 'Not priced', estimatedCost: 'Not priced' };
+  if (unitCost === 0 && cost === 0) return { unitCost: '—', estimatedCost: '—' };
+  return {
+    unitCost: formatUnitCostUsd(unitCost),
+    estimatedCost: cost > 0 ? formatCostUsd(cost) : 'N/A',
+  };
+};
+
 /** Parse a value that may arrive from the API as either a number or a numeric string. */
 export const asFiniteNumber = (value: unknown): number | null => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;

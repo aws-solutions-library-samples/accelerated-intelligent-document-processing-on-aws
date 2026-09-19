@@ -35,6 +35,43 @@ INLINE_ROW_CAP = 50
 # How many head/tail sample rows to show the model when a table exceeds the cap.
 SAMPLE_ROWS = 5
 
+# Value transforms the mapping tool understands. The date ones exist because
+# ``finalize_table_extraction`` validates against a Pydantic model generated
+# from the class schema, and ``format: date`` there is a real ``datetime.date``
+# — so a parsed ``05/09/2024`` can never validate, no matter how correct it is.
+# Without a deterministic conversion the agent's only recourse is to re-emit
+# every row itself, which is exactly the output-token cost the deterministic
+# table pipeline exists to avoid.
+DATE_TRANSFORMS = {
+    # transform name -> date_order passed to the shared date parser
+    "date_to_iso": "auto",
+    "date_to_iso_mdy": "MDY",
+    "date_to_iso_dmy": "DMY",
+}
+# Cap on how many distinct per-value transform refusals are reported back.
+MAX_TRANSFORM_WARNINGS = 3
+_SUPPORTED_TRANSFORMS = frozenset(
+    {"strip_currency", "strip_whitespace", "lowercase", "uppercase"}
+    | set(DATE_TRANSFORMS)
+)
+
+
+def _to_iso_date(value: str, date_order: str) -> tuple[str, str]:
+    """Convert one date string to ISO ``YYYY-MM-DD``. ``(value, reason)``.
+
+    Returns the value unchanged with a reason when the conversion is refused —
+    a wrongly "fixed" date is data corruption nothing downstream can catch, so
+    an ambiguous value is left exactly as parsed. Reuses the same parser (and
+    therefore the same refusal policy) as ``extraction.coercion``.
+    """
+    from idp_common.extraction.coercion import _parse_date_string
+
+    iso, note = _parse_date_string(value, date_order)
+    if iso is not None:
+        return iso, ""
+    # note == "" means "already ISO and valid: nothing to do"
+    return value, note
+
 
 def _compact_content(summary: dict[str, Any]) -> list[dict[str, Any]]:
     """Wrap a compact summary dict as a Strands ToolResultContent list.
@@ -1002,7 +1039,17 @@ def create_map_table_to_schema_tool():
                 - "strip_currency": removes $, commas  (e.g. "$1,234.56" -> "1234.56")
                 - "strip_whitespace": removes all internal whitespace
                 - "lowercase" / "uppercase": case conversion
-                Example: {"value": "strip_currency", "quantity": "strip_currency"}
+                - "date_to_iso": normalize an unambiguous date to YYYY-MM-DD
+                  (e.g. "15/03/2024", "2024/03/15", "March 15, 2024"). An
+                  all-numeric date whose day/month order is genuinely ambiguous
+                  ("01/02/2024") is REFUSED and reported, never guessed.
+                - "date_to_iso_mdy" / "date_to_iso_dmy": same, but state which
+                  reading the source documents use so ambiguous values convert
+                  too. Use these whenever the schema declares `format: date`
+                  and the page shows some other order — the schema's date type
+                  accepts ISO only, so unconverted rows fail finalize and you
+                  would otherwise have to re-emit every row by hand.
+                Example: {"Amount": "strip_currency", "Date": "date_to_iso_mdy"}
 
         Returns:
             Dict with:
@@ -1085,7 +1132,18 @@ def create_map_table_to_schema_tool():
             warnings.append(f"Unmapped columns (not in column_mapping): {unmapped}")
 
         # Define value transform functions
-        def _apply_transform(value: str, transform: str) -> str:
+        # Per-field ordered dict of "value → reason" pairs. Previously this
+        # was ``dict[str, str]`` and only the FIRST refusal per field was
+        # recorded (``if field not in transform_refusals``), so a mixed
+        # batch where row 1 parses cleanly, row 2 refuses format A, and
+        # row 3 refuses format B saw only row 2's refusal — the agent had
+        # no evidence that row 3 also needed attention. Recording every
+        # distinct value+reason pair per field surfaces the full pattern
+        # so the agent knows which specific rows to re-examine.
+        transform_refusals: dict[str, dict[str, str]] = {}
+        warned_unknown: set[str] = set()
+
+        def _apply_transform(value: str, transform: str, field: str) -> str:
             if not value or not transform:
                 return value
             if transform == "strip_currency":
@@ -1096,6 +1154,21 @@ def create_map_table_to_schema_tool():
                 return value.lower()
             elif transform == "uppercase":
                 return value.upper()
+            elif transform in DATE_TRANSFORMS:
+                converted, reason = _to_iso_date(value, DATE_TRANSFORMS[transform])
+                if reason:
+                    per_field = transform_refusals.setdefault(field, {})
+                    # Dedupe on the exact (value, reason) pair — every
+                    # DISTINCT refusal is recorded once, but repeats of
+                    # the same value don't spam the report.
+                    per_field.setdefault(value, reason)
+                return converted
+            if transform not in warned_unknown:
+                warned_unknown.add(transform)
+                warnings.append(
+                    f"Unknown value transform {transform!r} ignored. Supported: "
+                    + ", ".join(sorted(_SUPPORTED_TRANSFORMS))
+                )
             return value
 
         transforms = value_transforms or {}
@@ -1185,7 +1258,7 @@ def create_map_table_to_schema_tool():
             for table_col, schema_field in col_map.items():
                 val = row.get(table_col, "")
                 if schema_field in transforms:
-                    val = _apply_transform(val, transforms[schema_field])
+                    val = _apply_transform(val, transforms[schema_field], schema_field)
                 mapped_row[schema_field] = val
 
             # Add static fields
@@ -1210,6 +1283,29 @@ def create_map_table_to_schema_tool():
             ]
 
             mapped_rows.extend(split_rows)
+
+        # Report refused value transforms. A refused date is left exactly as
+        # parsed (never guessed), so the agent must know which column still
+        # carries a non-schema format rather than discovering it at finalize.
+        # Every distinct (value, reason) pair per field is included — a
+        # mixed batch that refuses two different formats on the same field
+        # surfaces BOTH so the agent doesn't chase only the first.
+        for field, refusals in list(transform_refusals.items())[
+            :MAX_TRANSFORM_WARNINGS
+        ]:
+            detail = "; ".join(
+                f"{value!r}: {reason}" for value, reason in refusals.items()
+            )
+            warnings.append(
+                f"Date transform refused for {field!r} ({detail}); value left "
+                f"unchanged. Pass date_to_iso_mdy or date_to_iso_dmy to state "
+                f"the reading this document uses."
+            )
+        if len(transform_refusals) > MAX_TRANSFORM_WARNINGS:
+            warnings.append(
+                f"...and {len(transform_refusals) - MAX_TRANSFORM_WARNINGS} more "
+                f"field(s) with refused date transforms."
+            )
 
         # Accumulate mapped rows in agent state for finalize_table_extraction
         # (supports multiple calls for chunked processing)

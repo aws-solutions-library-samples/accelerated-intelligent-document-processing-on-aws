@@ -51,13 +51,89 @@ For issues not covered by the Error Analyzer, use the manual troubleshooting ste
 | **Classification returns "other"** | Review document class definitions. Consider adding more detailed class descriptions or adding few-shot examples.                     |
 | **Extraction missing fields**      | Review attribute descriptions and prompt engineering. Check if fields are present but in an unusual format or location.              |
 
+### Confidence (Assessment) Failures
+
+Confidence scoring runs as its own step after extraction. Two failure shapes have
+distinct symptoms and distinct fixes.
+
+**The confidence model truncates its response at every batch size, down to a single
+row.** No batch size can fit that row, so shrinking cannot converge. The ladder now
+stops as soon as a **single-row** call truncates and reports
+`assessment_row_too_large` (error severity) on the section, naming the confidence
+model, its output-token cap, the list field and class, and the offending row's
+approximate serialized size. Look for that issue in the section's **Status** column
+or **Processing Report** tab. Before this, the section reported the generic
+`assessment_incomplete`, which points at `list_batch_size` — the one setting that
+cannot help here.
+
+The known trigger is a class marked `x-aws-idp-multi-instance: true` whose instance
+carries a long inner list — a 100-row bank statement, for example. The wrapper makes
+the *instance* array the outer list, so one row of that list is a whole document
+instance, and the batch sizer (which measures only the outer row's columns, logging
+`cols=2 per_row~80`) derives a batch size that is wrong by orders of magnitude.
+⚠️ **That sizing bug is not fixed** — it is tracked as open issue
+[#894](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/894),
+so such a class still cannot be fully assessed; what it now gets is an actionable
+message naming the real cause.
+
+⚠️ If your symptom is instead **the document stuck in `ASSESSING` with the Assessment
+Lambda hitting its 900-second limit and `Sandbox.Timedout` retried three times**
+— the symptom originally reported on #894 — note that this guard is not known to fix
+it. The cause of that timeout has not been established: the same-model retry rung
+already stopped on no progress before this change, and the ladder's wall-clock
+deadline guard was already in place in the release where the timeouts were observed.
+The one gap in that guard has since been closed (#958): every recovery call now
+checks the remaining Lambda time before it is made, not just further bisections and
+whole escalation rounds, so a run that would previously have spent its entire budget
+on partially-successful retries now stops at the last call that fits and keeps
+everything it recovered. When that happens with rows still unscored the section
+reports `assessment_incomplete` (error) with the time budget named in its message —
+**not** `assessment_deadline_reached`, which is reserved for the case where recovery
+was cut short and every row ended up scored anyway; `deadline_reached` is also set in
+`metadata.assessment_batch_split_stats`. Whether any of this was the cause of the
+reported timeouts is still unknown. Attach your Assessment Lambda log (the per-call timings
+and `stopReason` lines) to #894. Until #894 is fixed, either point that class at a large-output-cap confidence model
+(`extraction.confidence.escalation_model`, or the per-class
+`x-aws-idp-confidence-escalation-model`), or restructure so the long list is its own
+class rather than a field inside a multi-instance instance.
+
+**`ValidationException: Input is too long for requested model.` from the Assessment
+step.** This is deterministic — retrying sends the identical oversized request — and
+it used to fail the whole document, discarding extraction that had already completed
+and been paid for. The step now **degrades** instead: the extracted data is
+returned, the document succeeds, and the missing confidence is recorded as an
+error-severity `assessment_failed_confidence_unavailable` issue on the section.
+Because that section has no confidence values, HITL confidence routing and the UI
+threshold signals do not apply to it — the processing issue is the signal. Find it in
+the **Status** column of the Sections panel; this one is written to the section
+record only, not into the section's `result.json`, so it does not appear in the
+Processing Report tab. Transient
+failures (throttling, read timeouts) are unaffected and still retry. To get
+confidence back, reduce the confidence request's size: `geometry.mode: ocr_only`,
+a lower `extraction.confidence.list_batch_size`, or Advanced (agentic) extraction,
+which shards the confidence pass. Automatically re-batching an oversized confidence
+input so the pass succeeds rather than degrades remains open as part of
+[#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901).
+
+**Some rows scored, most not, and nothing complained.** Sections whose scored rows
+fall materially short of the extracted rows now emit
+`assessment_coverage_incomplete` — a warning past 5% of rows unscored, an error at
+25% or more **and** at least 10 unscored rows (a proportion alone would make one
+unscored row in a four-row list an error) — carrying the expected/scored/unscored
+counts and a per-field breakdown. The extracted values themselves are unaffected;
+treat it as "do not trust this section's confidence surface as a whole". It is
+suppressed when the self-healing ladder already reported an error for the same
+section (`assessment_incomplete`, `assessment_row_too_large`,
+`assessment_schema_mismatch`), because that issue describes the same unscored rows
+with a cause attached.
+
 ### Web UI Access Issues
 
 | Issue                                | Resolution                                                                                                            |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | **Cannot login to Web UI**           | Verify Cognito user status and permissions in AWS Console. Check email for temporary credentials if first-time login. |
 | **Web UI loads but shows errors**    | Check browser console for specific error messages. Verify API endpoints are accessible.                               |
-| **Cannot see document history**      | Verify AWS AppSync API permissions. Check CloudWatch Logs for API errors.                                             |
+| **Cannot see document history**      | Check the dispatcher Lambda's CloudWatch Logs for the failing operation. A 403 means a resolver group check rejected your role (see [rbac.md](./rbac.md)); a 401 means the Cognito token was rejected.  |
 | **Configuration changes not saving** | Check browser console for validation errors. Verify that the configuration Lambda function has correct permissions.   |
 
 ### Model and Service Issues
@@ -75,6 +151,7 @@ For issues not covered by the Error Analyzer, use the manual troubleshooting ste
 | **Lambda function timeouts**   | Increase function timeout or memory allocation. Consider breaking processing into smaller chunks.                     |
 | **DynamoDB capacity exceeded** | Check CloudWatch metrics for throttling. Consider increasing provisioned capacity or switching to on-demand capacity. |
 | **DynamoDB config upload fails: "Item size has exceeded the maximum allowed size"** | This error occurred in versions prior to the compression fix when configurations had ~45+ document classes, exceeding DynamoDB's 400KB item limit. **Solution**: Upgrade to the latest version, which gzip-compresses configuration data (supporting 3,000+ classes). Existing configs auto-migrate on next write. See [GitHub Issue #200](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/200). |
+| **Test Studio "Run Test" fails: "An error occurred (ValidationException) when calling the PutItem operation: Item size has exceeded the maximum allowed size"** | In versions before the fix, the test runner copied the selected configuration profile inline onto the run's DynamoDB record, uncompressed. The Configuration page accepted profiles past ~390KB of JSON (it compresses them), so a large profile saved fine and then failed every test run at submit. **Solution**: Upgrade to a version where runs store the captured configuration compressed. On an affected version, reduce the profile below ~390KB of JSON (fewer classes, shorter prompts or attribute descriptions, or split classes across profiles); export the profile from the Configuration page to check its size. |
 | **S3 permission errors**       | Verify bucket policies and IAM role permissions. Check for cross-account access issues.                               |
 | **Stack update fails with `iam:UpdateAssumeRolePolicy` AccessDenied on `CognitoAuthorizedRole`, then wedges in `UPDATE_ROLLBACK_FAILED`** | Affects upgrades from before v0.6.2 to v0.6.2–v0.6.4 when deploying with a CloudFormation service role (or permissions boundary) that lacks `iam:UpdateAssumeRolePolicy`. The rollback needs the same permission, so the stack cannot self-recover. **Recover:** `aws cloudformation continue-update-rollback --stack-name <StackName> --resources-to-skip <StackName>-CognitoAuthorizedRole`, then upgrade to a release that includes the fix (the GovCloud principals are now gated on the partition, so commercial deployments no longer change this trust policy). If you use your own service role, also grant `iam:UpdateAssumeRolePolicy` — see [iam-roles/cloudformation-management/README.md](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/iam-roles/cloudformation-management/README.md) and [GitHub Issue #632](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/632). |
 
@@ -173,6 +250,39 @@ If too many workflows are running and need to be stopped:
    - Navigate to SQS in the AWS Console
    - Select the queue
    - Choose "Purge" from the Actions menu
+
+### Documents Processed More Than Once
+
+**Symptom:** a document uploaded once shows several entries in the Web UI's
+**Version History** that differ only in the execution that produced them, all
+with the same queued time, and `AWS/States ExecutionsStarted` for the workflow is
+higher than the number of documents you uploaded. Every extra execution was
+billed for Bedrock, Textract and Lambda.
+
+**Cause (fixed in 0.6.9,
+[#904](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/904)):**
+under a saturated queue the `QueueProcessor` Lambda timed out mid-batch. Lambda
+then reported nothing to SQS, so the whole batch was redelivered — including
+messages whose workflow had already started — and each redelivery started a new,
+randomly named execution. Since 0.6.9 the execution is named after the SQS
+message (`<basename>-<message-id>`), so a redelivered message is refused by Step
+Functions and acked without a second execution, and each message is deleted as
+soon as its execution exists. `QueueProcessorErrorsAlarm` now reports the
+timeouts themselves; see [Monitoring](monitoring.md#queueprocessorerrorsalarm--a-processor-that-cannot-finish-its-batches).
+
+**To confirm it on a stack you have not yet upgraded**, pick one affected
+document and count how often its SQS message was received:
+
+```
+fields @timestamp, @requestId, @message
+| filter @message like /Processing message/ and @message like /<object-key>/
+| sort @timestamp asc
+```
+
+One `messageId` appearing many times is redelivery, not duplicate ingest. Check
+the same log group for invocations ending in `Status: timeout`. Upgrading is the
+fix; if you cannot yet, raising the function's `MemorySize` and lowering the
+event source mapping's `BatchSize` reduce how often a batch fails to finish.
 
 ## Security Issues
 

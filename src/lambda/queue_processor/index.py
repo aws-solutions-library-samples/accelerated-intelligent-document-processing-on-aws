@@ -1,9 +1,11 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
@@ -15,6 +17,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from idp_common.config import ConfigurationManager
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Status
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 patch_all()
 
@@ -69,11 +72,130 @@ if RECONCILE_SAMPLE_MAX_AGE_SECONDS < RECONCILE_GRACE_SECONDS * 2:
     )
     RECONCILE_SAMPLE_MAX_AGE_SECONDS = _clamped
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "IDP")
+# The workflow tracker's decrement is a TransactWriteItems on this same
+# `workflow_counter` item, so a plain UpdateItem here can lose the race with
+# TransactionConflictException — a code botocore's DynamoDB retry policy does not
+# cover. Bounded retry, same shape as the tracker's DECREMENT_MAX_ATTEMPTS /
+# 0.2s-doubling backoff (worst case 0.2 + 0.4 + 0.8 = 1.4s of sleep), because the
+# real conflict rate is unmeasured. See update_counter.
+COUNTER_CONFLICT_MAX_ATTEMPTS = int(
+    os.environ.get("COUNTER_CONFLICT_MAX_ATTEMPTS", "4")
+)
+COUNTER_CONFLICT_BASE_DELAY_SECONDS = float(
+    os.environ.get("COUNTER_CONFLICT_BASE_DELAY_SECONDS", "0.2")
+)
+
+# Step Functions execution names: 1-80 chars, no whitespace, brackets, wildcards
+# or the characters " # % \ ^ | ~ ` $ & , ; : /. The name also becomes the last
+# ARN segment, which document_versions.build_run_id and the classification cache
+# key both take with ``split(":")[-1]``, so it is kept to a set that is safe in
+# an S3 key and a DynamoDB sort key as well.
+_EXECUTION_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_EXECUTION_NAME_MAX_LEN = 80
+
+
+class ExecutionAlreadyStarted(Exception):
+    """StartExecution was refused because this message already started a workflow.
+
+    Raised when Step Functions answers ``ExecutionAlreadyExists`` for the
+    deterministic name derived from the SQS message: an earlier delivery of the
+    same message already started the execution, so this delivery must be acked
+    as a no-op rather than start a second one.
+    """
+
+    def __init__(self, execution_name: str, execution_arn: str):
+        super().__init__(
+            f"Execution {execution_name} already exists as {execution_arn}"
+        )
+        self.execution_name = execution_name
+        self.execution_arn = execution_arn
+
+
+def execution_name_for(input_key: str, message_id: str) -> Optional[str]:
+    """Derive the idempotent execution name for one SQS message.
+
+    SQS is at-least-once: a message whose StartExecution succeeded is redelivered
+    whenever the invocation that handled it dies before it can report the batch
+    outcome (issue #904 saw one message delivered 24 times and started 6 times).
+    Step Functions refuses a second StartExecution with the same name for 90
+    days, so naming the execution after the message turns every redelivery into
+    a harmless ``ExecutionAlreadyExists``.
+
+    The message id, not the document, is the key: the same object re-uploaded,
+    reprocessed from the UI or re-run through the SDK is a NEW message and must
+    get a new execution, while every redelivery of one message carries the same
+    id. A human-readable prefix from the object's basename is kept so the
+    Step Functions console still reads like a document list.
+
+    Returns None when there is no message id (a direct invocation), in which case
+    Step Functions assigns a name and duplicate protection does not apply.
+    """
+    if not message_id:
+        return None
+    token = message_id
+    if _EXECUTION_NAME_UNSAFE.search(token) or len(token) > 64:
+        token = hashlib.sha256(message_id.encode("utf-8")).hexdigest()[:32]
+    basename = (input_key or "").rsplit("/", 1)[-1]
+    prefix = _EXECUTION_NAME_UNSAFE.sub("-", basename).strip("-.")
+    room = _EXECUTION_NAME_MAX_LEN - len(token) - 1
+    prefix = prefix[:room].rstrip("-.")
+    # Preserve the "looks like a document list" property in the Step
+    # Functions console even for basenames that yield no allowed chars
+    # (e.g. all-emoji filenames, extension-only basenames like ``.pdf``).
+    # A bare token — 32-char sha1 or 36-char UUID — is uninformative and
+    # loses the browse-by-name affordance the prefix exists for. Fall
+    # back to a generic ``doc-`` prefix so the execution row still reads
+    # as "some document" rather than "some hash".
+    return f"{prefix}-{token}" if prefix else f"doc-{token}"
+
+
+def execution_arn_for(execution_name: str) -> str:
+    """The ARN Step Functions gives an execution of our state machine by name."""
+    return (
+        state_machine_arn.replace(":stateMachine:", ":execution:", 1)
+        + f":{execution_name}"
+    )
+
+
+def ack_message(receipt_handle: str) -> bool:
+    """Delete one message as soon as its workflow exists.
+
+    Lambda only deletes the successful messages of a batch when the invocation
+    returns. If it times out first, SQS gets no response at all and redelivers
+    the whole batch, including messages whose executions were already started.
+    Deleting each message right after its StartExecution closes that window
+    (the later batch-level delete of an already-deleted message is a no-op).
+    Non-fatal: if this fails the deterministic execution name still makes the
+    redelivery harmless.
+    """
+    if not DOCUMENT_QUEUE_URL or not receipt_handle:
+        return False
+    try:
+        sqs.delete_message(QueueUrl=DOCUMENT_QUEUE_URL, ReceiptHandle=receipt_handle)
+        return True
+    except (ClientError, BotoCoreError) as e:
+        logger.warning(f"Could not delete message after starting its workflow: {e}")
+        return False
 
 
 def update_counter(increment: bool = True) -> bool:
     """
     Update the concurrency counter
+
+    Retries ``TransactionConflictException`` with bounded backoff. The workflow
+    tracker's decrement is now a ``TransactWriteItems`` (so it can carry its
+    per-execution marker atomically), which makes ``workflow_counter`` a
+    transactional target: DynamoDB fails a plain ``UpdateItem`` that collides
+    with an in-flight transaction on the same item with
+    ``TransactionConflictException``, and botocore's DynamoDB retry policy does
+    NOT cover that code (it covers ``ReplicatedWriteConflictException``,
+    ``TransactionInProgressException`` and crc32 only). On the increment path a
+    raise is harmless — the outer handler returns False without touching the
+    counter, so SQS redelivers — but the two COMPENSATING-DECREMENT paths in
+    ``process_message`` catch and log it, which would LEAK a slot: exactly the
+    failure class the floor and the marker exist to prevent. Retried here with
+    the same shape the tracker's decrement uses, and deliberately conservative:
+    the real conflict rate is unmeasured (this change is not deploy-validated).
 
     Args:
         increment: Whether to increment (True) or decrement (False) the counter
@@ -85,31 +207,101 @@ def update_counter(increment: bool = True) -> bool:
         ClientError: If DynamoDB operation fails
     """
     logger.info(f"Updating counter: increment={increment}, max={MAX_CONCURRENT}")
+    update_args = {
+        "Key": {"counter_id": COUNTER_ID},
+        "UpdateExpression": "ADD active_count :inc",
+        "ExpressionAttributeValues": {
+            ":inc": 1 if increment else -1,
+            ":max": MAX_CONCURRENT,
+        },
+        "ReturnValues": "UPDATED_NEW",
+    }
+
+    if increment:
+        update_args["ConditionExpression"] = "active_count < :max"
+
+    last_conflict: Optional[ClientError] = None
+    for attempt in range(1, COUNTER_CONFLICT_MAX_ATTEMPTS + 1):
+        try:
+            logger.info(f"Counter update args: {update_args}")
+            response = concurrency_table.update_item(**update_args)
+            logger.info(f"Counter update response: {response}")
+            if increment:
+                # The ONLY place a negative counter is observable in production —
+                # see _repair_if_counter_was_negative. Never raises.
+                _repair_if_counter_was_negative(response)
+            return True
+
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code == "ConditionalCheckFailedException":
+                logger.warning("Concurrency limit reached")
+                return False
+            if code == "TransactionConflictException":
+                last_conflict = e
+                logger.warning(
+                    f"Counter update collided with an in-flight transaction on "
+                    f"the counter item (attempt {attempt}/"
+                    f"{COUNTER_CONFLICT_MAX_ATTEMPTS}): {e}"
+                )
+                if attempt < COUNTER_CONFLICT_MAX_ATTEMPTS:
+                    time.sleep(
+                        COUNTER_CONFLICT_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                    )
+                continue
+            logger.error(f"Error updating counter: {e}")
+            raise
+
+    logger.error(
+        f"Counter {'increment' if increment else 'decrement'} still conflicting "
+        f"after {COUNTER_CONFLICT_MAX_ATTEMPTS} attempts: {last_conflict}. "
+        f"Raising rather than reporting a write that never landed as done.",
+        exc_info=True,
+    )
+    raise last_conflict if last_conflict else RuntimeError("counter update failed")
+
+
+def _repair_if_counter_was_negative(response: Dict[str, Any]) -> None:
+    """Detect, from the increment just applied, that the counter was NEGATIVE.
+
+    **This is the only path in the deployed system that can observe a negative
+    counter.** ``reconcile_counter`` — and with it ``_repair_negative_counter``
+    and ``ConcurrencyCounterNegativeAlarm`` — is reached from exactly one place:
+    the ``if not update_counter(increment=True)`` branch, i.e. only when the
+    increment's ``active_count < :max`` condition FAILED. A negative counter
+    satisfies that condition, so the increment always succeeds and the reconciler
+    is never consulted. Without this hook the repair is unreachable and the alarm
+    cannot fire, and the repair's own tests cannot show that because they call
+    ``reconcile_counter()`` directly rather than going through admission.
+
+    Detection is free: the increment already asks for ``ReturnValues``, and
+    ``active_count`` after adding 1 is ``<= 0`` exactly when it was negative
+    before. We hold one slot whose execution does not exist yet — ListExecutions
+    cannot see it — hence ``claimed=1``, so the repair does not write a value that
+    excludes our own claim.
+
+    Never allowed to change the admission decision: the increment has landed and
+    the caller is about to start a workflow, so every failure here is swallowed.
+    """
     try:
-        update_args = {
-            "Key": {"counter_id": COUNTER_ID},
-            "UpdateExpression": "ADD active_count :inc",
-            "ExpressionAttributeValues": {
-                ":inc": 1 if increment else -1,
-                ":max": MAX_CONCURRENT,
-            },
-            "ReturnValues": "UPDATED_NEW",
-        }
-
-        if increment:
-            update_args["ConditionExpression"] = "active_count < :max"
-
-        logger.info(f"Counter update args: {update_args}")
-        response = concurrency_table.update_item(**update_args)
-        logger.info(f"Counter update response: {response}")
-        return True
-
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            logger.warning("Concurrency limit reached")
-            return False
-        logger.error(f"Error updating counter: {e}")
-        raise
+        raw = (response.get("Attributes") or {}).get("active_count")
+        if raw is None:
+            return
+        post = int(raw)
+        if post > 0:
+            return
+        logger.error(
+            f"Concurrency counter was NEGATIVE ({post - 1}) before this "
+            f"increment. Admission is `active_count < MaxConcurrentWorkflows`, so "
+            f"the stack has been admitting up to {1 - post} workflow(s) above the "
+            f"configured ceiling, with nothing erroring. Repairing."
+        )
+        _repair_negative_counter(post, claimed=1)
+    except Exception as e:
+        logger.warning(
+            f"Could not check the concurrency counter for an underflow: {e}",
+            exc_info=True,
+        )
 
 
 def _count_running_executions() -> Optional[int]:
@@ -192,6 +384,19 @@ def reconcile_counter() -> Optional[int]:
     3. **Conditional write** on the exact value we sampled, so a concurrent
        increment or decrement makes this a no-op instead of clobbering it.
 
+    A NEGATIVE counter is the one case that gets none of that caution, because it
+    is the opposite failure: see ``_repair_negative_counter``. It used to get no
+    treatment at all — an ``active <= 0`` early return here declined to act on
+    exactly the state that needed correcting (issue #915).
+
+    Note that the negative branch below is **defensive depth, not the live path**.
+    This function only runs when the increment's ``active_count < :max`` condition
+    failed, and a negative counter satisfies that condition, so in a normally
+    configured stack a negative counter is detected on the *successful* increment
+    instead (``_repair_if_counter_was_negative``). The branch here still covers
+    the residue: a MaxConcurrentWorkflows of 0 or below, where a negative counter
+    can also fail the admission condition.
+
     Returns the corrected value, or None if no correction was made.
     """
     now = int(time.time())
@@ -208,7 +413,13 @@ def reconcile_counter() -> Optional[int]:
         return None
 
     active = int(item.get("active_count", 0))
-    if active <= 0:
+    if active < 0:
+        # An underflowed counter raises the effective ceiling instead of lowering
+        # it, so it is repaired on sight rather than sampled twice.
+        return _repair_negative_counter(active)
+    if active == 0:
+        # No slots claimed, so there is nothing to reconcile and no reason to pay
+        # for a ListExecutions sweep.
         return None
 
     running = _count_running_executions()
@@ -275,7 +486,9 @@ def reconcile_counter() -> Optional[int]:
         return None
 
     # Two independent samples, GRACE apart, both saw the counter too high.
-    target = max(running, int(prev_running or 0))
+    # max(..., 0) is belt-and-braces: both inputs are counts, so the corrected
+    # value can never be the negative counter this function now also repairs.
+    target = max(running, int(prev_running or 0), 0)
     if target >= active:
         return None
 
@@ -301,6 +514,76 @@ def reconcile_counter() -> Optional[int]:
         f"RECONCILED leaked concurrency counter: {active} -> {target} "
         f"(running executions: {running}, previous sample: {prev_running}). "
         f"{active - target} slot(s) had been held by workflows that already ended."
+    )
+    return target
+
+
+def _repair_negative_counter(active: int, claimed: int = 0) -> Optional[int]:
+    """Raise a NEGATIVE counter back to what is actually running.
+
+    A negative ``active_count`` is not drift, it is arithmetic that ran past its
+    floor, and it fails in the opposite and worse direction: the admission gate is
+    ``active_count < MAX_CONCURRENT``, so every unit below zero is one more
+    workflow admitted above MaxConcurrentWorkflows, with no error anywhere
+    (issue #915). The workflow tracker's decrement is now floored and deduplicated
+    so it cannot get here, but a counter that already went negative — or one edited
+    by hand — still needs a way back.
+
+    The two-sample caution in ``reconcile_counter`` exists because *lowering* the
+    counter over-admits work. Raising it out of a negative value only ever
+    tightens admission, so this acts on the first observation. It still writes
+    conditionally on the exact value read, and can never write below zero.
+
+    Args:
+        active: The counter value as currently written — what the conditional
+            write below must still find, so a concurrent change makes this a
+            no-op rather than a clobber.
+        claimed: Slots this caller has ALREADY added to ``active`` for executions
+            that do not exist yet, and which ListExecutions therefore cannot see.
+            The admission path (``_repair_if_counter_was_negative``) passes 1, so
+            the repair neither drops its own claim nor misreports the negative
+            value for the alarm. ``reconcile_counter`` runs only on a *refused*
+            increment — nothing was claimed — so it passes 0.
+    """
+    running = _count_running_executions()
+    # None means the probe failed, or that it stopped counting past the ceiling.
+    # Either way zero is a safe floor: it is much closer to the truth than a
+    # negative counter, and it cannot admit MORE work than we already are.
+    target = (max(running, 0) if running is not None else 0) + claimed
+
+    # Publish the value the counter actually HELD, before the write below and even
+    # if that write no-ops. Two reasons it is `active - claimed` rather than
+    # `active`: ConcurrencyCounterNegativeAlarm is Minimum < 0, and on the
+    # admission path our own increment has already moved the counter (a counter of
+    # -1 reads 0 by the time we detect it), so publishing `active` would leave the
+    # alarm unable to fire on the very case it exists for. And nothing else records
+    # an underflow that was silently cleaned up — an operator needs to know the
+    # ceiling was breached, not just that it is fixed.
+    _emit_counter_active_metric(active - claimed)
+
+    try:
+        concurrency_table.update_item(
+            Key={"counter_id": COUNTER_ID},
+            UpdateExpression=(
+                "SET active_count = :new REMOVE drift_observed_at, drift_running"
+            ),
+            ConditionExpression="active_count = :expected",
+            ExpressionAttributeValues={":new": target, ":expected": active},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # The counter moved under us; re-read it on a later invocation.
+            logger.info("Counter changed during underflow repair; skipping")
+            return None
+        logger.error(f"Failed to repair negative concurrency counter: {e}")
+        return None
+
+    held = active - claimed
+    logger.warning(
+        f"REPAIRED a NEGATIVE concurrency counter: it held {held}, now {target} "
+        f"(running executions: {running}; slots claimed but not yet started: "
+        f"{claimed}). While it was negative the stack could admit up to {-held} "
+        f"workflows ABOVE MaxConcurrentWorkflows."
     )
     return target
 
@@ -456,6 +739,29 @@ def _emit_drift_metric(drift: int, active: int, running: int) -> None:
         logger.warning(f"Could not emit concurrency drift metric: {e}")
 
 
+def _emit_counter_active_metric(active: int) -> None:
+    """Publish the counter value on its own, without a drift sample.
+
+    Used by the underflow-repair path: there is no meaningful drift to report
+    there, but the negative value itself has to reach CloudWatch so
+    ConcurrencyCounterNegativeAlarm can fire on it.
+    """
+    try:
+        cloudwatch = boto3.client("cloudwatch")
+        cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": "ConcurrencyCounterActive",
+                    "Value": active,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:  # never let telemetry break message processing
+        logger.warning(f"Could not emit concurrency counter metric: {e}")
+
+
 def check_circuit_breaker() -> tuple[bool, str]:
     """
     Check if the circuit breaker allows new workflows.
@@ -503,8 +809,9 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
     """Push SQS visibility to RECOVERY_TIMEOUT_SECONDS so OPEN-state retries
     don't burn through the queue's maxReceiveCount during a long Bedrock outage.
 
-    Non-fatal: if the call fails, the message still reappears on the default
-    30s visibility timeout and the next invocation handles the retry.
+    Non-fatal: if the call fails, the message still reappears on the
+    ``DocumentQueue.VisibilityTimeout`` (60s — raised from 30s in the
+    per-message ack fix for #904) and the next invocation handles the retry.
     """
     if not DOCUMENT_QUEUE_URL:
         return
@@ -521,17 +828,24 @@ def extend_visibility_for_outage(receipt_handle: str) -> None:
         logger.warning(f"Failed to extend visibility for OPEN-state message: {e}")
 
 
-def start_workflow(document: Document) -> Dict[str, Any]:
+def start_workflow(
+    document: Document, execution_name: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Start Step Functions workflow
 
     Args:
         document: The Document object to process
+        execution_name: Deterministic name for the execution (see
+            ``execution_name_for``). None lets Step Functions pick one, which
+            disables duplicate protection.
 
     Returns:
         Dict containing execution details
 
     Raises:
+        ExecutionAlreadyStarted: If an execution with this name already exists,
+            i.e. an earlier delivery of the same message already started it
         ClientError: If Step Functions operation fails
     """
     # Update document status and timing
@@ -667,10 +981,15 @@ def start_workflow(document: Document) -> Dict[str, Any]:
         f"Starting workflow for document (size: {len(json.dumps(event, default=str))} chars)"
     )
 
+    start_args: Dict[str, Any] = {
+        "stateMachineArn": state_machine_arn,
+        "input": json.dumps(event),
+    }
+    if execution_name:
+        start_args["name"] = execution_name
+
     try:
-        execution = sfn.start_execution(
-            stateMachineArn=state_machine_arn, input=json.dumps(event)
-        )
+        execution = sfn.start_execution(**start_args)
 
         # Set workflow execution ARN and start_time in the document
         document.workflow_execution_arn = execution.get("executionArn", "")
@@ -678,6 +997,17 @@ def start_workflow(document: Document) -> Dict[str, Any]:
 
         logger.info(f"Workflow started: {execution.get('executionArn', '')}")
         return execution
+    except ClientError as e:
+        if (
+            execution_name
+            and e.response.get("Error", {}).get("Code") == "ExecutionAlreadyExists"
+        ):
+            raise ExecutionAlreadyStarted(
+                execution_name, execution_arn_for(execution_name)
+            ) from e
+        logger.error(f"Error starting workflow: {str(e)}")
+        document.workflow_execution_arn = document.workflow_execution_arn or ""
+        raise
     except Exception as e:
         logger.error(f"Error starting workflow: {str(e)}")
         # Ensure we have a default workflow_execution_arn to avoid None errors
@@ -717,7 +1047,16 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
             logger.info(
                 f"Document {object_key} was aborted by user, skipping workflow start"
             )
-            return True, message_id  # Return success to remove message from queue
+            # Delete the message immediately rather than relying on the
+            # batch-outcome path. If this invocation times out on a later
+            # message, Lambda reports nothing to SQS and every message in
+            # the batch — including this aborted one — would be
+            # redelivered, causing the "check if aborted, skip, return"
+            # cycle to repeat until the message eventually hits its
+            # maxReceiveCount. Same invariant the workflow-started path
+            # below enforces (see #904).
+            ack_message(receipt_handle)
+            return True, message_id
 
         # Check circuit breaker before paying the cost of X-Ray setup and
         # counter increment.
@@ -772,8 +1111,36 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
         workflow_started = False
         try:
             # Start workflow with the document
-            execution = start_workflow(document)
+            try:
+                execution = start_workflow(
+                    document, execution_name_for(object_key, message_id)
+                )
+            except ExecutionAlreadyStarted as dup:
+                # An earlier delivery of this same message already started the
+                # workflow, and the invocation handling it died before SQS
+                # learned the outcome. That execution owns its slot; the
+                # increment above was for a start that did not happen, so hand
+                # it back, then ack the message so it stops being redelivered.
+                logger.warning(
+                    f"Message {message_id} for {object_key} was redelivered after "
+                    f"its workflow already started as {dup.execution_arn}; acking "
+                    f"without starting a second execution."
+                )
+                try:
+                    update_counter(increment=False)
+                except Exception as counter_error:
+                    logger.error(
+                        f"Failed to decrement counter: {counter_error}", exc_info=True
+                    )
+                ack_message(receipt_handle)
+                return True, message_id
             workflow_started = True
+
+            # Delete the message NOW rather than at the end of the batch: if this
+            # invocation times out on a later message, Lambda reports nothing to
+            # SQS and every message in the batch, this one included, would be
+            # redelivered (#904).
+            ack_message(receipt_handle)
 
             # Update document status in document service.
             #
@@ -836,7 +1203,7 @@ def process_message(record: Dict[str, Any]) -> Tuple[bool, str]:
 
 @xray_recorder.capture("queue_processor")
 def handler(event, context):
-    logger.info(f"Processing event: {json.dumps(event)}")
+    logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
     logger.info(f"Processing batch of {len(event['Records'])} messages")
 
     failed_message_ids = []

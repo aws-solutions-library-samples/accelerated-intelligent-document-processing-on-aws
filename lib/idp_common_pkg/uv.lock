@@ -159,15 +159,15 @@ wheels = [
 
 [[package]]
 name = "anyio"
-version = "4.12.1"
+version = "4.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/f0/5eb65b2bb0d09ac6776f2eb54adee6abe8228ea05b20a5ad0e4945de8aac/anyio-4.12.1.tar.gz", hash = "sha256:41cfcc3a4c85d3f05c932da7c26d0201ac36f72abd4435ba90d0464a3ffed703", size = 228685, upload-time = "2026-01-06T11:45:21.246Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/0e/27be9fdef66e72d64c0cdc3cc2823101b80585f8119b5c112c2e8f5f7dab/anyio-4.12.1-py3-none-any.whl", hash = "sha256:d405828884fc140aa80a3c667b8beed277f1dfedec42ba031bd6ac3db606ab6c", size = 113592, upload-time = "2026-01-06T11:45:19.497Z" },
+    { url = "https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl", hash = "sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101", size = 132079, upload-time = "2026-09-05T10:42:37.923Z" },
 ]
 
 [[package]]
@@ -1193,9 +1193,10 @@ wheels = [
 
 [[package]]
 name = "idp-common"
-version = "0.6.7"
+version = "0.6.8"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "boto3" },
     { name = "deepdiff" },
     { name = "jsonschema" },
@@ -1225,6 +1226,7 @@ all = [
     { name = "amazon-textract-textractor", extra = ["pandas"] },
     { name = "bedrock-agentcore" },
     { name = "genson" },
+    { name = "jinja2" },
     { name = "jsonschema" },
     { name = "numpy" },
     { name = "openpyxl" },
@@ -1234,7 +1236,9 @@ all = [
     { name = "pypdfium2" },
     { name = "python-docx" },
     { name = "requests" },
-    { name = "stickler-eval" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "stickler-eval", extra = ["docsplit"] },
     { name = "strands-agents" },
     { name = "strands-agents-tools" },
     { name = "xlrd" },
@@ -1261,6 +1265,7 @@ code-intel = [
 dev = [
     { name = "ipykernel" },
     { name = "jupyter" },
+    { name = "jupyter-server" },
     { name = "python-dotenv" },
 ]
 docs-service = [
@@ -1271,7 +1276,7 @@ evaluation = [
     { name = "genson" },
     { name = "numpy" },
     { name = "ruamel-yaml" },
-    { name = "stickler-eval" },
+    { name = "stickler-eval", extra = ["docsplit"] },
 ]
 extraction = [
     { name = "pillow" },
@@ -1313,6 +1318,7 @@ synthesis-generator = [
 ]
 test = [
     { name = "aws-lambda-powertools" },
+    { name = "aws-xray-sdk" },
     { name = "build" },
     { name = "datamodel-code-generator" },
     { name = "deepdiff" },
@@ -1337,7 +1343,10 @@ test = [
     { name = "requests" },
     { name = "rich" },
     { name = "ruff" },
-    { name = "stickler-eval" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "setuptools" },
+    { name = "stickler-eval", extra = ["docsplit"] },
     { name = "strands-agents" },
     { name = "tabulate" },
     { name = "typer" },
@@ -1349,9 +1358,11 @@ test = [
 requires-dist = [
     { name = "amazon-textract-textractor", extras = ["pandas"], marker = "extra == 'all'", specifier = "==1.9.2" },
     { name = "amazon-textract-textractor", extras = ["pandas"], marker = "extra == 'ocr'", specifier = "==1.9.2" },
+    { name = "anyio", specifier = ">=4.14.2" },
     { name = "aws-lambda-powertools", marker = "extra == 'agentic-extraction'", specifier = ">=3.2.0" },
     { name = "aws-lambda-powertools", marker = "extra == 'assessment'", specifier = ">=3.2.0" },
     { name = "aws-xray-sdk", marker = "extra == 'docs-service'", specifier = ">=2.14.0" },
+    { name = "aws-xray-sdk", marker = "extra == 'test'", specifier = ">=2.14.0" },
     { name = "bedrock-agentcore", marker = "python_full_version >= '3.10' and extra == 'agents'", specifier = ">=1.6.1,<1.9.0" },
     { name = "bedrock-agentcore", marker = "python_full_version >= '3.10' and extra == 'all'", specifier = ">=1.6.1,<1.9.0" },
     { name = "bedrock-agentcore", marker = "extra == 'code-intel'", specifier = ">=1.6.1,<1.9.0" },
@@ -1369,6 +1380,7 @@ requires-dist = [
     { name = "graphql-core", marker = "extra == 'test'", specifier = ">=3.2,<4" },
     { name = "idp-common", extras = ["agentic-extraction"], marker = "extra == 'test'" },
     { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.29.5,<7.0.0" },
+    { name = "jinja2", marker = "extra == 'all'", specifier = ">=3.1.0" },
     { name = "jinja2", marker = "extra == 'multi-document-discovery'", specifier = ">=3.1.0" },
     { name = "jsonpatch", marker = "extra == 'agentic-extraction'", specifier = "==1.33" },
     { name = "jsonschema", specifier = ">=4.25.1" },
@@ -1376,6 +1388,7 @@ requires-dist = [
     { name = "jsonschema", marker = "extra == 'all'", specifier = ">=4.0.0" },
     { name = "jsonschema", marker = "extra == 'synthesis'", specifier = ">=4.0.0" },
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.1.1,<2.0.0" },
+    { name = "jupyter-server", marker = "extra == 'dev'", specifier = ">=2.21.0" },
     { name = "moto", marker = "extra == 'test'", specifier = ">=5.1.8" },
     { name = "moto", extras = ["s3", "cloudformation"], marker = "extra == 'test'", specifier = "==5.1.8" },
     { name = "mypy-boto3-bedrock-runtime", marker = "extra == 'agentic-extraction'", specifier = ">=1.39.0" },
@@ -1428,12 +1441,17 @@ requires-dist = [
     { name = "rich", marker = "extra == 'test'", specifier = ">=13.0.0" },
     { name = "ruamel-yaml", marker = "python_full_version >= '3.10' and extra == 'evaluation'", specifier = ">=0.17.0,<0.19.0" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.14.0,<0.16" },
+    { name = "scikit-learn", marker = "extra == 'all'", specifier = ">=1.5.0" },
     { name = "scikit-learn", marker = "extra == 'multi-document-discovery'", specifier = ">=1.5.0" },
+    { name = "scikit-learn", marker = "extra == 'test'", specifier = ">=1.5.0" },
+    { name = "scipy", marker = "extra == 'all'", specifier = ">=1.14.0" },
     { name = "scipy", marker = "extra == 'multi-document-discovery'", specifier = ">=1.14.0" },
+    { name = "scipy", marker = "extra == 'test'", specifier = ">=1.14.0" },
     { name = "seed-data", marker = "extra == 'synthesis-generator'", specifier = ">=0.0.6" },
-    { name = "stickler-eval", marker = "extra == 'all'", specifier = "==0.5.0" },
-    { name = "stickler-eval", marker = "extra == 'evaluation'", specifier = "==0.5.0" },
-    { name = "stickler-eval", marker = "extra == 'test'", specifier = "==0.5.0" },
+    { name = "setuptools", marker = "extra == 'test'", specifier = ">=78.1.1" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'all'", specifier = "==1.0.0" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'evaluation'", specifier = "==1.0.0" },
+    { name = "stickler-eval", extras = ["docsplit"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agentic-extraction'", specifier = "==1.14.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'agents'", specifier = "==1.14.0" },
     { name = "strands-agents", marker = "python_full_version >= '3.10' and extra == 'all'", specifier = "==1.14.0" },
@@ -1648,6 +1666,18 @@ wheels = [
 ]
 
 [[package]]
+name = "json-schema-to-pydantic"
+version = "0.4.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/d8/423895b918706c80db1cee679c13fbe810200b9a9d9a9442c7a58d35c3f2/json_schema_to_pydantic-0.4.11.tar.gz", hash = "sha256:35448ed711a28dd33396b095c8492939b4925aa30eb31942e9b8e08d04279465", size = 56597, upload-time = "2026-03-09T20:53:55.692Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/64/7cfeb8c6d2a5e73e0f8d732032aa62be9a7724c04beb461d677de0b4beb3/json_schema_to_pydantic-0.4.11-py3-none-any.whl", hash = "sha256:da2ccc39d070ee03dbcf0517d16720e3e33f7aa8d61257ace09af8c51bd46348", size = 17842, upload-time = "2026-03-09T20:53:54.576Z" },
+]
+
+[[package]]
 name = "json5"
 version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1830,7 +1860,7 @@ wheels = [
 
 [[package]]
 name = "jupyter-server"
-version = "2.20.0"
+version = "2.21.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1852,9 +1882,9 @@ dependencies = [
     { name = "traitlets" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/dc/db3a582633170186f8c8b31298d7eb26ad0eb031a1f53476c258b64eed05/jupyter_server-2.20.0.tar.gz", hash = "sha256:b5778ba337d8015a3dc2b80803ecdd5ac18d3797fddf61a50ea5fb472b4ebe14", size = 756523, upload-time = "2026-06-17T12:09:09.435Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/3d/3c9f8bce5d5448107bd285cd80185e76c9c871d076b580dfd90997e52904/jupyter_server-2.21.1.tar.gz", hash = "sha256:a8960aa29263f6041283e97d4756b099fb49b767baab6371891ecb1bd40a63df", size = 761651, upload-time = "2026-09-15T16:00:07.853Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/71/8c002223e873a870f5c41dc69b0a7c922301123e4a31d5d01ecb700aef77/jupyter_server-2.20.0-py3-none-any.whl", hash = "sha256:c3b67c93c471e947c18b5026f04f21614218adb706df8f48227d3ee8e0a7cdcc", size = 393143, upload-time = "2026-06-17T12:09:07.234Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/39/91bc08650cc8e3efeb7a83c25e20ebddcc9b70d28b4eb6f51a4fb55da7a4/jupyter_server-2.21.1-py3-none-any.whl", hash = "sha256:2a6467606af7dbae2e7e31640030025969e15db6a649eae334af90415dc71dca", size = 394641, upload-time = "2026-09-15T16:00:05.526Z" },
 ]
 
 [[package]]
@@ -2791,6 +2821,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523", size = 63772, upload-time = "2023-11-25T06:56:14.81Z" },
+]
+
+[[package]]
+name = "phonenumberslite"
+version = "9.0.39"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/ba/e6ce17d4b551685016b84df859e752b0ef6dcc7260742752b5b8731d8cc4/phonenumberslite-9.0.39.tar.gz", hash = "sha256:99b87ac617cb68faf828e2b6d88a204b3cf04a5e71c77aae6a85e1a9195f887a", size = 292866, upload-time = "2026-09-10T11:26:34.73Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/16/f709f28eec10500c6b10fab27eb231c16bbef25ba2643f194750b7501484/phonenumberslite-9.0.39-py2.py3-none-any.whl", hash = "sha256:a571a691c01b3c3e5c4e2b61f783ce41d4fdeb568d96269510b964f543bbef14", size = 473135, upload-time = "2026-09-10T11:26:33.134Z" },
 ]
 
 [[package]]
@@ -3982,11 +4021,11 @@ wheels = [
 
 [[package]]
 name = "soupsieve"
-version = "2.8.4"
+version = "2.9"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/47/2c/0a5f6f8ee0d5589e48c7640213ed5175d52cf540a06725b628cc1a45d6ce/soupsieve-2.8.4.tar.gz", hash = "sha256:e121fd02e975c695e4e9e8774a5ee35d74714b59307868dcc5319ad2d9e3328e", size = 121110, upload-time = "2026-05-24T13:55:57.154Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/80/f1/93422647dd7e461f23d254e6b2bfa687a85b53aeb4903fcdbb74474d4584/soupsieve-2.9.tar.gz", hash = "sha256:acee8417325c5653e1377dc31eccad59eb82cbc65942afe6174c53b3aaad63fc", size = 122122, upload-time = "2026-07-19T01:35:18.425Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/f5/0c41cb68dcae6b7de4fac4188a3a9589e21fb31df21ea3a2e888db95e6c9/soupsieve-2.8.4-py3-none-any.whl", hash = "sha256:e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65", size = 37304, upload-time = "2026-05-24T13:55:55.406Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/d6/3185ab5ad1280319b31986898f3206dd7227cd75e293d4dba2a5e6bf27a0/soupsieve-2.9-py3-none-any.whl", hash = "sha256:a2b2c76d67df2382d245409fd71e321a571717e58463efa32ace87dcadac2c12", size = 37387, upload-time = "2026-07-19T01:35:17.106Z" },
 ]
 
 [[package]]
@@ -4031,24 +4070,26 @@ wheels = [
 
 [[package]]
 name = "stickler-eval"
-version = "0.5.0"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jinja2" },
+    { name = "json-schema-to-pydantic" },
     { name = "jsonschema" },
     { name = "munkres" },
     { name = "numpy" },
-    { name = "pandas" },
-    { name = "psutil" },
+    { name = "phonenumberslite" },
     { name = "pydantic" },
     { name = "python-dateutil" },
     { name = "rapidfuzz" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/bb/0e78b24108f32d9569eaff3d789e205ee4ffa49b214c4b0b195c804f0124/stickler_eval-0.5.0.tar.gz", hash = "sha256:81957d7206b61a582cb96bb77f0872274759cc048f6579b09dfce4f1440f657f", size = 201904, upload-time = "2026-06-26T21:20:40.287Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/e5/06766bc3c892fd4ff1a3280fe69945a0b01b56e6fc501e11c79c58304df2/stickler_eval-1.0.0.tar.gz", hash = "sha256:d711975aa322128092b2b6514278caf8b3c04964dfb7eab3cebfb6097e8d5328", size = 316012, upload-time = "2026-09-14T17:19:00.081Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/ad/b8b7e09a3dac62b92fcb4252040161781792719203fd35e809fe9294fe3f/stickler_eval-0.5.0-py3-none-any.whl", hash = "sha256:e186533978b63039099bef4e04755527912b5a20dee034824e1813bd0dbdc9bd", size = 237727, upload-time = "2026-06-26T21:20:37.336Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/bd/a5fe522cc92cb35149210de70db2f8dfb12d780176b5e3c9e942655e9e76/stickler_eval-1.0.0-py3-none-any.whl", hash = "sha256:e8bee25b0e45e0fa8e59023e882b66fe4ce9f5496e51d07683af8af85aae798c", size = 347922, upload-time = "2026-09-14T17:18:58.477Z" },
+]
+
+[package.optional-dependencies]
+docsplit = [
+    { name = "pandas" },
 ]
 
 [[package]]
@@ -4261,11 +4302,11 @@ wheels = [
 
 [[package]]
 name = "typing-extensions"
-version = "4.15.0"
+version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
+    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
 ]
 
 [[package]]

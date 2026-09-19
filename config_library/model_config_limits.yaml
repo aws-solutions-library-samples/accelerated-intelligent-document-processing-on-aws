@@ -67,8 +67,13 @@ model_limits:
   # Anthropic Claude Opus 5 (extended output)
   # ---------------------------------------------------------------------------
   # The model's context window is 1M tokens; the base (non-:1m) ID is kept at
-  # 200K for auto-sizing so shards stay within the standard-pricing tier —
-  # select the :1m variant (matched above) to opt into the full 1M window.
+  # 200K so auto-sizing derives conservative shard budgets by default — select the
+  # :1m variant (matched above) to derive them from the full 1M window instead.
+  # This is purely a sizing choice, not a pricing one: the 1M window is priced at
+  # the same per-token rates as the first 200K (see the long-context note in
+  # pricing.yaml). Sizing still matters on its own terms — wide shards defeat
+  # prompt caching, measured at 5x the cost of the 5-page default in
+  # docs/benchmarking/studies/advanced-extraction-refinements.md.
   - pattern: "claude-opus-5"
     max_output_tokens: 128000
     max_input_tokens: 200000

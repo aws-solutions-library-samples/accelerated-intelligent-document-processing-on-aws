@@ -1,13 +1,105 @@
 AWSTemplateFormatVersion: '2010-09-09'
+# Optional CloudFormation service role for delegated IDP Accelerator deployment.
+#
+# The Description below is capped at 1024 characters by CloudFormation
+# (cfn-lint E1003, a hard error), so the full accounting of what this role can
+# do, what constrains it, and which wildcards were deliberately left broad lives
+# in two places that have no such limit: the per-statement comments in this file,
+# and iam-roles/cloudformation-management/README.md. Read one of those before
+# granting this role to anyone.
+#
+# It currently uses 1014 of the 1024 characters. There is room for roughly one
+# more short clause and no more, so put new material in the comments or the
+# README and re-run `make cfn-lint` if you touch it at all.
 Description: >
-  This template creates a CloudFormation Service Role for the IDP Accelerator solution. 
-  This role grants permissions to create, update, and delete IDP CloudFormation
-  stacks and their resources. It follows the principle of least privilege
-  by allowing only the necessary actions for stack management. This template also
-  creates a user permission policy that allows users to pass the CloudFormation
-  service role to CloudFormation. The iam:PassRole policy must be attached to
-  the user or role that will be using the CloudFormation Service Role in order
-  to successfully pass the role.
+  OPTIONAL CloudFormation service role letting a non-administrative user deploy
+  IDP Accelerator stacks. It is a DEPLOYMENT role, NOT a least-privilege role: it
+  holds cloudformation:* plus wildcards on 25 services with Resource "*", so
+  whoever can pass it to CloudFormation can change any resource in those
+  services in this account. Grant it deliberately. (appsync is upgrade-only: see
+  IDPLegacyAppSyncUpgradeCleanup.)
+
+  What contains it: every IAM role it creates or re-permissions must carry the
+  boundary named by CreatedRolePermissionsBoundaryArn. That is the TIGHT ceiling
+  on created roles, and is NOT the same parameter as
+  ServiceRolePermissionsBoundaryArn, the optional boundary on this role itself.
+  Stripping a boundary, editing either policy, creating IAM users or keys, and
+  self-modification are denied. IAM writes and PassRole are confined to names
+  starting with ManagedStackNamePrefix.
+
+  README.md explains per service why the wildcards stay broad, and how to update
+  an EXISTING deployment without wedging it.
+
+Parameters:
+  # Two boundaries, two jobs. These were one parameter until review found that
+  # the two ceilings are not merely different but mutually exclusive, so no
+  # single value could be correct:
+  #
+  #   * the boundary this role FORCES ONTO THE ROLES IT CREATES must be tight —
+  #     it is the ceiling on every IDP Lambda execution role, and the whole
+  #     containment argument for this template rests on it being small;
+  #   * the boundary attached to THIS ROLE ITSELF must be permissive enough to
+  #     admit this role's own policy, which includes cloudformation:*,
+  #     iam:CreateRole, kms:* and 20-odd other service wildcards.
+  #
+  # A boundary sized for the first job caps this role to the intersection of its
+  # policy and that boundary. Following the README's own former instruction
+  # ("allow no more than the services an IDP stack's Lambda functions need")
+  # produced a boundary with neither cloudformation: nor iam:, which left the
+  # role unable to create a stack at all. See README.md.
+  CreatedRolePermissionsBoundaryArn:
+    Type: String
+    Description: >-
+      REQUIRED. The TIGHT ceiling. ARN of an existing IAM permissions boundary
+      policy that bounds every IAM role this service role creates. Pass the SAME
+      ARN as the IDP stack's own PermissionsBoundaryArn parameter — the IDP
+      templates attach it to every role they create (explicit roles and
+      SAM-generated ones alike), and this role may only create or re-permission a
+      role carrying exactly this boundary. Create the boundary policy first; it
+      should allow no more than the services the IDP stack's Lambda functions
+      need at RUNTIME. Do NOT also pass it as
+      ServiceRolePermissionsBoundaryArn.
+      Format: arn:partition:iam::account-id:policy/policy-name
+    AllowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$"
+    ConstraintDescription: Must be a valid IAM policy ARN (this parameter is required)
+
+  ServiceRolePermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) The WIDE ceiling, attached to this deployment role itself. Leave
+      BLANK unless a Service Control Policy in your organization requires every
+      role to carry a boundary. If you set it, the policy it names must permit
+      everything in this role's own policy — cloudformation:*, the IAM actions
+      below and the service wildcards in IDPAcceleratorPermissions — or this role
+      will be unable to deploy an IDP stack. It is NOT the same value as
+      CreatedRolePermissionsBoundaryArn, and passing that (tight) ARN here will
+      break deployment. Blank leaves this role unbounded, which is the shipped
+      default: this role's containment comes from the iam:PermissionsBoundary
+      condition on the roles it creates, the ManagedStackNamePrefix scope, the
+      Deny guardrails, and the fact that only CloudFormation can assume it.
+      Format: arn:partition:iam::account-id:policy/policy-name
+    AllowedPattern: "^(|arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+)$"
+    ConstraintDescription: Must be empty or a valid IAM policy ARN
+
+  ManagedStackNamePrefix:
+    Type: String
+    Default: idp
+    MinLength: 1
+    MaxLength: 32
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9+=,.@_-]*$"
+    Description: >-
+      Name prefix of the IDP stacks this role may deploy. CloudFormation derives
+      the names of the roles and policies it generates from the stack name, so
+      this prefix bounds which IAM principals the role can create, change or
+      pass. Your IDP stack name MUST start with this prefix. Keep the prefix
+      short (<= 12 characters is a good rule): CloudFormation truncates
+      generated names at the 64-character IAM role-name limit, and only the
+      leading characters are guaranteed to survive.
+
+Conditions:
+  HasServiceRoleBoundary: !Not [!Equals [!Ref ServiceRolePermissionsBoundaryArn, ""]]
+
 Resources:
   CloudFormationServiceRole:
     Type: AWS::IAM::Role
@@ -15,15 +107,15 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W11
-            reason: "Broad permissions required for non-admin users to deploy IDP stacks via delegated CloudFormation service role"
+            reason: "Service-level wildcards on 25 services plus cloudformation:* are required to deploy the full IDP stack (24 back a currently-declared resource type; appsync is upgrade-only, to delete what a pre-0.6.0 template created); the IAM half is bounded by iam:PermissionsBoundary and a role-name prefix. See the template Description and README.md."
           - id: W28
             reason: "Explicit role name required for consistent cross-stack references in delegated deployment model"
           - id: F38
-            reason: "Resource wildcard needed with broad permissions required for non-admin users to deploy IDP stacks via delegated CloudFormation service role"
+            reason: "iam:PassRole is scoped to role/<ManagedStackNamePrefix>* with an iam:PassedToService condition; the remaining wildcard is the name-prefix suffix, not Resource: '*'"
           - id: W76
             reason: "Suppressing W76: SPCM for IAM policy document is higher than 25"
           - id: F3
-            reason: "Suppressing F3: wildcard action on named services required for cloudformation service role, to allow CRUD on stack respources"
+            reason: "Suppressing F3: wildcard action on named services required for cloudformation service role, to allow CRUD on stack resources"
           - id: AwsSolutions-IAM5
             reason: "Broad permissions required for non-admin users to deploy IDP stacks via delegated CloudFormation service role"
       cdk_nag:
@@ -32,84 +124,423 @@ Resources:
             reason: "CloudFormation service role requires broad permissions to deploy and manage the full IDP application stack. Assumable only by cloudformation.amazonaws.com. All operations logged in CloudTrail."
           - id: AwsSolutions-IAM4
             reason: "AWS managed policies not used. All policies are inline and custom-scoped."
-    # checkov:skip=CKV_AWS_110: "CloudFormation service role requires IAM permissions to create Lambda execution roles and service-linked roles during stack deployment. Trust policy restricts to cloudformation.amazonaws.com service principal."
-    # checkov:skip=CKV_AWS_109: "CloudFormation service role requires IAM policy management permissions to attach policies to created roles during infrastructure deployment. Constrained by trust policy."
+    # checkov:skip=CKV_AWS_110: "IAM role creation is required to deploy Lambda execution roles and service-linked roles. Escalation is contained: every created role must carry the required permissions boundary (iam:PermissionsBoundary condition), boundary removal is explicitly denied, and role writes are confined to the ManagedStackNamePrefix."
+    # checkov:skip=CKV_AWS_109: "IAM policy management is required to attach policies to the roles the stack creates. Constrained to policies named with the ManagedStackNamePrefix, and the boundary policy itself is explicitly protected from edits."
     # checkov:skip=CKV_AWS_108: "CloudFormation service role requires S3/KMS permissions to create and configure encrypted data buckets for the IDP solution. All buckets use customer-managed KMS encryption."
     # checkov:skip=CKV_AWS_111: "CloudFormation service role requires write permissions across AWS services to deploy complete IDP infrastructure. Trust policy limits to CloudFormation service. Use in conjunction with CloudTrail auditing."
     # checkov:skip=CKV_AWS_107: "CloudFormation service role may need to create/configure secrets for service integrations. Actual secret values are provided via parameters, not embedded in templates."
     # cdk-nag:skip=AwsSolutions-IAM5: CloudFormation service role requires broad permissions for IDP stack deployment. Constrained by trust policy to cloudformation.amazonaws.com service principal.
     Properties:
       RoleName: !Sub '${AWS::StackName}-CFServiceRole'
+      # This role's OWN boundary, and it is optional and normally blank. It is
+      # deliberately NOT CreatedRolePermissionsBoundaryArn: that policy is sized
+      # to cap IDP Lambda execution roles, and a role's effective permissions are
+      # the INTERSECTION of its policy and its boundary, so attaching the tight
+      # policy here would cap this role to the tight policy's services and leave
+      # it unable to run cloudformation:CreateStack or iam:CreateRole at all.
+      PermissionsBoundary: !If
+        - HasServiceRoleBoundary
+        - !Ref ServiceRolePermissionsBoundaryArn
+        - !Ref AWS::NoValue
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
+        # Only CloudFormation may assume this role, and only for stack
+        # operations in THIS account.
+        #
+        # Why ONE statement with ...IfExists operators. For a stack service role
+        # (`create-stack --role-arn`), AWS documents the trust policy with the
+        # service principal and no conditions, and does not state that
+        # CloudFormation populates aws:SourceAccount / aws:SourceArn on that
+        # sts:AssumeRole call — it documents those keys for StackSets
+        # administration roles and for registry extension execution roles. A
+        # plain StringEquals on a key that is not populated evaluates false and
+        # would deny EVERY stack operation, including the rollback.
+        #
+        # This was previously written as two statements: one applying StringEquals
+        # + ArnLike, and one allowing the case where both keys are absent via
+        # `Null: {aws:SourceAccount: true, aws:SourceArn: true}`. That pair has a
+        # gap. If CloudFormation populates EXACTLY ONE of the two keys, neither
+        # statement matches: the first fails because the plain operator on the
+        # absent key is false, and the second fails because `Null: true` demands
+        # that the key be absent while the other one is present. With no Allow
+        # matching, the role becomes unassumable and every stack operation and its
+        # rollback fails with an AccessDenied on sts:AssumeRole.
+        #
+        # StringEqualsIfExists / ArnLikeIfExists close that gap: each key is
+        # enforced when present and ignored when absent, so all four combinations
+        # (both present, either one present, neither present) are handled, while a
+        # key that IS present but does not match is still denied.
+        #
+        # sts:ExternalId is deliberately NOT used: it applies to cross-account
+        # role assumption by a third party, and CloudFormation does not send one.
+        # The load-bearing control for this role is who holds iam:PassRole on it
+        # (see PassRolePolicy) plus the cloudformation:RoleArn condition key on
+        # the deploying principal's own policy — a role in this account cannot be
+        # passed to CloudFormation from another account.
         Statement:
-          - Effect: Allow
+          - Sid: AllowCloudFormationFromThisAccount
+            Effect: Allow
             Principal:
               Service: !Sub 'cloudformation.${AWS::URLSuffix}'
             Action: sts:AssumeRole
+            Condition:
+              StringEqualsIfExists:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLikeIfExists:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/*'
       Policies:
         - PolicyName: CloudFormationPermissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              # Nested stacks, change sets, and the non-resource-scoped
+              # CloudFormation read APIs. Left broad: see the Description.
+              - Sid: CloudFormationStackOperations
+                Effect: Allow
                 Action:
                   - cloudformation:*
                 Resource: '*'
-              - Effect: Allow
+
+              # Create a role, or change what an existing role is allowed to do,
+              # ONLY when that role carries the required permissions boundary.
+              # This is the canonical delegation pattern from the IAM User Guide
+              # ("Delegating responsibility to others using permissions
+              # boundaries"): every one of these actions supports the
+              # iam:PermissionsBoundary condition key, so a role created or
+              # re-permissioned through this identity can never exceed the
+              # boundary — which is what stops this role from being a
+              # transitive account administrator.
+              #
+              # Every role the IDP templates create sets PermissionsBoundary —
+              # the explicit AWS::IAM::Role resources and the roles SAM generates
+              # for AWS::Serverless::Function alike — so this holds for a real
+              # deployment PROVIDED the IDP stack is deployed with its
+              # PermissionsBoundaryArn parameter set to the SAME value as
+              # CreatedRolePermissionsBoundaryArn here. Deploying the IDP stack
+              # with a blank PermissionsBoundaryArn while using this service role
+              # will fail on iam:CreateRole — that is intentional. It is also the
+              # single most common way to wedge an EXISTING deployment when
+              # adopting this hardened role: see "Updating an existing
+              # deployment" in README.md before you update.
+              - Sid: CreateOrChangeRolesOnlyWithBoundary
+                Effect: Allow
                 Action:
-                  # NOTE: role *lifecycle* actions are not enough. CloudFormation
-                  # sets a new role's trust policy and permissions boundary as
-                  # part of iam:CreateRole, but changing either on an ALREADY
-                  # EXISTING role is a separate API call. Omitting these three
-                  # makes any release that edits a role's trust policy (e.g.
-                  # adding a federated principal) or any change to the
-                  # PermissionsBoundaryArn parameter fail mid-update with
-                  # AccessDenied — and the rollback needs the same actions, so
-                  # the stack wedges in UPDATE_ROLLBACK_FAILED and can only be
-                  # recovered with `continue-update-rollback --resources-to-skip`.
-                  # See issue #632.
                   - iam:CreateRole
+                  - iam:PutRolePermissionsBoundary
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ManagedStackNamePrefix}*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*/${ManagedStackNamePrefix}*'
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref CreatedRolePermissionsBoundaryArn
+
+              # NOTE: role *lifecycle* actions are not enough. CloudFormation
+              # sets a new role's trust policy and permissions boundary as
+              # part of iam:CreateRole, but changing either on an ALREADY
+              # EXISTING role is a separate API call. Omitting these makes any
+              # release that edits a role's trust policy (e.g. adding a
+              # federated principal) or any change to the IDP stack's own
+              # PermissionsBoundaryArn parameter fail mid-update with
+              # AccessDenied — and the rollback
+              # needs the same actions, so the stack wedges in
+              # UPDATE_ROLLBACK_FAILED and can only be recovered with
+              # `continue-update-rollback --resources-to-skip`. See issue #632.
+              #
+              # Why these five are NOT conditioned on iam:PermissionsBoundary,
+              # and it is not because the key is unsupported. Checked against the
+              # Service Authorization Reference (iam:DeleteRole, iam:UpdateRole
+              # and iam:UpdateAssumeRolePolicy all list iam:PermissionsBoundary
+              # among their action-level condition keys; only iam:TagRole and
+              # iam:UntagRole do not). An earlier revision of this comment claimed
+              # all five lacked the key. That was wrong — it was carried over from
+              # AWS's canonical example, which is written for IAM *users*, where
+              # iam:DeleteUser genuinely has no action-level condition keys.
+              #
+              # The real reason is rollback safety. Whether the key is POPULATED
+              # when the target role carries NO boundary is not documented, and if
+              # it fails closed then conditioning iam:DeleteRole would deny
+              # deleting any boundary-less role. Every role predating this
+              # template is boundary-less, so that would fail the delete AND the
+              # rollback of the delete, wedging the stack in the
+              # UPDATE_ROLLBACK_FAILED state described above. We could not verify
+              # the populated-vs-absent behaviour without a live account, so these
+              # five stay bounded by the role-name prefix alone. Revisit with a
+              # real experiment, not with reasoning about the reference tables.
+              #
+              # iam:DeleteRolePermissionsBoundary is deliberately absent and is
+              # additionally denied below: stripping a boundary defeats it.
+              - Sid: RoleLifecycleWithinNamePrefix
+                Effect: Allow
+                Action:
                   - iam:DeleteRole
                   - iam:UpdateRole
                   - iam:UpdateAssumeRolePolicy
-                  - iam:PutRolePermissionsBoundary
-                  - iam:DeleteRolePermissionsBoundary
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ManagedStackNamePrefix}*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*/${ManagedStackNamePrefix}*'
+
+              # Hand a stack-created role to the service that will use it.
+              # Scoped by role name AND by destination service.
+              #
+              # StringEqualsIfExists, not StringEquals, because iam:PassedToService
+              # is not populated by every service; a plain StringEquals would give
+              # AccessDenied on the pass for any service that omits the key and
+              # would wedge the rollback too. This replaces an earlier pair of
+              # statements (StringEquals plus a second statement whose condition
+              # was `Null: {iam:PassedToService: true}`). The collapse is exactly
+              # behaviour-preserving: the pair allowed "key absent" OR "key present
+              # and in the list", and denied "key present and not in the list",
+              # which is precisely what StringEqualsIfExists evaluates.
+              #
+              # The list is what the IDP templates actually pass a role to. Review
+              # removed three entries that could never match, because they were
+              # not PassRole targets at all — they came from RESOURCE-POLICY
+              # principals elsewhere in template.yaml and were transcribed here by
+              # mistake: dynamodb and indexing.s3vectors are Principal entries in
+              # the CustomerManagedEncryptionKey key policy, and logging.s3 is a
+              # Principal in LoggingBucketPolicy. A key-policy or bucket-policy
+              # principal never appears in iam:PassedToService, so those three
+              # widened nothing and only misled the reader.
+              #
+              # cognito-identity is KEPT, against the review's suggestion that it
+              # is inert as well. AWS::Cognito::IdentityPoolRoleAttachment really
+              # does hand CognitoAuthorizedRole's ARN to Cognito Identity, so a
+              # role IS passed there; what could not be established is whether
+              # that API populates the condition key. If it does, removing the
+              # entry breaks the identity-pool role attachment; if it does not,
+              # StringEqualsIfExists covers the pass anyway and the entry is
+              # harmless. The asymmetry is one-sided, so the entry stays.
+              - Sid: PassStackRolesToStackServices
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ManagedStackNamePrefix}*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*/${ManagedStackNamePrefix}*'
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService:
+                      - !Sub 'apigateway.${AWS::URLSuffix}'
+                      - !Sub 'bedrock.${AWS::URLSuffix}'
+                      - !Sub 'bedrock-agentcore.${AWS::URLSuffix}'
+                      # cloudformation itself is NOT redundant here, and leaving it
+                      # out made this role unable to deploy anything at all. This
+                      # solution is built from nested stacks, and a nested stack
+                      # inherits its parent's service role: CloudFormation passes
+                      # this role to itself, an iam:PassRole whose
+                      # iam:PassedToService is cloudformation. Without this entry the
+                      # Resource matches but the condition does not, so the FIRST
+                      # nested stack fails with "no identity-based policy allows the
+                      # iam:PassRole action" on this role's own ARN and the whole
+                      # stack rolls back (59 sibling resources cancelled).
+                      #
+                      # The PassRolePolicy managed policy below grants the same pass
+                      # — but it is for the deploying HUMAN to hold, and is not
+                      # attached to this role, so it does nothing for the role
+                      # passing itself. Two different principals, two grants needed.
+                      - !Sub 'cloudformation.${AWS::URLSuffix}'
+                      - !Sub 'cloudfront.${AWS::URLSuffix}'
+                      - !Sub 'cloudwatch.${AWS::URLSuffix}'
+                      - !Sub 'codebuild.${AWS::URLSuffix}'
+                      - !Sub 'cognito-identity.${AWS::URLSuffix}'
+                      - !Sub 'ec2.${AWS::URLSuffix}'
+                      - !Sub 'events.${AWS::URLSuffix}'
+                      - !Sub 'glue.${AWS::URLSuffix}'
+                      - !Sub 'lambda.${AWS::URLSuffix}'
+                      - !Sub 'logs.${AWS::URLSuffix}'
+                      - !Sub 'scheduler.${AWS::URLSuffix}'
+                      - !Sub 'states.${AWS::URLSuffix}'
+
+              # Service-linked roles live at a fixed IAM path and cannot carry a
+              # permissions boundary (PutRolePermissionsBoundary rejects them),
+              # so they get their own path-scoped statement. Their permissions
+              # are defined by AWS, not by this role.
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                  - iam:DeleteServiceLinkedRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/*'
+
+              # The optional bastion host declares an AWS::IAM::InstanceProfile
+              # (named after the stack, so the same prefix applies). None of
+              # these actions supports iam:PermissionsBoundary, so the name
+              # prefix is the only scope available — but the escalation that
+              # matters is still contained: AWS requires the caller of
+              # AddRoleToInstanceProfile to hold iam:PassRole on the role being
+              # added, and this role holds PassRole only for prefix-named roles,
+              # which it can only have created with the boundary attached.
+              - Sid: InstanceProfilesWithinNamePrefix
+                Effect: Allow
+                Action:
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:TagInstanceProfile
+                  - iam:UntagInstanceProfile
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/${ManagedStackNamePrefix}*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*/${ManagedStackNamePrefix}*'
+
+              # Customer managed policies the stack declares
+              # (AWS::IAM::ManagedPolicy). CloudFormation derives their names
+              # from the stack name, so the same prefix applies.
+              - Sid: ManagedPoliciesWithinNamePrefix
+                Effect: Allow
+                Action:
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicyVersion
+                  - iam:SetDefaultPolicyVersion
+                  - iam:TagPolicy
+                  - iam:UntagPolicy
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${ManagedStackNamePrefix}*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/*/${ManagedStackNamePrefix}*'
+
+              # Read-only IAM. CloudFormation reads roles and policies it does
+              # not own (for example to resolve an ARN referenced by a
+              # parameter), and these actions grant no ability to change
+              # anything.
+              - Sid: IamReadOnly
+                Effect: Allow
+                Action:
                   - iam:GetRole
                   - iam:GetRolePolicy
                   - iam:ListRoles
                   - iam:ListRolePolicies
                   - iam:ListAttachedRolePolicies
                   - iam:ListRoleTags
-                  - iam:PutRolePolicy
-                  - iam:DeleteRolePolicy
-                  - iam:AttachRolePolicy
-                  - iam:DetachRolePolicy
-                  - iam:TagRole
-                  - iam:UntagRole
-                  - iam:PassRole
-                  - iam:CreateServiceLinkedRole
-                  - iam:DeleteServiceLinkedRole
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - iam:CreatePolicy
-                  - iam:DeletePolicy
                   - iam:GetPolicy
                   - iam:GetPolicyVersion
                   - iam:ListPolicies
                   - iam:ListPolicyVersions
+                  - iam:GetInstanceProfile
+                  - iam:ListInstanceProfiles
+                  - iam:ListInstanceProfilesForRole
+                Resource: '*'
+
+              # --- Guardrails. An explicit Deny cannot be overridden by any
+              # --- Allow above, including a future edit to this template.
+              - Sid: DenyStrippingAnyPermissionsBoundary
+                Effect: Deny
+                Action:
+                  - iam:DeleteRolePermissionsBoundary
+                  - iam:DeleteUserPermissionsBoundary
+                Resource: '*'
+              # Both boundary policies are protected, not just one. Editing
+              # CreatedRolePermissionsBoundaryArn would let the role widen the
+              # ceiling on every role it creates; editing this role's own boundary
+              # (when one is configured) would let it widen its own ceiling. The
+              # !If drops the second entry when no service-role boundary is set.
+              - Sid: DenyEditingTheBoundaryPolicy
+                Effect: Deny
+                Action:
                   - iam:CreatePolicyVersion
+                  - iam:DeletePolicy
                   - iam:DeletePolicyVersion
                   - iam:SetDefaultPolicyVersion
-                  - iam:TagPolicy
-                  - iam:UntagPolicy
+                Resource:
+                  - !Ref CreatedRolePermissionsBoundaryArn
+                  - !If
+                    - HasServiceRoleBoundary
+                    - !Ref ServiceRolePermissionsBoundaryArn
+                    - !Ref AWS::NoValue
+              - Sid: DenyModifyingThisServiceRole
+                Effect: Deny
+                Action:
+                  - iam:AttachRolePolicy
+                  - iam:DeleteRole
+                  - iam:DeleteRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePermissionsBoundary
+                  - iam:PutRolePolicy
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:UpdateRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-CFServiceRole'
+              # The PassRole policy below is what scopes iam:PassRole on THIS role
+              # to CloudFormation only. Without this Deny it was reachable through
+              # ManagedPoliciesWithinNamePrefix whenever ManagedStackNamePrefix is a
+              # prefix of the stack name (the default prefix `idp` and a stack named
+              # `idp-...` is exactly that case), so the role could publish a new
+              # default version of its own PassRole policy and hand itself to any
+              # service. The ARN is built with !Sub rather than !Ref PassRolePolicy
+              # because referencing the policy resource from inside this role would
+              # create a circular dependency — PassRolePolicy already depends on
+              # this role's ARN. It must stay in step with the ManagedPolicyName
+              # below.
+              - Sid: DenyModifyingThisRolesPassRolePolicy
+                Effect: Deny
+                Action:
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicy
+                  - iam:DeletePolicyVersion
+                  - iam:SetDefaultPolicyVersion
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${AWS::StackName}-PassRolePolicy'
+              # Creating an IAM user or access key is never part of deploying
+              # this solution, and both are classic persistence mechanisms.
+              - Sid: DenyIamUserAndCredentialCreation
+                Effect: Deny
+                Action:
+                  - iam:CreateUser
+                  - iam:CreateLoginProfile
+                  - iam:CreateAccessKey
+                  - iam:UpdateAccessKey
+                  - iam:CreateSAMLProvider
+                  - iam:UpdateSAMLProvider
+                  - iam:CreateOpenIDConnectProvider
+                  - iam:UpdateOpenIDConnectProviderThumbprint
                 Resource: '*'
         - PolicyName: IDPAcceleratorPermissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              # Each of the 24 services below backs at least one resource type
+              # declared in template.yaml, patterns/unified/template.yaml or
+              # nested/*/template.yaml (counting the types AWS::Serverless::*
+              # expands into), so every grant is load-bearing. Three wildcards
+              # that were here are gone because nothing declares a resource in
+              # them: textract and sagemaker (called only at RUNTIME by Lambda
+              # execution roles, and MLflow is referenced by ARN rather than
+              # created — and via the distinct sagemaker-mlflow: prefix — so
+              # CloudFormation never calls either), and application-autoscaling
+              # (no scalable target or scaling policy is declared anywhere, and
+              # every DynamoDB table is PAY_PER_REQUEST, so none uses
+              # provisioned throughput).
+              #
+              # appsync was ALSO removed here at one point and has been put back
+              # as its own statement below. It is the one grant that backs no
+              # currently-declared resource type, which is exactly why deriving
+              # this list from the current templates alone is unsafe: a service
+              # role must also be able to DELETE what an OLD template created.
+              # See IDPLegacyAppSyncUpgradeCleanup below.
+              #
+              # The remaining 24 are NOT narrowed further, and that is a
+              # deliberate trade rather than an oversight. `Resource: "*"` stays
+              # because CloudFormation assigns physical resource names at deploy
+              # time, long after this role is created, so there is no ARN
+              # pattern to match on beyond the stack name — and unlike IAM,
+              # these services have no equivalent of iam:PermissionsBoundary to
+              # bound the result. The `<service>:*` action wildcard stays
+              # because an action list that turns out to be one call short fails
+              # the stack operation AND its rollback, wedging the stack in
+              # UPDATE_ROLLBACK_FAILED (issue #632) — a far more likely outcome
+              # than the escalation it would prevent, given that only
+              # CloudFormation can assume this role. Narrowing them safely means
+              # deriving the action list from CloudTrail across a create, an
+              # update and a delete of a real stack in every deploy variant;
+              # see README.md ("What Remains Broad") and testing-guide.md.
+              - Sid: IDPStackResourceManagement
+                Effect: Allow
                 Action:
                   - lambda:*
                   - kms:*
@@ -119,11 +550,8 @@ Resources:
                   - s3:*
                   - dynamodb:*
                   - bedrock:*
-                  - textract:*
-                  - sagemaker:*
                   - states:*
                   - apigateway:*
-                  - appsync:*
                   - cognito-idp:*
                   - cognito-identity:*
                   - glue:*
@@ -135,10 +563,70 @@ Resources:
                   - ssm:*
                   - secretsmanager:*
                   - codebuild:*
-                  - application-autoscaling:*
                   - scheduler:*
                   - ec2:*
                   - ecr:*
+                Resource: '*'
+              # UPGRADE-ONLY. No current template declares an AWS::AppSync::*
+              # resource, so a first-time deployment of 0.6.0 or later never
+              # exercises this statement. It exists because an IN-PLACE update
+              # of a stack created BEFORE 0.6.0 must DELETE the AppSync
+              # resources that older template left behind, and CloudFormation
+              # performs those deletions with THIS role's permissions, not the
+              # caller's.
+              #
+              # Measured, at tag v0.5.16: 151 AWS::AppSync::* resources —
+              # 24 in template.yaml (including the GraphQLApi resource
+              # itself, so this is NOT only a nested-stack concern), 106 in
+              # nested/appsync/template.yaml, and 21 in
+              # feature-platform/main-stack-extensions/template.yaml. Commit
+              # 0b61040c0 removed all of them and renamed the nested stack's
+              # logical id APPSYNCSTACK -> APIRESOLVERSTACK, which
+              # CloudFormation treats as a delete plus a create. Nested stacks
+              # declare no RoleARN of their own, so they inherit this role.
+              #
+              # In-place upgrade across that boundary is a documented, supported
+              # path (docs/migration-appsync-to-rest.md publishes the one-time
+              # sequence "delete the feature stacks -> update the host stack ->
+              # reinstall the features"; docs/migration-v05-to-v06.md describes
+              # "a v0.5.x stack that you update in place to v0.6"), and the
+              # repository has no documented minimum upgrade source. Without
+              # this grant that update fails partway through on AccessDenied.
+              #
+              # Why a wildcard and not a deletion-only action list. AWS's own
+              # CloudFormation resource-provider schemas declare the delete path
+              # as appsync:DeleteGraphqlApi, appsync:DeleteResolver,
+              # appsync:DeleteDataSource and appsync:GetDataSource (note the
+              # irregular casing: DeleteGraphqlApi, not DeleteGraphQLApi — the
+              # resource type is GraphQLApi but the IAM action is Graphql).
+              # That list is NOT sufficient to rely on here:
+              #   * the GraphQLSchema resource type is a legacy type with no
+              #     handlers block, so AWS publishes no delete permissions for
+              #     it at all and the requirement is genuinely undocumented;
+              #   * a rollback that lands after a partial delete needs the
+              #     CREATE-side actions too (CreateGraphqlApi, CreateDataSource,
+              #     CreateResolver, TagResource, plus iam:PassRole and
+              #     s3:GetObject);
+              #   * this is the one path that cannot be rehearsed — it needs a
+              #     real pre-0.6.0 stack — so an action list that is one call
+              #     short would only be discovered by wedging a customer.
+              # That is the same trade the statement above documents for the
+              # other 24 services (issue #632): one missing action fails the
+              # operation AND its rollback, leaving UPDATE_ROLLBACK_FAILED.
+              #
+              # When this can be dropped: as soon as no stack that predates
+              # 0.6.0 remains to be upgraded. An operator who only ever deploys
+              # 0.6.0 or later can delete this whole statement today.
+              #
+              # Editing note: the individual AWS::AppSync::<Type> names are
+              # written above without their AWS::AppSync:: prefix on purpose.
+              # make check-retired-services treats any template text containing
+              # one of those literals as the resource type having been
+              # reintroduced, and it does not exclude comments.
+              - Sid: IDPLegacyAppSyncUpgradeCleanup
+                Effect: Allow
+                Action:
+                  - appsync:*
                 Resource: '*'
   PassRolePolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -149,14 +637,22 @@ Resources:
             reason: "Explicit role name required for consistent cross-stack references in delegated deployment model"
     Properties:
       ManagedPolicyName: !Sub '${AWS::StackName}-PassRolePolicy'
-      Description: Policy to allow passing the IDP CloudFormation service role
+      Description: Policy to allow passing the IDP CloudFormation service role to CloudFormation
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Effect: Allow
+          # Scoped to CloudFormation: a holder of this policy can hand the
+          # service role to CloudFormation and nothing else. Without the
+          # condition, the same grant would let them pass a role that can create
+          # IAM principals to any service that accepts one.
+          - Sid: PassServiceRoleToCloudFormationOnly
+            Effect: Allow
             Action:
               - iam:PassRole
             Resource: !GetAtt CloudFormationServiceRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: !Sub 'cloudformation.${AWS::URLSuffix}'
 
 Outputs:
   ServiceRoleArn:
@@ -169,3 +665,23 @@ Outputs:
     Value: !Ref PassRolePolicy
     Export:
       Name: !Sub '${AWS::StackName}-PassRolePolicyArn'
+  RequiredStackNamePrefix:
+    Description: >-
+      IDP stacks deployed with this service role must have a name starting with
+      this prefix (the comparison is case-sensitive), and must be deployed with
+      PermissionsBoundaryArn set to the value below.
+    Value: !Ref ManagedStackNamePrefix
+  RequiredPermissionsBoundaryArn:
+    Description: >-
+      Pass this ARN as the IDP stack's PermissionsBoundaryArn parameter. Role
+      creation through this service role is denied without it. This is the TIGHT
+      boundary forced onto created roles, not this role's own boundary.
+    Value: !Ref CreatedRolePermissionsBoundaryArn
+  ServiceRoleOwnPermissionsBoundaryArn:
+    Description: >-
+      The boundary attached to the deployment role itself, or "(none)" when it is
+      unbounded. Do NOT pass this as the IDP stack's PermissionsBoundaryArn.
+    Value: !If
+      - HasServiceRoleBoundary
+      - !Ref ServiceRolePermissionsBoundaryArn
+      - "(none)"

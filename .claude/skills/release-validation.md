@@ -17,6 +17,11 @@ cannot infer (see **Inputs**), and only if they are not already in the request.
 > `idp-main_<VERSION>.yaml`, not a local build — every stack is created from that
 > object except the two transform tiers, which must publish from source to apply the
 > transform. Check the template's `Description` says `(v<VERSION>)` before you start.
+>
+> **This skill validates a release; it does not publish one.** The publish procedure —
+> `scripts/aws-release.sh`, the three public buckets, the mutable vs version-pinned keys,
+> and the failure/recovery paths — is in `docs/release-runbook.md`. If the artifact under
+> test does not exist yet, that runbook is what produces it.
 
 ## Inputs
 
@@ -81,7 +86,7 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Tier | Command | Pass | Per-tier skill |
 |---|---|---|---|
 | SRT | `make srt-scan` (BEFORE publish) | 0 open/reopened HIGH in tracked source | `srt-security-scan.md` |
-| Unit + integration suites | `make test` | all test roots green — there is **no** standing failure set | `full-test-battery.md` |
+| Unit + integration suites | `make test` | all test roots green — **Expected standing failures: 0**, and the accepted-failure table in `full-test-battery.md` is empty. That table is authoritative; `scripts/tests/test_standing_failure_baseline.py` fails if this number disagrees with it | `full-test-battery.md` |
 | Lint | `make lint-cicd` | exit 0 | — |
 | Dependency audit | `make dep-audit` | nothing at or above HIGH | — |
 | Type check | `make typecheck` | compare **totals** against develop's baseline (4 errors / 51 warnings on 2026-09-11); file placement shifts with the installed deps. Report the delta, not the raw count | `full-test-battery.md` |
@@ -271,12 +276,38 @@ brought to `v<VERSION>`:
 Skill: `run-benchmarks.md` (procedure, cross-version config compatibility, retention,
 honesty rules). Read `benchmarks/matrices/METHODOLOGY.md` before writing a number.
 
+### G. UX review in a browser (on the tier-B stack, after it is healthy)
+
+The one tier a script cannot stand in for: whether a person can complete the web-UI
+flows on this build, and how it feels doing so.
+
+```bash
+make ux-test STACK_NAME=<the v<VERSION> stack> REGION=<region>   # throwaway Cognito user + session
+```
+
+Then drive `scripts/ux_flows.yaml` in the debug Chrome per `ux-test.md`. Scope for a
+release record: **flow 1 (sign-in → upload → results) always, plus every flow whose
+UI changed this release** — read the release's `CHANGELOG.md` section for `src/ui/`
+changes and say which flows you chose. Report functional pass/fail per flow *and*
+the ranked usability findings; a flow that is blocked because the feature is only on
+an unmerged branch is **blocked, not broken**, and the record must say which.
+
+Optionally record it (`scripts/ux_recorder.py start … mark … stop`, then `render`) —
+useful when a finding is easier to show than to describe. The mp4 stays in gitignored
+`scratch/ux-recordings/`: it shows real documents from a live stack, so it is
+**never** committed or attached to a PR. Link nothing; describe the finding in the
+record and keep the video for the team channel.
+
+Skill: `ux-test.md`.
+
 ## Ordering that fits in a day
 
 1. Preflight → `make srt-scan` → start `publish.py --clean-build` detached.
 2. While it builds: `make test`, `make lint-cicd`, `make dep-audit`, `make typecheck`.
 3. Deploy the **upgrade** PREV stack (long) and the **transform headless** run, two in flight.
-4. When a `v<VERSION>` stack exists: `make security-results` against it.
+4. When a `v<VERSION>` stack exists: `make security-results` against it, then the
+   tier-G UX review on the same stack (it needs nothing else deployed, and the
+   browser session is cheap to hold open while the stack-tests run).
 5. Stack-tests two at a time; seller last (different region, no VPC).
 6. Upgrade stack: baseline doc → update-stack → post doc → keep it as the benchmark stack.
 7. Benchmark F1 both sides (the PREV side must run **before** the upgrade — schedule

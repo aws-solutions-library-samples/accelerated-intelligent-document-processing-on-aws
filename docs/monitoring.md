@@ -75,16 +75,49 @@ That failure is quiet. Every other signal looks *idle* rather than broken: no
 errors, no failed executions, latency graphs simply stop. The usual first symptom
 is a person noticing that nothing has processed for hours.
 
-Two metrics in the stack's own namespace (`<StackName>`) make it visible, both on
-the **Workflow Concurrency Counter** widget:
+The counter can also drift the other way. Admission is gated on
+`active_count < MaxConcurrentWorkflows`, so a counter driven **below zero** raises
+the effective ceiling by exactly that much and nothing errors: documents process,
+queues drain, every graph looks healthy, and the stack simply spends more on
+Bedrock and Textract than it was configured to. Two guards in the tracker prevent
+it: the decrement is refused when the counter is already at zero, and it carries a
+`dec#<executionArn>` marker written in the same DynamoDB transaction, so a
+redelivered terminal event cannot release a second slot. The markers expire via
+the `ConcurrencyTable` TTL attribute (`ExpiresAfter`, seven days) rather than
+accumulating one item per document forever.
+
+Unlike the upward leak, a negative counter is **not** permanent even without
+intervention: every admitted document increments it, and once it climbs to the
+ceiling the floored decrements absorb the excess, so it converges back on its own.
+The over-admission is therefore bounded to roughly one generation of documents
+rather than lasting forever — which is why the guards and the repair below matter
+for cost and for predictable capacity rather than for recoverability.
+
+Four metrics in the stack's own namespace (`<StackName>`) make all of this
+visible, all on the **Workflow Concurrency Counter** widget:
 
 - **`ConcurrencyCounterActive`** — the counter value, published on every document
-  completion. Continuous, so there is a history to inspect after the fact.
+  completion. Continuous, so there is a history to inspect after the fact. Its
+  **Minimum** is plotted as well as its Average, because a single dip below zero
+  is what matters and an average hides it.
 - **`ConcurrencyCounterDrift`** — claimed slots minus executions actually
   running. Sampled only when an increment is *refused*, i.e. when drift is
   actually blocking work.
+- **`ConcurrencyCounterUnderflow`** — a decrement that was refused because the
+  counter was already at zero. Nothing else reports this: the counter and the
+  document both end up correct, so without this metric a duplicate release is
+  invisible.
+- **`ConcurrencyDecrementSuppressed`** — a terminal event whose slot had already
+  been released, recognised by its `dec#<executionArn>` marker and skipped. This
+  is the guard working, not a fault, so it has **no alarm**: EventBridge
+  redelivery is expected (the rule allows three retries, and a tracker invocation
+  that fails after the decrement lands is redelivered by design), and alarming on
+  correct behaviour would be noise. It is worth watching as a series, because it
+  is the only signal that terminal events are being redelivered at all — a rising
+  count alongside `WorkflowTrackerDLQAlarm` or tracker errors says the tracker is
+  failing *after* it releases the slot.
 
-Two alarms publish to `AlertsTopic`:
+Four alarms publish to `AlertsTopic`:
 
 - **`ConcurrencyCounterDriftAlarm`** — sustained drift (> 0 for 15 minutes). This
   fires on the *symptom*, once slots are already being held wrongly.
@@ -92,15 +125,43 @@ Two alarms publish to `AlertsTopic`:
   dead-letter queue. This fires on the *cause*: the tracker owns the decrement,
   so an event it could not process is a slot that was never released, and it
   alarms on the first message rather than waiting for drift to accumulate.
+- **`ConcurrencyCounterUnderflowAlarm`** — any refused decrement. The floor
+  already prevented the damage, so this is a *correctness* signal: something
+  released a slot twice, and the reason is worth finding.
+- **`ConcurrencyCounterNegativeAlarm`** — the counter observed below zero. This
+  should be unreachable now that the decrement is floored; if it fires, the
+  counter is being written by something that bypasses the floor.
 
-The queue processor also **self-heals**: on a refused increment it
-reconciles the counter against `ListExecutions`, requiring the same discrepancy
-in two samples at least five minutes apart, only ever lowering it, and writing
-conditionally on the value it sampled.
+The queue processor also **self-heals**, in two different places for the two
+different directions:
+
+- **Downward correction** (the counter is too high) runs on a *refused* increment,
+  reconciling against `ListExecutions` and writing conditionally on the value it
+  sampled. It requires the same discrepancy in two samples at least five minutes
+  apart, because lowering the counter wrongly over-admits work.
+- **Upward repair** (the counter is negative) runs on the next *successful*
+  increment — which is where it has to be, because a negative counter always
+  satisfies `active_count < MaxConcurrentWorkflows` and so is never refused. The
+  increment asks DynamoDB for the updated value, and a post-increment value of
+  zero or below means it was negative before. The counter is then raised to the
+  executions actually running plus the slot that increment just claimed (that
+  execution does not exist yet, so `ListExecutions` cannot see it), conditionally
+  on the value observed, and never to a value below zero. So a negative counter is
+  corrected within one admitted document rather than needing the queue to be at
+  its ceiling first.
+
+The repair publishes the pre-repair **negative** value — not the value the counter
+reads after the increment — before it writes, so `ConcurrencyCounterNegativeAlarm`
+still fires on a counter that healed itself. Without that a self-healed underflow
+would leave no trace at all.
 
 **Reading the widget:** the counter tracking a busy queue is normal. The counter
 sitting at or near `MaxConcurrentWorkflows` while the SQS widget shows messages
-in flight and the Step Functions widget shows nothing starting is the leak.
+in flight and the Step Functions widget shows nothing starting is the upward
+leak. The counter minimum below the zero annotation, or any
+`ConcurrencyCounterUnderflow` bar, is the downward one. A
+`ConcurrencyDecrementSuppressed` bar on its own is the idempotency guard doing its
+job.
 
 ### Stale Output Purge on Re-upload
 
@@ -160,6 +221,75 @@ S3 error.
 byte-identical file no longer reuses the prior OCR cache; it re-OCRs from
 scratch.
 
+### Confidence Assessment Degraded
+
+Confidence assessment is an *enrichment* pass: extraction has already run,
+written its results and been paid for by the time it starts. So when the
+confidence model fails **deterministically** — most often
+`ValidationException: Input is too long for requested model.`, which a retry
+would send again unchanged — the Assessment Lambda keeps the extraction and
+degrades that section instead of failing the document
+([#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901)).
+The document completes, its extracted data is intact, and the gap is recorded as
+an error-severity `assessment_failed_confidence_unavailable` processing issue on
+the section.
+
+That is the right trade for one section, and it creates a monitoring gap for the
+fleet ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)):
+a **systemic** confidence failure no longer fails documents, so it no longer
+lights `WorkflowErrorsAlarm` or any DLQ alarm. Without a metric it would be
+visible only in the Sections panel, one document at a time. `ProcessingIssueCount`
+does not help — it is a DynamoDB attribute on the tracking record, not a
+CloudWatch metric.
+
+One metric in the stack's own namespace (`<StackName>`):
+
+- **`AssessmentConfidenceUnavailable`** — published (value `1`) each time a
+  section is degraded, by the unified pattern's `AssessmentFunction`, with no
+  dimensions. It reaches the **root** stack's namespace because that function's
+  `METRIC_NAMESPACE` is the `StackName` the parent passes down. Published only on
+  a degrade, so no data means every confidence pass either succeeded or failed
+  transiently and was retried.
+
+One alarm publishes to `AlertsTopic`:
+
+- **`AssessmentConfidenceUnavailableAlarm`** — `ConfidenceUnavailableThreshold`
+  (default `10`) or more degrades within 15 minutes. Unlike
+  `StaleOutputPurgeFailedAlarm` this deliberately does **not** alarm on the first
+  occurrence: a single degraded section is an expected, self-limiting outcome — one
+  unusually large section against a small-context confidence model produces it with
+  nothing misconfigured. A steady stream is what a systemic cause produces, because
+  it degrades every section of every document. The default assumes no single
+  document legitimately produces ten degrades; **raise the parameter if your
+  documents split into many sections** that a small-context confidence model cannot
+  fit, since one such document would otherwise fire it on its own. The
+  unified-pattern dashboard draws the configured value as its annotation, so the
+  graph and the trigger stay in step when you tune it.
+
+**Diagnosing.** The recorded issue's `root_cause` names the underlying exception,
+and the same failure is logged at ERROR in the AssessmentFunction log group. Note
+that group is `/<StackName>-PATTERNSTACK-<id>/lambda/AssessmentFunction`: the name
+comes from `AWS::StackName` **inside the nested pattern template**, which is the
+nested stack's CloudFormation-generated name, not the root stack's — so list on the
+`/<StackName>-PATTERNSTACK` prefix rather than typing the path
+("Deterministic (non-retryable) assessment failure"). The three causes worth
+checking first:
+
+| Symptom in `root_cause` | Likely cause | Fix |
+|---|---|---|
+| `ValidationException: Input is too long for requested model.` | The confidence model's input limit is smaller than the sections being assessed | Lower `extraction.confidence.list_batch_size`, or configure a confidence model with a larger context window |
+| `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
+| `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
+
+**What is lost while it is firing:** the affected sections have no confidence
+values, so they are not covered by confidence-based review — HITL confidence
+routing and the UI threshold signals do not apply to them, and per-field scores
+are absent in the UI. The extracted data itself is unaffected.
+
+One dashboard widget on the **unified pattern** dashboard (not the main one):
+**Confidence Assessment Degraded**, a 15-minute-period count with the alarm
+threshold drawn as an annotation so the trend and the trigger are read together.
+
 ## Log Groups
 
 The solution creates centralized logging across all components:
@@ -170,7 +300,7 @@ The solution creates centralized logging across all components:
 - `/aws/lambda/ClassificationFunction`: Classification processing logs
 - `/aws/lambda/ExtractionFunction`: Extraction processing logs
 - `/aws/lambda/TrackingFunction`: Document tracking and status logs
-- `/aws/appsync/GraphQLAPI`: Web UI API access logs
+- The REST API's access logs and the dispatcher Lambda's log group: Web UI API activity (the dispatcher is the single entry point for every UI query and mutation)
 
 All logs include correlation IDs for tracing individual document processing journeys.
 
@@ -241,9 +371,14 @@ Each pattern includes additional monitoring tailored to its specific workflow:
 
 ## Alarms the Stack Creates
 
-Subscribe an email address or a chat webhook to the alarm's SNS topic to receive
-these — the alarms exist whether or not anything is subscribed, so a stack with
-no subscription raises alarms that nobody sees.
+Every alarm publishes to one SNS topic, `AlertsTopic`. A standard deployment
+subscribes the `AdminEmail` address to it at deploy time — but **that subscription
+is not live until the address confirms it**, and one address is not an on-call
+rota. A `--headless` deployment subscribes **nothing**, because the transform
+removes the `AdminEmail` parameter along with the UI, so there setting up delivery
+is a required step you perform yourself. Read
+[Who receives the alerts](#who-receives-the-alerts) before assuming these alarms
+will reach anyone, in either mode.
 
 > ⚠️ **On stacks deployed before release 0.6.7 with the circuit breaker disabled
 > (the default), no alarm notification was ever delivered.** `AlertsTopic` is
@@ -270,18 +405,184 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `SlowExecutionsAlarm` | Average execution time exceeds the threshold over 5 min | `AlertsTopic` | `ExecutionTimeThresholdMs` (default `300000`, i.e. 300 s) |
 | `WorkflowTimeoutsAlarm` | Any execution ended `TIMED_OUT` by the execution-level bound in 5 min | `AlertsTopic` | Threshold is fixed (≥ 1); the bound itself is `WorkflowExecutionTimeoutSeconds` (default `21600`, i.e. 6 hours) |
 | `ConcurrencyCounterDriftAlarm` | Concurrency drift > 0 sustained for 15 min | `AlertsTopic` | — |
+| `ConcurrencyCounterUnderflowAlarm` | Any decrement refused because the counter was already 0 — a slot released twice | `AlertsTopic` | — |
+| `ConcurrencyCounterNegativeAlarm` | Concurrency counter observed below 0 in 5 min — the ceiling is being exceeded | `AlertsTopic` | — |
 | `DocumentQueueDLQAlarm` | Any message in the document DLQ — a document that failed every retry | `AlertsTopic` | — |
 | `QueueSenderDLQAlarm` | Any message in the queue-sender DLQ — an upload that was never enqueued | `AlertsTopic` | — |
 | `DocumentQueueStalledAlarm` | Oldest queued document older than the threshold **and** nothing left the queue, for 30 min | `AlertsTopic` | `QueueStalledAgeThresholdSeconds` (default `1800`, i.e. 30 min) |
+| `QueueProcessorErrorsAlarm` | Any `QueueProcessor` invocation error in 5 min — for this function, a timeout or out-of-memory before its SQS batch finished | `AlertsTopic` | — |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections degraded to "no confidence scores" within 15 min — a systemic confidence-assessment failure, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
 `AlertsTopic` carries the display name **Workflow Alerts**.
 `BedrockServiceOutageAlarm` is created only when the circuit breaker is enabled
 and reports to its own topic, since it drives automated back-off rather than
-human attention.
+human attention — the circuit-breaker manager Lambda that topic invokes then
+publishes a readable notification to `AlertsTopic`, so a breaker trip still
+reaches the same recipients.
+
+### Who receives the alerts
+
+A standard deployment creates an **email** subscription on `AlertsTopic` for the
+address you passed as the `AdminEmail` parameter — the same address that receives
+the temporary Cognito password. Before release 0.6.9 there was no subscription to
+`AlertsTopic` — other topics in the solution had one, this one did not: the topic
+ARN was emitted as the `SNSAlertsTopicARN` stack output and an
+operator was tacitly expected to subscribe by hand, so a default deployment
+raised alarms nobody saw ([issue #922](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/922)).
+
+#### Headless deployments: you set up alert delivery
+
+> ⚠️ **A `--headless` deployment creates no subscription on `AlertsTopic`, so
+> alarm delivery is a required post-deployment step.** The headless transform
+> removes the `AdminEmail` parameter along with the Web UI and Cognito resources,
+> and a subscription cannot reference a parameter that does not exist, so the
+> subscription is removed with it. The topic and every alarm are still created, and
+> `SNSAlertsTopicARN` is still a stack output — what is missing is a recipient.
+
+This is a deliberate decision rather than an oversight, and the reasoning is worth
+stating because the alternative looks obviously better until you consider who
+deploys this way. Headless is the API-only path: operators using it are automating,
+and most of them attach a pager, a chat webhook or an existing operational topic
+through their own infrastructure-as-code. An optional `AlertsEmail` parameter on the
+variant whose design goal is fewer moving parts would be a parameter most of them
+never set, while the ones who do want email are equally well served by one
+`aws sns subscribe` call they already have to make for their other topics. What is
+**not** acceptable is finding out by missing an alarm, which is why this is called
+out here, in
+[Headless Deployment](./headless-deployment.md#monitoring--operations) and in
+[GovCloud Operations](./govcloud-operations.md#cloudwatch-alarms) rather than left
+to be inferred from the template. Tracked and decided in
+[issue #984](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/984).
+
+Do it immediately after the stack completes:
+
+```bash
+TOPIC_ARN="$(aws cloudformation describe-stacks --stack-name <stack-name> \
+    --query "Stacks[0].Outputs[?OutputKey=='SNSAlertsTopicARN'].OutputValue" \
+    --output text)"
+
+# Email or a distribution list — starts in PendingConfirmation, see below.
+aws sns subscribe --topic-arn "$TOPIC_ARN" \
+  --protocol email --notification-endpoint ops-alerts@example.com
+
+# Or an endpoint with no confirmation step and no unsubscribe link in the payload,
+# which is the better choice for an automated deployment.
+aws sns subscribe --topic-arn "$TOPIC_ARN" \
+  --protocol https --notification-endpoint https://example.com/hooks/idp-alerts
+```
+
+Then verify with the `list-subscriptions-by-topic` command below. Treat a topic
+with zero subscriptions as a failed deployment step: every alarm will publish
+successfully and notify nobody, and nothing in the stack, the console or the alarm
+history will tell you.
+
+#### You must confirm the subscription before anything is delivered
+
+> ⚠️ **An SNS email subscription starts in `PendingConfirmation` and delivers
+> nothing at all until the recipient clicks the confirmation link.** SNS sends a
+> *"AWS Notification - Subscription Confirmation"* message to `AdminEmail` when
+> the stack is created. Until someone opens it and follows the link, every alarm
+> still publishes successfully and every notification is still dropped — which
+> looks exactly like the pre-0.6.9 behaviour. A pending confirmation does **not**
+> fail or delay the CloudFormation operation, so there is no deployment error to
+> notice; the confirmation token is valid for about two days, after which you have
+> to re-request one from the SNS console.
+
+Check the status any time:
+
+```bash
+aws sns list-subscriptions-by-topic \
+  --topic-arn "$(aws cloudformation describe-stacks --stack-name <stack-name> \
+      --query "Stacks[0].Outputs[?OutputKey=='SNSAlertsTopicARN'].OutputValue" \
+      --output text)" \
+  --query 'Subscriptions[].{Protocol:Protocol,Endpoint:Endpoint,Arn:SubscriptionArn}' \
+  --output table
+```
+
+A `SubscriptionArn` of the literal string `PendingConfirmation` means exactly
+that — unconfirmed, delivering nothing. A real ARN means the endpoint is live.
+
+#### Alert a team, not one person
+
+One personal mailbox is a single point of failure for every alert in the
+solution. The `AdminEmail` subscription is a floor, not a design: add the
+recipients you actually want to the same topic. These are ordinary SNS
+subscriptions and are independent of the stack, so adding them does not conflict
+with a stack update, and removing the stack removes only the subscription it
+created.
+
+There is a second reason beyond the rota. **Every SNS email carries a one-click
+unsubscribe link, so any recipient — or anyone the mail is forwarded to — can
+remove the subscription without telling you, and nothing in the stack notices.**
+Alarms then keep publishing successfully to a topic nobody receives, which is
+indistinguishable from having no subscription at all. This is inherent to
+`Protocol: email` rather than something this solution introduces, and it is the
+strongest argument for the options below: a chat or `https` subscription has no
+unsubscribe link in the payload, and a distribution list keeps the SNS endpoint
+constant no matter who leaves it. If you rely on email, re-run the
+`list-subscriptions-by-topic` check above periodically.
+
+- **A distribution list or ticket queue** — subscribe a group address rather than
+  an individual, so the rota changes without a stack update:
+
+  ```bash
+  aws sns subscribe --topic-arn <alerts-topic-arn> \
+    --protocol email --endpoint idp-oncall@example.com
+  ```
+
+  Every email subscription needs its own confirmation click, including this one.
+
+- **Chat** — [AWS Chatbot](https://docs.aws.amazon.com/chatbot/latest/adminguide/getting-started.html)
+  subscribes the topic to a Slack channel or Amazon Chime/Microsoft Teams room and
+  renders the alarm payload legibly. No confirmation step, and the channel history
+  gives you an audit trail that a mailbox does not.
+
+- **Paging** — PagerDuty, Opsgenie and similar accept an SNS `https` subscription
+  endpoint, which is confirmed automatically by the receiving service. Use this if
+  an alarm needs to wake someone; email will not.
+
+- **An existing operational topic** — if you already centralise alarms, you do not
+  have to use `AlertsTopic` as the fan-out point. Subscribe your own topic's
+  ingest Lambda/queue to it, or point the alarms at your topic directly by
+  editing `AlarmActions` in a template you deploy yourself. A subscriber in
+  another account needs `sns:Subscribe` on the topic policy. It does **not** need
+  any permission on the stack's KMS key: SNS server-side encryption protects the
+  message at rest and SNS decrypts it itself before delivery, so the documented
+  key-policy grants are for *publishers* and for the `sns.amazonaws.com` service
+  principal, not for subscribers. The KMS requirement that does exist runs the
+  other way — if you subscribe an **encrypted SQS queue**, that queue's key
+  policy must allow `sns.amazonaws.com` to `kms:GenerateDataKey*` and
+  `kms:Decrypt`, otherwise delivery fails silently from SNS's side.
+
+  > ⚠️ Do not grant a foreign account `kms:Decrypt` on the stack's
+  > `CustomerManagedEncryptionKey` in order to receive alerts. That one key also
+  > encrypts the input, output, working and evaluation buckets, the DynamoDB
+  > tables and the queues, so the grant would reach the entire processed-document
+  > corpus — an enormous amount of access for an alarm email, and it is not
+  > required.
+
+#### `--headless` deployments still start with no subscribers
+
+> ⚠️ A `--headless` deployment strips the `AdminEmail` parameter along with
+> Cognito, so it collects no operator address and **creates no subscription at
+> all**. It keeps `AlertsTopic` and all fifteen alarms, so a headless stack still has
+> the original defect: every alarm publishes successfully and nobody is notified.
+> Issue #922 is closed for the standard deployment and remains open for this one.
+
+Subscribing at least one recipient to the `SNSAlertsTopicARN` output is therefore
+a required post-deploy step for headless, not an optional improvement:
+
+```bash
+aws sns subscribe --topic-arn <alerts-topic-arn> \
+  --protocol email --endpoint idp-oncall@example.com
+```
+
+Whether the headless variant should gain its own optional alerts-email parameter
+is an open deployment-interface question rather than a defect in the transform.
 
 ### `WorkflowErrorsAlarm` — the primary failure signal
 
@@ -320,7 +621,7 @@ slow" signal, not a per-document one.
 Both alarms above read the **state machine**, so neither can see a document that
 never got an execution ([#761](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/761)):
 a dead-lettered document emits no `ExecutionsFailed`, and a document still sitting
-in the queue emits no `ExecutionTime`. Three alarms cover the queue layer.
+in the queue emits no `ExecutionTime`. Four alarms cover the queue layer.
 
 #### `DocumentQueueDLQAlarm` and `QueueSenderDLQAlarm`
 
@@ -332,7 +633,7 @@ notify on recovery (`OKActions`) — DLQ depth does not decay on its own, so the
 
 | Alarm | What a message means | Recovery |
 |---|---|---|
-| `DocumentQueueDLQAlarm` | The document exhausted `DocumentQueue`'s redrive policy — `maxReceiveCount` 1000 against a 30 s visibility timeout, roughly **8 hours** of retries — and never processed. | Read the messages for the object keys, find the cause in the QueueProcessor and state-machine logs, then redrive or re-upload. Redrive needs `kms:Decrypt` on the stack's CMK. |
+| `DocumentQueueDLQAlarm` | The document exhausted `DocumentQueue`'s redrive policy — `maxReceiveCount` 500 against a 60 s visibility timeout, roughly **8 hours** of retries — and never processed. | Read the messages for the object keys, find the cause in the QueueProcessor and state-machine logs, then redrive or re-upload. Redrive needs `kms:Decrypt` on the stack's CMK. |
 | `QueueSenderDLQAlarm` | The upload event never reached the queue, so the document never entered the pipeline. | Read the messages for the S3 keys, check the QueueSender logs, then **re-upload**. See the note below on which state the document is left in — and note that SQS redrive does **not** apply to this queue. |
 
 > **What a `QueueSenderDLQ` message means for the document, precisely.** The
@@ -346,6 +647,45 @@ notify on recovery (`OKActions`) — DLQ depth does not decay on its own, so the
 > `StartMessageMoveTask` (the console's *Redrive* button) does not apply to it and
 > is not offered. `DocumentQueueDLQ` *is* a true SQS DLQ, so redrive does work
 > there.
+
+#### `QueueProcessorErrorsAlarm` — a processor that cannot finish its batches
+
+`QueueProcessor` catches every per-message error itself, so an invocation that
+ends in a Lambda **error** is one that was killed from outside: it hit its
+`Timeout` or ran out of memory before finishing its SQS batch. Nothing else
+reports that. The messages it held are redelivered and eventually processed, so
+every execution still succeeds, the DLQ stays empty and `DocumentQueueStalledAlarm`
+sees a queue that is draining. Before release 0.6.9 this was how a saturated
+queue silently multiplied its own work
+([#904](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/904)):
+the processor ran at the 128 MB default with 50-message batches and a 30 s
+timeout, two thirds of its invocations under load timed out, and because Lambda
+reports a batch outcome only when the function returns, each timeout handed the
+whole batch back to SQS — including messages whose `StartExecution` had already
+succeeded. Each redelivery then started another execution, because executions had
+no name. One upload was started six times; 4,384 uploads produced 14,727
+executions, all billed, with every alarm reading `OK`.
+
+Two changes make a redelivery harmless now, whatever Lambda or SQS do: the
+execution name is derived from the SQS message id (`<basename>-<message-id>`),
+so a second start of the same message is refused by Step Functions and acked as a
+no-op, and each message is deleted the moment its execution exists rather than at
+the end of the batch. The processor also runs at 1024 MB with 10-message batches
+and a 60 s timeout, so the timeouts themselves should be rare. When this alarm
+does fire, compare the function's **Duration** and **Max Memory Used** against
+its `Timeout` and `MemorySize`, and check **Throttles**: a processor that cannot
+finish 10 messages in 60 s is undersized for the deployment's configuration (a
+very large merged configuration is decompressed per message) or is being
+throttled. To confirm redelivery rather than duplicate ingest for one document,
+count receives of its message in the `QueueProcessor` log group — a single
+`messageId` appearing more than once is a redelivery, and since 0.6.9 the same id
+is the suffix of the execution name:
+
+```
+fields @timestamp, @requestId, @message
+| filter @message like /Processing message/ and @message like /<object-key>/
+| sort @timestamp asc
+```
 
 #### `DocumentQueueStalledAlarm` — why it is not a queue-depth alarm
 
@@ -440,14 +780,23 @@ was a `FAILED` run of 306–308 minutes: a single state's Lambda `Sandbox.Timedo
 900 seconds retried eight times at 2.5× backoff. A benchmark stack's longest success
 was 2.6 minutes. Six hours is therefore about ten times the longest observed success.
 
+That particular storm can no longer happen: every Lambda task state now retries the
+timeout codes at most once, so a deterministic timeout fails in about 30 minutes
+rather than 5.1 hours (see
+[Step Functions Retry Configuration](./configuration.md)). The measurement is kept
+here because it is what sized the bound, and because the *transient* ladder is
+unchanged — a state throttled through all eight attempts still spends about 2.8
+hours in backoff alone.
+
 Be precise about what the default does and does not bound. It does **not** shorten
-that measured storm: one state exhausting its `Retry` policy takes about 5.1 hours and
-then fails on its own, inside the 6-hour bound, and shortening it would need a bound
-of 3 hours or less (`10800`), which is a defensible choice for a stack whose largest
-documents finish well under an hour. What the default does bound is everything the
+a state that is still inside its own `Retry` budget: a full transient ladder fails
+on its own inside the 6-hour bound, and cutting the bound to 3 hours or less
+(`10800`) is a defensible choice for a stack whose largest documents finish well
+under an hour. What the default does bound is everything the
 per-state guards cannot: a `.waitForTaskToken` callback that never arrives once the
 BDA bound is exceeded (see below), a state that hangs without erroring, and a storm
-that compounds across two or more states (two consecutive storms are about 10 hours).
+that compounds across two or more states (two consecutive transient ladders are
+about 5.6 hours).
 Not measured: multi-hundred-page packets under agentic table extraction, which are
 the case most likely to approach the bound — if your `ExecutionTime` p99 for
 *successful* runs is within a factor of two of the bound, raise it (up to one year,
@@ -500,6 +849,10 @@ in flight.
 > propagates to `ExecutionsFailed` on its own.
 
 ## Setting Up Alerts
+
+For who receives the **built-in** alarms — and the confirmation click that has to
+happen before any of them are delivered — see
+[Who receives the alerts](#who-receives-the-alerts).
 
 Beyond the built-in alarms you can add your own for metrics specific to your
 deployment:

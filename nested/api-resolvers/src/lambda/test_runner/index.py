@@ -1,14 +1,18 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
+import gzip
 import json
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
 from botocore.exceptions import ClientError
+
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -31,40 +35,6 @@ class TestRunIdTaken(Exception):
     """A run with this id already exists; the caller should pick another."""
 
 
-# --- inline log sanitizer ---------------------------------------------------
-# Minimal inline redactor. Kept here rather than importing from idp_common to
-# avoid adding a Lambda Layer dependency to this resolver. If this file grows
-# to need idp_common anyway, promote to
-# `from idp_common.utils.log_sanitizer import sanitize_event_for_logging`.
-_LOG_SENSITIVE_KEYS = (
-    "password",
-    "secret",
-    "token",
-    "authorization",
-    "apikey",
-    "api_key",
-    "cookie",
-    "credential",
-    "claims",
-    "identity",
-)
-
-
-def _sanitize_for_log(obj):
-    """Deep-copy `obj` redacting values whose keys match the denylist."""
-    if isinstance(obj, dict):
-        out = {}
-        for k, v in obj.items():
-            if isinstance(k, str) and any(s in k.lower() for s in _LOG_SENSITIVE_KEYS):
-                out[k] = "***REDACTED***" if v is not None else None
-            else:
-                out[k] = _sanitize_for_log(v)
-        return out
-    if isinstance(obj, list):
-        return [_sanitize_for_log(v) for v in obj]
-    return obj
-
-
 def _caller_in_groups(event, allowed):
     """Defense-in-depth RBAC check against the caller's Cognito groups.
 
@@ -82,7 +52,7 @@ def _caller_in_groups(event, allowed):
 
 def handler(event, context):
     logger.info(
-        f"Test runner invoked with event: {json.dumps(_sanitize_for_log(event))}"
+        f"Test runner invoked with event: {json.dumps(sanitize_event_for_logging(event))}"
     )
 
     try:
@@ -397,10 +367,15 @@ def _get_test_set(tracking_table, test_set_id):
 def _decompress_config_item(item):
     """
     Decompress a DynamoDB config item if it uses compressed storage format.
-    Inlined here to avoid dependency on idp_common (not available in this Lambda).
-    """
-    import gzip as _gzip
 
+    Kept inline rather than imported from idp_common. NOT because the library is
+    unavailable — this function carries IDPCommonBaseLayer and already imports
+    ``idp_common.config.configuration_manager`` below, plus
+    ``idp_common.utils.log_sanitizer`` at module scope — but because this is a
+    small, stable decode of a storage format the resolver only reads. The
+    stronger reason to reach for idp_common would be if the compressed format
+    changed; if that happens, import the library version instead of editing this.
+    """
     if item.get("_config_storage") != "compressed":
         return item  # Legacy inline format — return as-is
 
@@ -415,7 +390,16 @@ def _decompress_config_item(item):
     )
 
     try:
-        config_data = json.loads(_gzip.decompress(raw_bytes).decode("utf-8"))
+        # parse_float=Decimal, for the same reason _capture_config gives for a
+        # pinned revision: this config is written straight into the run's
+        # DynamoDB item, and the resource client rejects Python floats ("Float
+        # types are not supported. Use Decimal types instead."). A compressed
+        # config carrying any non-integer number (the shipped `ocr-benchmark`
+        # preset has `criteria_validation.temperature: 0.0`) failed every
+        # startTestRun at submit until this matched the revision path.
+        config_data = json.loads(
+            gzip.decompress(raw_bytes).decode("utf-8"), parse_float=Decimal
+        )
     except Exception as e:
         logger.error(f"Failed to decompress config data: {e}")
         return item
@@ -662,6 +646,129 @@ def _confidence_fingerprint_of(config):
         return None
 
 
+_CONFIG_STORAGE_MARKER = "_config_storage"
+_CONFIG_STORAGE_COMPRESSED = "compressed"
+_COMPRESSED_CONFIG_FIELD = "_compressed_config"
+_MAX_COMPRESSED_CONFIG_BYTES = 300 * 1024
+
+
+def _json_default(value):
+    """``json.dumps`` fallback for the captured-config round trip.
+
+    Decimals coerce to int/float (preserving integer-ness where possible).
+    Non-finite Decimals (``NaN``, ``Infinity``, ``-Infinity``) raise a
+    clear ``ValueError`` — they cannot round-trip through JSON at all,
+    and ``value % 1`` on them would otherwise raise the cryptic
+    ``decimal.InvalidOperation`` before the equality check is even
+    evaluated, failing ``startTestRun`` with a stack trace that hides
+    the real problem.
+
+    Common Python-native types (``datetime`` / ``date`` / ``time``,
+    ``UUID``, ``bytes``, ``set``) are handled by explicit converters
+    with documented round-trip semantics; genuinely-unknown types raise
+    ``TypeError`` so they surface loudly rather than being silently
+    coerced to a ``str()`` repr that corrupts the round-trip.
+    """
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(
+                f"Config contains non-finite Decimal {value!r}; JSON "
+                f"cannot represent NaN/Infinity. Fix the config source."
+            )
+        # Convert to float FIRST — this catches magnitudes outside float64's
+        # range (subnormals underflow to ``0.0``, huge values overflow to
+        # ``inf``). Doing the integer test first would itself raise
+        # ``decimal.InvalidOperation`` on very-large-but-float-finite
+        # Decimals like ``Decimal('1E30')`` (31 digits > default context
+        # prec of 28; the internal division-with-remainder overflows the
+        # context even though ``float(1E30)`` is a fine 1e+30).
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError(
+                f"Config contains a Decimal {value!r} that overflows to "
+                f"{result} when converted to float; JSON cannot represent "
+                f"infinity. Fix the config source."
+            )
+        if result == 0.0 and value != 0:
+            raise ValueError(
+                f"Config contains a Decimal {value!r} that underflows to "
+                f"0.0 when converted to float; JSON cannot preserve the "
+                f"value. Fix the config source (avoid subnormal magnitudes)."
+            )
+        # ``value == value.to_integral_value()`` rather than ``value % 1
+        # == 0`` — the modulo path raises ``InvalidOperation`` /
+        # ``DivisionImpossible`` on Decimals whose coefficient exceeds
+        # the current context precision (default 28 digits), which
+        # includes float-representable values like ``Decimal('1E30')``.
+        # ``to_integral_value`` is a rounding op with no arithmetic
+        # precision requirement, so it never trips on that path.
+        if value == value.to_integral_value():
+            return int(value)
+        return result
+    # Explicit converters for common Python-native types that ``json.dumps``
+    # doesn't handle natively. Historically ``_json_default`` fell through
+    # to ``str(value)`` for anything unrecognized — which meant configs
+    # containing ``datetime``, ``bytes``, ``UUID`` or ``set`` values
+    # serialized cleanly via their ``str()`` repr. A prior round replaced
+    # that with a blanket ``raise TypeError`` to surface unexpected types
+    # loudly, but that broke previously-working configs at
+    # ``startTestRun`` with no fallback. The right shape is EXPLICIT
+    # converters for the types that actually appear (each with a
+    # documented round-trip semantic) and a loud ``TypeError`` for
+    # everything else — configs get their known types converted, and
+    # genuinely-surprising types still raise where they should.
+    import datetime as _dt
+    import uuid as _uuid
+    import base64 as _b64
+
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        # ISO-8601 — read-back is a string, not a datetime; that mirrors
+        # how DDB itself hands date-like fields back to callers.
+        return value.isoformat()
+    if isinstance(value, _uuid.UUID):
+        return str(value)
+    if isinstance(value, (bytes, bytearray)):
+        # base64 preserves round-trip fidelity; ``str(bytes)`` would emit
+        # ``"b'...'"`` which is neither valid data nor decodable.
+        return _b64.b64encode(bytes(value)).decode("ascii")
+    if isinstance(value, (set, frozenset)):
+        return sorted(value) if all(isinstance(v, (str, int, float)) for v in value) else list(value)
+    # Genuinely-surprising types raise so the failure is loud and named
+    # rather than silently coerced to a repr that corrupts the round-trip.
+    # Pinned by ``test_non_decimal_non_json_types_raise_typeerror_not_silent_str``.
+    raise TypeError(
+        f"Config contains a value of type {type(value).__name__} that is "
+        f"not JSON-serialisable and has no registered converter: {value!r}"
+    )
+
+
+def _compress_captured_config(config):
+    """gzip the captured ``{"Config": <body>}`` for the run's DynamoDB item.
+
+    Same storage shape as the configuration table, so a profile that fits
+    there also fits on every run that captures it. Raises ValueError when even
+    the compressed body would crowd out the attributes written to the item
+    later (the copier's Files list, the cached testRunResult aggregate).
+    """
+    raw = json.dumps(config, default=_json_default, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    compressed = gzip.compress(raw)
+    logger.info(
+        f"Captured configuration: {len(raw):,} bytes -> {len(compressed):,} bytes "
+        "compressed"
+    )
+    if len(compressed) > _MAX_COMPRESSED_CONFIG_BYTES:
+        raise ValueError(
+            f"Configuration is too large to record on a test run: "
+            f"{len(compressed):,} bytes after compression "
+            f"({len(raw):,} bytes raw); the limit is "
+            f"{_MAX_COMPRESSED_CONFIG_BYTES:,} bytes. Reduce the configuration "
+            "profile (fewer classes, shorter prompts or descriptions) and retry."
+        )
+    return compressed
+
+
 def _store_test_run_metadata(
     tracking_table,
     test_run_id,
@@ -695,7 +802,8 @@ def _store_test_run_metadata(
             "CompletedFiles": 0,
             "FailedFiles": 0,
             "Files": files,
-            "Config": config,
+            _CONFIG_STORAGE_MARKER: _CONFIG_STORAGE_COMPRESSED,
+            _COMPRESSED_CONFIG_FIELD: _compress_captured_config(config),
             "CreatedAt": created_at,
         }
 

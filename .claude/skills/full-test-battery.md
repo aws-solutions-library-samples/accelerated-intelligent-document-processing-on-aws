@@ -40,6 +40,11 @@ failure in this repo turns out to be.
    ```bash
    export PYTHONPATH=<checkout>/lib/idp_common_pkg
    ```
+   Both CIs run **`python:3.13-bookworm`** (`.gitlab-ci.yml` `image:`, and the job
+   container in `.github/workflows/developer-tests.yml` and `security-checks.yml`) —
+   there is no 3.12/3.13 skew between them. A suite run under a system 3.12 is
+   therefore not what CI measures, and "it passes in CI because CI is on a different
+   Python" is a claim to check against those three files, not to assume.
 3. **`publish.py` must run in a CLEAN env** — the venv on `PATH` breaks SAM's
    OpenSSL (`OPENSSL_3.4.0 not found` / `_sha2`). Build with:
    ```bash
@@ -78,7 +83,9 @@ Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 | idp_sdk | `cd lib/idp_sdk && pytest -m "not integration" -q` | 471 pass (~2.5 min) |
 | idp_feature_sdk | `cd lib/idp_feature_sdk && pytest -q` | 140 pass (slow, ~75s) |
 | feature platform | `cd feature-platform/main-stack-extensions && pytest -q` | 207 pass |
+| pii-anonymizer feature API | `cd feature-platform/pii-anonymizer/feature-api && pytest tests -q` | 14 pass |
 | pii-anonymizer hook | `cd feature-platform/pii-anonymizer/hook && pytest tests -q` | 17 pass |
+| pii-anonymizer UI deployer | `cd feature-platform/pii-anonymizer/ui-deployer && pytest tests -q` | 10 pass |
 | config library | `pytest config_library/test_config_library.py -q` | 114 pass |
 | pipeline-hooks | `cd lib/idp_common_pkg && pytest tests/unit/lambdas/test_pipeline_hooks_dispatcher.py -q` | 6 pass |
 | capacity Lambda | `cd src/lambda/calculate_capacity && pytest -q` | 33 pass |
@@ -87,27 +94,43 @@ Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 
 ## There is no standing failure set — green means green
 
-**A correctly installed tree passes every suite above with zero failures**
-(verified on `develop` at `3101aeeb`, 2026-09-11). So treat **any** failure as a
-real regression until you have proved otherwise.
+**Expected standing failures: 0.** A correctly installed tree passes every suite
+above with zero failures (verified on `develop` at `3101aeeb`, 2026-09-11; the three
+pii-anonymizer rows added and re-verified at `28d2fc33e`, 2026-09-18). So treat
+**any** failure as a real regression until you have proved otherwise.
 
-This section previously listed ~26 "known pre-existing failures — DO NOT treat as
-regressions", covering `test_configuration_sync.py`, `test_embedding_service.py`,
-`test_discovery_agent.py`, `test_publish.py`, `test_assessment_enabled_property.py`,
-`test_pdf_page_extraction.py`, `test_document_compression.py` and
-`workflow_tracker/test_notify_circuit_breaker.py`. **All of them now pass**, and the
-list has been removed rather than trimmed, because a stale allow-list is worse than
-none: it invites you to wave through a genuine regression that happens to land in a
-file it names. Two lessons worth keeping:
+The accepted-failure list is the table below, and it is empty. Keep the count in the
+heading and the table in step — `scripts/tests/test_standing_failure_baseline.py`
+fails if they disagree, and also fails if `docs/testing.md` or
+`release-validation.md` still claim zero while this table is non-empty. That gate
+exists because those three documents claimed zero for weeks while
+`pii-anonymizer/feature-api/tests/test_handler.py::test_report_list_and_aggregate`
+failed on any machine with an assume-role `AWS_PROFILE` (#974).
 
-- Most of that list was an **environment artifact, not a repo state** — the symptom
-  of a venv missing the pinned `[test]` extras (see gotcha 1). Reach for
-  `pip install -e ".[test]"` before you reach for this section.
-- Order-dependent pollution is still a real phenomenon. If a test fails in the full
-  run, re-run the file alone (`pytest <file> -q`) before concluding anything.
+<!-- STANDING-FAILURES-BEGIN -->
+| Suite | Test | Expected failure mode | Verified cause | Date |
+|---|---|---|---|---|
+<!-- STANDING-FAILURES-END -->
 
-If you do find a genuine standing failure, add it here **with the date and the
-verified cause** — and delete it the moment it stops reproducing.
+**Keep that table empty unless a failure is verified.** A stale allow-list is worse
+than none: it invites you to wave through a genuine regression that happens to land
+in a file it names. Two things to check before you add a row:
+
+- Most apparent standing failures are an **environment artifact, not a repo state**
+  — the symptom of a venv missing the pinned `[test]` extras (see gotcha 1). Reach
+  for `pip install -e ".[test]"` before you reach for this section.
+- Order-dependent pollution is a real phenomenon. If a test fails in the full
+  run, re-run the file alone (`pytest <file> -q`) before concluding anything —
+  but note that re-running the file alone is **not** sufficient to rule order out.
+  `test_report_list_and_aggregate` (#974) reproduced perfectly with the file run
+  alone, because what mattered was that it was the first DynamoDB test *in the file*
+  to run: moto resets its backends when each `mock_aws` starts, so only the first one
+  saw the polluted state. Deselect the failing test and watch whether the failure
+  moves to its neighbour; if it does, the fault is ordinal, not in the test.
+
+If you do find a genuine standing failure, add it to the table above **with the date
+and the verified cause**, bump the count in that heading, and delete the row the
+moment it stops reproducing.
 
 ## How to verify a suspected regression is real (not inherited)
 
@@ -116,6 +139,19 @@ Order matters — check the cheap explanation first:
 1. **Read the error.** `ModuleNotFoundError` / `ImportError` on a third-party name
    (`stickler.*`, `z3`, `xlrd`, `sklearn`, `aws_xray_sdk`, `idp_sdk`) is an install
    problem, not a regression. Fix the environment (gotcha 1) and re-run.
+   ⚠️ **A broken install does not always produce an import error.** Several Lambdas
+   catch a missing `idp_common` deliberately and degrade — the config-preset handler
+   logs `idp_common is unavailable (...)` at ERROR and skips the revision write — so
+   the test fails on a plain assertion with no hint of the cause. Before anything
+   else, confirm `python3 -c "import idp_common; print(idp_common.__file__)"` resolves
+   **inside your own checkout**; an editable install here has been observed pointing
+   at another agent's deleted `/tmp` checkout, which fails every suite that needs it
+   while looking like a logic bug. Note this is **not** an interpreter-version
+   effect, however much it looks like one when two interpreters on the same machine
+   disagree: `test_apply_feature_config_preset.py` gives `2 failed, 18 passed`
+   whenever `idp_common` is unimportable and `20 passed` whenever it is, identically
+   under 3.12 and 3.13. What differs between interpreters is which editable install
+   each one carries, not the language.
 2. **Re-run the file alone** to rule out order-dependent pollution.
 3. **Only then** compare against pristine `develop`:
    ```bash

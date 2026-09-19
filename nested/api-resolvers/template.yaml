@@ -2879,7 +2879,8 @@ Resources:
     UpdateReplacePolicy: Delete
     Properties:
       LogGroupName: !Sub "/aws/lambda/${StackName}-http-api-dispatcher"
-      RetentionInDays: 30
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
 
   HttpApiDispatcherFunction:
     Type: AWS::Serverless::Function

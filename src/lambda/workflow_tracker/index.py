@@ -10,6 +10,7 @@ import logging
 from idp_common.models import Document, Status, Page, Section  # type: ignore[import-untyped]
 from idp_common.docs_service import create_document_service  # type: ignore[import-untyped]
 from idp_common.document_versions import build_run_id, snapshot_output_versions  # type: ignore[import-untyped]
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional
 
@@ -39,17 +40,31 @@ else:
     Table = object
 
 dynamodb = boto3.resource("dynamodb")
+# TransactWriteItems exists only on the client, not the resource/Table API.
+dynamodb_client = boto3.client("dynamodb")
 cloudwatch = boto3.client("cloudwatch")
 s3 = boto3.client("s3")
 lambda_client = boto3.client("lambda")
 sns = boto3.client("sns")
 document_service = create_document_service()
-concurrency_table: Table = dynamodb.Table(os.environ["CONCURRENCY_TABLE"])
+CONCURRENCY_TABLE = os.environ["CONCURRENCY_TABLE"]
+concurrency_table: Table = dynamodb.Table(CONCURRENCY_TABLE)
 COUNTER_ID = "workflow_counter"
 # A lost decrement leaks a workflow slot permanently, so the realistic failure
 # (transient DynamoDB throttling) is retried in-process before the event is
 # handed back to EventBridge for its own retry.
 DECREMENT_MAX_ATTEMPTS = int(os.environ.get("DECREMENT_MAX_ATTEMPTS", "4"))
+# One decrement per EXECUTION, not per invocation (issue #916). The marker item
+# below shares the counter table and is written in the same transaction as the
+# decrement, so its key must not collide with the counter or the circuit breaker.
+DECREMENT_MARKER_PREFIX = "dec#"
+# The marker only has to outlive the redelivery window it protects against:
+# EventBridge retries this rule for up to 24h, and Lambda/SQS windows are far
+# shorter. Seven days is comfortably past all of them; TTL then reaps the marker
+# so the table does not grow with one item per document forever.
+DECREMENT_MARKER_TTL_SECONDS = int(
+    os.environ.get("DECREMENT_MARKER_TTL_SECONDS", str(7 * 24 * 60 * 60))
+)
 CIRCUIT_BREAKER_ID = "circuit_breaker"
 CIRCUIT_BREAKER_ENABLED = (
     os.environ.get("CIRCUIT_BREAKER_ENABLED", "false").lower() == "true"
@@ -446,9 +461,103 @@ def put_latency_metrics(document: Document) -> None:
         raise
 
 
-def decrement_counter() -> Optional[int]:
+def _apply_decrement(marker_id: Optional[str]) -> str:
+    """Apply one floored, once-per-execution decrement.
+
+    Returns "applied", "duplicate" (this execution's decrement already landed) or
+    "underflow" (the counter was already at zero). Raises for anything the caller
+    should retry.
     """
-    Decrement the concurrency counter.
+    counter_update = {
+        "TableName": CONCURRENCY_TABLE,
+        "Key": {"counter_id": {"S": COUNTER_ID}},
+        "UpdateExpression": "ADD active_count :dec",
+        # The floor (issue #915). Without it a double-decrement drives the
+        # counter NEGATIVE, and the admission gate in the queue processor is
+        # `active_count < :max` — so every unit below zero permanently raises the
+        # effective ceiling above MaxConcurrentWorkflows, with nothing reporting
+        # it.
+        "ConditionExpression": "active_count > :zero",
+        "ExpressionAttributeValues": {":dec": {"N": "-1"}, ":zero": {"N": "0"}},
+    }
+
+    if marker_id is None:
+        # No execution ARN (a direct invocation, or an event without one): still
+        # floored, but there is no stable identity to deduplicate on.
+        try:
+            dynamodb_client.update_item(**counter_update)
+        except ClientError as e:
+            if (
+                e.response.get("Error", {}).get("Code")
+                == "ConditionalCheckFailedException"
+            ):
+                return "underflow"
+            raise
+        return "applied"
+
+    marker_put = {
+        "TableName": CONCURRENCY_TABLE,
+        "Item": {
+            "counter_id": {"S": marker_id},
+            # ExpiresAfter is this stack's TTL attribute name on every table.
+            "ExpiresAfter": {
+                "N": str(int(time.time()) + DECREMENT_MARKER_TTL_SECONDS)
+            },
+        },
+        "ConditionExpression": "attribute_not_exists(counter_id)",
+    }
+
+    try:
+        # One transaction, so either the marker is new AND the counter had a slot
+        # to release, or nothing at all happens. That makes the decrement
+        # idempotent per EXECUTION rather than per invocation: the rule sets
+        # MaximumRetryAttempts: 3, and a redelivery can no longer subtract a
+        # second slot no matter where in the handler the previous attempt died.
+        #
+        # KNOWN RESIDUAL, accepted deliberately: all-or-nothing also means an
+        # UNDERFLOWED decrement leaves NO marker, so that execution is not
+        # deduplicated afterwards. If the same execution's event comes back while
+        # the counter is above zero, it subtracts a slot that belongs to a
+        # different, live workflow. It is narrow — the happy-path underflow returns
+        # 200, so EventBridge does not redeliver; reaching it needs the handler's
+        # error path to underflow AND something else in the handler to fail — and
+        # bounded to one spurious subtraction, with the floor still preventing a
+        # negative counter. Writing the marker outside the transaction to close it
+        # would trade this for the strictly worse failure the transaction exists to
+        # prevent: a marker that lands while the decrement does not, permanently
+        # losing that execution's slot.
+        dynamodb_client.transact_write_items(
+            TransactItems=[{"Put": marker_put}, {"Update": counter_update}]
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+            raise
+        # Reason order matches TransactItems: 0 = marker, 1 = counter. Getting this
+        # ordering wrong swaps "duplicate" and "underflow" — two outcomes with
+        # different metrics and different alarms. A wholesale swap of the two
+        # indices is caught indirectly by three tests in
+        # TestFloorAtZero/TestIdempotentPerExecution (measured), but the PRECEDENCE
+        # when BOTH conditions fail was not covered by anything: checking the
+        # counter first there reports a correctly-suppressed redelivery as an
+        # underflow and raises ConcurrencyCounterUnderflowAlarm on it. The marker is
+        # therefore checked FIRST — if this execution's slot was already released,
+        # the counter sitting at 0 afterwards is some other execution's business —
+        # and TestCancellationReasonDisambiguation pins both the mapping and that
+        # precedence.
+        reasons = [r.get("Code") for r in (e.response.get("CancellationReasons") or [])]
+        if len(reasons) > 0 and reasons[0] == "ConditionalCheckFailed":
+            return "duplicate"
+        if len(reasons) > 1 and reasons[1] == "ConditionalCheckFailed":
+            return "underflow"
+        # TransactionConflict (a concurrent write to the counter) and anything
+        # else are retryable — the transaction was cancelled, so nothing landed.
+        raise
+    return "applied"
+
+
+def decrement_counter(execution_arn: Optional[str] = None) -> Optional[int]:
+    """
+    Decrement the concurrency counter, once per execution and never below zero.
 
     A LOST decrement is permanent and unrecoverable-by-itself: the counter drifts
     up, and once it reaches MaxConcurrentWorkflows the stack stops admitting
@@ -466,13 +575,34 @@ def decrement_counter() -> Optional[int]:
     and if it still cannot be done the exception propagates so EventBridge/Lambda
     retry the whole event rather than losing the slot quietly.
 
+    The opposite direction was left unguarded for as long, and it is strictly
+    worse: an EXTRA decrement drove ``active_count`` negative, and the admission
+    gate compares the counter against MaxConcurrentWorkflows, so a counter at -5
+    quietly admits five workflows above the ceiling forever. Two guards close
+    that (issues #915 and #916):
+
+    * a ConditionExpression floor at zero, and a ``ConcurrencyCounterUnderflow``
+      metric plus a WARNING when it trips. The document is already terminal at
+      this point, so absorbing the underflow beats failing the tracker.
+    * a per-execution marker item written in the SAME transaction as the
+      decrement, so a redelivered event is a no-op rather than a second
+      subtraction. As a side benefit the in-process retry above is now safe even
+      when a write landed but answered with an error: the retry sees its own
+      marker and reports a duplicate.
+
+    Args:
+        execution_arn: The terminal execution's ARN, used as the idempotency
+            key. When absent the decrement is still floored, but not deduplicated.
+
     Returns:
-        The new counter value.
+        The counter value after the decrement, or None when the decrement was
+        suppressed as a duplicate or could not be read back.
 
     Raises:
         ClientError / Exception if the decrement could not be applied after
         retries — deliberately, so the caller fails and the event is retried.
     """
+    marker_id = f"{DECREMENT_MARKER_PREFIX}{execution_arn}" if execution_arn else None
     last_error: Optional[Exception] = None
     for attempt in range(1, DECREMENT_MAX_ATTEMPTS + 1):
         try:
@@ -480,12 +610,7 @@ def decrement_counter() -> Optional[int]:
                 f"Decrementing concurrency counter (attempt {attempt}/"
                 f"{DECREMENT_MAX_ATTEMPTS})"
             )
-            response = concurrency_table.update_item(
-                Key={"counter_id": COUNTER_ID},
-                UpdateExpression="ADD active_count :dec",
-                ExpressionAttributeValues={":dec": -1},
-                ReturnValues="UPDATED_NEW",
-            )
+            outcome = _apply_decrement(marker_id)
         except Exception as e:  # ClientError and anything else
             last_error = e
             logger.warning(
@@ -495,9 +620,32 @@ def decrement_counter() -> Optional[int]:
                 time.sleep(0.2 * (2 ** (attempt - 1)))
             continue
 
-        # Past this point the decrement HAS been applied. Nothing below may
-        # re-enter the retry loop, or we would decrement a second time.
-        new_count = response.get("Attributes", {}).get("active_count")
+        # Past this point the transaction has been resolved one way or another.
+        # Nothing below may re-enter the retry loop.
+        if outcome == "duplicate":
+            logger.warning(
+                f"Concurrency decrement for {execution_arn} already applied; "
+                "skipping. This is a redelivered terminal event — the slot was "
+                "released by the earlier attempt."
+            )
+            _emit_event_metric("ConcurrencyDecrementSuppressed")
+            return None
+
+        if outcome == "underflow":
+            # Nothing to release: the counter was already at zero. Warn loudly
+            # and let the alarm carry it, but do NOT raise — the document is
+            # terminal, so failing the tracker would be strictly worse than
+            # absorbing a decrement that had nothing to subtract.
+            logger.warning(
+                "Concurrency counter was already 0 when releasing the slot for "
+                f"{execution_arn or 'an execution with no ARN'}; decrement "
+                "skipped to keep the counter from going negative. Investigate "
+                "duplicate terminal events for this execution."
+            )
+            _emit_event_metric("ConcurrencyCounterUnderflow")
+            return 0
+
+        new_count = _read_counter_value()
         logger.info(f"Counter decremented. New value: {new_count}")
         try:
             _emit_counter_metric(new_count)
@@ -512,6 +660,44 @@ def decrement_counter() -> Optional[int]:
         exc_info=True,
     )
     raise last_error if last_error else RuntimeError("decrement failed")
+
+
+def _read_counter_value() -> Optional[int]:
+    """Read the counter back after a decrement.
+
+    TransactWriteItems has no ReturnValues, so the post-decrement value that the
+    handler reports and ``_emit_counter_metric`` publishes has to be read. Purely
+    for reporting: never allowed to fail a decrement that already landed.
+    """
+    try:
+        item = (
+            concurrency_table.get_item(
+                Key={"counter_id": COUNTER_ID}, ConsistentRead=True
+            ).get("Item")
+            or {}
+        )
+        value = item.get("active_count")
+        return int(value) if value is not None else None
+    except Exception as e:
+        logger.warning(f"Could not read back the concurrency counter: {e}")
+        return None
+
+
+def _emit_event_metric(metric_name: str) -> None:
+    """Publish a single count for an exceptional concurrency event.
+
+    These are the only signal an operator gets for an underflow or a suppressed
+    duplicate — both are invisible in every other metric, because the counter and
+    the document both end up in a correct state. Never allowed to affect the
+    decrement it reports on.
+    """
+    try:
+        cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[{"MetricName": metric_name, "Value": 1, "Unit": "Count"}],
+        )
+    except Exception as e:
+        logger.warning(f"Could not emit {metric_name} metric: {e}")
 
 
 def _emit_counter_metric(value) -> None:
@@ -629,9 +815,15 @@ def notify_circuit_breaker_success() -> None:
 
 
 def handler(event, context):
-    logger.info(f"Processing event: {json.dumps(event)}")
+    logger.info(f"Processing event: {json.dumps(sanitize_event_for_logging(event))}")
     counter_value = None
     decrement_attempted = False
+    # Read before the try: the error path below decrements too, and it needs the
+    # same idempotency key as the happy path (a redelivery of an event whose first
+    # attempt raised must not subtract a second slot).
+    execution_arn = None
+    if isinstance(event, dict) and isinstance(event.get("detail"), dict):
+        execution_arn = event["detail"].get("executionArn")
 
     try:
         # Extract data from event
@@ -673,7 +865,7 @@ def handler(event, context):
             # Record this run as an immutable document version (S3-version
             # manifest + run record) before anything can overwrite outputs.
             if not updated_doc.workflow_execution_arn:
-                updated_doc.workflow_execution_arn = event["detail"].get("executionArn")
+                updated_doc.workflow_execution_arn = execution_arn
             # Use the execution's stable stopDate (epoch millis) for the run_id
             # timestamp so an at-least-once redelivery of this SUCCEEDED event
             # dedupes to the same run_id instead of minting a duplicate version.
@@ -683,7 +875,23 @@ def handler(event, context):
                 run_timestamp = datetime.fromtimestamp(
                     stop_date / 1000, tz=timezone.utc
                 ).isoformat()
-            record_document_run(updated_doc, run_timestamp=run_timestamp)
+            # Belt-and-braces, mirroring put_latency_metrics below it.
+            # record_document_run() already wraps its whole body in
+            # `except Exception` and documents "Never raises", so nothing
+            # escapes it today — a DynamoDB throttle or S3 error in that
+            # history/audit write is already swallowed there, and this guard
+            # changes no current behaviour. It earns its keep only if that
+            # contract is ever broken by an edit inside the function, and even
+            # then what it protects is the REST of the terminal handling
+            # (latency metrics, circuit-breaker notify) and the 200 response —
+            # not the decrement, which the error path below performs anyway.
+            try:
+                record_document_run(updated_doc, run_timestamp=run_timestamp)
+            except Exception as run_error:
+                logger.error(
+                    f"Failed to record document run: {run_error}", exc_info=True
+                )
+                # Continue processing even if the run record fails
 
             try:
                 logger.info("Workflow succeeded, publishing latency metrics")
@@ -704,7 +912,7 @@ def handler(event, context):
 
         # Always decrement counter
         decrement_attempted = True
-        counter_value = decrement_counter()
+        counter_value = decrement_counter(execution_arn)
 
         return {
             "statusCode": 200,
@@ -722,7 +930,9 @@ def handler(event, context):
         # never got as far as trying. decrement_counter() now retries internally
         # and raises when it truly cannot apply the write, so calling it a second
         # time here would only risk a double-subtract (a write that landed but
-        # answered with an error) without adding a chance of success.
+        # answered with an error) without adding a chance of success. The
+        # per-execution marker makes that double-subtract impossible now, but the
+        # guard stays: a second attempt still adds nothing.
         if not decrement_attempted:
-            decrement_counter()
+            decrement_counter(execution_arn)
         raise

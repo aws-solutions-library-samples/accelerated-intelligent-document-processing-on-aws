@@ -124,6 +124,8 @@ export default defineConfig({
         {
           label: "Evaluation & Testing",
           items: [
+            // Every test method in the repo, and whether CI runs it.
+            { label: "Testing", slug: "testing" },
             { label: "Evaluation Framework", slug: "evaluation" },
             {
               label: "Enhanced Reporting",
@@ -246,13 +248,18 @@ export default defineConfig({
             { label: "Circuit Breaker", slug: "circuit-breaker" },
             { label: "Cross-Account Bedrock", slug: "cross-account-bedrock" },
             { label: "Version Update Indicator", slug: "version-update-indicator" },
+            // The publish-to-public-buckets procedure. Kept out of the
+            // "Release Validation" group, whose entries are per-release records
+            // written once and never overwritten; this page is a live procedure.
+            { label: "Release Runbook", slug: "release-runbook" },
           ],
         },
         {
           label: "Planning & Security",
           items: [
+            { label: "Threat Model", slug: "threat-model" },
             {
-              label: "Well-Architected Assessment",
+              label: "Well-Architected Review",
               slug: "well-architected",
             },
             {

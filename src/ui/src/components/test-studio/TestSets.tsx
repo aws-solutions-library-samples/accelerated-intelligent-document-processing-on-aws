@@ -19,6 +19,7 @@ import {
   Select,
   StatusIndicator,
   Link,
+  Popover,
 } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 import useUserRole from '../../hooks/use-user-role';
@@ -632,27 +633,16 @@ const TestSets = (): React.JSX.Element => {
         }
 
         if (status === 'FAILED' && item.error) {
-          const truncatedError = item.error.length > 15 ? `${item.error.substring(0, 15)}...` : item.error;
-
+          // The whole message, one click away. It used to be cut to 15 characters with
+          // the rest in a native tooltip, which turned "No files found in baseline/
+          // folder within zip file" into "No files found..." — the one part that did
+          // not say what was wrong. A text trigger, not a custom one: the custom
+          // trigger leaves the indicator a plain span, so nothing is focusable and a
+          // keyboard user can never reach the reason.
           return (
-            <div>
-              <div style={{ color: '#d13212', fontWeight: 'bold' }}>FAILED</div>
-              <div
-                style={{
-                  fontSize: '0.9em',
-                  color: '#666',
-                  marginTop: '2px',
-                  cursor: 'help',
-                  maxWidth: '200px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-                title={item.error}
-              >
-                {truncatedError}
-              </div>
-            </div>
+            <Popover dismissButton={false} position="top" size="large" triggerType="text" content={item.error}>
+              <StatusIndicator type="error">FAILED — why?</StatusIndicator>
+            </Popover>
           );
         }
 

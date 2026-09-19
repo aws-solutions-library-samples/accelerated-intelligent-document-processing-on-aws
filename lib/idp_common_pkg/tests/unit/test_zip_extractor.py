@@ -379,3 +379,64 @@ class TestExtractionWritesFiles:
 
         assert not any("._document1" in k or "__MACOSX" in k for k in keys)
         assert len(keys) == 2
+
+
+@pytest.mark.unit
+class TestDocumentsOnlyZip:
+    """A zip with only input/ is the "documents only" set the wizard offers (#897).
+
+    The extractor alone insisted on a baseline/ folder, so the option the UI names
+    could not succeed by any arrangement of the archive. The rule is now the
+    validator's: no baselines at all is an unlabeled set; baselines that are present
+    but mismatched are still a broken upload.
+    """
+
+    _RESULT = json.dumps({"inference_result": {"f": "v"}})
+
+    def test_input_only_zip_writes_the_documents_and_raises_nothing(self):
+        keys = _extract_and_capture(
+            {"input/document1.pdf": b"pdf", "input/document2.pdf": b"pdf"}
+        )
+        assert keys == ["ts1/input/document1.pdf", "ts1/input/document2.pdf"]
+
+    def test_wrapped_input_only_zip_behaves_the_same(self):
+        keys = _extract_and_capture({"my-set/input/document1.pdf": b"pdf"})
+        assert keys == ["ts1/input/document1.pdf"]
+
+    def test_an_empty_baseline_directory_entry_counts_as_no_baselines(self):
+        # `zip -r` of a folder tree records the empty directory itself; the issue's
+        # second reproduction. Directory entries are skipped, so nothing is written
+        # under baseline/ and the set is unlabeled rather than failed.
+        keys = _extract_and_capture({"input/document1.pdf": b"pdf", "baseline/": b""})
+        assert keys == ["ts1/input/document1.pdf"]
+
+    def test_baselines_for_only_some_documents_still_fail(self):
+        with pytest.raises(
+            ValueError, match="Missing baseline files for: document2.pdf"
+        ):
+            _extract_and_capture(
+                {
+                    "input/document1.pdf": b"pdf",
+                    "input/document2.pdf": b"pdf",
+                    "baseline/document1.pdf/sections/1/result.json": self._RESULT,
+                }
+            )
+
+    def test_baselines_without_a_matching_input_still_fail(self):
+        with pytest.raises(
+            ValueError,
+            match="Extra baseline files without corresponding input: ghost.pdf",
+        ):
+            _extract_and_capture(
+                {
+                    "input/document1.pdf": b"pdf",
+                    "baseline/document1.pdf/sections/1/result.json": self._RESULT,
+                    "baseline/ghost.pdf/sections/1/result.json": self._RESULT,
+                }
+            )
+
+    def test_a_zip_with_no_documents_still_fails(self):
+        with pytest.raises(ValueError, match="No files found in input/"):
+            _extract_and_capture(
+                {"baseline/document1.pdf/sections/1/result.json": self._RESULT}
+            )

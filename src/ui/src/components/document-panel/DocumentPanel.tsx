@@ -45,6 +45,11 @@ import useClassificationComparison from '../../hooks/use-classification-comparis
 import { exportDocument, isBaselineAvailable, triggerBrowserDownload } from './document-export';
 import type { ExportErrorEntry, ExportProgress, ExportScope } from './document-export';
 import { DownloadOptionsModal, DownloadProgressModal } from './DocumentDownloadModals';
+// Exact-key pricing resolution, ported from the backend's _get_unit_cost. Kept in
+// its own module so it can be unit-tested without mounting this component — see
+// pricing.test.ts, which pins the cache-read case this file used to get wrong.
+import { lookupUnitPrice } from './pricing';
+import type { PricingLookup } from './pricing';
 // Uncomment the line below to enable debugging
 // import { debugDocumentStructure } from '../common/debug-utils';
 
@@ -102,12 +107,6 @@ interface PricingItem {
 
 interface PricingData {
   pricing: PricingItem[];
-}
-
-interface PricingLookup {
-  [serviceName: string]: {
-    [unitName: string]: number;
-  };
 }
 
 interface ConfidenceAlertsSectionProps {
@@ -188,42 +187,6 @@ const parseServiceApiKey = (serviceApiKey: string): { context: string; serviceAp
   return { context: '', serviceApi: serviceApiKey };
 };
 
-// Look up a unit price for a service/unit, mirroring the backend's
-// _get_unit_cost matching (idp_common/reporting/save_reporting_data.py):
-//   1. exact match on serviceApi
-//   2. bidirectional substring match on the service key, then a flexible
-//      substring match on the unit name.
-// This lets a generic pricing entry (e.g. "GENAIIDP-mistral-ocr-hook") match a
-// metering key that embeds the full Lambda ARN
-// (e.g. "lambda_hook/arn:aws:lambda:...:function:GENAIIDP-mistral-ocr-hook").
-const lookupUnitPrice = (pricingData: PricingLookup, serviceApi: string, unit: string): number | null => {
-  // 1. Exact match
-  if (pricingData[serviceApi] && pricingData[serviceApi][unit] !== undefined) {
-    return Number(pricingData[serviceApi][unit]);
-  }
-
-  // 2. Partial match (case-insensitive, bidirectional on the service key)
-  const serviceApiLower = serviceApi.toLowerCase();
-  const unitLower = unit.toLowerCase();
-  const serviceKeys = Object.keys(pricingData);
-  for (let i = 0; i < serviceKeys.length; i += 1) {
-    const serviceKey = serviceKeys[i];
-    const serviceKeyLower = serviceKey.toLowerCase();
-    if (serviceKeyLower.includes(serviceApiLower) || serviceApiLower.includes(serviceKeyLower)) {
-      const unitKeys = Object.keys(pricingData[serviceKey]);
-      for (let j = 0; j < unitKeys.length; j += 1) {
-        const unitKey = unitKeys[j];
-        const unitKeyLower = unitKey.toLowerCase();
-        if (unitKeyLower === unitLower || unitKeyLower.includes(unitLower) || unitLower.includes(unitKeyLower)) {
-          return Number(pricingData[serviceKey][unitKey]);
-        }
-      }
-    }
-  }
-
-  return null;
-};
-
 // Helper function to format cost cells
 const formatCostCell = (rowItem: MeteringRowItem): React.JSX.Element | string => {
   if (rowItem.isTotal) {
@@ -282,8 +245,9 @@ const MeteringTable = ({ meteringData, preCalculatedTotals }: MeteringTableProps
       const numericValue = Number(value);
 
       // Look up the unit price from the pricing data using the parsed serviceApi.
-      // Uses exact-then-partial matching (mirrors the backend) so generic
-      // pricing entries match metering keys that embed a full Lambda ARN.
+      // Exact key with a '/'-suffix walk and an exact unit match, mirroring the
+      // backend's _get_unit_cost. null means genuinely unpriced (rendered
+      // 'None'/'N/A'); 0 means metered but not chargeable.
       let unitPrice: number | null = lookupUnitPrice(pricingData, serviceApi, unit);
       let unitPriceDisplayValue = 'None';
       let cost = 0;

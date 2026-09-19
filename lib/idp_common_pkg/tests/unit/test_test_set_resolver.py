@@ -5606,6 +5606,43 @@ class TestTestSetResolver:
         assert row["status"] == "COMPLETED"
         assert "error" not in row
 
+    def test_reconcile_keeps_a_refused_upload_failed(self, labeling_env):
+        """A zip the extractor refused must stay FAILED, with its reason.
+
+        The refused upload leaves the prefix with only the archive: no input/,
+        no baseline/, and no ``.keep`` marker (only create-empty and Remove write
+        that). Without this guard the emptied-set rule rewrote the row to
+        COMPLETED with zero files one refresh later and dropped the error, so the
+        table's "FAILED — why?" was readable only until the next poll.
+        """
+        table, s3 = labeling_env
+
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/upload.zip", Body=b"PK")
+        _seed_test_set(
+            table,
+            "ts1",
+            name="ts1",
+            status="FAILED",
+            error="Missing baseline files for: doc_0002.pdf",
+            fileCount=0,
+            labelState="unlabeled",
+            source="uploaded",
+            createdAt="2026-01-01T00:00:00Z",
+            InitialEventTime="2026-01-01T00:00:00Z",
+            ItemType="testset",
+        )
+
+        existing_row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})[
+            "Item"
+        ]
+        test_set_index._reconcile_test_set_tracking_entry(
+            s3, "test-set-bucket", "ts1", existing_row
+        )
+        row = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert row["status"] == "FAILED"
+        assert row["error"] == "Missing baseline files for: doc_0002.pdf"
+        assert row["fileCount"] == 0
+
     def test_reconcile_clears_error_when_baseline_added_back(self, labeling_env):
         """A row FAILED yesterday must recover when the missing baseline arrives."""
         table, s3 = labeling_env

@@ -972,10 +972,36 @@ class SaveReportingData:
         self._pricing_cache = pricing_map
         return pricing_map
 
-    def _get_unit_cost(self, service_api: str, unit: str) -> float:
+    def _get_unit_cost(self, service_api: str, unit: str) -> Optional[float]:
         """
         Get the unit cost for a specific service API and unit using the
         configuration dictionary (same source as the UI).
+
+        Resolution is by EXACT pricing key. ``service_api`` is tried first, then
+        progressively shorter ``/``-delimited suffixes of it, and the longest
+        match wins — the same rule the benchmark harness uses
+        (``benchmarks/harness/lib.py::price_metering``), so the two cost figures
+        the project publishes cannot diverge. Every shipped pricing key is fully
+        qualified (``bedrock/<model-id>``, ``textract/<api>``,
+        ``lambda_hook/<function-name>``), so the suffix walk only ever strips
+        leading context components; it cannot bind one model to another.
+
+        The suffix walk is also what keeps a pricing key that is *less* qualified
+        than the metering key working, which is why a user config that keys a
+        Lambda hook on the bare ``GENAIIDP-<name>`` still resolves even though the
+        shipped default is now ``lambda_hook/GENAIIDP-<name>``. Note the
+        corollary: a Lambda hook's metering key must carry the bare function
+        name, not the configured ARN — an ARN delimits the name with ``:``, which
+        this walk cannot split, so an ARN-keyed metering row is unpriceable. See
+        ``bedrock.client.lambda_hook_metering_name``.
+
+        There is deliberately NO substring/fuzzy fallback. The previous
+        implementation accepted a pricing key that was merely a substring of the
+        requested ``service_api`` (or vice versa), and — worse — a unit name that
+        was merely a substring of the requested ``unit``. Because ``inputTokens``
+        is the first unit in every pricing row, ``cacheReadInputTokens`` bound to
+        it and cache reads were billed at the FRESH INPUT rate: up to 10x their
+        real price, always in the expensive direction. See GitHub issue #926.
 
         Args:
             service_api: The AWS service API (e.g., 'bedrock/model-id',
@@ -983,42 +1009,44 @@ class SaveReportingData:
             unit: The unit of measurement (e.g., 'inputTokens', 'pages')
 
         Returns:
-            Unit cost in USD, or 0.0 if not found
+            The unit cost in USD; ``0.0`` when a pricing entry exists but does
+            not list this unit (the unit is not chargeable for that service);
+            or ``None`` when no pricing entry exists for ``service_api`` at all.
+            ``None`` is an explicit "unpriced" result, not a price — the caller
+            records it as NULL so a pricing gap stays distinguishable from
+            something that is genuinely free. Never silently substitutes a
+            related model's price.
         """
         pricing_map = self._get_pricing_from_config()
 
-        # Try exact match first
-        if service_api in pricing_map and unit in pricing_map[service_api]:
-            return pricing_map[service_api][unit]
-
-        # Try partial matches for common patterns
-        service_api_lower = service_api.lower()
-        unit_lower = unit.lower()
-
-        for service_key, service_costs in pricing_map.items():
-            service_key_lower = service_key.lower()
-            if (
-                service_key_lower in service_api_lower
-                or service_api_lower in service_key_lower
-            ):
-                for unit_key, cost in service_costs.items():
-                    unit_key_lower = unit_key.lower()
-                    if (
-                        unit_key_lower == unit_lower
-                        or unit_key_lower in unit_lower
-                        or unit_lower in unit_key_lower
-                    ):
-                        logger.info(
-                            f"Using partial match for {service_api}/{unit}: "
-                            f"{service_key}/{unit_key} = ${cost}"
-                        )
-                        return cost
+        parts = service_api.split("/")
+        for start in range(len(parts)):
+            candidate = "/".join(parts[start:])
+            service_costs = pricing_map.get(candidate)
+            if service_costs is None:
+                continue
+            if unit in service_costs:
+                return service_costs[unit]
+            # The entry exists but does not list this unit, which means the unit
+            # is not chargeable for that service rather than that pricing is
+            # missing. Two routine cases: pricing.yaml deliberately omits units
+            # that do not apply (the us-gov Claude profile has no cache units
+            # because it never reports cache reads), and every Bedrock call
+            # meters 'totalTokens' and 'requests', neither of which Bedrock
+            # charges for. So $0.00, not an unpriced NULL.
+            logger.debug(
+                f"Pricing entry '{candidate}' lists no unit '{unit}'; "
+                f"treating as not chargeable ($0.0)"
+            )
+            return 0.0
 
         logger.warning(
-            f"No unit cost mapping found for service_api='{service_api}', "
-            f"unit='{unit}'. Using $0.0"
+            f"UNPRICED: no pricing entry for service_api='{service_api}' "
+            f"(unit='{unit}'). Recording this metering row with a NULL cost "
+            f"rather than $0.00, which would understate spend silently. Add a "
+            f"'{service_api}' entry to the pricing configuration."
         )
-        return 0.0
+        return None
 
     def clear_pricing_cache(self):
         """
@@ -1129,6 +1157,11 @@ class SaveReportingData:
 
         # Process metering data
         metering_records = []
+        # service_api values with no pricing entry at all. Collected so the miss
+        # is reported once per document as well as per row — a single grep-able
+        # line naming every unpriced service, rather than a warning buried among
+        # the per-unit ones.
+        unpriced_service_apis = set()
 
         for key, metrics in document.metering.items():
             # Split the key into context and service_api
@@ -1154,9 +1187,20 @@ class SaveReportingData:
                 # Get the number of pages from the document
                 num_pages = document.num_pages if document.num_pages is not None else 0
 
-                # Calculate unit cost and estimated cost using pricing from configuration
+                # Calculate unit cost and estimated cost using pricing from
+                # configuration. ``None`` means the pricing configuration has no
+                # entry for this service at all, so both cost columns are written
+                # as NULL instead of $0.00: a zero is indistinguishable from
+                # something that is genuinely free, and it silently understates
+                # spend. SUM() in Athena ignores NULLs the same way it would a
+                # zero, so totals are unaffected, but the gap is now queryable
+                # (``WHERE unit_cost IS NULL``). See _get_unit_cost.
                 unit_cost = self._get_unit_cost(service_api, unit)
-                estimated_cost = float_value * unit_cost
+                if unit_cost is None:
+                    unpriced_service_apis.add(service_api)
+                    estimated_cost = None
+                else:
+                    estimated_cost = float_value * unit_cost
 
                 metering_record = {
                     "document_id": document_id,
@@ -1172,6 +1216,14 @@ class SaveReportingData:
                     "config_version": document.config_version or "default",
                 }
                 metering_records.append(metering_record)
+
+        if unpriced_service_apis:
+            logger.warning(
+                f"UNPRICED SERVICES for document {document_id}: "
+                f"{sorted(unpriced_service_apis)}. Cost for these rows is NULL, "
+                f"so reported spend for this document is INCOMPLETE. Add pricing "
+                f"entries for them to config_library/pricing.yaml."
+            )
 
         # Save metering data in Parquet format. Path is date+hour partitioned
         # so the tier picker's <2h tail query can prune to the current hour

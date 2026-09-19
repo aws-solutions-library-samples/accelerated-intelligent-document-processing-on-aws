@@ -24,7 +24,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
 | **Amazon EventBridge** | Triggers document processing workflows when files are uploaded | ✓ | ✓ |
 | **Amazon CloudFront** | Delivers the web UI with global distribution (default hosting mode) | ✓ | ✓ |
-| **Amazon API Gateway** | Backs the web UI's data API, and can alternatively serve the web UI itself (S3 proxy) for VPC-based deployments (see [API Gateway Hosting](./apigateway-hosting.md)) | ✓ | ✓ |
+| **Amazon API Gateway** | Backs the web UI's data API — a REST API with a Cognito User Pools authorizer in front of a dispatcher Lambda, which is how every UI query and mutation reaches the backend (see [AppSync → REST API Migration](./migration-appsync-to-rest.md)). Can alternatively serve the web UI itself (S3 proxy) for VPC-based deployments (see [API Gateway Hosting](./apigateway-hosting.md)) | ✓ | ✓ |
 | **Amazon ECR** | Stores container images for the pattern processing Lambda functions (OCR, classification, extraction, etc., which are deployed as container images) | ✓ | ✓ |
 | **AWS CloudFormation** | Deploys and manages the solution infrastructure | ✓ | |
 | **AWS SAM** | Simplifies serverless application deployment | ✓ | |
@@ -47,9 +47,8 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
-| **Amazon Cognito** | Manages user authentication and authorization | ✓ | ✓ |
-| **AWS AppSync** | Provides GraphQL API for the web UI | ✓ | ✓ |
-| **AWS WAF** | Protects web applications from web exploits (optional) | ✓ | ✓ |
+| **Amazon Cognito** | Manages user authentication and authorization. The User Pool fronts the UI's REST API as a **User Pools authorizer** (authentication only — per-role authorization is enforced in each resolver, see [rbac.md](./rbac.md)), and the Identity Pool's authenticated role SigV4-signs the chat streaming Lambda Function URL | ✓ | ✓ |
+| **AWS WAF** | Protects the UI's REST API from unwanted sources (optional) — a REGIONAL WAFv2 WebACL associated with the REST API stage, enabled when `WAFAllowedIPv4Ranges` is set to anything other than the allow-all default | ✓ | ✓ |
 | **AWS Marketplace (Agreement / Catalog / Entitlement)** | Subscription checks for paid Feature Platform extensions. In the **host** stack, buyer-side `SearchAgreements`. In the optional **Seller Entitlement Service** (deployed separately, into a *seller* account), seller-side `SearchAgreements` + `ListEntities` | — | ✓ |
 
 ### Monitoring & Operations
@@ -75,6 +74,27 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 
 For organizations with Service Control Policies (SCPs) that mandate permissions boundaries on all IAM roles, the solution provides comprehensive support through the `PermissionsBoundaryArn` parameter. This optional parameter can be specified during deployment to attach a permissions boundary to all IAM roles (both explicit roles and implicit roles created by AWS SAM functions).
 
+> **The boundary is optional for the stack but required by the delegated
+> deployment role.** If you deploy through the example CloudFormation service role
+> in [iam-roles/cloudformation-management/](../iam-roles/cloudformation-management/README.md),
+> a boundary is **mandatory**: that stack's `CreatedRolePermissionsBoundaryArn`
+> parameter has no default, and the same ARN must be passed here as
+> `PermissionsBoundaryArn`. The service role's `iam:CreateRole` grant carries an
+> `iam:PermissionsBoundary` condition, which is the mechanism that stops a
+> delegated deployment identity from being able to create a role more powerful
+> than itself. Deploying with an empty `PermissionsBoundaryArn` through that role
+> fails on `iam:CreateRole` by design. Deploying with administrator credentials is
+> unaffected.
+>
+> Do **not** confuse that with the service-role template's second, optional
+> parameter `ServiceRolePermissionsBoundaryArn`, which caps the deployment role
+> itself and must be left blank or set to a *wide* policy. Passing the tight
+> runtime boundary there stops the role deploying anything.
+>
+> If the IDP stack already exists and was deployed before that role was hardened,
+> read "Updating an Existing Deployment" in the service role's README first: three
+> detectable configurations wedge the update in `UPDATE_ROLLBACK_FAILED`.
+
 **Usage:**
 ```bash
 aws cloudformation deploy \
@@ -97,10 +117,29 @@ Deploying this solution requires an IAM role/user with the following permissions
 > CloudFormation assumes on a user's behalf, so developers/DevOps can deploy and
 > manage IDP stacks with only `iam:PassRole` instead of broad administrator
 > access. See also [Deployment → Administrator Access Requirements](./deployment.md#administrator-access-requirements).
+>
+> That role is a **deployment** role, not a least-privilege one. It still holds
+> `cloudformation:*` plus service wildcards on 25 services, because a
+> CloudFormation service role must be able to create, update, **and roll back**
+> every resource type in every optional feature of the templates. What contains
+> it is not narrow actions but three constraints, which its own template now
+> requires: a mandatory `CreatedRolePermissionsBoundaryArn` (its `iam:CreateRole`
+> grant carries an `iam:PermissionsBoundary` condition, so it cannot mint a role
+> outside the boundary), a `ManagedStackNamePrefix` that scopes its IAM
+> role/policy grants to resource names beginning with that prefix, and a trust
+> policy that admits only the CloudFormation service principal in the same
+> account. Read the "Read This Before Granting the Role" and "What Remains Broad,
+> and Why" sections of that
+> [README](../iam-roles/cloudformation-management/README.md) before granting it.
 
 #### Essential Permissions
 * `cloudformation:*` - Create and manage CloudFormation stacks
-* `iam:*` - Create and manage IAM roles and policies
+* `iam:*` - Create and manage IAM roles and policies. This is the one entry the
+  example service role deliberately does **not** grant as a wildcard: it holds a
+  named list of role/policy actions, scoped to the stack name prefix, with
+  `iam:CreateRole` gated on the permissions boundary and explicit denies on
+  removing that boundary, editing the boundary policy, editing the service role
+  itself, and creating IAM users or access keys
 * `lambda:*` - Create and configure Lambda functions
 * `states:*` - Create and manage Step Functions state machines
 * `s3:*` - Create buckets and manage S3 resources
@@ -110,21 +149,33 @@ Deploying this solution requires an IAM role/user with the following permissions
 * `cloudfront:*` - Create and configure CloudFront distributions
 * `cognito-idp:*` - Create and configure Cognito user pools 
 * `cognito-identity:*` - Create and configure Cognito identity pools for AWS service access
-* `appsync:*` - Create and configure AppSync APIs
+* `apigateway:*` - Create and configure the UI ⇄ backend REST API (and the optional API Gateway UI host)
+* `appsync:*` - **Legacy, retained for upgrades only.** No template creates an AppSync API any more (see [AppSync → REST API Migration](./migration-appsync-to-rest.md)); the grant remains so that an in-place update of a stack created *before* that migration can delete the AppSync resources it still owns. Safe to drop once no pre-migration stacks remain.
 * `logs:*` - Create and configure CloudWatch log groups
 * `cloudwatch:*` - Create and configure CloudWatch dashboards and alarms
 * `sns:*` - Create and configure SNS topics
 
 #### Feature-Specific Permissions
 * `bedrock:*` - Create and invoke Bedrock resources (all modes)
-* `textract:*` - OCR via Amazon Textract (Pipeline mode)
 * `ecr:*` - Create ECR repositories and push pattern container images
-* `glue:*`, `athena:*` - Create the reporting database/tables and run analytics queries (evaluation reporting)
+* `glue:*` - Create the reporting database and tables (evaluation reporting).
+  `athena:*` is needed to *query* that data, not to deploy it — no template
+  declares an `AWS::Athena` resource, so the example service role does not grant it
 * `aoss:*` / `opensearch-serverless:*` - Create OpenSearch Serverless collections (Knowledge Base feature, only when `KnowledgeBaseVectorStore: OPENSEARCH_SERVERLESS`; the default S3 Vectors store does not need this)
-* `sagemaker:*` - Optional MLflow tracking server integration (only when MLflow is enabled)
 * `kms:*` - Create KMS keys for encryption
 * `wafv2:*` - Configure WAF rules (optional)
+* `ec2:*` - Create the VPC-attached resources used by the private/VPC hosting
+  variants and the optional bastion host
+* `scheduler:*` / `secretsmanager:*` - Optional scheduled jobs and stored secrets
 * `glue:*` / `codebuild:*` / `ssm:*` - Supporting build, configuration, and reporting infrastructure
+
+> **Runtime-only services are not deployment permissions.** `textract:*` and
+> `sagemaker:*` were previously listed here, but neither is needed to *create* the
+> stack: no template declares an `AWS::Textract` or `AWS::SageMaker` resource.
+> Textract is called at runtime by the OCR Lambda, and SageMaker (MLflow tracking)
+> at runtime by the evaluation path — both via the scoped Lambda execution roles
+> described under [Runtime Roles](#runtime-roles). They have been removed from the
+> example CloudFormation service role for the same reason.
 
 > **Note:** Earlier releases used Amazon SageMaker to host a UDOP classification endpoint (the former "Pattern 3"). The unified architecture no longer deploys a SageMaker inference endpoint; document classification is performed by Bedrock foundation models (with optional custom/fine-tuned model ARNs). SageMaker now appears only in the optional MLflow tracking integration.
 
@@ -176,10 +227,10 @@ The solution creates various IAM roles to run different components of the system
   * `logs:*`
 
 #### Web UI & API Roles
-* **AppSync Service Role**:
+* **API Dispatcher Role** (the single Lambda behind `POST /op/{field}`, which fans a request out to the per-field resolver Lambdas and serves the DynamoDB-direct fields in process):
   * `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:Scan`
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`
-  * `lambda:InvokeFunction`
+  * `lambda:InvokeFunction` (only the resolver functions in its field → function map)
 
 * **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
@@ -192,8 +243,8 @@ The solution creates various IAM roles to run different components of the system
   * `bedrock:InvokeModel` (foundation models + inference profiles, for Z3 RuleJSON translation via `generateRuleJson` mutation)
   * `bedrock:DeleteDataAutomationProject`, `bedrock:GetDataAutomationProject`, `bedrock:DeleteBlueprint`, `bedrock:ListBlueprints`
 
-* **Cognito Authentication Role**:
-  * `appsync:GraphQL`
+* **Cognito Authentication Role** (the Identity Pool's authenticated role, assumed by the browser):
+  * `lambda:InvokeFunction` on the chat streaming function — the browser SigV4-signs its Function URL directly (a Function URL invocation needs `InvokeFunction`, *not* `InvokeFunctionUrl`). The REST API itself is reached with the Cognito **ID token**, not IAM, so no `execute-api:Invoke` grant is required.
   * `s3:GetObject` (for UI assets and buckets)
   * `ssm:GetParameter` (for settings)
 
@@ -229,9 +280,8 @@ The solution creates various IAM roles to run different components of the system
 * **Evaluation Function Role**:
   * `s3:GetObject` (from baseline bucket)
   * `s3:PutObject`, `s3:GetObject` (for output bucket)
-  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
+  * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem` — evaluation results are written straight to the tracking table; backend workers do not call the UI API
   * `bedrock:InvokeModel` (for LLM-based evaluations)
-  * `appsync:GraphQL` (for updating evaluation results)
   * `cloudwatch:PutMetricData`
   * `logs:*`
 

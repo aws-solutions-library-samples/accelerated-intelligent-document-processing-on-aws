@@ -43,6 +43,7 @@ from idp_common.extraction.page_type_resolver import (
 from idp_common.extraction.sharding import (
     DEFAULT_MAX_PAGES_PER_SHARD,
     DEFAULT_SHARD_TOKEN_BUDGET,
+    _rebalance_to_cap,  # noqa: PLC2701 - see _agentic_images_per_request (#994)
     estimate_tokens,
     plan_shards,
 )
@@ -95,6 +96,18 @@ class ExtractionInputTooLarge(Exception):
     and the document's errors carry an explanation and a remedy instead of the
     bare "Input is too long for requested model". Deterministic — the class name
     is deliberately NOT in any retry list (#787).
+    """
+
+
+class ExtractionImageRejected(Exception):
+    """Bedrock rejected a section's request because of the IMAGES it carried.
+
+    A different failure from :class:`ExtractionInputTooLarge` even though both
+    surface as a ``ValidationException``: the remedy is smaller page images, not
+    fewer tokens or smaller shards. Reducing pages per shard or switching to
+    Advanced mode does not help, and #994 shows what happens when the two are
+    conflated — users tune budgets that cannot fix it. Deterministic, so like
+    ``ExtractionInputTooLarge`` the class name is NOT in any retry list.
     """
 
 
@@ -692,6 +705,239 @@ class ExtractionService:
             header_tokens,
         )
         return payloads
+
+    def _preflight_table_parse(self, ocr_analysis: dict[str, Any]) -> dict | None:
+        """Parse the section's tables deterministically before the agent runs.
+
+        Returns the ``parse_markdown_tables`` result, or ``None`` when pre-flight
+        does not apply (table parsing disabled, or too few estimated rows for the
+        table pipeline to be the right tool).
+
+        Shared by the single-pass agentic path and the sharded SFN plan. It used
+        to live inline in the single-pass path only, which meant the sharded path
+        — the default for any multi-page table document — never knew a table had
+        already been parsed, and so never applied the ``lazy_images``
+        optimization below.
+        """
+        tp_config = self.config.extraction.agentic.table_parsing
+        if not (tp_config.enabled and ocr_analysis.get("estimated_row_count", 0) >= 50):
+            return None
+        from idp_common.extraction.tools.table_parser import parse_markdown_tables
+
+        result = parse_markdown_tables(
+            text=self._document_text,
+            max_empty_line_gap=tp_config.max_empty_line_gap,
+            auto_merge_adjacent_tables=tp_config.auto_merge_adjacent_tables,
+        )
+        # Logged here rather than at the call sites so both agentic paths are
+        # equally observable: the sharded path used to run no pre-flight at all,
+        # and once it did, it still emitted no evidence of having done so.
+        logger.info(
+            "Pre-flight table parsing complete",
+            extra={
+                "status": result.get("status"),
+                "table_count": result.get("table_count", 0),
+                "total_rows": sum(
+                    t.get("row_count", 0) for t in result.get("tables", [])
+                ),
+                "columns": result.get("columns", []),
+            },
+        )
+        return result
+
+    # Scope note for SHARDED agents ONLY (passed via `scope_note=` below). The
+    # block itself is written for an agent holding the whole section, and two of
+    # its sentences read wrong from inside a shard:
+    #
+    #  * "extract ONLY text between markers for your pages" — a shard's text is
+    #    ALREADY only its pages, and every shard after the first is prefixed with
+    #    a `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
+    #    OUTSIDE the `--- PAGE N ---` markers on purpose (`_build_shard_payloads`)
+    #    because it carries the table's column-header row. An agent obeying that
+    #    sentence literally drops the header, the deterministic parse then fails
+    #    on text that starts mid-table, and the agent falls back to emitting rows
+    #    itself — a COMPLETENESS risk, not only a cost one.
+    #  * the table/row totals are section-wide (`_preflight_table_parse` parses
+    #    the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system
+    #    prompt tells the agent to verify row_count against the document and
+    #    never stop until all rows are captured. A shard covering 2 of 6 pages
+    #    that reads those totals as its own target can over-extract or fail to
+    #    terminate. `_run_shard_agent`'s per-shard "covering pages A-B of T"
+    #    sentence does establish the subset, but only a strong model reconciles
+    #    it with the totals unaided.
+    _SHARD_SCOPE_NOTE = (
+        "YOUR SCOPE (sharded run — this overrides the marker rule above): the "
+        "text you were given ALREADY contains only your assigned pages, so pass "
+        "ALL of it to parse_table, including any leading "
+        "'--- DOCUMENT HEADER (page 1, for context only) ---' block. That header "
+        "carries the table's column headers and deliberately sits outside the "
+        "'--- PAGE N ---' markers; dropping it makes parse_table fail on text "
+        "that starts mid-table.\n"
+        "The table and row totals above are for the WHOLE section, not for your "
+        "pages: parse_table on your pages will legitimately return fewer rows, "
+        "and that is complete for your scope."
+    )
+
+    @staticmethod
+    def _append_preflight_table_guidance(
+        custom_instruction: str | None,
+        preflight_parse_result: dict | None,
+        *,
+        scope_note: str | None = None,
+    ) -> str | None:
+        """Append the PRE-PARSED TABLE DATA block to an agent instruction.
+
+        Returns ``custom_instruction`` unchanged when there is no successful
+        pre-flight parse to describe, so the caller can apply this
+        unconditionally.
+
+        The block tells the agent that the section's tables have *already* been
+        parsed deterministically — how many tables, how many rows, which columns
+        — and then walks it through the tool chain that keeps the rows out of the
+        model's output: ``parse_table`` → ``map_table_to_schema`` →
+        ``finalize_table_extraction``, with the closing note that ``finalize``
+        reads the mapped rows from agent state so no JSON rows need to be
+        generated. Suppressing that row-by-row JSON fallback is the whole point:
+        it is the same failure mode whose removal cut Extraction output tokens
+        from 1,512,506 to 681,222 over an identical 12-run arm in the
+        advanced-extraction study.
+
+        Shared by the single-pass agentic path and the sharded SFN plan
+        (issue #900). It used to live inline in the single-pass path only, so the
+        shard agents — the DEFAULT for any multi-page table document, and the
+        ones the page-marker paragraph was written for — never received it, even
+        after #898 gave the sharded path the same pre-flight parse.
+
+        The page-range wording stays generic ("when you are assigned a page
+        range") rather than naming a concrete range, because the plan builds ONE
+        instruction for all of a section's shards and
+        ``agentic_idp._run_shard_agent`` already appends each shard's own
+        ``pages N-M of T`` sentence immediately after this block.
+
+        ``scope_note`` is an optional paragraph inserted directly after the
+        page-marker rule, so it can qualify it. The sharded call sites pass
+        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for what the block gets
+        wrong when read from inside a shard); the single-agent path passes
+        nothing, which keeps its instruction byte-identical to the text the
+        advanced-extraction study measured.
+        """
+        if (preflight_parse_result or {}).get("status") != "success":
+            return custom_instruction
+
+        total_rows = sum(
+            t.get("row_count", 0) for t in preflight_parse_result.get("tables", [])
+        )
+        columns = preflight_parse_result.get("columns", [])
+        table_count = preflight_parse_result.get("table_count", 0)
+        scope_paragraph = f"{scope_note}\n\n" if scope_note else ""
+
+        guidance = (
+            f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
+            f"Found {table_count} table(s) with {total_rows} total rows.\n"
+            f"Table columns: {columns}\n\n"
+            f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
+            f"markers between pages. When you are assigned a page range, "
+            f"extract ONLY text between markers for your pages before "
+            f"calling parse_table.\n\n"
+            # Empty unless a caller passes scope_note, so the single-agent
+            # path's text is unchanged (pinned byte-for-byte by a unit test).
+            f"{scope_paragraph}"
+            f"EFFICIENT EXTRACTION WORKFLOW:\n"
+            f"1. Extract scalar fields from your pages' text\n"
+            f"2. Call parse_table with your pages' text\n"
+            f"3. Call map_table_to_schema with column_mapping + static_fields\n"
+            f"   (merged rows are auto-split — no manual handling needed)\n"
+            f"4. Call finalize_table_extraction with table_array_field + "
+            f"scalar_fields\n\n"
+            f"finalize reads mapped rows from state — no JSON generation needed."
+        )
+        return f"{custom_instruction}{guidance}" if custom_instruction else guidance
+
+    def _apply_lazy_images(
+        self,
+        send_images: bool,
+        preflight_parse_result: dict | None,
+    ) -> bool:
+        """Apply the ``lazy_images`` cost optimization to an image decision.
+
+        When the deterministic table parser already parsed the section's
+        table(s) in pre-flight, the agentic loop is text/markdown-driven
+        (``parse_table`` / ``map_table_to_schema`` never read images) and the
+        agent can still fetch a page on demand via the ``view_image`` tool.
+        Pre-loaded images are re-sent on every agent turn and dominate cost on
+        multi-page documents (and push large documents toward context limits),
+        so the up-front attachment is suppressed. Gated by config
+        (``lazy_images``, default on) so image-dependent corpora can opt back in.
+
+        Returning False only decides the POLICY. On the single-pass path the
+        page images are already inside the prompt content that
+        ``_build_extraction_content`` rendered for ``{DOCUMENT_IMAGE}``, so the
+        caller must also apply :meth:`_limit_content_images` to that content —
+        otherwise the suppression is a no-op (which is what shipped: see the
+        note there). ``view_image`` stays available on the single-pass path
+        because the full page list is still handed to the agent for tool
+        registration, with attachment turned off; per-shard agents get no
+        ``view_image`` tool at all, so for them this is text-only.
+        """
+        suppress = (
+            send_images
+            and self.config.extraction.agentic.table_parsing.lazy_images
+            and (preflight_parse_result or {}).get("status") == "success"
+        )
+        if not suppress:
+            return send_images
+        logger.info(
+            "Skipping up-front image attachment for agentic extraction "
+            "(pre-flight table parse succeeded; table tool is text-driven, "
+            "view_image remains available on demand)"
+        )
+        return False
+
+    @staticmethod
+    def _limit_content_images(content: Any, limit: int | None) -> tuple[Any, int, int]:
+        """Enforce an image budget on ALREADY-RENDERED prompt content.
+
+        ``{DOCUMENT_IMAGE}`` is substituted in ``_build_extraction_content``,
+        which runs before the agentic branch decides anything about images. So
+        by the time ``_apply_lazy_images`` / ``max_images_per_agent`` have an
+        opinion, every page image is already an image block in ``content``, and
+        the ``page_images=`` argument they were being applied to is a *second*
+        copy. That made all three of the following true on the single-pass
+        agentic path, and none of them were caught by a test:
+
+        * ``lazy_images`` suppressed nothing — the images stayed in ``content``;
+        * ``max_images_per_agent`` capped nothing — a 25-page section with
+          ``{DOCUMENT_IMAGE}`` still attached 25 images against a default cap of
+          20, which is the oversized-first-turn overflow the cap exists for;
+        * with suppression off, every page image was attached **twice** (once by
+          the substitution, once by ``_prepare_prompt_content``).
+
+        The policy is therefore applied to the content itself, and the images
+        handed to the agent alongside it are for ``view_image`` only
+        (``attach_page_images=False``).
+
+        Args:
+            content: rendered content (list of blocks, or anything else — a
+                non-list prompt has no image blocks and is returned unchanged).
+            limit: max image blocks to keep; 0 drops them all, None = unlimited.
+
+        Returns:
+            ``(content, kept, dropped)``.
+        """
+        if limit is None or not isinstance(content, list):
+            return content, 0, 0
+        kept: list[Any] = []
+        n_images = 0
+        dropped = 0
+        for block in content:
+            is_image = isinstance(block, dict) and block.get("image") is not None
+            if is_image:
+                if n_images >= limit:
+                    dropped += 1
+                    continue
+                n_images += 1
+            kept.append(block)
+        return kept, n_images, dropped
 
     @staticmethod
     def _slice_images(images: list[bytes], start: int, end: int) -> list[bytes]:
@@ -1312,8 +1558,141 @@ class ExtractionService:
                     )
         return confidence_data
 
+    @staticmethod
+    def _repack_is_reachable(
+        page_texts: list[str], max_shards: int, page_cap: int | None
+    ) -> bool:
+        """Can ``plan_shards``' repack pass fire for ANY token budget? (#994)
+
+        It fires only when the first pass produces more than ``max_shards``
+        ranges. The first pass closes a shard on the page cap or on the budget, so
+        the fewest ranges any budget can yield is ``ceil(n / page_cap)`` — what an
+        unbounded budget gives, since only the page cap then applies. If even that
+        exceeds ``max_shards`` the repack fires whatever the budget is. Otherwise
+        it fires only for a budget small enough to split further, which requires
+        some page to carry a nonzero token estimate.
+
+        The case this exists for: a section whose pages have NO OCR text at all
+        (image-only pages, or pages under ``_CHARS_PER_TOKEN`` characters, which
+        ``estimate_tokens`` floors to 0). Every page then costs 0, so no budget can
+        split anything and the repack is unreachable — yet asking
+        ``_rebalance_to_cap`` anyway returns a degenerate split, because its
+        ``target`` of ``total / max_shards`` is 0 and every shard closes on the
+        first page: nine 1-page ranges and a tail holding the rest. Taking that as
+        the bound clamps a 20-page image-only section that the real planner would
+        have sent as 5-page shards. That is the one place the clamp costs most —
+        with no text, the page images are the model's only signal — so the
+        reachability test is worth the few lines.
+        """
+        if (page_cap or 0) > 0:
+            min_first_pass_ranges = -(-len(page_texts) // page_cap)  # type: ignore[operator]
+        else:
+            min_first_pass_ranges = 1
+        if min_first_pass_ranges > max_shards:
+            return True
+        return any(estimate_tokens(text) > 0 for text in page_texts)
+
+    def _agentic_images_per_request(
+        self, pages_to_attach: int, page_texts: list[str] | None = None
+    ) -> int:
+        """Upper bound on the page images ONE agentic request will carry (#994).
+
+        Needed because Bedrock's 2,000px many-image cap binds on a single
+        request's image count, and on the agentic path a section is not one
+        request. Two things bound it, and only one is a ceiling on page COUNT:
+
+        * ``max_images_per_agent`` is — ``_cap_agent_images`` truncates the
+          attached list to it before every invocation.
+        * ``max_pages_per_shard`` is not, and nor is any arithmetic on it.
+          ``plan_shards`` closes a shard at that many pages, but when that would
+          produce more shards than ``max_concurrent_batches``,
+          ``_rebalance_to_cap`` discards those ranges and repacks the pages into
+          exactly ``max_concurrent_batches`` **token-balanced** groups, ignoring
+          the page cap. Token-balanced, not page-balanced: one dense page can take
+          a whole shard and leave 20 sparse ones in another, so no closed form
+          over page counts bounds it.
+
+        So it is not estimated. ``plan_shards`` has exactly two regimes, and the
+        bound is the worse of them — which needs no token budget at all:
+
+        * **A, the page cap holds** (the first pass produced no more ranges than
+          ``max_concurrent_batches``): the largest shard is
+          ``max_pages_per_shard``, or the whole section when that is ``0``
+          ("page cap off").
+        * **B, the repack fired**: the largest range ``_rebalance_to_cap`` returns.
+          It takes no budget argument — it repacks from page 0 by token weight —
+          so this is computable exactly. Included only when the repack can actually
+          fire for some budget (see ``_repack_is_reachable``); asking for it
+          unconditionally over-clamps a section with no OCR text at all.
+
+        ``_rebalance_to_cap`` is private but imported at module scope deliberately:
+        the soundness argument below rests on it, so a rename should fail at import
+        rather than be swallowed by the fallback here and silently degrade the
+        bound to "the whole section".
+
+        Taking ``max(A, B)`` rather than planning under one budget is deliberate,
+        and an earlier version of this method got it wrong in a way worth
+        recording. It called ``plan_shards`` with a deliberately enormous budget,
+        on the argument that a smaller budget only closes shards *earlier* and so
+        cannot under-estimate. That is false: the budget also decides **whether the
+        repack fires at all**, and the repack discards the page cap. Measured on
+        the shipped default (``max_concurrent_batches: 10``,
+        ``max_pages_per_shard: 5``) with a 50-page section holding one dense page,
+        at Sonnet 4.6's own derived budget of 18,400 tokens: an unbounded budget
+        plans ten 5-page shards, while the real budget plans
+        ``[1, 41, 1, 1, ...]``. Estimating 5 there misses a clamp the request
+        needs. Regime B catches it because it does not depend on the budget.
+
+        ``table_boundary_pages`` is not consulted: it only ever closes a first-pass
+        shard earlier, which can move the plan from regime A into regime B, and B
+        is already covered.
+
+        Without ``page_texts`` (the only other caller shape) the sound answer is
+        the whole section, since a single agent may then receive all of it.
+
+        ⚠️ Known gap: sharding is skipped altogether — whole section to one agent
+        — when the run is a resume (``existing_data_model``) or carries a
+        ``checkpoint_buffer``, even with ``max_concurrent_batches > 1``. The
+        estimate cannot see that from here, so a resumed run of a sharded config
+        can carry more images than this predicts. ``max_images_per_agent`` still
+        bounds the attached count (at its default of 20; ``0`` means unlimited and
+        removes that backstop), and the failure mode is a clear
+        ``ExtractionImageRejected`` rather than a wrong result.
+        """
+        agentic = self.config.extraction.agentic
+        bound = pages_to_attach
+        if agentic.max_concurrent_batches > 1 and page_texts and pages_to_attach > 1:
+            try:
+                n = len(page_texts)
+                max_shards = min(agentic.max_concurrent_batches, n)
+                page_cap = self._max_pages_per_shard()
+                # Regime A: the page cap holds. 0 / None means "page cap off", so
+                # the token budget alone bounds shards and all of them can land in
+                # one.
+                page_cap_bound = page_cap if (page_cap or 0) > 0 else n
+                bound = min(bound, page_cap_bound)
+                if self._repack_is_reachable(page_texts, max_shards, page_cap):
+                    # Regime B: exact, and budget-free by construction — the repack
+                    # ignores the budget and repacks from page 0 by token weight.
+                    repacked = _rebalance_to_cap(page_texts, n, max_shards)
+                    repack_bound = max((e - s) for s, e in repacked) if repacked else n
+                    bound = min(pages_to_attach, max(page_cap_bound, repack_bound))
+            except Exception as e:  # noqa: BLE001 - fall back to the sound answer
+                logger.warning(
+                    "Could not size the many-image cap from the shard plan (%s); "
+                    "assuming one request carries the whole section.",
+                    e,
+                )
+                bound = pages_to_attach
+        if agentic.max_images_per_agent > 0:
+            bound = min(bound, agentic.max_images_per_agent)
+        return max(0, bound)
+
     def _load_document_images(
-        self, document: Document, sorted_page_ids: list[str]
+        self,
+        document: Document,
+        sorted_page_ids: list[str],
+        page_texts: list[str] | None = None,
     ) -> list[Any]:
         """
         Load images from all pages.
@@ -1321,6 +1700,12 @@ class ExtractionService:
         Args:
             document: Document containing pages
             sorted_page_ids: Sorted list of page IDs
+            page_texts: Per-page OCR text in section page order, when the caller
+                has it. Used only to size Bedrock's many-image dimension cap
+                (#994): on the agentic path the pages are sharded by TEXT volume,
+                so how many images one request carries cannot be known without it.
+                Omitted means "assume one request takes the whole section", which
+                is the conservative answer.
 
         Returns:
             List of prepared images
@@ -1328,6 +1713,31 @@ class ExtractionService:
         t0 = time.time()
         target_width = self.config.extraction.image.target_width
         target_height = self.config.extraction.image.target_height
+
+        # Bedrock drops the per-image dimension cap from 8,000px to 2,000px per side
+        # once a request carries MORE than 20 image blocks (#994). Which cap applies
+        # therefore depends on how many pages this section is about to attach, so it
+        # is decided here, once, from the page count rather than per image.
+        #
+        # What matters is the count ONE REQUEST will carry, not the section's page
+        # count, and on the agentic (Strands) path those differ: the section's pages
+        # are sliced into shards and capped again per agent invocation, so a long
+        # section can be sent as several small requests. Counting the section would
+        # clamp pages that no request ever over-fills. ``_agentic_images_per_request``
+        # bounds it from the shard planner's two regimes; it is then DOUBLED, because the
+        # agent re-sends its attached images on every turn and a ``view_image`` tool
+        # result adds a further copy of a page to the same request. Doubling is
+        # pessimistic on purpose — clamping to 2,000px costs far less than a hard
+        # request rejection. See extraction/README.md for the thresholds this
+        # produces per mode.
+        pages_to_attach = sum(1 for pid in sorted_page_ids if pid in document.pages)
+        if self.config.extraction.agentic.enabled:
+            effective_image_count = (
+                self._agentic_images_per_request(pages_to_attach, page_texts) * 2
+            )
+        else:
+            effective_image_count = pages_to_attach
+        max_dimension = image.max_dimension_for_image_count(effective_image_count)
 
         page_images = []
         for page_id in sorted_page_ids:
@@ -1341,7 +1751,10 @@ class ExtractionService:
             # a stored page image over 3.75 MiB fails the whole request (#778).
             # Fit it here — where the reduction can be recorded per page — rather
             # than at the attach choke point, whose fit is then a pass-through.
-            image_content, fit = image.fit_image_to_bedrock_limit(image_content)
+            # ``max_dimension`` additionally applies the many-image pixel cap.
+            image_content, fit = image.fit_image_to_bedrock_limit(
+                image_content, max_dimension=max_dimension
+            )
             if fit is not None:
                 if self._pending_image_fit_metadata is None:
                     self._pending_image_fit_metadata = []
@@ -1827,18 +2240,23 @@ class ExtractionService:
 
         Simple mode sends ONE request per section — that is the difference from
         Advanced mode, which shards. Text is chars/4; an image is priced from its
-        pixels the way Bedrock does (width x height / 750), falling back to the
-        sizing module's reserve figure when the bytes cannot be read. The
-        estimate is not recorded as a processing issue: if the call then
-        succeeds the estimate was wrong, and if it fails the section never
-        reaches the record — the failure itself carries the explanation (see
-        ``_explain_input_overflow``). Returns the estimate.
+        pixel dimensions using the model's own visual-token math (see
+        ``_image_token_estimate``), falling back to the sizing module's reserve
+        figure when the bytes cannot be read. The estimate is not recorded as a
+        processing issue: if the call then succeeds the estimate was wrong, and if
+        it fails the section never reaches the record — the failure itself carries
+        the explanation (see ``_explain_input_overflow``). Returns the estimate.
+
+        The image COUNT and the largest image dimension are recorded alongside the
+        token figures because a request can be rejected for either reason, and the
+        failure message has to be able to tell them apart (#994).
         """
         from idp_common.bedrock.sizing import _TOKENS_PER_IMAGE
 
         text_tokens = estimate_tokens(system_prompt or "")
         images = 0
         image_tokens = 0
+        max_image_dimension = 0
         for block in content or []:
             if not isinstance(block, dict):
                 continue
@@ -1847,8 +2265,11 @@ class ExtractionService:
             if "image" in block:
                 images += 1
                 image_tokens += self._image_token_estimate(
-                    block["image"], _TOKENS_PER_IMAGE
+                    block["image"], _TOKENS_PER_IMAGE, model_id
                 )
+                size = self._image_dimensions(block["image"])
+                if size:
+                    max_image_dimension = max(max_image_dimension, size[0], size[1])
         estimate = text_tokens + image_tokens
         max_input = 0
         try:
@@ -1861,6 +2282,7 @@ class ExtractionService:
             "max_input_tokens": max_input,
             "pages": pages,
             "images": images,
+            "max_image_dimension": max_image_dimension,
         }
         if max_input and estimate > max_input:
             logger.warning(
@@ -1878,9 +2300,8 @@ class ExtractionService:
         return estimate
 
     @staticmethod
-    def _image_token_estimate(image_block: Any, fallback: int) -> int:
-        """Bedrock's image pricing is ~(width x height) / 750 tokens; read the
-        dimensions from the bytes when possible, else use ``fallback``."""
+    def _image_dimensions(image_block: Any) -> tuple[int, int] | None:
+        """``(width, height)`` of a Converse image block, or None if unreadable."""
         try:
             import io
 
@@ -1892,11 +2313,29 @@ class ExtractionService:
                 data = src.get("bytes") if isinstance(src, dict) else None
             if isinstance(data, (bytes, bytearray)) and data:
                 with Image.open(io.BytesIO(bytes(data))) as im:
-                    w, h = im.size
-                return max(1, int(w * h / 750))
+                    return im.size
         except Exception:  # noqa: BLE001 - estimate only
             pass
-        return int(fallback)
+        return None
+
+    @classmethod
+    def _image_token_estimate(
+        cls, image_block: Any, fallback: int, model_id: str | None = None
+    ) -> int:
+        """Tokens one image block costs, from its pixel dimensions.
+
+        Delegates to ``bedrock.model_utils.estimate_image_tokens``, which applies
+        Claude's 28px-patch math and the per-model visual-token CAP. The older
+        uncapped (w*h)/750 figure over-stated a full-page scan by ~2.4x, which is
+        what made a per-image dimension rejection look like a context-window
+        overflow (#994). Falls back to ``fallback`` when the bytes are unreadable.
+        """
+        from idp_common.bedrock.model_utils import estimate_image_tokens
+
+        size = cls._image_dimensions(image_block)
+        if size is None:
+            return int(fallback)
+        return estimate_image_tokens(size[0], size[1], model_id)
 
     async def _run_shard_or_explain_overflow(self, fn: Any, **kwargs: Any) -> Any:
         """Await one shard coroutine; re-raise a Bedrock input overflow as
@@ -1904,11 +2343,20 @@ class ExtractionService:
         Functions shard path fails with the same actionable cause as the in-process
         path. ``fn`` is ``async`` (``extract_one_shard``): the try must wrap the
         await, not the call that merely creates the coroutine."""
-        from idp_common.utils.bedrock_utils import is_input_token_overflow
+        from idp_common.utils.bedrock_utils import (
+            is_image_request_rejection,
+            is_input_token_overflow,
+        )
 
         try:
             return await fn(**kwargs)
         except Exception as e:
+            if is_image_request_rejection(e):
+                msg = self._explain_image_rejection(
+                    e, str(kwargs.get("section_id") or "?")
+                )
+                logger.error(msg)
+                raise ExtractionImageRejected(msg) from e
             if is_input_token_overflow(e):
                 msg = self._explain_input_overflow(
                     e, str(kwargs.get("section_id") or "?"), is_agentic=True
@@ -1935,6 +2383,24 @@ class ExtractionService:
             if est.get("estimated_input_tokens") and est.get("max_input_tokens")
             else (f" ({pages} page(s))" if pages else "")
         )
+        if (
+            est.get("images", 0) > image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD
+            or est.get("max_image_dimension", 0)
+            > image.BEDROCK_MANY_IMAGE_MAX_DIMENSION
+        ):
+            # This request's SHAPE can also fail on the images themselves, and
+            # Bedrock reports a payload that is simply too large with the same
+            # "Input is too long" wording it uses for a context overflow (#994).
+            # Say so, so the reader does not spend the next hour lowering a page
+            # budget that is not the binding limit.
+            size += (
+                f" — note this request carried {est.get('images', 0)} image(s), "
+                f"largest {est.get('max_image_dimension', 0)}px per side; Bedrock "
+                f"also caps images at {image.BEDROCK_MANY_IMAGE_MAX_DIMENSION}px "
+                f"per side once a request carries more than "
+                f"{image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD} images, and caps the "
+                f"total request payload independently of the token count."
+            )
         if is_agentic and "remedies:" in str(exc).lower():
             advice = ""  # agentic_idp already translated it with its own remedies
         elif is_agentic:
@@ -1950,6 +2416,41 @@ class ExtractionService:
                 "which shards a section across requests, or split the document."
             )
         return f"Error processing section {section_id}: {exc}{size}{advice}"
+
+    def _explain_image_rejection(self, exc: BaseException, section_id: str) -> str:
+        """The message for a Bedrock IMAGE rejection on a section (#994).
+
+        Names the request's image count and largest dimension, then the remedy
+        that actually applies — smaller ``extraction.image.target_width`` /
+        ``target_height`` — rather than the token/shard advice that belongs to a
+        context-window overflow.
+        """
+        est = getattr(self, "_last_simple_input_estimate", None) or {}
+        largest = est.get("max_image_dimension") or 0
+        if est.get("images"):
+            # Simple mode: the pre-flight measured the request that actually went
+            # out, so the count and the largest dimension are that request's.
+            shape = f" (request carried {est['images']} image(s)"
+            if largest:
+                shape += f", largest {largest}px per side"
+            shape += ")"
+        else:
+            # Advanced/shard mode has no pre-flight estimate, and a shard carries
+            # only its own page range — so the only number available here is the
+            # SECTION's page count. Label it as such rather than claiming it is
+            # what the failing request held.
+            shape = f" (section has {len(self._page_images or [])} page image(s))"
+        return (
+            f"Error processing section {section_id}: {exc}{shape}. Bedrock rejected "
+            "the IMAGES in this request, not its token count: images are capped at "
+            f"{image.BEDROCK_IMAGE_MAX_DIMENSION}px per side, dropping to "
+            f"{image.BEDROCK_MANY_IMAGE_MAX_DIMENSION}px once a request carries more "
+            f"than {image.BEDROCK_MANY_IMAGE_COUNT_THRESHOLD} images, and each image "
+            "must be under 5 MB base64-encoded. Lower "
+            "extraction.image.target_width / target_height so pages are rendered "
+            "smaller; reducing pages per shard or switching extraction mode does "
+            "not address this."
+        )
 
     def _analyze_ocr_for_tables(self, ocr_text: str) -> dict[str, Any]:
         """
@@ -4492,6 +4993,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     prompt=message_prompt,
                     existing_data=existing_model,
                     page_images=agentic_images,
+                    # Attachment is decided on the content; this pool is for view_image.
+                    attach_page_images=False,
                     config=self.config,
                     context="ExtractionEscalation",
                     custom_instruction=instruction,
@@ -4515,6 +5018,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     prompt=message_prompt,
                     existing_data=existing_model,
                     page_images=agentic_images,
+                    # Attachment is decided on the content; this pool is for view_image.
+                    attach_page_images=False,
                     config=self.config,
                     context="ExtractionEscalation",
                     custom_instruction=instruction,
@@ -4849,62 +5354,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # the LLM having to call parse_table and then generate JSON row-by-row.
             # The LLM only needs to provide a column-to-field mapping, and the
             # map_table_to_schema tool does the bulk transformation instantly.
-            preflight_parse_result = None
-            if (
-                self.config.extraction.agentic.table_parsing.enabled
-                and ocr_analysis.get("estimated_row_count", 0) >= 50
-            ):
-                from idp_common.extraction.tools.table_parser import (
-                    parse_markdown_tables,
-                )
-
-                tp_config = self.config.extraction.agentic.table_parsing
-                preflight_parse_result = parse_markdown_tables(
-                    text=self._document_text,
-                    max_empty_line_gap=tp_config.max_empty_line_gap,
-                    auto_merge_adjacent_tables=tp_config.auto_merge_adjacent_tables,
-                )
-
-                if preflight_parse_result.get("status") == "success":
-                    total_rows = sum(
-                        t.get("row_count", 0)
-                        for t in preflight_parse_result.get("tables", [])
-                    )
-                    columns = preflight_parse_result.get("columns", [])
-                    table_count = preflight_parse_result.get("table_count", 0)
-
-                    logger.info(
-                        "Pre-flight table parsing complete",
-                        extra={
-                            "total_rows": total_rows,
-                            "table_count": table_count,
-                            "columns": columns,
-                        },
-                    )
-
-                    # Build efficient extraction guidance with pre-parsed summary
-                    preflight_guidance = (
-                        f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
-                        f"Found {table_count} table(s) with {total_rows} total rows.\n"
-                        f"Table columns: {columns}\n\n"
-                        f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
-                        f"markers between pages. When you are assigned a page range, "
-                        f"extract ONLY text between markers for your pages before "
-                        f"calling parse_table.\n\n"
-                        f"EFFICIENT EXTRACTION WORKFLOW:\n"
-                        f"1. Extract scalar fields from your pages' text\n"
-                        f"2. Call parse_table with your pages' text\n"
-                        f"3. Call map_table_to_schema with column_mapping + static_fields\n"
-                        f"   (merged rows are auto-split — no manual handling needed)\n"
-                        f"4. Call finalize_table_extraction with table_array_field + "
-                        f"scalar_fields\n\n"
-                        f"finalize reads mapped rows from state — no JSON generation needed."
-                    )
-
-                    if custom_instruction:
-                        custom_instruction += preflight_guidance
-                    else:
-                        custom_instruction = preflight_guidance
+            # (`_preflight_table_parse` logs the parse itself, for both agentic
+            # paths; `_append_preflight_table_guidance` builds the instruction
+            # block, likewise for both paths.)
+            preflight_parse_result = self._preflight_table_parse(ocr_analysis)
+            # Kept as-is: the sharded branch below rebuilds the block with the
+            # shard scope note, which is inserted INSIDE the block (after the
+            # page-marker rule it qualifies) and so cannot be appended later.
+            pre_block_instruction = custom_instruction
+            custom_instruction = self._append_preflight_table_guidance(
+                custom_instruction, preflight_parse_result
+            )
 
             # Determine if images should be sent to the agentic model.
             # If the task prompt does not reference {DOCUMENT_IMAGE}, sending
@@ -4920,41 +5380,88 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             prompt_template = (
                 select_extraction_task_prompt(self.config.extraction) or ""
             )
-            send_images = "{DOCUMENT_IMAGE}" in prompt_template
-
-            # Cost optimization: when the deterministic table parser already
-            # parsed the document's table(s) in pre-flight, the agentic loop is
-            # text/markdown-driven (parse_table / map_table_to_schema never read
-            # images) and the agent can still fetch a page on demand via the
-            # view_image tool. Pre-loading every page image re-sends them on
-            # every agent turn and dominates cost on multi-page docs (and can
-            # push large docs toward context-window limits). So suppress the
-            # up-front image attachment when a successful pre-flight table parse
-            # covers the doc. Gated by config (lazy_images, default on) so
-            # image-dependent corpora can opt back in. Local+live A/B: identical
-            # completeness/accuracy (recall 1.0) with images off on this path.
-            suppress_images_for_table = (
-                send_images
-                and self.config.extraction.agentic.table_parsing.lazy_images
-                and preflight_parse_result is not None
-                and preflight_parse_result.get("status") == "success"
-            )
-            if suppress_images_for_table:
-                send_images = False
-
-            agentic_images = (
-                self._cap_agent_images(self._page_images) if send_images else []
-            )
+            prompt_wants_images = "{DOCUMENT_IMAGE}" in prompt_template
             num_pages = len(self._page_images) or len(section_info.sorted_page_ids)
+            # Local+live A/B: identical completeness/accuracy (recall 1.0) with
+            # images off on this path.
+            send_images = self._apply_lazy_images(
+                prompt_wants_images, preflight_parse_result
+            )
 
-            if suppress_images_for_table and self._page_images:
-                logger.info(
-                    "Skipping up-front image attachment for agentic extraction "
-                    "(pre-flight table parse succeeded; table tool is text-driven, "
-                    "view_image remains available on demand)",
-                    extra={"page_count": num_pages},
+            # Enforce the decision on the CONTENT, which is where the images
+            # actually are (see _limit_content_images). `agentic_images` is the
+            # pool the view_image tool reads from — never a second attachment,
+            # hence attach_page_images=False at every call below.
+            #
+            # ``0 = unlimited`` per the config schema's documented "legacy
+            # behavior" (see ``max_images_per_agent`` in
+            # ``idp_common/config/models.py``). ``x or None`` collapses
+            # the operator-authored 0 to ``None`` here so downstream
+            # ``_limit_content_images`` treats it as "no cap". A recent
+            # code review flagged that ``image_limit == 0`` downstream
+            # is now ambiguous — it could mean either "operator wrote 0"
+            # (unlimited) or "lazy_images suppressed" (drop-all). Making
+            # ``0`` an actual cap of zero would fix the ambiguity but
+            # break the documented contract; a config-schema evolution
+            # to a nullable ``Optional[int]`` cap is the right fix, out
+            # of scope here.
+            cap = self.config.extraction.agentic.max_images_per_agent or None
+            image_limit = 0 if not send_images else cap
+            if isinstance(message_prompt, dict):
+                limited, kept_images, dropped_images = self._limit_content_images(
+                    message_prompt.get("content"), image_limit
                 )
-            elif not send_images and self._page_images:
+                message_prompt = {**message_prompt, "content": limited}
+            else:
+                (
+                    message_prompt,
+                    kept_images,
+                    dropped_images,
+                ) = self._limit_content_images(message_prompt, image_limit)
+            if dropped_images:
+                logger.info(
+                    "Agentic image policy applied to the prompt content",
+                    extra={
+                        "images_kept": kept_images,
+                        "images_dropped": dropped_images,
+                        "limit": image_limit,
+                        "reason": (
+                            "lazy_images" if not send_images else "max_images_per_agent"
+                        ),
+                    },
+                )
+            # ``view_image`` tool pool. Gated on ``prompt_wants_images``
+            # (not ``send_images``) — deliberate behavioural difference
+            # from the pre-lazy_images shape (``self._page_images if
+            # send_images else []``):
+            #
+            # * ``prompt_wants_images = False`` (no ``{DOCUMENT_IMAGE}`` in
+            #   prompt): registering ``view_image`` against the page list
+            #   would let the agent burn tokens fetching images the run
+            #   never asked for. Pass ``[]`` — no tool registration.
+            #   Matches the shard path, which never gets ``view_image``.
+            #
+            # * ``prompt_wants_images = True`` AND ``lazy_images`` suppressed
+            #   the up-front attachment (``send_images = False``): the whole
+            #   point of ``lazy_images`` is that the agent CAN still fetch
+            #   pages on demand while the up-front payload stays small.
+            #   Gating on ``send_images`` here would empty the pool and
+            #   defeat that.
+            #
+            # * ``prompt_wants_images = True`` AND images are being sent:
+            #   ``view_image`` remains available in addition to the
+            #   attached images (a page N > cap can still be fetched).
+            #
+            # ``_cap_agent_images`` is applied to the pool so ``view_image``
+            # respects the operator's ``max_images_per_agent`` cap — the
+            # original PR (#396) capped this pool and a later refactor
+            # dropped it. Without the cap, ``view_image`` could pull a
+            # page beyond the operator's constraint on demand.
+            agentic_images = (
+                self._cap_agent_images(self._page_images) if prompt_wants_images else []
+            )
+
+            if not prompt_wants_images and self._page_images:
                 logger.info(
                     "Skipping image attachment for agentic extraction "
                     "(task prompt does not reference {DOCUMENT_IMAGE})",
@@ -5003,6 +5510,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 from idp_common.extraction.runtime import select_runtime
 
                 runtime = select_runtime(self.config, num_batches)
+                # These agents are shard agents too (in-process sharding), so
+                # they need the same scope note `_build_agentic_shard_plan`
+                # passes on the Step Functions route. Held in its own local:
+                # `custom_instruction` is reused after this branch by
+                # `_validate_and_maybe_escalate`, whose retry agent sees the
+                # WHOLE section and so must not be told it holds a slice.
+                shard_custom_instruction = self._append_preflight_table_guidance(
+                    pre_block_instruction,
+                    preflight_parse_result,
+                    scope_note=self._SHARD_SCOPE_NOTE,
+                )
                 structured_data, response_with_metering = _asyncio.run(
                     concurrent_structured_output_async(
                         model_id=model_id,
@@ -5012,7 +5530,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         config=self.config,
                         context="Extraction",
                         checkpoint_callback=self._checkpoint_callback,
-                        custom_instruction=custom_instruction,
+                        custom_instruction=shard_custom_instruction,
                         section_id=(
                             f"{section_info.class_label}_"
                             f"{section_info.start_page}_{section_info.end_page}"
@@ -5038,6 +5556,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     prompt=message_prompt,
                     existing_data=existing_data_model,
                     page_images=agentic_images,
+                    # Attachment is decided on the content; this pool is for view_image.
+                    attach_page_images=False,
                     config=self.config,
                     context="Extraction",
                     checkpoint_callback=self._checkpoint_callback,
@@ -5862,10 +6382,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 escalation_batch_size=esc_batch,
                 max_escalation_rounds=confidence_cfg.max_escalation_rounds,
                 deadline_epoch=self._assessment_deadline_epoch,
+                model_id=confidence_cfg.model,
             )
             split_stats["unrecoverable_rows"] += len(
                 _missing_row_indices(merged_assessment.get(field), rows)
             )
+
+        # #894: name the class alongside the oversized-row field(s) so the emitted
+        # issue points at the class whose list item does not fit the model's output
+        # budget (the ladder itself only sees field names).
+        if split_stats.get("oversized_row_fields"):
+            split_stats["oversized_row_class"] = section_info.class_label
 
         # Re-enrich so any spliced-in rows carry confidence_threshold like the
         # rest — and keep the alerts it builds: enumerating the full merged list
@@ -6237,21 +6764,23 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             )
 
             geometry_mode = self.config.extraction.geometry.mode
+            # Ladder issues FIRST — the audit's coverage rung is suppressed when the
+            # ladder already reported an error for this section (see
+            # audit_explainability's ``ladder_issues``).
+            ladder_issues = build_assessment_issues(
+                metadata.get("assessment_batch_split_stats"),
+                section_id=section_id,
+                confidence_model=self.config.extraction.confidence.model,
+                geometry_mode=geometry_mode,
+            )
             _gaps, audit_issues = audit_explainability(
                 self._grounded_assessment,
                 fields_for_output,
                 geometry_mode=geometry_mode,
                 section_id=section_id,
+                ladder_issues=ladder_issues,
             )
-            section_issues = (
-                build_assessment_issues(
-                    metadata.get("assessment_batch_split_stats"),
-                    section_id=section_id,
-                    confidence_model=self.config.extraction.confidence.model,
-                    geometry_mode=geometry_mode,
-                )
-                + audit_issues
-            )
+            section_issues = ladder_issues + audit_issues
 
         # Extraction-completeness issue (BOTH modes): flag empty / suspiciously
         # sparse extractions — e.g. a large list schema field that came back
@@ -6441,8 +6970,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._save_results(document, section, result, section_info, section_id, t0)
 
         except Exception as e:
-            from idp_common.utils.bedrock_utils import is_input_token_overflow
+            from idp_common.utils.bedrock_utils import (
+                is_image_request_rejection,
+                is_input_token_overflow,
+            )
 
+            if is_image_request_rejection(e):
+                # Checked FIRST so the image case can never be absorbed by the
+                # overflow branch as Bedrock's wording evolves: the two families
+                # share vocabulary ("exceeds", "too large"), and overflow advice
+                # — fewer pages per shard, switch extraction mode — cannot fix an
+                # image that is too many pixels per side (#994). Measured against
+                # today's wording the overflow matcher does NOT claim
+                # "image exceed max allowed size for many-image requests", so this
+                # branch is what gives that error an explanation at all rather
+                # than a correction of a misrouting.
+                error_msg = self._explain_image_rejection(e, section_id)
+                logger.error(error_msg)
+                document.errors.append(error_msg)
+                raise ExtractionImageRejected(error_msg) from e
             if is_input_token_overflow(e):
                 # The failure itself is the signal: the section never reaches the
                 # record, so the explanation travels in the exception (Step
@@ -6502,13 +7048,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             page_id_to_text,
             section_info.page_type_presence,
         )
-        page_images = self._load_document_images(document, section_info.sorted_page_ids)
         # Stash the per-page OCR text (in section page order) so the agentic
         # path can shard the input by page range when concurrent batches are
         # configured. Pages missing from page_id_to_text contribute "".
+        # Built BEFORE the images are loaded because the many-image dimension cap
+        # (#994) depends on how the pages will be sharded, and that is decided by
+        # the page TEXT — see _agentic_images_per_request.
         self._page_texts = [
             page_id_to_text.get(pid, "") for pid in section_info.sorted_page_ids
         ]
+        page_images = self._load_document_images(
+            document, section_info.sorted_page_ids, page_texts=self._page_texts
+        )
 
         # Initialize extraction context
         class_schema, attribute_descriptions = self._initialize_extraction_context(
@@ -6965,6 +7516,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         branch, but standalone so the per-shard SFN Lambda (and the merge step)
         can each rebuild the identical plan deterministically. Requires
         ``_prepare_section_context`` to have populated the per-section state.
+
+        The returned ``custom_instruction`` is ONE instruction for **all** of the
+        section's shards (the in-process runtime shares it the same way), so it
+        cannot name a single shard's page range. It does not need to:
+        ``agentic_idp._run_shard_agent`` appends each shard's own "shard i of N,
+        covering pages A-B of T" sentence directly after it.
         """
         class_model_override = self._class_schema.get(X_AWS_IDP_EXTRACTION_MODEL)
         model_id = class_model_override or self.config.extraction.model
@@ -6979,12 +7536,61 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             self._class_schema
         )
         ocr_analysis = self._analyze_ocr_for_tables(self._document_text)
-        custom_instruction = self._build_table_parsing_guidance(
-            schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
+        # Pre-flight parse FIRST: its result feeds BOTH the shard agents'
+        # instruction block and the lazy_images decision below. It used to run
+        # only for lazy_images, after the instruction was already built, so the
+        # shard agents never learned that their tables had already been parsed
+        # (issue #900) — no row/column summary and no "finalize reads the rows
+        # from state" workflow, which is exactly the guidance that stops an agent
+        # re-emitting every row as output tokens.
+        preflight_parse_result = self._preflight_table_parse(ocr_analysis)
+        custom_instruction = self._append_preflight_table_guidance(
+            self._build_table_parsing_guidance(
+                schema_analysis=schema_analysis, ocr_analysis=ocr_analysis
+            ),
+            preflight_parse_result,
+            # Shard agents read the block's page-marker rule and its section-wide
+            # row totals against a slice of the section; the note reconciles both.
+            scope_note=self._SHARD_SCOPE_NOTE,
         )
 
-        prompt_template = self.config.extraction.task_prompt or ""
-        send_images = "{DOCUMENT_IMAGE}" in prompt_template
+        # Same prompt-selection as the single-pass agentic path — use
+        # ``select_extraction_task_prompt`` so integrated-confidence variants
+        # (which have different ``{DOCUMENT_IMAGE}`` slot presence) are
+        # honoured here too. Reading ``self.config.extraction.task_prompt``
+        # directly missed those variants, so a stack running with
+        # ``confidence.mode == 'integrated'`` would see the sharded path's
+        # send-images decision disagree with the single-pass path's for the
+        # same document. Falling back to ``self.config.extraction.task_prompt``
+        # matches the historical default when no selector rule fires.
+        from idp_common.extraction.prompt_assembly import (
+            select_extraction_task_prompt,
+        )
+
+        prompt_template = (
+            select_extraction_task_prompt(self.config.extraction)
+            or self.config.extraction.task_prompt
+            or ""
+        )
+        # Same lazy_images decision as the single-pass agentic path. This path is
+        # the DEFAULT for multi-page table documents, and it used to skip the
+        # check entirely: every shard carried its page images on every agent
+        # turn, so the shipped `lazy_images: true` default had no effect where it
+        # mattered most.
+        #
+        # ``preflight_parse_result`` was computed above (line 7247) to feed
+        # BOTH ``custom_instruction`` (#900 wired the shard agents into the
+        # pre-flight guidance) AND this lazy_images decision, so we reuse
+        # it here rather than parsing twice. My earlier "skip preflight
+        # when prompt has no ``{DOCUMENT_IMAGE}``" optimization was
+        # obsoleted by #900 — the parse now runs unconditionally for the
+        # instruction block, so gating the lazy_images-side call on the
+        # prompt saved nothing.
+        prompt_wants_images = "{DOCUMENT_IMAGE}" in prompt_template
+        send_images = self._apply_lazy_images(
+            prompt_wants_images,
+            preflight_parse_result,
+        )
         shard_payloads = self._build_shard_payloads(
             prompt_template=prompt_template,
             send_images=send_images,
@@ -7018,8 +7624,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         ``deadline_epoch`` (absolute epoch seconds, from the shard Lambda's
         ``context.get_remaining_time_in_millis()``) bounds the in-shard confidence
         self-healing ladder so a truncation-retry storm on a small-cap confidence
-        model stops (with an ``assessment_deadline_reached`` warning, keeping
-        recovered rows) instead of running the shard Lambda into its 900s wall.
+        model stops -- keeping every row already recovered, and reporting
+        ``assessment_incomplete`` with the time budget named if any row is still
+        unscored (``assessment_deadline_reached`` only when coverage completed
+        anyway) -- instead of running the shard Lambda into its 900s wall.
         """
         import asyncio as _asyncio
 

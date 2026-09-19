@@ -10,6 +10,7 @@ import boto3
 from botocore.config import Config as BotoCoreConfig
 from botocore.exceptions import ClientError
 from crhelper import CfnResource  # type: ignore[import-untyped]
+from log_sanitizer import sanitize_event_for_logging
 
 
 LOGGER = logging.getLogger(__name__)
@@ -222,7 +223,10 @@ def delete_resource(event, _):
     resource_type = event["ResourceType"]
 
     if resource_type == "Custom::CodeBuildRun":
-        LOGGER.info("delete event ignored for CodeBuild custom resource: %s", event)
+        LOGGER.info(
+            "delete event ignored for CodeBuild custom resource: %s",
+            sanitize_event_for_logging(event),
+        )
         return
 
     if resource_type == "Custom::ECRRepositoryCleanup":
@@ -286,5 +290,5 @@ def _delete_all_ecr_images(repository_name: str) -> None:
 
 def handler(event, context):
     """Lambda Handler"""
-    LOGGER.info("Received event: %s", json.dumps(event))
+    LOGGER.info("Received event: %s", json.dumps(sanitize_event_for_logging(event)))
     HELPER(event, context)

@@ -578,7 +578,7 @@ they are the axis.
 | **Nova Pro** (simple cells only, see note) | 63 | 0 | **0.482** | 0.96 on the rows it returns; 3 of 7 documents return **0 rows** | $0.174 | 143 s | 0.998 |
 | Sonnet 4.6 (control) | 133 | 0 | 0.998 | 1.000 | $0.728 | 199 s | 0.995 |
 | **Sonnet 5 (default)** | 133 | 0 | 0.977 | 0.999 | $0.920 | 222 s | 0.995 |
-| Sonnet 5 `:1m` | 133 | 0 | 0.964 | 1.000 | $1.404 | 212 s | 0.994 |
+| Sonnet 5 `:1m` | 133 | 0 | 0.964 | 1.000 | $1.404 ⚠️ inflated, see finding 4 | 212 s | 0.994 |
 | **Opus 5** | 133 | 0 | **0.993** | 1.000 | $1.291 | 284 s | 0.994 |
 | **GPT-6 Astra** | 133 | 0 | 0.924 | **0.902** | $1.286 | 193 s | 0.995 |
 
@@ -592,7 +592,7 @@ The two core cells, which are what a customer actually chooses between:
 | Nova Pro | 1.00 · 1.00 | 0.98 · 0.99 | 1.00 · 1.00 | **0.00** | **0.50** · 0.87 | **0.00** | **0.00** | $0.198 |
 | Sonnet 4.6 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | **$0.537** |
 | **Sonnet 5** | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | $0.721 |
-| Sonnet 5 `:1m` | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | **0.05** · 1.00 | $0.795 |
+| Sonnet 5 `:1m` | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | **0.05** · 1.00 | $0.795 ⚠️ inflated, see finding 4 |
 | Opus 5 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | $0.885 |
 | GPT-6 Astra | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | 1.00 · 1.00 | **0.00** (empty response) | $0.662 |
 
@@ -605,7 +605,7 @@ The two core cells, which are what a customer actually chooses between:
 | Nova Lite | 1.00 | **FAILED** | **FAILED** | **FAILED** | **FAILED** | **FAILED** | **FAILED** | — (6 of 7 fail) |
 | Sonnet 4.6 | 1.00 · $0.09 | 1.00 · $0.38 | 1.00 · $0.62 | 1.00 · $1.43 | 1.00 · $1.91 | 1.00 · $1.38 | 1.00 · $2.72 | **$1.217** |
 | **Sonnet 5** | 1.00 · $0.12 | 1.00 · $0.47 | 1.00 · $0.76 | 1.00 · $1.98 | 1.00 · $2.03 | 1.00 · $1.50 | 1.00 · $4.77 | $1.661 |
-| Sonnet 5 `:1m` | 1.00 · $0.06 | 1.00 · $0.66 | 1.00 · $1.29 | 1.00 · $3.89 | 1.00 · $4.76 | 1.00 · $2.76 | 1.00 · $4.10 | $2.504 |
+| Sonnet 5 `:1m` ⚠️ dollars inflated, see finding 4 | 1.00 · $0.06 | 1.00 · $0.66 | 1.00 · $1.29 | 1.00 · $3.89 | 1.00 · $4.76 | 1.00 · $2.76 | 1.00 · $4.10 | $2.504 ⚠️ |
 | Opus 5 | 1.00 · $0.18 | 1.00 · $0.67 | 1.00 · $0.80 | 1.00 · $2.75 | 1.00 · $3.39 | 1.00 · $2.61 | 1.00 · $6.04 | $2.348 |
 | GPT-6 Astra | 1.00 · $0.18 | 1.00 · $0.88 | 1.00 · $1.24 | 1.00 · $3.58 | 1.00 · $2.95 | 1.00 · $3.17 | 1.00 · $6.57 | $2.653 |
 
@@ -617,7 +617,9 @@ The two core cells, which are what a customer actually chooses between:
    only in price.** Advanced mode returned every row with every value right — 4,410 cells
    compared per model — on Sonnet 4.6, Sonnet 5, Sonnet 5 `:1m`, Opus 5 and Astra, at
    $1.22 / $1.66 / $2.50 / $2.35 / $2.65 per document. Opus 5 costs 41% more than Sonnet 5
-   for the same result; Astra 60% more.
+   for the same result; Astra 60% more. ⚠️ The `:1m` figure ($2.50) is inflated by the
+   pricing defect described in finding 4 and is not the variant's price — `:1m` is billed
+   at exactly plain Sonnet 5's rates. The other four figures are unaffected.
 2. **The cheap end is not usable on lists.** Nova Lite in simple mode returns every row of a
    5-row form and a 100-row statement (with 12% of values wrong) and **none** of a 400-row
    one — two of the three 400-row documents came back with 0 matching rows, `COMPLETED`. On
@@ -640,13 +642,26 @@ The two core cells, which are what a customer actually chooses between:
    prompts and tool schemas are tuned on, and #839's Payslip variance is a Sonnet-5-only
    behaviour on real forms), so this is not a recommendation to switch — it is the measured
    price of the default on transaction lists.
-4. **The 1M-context variant is a capacity feature you pay for on every call.** Sonnet 5 `:1m`
-   costs +10% (simple) and **+51%** (advanced) over Sonnet 5 with identical accuracy at
-   every size that fits — and it *truncated* the 800-row document in simple mode (43 rows)
-   where Sonnet 5 returned 800. Its window only helps a request that would otherwise be
-   refused, and §3 shows the product refuses at 25 pages regardless of model, so on this
-   corpus there is no request it rescues. Choose it for documents between ~200K and ~1M
-   tokens in a single section, and pair it with advanced mode.
+4. **The 1M-context variant buys capacity this corpus never needs.** Sonnet 5 `:1m`
+   matched Sonnet 5's accuracy at every size that fits — and it *truncated* the 800-row
+   document in simple mode (43 rows) where Sonnet 5 returned 800. Its window only helps a
+   request that would otherwise be refused, and §3 shows the product refuses at 25 pages
+   regardless of model, so on this corpus there is no request it rescues. Choose it for
+   documents between ~200K and ~1M tokens in a single section, and pair it with advanced
+   mode.
+
+   ⚠️ **The costs recorded for `:1m` in this edition's tables are inflated and should not
+   be read as a price of the variant.** This edition ran before
+   [#899](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/899)
+   was fixed, when `pricing.yaml` charged a 2× input / 1.5× output premium on every `:1m`
+   request. That premium does not exist on these models: the 1M context window is priced
+   at the model's standard per-token rates, so `:1m` and plain Sonnet 5 are billed
+   identically at every request size. The +10% (simple) / +51% (advanced) deltas this
+   edition reported against plain Sonnet 5 are therefore not the price of the variant —
+   what is left of the difference is token volume, not rate (in simple mode the `:1m` arm
+   also truncated, so it did less work). The rows have not been re-run or repriced. Token
+   volumes, accuracy, recall and timings are unaffected; only the dollar columns for
+   `:1m` rows are.
 5. **Opus 5 is the most complete model in the grid, by one run.** 0.993 grid recall against
    Sonnet 5's 0.977: the difference is that Opus 5 truncated one 400-row document once
    (`enforce-warn` / `wide_400`, 43 rows) where Sonnet 5 truncated the 800-row document

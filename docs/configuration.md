@@ -504,8 +504,8 @@ The solution tracks metrics for throttling events and successful retries, viewab
 
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
-so each task lists the Lambda service errors, the Lambda timeout
-(`Sandbox.Timedout`) and the Bedrock throttling / availability codes. The five
+so each task lists the Lambda service errors and the Bedrock throttling /
+availability codes. The five
 extraction and assessment task states (in-process extraction, shard plan, shard,
 shard merge, assessment) additionally list `TransientError` — the one name their
 handlers re-raise a transient cause under when it arrives as an ordinary Python
@@ -523,12 +523,32 @@ violation, an unparseable document, missing input — keep their own names and a
 same way every time succeed, they only multiply its cost and delay. No task retries
 `States.TaskFailed` or `States.ALL` for that reason.
 
+**A Lambda timeout is deterministic, so it gets its own retrier with
+`MaxAttempts: 1`.** `Sandbox.Timedout` is Step Functions' name for a function that
+hit its configured timeout, `States.Timeout` for a task that hit the state's own
+bound, and `Lambda.Unknown` for an unhandled Lambda fault — a timeout is one cause
+of it and an out-of-memory kill the other. In all three cases the document needs
+more work than the function has room for, so each further attempt burns another
+full timeout and fails identically. While these codes shared the transient ladder,
+one such document held a workflow-concurrency slot for about 5.2 hours (8 attempts
+of 900 s at 2.5× backoff) before failing anyway. Every Lambda task state now
+carries the single-attempt timeout retrier, which previously only `EvaluationStep`
+had. Throttling and Lambda service errors keep the full ladder — the split narrows
+what is retried, it does not weaken retrying for genuinely transient faults.
+
 ```json
 {
   "Retry": [
     {
       "ErrorEquals": [
-        "States.Timeout", "Lambda.Unknown", "Sandbox.Timedout",
+        "States.Timeout", "Lambda.Unknown", "Sandbox.Timedout"
+      ],
+      "IntervalSeconds": 5,
+      "MaxAttempts": 1,
+      "BackoffRate": 1.0
+    },
+    {
+      "ErrorEquals": [
         "Lambda.ServiceException", "Lambda.AWSLambdaException",
         "Lambda.SdkClientException", "Lambda.TooManyRequestsException",
         "ThrottlingException", "ServiceUnavailableException",
@@ -541,6 +561,42 @@ same way every time succeed, they only multiply its cost and delay. No task retr
   ]
 }
 ```
+
+Per-state values differ (the shard and rule-validation states use shorter
+intervals and 6 attempts on the transient ladder, and `Lambda.Unknown` appears only
+where a state already listed it), but the shape above holds everywhere: one
+single-attempt timeout retrier, one generous transient retrier, and no
+`States.ALL`. `scripts/tests/test_state_machine_retry_policies.py` enumerates the
+Lambda task states out of `workflow.asl.json` and asserts both halves, so a state
+added later is covered without editing the test.
+
+#### Adding a Lambda task state to the workflow
+
+Because that test enumerates the definition rather than naming states, a new Lambda
+task state inherits three requirements the moment it is added. All 24 existing states
+comply; a new one that does not will fail `make test-packages-cicd` in both CIs,
+naming the state:
+
+1. **It must carry a transient retrier** — at least one of `ThrottlingException`,
+   `Lambda.TooManyRequestsException`, `Lambda.ServiceException` or
+   `ServiceUnavailableException`, with `MaxAttempts` of 3 or more. A state with no
+   `Retry` block at all fails: one Bedrock or Textract throttle would otherwise lose
+   the document. This is a repo-wide rule rather than a property of the states
+   [#917](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/917)
+   happened to touch, deliberately — #917 was originally fixed as a list of state
+   names, which is exactly why eleven of the twelve task states then in the file kept
+   the wrong ladder for a release.
+2. **Timeout codes, if listed, go in their own retrier with `MaxAttempts: 1`.**
+   Mixing them into the transient retrier fails a separate assertion, because the two
+   budgets are different numbers and sharing one retrier means changing either changes
+   both.
+3. **No wildcard retrier.** `States.ALL` and `States.TaskFailed` in a `Retry` block put
+   timeouts, unparseable documents and bad schemas on whatever ladder they carry, which
+   would bypass both rules above without naming a timeout code.
+
+If a future state genuinely must not retry — an idempotency hazard, for instance — add
+it to a named, commented exemption set in that test file rather than deleting the
+assertion.
 
 ### Concurrency Control
 
@@ -1204,6 +1260,86 @@ extraction — records the reduction per page under the section's
 is auditable. To avoid the downscale (and the warning) on every request, set
 `target_width` / `target_height` so pages render inside the budget. See
 [#778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/778).
+
+### A request with more than 20 page images caps every image at 2,000 px
+
+The 8,000 px figure above is the **single-image** limit. A second, stricter limit
+applies to the request as a whole: once one request carries **more than 20** image
+blocks, every image in it must be within **2,000 px** per side, or Bedrock rejects
+the request with `image exceed max allowed size for many-image requests: 2000
+pixels`. `document` blocks count toward the 20 alongside images, and so do images
+the agentic extraction tool returns mid-run.
+
+This is what made a 21+ page section fail even though every page was individually
+well inside 8,000 px
+([#994](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/994)).
+The pipeline now **detects the request shape and downscales the images to 2,000 px
+itself**, logging one `WARNING` per request that says how many images were reduced.
+Extraction records the reduction in the section's `metadata.image_downscale` as
+before.
+
+**Which page counts this affects depends on the extraction mode**, because the
+limit binds on the images in one *request*, not on the section:
+
+| Configuration | Downscales at |
+|---|---|
+| Simple (`extraction.mode: simple`) | 21 or more pages in the section |
+| **Advanced, shipped defaults** (`max_concurrent_batches: 10`, `max_pages_per_shard: 5`) | about **101** or more pages |
+| Advanced, `max_concurrent_batches: 5` | about 51 or more pages |
+| Advanced, `max_concurrent_batches: 2` | about 21 or more pages |
+| Advanced, `max_concurrent_batches: 1` (sharding off) | 11 or more pages |
+| Advanced, `max_images_per_agent: 10` or lower | never — the request cannot reach 11 attached images |
+
+Advanced mode halves whatever the per-request figure is, because the agent re-sends
+its attached page images on every turn and its `view_image` tool can add a further
+copy of a page to the same request: 11 attached pages can present 22 image blocks.
+The estimate is deliberately pessimistic — some lost resolution is cheaper than a
+rejected request.
+
+Two things about the Advanced figures. `max_concurrent_batches` is a cap on the
+number of shards as well as on parallelism, so raising it makes each request
+*smaller* and the threshold *higher*; that is why the shipped default of 10 reaches
+the clamp only on very long sections. And `max_pages_per_shard` is **not** a ceiling
+on how many pages one request carries: when honouring it would need more shards than
+`max_concurrent_batches` allows, the planner discards those ranges and repacks the
+pages into exactly that many **token-balanced** groups, ignoring the page cap. Being
+token-balanced rather than page-balanced, one text-heavy page can occupy a shard of
+its own and leave the sparse pages crowded into another, so the page counts above
+are approximate. They are approximate in one direction only: the pipeline derives
+the bound from the worse of the planner's two regimes rather than from a formula,
+so on a document with uneven — or entirely absent — text per page the clamp can
+engage *earlier* than the table says, never later.
+
+This also reaches stages other than extraction. Holistic classification sends every
+page of a packet in one request, so a packet over 20 pages now has its page images
+downscaled at classification time too.
+
+**What the re-encode costs.** It removes roughly 15% of the image tokens. Whether
+that costs *accuracy* depends on the model: Claude 4.7+, Opus 5 and Sonnet 5
+tokenize images on a high-resolution tier whose own target is about a 2,576 px long
+edge, so 2,000 px sits roughly 20% below the resolution those models would
+otherwise have used — a real reduction, not a free one. On Sonnet 4.6, Haiku 4.5
+and the 3.x family the tier target is about 1,568 px, so the clamp costs nothing
+there. **We have not measured extraction accuracy with and without it.** If you
+process dense small print on a high-resolution-tier model, prefer keeping requests
+under the threshold rather than relying on the clamp. `agentic.max_images_per_agent`
+is the only hard ceiling on images per agent request, so it is the lever that always
+works; raising `max_concurrent_batches` splits a section across more, smaller
+requests; lowering `max_pages_per_shard` also closes shards earlier, which on the
+shipped defaults is what bounds any section up to 50 pages; and splitting the
+documents themselves works in any mode.
+
+To avoid the per-request re-encode itself, set `target_width` / `target_height` to
+`2000` (or less) for stages that send many page images. If your sections routinely
+exceed the thresholds above, that is the better choice: the resolution loss is
+identical, and you get the smaller payload on every request instead of re-deriving
+it each time.
+
+**One limit remains.** Bedrock also caps the total size of a request, independently
+of its token count and of any per-image limit, and nothing here bounds that. A long
+enough request — on the order of 60 clamped pages — still fails, reported as `Input
+is too long for requested model`. Splitting the document or lowering the pages per
+request is the remedy.
 
 ### Configuration Benefits
 

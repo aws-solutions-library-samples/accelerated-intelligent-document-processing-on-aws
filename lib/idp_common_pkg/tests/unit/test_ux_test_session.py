@@ -401,3 +401,34 @@ def test_the_cline_skill_is_a_symlink_not_a_copy():
     cline = Path(__file__).resolve().parents[4] / ".cline" / "skills" / "ux-test.md"
     assert cline.is_symlink(), f"{cline} must be a symlink to the .claude skill"
     assert os.path.realpath(cline).endswith(".claude/skills/ux-test.md")
+
+
+@pytest.mark.unit
+class TestTheSkillDocumentsTheRecorder:
+    """The recorder is only useful if the skill tells the agent the cadence.
+
+    These pin the parts a live run would otherwise discover the hard way: the
+    commands, where the output goes, and that the tab must stay visible.
+    """
+
+    SKILL = _SCRIPTS.parent / ".claude" / "skills" / "ux-test.md"
+    README = _SCRIPTS / "README.md"
+
+    def test_skill_gives_the_recording_cadence(self):
+        text = self.SKILL.read_text(encoding="utf-8")
+        for needle in (
+            "ux_recorder.py start",
+            "ux_recorder.py mark",
+            "ux_recorder.py stop",
+            "ux_recorder.py render",
+            "scratch/ux-recordings",
+            "narration.md",
+        ):
+            assert needle in text, needle
+
+    def test_skill_warns_that_a_hidden_tab_stops_the_screencast(self):
+        text = self.SKILL.read_text(encoding="utf-8").lower()
+        assert "visible" in text and "not covered" in text
+
+    def test_scripts_readme_mentions_the_recorder(self):
+        assert "ux_recorder.py" in self.README.read_text(encoding="utf-8")

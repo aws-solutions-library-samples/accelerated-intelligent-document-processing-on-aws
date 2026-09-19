@@ -15,6 +15,7 @@ from idp_common.config.configuration_manager import (
     ConfigurationManager,  # type: ignore[import-untyped]
 )
 from idp_common.config.merge_utils import merge_config_with_defaults
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 from pydantic import ValidationError
 
 logger = logging.getLogger()
@@ -599,7 +600,7 @@ def handler(event: Dict[str, Any], context: Any) -> None:
     """
     Handles CloudFormation Custom Resource events for configuration management
     """
-    logger.info(f"Received event: {json.dumps(event)}")
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
     try:
         request_type = event["RequestType"]

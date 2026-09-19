@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.1 |
-| **Last Updated** | 2026-08-20 |
-| **Applies to release** | v0.6.5.dev1 |
+| **Document Version** | 3.2 |
+| **Last Updated** | 2026-09-17 |
+| **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 93 |
+| **Total Threat IDs** | 98 |
 
 ## 1. Threat ID Naming Convention
 
@@ -98,7 +98,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | KB.T03 | OpenSearch Serverless data exposure | ID | 2 (Low) |
 | KB.T04 | Excessive RAG retrieval | ID, DoS | 2 (Low) |
 
-### AUTH — Authentication & RBAC (12 threats)
+### AUTH — Authentication & RBAC (15 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -114,8 +114,26 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | AUTH.T10 | Token lifecycle — post-logout token reuse (stateless JWT) | Spoofing, EoP | 3 (Medium) |
 | AUTH.T11 | Weak transport security (TLS downgrade / cleartext) | ID, Tampering | 3 (Medium) |
 | AUTH.T12 | Missing input-shape validation (type confusion via lost schema validation) | Tampering, DoS | 3 (Medium) |
+| AUTH.T13 | Group assignment from a user-writable attribute (external IdP mapping) | Spoofing, EoP | 4 (Medium) |
+| AUTH.T15 | Authentication material in resolver logs (divergent redaction denylists) | ID | 4 (Medium) |
+| AUTH.T16 | Authorization is opt-in per resolver — no default deny at the dispatcher | EoP | 6 (High) |
 
-### SDK — SDK/CLI (4 threats)
+> **`AUTH.T14` is reserved and deliberately absent from this table.** It is
+> assigned, in a change under review at the time of writing, to "alternate entry
+> path bypassing an operation's group check (streaming Function URL)", and that
+> identifier is already referenced from that change's CHANGELOG entry, from
+> `.claude/skills/api-rbac-test.md` and from a comment in
+> `scripts/api_rbac_expectations.yaml`, in each case next to the corresponding
+> coverage-gap id `GAP-07`. (Measured on that branch: those are the only three
+> occurrences outside this directory. Its *code* comments name `GAP-07` rather
+> than the threat id, so do not expect to find the threat id there.) The threat
+> that this document
+> originally numbered `AUTH.T14` — authorization being opt-in per resolver — was
+> renumbered to `AUTH.T16` here so the two do not collide. A threat identifier is
+> this model's primary key; two threats sharing one is worse than a gap in the
+> sequence.
+
+### SDK — SDK/CLI (5 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -123,8 +141,9 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | SDK.T02 | Insecure automation pipelines | Spoofing, ID | 6 (High) |
 | SDK.T03 | SDK supply chain attack | Tampering | 3 (Medium) |
 | SDK.T04 | Batch processing abuse | DoS | 4 (Medium) |
+| SDK.T05 | Deployment service role is broad enough to reach account administrator | EoP | 8 (Critical) |
 
-### HOOK — Lambda Hooks (6 threats)
+### HOOK — Lambda Hooks (7 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -134,6 +153,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | HOOK.T04 | Hook Lambda timeout / failure cascade | DoS | 4 (Medium) |
 | HOOK.T05 | Privilege escalation via hook IAM role | EoP | 3 (Medium) |
 | HOOK.T06 | Preprocessing hook sees raw source document; can halt or replace it | Tampering, ID, DoS | 6 (High) |
+| HOOK.T07 | `onError: fail` does not halt the workflow at six of seven hook points | Tampering, EoP | 6 (High) |
 
 ### UI — Web UI (7 threats)
 

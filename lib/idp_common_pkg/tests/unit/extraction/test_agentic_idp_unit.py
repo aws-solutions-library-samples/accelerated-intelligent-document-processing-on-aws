@@ -743,3 +743,45 @@ class TestAgenticCachePointGating:
             blocks = _prepare_prompt_content("Extract this", None, None, model_id=mid)
             texts = [b.get("text") for b in blocks if isinstance(b, dict)]
             assert "end of your main task description" in texts
+
+
+class TestDateFormatErrorFields:
+    """``_date_format_error_fields`` surfaces the schema fields that failed
+    only on date-shape validation, so the table tool can tell the agent to
+    add a date transform rather than re-emit every row by hand.
+
+    Pydantic v2 emits two distinct error-type families for date-shaped
+    validation failures: ``date_*`` (for ``format: date`` fields, which
+    the model generator turns into ``datetime.date``) and ``datetime_*``
+    (for ``format: date-time`` fields, which become ``datetime.datetime``).
+    Filtering on ``startswith('date_')`` alone missed the entire
+    date-time family, so schemas with ``format: date-time`` got no
+    diagnostic and the agent had to re-emit every row by hand.
+    """
+
+    def test_date_and_datetime_error_types_both_surface_the_field(self):
+        from idp_common.extraction.agentic_idp import _date_format_error_fields
+
+        class FakeErr(Exception):
+            def __init__(self, entries):
+                self._entries = entries
+
+            def errors(self):
+                return self._entries
+
+        # Mixed batch: one ``date_`` error, one ``datetime_`` error, one
+        # unrelated ``value_error`` that must NOT be surfaced.
+        exc = FakeErr(
+            [
+                {"type": "date_from_datetime_parsing", "loc": (0, "birthday")},
+                {"type": "datetime_from_date_parsing", "loc": (0, "issued_at")},
+                {"type": "value_error", "loc": (0, "amount")},
+            ]
+        )
+        assert _date_format_error_fields(exc) == {"birthday", "issued_at"}
+
+    def test_non_pydantic_exception_returns_empty_set(self):
+        from idp_common.extraction.agentic_idp import _date_format_error_fields
+
+        # ``errors`` not callable — defensive path.
+        assert _date_format_error_fields(ValueError("plain")) == set()

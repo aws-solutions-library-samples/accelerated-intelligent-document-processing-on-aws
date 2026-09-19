@@ -55,6 +55,10 @@ Parameters:
       - CRITICAL
     Description: Default logging level for all Lambda functions
 
+  ConfidenceUnavailableThreshold:
+    Type: Number
+    Default: 10
+
   ExecutionTimeThresholdMs:
     Type: Number
     Default: 30000
@@ -1322,7 +1326,7 @@ Resources:
                     order: 1
                   max_pages_per_shard:
                     type: number
-                    description: "Max pages per shard (wall-clock guard). Shard token budget is auto-sized from the model's context window, but a shard is still capped at this many pages so very large documents can't collapse into one long-running agent. 0 = page cap off (token budget alone). Default: 5."
+                    description: "Max pages per shard (wall-clock guard). Shard token budget is auto-sized from the model's context window, but a shard also closes at this many pages, so a document with unusually compact text still shards instead of collapsing into one long-running agent. Not an absolute ceiling: once honouring it would need more shards than Max concurrent batches allows, the planner repacks the pages into exactly that many token-balanced shards and this cap no longer applies. 0 = page cap off (token budget alone). Default: 5."
                     minimum: 0
                     maximum: 100
                     default: 5
@@ -7348,6 +7352,35 @@ Resources:
                   "left": {
                     "label": "Throttle Count"
                   }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 90,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["${StackName}", "AssessmentConfidenceUnavailable", {"stat": "Sum", "label": "Sections degraded to no confidence scores"}]
+                ],
+                "region": "${AWS::Region}",
+                "title": "Confidence Assessment Degraded (sections returned with no confidence scores)",
+                "view": "timeSeries",
+                "period": 900,
+                "yAxis": {
+                  "left": {
+                    "label": "Sections",
+                    "min": 0
+                  }
+                },
+                "annotations": {
+                  "horizontal": [{
+                    "value": ${ConfidenceUnavailableThreshold},
+                    "label": "AssessmentConfidenceUnavailableAlarm threshold (${ConfidenceUnavailableThreshold} per 15 min)",
+                    "color": "#d62728"
+                  }]
                 }
               }
             }

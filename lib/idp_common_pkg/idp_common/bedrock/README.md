@@ -57,6 +57,44 @@ output_text = client.extract_text_from_response(response)
 print(output_text)
 ```
 
+### What the metering key names
+
+Every invocation returns `{"response": ..., "metering": ...}`, where the metering
+key is `"{context}/bedrock/{model id}"` — for example
+`"Extraction/bedrock/us.anthropic.claude-sonnet-5"`. That model ID is the one
+**actually sent to Bedrock**, and it is what cost reporting prices, so which
+suffixes it keeps matters:
+
+| Suffix | In the key? | Why |
+|---|---|---|
+| `:flex`, `:priority` (service tier) | kept | The tier re-prices **every** request made in it (flex 0.5×, priority 1.75×) and each tier has its own `config_library/pricing.yaml` entry, so the key has to name it to pick the right rate. |
+| `:1m` (long context) | **stripped** | It names no separate rate: the 1M context window is priced at the model's standard per-token rates. It is also not part of the model ID — the client removes it and sends the `context-1m-2025-08-07` beta header instead — so a key carrying it names a profile that was never invoked. |
+
+Note that both suffixes are stripped before Bedrock is called (`parse_model_id`
+lifts a service tier out into `converse_params["serviceTier"]`), so the wire
+format is not what separates them — pricing is.
+
+`idp_common.bedrock.model_utils.metering_model_id` does the stripping for
+**metering keys**; use it at any new metering emission site (a unit test in
+`tests/unit/bedrock/test_long_context_metering_key.py` fails if a new site builds
+the key from a raw model ID). It is **not** the only place `:1m` is handled, and
+it is not meant to be. Six other sites strip the suffix by hand, none of them
+about pricing: `client.py` normalizes a model ID to its base family name in
+`is_claude_4_7_model` and `_strip_region_and_1m` (capability predicates — which
+inference parameters the model accepts); `extraction/agentic_idp.py` and the
+`chat_with_document_processor` Lambda plus its vendored copy under
+`chat_stream_processor/` strip it to build the ID they actually invoke with; and
+`calculate_capacity/index.py` falls back to the base ID for a Service Quotas
+lookup, since a `:1m` variant shares the base model's quota. Deciding what to
+*call*, or which quota to read, is a different question from what a metering key
+should name, so those sites deliberately do not route through
+`metering_model_id`.
+
+Until v0.6.9 the key carried `:1m`, and `pricing.yaml` gave those keys a premium
+rate card — a flat 2× input / 1.5× output that never applied to any model offered
+with the suffix — which overstated long-context model cost by up to 1.8× in every
+report; see `docs/cost-calculator.md` and issue #899.
+
 ## Working with Embeddings
 
 Generate text embeddings for semantic search or document comparison:
@@ -134,6 +172,46 @@ response = client.invoke_model(
     temperature=0.0
 )
 ```
+
+### Images are fitted to Bedrock's many-image cap before every call (#994)
+
+Immediately before `converse`, `invoke_model` sweeps the assembled request with
+`idp_common.image.fit_images_in_request`. Bedrock caps each image at 8,000 px per
+side normally, but at **2,000 px** once the request carries more than 20 image
+blocks — counting `document` blocks and images nested in a `toolResult`. That limit
+binds on the request's image **count**, so no per-image guard can see it: every page
+is individually legal and the request fails as a whole with `image exceed max
+allowed size for many-image requests: 2000 pixels`.
+
+This is the only place in the library that sees a complete request, which is why the
+sweep lives here rather than in each stage. It therefore covers classification,
+assessment, summarization, evaluation and few-shot examples as well as extraction
+(which additionally clamps at page-load time, so the reduction is auditable and the
+agentic path — which builds its own requests — is covered).
+
+The sweep is best-effort: an image it cannot resize is sent unchanged with a warning
+rather than failing a request Bedrock might accept, and one aggregate `WARNING` per
+request replaces the per-image line. To avoid the re-encode entirely, set the
+stage's `image.target_width` / `target_height` to 2,000 or less.
+
+Three properties worth knowing about the call site:
+
+- **It does not mutate what the caller passed.** When the content carries no
+  `<<CACHEPOINT>>` tag, `processed_content is content` — the caller's own list — so
+  `_fit_request_images` counts the blocks first and, only when the cap actually
+  binds, works on a `deepcopy` of the request spine (`bytes` is atomic to
+  `deepcopy`, so the image payloads are shared, not duplicated). Without that, a
+  cached few-shot example image or a page-image list reused by a later pass would be
+  permanently downscaled by one oversized request.
+- **It runs once per `invoke_model`, not once per retry.** The sweep sits before
+  `_invoke_with_retry`, and re-running it would be a no-op anyway since the images
+  then fit.
+- **It applies to every model family, not only Claude.** The 2,000 px figure is
+  measured on Claude and is legal on all of them, so clamping cannot cause a
+  rejection that would not otherwise happen; not clamping risks a hard failure on a
+  family that turns out to enforce a similar cap. The cost is some resolution on a
+  >20-image Nova / Grok / Astra request. The `LambdaHook` path returns before the
+  sweep and is unaffected.
 
 ### How CachePoint Works
 

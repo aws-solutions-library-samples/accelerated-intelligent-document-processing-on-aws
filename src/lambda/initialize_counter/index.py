@@ -5,6 +5,7 @@ import boto3
 import cfnresponse
 import logging
 from botocore.exceptions import ClientError
+from log_sanitizer import sanitize_event_for_logging
 import os
 
 # Initialize logging
@@ -21,7 +22,7 @@ concurrency_table = dynamodb.Table(CONCURRENCY_TABLE)
 COUNTER_ID = "workflow_counter"
 
 def handler(event, context):
-    logger.info(f"Event received: {event}")
+    logger.info(f"Event received: {sanitize_event_for_logging(event)}")
     try:
         # Handle CloudFormation CREATE events
         if event['RequestType'] == 'Create':

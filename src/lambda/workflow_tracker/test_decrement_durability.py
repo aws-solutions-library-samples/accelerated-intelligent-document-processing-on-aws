@@ -14,6 +14,14 @@ For the record, this is a latent gap being closed rather than the cause of the
 leak that motivated it: that investigation found ZERO decrement failures across
 the entire retained log history, and exactly 177 decrements for 177 terminal
 executions through the incident window.
+
+``decrement_counter`` has two write shapes, and the durability guarantee has to
+hold on both. Without an execution ARN it is a plain ``UpdateItem``
+(``dynamodb_client.update_item``); with one — which is what every real terminal
+event carries — it is a ``TransactWriteItems`` carrying the ``dec#<arn>`` marker
+alongside the decrement. ``TestRetriesOnTheTransactionBranch`` covers the second,
+because a retry ladder proven only on the branch production never takes proves
+nothing about production.
 """
 
 import importlib.util
@@ -59,6 +67,7 @@ def index_module(monkeypatch):
         sys.modules[_MODULE_NAME] = module
         spec.loader.exec_module(module)
         module.concurrency_table = MagicMock()
+        module.dynamodb_client = MagicMock()
         module.cloudwatch = MagicMock()
         # Keep the real implementation reachable for the telemetry-failure test.
         module.real_emit_counter_metric = module._emit_counter_metric
@@ -75,51 +84,55 @@ def _throttle():
     )
 
 
-def _ok(n):
-    return {"Attributes": {"active_count": n}}
+def _reads_back(index_module, n):
+    """The post-decrement value is READ back, not returned by the write: the
+    decrement is now a TransactWriteItems (so it can carry its per-execution
+    marker atomically) and transactions have no ReturnValues."""
+    index_module.concurrency_table.get_item.return_value = {"Item": {"active_count": n}}
 
 
 @pytest.mark.unit
 def test_succeeds_first_try(index_module):
-    index_module.concurrency_table.update_item.return_value = _ok(41)
+    _reads_back(index_module, 41)
     assert index_module.decrement_counter() == 41
-    assert index_module.concurrency_table.update_item.call_count == 1
+    assert index_module.dynamodb_client.update_item.call_count == 1
 
 
 @pytest.mark.unit
 def test_retries_transient_throttling_then_succeeds(index_module):
-    index_module.concurrency_table.update_item.side_effect = [
+    index_module.dynamodb_client.update_item.side_effect = [
         _throttle(),
         _throttle(),
-        _ok(7),
+        None,
     ]
+    _reads_back(index_module, 7)
     assert index_module.decrement_counter() == 7
-    assert index_module.concurrency_table.update_item.call_count == 3
+    assert index_module.dynamodb_client.update_item.call_count == 3
 
 
 @pytest.mark.unit
 def test_raises_rather_than_losing_the_slot(index_module):
     """The whole point: a decrement that cannot be applied must NOT return
     quietly, because the event would be acked and the slot lost forever."""
-    index_module.concurrency_table.update_item.side_effect = _throttle()
+    index_module.dynamodb_client.update_item.side_effect = _throttle()
     with pytest.raises(ClientError):
         index_module.decrement_counter()
-    assert index_module.concurrency_table.update_item.call_count == 4
+    assert index_module.dynamodb_client.update_item.call_count == 4
 
 
 @pytest.mark.unit
 def test_non_clienterror_is_also_retried_and_raised(index_module):
-    index_module.concurrency_table.update_item.side_effect = RuntimeError("boom")
+    index_module.dynamodb_client.update_item.side_effect = RuntimeError("boom")
     with pytest.raises(RuntimeError):
         index_module.decrement_counter()
-    assert index_module.concurrency_table.update_item.call_count == 4
+    assert index_module.dynamodb_client.update_item.call_count == 4
 
 
 @pytest.mark.unit
 def test_counter_value_is_published_for_history(index_module):
     """The leak could not be attributed to a moment in time because nothing ever
     recorded the counter — only the end state was visible."""
-    index_module.concurrency_table.update_item.return_value = _ok(12)
+    _reads_back(index_module, 12)
     index_module.decrement_counter()
     index_module._emit_counter_metric.assert_called_once_with(12)
 
@@ -128,11 +141,11 @@ def test_counter_value_is_published_for_history(index_module):
 def test_metric_failure_never_breaks_the_decrement(index_module):
     """Telemetry is not allowed to affect the thing it reports on."""
     index_module._emit_counter_metric = index_module.real_emit_counter_metric
-    index_module.concurrency_table.update_item.return_value = _ok(3)
+    _reads_back(index_module, 3)
     index_module.cloudwatch.put_metric_data.side_effect = RuntimeError("no cloudwatch")
     assert index_module.decrement_counter() == 3
     assert index_module.cloudwatch.put_metric_data.called
-    assert index_module.concurrency_table.update_item.call_count == 1
+    assert index_module.dynamodb_client.update_item.call_count == 1
 
 
 @pytest.mark.unit
@@ -140,6 +153,125 @@ def test_metric_raising_outright_does_not_double_decrement(index_module):
     """The decrement is already applied by the time telemetry runs, so telemetry
     must never be able to re-enter the retry loop — that would subtract twice."""
     index_module._emit_counter_metric = MagicMock(side_effect=RuntimeError("boom"))
-    index_module.concurrency_table.update_item.return_value = _ok(5)
+    _reads_back(index_module, 5)
     assert index_module.decrement_counter() == 5
-    assert index_module.concurrency_table.update_item.call_count == 1
+    assert index_module.dynamodb_client.update_item.call_count == 1
+
+
+@pytest.mark.unit
+def test_read_back_failure_does_not_fail_an_applied_decrement(index_module):
+    """The read-back exists only to report a value. A decrement that landed must
+    not be turned into an error (and retried, subtracting again) because the
+    follow-up GetItem was throttled."""
+    index_module.concurrency_table.get_item.side_effect = _throttle()
+    assert index_module.decrement_counter() is None
+    assert index_module.dynamodb_client.update_item.call_count == 1
+
+
+EXEC_ARN = "arn:aws:states:us-east-1:123456789012:execution:idp:doc-1"
+
+
+def _transaction_conflict():
+    """What DynamoDB returns when the transaction loses a race on the counter item
+    with a concurrent write — the queue processor's increment or one of its
+    compensating decrements. Nothing landed, so it is safe to retry."""
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [
+                {"Code": "None"},
+                {"Code": "TransactionConflict"},
+            ],
+        },
+        "TransactWriteItems",
+    )
+
+
+class TestRetriesOnTheTransactionBranch:
+    """Every test above passes no ARN, so it exercises ``update_item``. Production
+    always passes one and therefore always takes ``transact_write_items``, so the
+    retry-and-raise guarantees have to be pinned there too.
+
+    Measured: reintroduce the original bug on the transaction branch only — swallow
+    a throttled write and report success, which acks the event and loses the slot —
+    and all 28 other tracker tests still pass. Only
+    ``test_retries_transient_throttling_then_succeeds`` and
+    ``test_raises_rather_than_losing_the_slot`` here catch it."""
+
+    @pytest.mark.unit
+    def test_succeeds_first_try(self, index_module):
+        _reads_back(index_module, 41)
+        assert index_module.decrement_counter(EXEC_ARN) == 41
+        assert index_module.dynamodb_client.transact_write_items.call_count == 1
+        # The plain-UpdateItem branch must not be taken when an ARN is available.
+        assert index_module.dynamodb_client.update_item.call_count == 0
+
+    @pytest.mark.unit
+    def test_retries_transient_throttling_then_succeeds(self, index_module):
+        index_module.dynamodb_client.transact_write_items.side_effect = [
+            _throttle(),
+            _throttle(),
+            None,
+        ]
+        _reads_back(index_module, 7)
+        assert index_module.decrement_counter(EXEC_ARN) == 7
+        assert index_module.dynamodb_client.transact_write_items.call_count == 3
+
+    @pytest.mark.unit
+    def test_a_transaction_conflict_is_retried(self, index_module):
+        """Making the decrement transactional created this failure mode: the queue
+        processor writes the same item, so the two can collide. Nothing landed when
+        the transaction is cancelled, so retrying cannot double-subtract."""
+        index_module.dynamodb_client.transact_write_items.side_effect = [
+            _transaction_conflict(),
+            None,
+        ]
+        _reads_back(index_module, 9)
+        assert index_module.decrement_counter(EXEC_ARN) == 9
+        assert index_module.dynamodb_client.transact_write_items.call_count == 2
+
+    @pytest.mark.unit
+    def test_raises_rather_than_losing_the_slot(self, index_module):
+        index_module.dynamodb_client.transact_write_items.side_effect = _throttle()
+        with pytest.raises(ClientError):
+            index_module.decrement_counter(EXEC_ARN)
+        assert index_module.dynamodb_client.transact_write_items.call_count == 4
+
+    @pytest.mark.unit
+    def test_a_persistent_conflict_also_raises(self, index_module):
+        index_module.dynamodb_client.transact_write_items.side_effect = (
+            _transaction_conflict()
+        )
+        with pytest.raises(ClientError):
+            index_module.decrement_counter(EXEC_ARN)
+        assert index_module.dynamodb_client.transact_write_items.call_count == 4
+
+    @pytest.mark.unit
+    def test_non_clienterror_is_also_retried_and_raised(self, index_module):
+        index_module.dynamodb_client.transact_write_items.side_effect = RuntimeError(
+            "boom"
+        )
+        with pytest.raises(RuntimeError):
+            index_module.decrement_counter(EXEC_ARN)
+        assert index_module.dynamodb_client.transact_write_items.call_count == 4
+
+    @pytest.mark.unit
+    def test_counter_value_is_published_for_history(self, index_module):
+        _reads_back(index_module, 12)
+        index_module.decrement_counter(EXEC_ARN)
+        index_module._emit_counter_metric.assert_called_once_with(12)
+
+    @pytest.mark.unit
+    def test_read_back_failure_does_not_fail_an_applied_decrement(self, index_module):
+        index_module.concurrency_table.get_item.side_effect = _throttle()
+        assert index_module.decrement_counter(EXEC_ARN) is None
+        assert index_module.dynamodb_client.transact_write_items.call_count == 1
+
+    @pytest.mark.unit
+    def test_metric_raising_outright_does_not_double_decrement(self, index_module):
+        """Telemetry runs after the transaction has landed, so it must never be
+        able to re-enter the retry loop and subtract a second slot."""
+        index_module._emit_counter_metric = MagicMock(side_effect=RuntimeError("boom"))
+        _reads_back(index_module, 5)
+        assert index_module.decrement_counter(EXEC_ARN) == 5
+        assert index_module.dynamodb_client.transact_write_items.call_count == 1

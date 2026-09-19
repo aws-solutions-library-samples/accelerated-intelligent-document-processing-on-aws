@@ -16,6 +16,7 @@ from idp_common.bda.blueprint_optimizer import (
     OptimizationStatus,
 )
 from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -40,7 +41,7 @@ def handler(event, context):
             groundTruthKey, bucket, version, discoveredClassName.
         context: Lambda context object.
     """
-    logger.info(f"Received event: {json.dumps(event)}")
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
     job_id = event.get("jobId")
     class_schema = event.get("classSchema")

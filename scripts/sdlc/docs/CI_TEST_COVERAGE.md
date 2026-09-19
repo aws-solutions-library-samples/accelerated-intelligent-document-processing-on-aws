@@ -17,6 +17,7 @@ its `make` target and the skill that documents how to run it.
 | Primary functional suite (Steps 3–14) | *(runs in CI; deploy a stack then use the individual targets below)* | — |
 | API RBAC / authorization (Step 12) | `make api-test STACK_NAME=…` (alias `make stacktest-rbac`) · static-only: `make api-test-static` | `.claude/skills/api-rbac-test.md` |
 | ZAP DAST scan | `make stacktest-zap STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
+| UX review in a real browser (functional pass/fail per flow **plus** usability findings; optionally recorded as a narrated mp4 via `scripts/ux_recorder.py`) | `make ux-test STACK_NAME=…` | `.claude/skills/ux-test.md` |
 | APIGateway GLOBAL hosting | `make stacktest-hosting-global` | `.claude/skills/run-stack-tests.md` |
 | WAF-enabled hosting | `make stacktest-waf` | `.claude/skills/run-stack-tests.md` |
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
@@ -31,6 +32,10 @@ its `make` target and the skill that documents how to run it.
 | Seller-service live activation + payload probe | `python feature-platform/seller-entitlement-service/tests/dynamic_activation_test.py --endpoint … --product-id …` | `feature-platform/seller-entitlement-service/README.md` |
 | Seller-service test-stack teardown (incl. retained KMS key + table) | `feature-platform/seller-entitlement-service/tests/teardown_test_stack.sh --stack-name …-citest` | `feature-platform/seller-entitlement-service/README.md` |
 | Run security tests + curate a public-safe snapshot | `make security-results [STACK_NAME=… REGION=…]` (offline-only if no stack) | `.claude/skills/curate-security-results.md` |
+
+The user-facing version of this map — every layer, including the ones that *do* run
+in CI — is [`docs/testing.md`](../../../docs/testing.md). This file stays the
+pipeline-internal reference: per-step detail, probe framework, cleanup.
 
 Once a release has been validated with these tiers, the outcome is recorded — one
 file per release, never overwritten — in
@@ -112,7 +117,65 @@ ran on that change.
 
 ⚠️ **A workflow makes a check visible, not blocking.** Both check names have to be
 added to the branch-protection rule for `develop` as *required status checks*, or a
-PR can still be merged while they are red or pending.
+PR can still be merged while they are red or pending. **Today they are not**, and
+`develop` has no branch protection at all — so every gate on this page is advisory.
+
+Run `make check-branch-protection` to measure it rather than trust this paragraph.
+It parses `.github/workflows/*.yml` for the job names GitHub turns into check
+contexts and compares them with the live required-check list, reporting anything
+required-but-never-reported (a renamed job) or reported-but-not-required (a new
+gate).
+
+Three contexts cover every gate on this page. All eight of
+`test_ci_gate_parity.py`'s `SHARED_GATES` are *steps* inside a **single** job,
+`developer_tests`, and GitHub can only require job-level contexts, never
+individual steps — so those eight gates collapse to exactly **one** requireable
+context, not eight and not three. That has a practical consequence worth knowing
+before you read a red check: because the eight share one context, they also share
+one red mark, so a required-check failure does not say which of the eight failed.
+The other two contexts are the two security jobs, one each.
+
+| Check context | Workflow / job | Covers |
+|---|---|---|
+| `Lint, Type Check, and Test` | `developer-tests.yml` / `developer_tests` | all eight shared gates: `lint-cicd`, `typecheck-pr`, `api-test-static`, `test-cicd`, `test-packages-cicd`, vitest, first-party dep check, service-role permissions |
+| `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
+| `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
+
+Three further contexts must **not** be required, because none of them reports on
+every pull request and a required check that does not report sits pending forever
+and blocks every merge: `build` (`build-docs.yml`) and `Generate Dependency
+Manifests` (`generate-dep-manifest.yml`) have path-filtered `pull_request`
+triggers, and `Test Results` is a check run the
+`publish-unit-test-result-action` step creates via `check_name:` behind an `if:`.
+That last one is not a job at all, so job-level YAML parsing cannot see it; the
+checker reads `check_name:` inputs specifically to find it.
+
+The command reads **both** enforcement mechanisms — classic branch protection
+(`.../branches/develop/protection`) and rulesets
+(`.../rules/branches/develop`) — because a branch can be fully governed by a
+ruleset while the classic endpoint reports nothing. It also distinguishes "not
+protected" from "cannot see": the classic endpoint needs repository **admin** and
+returns 404 without it, so it cross-checks `.../branches/develop`, which carries a
+`protected` boolean and is readable with plain `pull` access. As measured in
+2026-09, `develop` reports `"protected": false` there and no ruleset rule governs
+the branch (the repository's five active rulesets are inherited from the
+enterprise: four `target=repository`, one `target=tag`), so the tool reaches a
+**verified** "not protected" rather than an ambiguous one. `--json` reports
+`protected: null` when even that read fails, which is not the same as `false`.
+
+The command is opt-in and is in neither `lint-cicd` nor `SHARED_GATES`, because
+enabling protection needs repository **admin** — tracked by
+[issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933).
+A `pull`-scoped token is enough to run it, and enough to check one of the six
+assertions after protection is enabled: `.../branches/develop` carries a nested
+`protection.required_status_checks` object at that scope, so the required-check
+comparison is made from it rather than being abandoned as unverifiable.
+`administration:read` is what the other five need — required approvals, stale-review
+dismissal, the force-push and deletion blocks, and `enforce_admins` — and a run
+without it emits a `protection_detail_unreadable` finding saying those five are
+unverified rather than verified-good, so such a run still exits non-zero.
+Once that is closed it should become a required, blocking check, run with
+`--fail-on-skip`.
 
 **Trigger matrix** — what runs, when:
 
@@ -223,7 +286,8 @@ Notes:
 ### Step 1: Stack Deployment
 **What it tests**: CloudFormation stack deployment
 - Template validation
-- Nested stack creation (AppSync, Pattern, DocumentKB, MultiDocDiscovery)
+- Nested stack creation (`APIRESOLVERSTACK`, `PATTERNSTACK`, `DOCUMENTKB`,
+  `MULTIDOCDISCOVERYSTACK`)
 - Resource creation and initialization
 - Stack outputs verification
 
@@ -424,7 +488,8 @@ should attach that boundary to every `AWS::IAM::Role` it creates.
 **What it tests**: the [pipeline-hook](../../../docs/feature-platform.md#pipeline-hooks)
 mechanism — the platform's supported way for a feature or an admin to inject
 business logic into document processing — at both standalone hook points
-(`preprocessing` and `postprocessing`).
+(`preprocessing` and `postprocessing`), plus the `onError: fail` gating policy at
+a post-step point (`ocr.postHook`).
 - **Why it exists**: before this step, **none of the seven hook points had any
   end-to-end coverage.** Unit tests exercise the dispatcher with fakes, but four
   things only exist on a real stack: the dispatcher reading a hook out of a real
@@ -447,12 +512,34 @@ business logic into document processing — at both standalone hook points
     **accepted** rather than refused by the dispatcher's guardrails
   - the hook's marker is present in the **persisted** document (tracking row),
     proving the mutation survived past the workflow
+  - a hook declaring `onError: fail` and failing on purpose **aborts** the
+    document: the execution reaches `FAILED`, its `executionFailedEventDetails.error`
+    is `HookFatalError`, and `ClassificationStep` was never entered. This is the
+    live half of the fix for #919, where six of the seven hook states caught
+    `States.ALL` ahead of any fatal-error catcher and routed the document forward,
+    making the policy inert. Only a real execution proves the catcher ordering in
+    the deployed state machine; the offline test
+    (`patterns/unified/tests/test_workflow_hook_fatal_catch.py`) proves it in the
+    source ASL
 
-**Test Document**: `samples/lending_package.pdf`
-**Duration**: ~5-7 minutes
+**Test Document**: `samples/lending_package.pdf` — **twice**: once for the
+happy-path phase and once, under a uniquely named copy, for the `onError: fail`
+phase.
+**Duration**: ~10-14 minutes typical, up to ~18 in the worst case. The
+happy-path phase is the ~5-7 minutes this step used to take on its own; the
+`onError: fail` phase adds a second `run-inference` on its own copy of the
+document plus a poll for the FAILED execution that gives up only at
+`_TARGET_WAIT_SECS = 600` seconds in `scripts/sdlc/codebuild_deployment.py`. The
+poll normally resolves in well under a minute — the abort happens right after
+OCR — so the 600-second ceiling is the timeout, not the expected cost.
 **Execution**: Runs in the parallel pool. It registers its hook in its **own**
 config version (`test-pipeline-hooks`) and never activates it, so the other steps
-sharing this stack are unaffected.
+sharing this stack are unaffected. The `onError: fail` phase likewise uses its own
+config version (`test-pipeline-hooks-fail`) and its own uniquely named copy of the
+sample document, so the deliberately FAILED execution it produces cannot be
+confused with — or overwrite — another step's assertions. It gates at
+`ocr.postHook` rather than a later point so aborting costs one OCR call and no
+Bedrock spend.
 **Implementation**: `test_step14_pipeline_hooks` in
 `scripts/sdlc/codebuild_deployment.py`. Deploys a real `idp-citest-hook-*` Lambda
 built from `idp_common.hooks` — the documented helper pair — so the test also
@@ -816,7 +903,8 @@ run_command("idp-cli test-result --stack-name {stack} --test-run-id {id} --wait"
 
 ### Stack Deletion
 - Cancels all Bedrock ingestion jobs
-- Deletes nested stacks first (AppSync, Pattern, DocumentKB, MultiDocDiscovery)
+- Deletes nested stacks first (`APIRESOLVERSTACK`, `PATTERNSTACK`, `DOCUMENTKB`,
+  `MULTIDOCDISCOVERYSTACK`)
 - Deletes main stack
 - Cleans up S3 buckets, DynamoDB tables, Lambda functions
 

@@ -83,10 +83,9 @@ images, some holding several checks on one sheet). The class's baseline is a
 It flagged every multi-check image, stayed silent on every single-check image, and
 got the number right every time.
 
-**But it did not avert any data loss here, and an earlier draft of this document
-claimed it did.** That claim — "without it each of those 18 documents silently ships
-1 to 7 checks fewer than it contains" — was **false**. Measured directly from both
-arms' `inference_result` afterwards:
+**But it did not avert any data loss on this corpus.** The tempting reading — that
+without it each of those 18 documents silently ships 1 to 7 checks fewer than it
+contains — does not hold. Measured directly from both arms' `inference_result`:
 
 | | detection ON | detection OFF |
 |---|---|---|
@@ -177,10 +176,10 @@ Not "gated on evidence we could not resolve". The evidence resolved:
 > declare a record array (like `BANK_CHECK`) it reports a count discrepancy that is
 > real but is a *configuration* finding, not data loss.
 
-The second half of that condition is the correction §2a records: an earlier draft
-said only "when a section can hold several documents", which reads as a
-recommendation to leave it on for `ocr-benchmark` — where it would flag 18 documents
-a month, indefinitely, none of which is losing anything.
+Both halves of that condition matter, and §2a is why. "When a section can hold
+several documents" on its own reads as a recommendation to leave it on for
+`ocr-benchmark` — where it would flag 18 documents a month, indefinitely, none of
+which is losing anything.
 
 **So there are two distinct uses, and only one of them is a setting:**
 
@@ -195,17 +194,15 @@ toolSpec are byte-identical to earlier releases.
 
 ## Honesty notes
 
-- **The headline claim of §2a was wrong in the first published version of this
-  document, and it took a fourth look to catch.** "Each of those 18 documents
-  silently ships 1 to 7 checks fewer than it contains" was asserted from the
-  *detection* numbers alone — probe count vs `instance_count` — without ever
-  counting the extracted rows. Counting them gives 0 missing in both arms. The
-  error is instructive: `instance_count` is 1 for a class with no declared
-  instance axis *whether or not anything was lost*, so "probe 6 vs instance 1"
-  cannot distinguish "5 records dropped" from "5 records present inside a declared
-  array". Nothing in the detection instrument can tell those apart — that is what
-  the extracted-row count is for, and it was one query away the whole time.
-  It survived into a merged PR and a closed issue before being checked.
+- **Detection numbers alone cannot establish data loss.** "Each of those 18
+  documents silently ships 1 to 7 checks fewer than it contains" is the conclusion
+  the *detection* numbers invite — probe count vs `instance_count` — and it is
+  wrong: counting the extracted rows gives 0 missing in both arms.
+  `instance_count` is 1 for a class with no declared instance axis *whether or not
+  anything was lost*, so "probe 6 vs instance 1" cannot distinguish "5 records
+  dropped" from "5 records present inside a declared array". Nothing in the
+  detection instrument can tell those apart — that is what the extracted-row count
+  is for, and it is one query away.
 - **The synthetic grid nearly produced the wrong conclusion twice.** First it
   reported 0 false positives from a corpus that contained no multi-record
   documents — a number with no information in it that read like a clean bill of

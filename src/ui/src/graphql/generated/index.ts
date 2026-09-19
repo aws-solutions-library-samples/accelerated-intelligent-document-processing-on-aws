@@ -902,8 +902,8 @@ export const getTestRun = /* GraphQL */ `
 ` as GeneratedQuery<GetTestRunQueryVariables, GetTestRunQuery>;
 
 export const getTestRuns = /* GraphQL */ `
-  query GetTestRuns($timePeriodHours: Int, $startDateTime: AWSDateTime, $endDateTime: AWSDateTime) {
-    getTestRuns(timePeriodHours: $timePeriodHours, startDateTime: $startDateTime, endDateTime: $endDateTime) {
+  query GetTestRuns($timePeriodHours: Int, $startDateTime: AWSDateTime, $endDateTime: AWSDateTime, $maxItems: Int) {
+    getTestRuns(timePeriodHours: $timePeriodHours, startDateTime: $startDateTime, endDateTime: $endDateTime, maxItems: $maxItems) {
       testRunId
       testSetId
       testSetName

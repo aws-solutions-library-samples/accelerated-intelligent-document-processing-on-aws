@@ -39,7 +39,17 @@ def resolver(monkeypatch):
         )
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        # The resolver's own directory must be on sys.path for the exec, because
+        # that is where Lambda puts it: index.py imports a sibling by bare name
+        # (``from log_sanitizer import ...``), which loading the file by path
+        # alone does not reproduce. Without this the import only succeeded when
+        # some other test in the run happened to have left the directory on
+        # sys.path — see the same note on ``_load`` in test_agent_chat_rbac.py.
+        sys.path.insert(0, os.path.dirname(_RESOLVER))
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
         yield module
 
 
@@ -109,13 +119,49 @@ def test_processor_requires_literal_true(rel_path):
 
 @pytest.mark.unit
 def test_stream_processor_requires_literal_true():
-    """The streaming (SSE) entry point takes raw client JSON, so it must be strict."""
+    """The streaming (SSE) entry point takes raw client JSON, so it must be strict.
+
+    Its route bodies are now declared as Pydantic models, so the flag is enforced
+    by its *annotation* rather than by an ``is True`` comparison at the use site:
+    ``StrictBool`` refuses a non-boolean instead of coercing it, and the default
+    is False. Asserted on the source because ``app.py`` imports FastAPI, which is
+    not installed in this environment.
+    """
     source = open(
         os.path.join(_REPO_ROOT, "src/lambda/chat_stream_processor/app.py")
     ).read()
     # Collapse whitespace so the assertion survives reformatting by the linter.
     flat = " ".join(source.split())
-    assert 'body.get("enableCodeIntelligence") is True' in flat
-    assert 'body.get("enableCodeIntelligence", True)' not in flat
-    # bool() would read the JSON string "false" as an opt-in.
-    assert 'bool( body.get("enableCodeIntelligence"' not in flat
+    assert "enableCodeIntelligence: StrictBool = False" in flat, (
+        "the opt-in flag must be declared StrictBool (not bool) and default False"
+    )
+    # The validated value is passed straight through — nothing may re-widen it.
+    assert '"enableCodeIntelligence": body.enableCodeIntelligence' in flat
+    assert "bool(body.enableCodeIntelligence" not in flat
+    # The old untyped reads must not come back alongside the schema.
+    assert 'body.get("enableCodeIntelligence"' not in flat
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "value", ["false", "no", "0", 0, 1, "true", [], {}, None, "", "False"]
+)
+def test_stream_processor_schema_refuses_non_boolean_opt_in(value):
+    """The declared type must refuse a non-boolean, not coerce one.
+
+    The assertion above pins *which* annotation the route uses; this pins what
+    that annotation does, on a stand-in model carrying the same declaration (
+    importing ``app.py`` itself needs FastAPI). A plain ``bool`` here would accept
+    the string ``"false"`` and read it as consent.
+    """
+    pydantic = pytest.importorskip("pydantic")
+
+    # Built with create_model rather than a class body so the annotation comes
+    # from the same object the route's model uses, without naming it statically.
+    body_model = pydantic.create_model(
+        "_AgentChatBody", enableCodeIntelligence=(pydantic.StrictBool, False)
+    )
+
+    assert body_model().enableCodeIntelligence is False
+    with pytest.raises(pydantic.ValidationError):
+        body_model(enableCodeIntelligence=value)

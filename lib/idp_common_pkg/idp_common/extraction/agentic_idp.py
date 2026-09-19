@@ -47,7 +47,10 @@ from idp_common.bedrock.client import (
     is_grok_model,
     strips_sampling_params,
 )
-from idp_common.bedrock.model_utils import get_model_max_output_tokens
+from idp_common.bedrock.model_utils import (
+    get_model_max_output_tokens,
+    metering_model_id,
+)
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.topk_resolver import resolve_candidates
@@ -59,9 +62,67 @@ from idp_common.utils.strands_agent_tools.todo_list import (
     update_todo,
     view_todo_list,
 )
+from idp_common.utils.transient_errors import is_model_tool_use_sequence_error
 
 # Supported image formats for Bedrock API
 SUPPORTED_IMAGE_FORMATS = {"jpeg", "png", "gif", "webp"}
+
+
+class ModelInvalidToolUseSequence(Exception):
+    """The extraction model could not emit a valid tool-use sequence.
+
+    Raised ``from`` Bedrock's ``modelStreamErrorException`` / ``EventStreamError``
+    so the Step Functions cause and the document's error name the model and the
+    remedy instead of repeating the bare "Model produced invalid sequence as part
+    of ToolUse". Deterministic — the class name is deliberately in no retry list,
+    and ``transient_errors`` classifies the underlying outcome as non-transient
+    too, so neither the caller nor the state machine retries it (#895).
+    """
+
+
+#: Models this repository documents as working for Advanced (agentic) extraction.
+#: Kept short and taken from ``docs/extraction-and-confidence.md`` + ``pricing.yaml``
+#: rather than invented; the first entry is the shipped default extraction model
+#: (``config/system_defaults/base-extraction.yaml``).
+_AGENTIC_CAPABLE_EXAMPLE_MODELS = (
+    "us.anthropic.claude-sonnet-5",
+    "us.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-opus-5",
+    "us.openai.gpt-6-astra",
+    "us.xai.grok-4.6",
+)
+
+
+def _explain_invalid_tool_use_sequence(exc: BaseException, model_id: str | None) -> str:
+    """The message for a model that cannot emit a valid tool-use sequence (#895).
+
+    States the outcome, that it reproduces on retry with the same request (so
+    nobody reads the fast failure as a flaky stack), which model produced it, and
+    what to change. Deliberately does NOT claim a hard model capability limit:
+    AWS's Nova tool-use troubleshooting guide attributes this error primarily to
+    inference parameters and output budget, and this repository does not send
+    ``topK`` on the agentic path, so the remedies include emitting less per call.
+    """
+    which = model_id or "the configured extraction model"
+    alternatives = ", ".join(_AGENTIC_CAPABLE_EXAMPLE_MODELS)
+    return (
+        f"Advanced (agentic) extraction failed: {which} produced an invalid "
+        "tool-use sequence, which Bedrock reports mid-stream as "
+        "modelStreamErrorException / 'Model produced invalid sequence as part of "
+        "ToolUse'. This reproduces on retry with the same request, so it is treated "
+        "as deterministic rather than transient and is not retried. Suggested "
+        "actions: (1) switch extraction.model (or the per-class "
+        "x-aws-idp-extraction-model override) to a model measured on this path — "
+        f"e.g. {alternatives}; (2) reduce extraction.agentic.shard_token_budget / "
+        "extraction.agentic.max_pages_per_shard so each call emits less, since this "
+        "error is also reported when a tool-output turn runs past the output budget; "
+        "or (3) set extraction.mode to simple, which needs no tool use in its "
+        "default configuration and works on every model. Amazon Nova Lite has not "
+        "completed the Advanced path in this repository's benchmarks. See AWS's Nova "
+        "tool-use troubleshooting guide: "
+        "https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html "
+        f"(underlying error: {exc})"
+    )
 
 
 def detect_image_format(image_bytes: bytes) -> str:
@@ -397,6 +458,41 @@ def _invoke_checkpoint_callback(agent: Agent) -> None:
         )
 
 
+def _date_format_error_fields(exc: Exception) -> set[str]:
+    """Field names in a Pydantic ValidationError that failed only on date format.
+
+    A schema's ``format: date`` becomes a real ``datetime.date`` in the generated
+    model, so a correctly-parsed ``05/09/2024`` is rejected. Distinguishing that
+    from a genuine structural mismatch is what lets the tool tell the agent to
+    re-map with a date transform instead of re-emitting every row by hand.
+
+    Row indices are stripped, so a 1,200-row table reports one field, not 1,200.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return set()
+    try:
+        entries = errors()
+    except Exception:  # pragma: no cover - defensive
+        return set()
+    fields: set[str] = set()
+    for err in entries:
+        # Pydantic v2 emits ``date_parsing`` / ``date_from_datetime_parsing``
+        # for ``format: date`` fields AND ``datetime_parsing`` /
+        # ``datetime_from_date_parsing`` for ``format: date-time`` fields.
+        # A prefix check on ``"date_"`` alone missed the entire
+        # date-time family, so schemas that model timestamps with
+        # ``format: date-time`` got no diagnostic and the agent had to
+        # re-emit every row by hand instead of applying a transform.
+        err_type = str(err.get("type", ""))
+        if not (err_type.startswith("date_") or err_type.startswith("datetime_")):
+            continue
+        leaf = [p for p in err.get("loc", ()) if not isinstance(p, int)]
+        if leaf:
+            fields.add(str(leaf[-1]))
+    return fields
+
+
 def create_dynamic_extraction_tool_and_patch_tool(model_class: type[TargetModel]):
     """
     Create a dynamic tool function that extracts data according to a Pydantic model.
@@ -655,17 +751,31 @@ def create_dynamic_extraction_tool_and_patch_tool(model_class: type[TargetModel]
                 "scalar_fields": list(scalar_fields.keys()),
             }
         except Exception as e:
+            date_fields = _date_format_error_fields(e)
             logger.warning(
                 "finalize_table_extraction validation failed",
-                extra={"error": str(e)},
+                extra={"error": str(e), "date_format_fields": sorted(date_fields)},
             )
+            remedy = "Check that table_array_field and scalar_fields match the schema."
+            if date_fields:
+                fields = ", ".join(sorted(date_fields))
+                # The schema's date type accepts ISO-8601 only. Re-mapping with a
+                # date transform converts every row in Python; re-emitting the
+                # rows by hand instead costs one output token per character of
+                # every row, which is the single largest cost in this path.
+                remedy = (
+                    f"{len(date_fields)} field(s) failed only on date FORMAT: "
+                    f"{fields}. Do NOT re-emit the rows yourself. Call "
+                    f"map_table_to_schema again with the same column_mapping plus "
+                    f"value_transforms={{'<field>': 'date_to_iso_mdy'}} (or "
+                    f"'date_to_iso_dmy' / 'date_to_iso' — choose the reading the "
+                    f"page actually uses), then call this tool again."
+                )
             return {
                 "status": "validation_error",
-                "message": (
-                    f"Validation failed: {str(e)[:500]}. "
-                    f"Check that table_array_field and scalar_fields match the schema."
-                ),
+                "message": f"Validation failed: {str(e)[:500]}. {remedy}",
                 "row_count": row_count,
+                "date_format_fields": sorted(date_fields),
             }
 
     return (
@@ -1390,6 +1500,7 @@ def _prepare_prompt_content(
     existing_data: BaseModel | None,
     model_id: str | None = None,
     prompt_cache: str = "auto",
+    attach_page_images: bool = True,
 ) -> list[ContentBlock]:
     """
     Prepare prompt content from various input types.
@@ -1401,6 +1512,11 @@ def _prepare_prompt_content(
         prompt: Input content (text string, PIL Image, or Message dict)
         page_images: Optional list of page image bytes to include
         existing_data: Optional existing extraction data to update
+        attach_page_images: When False, ``page_images`` are NOT appended to the
+            first turn; they serve only to register the ``view_image`` tool. The
+            extraction service uses this because its ``{DOCUMENT_IMAGE}``
+            substitution has already placed the page images inside ``prompt``'s
+            content — appending them here as well sent every page image twice.
         model_id: Target model. Used ONLY to decide whether a trailing
             ``cachePoint`` block may be appended — a model that does not support
             prompt caching rejects the whole request (see below). When None the
@@ -1434,8 +1550,13 @@ def _prepare_prompt_content(
     else:
         prompt_content = [ContentBlock(text=str(prompt))]
 
-    # Add page images if provided - no limit with latest Bedrock API
-    if page_images:
+    # Add page images if provided. There IS a limit, contrary to what this comment
+    # used to claim: past 20 image blocks in one request Bedrock caps every image at
+    # 2,000 px per side, and past 100 it refuses the request outright (#994). The
+    # attached count is bounded by agentic.max_images_per_agent, and the pages
+    # reaching here are already fitted to the applicable cap by
+    # ExtractionService._load_document_images.
+    if page_images and attach_page_images:
         logger.info(
             "Attaching images to agentic extraction prompt",
             extra={"image_count": len(page_images)},
@@ -1516,6 +1637,7 @@ async def _invoke_agent_for_extraction(
     data_format: type[TargetModel],
     max_extraction_retries: int = 3,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
+    model_id: str | None = None,
 ) -> tuple[Any, TargetModel | None]:
     """
     Invoke agent and retry if extraction fails.
@@ -1533,6 +1655,9 @@ async def _invoke_agent_for_extraction(
             constraints (e.g. ``format`` keywords) that the Pydantic model does
             not, and to give the agent one more self-correction round with the
             list of violations. When None, only Pydantic type validation runs.
+        model_id: The extraction model, used only to name it in the two failure
+            translations below. ``None`` keeps the historical behavior for callers
+            that don't pass it (only the tests, today).
 
     Returns:
         Tuple of (response, validated_result or None)
@@ -1543,7 +1668,16 @@ async def _invoke_agent_for_extraction(
         # invoke_agent_with_retry already handles network errors and throttling
         try:
             response = await invoke_agent_with_retry(agent=agent, input=prompt_content)
-        except Exception as e:  # noqa: BLE001 - translate one specific failure mode
+        except Exception as e:  # noqa: BLE001 - translate two specific failure modes
+            if is_model_tool_use_sequence_error(e):
+                # #895: Bedrock reports this as modelStreamErrorException, a code
+                # that is otherwise transient, so it used to be retried by Step
+                # Functions for every shard of every document. A model that emits a
+                # malformed toolUse block emits it again, so fail once, here, with
+                # the model named and a working alternative suggested.
+                msg = _explain_invalid_tool_use_sequence(e, model_id)
+                logger.error(msg, extra={"model_id": model_id})
+                raise ModelInvalidToolUseSequence(msg) from e
             if _is_context_overflow_error(e):
                 raise ValueError(
                     "Extraction input exceeds the model's context window. The "
@@ -1866,6 +2000,7 @@ async def structured_output_async(
     checkpoint_buffer_data: dict[str, Any] | None = None,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
+    attach_page_images: bool = True,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Extract structured data using Strands agents with tool-based validation.
@@ -2093,6 +2228,7 @@ async def structured_output_async(
         existing_data=existing_data,
         model_id=model_id,
         prompt_cache=config.extraction.prompt_cache,
+        attach_page_images=attach_page_images,
     )
 
     # Track token usage
@@ -2182,6 +2318,7 @@ async def structured_output_async(
         data_format=data_format,
         max_extraction_retries=3,
         schema_validator=schema_validator,
+        model_id=model_id,
     )
 
     # Accumulate token usage
@@ -2205,8 +2342,16 @@ async def structured_output_async(
 
     # Return best effort result
     if result and response:
-        # Build metering dict with token usage
-        metering_dict = {f"{context}/bedrock/{model_id}": BedrockUsage(**token_usage)}
+        # Build metering dict with token usage. As at the Converse site in
+        # bedrock/client.py, the key names the model actually invoked: a ``:1m``
+        # suffix is a beta header rather than part of the model ID, and the 1M
+        # context window it selects carries no price premium, so it names no
+        # separate rate. See issue #899.
+        metering_dict = {
+            f"{context}/bedrock/{metering_model_id(model_id)}": BedrockUsage(
+                **token_usage
+            )
+        }
 
         # Include table parsing stats if tool was used
         tool_stats = agent.state.get("table_parsing_stats")
@@ -2276,6 +2421,7 @@ def structured_output(
     checkpoint_buffer_data: dict[str, Any] | None = None,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
+    attach_page_images: bool = True,
 ) -> tuple[BaseModel, BedrockInvokeModelResponse]:
     """
     Synchronous version of structured_output_async.
@@ -2366,6 +2512,7 @@ def structured_output(
                         checkpoint_buffer_data=checkpoint_buffer_data,
                         schema_validator=schema_validator,
                         emit_field_assessment=emit_field_assessment,
+                        attach_page_images=attach_page_images,
                     )
                 )
             except Exception as e:
@@ -2402,6 +2549,7 @@ def structured_output(
                 checkpoint_buffer_data=checkpoint_buffer_data,
                 schema_validator=schema_validator,
                 emit_field_assessment=emit_field_assessment,
+                attach_page_images=attach_page_images,
             )
         )
 
