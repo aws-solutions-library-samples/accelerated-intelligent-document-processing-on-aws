@@ -6,9 +6,12 @@
 #     schema_bridge, packet_io). The [synthesis] extra is
 #     deliberately light (jsonschema only) — NOT [ocr|evaluation|all], whose
 #     numpy==1.26.4 pin conflicts with seed-data's numpy 2.x.
-#   - AgentCore HTTP service contract, plus SigV4-signed HTTP helpers. Job
-#     status is NOT posted over HTTP: the runtime writes it straight to
-#     BootstrapTrackingTable with boto3 (runtime/handler.py::_post_status).
+#   - bedrock-agentcore + uvicorn: the AgentCore HTTP service contract.
+#   - aws-requests-auth and requests are pinned here but imported nowhere under
+#     agent-source/; job status is written straight to BootstrapTrackingTable
+#     with boto3 (runtime/handler.py::_post_status), not posted over HTTP.
+#     Whether anything in the image still needs them is unverified — check
+#     before dropping the pins.
 # idp_common_pkg is provided in the build context by package_agent_source.sh.
 ./idp_common_pkg[synthesis]
 bedrock-agentcore>=1.0.0
