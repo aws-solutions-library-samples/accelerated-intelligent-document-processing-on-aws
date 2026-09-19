@@ -272,11 +272,12 @@ One metric in the stack's own namespace (`<StackName>`):
   and the answer is yes either way. The section's issue code is what tells the two
   apart once you open the document, and they point at different remedies — the
   confidence model for a failure, whatever produced the section for a skip.
-  Nothing is published for a section no extraction was attempted on — one whose
-  class is **excluded**, and one whose class has **no attributes to extract**,
-  which is what a page classified `unclassified` gets — nor when confidence
+  Nothing is published for a section the confidence pass was never going to score:
+  one whose class is **excluded**, one that extraction deliberately produced no
+  fields for because its class has **no attributes to extract** (which is what a
+  page classified `unclassified` gets), or any section at all when confidence
   assessment is switched off in configuration. All three are expected on healthy
-  documents (a single blank page or cover sheet produces the second), so counting
+  documents — a single blank page or cover sheet produces the second — so counting
   them would breach the alarm's threshold on ordinary throughput. **No data
   therefore means every section that should have been scored was scored** — give
   or take a confidence pass that failed transiently and succeeded on retry.

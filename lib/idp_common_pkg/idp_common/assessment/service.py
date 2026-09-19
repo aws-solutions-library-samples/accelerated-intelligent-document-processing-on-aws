@@ -36,6 +36,7 @@ from idp_common.config.schema_constants import (
 )
 from idp_common.config.schema_utils import deref_schema
 from idp_common.models import Document
+from idp_common.section_exclusion import SKIPPED_STATUS
 from idp_common.utils import extract_json_from_text, repair_truncated_json
 
 logger = logging.getLogger(__name__)
@@ -70,19 +71,28 @@ def _extraction_declared_no_fields(extraction_data: Dict[str, Any]) -> bool:
     to provide.
 
     So this returns silently instead, exactly as an **excluded** section does a
-    few lines earlier in ``process_document_section``. The two are the same
-    situation — a section for which no extraction was ever attempted — reached by
-    different routes, and the fact is already recorded where it belongs, in
-    extraction's own result metadata. ``skipped_excluded_class`` is matched here
-    too, for the case where the stub is read but the section object has lost its
-    ``excluded`` flag (a document reassessed under a later configuration).
+    few lines earlier in ``process_document_section``: both are sections the
+    confidence pass has no business scoring, and reporting one but not the other
+    would be arbitrary. ``SKIPPED_STATUS`` is matched here too, for the case where
+    the stub is read but the section object has lost its ``excluded`` flag (a
+    document reassessed under a later configuration).
+
+    Note what silence costs. The flag is recorded in the section's ``result.json``
+    in S3 and nowhere else a user looks: the Visual Editor's Processing Report tab
+    renders an enumerated set of metadata keys that does not include it, so for
+    this payload it reports "no issues detected", and the Sections panel's
+    ``Skipped`` badge keys on the DynamoDB ``Excluded`` flag, which
+    ``_handle_empty_schema`` does not set. The only visible clue is a field count
+    of zero. That is a gap in how extraction surfaces its own skip, and the right
+    place to close it is there rather than by having the confidence pass report a
+    section it was never going to score.
     """
     if not isinstance(extraction_data, dict):
         return False
     metadata = extraction_data.get("metadata") or {}
     if isinstance(metadata, dict) and metadata.get("skipped_due_to_empty_attributes"):
         return True
-    return extraction_data.get("status") == "skipped_excluded_class"
+    return extraction_data.get("status") == SKIPPED_STATUS
 
 
 def _safe_float_conversion(value: Any, default: float = 0.0) -> float:

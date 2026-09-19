@@ -1461,7 +1461,12 @@ extraction:
 > `assessment_skipped_confidence_unavailable` instead and is likewise invisible in
 > the document's own status. The metric covers both, because the alarm's question is
 > whether sections are coming back without confidence; the issue code says which
-> happened. `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
+> happened. One exception, and you will meet it on ordinary documents: a section
+> whose class has **no attributes to extract** publishes nothing and records
+> nothing, because extraction skipped the model deliberately for it. That covers
+> every page classified `unclassified` — a blank page, a page whose classification
+> errored — so do not expect a data point for those.
+> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
 > minutes — on volume, not on the first occurrence, since one such section is an
 > expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
 > [#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).

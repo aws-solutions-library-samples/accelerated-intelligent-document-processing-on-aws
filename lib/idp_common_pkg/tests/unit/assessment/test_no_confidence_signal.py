@@ -17,15 +17,16 @@ completed looking exactly like one that had been fully scored.
 These tests pin the contract per path:
 
 * **nothing to assess** — no ``extraction_result_uri``, no ``page_ids``, or an
-  empty ``inference_result`` — records an error-severity
-  ``assessment_skipped_confidence_unavailable`` issue on the section and
-  publishes the metric, then returns;
+  empty ``inference_result`` that extraction did **not** flag as deliberate —
+  records an error-severity ``assessment_skipped_confidence_unavailable`` issue on
+  the section and publishes the metric, then returns;
 * **nothing to record on** — no document, no sections, or a ``section_id`` the
   document does not contain — raises, because there is no section to carry an
   issue and a caller asking for a section that is not there has a bug;
-* the two deliberate silent paths (confidence disabled by configuration, an
-  excluded section class) stay silent, or the alarm would fire on healthy
-  throughput.
+* the three deliberate silent paths — confidence disabled by configuration, an
+  excluded section class, and a class with no attributes to extract (whose empty
+  result extraction flags ``skipped_due_to_empty_attributes``) — stay silent, or
+  the alarm would fire on healthy throughput.
 """
 
 from __future__ import annotations
