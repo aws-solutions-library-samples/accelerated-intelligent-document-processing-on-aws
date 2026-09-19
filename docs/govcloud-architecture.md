@@ -188,22 +188,48 @@ The headless transform strips the following resource groups (matching the
 ## Auditing the IAM Statements a Transform Removed
 
 Both transforms delete IAM and S3 bucket policy statements as well as whole
-resources — a CloudFront log-delivery grant, an `appsync:GraphQL` permission, a
-statement whose `Resource` pointed at a function the transform removed. This
-deletion **cannot fail at deploy time**: a policy with fewer statements is still
-a valid policy, so CloudFormation creates the role happily and a statement
-dropped in error only surfaces later as an access-denied at runtime, in the
-partition you deployed to.
+resources. Against the template this repository builds there are three:
+`--headless` drops the `LoggingBucket` grant to the CloudFront log-delivery
+service principal, and the agent-chat function's
+`secretsmanager:GetSecretValue` on `ExternalMCPAgentsSecret` (a secret the
+transform removes); `--govcloud` drops the same CloudFront grant, and
+`CognitoAuthorizedRole`'s whole `ChatStreamInvoke` inline policy, whose one
+statement granted `lambda:InvokeFunction` and `lambda:InvokeFunctionUrl` on the
+chat-streaming function that the transform also removes. The whole policy goes
+rather than the statement because IAM rejects `Statement: []`.
+
+These deletions are correct and, for the last one, mandatory — a surviving
+statement would leave a dangling `Fn::GetAtt` to a removed resource and
+CloudFormation would reject the template. What matters is that a deletion here
+**cannot fail at deploy time**: a policy with fewer statements is still a valid
+policy, so CloudFormation creates the role happily and a statement dropped in
+error only surfaces later as an access-denied at runtime, in the partition you
+deployed to.
+
+Note what is **not** touched. `CognitoAuthorizedRole`'s `S3` inline policy —
+`s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the input, output
+and working buckets, plus its KMS statement — survives both transforms
+unchanged, so a GovCloud deployment gives the authenticated role exactly the same
+S3 reach as a commercial one.
 
 So each transform reports every statement it drops, at `INFO`, naming the
-resource (for a role's inline policy, `<RoleLogicalId>.<PolicyName>`) and the
-count, and ends with a single summary line:
+resource (for a role's inline policy, `<RoleLogicalId>.<PolicyName>`), the count
+and what matched, and ends with a single summary line:
 
 ```
 INFO: Policy LoggingBucketPolicy: removed 1 statement(s) (CloudFront service principal)
 INFO: Policy CognitoAuthorizedRole.ChatStreamInvoke: removed 1 statement(s) (reference to a resource this transform removed)
-INFO: Removed 2 policy statement(s) from 2 policy document(s) — LoggingBucketPolicy (1: ...), CognitoAuthorizedRole.ChatStreamInvoke (1: ...)
+INFO: Removed 2 policy statement(s) from 2 policy document(s) — LoggingBucketPolicy (1: CloudFront service principal), CognitoAuthorizedRole.ChatStreamInvoke (1: reference to a resource this transform removed)
 ```
+
+⚠️ These lines are emitted at `INFO` by a logger this package does not configure
+for you. `idp-cli` and the headless transformer set that up, so a CLI-driven
+transform prints them; a program that instantiates `GovCloudTemplateTransformer`
+directly in a fresh interpreter and calls no `logging.basicConfig` prints
+**nothing** — not these lines and not the pre-existing `Removed N resources`
+ones either, because logging's last-resort handler only passes `WARNING` and
+above. Configure logging at `INFO`, or read the records off the instance as
+below.
 
 `Removed 0 policy statements` is printed when there was nothing to drop, so
 "nothing was removed" and "the transform said nothing" are distinguishable. If

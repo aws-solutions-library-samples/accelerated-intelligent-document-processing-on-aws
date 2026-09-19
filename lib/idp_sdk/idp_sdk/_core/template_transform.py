@@ -50,9 +50,19 @@ class _PolicyStatementRemovalReporter:
     So every deletion is logged at INFO naming the resource it came from, and
     totalled in a summary line at the end of the transform — the same level at
     which both transformers already report their other removal counts
-    (resources, parameters, outputs, conditions, rules), and one that the
-    callers of these transforms configure as visible. The records also stay on
-    the instance, so an SDK caller can read them instead of parsing logs.
+    (resources, parameters, outputs, conditions, rules).
+
+    ⚠️ INFO is not necessarily *visible*. In-tree, CLI-driven invocations do
+    configure it: ``idp_cli.cli`` calls ``logging.basicConfig(level=INFO)`` at
+    import, and ``HeadlessTemplateTransformer.__init__`` does so itself. But
+    ``GovCloudTemplateTransformer`` configures no logging, and importing
+    ``idp_sdk`` configures none either, so a program that instantiates it in a
+    fresh interpreter and transforms a template sees nothing — logging's
+    last-resort handler only passes WARNING and above, which suppresses the
+    pre-existing removal counts just the same. That is why the records also stay
+    on the instance: ``policy_statement_removals`` is readable regardless of how
+    logging is set up, and is the reliable way for an SDK caller to audit what
+    the transform dropped.
     """
 
     # Lazily created, so the two transformers need no __init__ cooperation.
@@ -887,29 +897,40 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
     def _clean_policy_statements(
         self, policy: Dict[str, Any], func_name: str
     ) -> Optional[Dict[str, Any]]:
-        """Clean AppSync/MCP policy statements. Returns None if policy should be removed entirely.
+        """Drop a kept function's dead policy statements.
 
-        Reported the same way as the CloudFront cleaner above: a dropped
-        statement is a permission the deployed role no longer has, and nothing
-        downstream of here will notice.
+        Returns None if the whole policy should go. Each removal is reported
+        with the reason that matched, for the same reason as the CloudFront
+        cleaner above: a dropped statement is a permission the deployed role no
+        longer has, and nothing downstream of here will notice.
         """
         statement = policy["Statement"]
-        reason = "AppSync/MCP action or removed-resource reference"
 
         if isinstance(statement, dict):
-            if self._should_remove_statement(statement):
+            reason = self._statement_removal_reason(statement)
+            if reason:
                 self._record_policy_statement_removal(func_name, reason, removed=1)
                 return None
             return policy
 
         if isinstance(statement, list):
-            cleaned = [
-                s
-                for s in statement
-                if isinstance(s, dict) and not self._should_remove_statement(s)
-            ]
+            cleaned: List[Any] = []
+            reasons: List[str] = []
+            for s in statement:
+                if not isinstance(s, dict):
+                    # Unchanged behaviour: a non-dict entry is not a statement
+                    # this transform can reason about, and is dropped.
+                    reasons.append("malformed (non-object) statement")
+                    continue
+                reason = self._statement_removal_reason(s)
+                if reason:
+                    reasons.append(reason)
+                else:
+                    cleaned.append(s)
             self._record_policy_statement_removal(
-                func_name, reason, removed=len(statement) - len(cleaned)
+                func_name,
+                "; ".join(sorted(set(reasons))),
+                removed=len(statement) - len(cleaned),
             )
             if not cleaned:
                 return None
@@ -918,24 +939,48 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
 
         return policy
 
-    def _should_remove_statement(self, stmt: Dict[str, Any]) -> bool:
-        """Check if a policy statement references AppSync or removed resources."""
+    # The only reason that matches anything in a template this repository
+    # builds: the agent-chat function's secretsmanager:GetSecretValue on
+    # ExternalMCPAgentsSecret, which the transform removes.
+    _MCP_SECRET_REASON = "grant on ExternalMCPAgentsSecret, a removed resource"
+    # A GraphQL data-plane grant. No template this repository builds contains
+    # one — the GraphQL API was retired in 0.6.0 and no `appsync:` action string
+    # appears in template.yaml — so this arm matches nothing in normal use.
+    #
+    # It is retained rather than deleted because the public SDK entry point
+    # (`publish.transform_template_headless`) accepts an arbitrary template
+    # path, including an older published one, where the grant does exist AND the
+    # API it names is in this transform's own removal set. Dropping the API
+    # while keeping a statement that Refs it leaves a dangling reference that
+    # CloudFormation rejects outright, so deleting this arm would turn a clean
+    # transform of an older template into an undeployable one. Retire it when
+    # transforming a pre-0.6.0 template is no longer a supported input.
+    _GRAPHQL_GRANT_REASON = "data-plane grant for a retired GraphQL API"
+
+    def _statement_removal_reason(self, stmt: Dict[str, Any]) -> Optional[str]:
+        """Why this statement is dead in a headless template, or None to keep it.
+
+        The predicate is unchanged from returning a bool; it now names which arm
+        matched, so the reported removal says what the role actually lost.
+        """
         action = stmt.get("Action")
         resource = stmt.get("Resource")
 
-        # Remove if action contains appsync:GraphQL
         if isinstance(action, str) and "appsync:GraphQL" in action:
-            return True
+            return self._GRAPHQL_GRANT_REASON
         if isinstance(action, list) and any(
             "appsync:GraphQL" in str(a) for a in action
         ):
-            return True
+            return self._GRAPHQL_GRANT_REASON
 
-        # Remove if references ExternalMCPAgentsSecret (removed resource)
         if self._references_removed_resource(resource, "ExternalMCPAgentsSecret"):
-            return True
+            return self._MCP_SECRET_REASON
 
-        return False
+        return None
+
+    def _should_remove_statement(self, stmt: Dict[str, Any]) -> bool:
+        """Whether a policy statement is dead in a headless template."""
+        return self._statement_removal_reason(stmt) is not None
 
     def _references_removed_resource(self, resource: Any, ref_name: str) -> bool:
         """Check if a resource reference points to a removed resource."""
@@ -1093,7 +1138,13 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
                 policies = resource_def.get("Properties", {}).get("Policies", [])
                 for policy in policies:
                     if isinstance(policy, dict) and "PolicyDocument" in policy:
-                        policy_name = policy.get("PolicyName", "unnamed")
+                        # A PolicyName may be an intrinsic rather than a string;
+                        # this identifier is operator-facing, so do not render a
+                        # dict repr into it.
+                        raw_name = policy.get("PolicyName", "unnamed")
+                        policy_name = (
+                            raw_name if isinstance(raw_name, str) else "<computed>"
+                        )
                         self._clean_policy_document_cloudfront(
                             policy["PolicyDocument"],
                             f"{resource_name}.{policy_name}",
@@ -1805,7 +1856,13 @@ class GovCloudTemplateTransformer(_PolicyStatementRemovalReporter):
                     if not isinstance(doc, dict):
                         kept_policies.append(policy)
                         continue
-                    policy_name = policy.get("PolicyName", "<unnamed>")
+                    # A PolicyName may be an intrinsic (Fn::Sub) rather than a
+                    # string; keep the identifier readable instead of rendering
+                    # a dict repr into the operator-facing line.
+                    raw_name = policy.get("PolicyName", "<unnamed>")
+                    policy_name = (
+                        raw_name if isinstance(raw_name, str) else "<computed>"
+                    )
                     if self._prune_statements(doc, targets, f"{name}.{policy_name}"):
                         kept_policies.append(policy)
                     else:
