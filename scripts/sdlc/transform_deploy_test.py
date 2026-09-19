@@ -170,9 +170,7 @@ def _run_sample_document_test(stack_name, sample_file, sample_dir):
         inference_result = json_data.get("inference_result", {})
         if not inference_result:
             return False, "No inference_result found"
-        populated = sum(
-            1 for v in inference_result.values() if v not in [None, [], {}]
-        )
+        populated = sum(1 for v in inference_result.values() if v not in [None, [], {}])
         if populated == 0:
             return False, "No fields contain extracted data (all null/empty)"
         return True, f"{populated}/{len(inference_result)} fields populated"
@@ -209,8 +207,12 @@ def _run_sample_document_test(stack_name, sample_file, sample_dir):
 # ---------------------------------------------------------------------------
 
 
-def validate_headless_deploy(stack_name, skip_doc_test=False, sample=DEFAULT_SAMPLE,
-                             sample_dir=DEFAULT_SAMPLE_DIR):
+def validate_headless_deploy(
+    stack_name,
+    skip_doc_test=False,
+    sample=DEFAULT_SAMPLE,
+    sample_dir=DEFAULT_SAMPLE_DIR,
+):
     """The UI is gone, the processing core is not, and a document still processes."""
     failures = []
     checks = []
@@ -219,8 +221,13 @@ def validate_headless_deploy(stack_name, skip_doc_test=False, sample=DEFAULT_SAM
     outputs = _stack_outputs(stack_name)
 
     # UI / auth must be ABSENT — that is what --headless means.
-    for logical_id in ("UserPool", "IdentityPool", "CloudFrontDistribution",
-                       "WebUIBucket", "APIRESOLVERSTACK"):
+    for logical_id in (
+        "UserPool",
+        "IdentityPool",
+        "CloudFrontDistribution",
+        "WebUIBucket",
+        "APIRESOLVERSTACK",
+    ):
         if logical_id in resources:
             failures.append(f"headless stack still has UI resource: {logical_id}")
     if "ApplicationWebURL" in outputs:
@@ -243,8 +250,12 @@ def validate_headless_deploy(stack_name, skip_doc_test=False, sample=DEFAULT_SAM
     }
 
 
-def validate_govcloud_deploy(stack_name, skip_doc_test=False, sample=DEFAULT_SAMPLE,
-                             sample_dir=DEFAULT_SAMPLE_DIR):
+def validate_govcloud_deploy(
+    stack_name,
+    skip_doc_test=False,
+    sample=DEFAULT_SAMPLE,
+    sample_dir=DEFAULT_SAMPLE_DIR,
+):
     """CloudFront and the LWA chat-stream family are gone; the UI itself remains."""
     failures = []
     checks = []
@@ -270,7 +281,9 @@ def validate_govcloud_deploy(stack_name, skip_doc_test=False, sample=DEFAULT_SAM
     if "UserPool" not in resources:
         failures.append("govcloud stack lost Cognito UserPool (UI should be retained)")
     if params.get("WebUIHosting") not in (None, "APIGateway"):
-        failures.append(f"WebUIHosting={params.get('WebUIHosting')!r}, expected APIGateway")
+        failures.append(
+            f"WebUIHosting={params.get('WebUIHosting')!r}, expected APIGateway"
+        )
     checks.append("UI retained, hosted on API Gateway")
 
     _assert_core_present(resources, failures)
@@ -363,9 +376,18 @@ def _extra_deploy_params(variant, region, with_knowledge_base=False):
     return extra
 
 
-def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
-                sample_dir=DEFAULT_SAMPLE_DIR, skip_doc_test=False, keep=False,
-                existing_stack=None, with_knowledge_base=False):
+def run_variant(
+    variant,
+    *,
+    admin_email,
+    region,
+    sample=DEFAULT_SAMPLE,
+    sample_dir=DEFAULT_SAMPLE_DIR,
+    skip_doc_test=False,
+    keep=False,
+    existing_stack=None,
+    with_knowledge_base=False,
+):
     """Deploy (or reuse) a stack for one variant, validate it, always tear down.
 
     Returns a result dict shaped like the probe framework's:
@@ -376,13 +398,17 @@ def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
     # Validate-only mode: caller owns the stack lifecycle (mirrors run_stacktest).
     if existing_stack:
         result["stack_name"] = existing_stack
-        print(f"🔎 [{variant.name}] validating EXISTING stack {existing_stack} "
-              "(no deploy, no teardown)")
+        print(
+            f"🔎 [{variant.name}] validating EXISTING stack {existing_stack} "
+            "(no deploy, no teardown)"
+        )
         try:
             result.update(
                 variant.validate_fn(
-                    existing_stack, skip_doc_test=skip_doc_test,
-                    sample=sample, sample_dir=sample_dir,
+                    existing_stack,
+                    skip_doc_test=skip_doc_test,
+                    sample=sample,
+                    sample_dir=sample_dir,
                 )
             )
         except Exception as e:  # noqa: BLE001
@@ -394,13 +420,17 @@ def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
     result["stack_name"] = stack_name
     role_arn = None
     try:
+        # Shared boundary policy, like the probes: the service role requires a
+        # boundary ARN up front and only allows iam:CreateRole for roles carrying
+        # that exact ARN, so this cannot deploy with an empty one.
         role_arn, boundary_arn = cbd.create_iam_resources(
-            stack_name, create_boundary=False
+            stack_name, shared_boundary=True
         )
-        if not role_arn:
+        if not role_arn or not boundary_arn:
             raise RuntimeError(f"Failed to create IAM resources for {stack_name}")
 
         extra = _extra_deploy_params(variant, region, with_knowledge_base)
+        # Must equal the service role's CreatedRolePermissionsBoundaryArn.
         param_pairs = [f"PermissionsBoundaryArn={boundary_arn}"]
         param_pairs += [f"{k}={v}" for k, v in extra.items()]
         params = ",".join(param_pairs)
@@ -452,8 +482,10 @@ def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
         try:
             result.update(
                 variant.validate_fn(
-                    stack_name, skip_doc_test=skip_doc_test,
-                    sample=sample, sample_dir=sample_dir,
+                    stack_name,
+                    skip_doc_test=skip_doc_test,
+                    sample=sample,
+                    sample_dir=sample_dir,
                 )
             )
         except Exception as e:  # noqa: BLE001
@@ -471,8 +503,10 @@ def run_variant(variant, *, admin_email, region, sample=DEFAULT_SAMPLE,
         return result
     finally:
         if keep:
-            print(f"⏸️  [{variant.name}] --keep set; leaving {stack_name} up. "
-                  f"Delete it yourself:  idp-cli delete --stack-name {stack_name}")
+            print(
+                f"⏸️  [{variant.name}] --keep set; leaving {stack_name} up. "
+                f"Delete it yourself:  idp-cli delete --stack-name {stack_name}"
+            )
         else:
             cbd.cleanup_stack({"stack_name": stack_name})
 
@@ -503,7 +537,9 @@ def main(argv=None):
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "variant", nargs="?", choices=[v.key for v in VARIANTS] + ["both"],
+        "variant",
+        nargs="?",
+        choices=[v.key for v in VARIANTS] + ["both"],
         help="which transform to deploy-test",
     )
     parser.add_argument("--list", action="store_true", help="list variants and exit")
@@ -511,26 +547,30 @@ def main(argv=None):
         "--admin-email",
         default=os.environ.get("IDP_ADMIN_EMAIL", cbd.SUPPRESS_INVITE_ADMIN_EMAIL),
         help="admin email for variants that keep Cognito (default: the CI "
-             "invite-suppression sentinel)",
+        "invite-suppression sentinel)",
     )
     parser.add_argument(
-        "--region", default=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+        "--region",
+        default=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
         help="target region; use us-gov-west-1 for a real GovCloud run",
     )
     parser.add_argument("--sample", default=DEFAULT_SAMPLE, help="sample document")
     parser.add_argument("--sample-dir", default=DEFAULT_SAMPLE_DIR)
     parser.add_argument(
-        "--skip-doc-test", action="store_true",
+        "--skip-doc-test",
+        action="store_true",
         help="structural assertions only (much faster; does NOT prove processing works)",
     )
     parser.add_argument(
-        "--with-knowledge-base", action="store_true",
+        "--with-knowledge-base",
+        action="store_true",
         help="keep the Bedrock Knowledge Base enabled on --govcloud (adds an "
-             "OpenSearch Serverless collection: the slowest and most expensive "
-             "resource in the stack; disabled by default)",
+        "OpenSearch Serverless collection: the slowest and most expensive "
+        "resource in the stack; disabled by default)",
     )
     parser.add_argument(
-        "--keep", action="store_true",
+        "--keep",
+        action="store_true",
         help="leave the stack up for inspection (you must delete it)",
     )
     parser.add_argument(
@@ -547,8 +587,10 @@ def main(argv=None):
             print(f"  {v.key:10s} {v.name}")
             if v.caveat:
                 print(f"             ⚠️  {v.caveat}")
-        print("\nRun:  make transform-deploy-test-<variant> "
-              "[REGION=...] [ADMIN_EMAIL=...]")
+        print(
+            "\nRun:  make transform-deploy-test-<variant> "
+            "[REGION=...] [ADMIN_EMAIL=...]"
+        )
         return 0 if args.list else 2
 
     selected = list(VARIANTS) if args.variant == "both" else [by_key[args.variant]]
