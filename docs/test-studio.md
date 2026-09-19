@@ -792,20 +792,28 @@ follows.
 Open the test set and click **Publish version** at the top of its page — beside the
 label-generation and annotation controls, since publishing is what completes the pass
 those two begin. The dialog names the version number it will create and how many
-documents it freezes, and takes an optional **Label** and **Notes** that appear
+documents it covers, and takes an optional **Label** and **Notes** that appear
 wherever versions are listed.
 
-Publishing freezes the current document and label state into a numbered version
-(`v1`, `v2`, …) and, by default, marks it the **active reference** — the version that
-test runs record themselves as having scored against. Clear **Make this the active
-reference** to publish a version without moving that pointer, leaving existing runs
-comparable against the version it already points at. Publishing does not require
-every document to be reviewed; unreviewed fields keep their machine labels and remain
-flagged as such, which supports time-boxed "first pass" golden sets.
+Publishing records the current document and label state as a numbered version
+(`v1`, `v2`, …) so a test run can name the state of the labels it was scored against,
+and by default also marks it the **active reference** — the version the **Test Sets**
+table reports as that set's reference point. Clear **Make this the active reference**
+to publish without moving that pointer. Publishing does not require every document to
+be reviewed; unreviewed fields keep their machine labels and remain flagged as such,
+which supports time-boxed "first pass" golden sets.
+
+⚠️ **The active reference does not decide what a test run is scored against.** A run
+is scored against whichever version you pick in the runner, and that control defaults
+to **Current labels** — the set as it stands, including annotation in progress —
+rather than to the last published version, so that the ordinary review-then-rerun loop
+scores the corrections just made. Pin a run to a published version explicitly if that
+is what you want.
 
 The button is available to Admins and Authors, the two groups
-`publishTestSetVersion` is restricted to, and is disabled while a draft-labelling run
-is still writing labels or the set has no documents.
+`publishTestSetVersion` is restricted to. It is disabled, with the reason on hover,
+while a draft-labelling run is still writing labels, while the set is still being
+written to, and when it has no documents.
 
 On the **Test Sets** table the **Version** column shows each set's active reference,
 and notes when the latest published version is ahead of it.

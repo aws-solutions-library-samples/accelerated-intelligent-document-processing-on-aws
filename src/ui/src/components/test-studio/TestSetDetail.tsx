@@ -385,6 +385,8 @@ const TestSetDetail = (): React.JSX.Element => {
   const [hasMore, setHasMore] = useState(false);
   // The set's size, from the server. The page length is not the total.
   const [totalCount, setTotalCount] = useState<number | null>(null);
+  /** The set's own status, carried on the documents page. `null` until it is read. */
+  const [setStatus, setSetStatus] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
@@ -448,6 +450,7 @@ const TestSetDetail = (): React.JSX.Element => {
         setDocuments((page?.documents ?? []) as TestSetDocumentItem[]);
         setHasMore(Boolean(page?.nextToken));
         setTotalCount(page?.totalCount ?? null);
+        setSetStatus(page?.status ?? null);
         setPageTokens((prev) => {
           const next = [...prev];
           next[pageIndex] = page?.nextToken ?? null;
@@ -611,8 +614,8 @@ const TestSetDetail = (): React.JSX.Element => {
       setShowPublishModal(false);
       setPublishedMessage(
         input.setAsActiveReference
-          ? `Published version ${published?.version ?? ''} and made it the active reference.`
-          : `Published version ${published?.version ?? ''}. The active reference is unchanged.`,
+          ? `Published version ${published?.version ?? ''} and made it this set's active reference.`
+          : `Published version ${published?.version ?? ''}. The set's active reference is unchanged.`,
       );
     } catch (err) {
       logger.error('Error publishing test set version:', err);
@@ -751,6 +754,27 @@ const TestSetDetail = (): React.JSX.Element => {
 
   const filteredDocs = filterText ? documents.filter((d) => d.objectKey.toLowerCase().includes(filterText.toLowerCase())) : documents;
 
+  /**
+   * Why a version cannot be published right now, or `null` when it can.
+   *
+   * Doubles as the control's tooltip: a disabled button with no stated reason is
+   * the worst of both outcomes. Publishing freezes the labels as they stand, so the
+   * conditions are about whether the set is settled — not about permission, which is
+   * a separate check on the control itself.
+   *
+   * `totalCount` is also `null` when the document read failed, which is not the same
+   * as an empty set; checking it alone would leave the control live on a page showing
+   * a load error and no documents.
+   */
+  const publishBlockedReason =
+    labelJob?.status === 'RUNNING'
+      ? 'Wait for draft labeling to finish: a version freezes the labels as they stand'
+      : totalCount === 0 || (totalCount === null && documents.length === 0)
+        ? 'This test set has no documents to publish'
+        : setStatus && setStatus !== 'COMPLETED'
+          ? `This test set is ${setStatus.toLowerCase()}. Wait for it to settle before freezing a version.`
+          : null;
+
   const hasConfidence = documents.some((d) => d.minConfidence !== null && d.minConfidence !== undefined);
   // Sorts the current page only: pagination is server-side and opaque, so a
   // set-wide ranking is not available here.
@@ -790,13 +814,11 @@ const TestSetDetail = (): React.JSX.Element => {
                   // rather than on the table page because publishing completes the
                   // pass that Generate draft labels and Annotate below begin.
                   canWrite ? (
-                    <Button
-                      onClick={openPublishDialog}
-                      disabled={isLoading || totalCount === 0 || labelJob?.status === 'RUNNING'}
-                      loading={isPublishing}
-                    >
-                      Publish version
-                    </Button>
+                    <span title={publishBlockedReason ?? undefined}>
+                      <Button onClick={openPublishDialog} disabled={isLoading || publishBlockedReason !== null} loading={isPublishing}>
+                        Publish version
+                      </Button>
+                    </span>
                   ) : undefined
                 }
               >

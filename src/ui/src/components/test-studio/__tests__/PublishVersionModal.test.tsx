@@ -36,11 +36,23 @@ const renderModal = (overrides: Partial<React.ComponentProps<typeof PublishVersi
 };
 
 describe('PublishVersionModal', () => {
-  it('names the version it is about to create and what it freezes', () => {
+  it('names the version it is about to create and what it covers', () => {
     renderModal();
     expect(screen.getByText('Publish version 3 of bank-statements')).toBeTruthy();
-    expect(screen.getByText(/these 12 document\(s\)/)).toBeTruthy();
-    expect(screen.getByText(/never rewritten/)).toBeTruthy();
+    expect(screen.getByText(/12 document\(s\)/)).toBeTruthy();
+  });
+
+  it('claims only what the backend guarantees', () => {
+    // Publishing writes a DynamoDB row; it copies no baseline bytes, and the
+    // baselines a version stands for are snapshotted later from whatever the set
+    // holds at that moment. So the dialog must not promise the documents are frozen
+    // or that later edits cannot reach the version.
+    renderModal();
+    // Cloudscape renders a Modal into a portal, so the render container is empty.
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/never rewritten/);
+    expect(text).not.toMatch(/later edits to the set do not change it/);
+    expect(text).toMatch(/Records a numbered version/);
   });
 
   it('stays usable when the existing versions could not be read', () => {
@@ -71,13 +83,26 @@ describe('PublishVersionModal', () => {
 
   it('explains what is left alone when the active reference is not moved', () => {
     const { onConfirm } = renderModal();
-    expect(screen.queryByText(/active reference is left as it is/)).toBeNull();
+    expect(screen.queryByText(/reference point is left where it is/)).toBeNull();
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Make this the active reference/ }));
-    expect(screen.getByText(/active reference is left as it is/)).toBeTruthy();
+    expect(screen.getByText(/reference point is left where it is/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Publish version' }));
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ setAsActiveReference: false }));
+  });
+
+  it('describes the active reference as a reference point, not a scoring baseline', () => {
+    // `test_runner` never reads `activeReference`; a run is scored against the version
+    // chosen in the runner, which defaults to the set's current labels. This is the
+    // moment the user decides whether to move the pointer, so the wrong description
+    // here is the most costly place for it.
+    renderModal();
+    // Cloudscape renders a Modal into a portal, so the render container is empty.
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Test Sets table reports/);
+    expect(text).toMatch(/does not decide what a test run is scored against/);
+    expect(text).toMatch(/defaulting to the set's current labels/);
   });
 
   it('refuses an empty set, and says why', () => {

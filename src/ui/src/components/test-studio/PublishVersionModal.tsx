@@ -2,18 +2,29 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * PublishVersionModal — freeze a test set's current documents and labels into a
- * numbered, immutable version.
+ * PublishVersionModal — record a numbered version of a test set's current documents
+ * and labels.
  *
  * It sits on the set's own page, beside the label and annotation controls, because
  * publishing is the last step of the labelling pass those two start: generate draft
- * labels, review them, then freeze the result.
+ * labels, review them, then mark the result as a version.
  *
  * The dialog exists because the outcome is not self-evident from a menu item.
- * Publishing writes a version that is never rewritten, and by default it also
- * repoints the set's active reference — the baseline every later test run is scored
- * against. It collects the label and notes the mutation accepts, which is the only
- * way a reader of the version list later knows what a version was for.
+ * Publishing writes a numbered version and, by default, also moves the set's active
+ * reference — the version the Test Sets table reports as the set's reference point,
+ * and one a run can be pinned to by choosing it in the runner. It collects the label
+ * and notes the mutation accepts, which is the only way a reader of the version list
+ * later knows what a version was for.
+ *
+ * ⚠️ Do **not** describe the active reference as what test runs are scored against.
+ * Nothing scores against it: `test_runner` never reads it, and its version picker
+ * defaults to the set's *current* labels precisely so the ordinary loop scores the
+ * corrections just made rather than the last published state.
+ *
+ * ⚠️ Nor does publishing copy any bytes — it writes a DynamoDB row. The baselines a
+ * version stands for are snapshotted later, by the annotation draft path, from
+ * whatever is in the set at that moment. The wording here stays inside what the
+ * backend actually guarantees.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -28,7 +39,7 @@ export interface PublishVersionInput {
 interface PublishVersionModalProps {
   visible: boolean;
   testSetId: string;
-  /** Documents the version will freeze. `null` while the set's size is unknown. */
+  /** Documents the version will cover. `null` while the set's size is unknown. */
   documentCount: number | null;
   /**
    * Highest version already published: `0` when none has been, `null` while it is
@@ -91,9 +102,9 @@ const PublishVersionModal = ({
     >
       <SpaceBetween size="m">
         <Box>
-          Freezes {documentCount === null ? 'this test set' : `these ${documentCount} document(s)`} and the ground truth they currently
-          carry into a numbered version. A published version is never rewritten, so later edits to the set do not change it and test runs
-          scored against it stay comparable.
+          Records a numbered version of {documentCount === null ? 'this test set' : `this test set's ${documentCount} document(s)`} and the
+          ground truth they currently carry, so a test run can name the state of the labels it was scored against. The version number and
+          its label and notes are immutable once written.
         </Box>
 
         <FormField label="Label (optional)" description="A short name for this version, shown wherever versions are listed.">
@@ -113,15 +124,14 @@ const PublishVersionModal = ({
           checked={setAsActiveReference}
           onChange={({ detail }) => setSetAsActiveReference(detail.checked)}
           disabled={submitting}
-          description="The active reference is the baseline new test runs are scored against."
+          description="The version the Test Sets table reports as this set's reference point. It does not decide what a test run is scored against — the runner picks that, defaulting to the set's current labels."
         >
           Make this the active reference
         </Checkbox>
 
         {!setAsActiveReference && (
           <Alert type="info">
-            The set&apos;s active reference is left as it is, so new test runs continue to be scored against the version it already points
-            at rather than against this one.
+            The set&apos;s reference point is left where it is, so the Test Sets table keeps reporting the version it already names.
           </Alert>
         )}
 

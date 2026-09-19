@@ -121,8 +121,8 @@ describe('an empty set', () => {
   });
 
   it('cannot be published from its own page', () => {
-    const publish = DETAIL.slice(DETAIL.indexOf('onClick={openPublishDialog}'), DETAIL.indexOf('Publish version'));
-    expect(publish).toMatch(/totalCount === 0/);
+    const reason = DETAIL.slice(DETAIL.indexOf('const publishBlockedReason ='), DETAIL.indexOf('const hasConfidence ='));
+    expect(reason).toMatch(/totalCount === 0/);
   });
 
   it('cannot be annotated from the table', () => {

@@ -958,6 +958,7 @@ export const getTestSetDocuments = /* GraphQL */ `
       nextToken
       totalCount
       activeLabelJobId
+      status
     }
   }
 ` as GeneratedQuery<GetTestSetDocumentsQueryVariables, GetTestSetDocumentsQuery>;

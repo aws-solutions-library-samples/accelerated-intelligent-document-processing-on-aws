@@ -38,12 +38,48 @@ describe('publishing a version from the set detail page', () => {
     expect(DETAIL).toMatch(/query: publishTestSetVersion/);
   });
 
-  it('will not publish an empty set, or one mid-labelling', () => {
-    // A version freezes the labels as they stand, so a run that is still writing
-    // them is the moment not to. The server refuses an empty set as well.
-    const button = DETAIL.slice(DETAIL.indexOf('onClick={openPublishDialog}'), DETAIL.indexOf('Publish version'));
-    expect(button).toMatch(/totalCount === 0/);
-    expect(button).toMatch(/labelJob\?\.status === 'RUNNING'/);
+  it('does not tell the user the active reference decides what runs score against', () => {
+    // It does not: `test_runner` never reads `activeReference`, and the runner's
+    // version picker defaults to the set's current labels. Saying otherwise at the
+    // moment someone decides whether to move the pointer is the worst place to be
+    // wrong, so the claim is pinned out of the dialog and the docs.
+    const MODAL = readFileSync(join(HERE, 'PublishVersionModal.tsx'), 'utf-8');
+    const RUNNER = readFileSync(join(HERE, 'TestRunner.tsx'), 'utf-8');
+    const DOC = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'docs', 'test-studio.md'), 'utf-8');
+    expect(MODAL).toMatch(/does not decide what a test run is scored against/);
+    expect(MODAL).not.toMatch(/active reference is the baseline/);
+    expect(DOC).toMatch(/active reference does not decide what a test run is scored against/);
+
+    // The claim's truth condition: the runner does not consult the pointer at all.
+    expect(RUNNER).not.toMatch(/activeReference/);
+  });
+
+  it('will not publish an empty set, one mid-labelling, or one still being written', () => {
+    // A version records the labels as they stand, so a set something is still
+    // writing to is the moment not to. The server refuses an empty set as well, but
+    // checks nothing about the set's status, so that condition lives only here.
+    const reason = DETAIL.slice(DETAIL.indexOf('const publishBlockedReason ='), DETAIL.indexOf('const hasConfidence ='));
+    expect(reason).toMatch(/labelJob\?\.status === 'RUNNING'/);
+    expect(reason).toMatch(/totalCount === 0/);
+    expect(reason).toMatch(/setStatus !== 'COMPLETED'/);
+    expect(DETAIL).toMatch(/disabled=\{isLoading \|\| publishBlockedReason !== null\}/);
+  });
+
+  it('states the reason rather than only disabling', () => {
+    expect(DETAIL).toMatch(/title=\{publishBlockedReason \?\? undefined\}/);
+  });
+
+  it('does not read a failed document load as an empty set', () => {
+    // `totalCount` stays null when the fetch failed, so `=== 0` alone would leave the
+    // control live on a page showing a load error and no documents.
+    const reason = DETAIL.slice(DETAIL.indexOf('const publishBlockedReason ='), DETAIL.indexOf('const hasConfidence ='));
+    expect(reason).toMatch(/totalCount === null && documents\.length === 0/);
+  });
+
+  it('takes the set status off the documents page, not a second query', () => {
+    expect(DETAIL).toMatch(/setSetStatus\(page\?\.status \?\? null\)/);
+    const docsQuery = readFileSync(join(HERE, '..', '..', 'graphql', 'operations', 'queries', 'GetTestSetDocuments.graphql'), 'utf-8');
+    expect(docsQuery).toMatch(/^\s+status$/m);
   });
 
   it('reads the existing versions only when the dialog opens', () => {
