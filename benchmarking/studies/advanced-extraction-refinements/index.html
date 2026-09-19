@@ -1,0 +1,1183 @@
+<!DOCTYPE html><html lang="en" dir="ltr" data-theme="dark" data-has-toc data-has-sidebar class="astro-vdxcvpsm"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Advanced Extraction — Seven Candidate Refinements, Measured | GenAI IDP</title><link rel="canonical" href="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/advanced-extraction-refinements/"/><link rel="sitemap" href="/accelerated-intelligent-document-processing-on-aws/sitemap-index.xml"/><link rel="shortcut icon" href="/accelerated-intelligent-document-processing-on-aws/favicon.svg" type="image/svg+xml"/><meta name="generator" content="Astro v7.3.2"/><meta name="generator" content="Starlight v0.41.4"/><meta property="og:title" content="Advanced Extraction — Seven Candidate Refinements, Measured"/><meta property="og:type" content="article"/><meta property="og:url" content="https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/advanced-extraction-refinements/"/><meta property="og:locale" content="en"/><meta property="og:description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><meta property="og:site_name" content="GenAI IDP"/><meta name="twitter:card" content="summary_large_image"/><meta name="description" content="GenAI Intelligent Document Processing — scalable, serverless AWS solution for automated document processing"/><script>
+	window.StarlightThemeProvider = (() => {
+		const storedTheme =
+			typeof localStorage !== 'undefined' && localStorage.getItem('starlight-theme');
+		const theme =
+			storedTheme ||
+			(window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+		document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+		return {
+			updatePickers(theme = storedTheme || 'auto') {
+				document.querySelectorAll('starlight-theme-select').forEach((picker) => {
+					const select = picker.querySelector('select');
+					if (select) select.value = theme;
+					/** @type {HTMLTemplateElement | null} */
+					const tmpl = document.querySelector(`#theme-icons`);
+					const newIcon = tmpl && tmpl.content.querySelector('.' + theme);
+					if (newIcon) {
+						const oldIcon = picker.querySelector('svg.label-icon');
+						if (oldIcon) {
+							oldIcon.replaceChildren(...newIcon.cloneNode(true).childNodes);
+						}
+					}
+				});
+			},
+		};
+	})();
+</script><template id="theme-icons"><svg aria-hidden="true" class="light astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M5 12a1 1 0 0 0-1-1H3a1 1 0 0 0 0 2h1a1 1 0 0 0 1-1Zm.64 5-.71.71a1 1 0 0 0 0 1.41 1 1 0 0 0 1.41 0l.71-.71A1 1 0 0 0 5.64 17ZM12 5a1 1 0 0 0 1-1V3a1 1 0 0 0-2 0v1a1 1 0 0 0 1 1Zm5.66 2.34a1 1 0 0 0 .7-.29l.71-.71a1 1 0 1 0-1.41-1.41l-.66.71a1 1 0 0 0 0 1.41 1 1 0 0 0 .66.29Zm-12-.29a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.71-.71a1.004 1.004 0 1 0-1.43 1.41l.73.71ZM21 11h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Zm-2.64 6A1 1 0 0 0 17 18.36l.71.71a1 1 0 0 0 1.41 0 1 1 0 0 0 0-1.41l-.76-.66ZM12 6.5a5.5 5.5 0 1 0 5.5 5.5A5.51 5.51 0 0 0 12 6.5Zm0 9a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm0 3.5a1 1 0 0 0-1 1v1a1 1 0 0 0 2 0v-1a1 1 0 0 0-1-1Z"/></svg><svg aria-hidden="true" class="dark astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8.049 8.049 0 0 1-3.37.73 8.15 8.15 0 0 1-8.14-8.1 8.59 8.59 0 0 1 .25-2A1 1 0 0 0 8 2.36a10.14 10.14 0 1 0 14 11.69 1 1 0 0 0-.36-1.05Zm-9.5 6.69A8.14 8.14 0 0 1 7.08 5.22v.27a10.15 10.15 0 0 0 10.14 10.14 9.784 9.784 0 0 0 2.1-.22 8.11 8.11 0 0 1-7.18 4.32v-.04Z"/></svg><svg aria-hidden="true" class="auto astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg></template><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/print.ehPL0gv-.css" media="print"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/common.CjZgBAcP.css"><style>@layer starlight.components{.card:where(.astro-zts4jgjd){--sl-card-border:var(--sl-color-purple);--sl-card-bg:var(--sl-color-purple-low);border:1px solid var(--sl-color-gray-5);background-color:var(--sl-color-black);flex-direction:column;gap:clamp(.5rem,.125rem + 1vw,1rem);padding:clamp(1rem,.125rem + 3vw,2.5rem)}.card:where(.astro-zts4jgjd):nth-child(4n+1){--sl-card-border:var(--sl-color-orange);--sl-card-bg:var(--sl-color-orange-low)}.card:where(.astro-zts4jgjd):nth-child(4n+3){--sl-card-border:var(--sl-color-green);--sl-card-bg:var(--sl-color-green-low)}.card:where(.astro-zts4jgjd):nth-child(4n+4){--sl-card-border:var(--sl-color-red);--sl-card-bg:var(--sl-color-red-low)}.card:where(.astro-zts4jgjd):nth-child(4n+5){--sl-card-border:var(--sl-color-blue);--sl-card-bg:var(--sl-color-blue-low)}.title:where(.astro-zts4jgjd){font-weight:600;font-size:var(--sl-text-h4);color:var(--sl-color-white);line-height:var(--sl-line-height-headings);align-items:center;gap:1rem}.card:where(.astro-zts4jgjd) .icon:where(.astro-zts4jgjd){border:1px solid var(--sl-card-border);background-color:var(--sl-card-bg);border-radius:.25rem;flex-shrink:0;padding:.2em}.card:where(.astro-zts4jgjd) .body:where(.astro-zts4jgjd){font-size:clamp(var(--sl-text-sm), calc(.5rem + 1vw), var(--sl-text-body));margin:0}.card-grid:where(.astro-lmor3ela){grid-template-columns:100%;gap:1rem;display:grid}.card-grid:where(.astro-lmor3ela)>*{margin-top:0!important}@media (width>=50rem){.card-grid:where(.astro-lmor3ela){grid-template-columns:1fr 1fr;gap:1.5rem}.stagger:where(.astro-lmor3ela){--stagger-height:5rem;padding-bottom:var(--stagger-height)}.stagger:where(.astro-lmor3ela)>:nth-child(2n){transform:translateY(var(--stagger-height))}}.sl-link-card:where(.astro-vodiqeol){border:1px solid var(--sl-color-gray-5);box-shadow:var(--sl-shadow-sm);border-radius:.5rem;grid-template-columns:1fr auto;gap:.5rem;padding:1rem;display:grid;position:relative}a:where(.astro-vodiqeol){line-height:var(--sl-line-height-headings);text-decoration:none}a:where(.astro-vodiqeol):before{content:"";position:absolute;inset:0}.stack:where(.astro-vodiqeol){flex-direction:column;gap:.5rem}.title:where(.astro-vodiqeol){color:var(--sl-color-white);font-weight:600;font-size:var(--sl-text-lg)}.description:where(.astro-vodiqeol){color:var(--sl-color-gray-3);line-height:1.5}.icon:where(.astro-vodiqeol){color:var(--sl-color-gray-3)}.sl-link-card:where(.astro-vodiqeol):hover{background:var(--sl-color-gray-7,var(--sl-color-gray-6));border-color:var(--sl-color-gray-2)}.sl-link-card:where(.astro-vodiqeol):hover .icon:where(.astro-vodiqeol){color:var(--sl-color-white)}}
+@layer starlight.components{svg:where(.astro-n5k4ipy7){color:var(--sl-icon-color);font-size:var(--sl-icon-size,1em);width:1em;height:1em}}
+</style><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/page.LAbJoB63.js"></script></head><body class="astro-vdxcvpsm"><a class="sl-skip-link astro-vxeigawq" href="#_top">Skip to content</a><div class="page sl-flex astro-gqpr5s5a"><header class="header astro-gqpr5s5a"><div class="header astro-nczgtkxc"><div class="title-wrapper sl-flex astro-nczgtkxc"><a href="/accelerated-intelligent-document-processing-on-aws/" class="site-title sl-flex astro-clw6ags5"><img class="light:sl-hidden print:hidden astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-dark.CDSNlVMV.svg" width="120" height="32"><img class="dark:sl-hidden print:block astro-clw6ags5" alt src="/accelerated-intelligent-document-processing-on-aws/_astro/logo-light.CszXvHpe.svg" width="120" height="32"><span class="astro-clw6ags5" translate="no">GenAI IDP</span></a></div><div class="sl-flex print:hidden astro-nczgtkxc"><site-search class="astro-nczgtkxc astro-r5ar4xm7" data-translations="{&quot;placeholder&quot;:&quot;Search&quot;}"><button data-open-modal disabled aria-label="Search" aria-keyshortcuts="Control+K" class="astro-r5ar4xm7"><svg aria-hidden="true" class="astro-r5ar4xm7 astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"/></svg><span class="sl-hidden md:sl-block astro-r5ar4xm7" aria-hidden="true">Search</span><kbd class="sl-hidden md:sl-flex astro-r5ar4xm7" style="display: none;"><kbd class="astro-r5ar4xm7">Ctrl</kbd><kbd class="astro-r5ar4xm7">K</kbd></kbd></button><dialog style="padding:0" aria-label="Search" class="astro-r5ar4xm7"><div class="dialog-frame sl-flex astro-r5ar4xm7"><button data-close-modal class="sl-flex md:sl-hidden astro-r5ar4xm7">Cancel</button><div class="search-container astro-r5ar4xm7"><div id="starlight__search" class="astro-r5ar4xm7"></div></div></div></dialog></site-search><script>
+	(() => {
+		const openBtn = document.querySelector('button[data-open-modal]');
+		const shortcut = openBtn?.querySelector('kbd');
+		if (!openBtn || !(shortcut instanceof HTMLElement)) return;
+		const platformKey = shortcut.querySelector('kbd');
+		if (platformKey && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform)) {
+			platformKey.textContent = '⌘';
+			openBtn.setAttribute('aria-keyshortcuts', 'Meta+K');
+		}
+		shortcut.style.display = '';
+	})();
+</script><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/Search.astro_astro_type_script_index_0_lang.DgM3kjKb.js"></script></div><div class="sl-hidden md:sl-flex print:hidden right-group astro-nczgtkxc"><div class="sl-flex social-icons astro-nczgtkxc"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script><script type="module">var e=`starlight-theme`,t=e=>e===`auto`||e===`dark`||e===`light`?e:`auto`,n=()=>t(typeof localStorage<`u`&&localStorage.getItem(e));function r(t){typeof localStorage<`u`&&localStorage.setItem(e,t===`light`||t===`dark`?t:``)}var i=()=>matchMedia(`(prefers-color-scheme: light)`).matches?`light`:`dark`;function a(e){StarlightThemeProvider.updatePickers(e),document.documentElement.dataset.theme=e===`auto`?i():e,r(e)}matchMedia(`(prefers-color-scheme: light)`).addEventListener(`change`,()=>{n()===`auto`&&a(`auto`)});var o=class extends HTMLElement{constructor(){super(),a(n()),this.querySelector(`select`)?.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&a(t(e.currentTarget.value))})}};customElements.define(`starlight-theme-select`,o);</script><script type="module">var e=class extends HTMLElement{constructor(){super();let e=this.querySelector(`select`);e&&(e.addEventListener(`change`,e=>{e.currentTarget instanceof HTMLSelectElement&&(window.location.pathname=e.currentTarget.value)}),window.addEventListener(`pageshow`,t=>{if(!t.persisted)return;let n=e.querySelector(`option[selected]`)?.index;n!==e.selectedIndex&&(e.selectedIndex=n??0)}))}};customElements.define(`starlight-lang-select`,e);</script></div></div></header><nav class="sidebar print:hidden astro-gqpr5s5a" aria-label="Main"><starlight-menu-button class="print:hidden astro-vvx7mffu"><button aria-expanded="false" aria-label="Menu" aria-controls="starlight__sidebar" class="sl-flex md:sl-hidden astro-vvx7mffu"><svg aria-hidden="true" class="open-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M3 8h18a1 1 0 1 0 0-2H3a1 1 0 0 0 0 2Zm18 8H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Zm0-5H3a1 1 0 0 0 0 2h18a1 1 0 0 0 0-2Z"/></svg><svg aria-hidden="true" class="close-menu astro-vvx7mffu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="m13.41 12 6.3-6.29a1.004 1.004 0 1 0-1.42-1.42L12 10.59l-6.29-6.3a1.004 1.004 0 0 0-1.42 1.42l6.3 6.29-6.3 6.29a1 1 0 0 0 0 1.42.998.998 0 0 0 1.42 0l6.29-6.3 6.29 6.3a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.42L13.41 12Z"/></svg></button></starlight-menu-button><script type="module">var e=class extends HTMLElement{btn=this.querySelector(`button`);constructor(){super(),this.btn.addEventListener(`click`,()=>this.toggleExpanded());let e=this.closest(`nav`);e&&e.addEventListener(`keyup`,e=>this.closeOnEscape(e)),matchMedia(`(min-width: 50em)`).addEventListener(`change`,()=>this.setExpanded(!1))}setExpanded(e){this.setAttribute(`aria-expanded`,String(e)),document.body.toggleAttribute(`data-mobile-menu-expanded`,e),document.querySelectorAll(`.main-frame, .sl-skip-link`).forEach(t=>{t.toggleAttribute(`inert`,e)})}toggleExpanded(){this.setExpanded(this.getAttribute(`aria-expanded`)!==`true`)}closeOnEscape(e){e.code===`Escape`&&(this.setExpanded(!1),this.btn.focus())}};customElements.define(`starlight-menu-button`,e);</script><div id="starlight__sidebar" class="sidebar-pane astro-gqpr5s5a"><div class="sidebar-content sl-flex astro-gqpr5s5a"><sl-sidebar-state-persist data-hash="1b2zht4" class="astro-f5yvicm7"><script aria-hidden="true">
+		(() => {
+			try {
+				if (!matchMedia('(min-width: 50em)').matches) return;
+				/** @type {HTMLElement | null} */
+				const target = document.querySelector('sl-sidebar-state-persist');
+				const state = JSON.parse(sessionStorage.getItem('sl-sidebar-state') || '0');
+				if (!target || !state || target.dataset.hash !== state.hash) return;
+				window._starlightScrollRestore = state.scroll;
+				customElements.define(
+					'sl-sidebar-restore',
+					class SidebarRestore extends HTMLElement {
+						connectedCallback() {
+							try {
+								const idx = parseInt(this.dataset.index || '');
+								const details = this.closest('details');
+								if (details && typeof state.open[idx] === 'boolean') details.open = state.open[idx];
+							} catch {}
+						}
+					}
+				);
+			} catch {}
+		})();
+	</script><ul class="top-level astro-ojxuodky"><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Overview</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="0"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/" class="astro-ojxuodky"><span class="astro-ojxuodky">Welcome</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/references/" class="astro-ojxuodky"><span class="astro-ojxuodky">Blogs, Customer Stories &amp; Research</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Core</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="1"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/quick-start/" class="astro-ojxuodky"><span class="astro-ojxuodky">Quick Start</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-deployment-ai-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">AI-Guided Deployment Walkthrough</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/headless-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Headless Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/apigateway-hosting/" class="astro-ojxuodky"><span class="astro-ojxuodky">API Gateway Hosting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/deployment-private-network/" class="astro-ojxuodky"><span class="astro-ojxuodky">Private Network Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/vpc-secured-mode/" class="astro-ojxuodky"><span class="astro-ojxuodky">VPC-Secured Mode</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-profiles/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Profiles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/configuration-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Versions (renamed)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-configuration-best-practices/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Best Practices</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/json-schema-migration/" class="astro-ojxuodky"><span class="astro-ojxuodky">JSON Schema Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/web-ui/" class="astro-ojxuodky"><span class="astro-ojxuodky">Web UI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-appsync-to-rest/" class="astro-ojxuodky"><span class="astro-ojxuodky">UI ⇄ Backend Transport (AppSync → REST)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-cli/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP CLI</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idp-sdk/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP SDK</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/idpcommon-api-reference/" class="astro-ojxuodky"><span class="astro-ojxuodky">idp_common API Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/demo-videos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Demo Videos</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/troubleshooting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Troubleshooting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/error-analyzer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Error Analyzer</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Processing Modes</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="2"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-1/" class="astro-ojxuodky"><span class="astro-ojxuodky">BDA Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/pattern-2/" class="astro-ojxuodky"><span class="astro-ojxuodky">Pipeline Mode Reference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Discovery</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/policy-discovery/" class="astro-ojxuodky"><span class="astro-ojxuodky">Policy Discovery</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Document Processing Features</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="3"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/classification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-and-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction &amp; Confidence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/assessment-bounding-boxes/" class="astro-ojxuodky"><span class="astro-ojxuodky">Assessment Bounding Boxes (moved)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/few-shot-examples/" class="astro-ojxuodky"><span class="astro-ojxuodky">Few-Shot Examples</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/human-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Human-in-the-Loop Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/criteria-validation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Criteria Validation</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/missing-page-handling/" class="astro-ojxuodky"><span class="astro-ojxuodky">Missing Page Handling</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/ocr-image-sizing-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">OCR Image Sizing Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/languages/" class="astro-ojxuodky"><span class="astro-ojxuodky">Languages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Evaluation &amp; Testing</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="4"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/testing/" class="astro-ojxuodky"><span class="astro-ojxuodky">Testing</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation/" class="astro-ojxuodky"><span class="astro-ojxuodky">Evaluation Framework</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/evaluation-enhanced-reporting/" class="astro-ojxuodky"><span class="astro-ojxuodky">Enhanced Reporting</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/test-studio/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Studio</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/creating-custom-test-sets/" class="astro-ojxuodky"><span class="astro-ojxuodky">Creating Custom Test Sets</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mlflow-integration/" class="astro-ojxuodky"><span class="astro-ojxuodky">MLflow Experiment Tracking</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Validation</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="5"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation Records</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.6</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-validation/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Validation: v0.6.8</span></a></li></ul></details></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Benchmarks &amp; Performance</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="6"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmarking Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/config-guidance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Configuration Guidance</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Release Audit Trail</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="7"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit Trail</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v060/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.0 vs v0.5.16</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.5 vs v0.6.4</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v065-fix-verification/" class="astro-ojxuodky"><span class="astro-ojxuodky">Fix Verification: v0.6.5 correctness fixes</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v066/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark: v0.6.6 vs v0.6.5</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v067/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.7</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v068/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Benchmark Audit — v0.6.8</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Studies</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="8"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/advanced-extraction-refinements/" aria-current="page" class="astro-ojxuodky"><span class="astro-ojxuodky">Advanced Extraction — Seven Candidate Refinements, Measured</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/classification-confidence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Classification Confidence — Does the Score Carry Signal?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/feature-multi-instance/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Study: multi-instance sections (#715 / #753)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-cache-padding-proposal/" class="astro-ojxuodky"><span class="astro-ojxuodky">Should we pad prompts to clear the cache minimum?</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/prompt-caching/" class="astro-ojxuodky"><span class="astro-ojxuodky">Prompt Caching — Measured Behaviour</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/readme/" class="astro-ojxuodky"><span class="astro-ojxuodky">Benchmark Studies</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extraction-scaling-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Extraction Scaling Guide</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">AI Agents &amp; Analytics</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="9"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-analysis/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Analysis</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/agent-companion-chat/" class="astro-ojxuodky"><span class="astro-ojxuodky">Agent Companion Chat</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/code-intelligence/" class="astro-ojxuodky"><span class="astro-ojxuodky">Code Intelligence</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/knowledge-base/" class="astro-ojxuodky"><span class="astro-ojxuodky">Knowledge Base</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-mcp-agent/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom MCP Agent</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-connector/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Connector</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/mcp-server/" class="astro-ojxuodky"><span class="astro-ojxuodky">MCP Server</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Integration &amp; Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="10"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/feature-platform-developer-guide/" class="astro-ojxuodky"><span class="astro-ojxuodky">Feature Platform Developer Guide</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/marketplace-subscription-next-steps/" class="astro-ojxuodky"><span class="astro-ojxuodky">After Subscribing on AWS Marketplace</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Extensions</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="11"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/auto-optimizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Auto Optimizer (Beta)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-monitor/" class="astro-ojxuodky"><span class="astro-ojxuodky">IDP Monitor</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/pii-anonymizer/" class="astro-ojxuodky"><span class="astro-ojxuodky">PII Anonymization</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/confbench-testset/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set - ConfBench</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/idp-data-generator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Test Set Generator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-document-status/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Document Status (feature add-on)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/extensions/sample-health-insurance-review/" class="astro-ojxuodky"><span class="astro-ojxuodky">Sample: Health Insurance Review</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/document-versions/" class="astro-ojxuodky"><span class="astro-ojxuodky">Document Versions</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/post-processing-lambda-hook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Post-Processing Lambda Hook</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/lambda-hook-inference/" class="astro-ojxuodky"><span class="astro-ojxuodky">Lambda Hook Inference</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/nova-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Nova Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/custom-model-finetuning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Custom Model Fine-Tuning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/service-tiers/" class="astro-ojxuodky"><span class="astro-ojxuodky">Service Tiers</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Monitoring &amp; Operations</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="12"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/monitoring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Monitoring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-database/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting Database</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/reporting-sql-layer/" class="astro-ojxuodky"><span class="astro-ojxuodky">Reporting SQL Layer</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/capacity-planning/" class="astro-ojxuodky"><span class="astro-ojxuodky">Capacity Planning</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cost-calculator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cost Calculator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/circuit-breaker/" class="astro-ojxuodky"><span class="astro-ojxuodky">Circuit Breaker</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/cross-account-bedrock/" class="astro-ojxuodky"><span class="astro-ojxuodky">Cross-Account Bedrock</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/version-update-indicator/" class="astro-ojxuodky"><span class="astro-ojxuodky">Version Update Indicator</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/release-runbook/" class="astro-ojxuodky"><span class="astro-ojxuodky">Release Runbook</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Planning &amp; Security</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="13"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/threat-model/" class="astro-ojxuodky"><span class="astro-ojxuodky">Threat Model</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/well-architected/" class="astro-ojxuodky"><span class="astro-ojxuodky">Well-Architected Review</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/aws-services-and-roles/" class="astro-ojxuodky"><span class="astro-ojxuodky">AWS Services &amp; IAM Roles</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rbac/" class="astro-ojxuodky"><span class="astro-ojxuodky">Role-Based Access Control (RBAC)</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/external-idp/" class="astro-ojxuodky"><span class="astro-ojxuodky">External Identity Provider</span></a></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">GovCloud</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="14"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-deployment/" class="astro-ojxuodky"><span class="astro-ojxuodky">Deployment</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-architecture/" class="astro-ojxuodky"><span class="astro-ojxuodky">Architecture</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-operations/" class="astro-ojxuodky"><span class="astro-ojxuodky">Operations</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/govcloud-batch-api/" class="astro-ojxuodky"><span class="astro-ojxuodky">Batch API</span></a></li></ul></details></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/eu-region-model-support/" class="astro-ojxuodky"><span class="astro-ojxuodky">EU Region Model Support</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/openai-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">OpenAI Models</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/grok-models/" class="astro-ojxuodky"><span class="astro-ojxuodky">xAI Grok Models</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Development Setup</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="15"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-linux/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Linux</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-macos/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: macOS</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-wsl/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: WSL</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/setup-development-env-windows/" class="astro-ojxuodky"><span class="astro-ojxuodky">Setup: Windows</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/using-notebooks-with-idp-common/" class="astro-ojxuodky"><span class="astro-ojxuodky">Using Notebooks</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-mirroring/" class="astro-ojxuodky"><span class="astro-ojxuodky">Dependency Mirroring</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/dependency-confusion/" class="astro-ojxuodky"><span class="astro-ojxuodky">Installing First-Party Packages</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">Migration</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="16"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v05-to-v06/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.5 → v0.6 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-v04-to-v05/" class="astro-ojxuodky"><span class="astro-ojxuodky">v0.4 → v0.5 Migration</span></a></li><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/migration-granular-retirement/" class="astro-ojxuodky"><span class="astro-ojxuodky">Granular Assessment Retirement</span></a></li></ul></details></li><li class="astro-ojxuodky"><details open class="astro-ojxuodky"><summary class="astro-ojxuodky"><span class="group-label astro-ojxuodky"><span class="large astro-ojxuodky">New &amp; Uncategorized</span></span><svg aria-hidden="true" class="caret astro-ojxuodky astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.25rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></summary><sl-sidebar-restore data-index="17"></sl-sidebar-restore><ul class="astro-ojxuodky"><li class="astro-ojxuodky"><a href="/accelerated-intelligent-document-processing-on-aws/rule-validation-z3/" class="astro-ojxuodky"><span class="astro-ojxuodky">Rule Validation Z3</span></a></li></ul></details></li></ul><script aria-hidden="true">
+		(() => {
+			const scroller = document.getElementById('starlight__sidebar');
+			if (!window._starlightScrollRestore || !scroller) return;
+			scroller.scrollTop = window._starlightScrollRestore;
+			delete window._starlightScrollRestore;
+		})();
+	</script></sl-sidebar-state-persist><div class="md:sl-hidden"><div class="mobile-preferences sl-flex astro-b5gddk54"><div class="social-icons astro-b5gddk54"><a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws" rel="me" class="sl-flex astro-cg55etiy"><span class="sr-only astro-cg55etiy">GitHub</span><svg aria-hidden="true" class="astro-cg55etiy astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.08-.74.09-.73.09-.73 1.2.09 1.83 1.24 1.83 1.24 1.08 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg></a></div><starlight-theme-select><label style="--sl-select-width: 6.25em" class="astro-r2p65idu"><span class="sr-only astro-r2p65idu">Select theme</span><svg aria-hidden="true" class="icon label-icon astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg><select autocomplete="off" class="astro-r2p65idu"><option value="dark" class="astro-r2p65idu">Dark</option><option value="light" class="astro-r2p65idu">Light</option><option value="auto" selected class="astro-r2p65idu">Auto</option></select><svg aria-hidden="true" class="icon caret astro-r2p65idu astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg></label></starlight-theme-select><script>
+	StarlightThemeProvider.updatePickers();
+</script></div></div></div></div></nav><div class="main-frame astro-gqpr5s5a"><script type="module">var e=document.getElementById(`starlight__sidebar`),t=e?.querySelector(`sl-sidebar-state-persist`),n=`sl-sidebar-state`,r=()=>{let r=[],i=t?.dataset.hash||``;try{let e=sessionStorage.getItem(n),t=JSON.parse(e||`{}`);Array.isArray(t.open)&&t.hash===i&&(r=t.open)}catch{}return{hash:i,open:r,scroll:e?.scrollTop||0}},i=e=>{try{sessionStorage.setItem(n,JSON.stringify(e))}catch{}},a=()=>i(r()),o=(e,t)=>{let n=r();n.open[t]=e,i(n)};t?.addEventListener(`click`,e=>{if(!(e.target instanceof Element))return;let t=e.target.closest(`summary`)?.closest(`details`);if(!t)return;let n=t.querySelector(`sl-sidebar-restore`),r=parseInt(n?.dataset.index||``);isNaN(r)||o(!t.open,r)}),addEventListener(`visibilitychange`,()=>{document.visibilityState===`hidden`&&a()});</script><div class="lg:sl-flex astro-abfeecmu"><aside class="right-sidebar-container print:hidden astro-abfeecmu"><div class="right-sidebar astro-abfeecmu"><div class="lg:sl-hidden astro-q5mffni3"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-5ulgm6bh"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-5ulgm6bh"><details id="starlight__mobile-toc" class="astro-5ulgm6bh"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-5ulgm6bh"><span class="toggle sl-flex astro-5ulgm6bh">On this page<svg aria-hidden="true" class="caret astro-5ulgm6bh astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-5ulgm6bh"></span></summary><div class="dropdown astro-5ulgm6bh"><ul class="isMobile astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#0-first-the-noise-floor--because-most-of-these-deltas-are-smaller-than-it" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">0. First, the noise floor — because most of these deltas are smaller than it</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#1-sonnet-5-on-the-1m-token-context-tier-the-18-price-gap-is-mostly-a-cost-table-artifact" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">1. Sonnet 5 on the 1M-token context tier: the 1.8× price gap is mostly a cost-table artifact</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#2-wider-shards-on-the-1m-tier-they-failed-outright-and-once-fixed-they-cost-5" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">2. Wider shards on the 1M tier: they failed outright, and once fixed they cost 5×</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#the-re-run-with-the-fix-in-place-the-failures-move-and-the-cost-gets-worse" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">The re-run with the fix in place: the failures move, and the cost gets worse</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#3-prompt-caching-does-survive-sharding" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">3. Prompt caching does survive sharding</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#4-images-off-was-not-a-measurement-it-was-three-bugs" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">4. “Images off” was not a measurement, it was three bugs</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#5-parse-first-the-table-tools-rows-were-being-thrown-away-over-date-formats" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">5. Parse-first: the table tool’s rows were being thrown away over date formats</span></a><ul class="isMobile astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#what-the-two-fixes-are-worth-measured" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">What the two fixes are worth, measured</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#6-textract-feature-set-layout-alone-is-23-cheaper-and-breaks-the-parser-on-the-densest-document" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">6. Textract feature set: [LAYOUT] alone is 23% cheaper and breaks the parser on the densest document</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#7-passing-ocr-confidence-through-instead-of-asking-a-model-not-a-cost-lever" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">7. Passing OCR confidence through instead of asking a model: not a cost lever</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#8-bedrock-batch-inference-at-50-the-agentic-path-cannot-use-it-and-it-would-not-pay" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">8. Bedrock batch inference at 50%: the agentic path cannot use it, and it would not pay</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#9-deliberately-not-measured" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">9. Deliberately not measured</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reproduce" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reproduce</span></a></li></ul></div></details></nav></mobile-starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.BcSo_yiZ.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-q5mffni3"><div class="sl-container astro-q5mffni3"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-cxyftcne" style="--depth: 0;"><li style="--depth: 0;" class="astro-cxyftcne"><a href="#_top" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Overview</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#0-first-the-noise-floor--because-most-of-these-deltas-are-smaller-than-it" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">0. First, the noise floor — because most of these deltas are smaller than it</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#1-sonnet-5-on-the-1m-token-context-tier-the-18-price-gap-is-mostly-a-cost-table-artifact" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">1. Sonnet 5 on the 1M-token context tier: the 1.8× price gap is mostly a cost-table artifact</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#2-wider-shards-on-the-1m-tier-they-failed-outright-and-once-fixed-they-cost-5" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">2. Wider shards on the 1M tier: they failed outright, and once fixed they cost 5×</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#the-re-run-with-the-fix-in-place-the-failures-move-and-the-cost-gets-worse" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">The re-run with the fix in place: the failures move, and the cost gets worse</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#3-prompt-caching-does-survive-sharding" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">3. Prompt caching does survive sharding</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#4-images-off-was-not-a-measurement-it-was-three-bugs" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">4. “Images off” was not a measurement, it was three bugs</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#5-parse-first-the-table-tools-rows-were-being-thrown-away-over-date-formats" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">5. Parse-first: the table tool’s rows were being thrown away over date formats</span></a><ul class="astro-cxyftcne" style="--depth: 1;"><li style="--depth: 1;" class="astro-cxyftcne"><a href="#what-the-two-fixes-are-worth-measured" style="--depth: 1;" class="astro-cxyftcne"><span style="--depth: 1;" class="astro-cxyftcne">What the two fixes are worth, measured</span></a></li></ul></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#6-textract-feature-set-layout-alone-is-23-cheaper-and-breaks-the-parser-on-the-densest-document" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">6. Textract feature set: [LAYOUT] alone is 23% cheaper and breaks the parser on the densest document</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#7-passing-ocr-confidence-through-instead-of-asking-a-model-not-a-cost-lever" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">7. Passing OCR confidence through instead of asking a model: not a cost lever</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#8-bedrock-batch-inference-at-50-the-agentic-path-cannot-use-it-and-it-would-not-pay" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">8. Bedrock batch inference at 50%: the agentic path cannot use it, and it would not pay</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#9-deliberately-not-measured" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">9. Deliberately not measured</span></a></li><li style="--depth: 0;" class="astro-cxyftcne"><a href="#reproduce" style="--depth: 0;" class="astro-cxyftcne"><span style="--depth: 0;" class="astro-cxyftcne">Reproduce</span></a></li></ul></nav></starlight-toc><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/TableOfContents.astro_astro_type_script_index_0_lang.Csloo1VZ.js"></script></div></div></div></aside><div class="main-pane astro-abfeecmu"><main data-pagefind-body class="astro-vdxcvpsm" lang="en" dir="ltr"><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><h1 id="_top" class="astro-2sm4b3ln">Advanced Extraction — Seven Candidate Refinements, Measured</h1></div></div><div class="content-panel astro-oil7k7jf"><div class="sl-container astro-oil7k7jf"><div class="sl-markdown-content"><!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
+<!-- SPDX-License-Identifier: MIT-0 -->
+<div class="sl-heading-wrapper level-h1"><h1 id="advanced-agentic-extraction-seven-candidate-refinements-measured">Advanced (agentic) extraction: seven candidate refinements, measured</h1><a class="sl-anchor-link" href="#advanced-agentic-extraction-seven-candidate-refinements-measured"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Advanced (agentic) extraction: seven candidate refinements, measured”</span></a></div>
+<blockquote>
+<p><strong>Why this page exists.</strong> After the v0.6.8 release benchmark, seven ideas were on
+the table for making <em>advanced</em> extraction cheaper or more complete: getting the
+table rows out of the model’s mouth entirely, dropping page images from the
+extraction prompt, moving to Sonnet 5’s 1M-token context tier with wider shards,
+confirming prompt caching actually works across shards, passing OCR confidence
+through instead of asking a model, and buying Bedrock batch inference at half
+price. This page measures all of them on one stack, in one sitting, and says
+plainly which ones are real. Several of the seven turned into <strong>defects</strong> rather
+than measurements: the benchmark arm that was supposed to test “images off” had
+never changed anything, the code path that runs by default for multi-page tables
+had never honoured the optimization it shipped with, neither of the two agentic
+image knobs did anything on the single-pass path, wider shards fail outright above
+800 rows, and the 1M-context tier’s apparent 1.8× price is mostly an artifact of
+the cost table rather than of spend. Two of those defects turned out to be worth more
+than any of the seven tuning ideas: fixing them took the same 12-run arm from $68.82
+to $31.60 with completeness improving from 0.976 to 1.000 — 54% cheaper on identical
+inputs (§5). Simple mode is deliberately out of scope throughout: these are
+refinements to the agentic path only.</p>
+</blockquote>
+<p><strong>Method.</strong> Every number comes from the standard harness
+(<code dir="auto">benchmarks/harness/run_matrix.py</code>) against the live stack <code dir="auto">IDPUpg067to068</code>
+(us-west-2, v0.6.8), suite <code dir="auto">advscale</code> — one cell, <code dir="auto">core-tt-adv-sep</code> (Textract with
+tables, <strong>adv</strong>anced extraction, <strong>sep</strong>arate confidence pass), six synthetic
+bank-statement documents from 250 to 3,200 transaction rows (9 to 66 pages), two
+repeats each, so 12 runs per arm. Cost is priced from the stack’s own metering records
+(<code dir="auto">lib.price_metering</code> over the tracking table), not estimated — §1 is about a case
+where that pricing is itself wrong. Extraction model is Sonnet 5
+(<code dir="auto">us.anthropic.claude-sonnet-5</code>) in every arm unless stated.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="0-first-the-noise-floor--because-most-of-these-deltas-are-smaller-than-it">0. First, the noise floor — because most of these deltas are smaller than it</h2><a class="sl-anchor-link" href="#0-first-the-noise-floor--because-most-of-these-deltas-are-smaller-than-it"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “0. First, the noise floor — because most of these deltas are smaller than it”</span></a></div>
+<p>Two arms in this study were run with configurations that are <strong>byte-identical in
+behaviour</strong>: the arm labelled <code dir="auto">lazy-images-off</code> set a config key that nothing read
+(see §4), so it is a second replicate of the Sonnet 5 baseline rather than a
+treatment. That accident is useful, because it measures run-to-run variance with 24
+runs of the same thing:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th align="right">12-run total cost</th><th align="right">mean completeness recall</th><th align="right">worst single run</th></tr></thead><tbody><tr><td>Baseline (run <code dir="auto">run-20260914-214619</code>)</td><td align="right">$68.82</td><td align="right">0.976</td><td align="right">0.804</td></tr><tr><td>Same config again (run <code dir="auto">run-20260914-214816</code>)</td><td align="right">$75.14</td><td align="right">1.000</td><td align="right">1.000</td></tr></tbody></table>
+<p>Per document, the second replicate cost between <strong>0.84× and 1.57×</strong> the first:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>document (rows)</th><th align="right">replicate A $/run</th><th align="right">replicate B $/run</th><th align="right">B/A</th></tr></thead><tbody><tr><td>med_narrow (400)</td><td align="right">1.60</td><td align="right">1.55</td><td align="right">0.97</td></tr><tr><td>large_narrow (800)</td><td align="right">3.23</td><td align="right">3.29</td><td align="right">1.02</td></tr><tr><td>dense_250 (250)</td><td align="right">1.66</td><td align="right">1.38</td><td align="right">0.84</td></tr><tr><td>scale_1200 (1,200)</td><td align="right">4.20</td><td align="right">6.60</td><td align="right"><strong>1.57</strong></td></tr><tr><td>scale_1600 (1,600)</td><td align="right">6.88</td><td align="right">6.98</td><td align="right">1.01</td></tr><tr><td>scale_3200 (3,200)</td><td align="right">16.85</td><td align="right">17.78</td><td align="right">1.06</td></tr></tbody></table>
+<p>An agentic run is a variable-length loop, so its cost has a long tail: the same
+document, same config, can take one extra tool round trip and cost 57% more. <strong>Read
+every cost delta in this page against that envelope.</strong> A single-doc difference below
+about 1.6× is not evidence of anything, and the two dropped-row runs in replicate A
+(recall 0.804 on dense_250, 0.908 on scale_3200) are variance, not a property of the
+configuration — replicate B recovered every row on the same inputs.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="1-sonnet-5-on-the-1m-token-context-tier-the-18-price-gap-is-mostly-a-cost-table-artifact">1. Sonnet 5 on the 1M-token context tier: the 1.8× price gap is mostly a cost-table artifact</h2><a class="sl-anchor-link" href="#1-sonnet-5-on-the-1m-token-context-tier-the-18-price-gap-is-mostly-a-cost-table-artifact"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “1. Sonnet 5 on the 1M-token context tier: the 1.8× price gap is mostly a cost-table artifact”</span></a></div>
+<p>Sonnet 5 can be selected as <code dir="auto">sonnet5_1m</code>, which the product turns into a request on
+the 1M-token context tier. The hope was that wider shards would remove the shard
+boundaries where rows go missing. The arm ran (run <code dir="auto">run-20260914-214620</code>) and the
+harness priced it at <strong>$125.42 against the baseline’s $68.82, a 1.82× total</strong> — a
+headline number that does not survive being checked, and the reason is worth more
+than the number itself.</p>
+<p>Start with what the two arms actually consumed. Summing the Extraction-phase metering
+records across all 12 runs of each arm:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Extraction tokens, 12 runs</th><th align="right">baseline</th><th align="right"><code dir="auto">:1m</code> arm</th><th align="right">ratio</th></tr></thead><tbody><tr><td>fresh input</td><td align="right">7,457,162</td><td align="right">8,144,158</td><td align="right">1.09×</td></tr><tr><td>cache read</td><td align="right">22,087,966</td><td align="right">23,087,890</td><td align="right">1.05×</td></tr><tr><td>cache write</td><td align="right">1,324,126</td><td align="right">1,402,002</td><td align="right">1.06×</td></tr><tr><td>output</td><td align="right">1,512,506</td><td align="right">1,549,408</td><td align="right">1.02×</td></tr><tr><td><strong>all tokens</strong></td><td align="right"><strong>32,381,760</strong></td><td align="right"><strong>34,183,458</strong></td><td align="right"><strong>1.06×</strong></td></tr></tbody></table>
+<p>The two arms did essentially the same amount of work. Repricing the <code dir="auto">:1m</code> arm’s own
+measured token mix at the plain Sonnet 5 rate card gives $65.84 of extraction cost
+against the baseline’s $62.32 — 1.06×, inside the noise floor from §0. Priced at the
+<code dir="auto">:1m</code> rate card it is $118.90. <strong>94% of the apparent gap is the rate card, not
+spend.</strong></p>
+<p>The rate card is where the problem is. <code dir="auto">config_library/pricing.yaml</code> carries a
+separate entry, <code dir="auto">bedrock/us.anthropic.claude-sonnet-5:1m</code>, at exactly 2× input and
+1.5× output of the plain entry (<code dir="auto">6.6E-6</code> vs <code dir="auto">3.3E-6</code> per input token, <code dir="auto">2.475E-5</code> vs
+<code dir="auto">1.65E-5</code> per output token, and the same 2× on cache read and cache write). It is
+applied to <strong>every</strong> token metered under that key, unconditionally. It was taken
+here to be a <strong>per-request tier</strong> — applying to a request whose input exceeds 200K
+tokens, not to every request made by a model that <em>can</em> accept 200K+. (That was
+wrong in the model’s favour: as the correction below records, there is no
+long-context premium on these models at any request size. The reasoning that
+follows is preserved as it was written, because it is what led to the fix.) Two
+facts make that tier unreachable here:</p>
+<ul>
+<li>The product <strong>strips the <code dir="auto">:1m</code> suffix before invoking anything.</strong> Both
+<code dir="auto">bedrock/client.py</code> (<code dir="auto">_strip_region_and_1m</code>) and <code dir="auto">extraction/agentic_idp.py</code> map
+<code dir="auto">…-sonnet-5:1m</code> to the ordinary <code dir="auto">us.anthropic.claude-sonnet-5</code> inference profile
+and pass <code dir="auto">additional_request_fields = {"anthropic_beta": ["context-1m-2025-08-07"]}</code>. There is no <code dir="auto">:1m</code> inference profile in us-west-2 to
+invoke. The suffix survives only in the metering key, which is what the pricing
+table then matches on.</li>
+<li><strong>No request in the study came close to 200K input tokens.</strong> Over the whole study
+window, across 8,041 metered Bedrock calls in <code dir="auto">ShardRuntimeFunction</code> and 290 in
+<code dir="auto">ExtractionFunction</code>, the largest single request was <strong>34,015</strong> input tokens
+(fresh + cache read) and the mean was 10,613 in the shard runtime and 22,679 in the
+single-pass function. Shards are auto-sized to the model’s limits, so enabling a
+1M window does not by itself produce 200K-token requests — it raises a ceiling that
+nothing was pressing against.</li>
+</ul>
+<p>So the honest statement is: <strong>measured</strong> token volumes are 1.06× baseline; the
+harness <em>reports</em> 1.82× because of a flat premium in <code dir="auto">pricing.yaml</code>; and under
+tiered long-context pricing none of these requests should have paid that premium, so
+real spend is very likely ~1.05× rather than 1.82×. What is <strong>not verified</strong> is the
+last step against an actual AWS bill — this was not reconciled against Cost Explorer
+or a CUR line item at per-model granularity, and if Bedrock were to charge the
+premium for any request carrying the <code dir="auto">anthropic_beta</code> header regardless of size, the
+1.82× would be real. That is the one experiment left to run on this item.</p>
+<p><strong>Product implication, and it is not benchmark-only.</strong> The same <code dir="auto">pricing.yaml</code>
+prices the stack’s own cost reporting and the UI. Any deployment that selects
+<code dir="auto">sonnet5_1m</code> (or <code dir="auto">opus-5:1m</code>, priced the same way) will see roughly double the
+extraction cost it is billed, on every document, with no indication why. The fix is
+one of two things: make the pricing entry threshold-aware, or stop carrying the
+<code dir="auto">:1m</code> suffix into the metering key when the suffix is stripped before invocation. The
+second is much simpler and matches what is actually invoked; it would also mean the
+long-context premium is never charged, which is correct only as long as requests stay
+under 200K. Filed as
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/899">issue #899</a>.</p>
+<p><strong>Correction, fixed in v0.6.9 — and the premium above does not exist.</strong> The
+analysis above assumed the <code dir="auto">:1m</code> rates in <code dir="auto">pricing.yaml</code> were a real tier that
+merely applied at the wrong times. They were not a real tier for these models at
+all.</p>
+<p>The AWS Price List bulk offer file settles it, and it is the right source here
+because Bedrock is partner-operated and sets its own prices. In
+<code dir="auto">AmazonBedrockFoundationModels</code> (version 20260911124410, published 2026-09-11,
+retrieved 2026-09-17) all six models offered here with a <code dir="auto">:1m</code> suffix appear under
+<code dir="auto">serviceName</code> “Claude <em>model</em> (Amazon Bedrock Edition)”, and each carries exactly
+one input-token rate per routing mode and service tier — Sonnet 5 at $2.20/MTok
+regional and $2.00/MTok global, Opus 4.7/4.8/5 at $5.50 and $5.00. Across that
+file and the <code dir="auto">AmazonBedrock</code> offer file together, every price dimension spans
+<code dir="auto">StartingRange</code> 0 to <code dir="auto">EndingRange</code> Inf: there is not a single token-volume band on
+any model, so there is no threshold at which any rate changes. No Anthropic SKU
+mentions a long context. This is not an artifact of the price list being unable to
+express one — a long-context band appears there as a distinct <code dir="auto">-long-ctx</code> usage
+type, and exactly two models have one today (<code dir="auto">openai.gpt-5.6-luna-mantle</code> and
+<code dir="auto">openai.gpt-5.6-terra-mantle</code>).</p>
+<p>Anthropic says the same first-hand for the models themselves: “Claude 4.6 and
+later models … include the full 1M token context window at standard pricing. (A
+900k-token request is billed at the same per-token rate as a 9k-token request.)”
+(<a href="https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing">pricing docs</a>,
+retrieved 2026-09-17). Every model offered with a <code dir="auto">:1m</code> suffix here — Sonnet 4.6,
+Sonnet 5, Opus 4.6/4.7/4.8, Opus 5 — is 4.6 or later. The 2× input / 1.5× output
+structure was Anthropic’s pricing for the earlier Sonnet 4 / Sonnet 4.5 1M-context
+beta.</p>
+<p>That resolves the open question above in the direction the token counts already
+pointed: there was no 200K threshold to stay under, so <strong>the 1.82× was never real
+at any request size</strong>, and the $65.84-vs-$62.32 repricing (1.06×) is the arm’s
+cost. The reconciliation against an actual AWS bill or CUR line item still has not
+been done, so that figure remains a rate-card calculation rather than a verified
+invoice — but the specific risk flagged above, that Bedrock might charge a premium
+for any request carrying the <code dir="auto">anthropic_beta</code> header, is contradicted by Bedrock’s
+own published rate card.</p>
+<p>The fix was the second option. <code dir="auto">pricing.yaml</code>’s 18 <code dir="auto">:1m</code> entries were re-rated to
+their base model’s rates (they are kept, not deleted: the file doubles as the
+model-ID allowlist for configuration validation, and <code dir="auto">:1m</code> still reaches a price
+lookup from older metering and from the Athena rollups), and metering keys no
+longer carry the suffix at all, so they name the inference profile actually
+invoked. The first option was not “unimplementable” in general, and the earlier
+draft of this correction overstated that — it is unimplementable <em>downstream of
+<code dir="auto">merge_metering_data()</code></em>, where every consumer prices a sum over a document’s
+calls and a threshold would charge a premium on ten 30K-token calls, and on the
+Strands agentic path this study measured, where only <code dir="auto">accumulated_usage</code> is
+available. At the emission site in <code dir="auto">bedrock/client.py</code> one request’s <code dir="auto">usage</code> is in
+hand and band selection would be exact. It is simply not needed for <code dir="auto">:1m</code>, since
+there is no band; the model that does have one is GPT-6 Astra above 272K tokens
+(see <a href="../../../cost-calculator/">cost-calculator.md</a>).</p>
+<p>Cost figures already written to the reporting tables, including this study’s, are
+not retroactively rewritten; the numbers in the table above stay as they were
+measured.</p>
+<p><strong>Verdict on the refinement itself: still not a default,</strong> for the completeness
+reason rather than the price. The <code dir="auto">:1m</code> arm returned every row in 12 of 12 runs — but
+so did the baseline’s own second replicate. 24 baseline runs produced two short runs,
+12 <code dir="auto">:1m</code> runs produced none, and at those sample sizes the difference is one or two
+tail events either way. There is no measured completeness gain to buy, at any price.
+And the natural way to use the wider window — wider shards — makes things worse, which
+is §2.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="2-wider-shards-on-the-1m-tier-they-failed-outright-and-once-fixed-they-cost-5">2. Wider shards on the 1M tier: they failed outright, and once fixed they cost 5×</h2><a class="sl-anchor-link" href="#2-wider-shards-on-the-1m-tier-they-failed-outright-and-once-fixed-they-cost-5"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “2. Wider shards on the 1M tier: they failed outright, and once fixed they cost 5×”</span></a></div>
+<p>The point of a 1M-token context is to stop cutting documents into shards. The arm
+that tests that is <code dir="auto">sonnet5_1m</code> combined with <code dir="auto">shard_pages=wide25</code>, which sets
+<code dir="auto">extraction.agentic.max_pages_per_shard</code> to 25 instead of the shipped 5. Measured
+first on pre-fix code, it was the worst result in this study:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>document (rows, pages)</th><th>status</th><th align="right">recall</th><th align="right">wall</th><th align="right">$/run</th><th align="right">baseline $/run</th></tr></thead><tbody><tr><td>med_narrow (400, 9)</td><td>COMPLETED ×2</td><td align="right">1.000</td><td align="right">497 s</td><td align="right">4.18</td><td align="right">1.60</td></tr><tr><td>large_narrow (800, 17)</td><td>COMPLETED ×2</td><td align="right">1.000</td><td align="right">1,561 s</td><td align="right">4.06</td><td align="right">3.23</td></tr><tr><td>dense_250 (250, 26)</td><td>COMPLETED ×2</td><td align="right">1.000</td><td align="right">758 s</td><td align="right">6.90</td><td align="right">1.66</td></tr><tr><td>scale_1200 (1,200, 25)</td><td><strong>FAILED ×2</strong></td><td align="right">0.000</td><td align="right">29 s</td><td align="right">0.40</td><td align="right">4.20</td></tr><tr><td>scale_1600 (1,600, 33)</td><td><strong>FAILED ×2</strong></td><td align="right">0.000</td><td align="right">34 s</td><td align="right">0.53</td><td align="right">6.88</td></tr><tr><td>scale_3200 (3,200, 66)</td><td><strong>FAILED ×2</strong></td><td align="right">0.000</td><td align="right">55 s</td><td align="right">1.06</td><td align="right">16.85</td></tr></tbody></table>
+<p>Six of twelve runs failed, in 28–56 seconds, with
+<code dir="auto">States.ExceedToleratedFailureThreshold</code> in the state machine over an
+<code dir="auto">ExtractionInputTooLarge</code> error. The arm’s $34.25 total is not a saving — half of it
+is documents that produced nothing, and the three that did complete were both slower
+(large_narrow 1,561 s against the baseline’s 296 s; dense_250 758 s against 143 s)
+and dearer (dense_250 $6.90 against $1.66, 4.2×; med_narrow 2.6×).</p>
+<p>The failure chain is mechanical and was reproduced offline. A 25-page section of these
+documents is only about 19,000 tokens of text, so <code dir="auto">plan_shards</code> concludes one shard is
+enough and the section takes the <strong>single-pass</strong> agentic path rather than the sharded
+one. That path attaches every page image of the section — 25 unresized 300-DPI JPEGs,
+roughly 32 MB — and Bedrock rejects the request with <code dir="auto">ValidationException: Input is too long for requested model.</code> The configuration that exists to prevent exactly this,
+<code dir="auto">extraction.agentic.max_images_per_agent</code> (default 20), did not trim anything, because
+on that path it was being applied to the wrong copy of the images. That is the third
+defect in §4, and it is the reason a wide-shard setting fails instead of degrading.</p>
+<div class="sl-heading-wrapper level-h3"><h3 id="the-re-run-with-the-fix-in-place-the-failures-move-and-the-cost-gets-worse">The re-run with the fix in place: the failures move, and the cost gets worse</h3><a class="sl-anchor-link" href="#the-re-run-with-the-fix-in-place-the-failures-move-and-the-cost-gets-worse"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “The re-run with the fix in place: the failures move, and the cost gets worse”</span></a></div>
+<p>The arm above was re-run on the same stack with the §4 and §5 fixes deployed
+(<code dir="auto">advfix2__sonnet5-1m-wide25</code>, 2026-09-15). Comparing it against the post-fix default
+5-page arm rather than the pre-fix baseline, since both sides now run the same code:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>document (rows, pages)</th><th>wide25 status</th><th align="right">wide25 recall</th><th align="right">wide25 wall</th><th align="right">wide25 $/run</th><th align="right">5-page $/run</th></tr></thead><tbody><tr><td>med_narrow (400, 9)</td><td>COMPLETED ×2</td><td align="right">1.000</td><td align="right">259 s</td><td align="right">1.19</td><td align="right">0.80</td></tr><tr><td>large_narrow (800, 17)</td><td>COMPLETED ×2</td><td align="right">1.000</td><td align="right">500 s</td><td align="right">2.29</td><td align="right">1.38</td></tr><tr><td>dense_250 (250, 26)</td><td>COMPLETED ×2</td><td align="right">1.000</td><td align="right">455 s</td><td align="right">3.69</td><td align="right">2.08</td></tr><tr><td>scale_1200 (1,200, 25)</td><td><strong>FAILED ×2</strong> (assessment)</td><td align="right">1.000 extraction</td><td align="right">625 s</td><td align="right">12.59</td><td align="right">2.02</td></tr><tr><td>scale_1600 (1,600, 33)</td><td>COMPLETED ×2</td><td align="right">0.9997</td><td align="right">1,199 s</td><td align="right">23.99</td><td align="right">2.71</td></tr><tr><td>scale_3200 (3,200, 66)</td><td>COMPLETED ×2</td><td align="right">0.807</td><td align="right">2,263 s</td><td align="right">35.24</td><td align="right">6.81</td></tr></tbody></table>
+<p>The <code dir="auto">ExtractionInputTooLarge</code> failures are gone: the image cap now trims the first turn
+and all six of the previously dead runs get through extraction, three of them with recall
+1.000. So the diagnosis in §4 was right about the cause. It was wrong about the
+consequence — the arm’s total went from $34.25 (half of it documents that produced
+nothing) to <strong>$158.00 against the 5-page default’s $31.60 for the same twelve runs</strong>, and
+recall on the largest document fell to 0.807. Widening shards is worse with the fix than
+the fix’s absence made it look.</p>
+<p>The mechanism is prompt caching, and it is the mirror image of §3. A 25-page shard is one
+agent conversation covering ~1,200 rows instead of ~240, so the history grows past the
+cached prefix and each tool turn re-reads a longer uncached tail. Per run, extraction
+tokens (means over the two repeats):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>document</th><th align="right">fresh input, 5-page</th><th align="right">fresh input, wide25</th><th align="right">cache reads, 5-page</th><th align="right">cache reads, wide25</th></tr></thead><tbody><tr><td>scale_1200</td><td align="right">151,887</td><td align="right">1,351,398</td><td align="right">402,848</td><td align="right">1,586,871</td></tr><tr><td>scale_1600</td><td align="right">204,954</td><td align="right">2,933,867</td><td align="right">556,854</td><td align="right">1,827,560</td></tr><tr><td>scale_3200</td><td align="right">708,944</td><td align="right">4,030,287</td><td align="right">1,167,778</td><td align="right">3,394,190</td></tr><tr><td>dense_250</td><td align="right">198,594</td><td align="right">266,248</td><td align="right">500,488</td><td align="right">452,472</td></tr></tbody></table>
+<p>Fresh (uncached) input rises 8.9× on scale_1200 and 14.3× on scale_1600, while the
+cache-read share falls from 0.73 to 0.38 — that is where the money goes. <code dir="auto">dense_250</code>,
+which fits a single shard either way, barely moves, which is the control.</p>
+<p>The two remaining <code dir="auto">scale_1200</code> failures are a <strong>different</strong> defect and worth naming
+separately. Extraction succeeded completely on both runs — 1,200 of 1,200 rows, cell
+accuracy 1.000, $17.34 and $7.05 spent — and then the document failed as a whole with
+<code dir="auto">ValidationException: Input is too long for requested model.</code> from the <em>assessment</em> step.
+Assessment runs in-shard on the agentic path, so a 25-page shard hands one Nova Lite
+confidence call five times as many rows as a 5-page shard does, and nothing catches that
+<code dir="auto">ValidationException</code>: a perfectly extracted, already-paid-for document is discarded. The
+two documents that did complete show the quieter form of the same problem — <code dir="auto">scale_1600</code>
+scored 1,146 confidence leaves against 4,807 at the default shard width, <code dir="auto">scale_3200</code>
+2,275 against 9,605 — a ~76% drop in confidence coverage with recall unchanged. Why
+coverage drops rather than fails is not established; the deadline-bounded self-healing
+ladder keeping partial results is the obvious candidate but was not confirmed. Filed as
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901">issue #901</a>.</p>
+<p><strong>Verdict: do not widen shards, and the per-document sizing is not the knob it looks
+like.</strong> The fix turns a hard failure into an expensive success, which is the right
+direction for robustness and the wrong one for anybody hoping wide shards would save
+money. §1 already showed there was nothing to gain — the auto-sized default returns every
+row — and this re-run puts a number on the loss: 5× the cost and 0.807 recall at 3,200
+rows.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="3-prompt-caching-does-survive-sharding">3. Prompt caching does survive sharding</h2><a class="sl-anchor-link" href="#3-prompt-caching-does-survive-sharding"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “3. Prompt caching does survive sharding”</span></a></div>
+<p>The concern was mechanical: each shard is a separate agent conversation, so a
+50-page document might be paying to write the same schema prefix five times and
+reading it back zero times. It is not. Measured from the metering records, as the
+cache-read share of all Extraction input tokens:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>cell</th><th>extraction model</th><th align="right">cache-read share of input tokens</th></tr></thead><tbody><tr><td><code dir="auto">core-tt-adv-sep</code></td><td>Sonnet 5</td><td align="right">0.71</td></tr><tr><td><code dir="auto">sonnet5-adv-sep</code></td><td>Sonnet 5</td><td align="right">0.70</td></tr><tr><td><code dir="auto">core-tt-adv-int</code></td><td>Sonnet 5 (integrated confidence)</td><td align="right">0.70</td></tr><tr><td><code dir="auto">core-tl-adv-sep</code></td><td>Sonnet 5 (Textract layout)</td><td align="right">0.71</td></tr><tr><td><code dir="auto">core-bda-adv-sep</code></td><td>Sonnet 5 (BDA branch)</td><td align="right">0.72</td></tr><tr><td><code dir="auto">astra-adv-sep</code></td><td>Astra</td><td align="right"><strong>0.97</strong></td></tr></tbody></table>
+<p>Roughly 70% of every input token billed in an advanced Claude run is a cache read at
+a tenth of the fresh rate, and on Astra it is 97%. Per document the share ranges
+0.50–0.86 (smallest documents lowest, because a one-shot run has nothing to re-read).
+So the shard structure is not defeating the cache — within a shard the prefix is
+reused across the agent’s tool turns, which is where the volume is. No change
+recommended; the <code dir="auto">metadata.prompt_cache</code> observability shipped in 0.6.8 is what made
+this checkable at all.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="4-images-off-was-not-a-measurement-it-was-three-bugs">4. “Images off” was not a measurement, it was three bugs</h2><a class="sl-anchor-link" href="#4-images-off-was-not-a-measurement-it-was-three-bugs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “4. “Images off” was not a measurement, it was three bugs”</span></a></div>
+<p>The idea was ordinary: for a table document the agent works from OCR text and can
+fetch a page with <code dir="auto">view_image</code> when it needs to, so attaching every page image to
+every agent turn may be pure cost. The product already had a knob for exactly this —
+<code dir="auto">extraction.agentic.table_parsing.lazy_images</code>, default <code dir="auto">true</code>, which suppresses
+up-front image attachment when a pre-flight deterministic table parse has already
+succeeded. The benchmark axis existed too. The first arm came back showing <em>better</em>
+recall with images off, which made no mechanical sense, so it was checked instead of
+believed. Nothing about the idea was measurable until three separate defects were
+fixed, and the third one is also the cause of §2.</p>
+<p><strong>Bug one: the benchmark axis wrote a key nothing reads.</strong> The matrix set
+<code dir="auto">extraction.agentic.lazy_images</code>; the real field is
+<code dir="auto">extraction.agentic.table_parsing.lazy_images</code>. <code dir="auto">make_configs.set_path</code> creates
+missing dictionaries as it walks, so a mistyped path is not an error — it writes a key
+no consumer looks at, and the arm silently becomes a duplicate of its own control.
+That is where the 24 identical runs in §0 came from. The fix validates every axis path
+against the <code dir="auto">IDPConfig</code> model tree before writing it:</p>
+<div class="expressive-code"><link rel="stylesheet" href="/accelerated-intelligent-document-processing-on-aws/_astro/ec.w36nc.css"><script type="module" src="/accelerated-intelligent-document-processing-on-aws/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">$ python3 benchmarks/harness/make_configs.py --suite advscale --set lazy_images=off</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">axis path does not exist in IDPConfig — 'extraction.agentic.lazy_images':</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">AgenticConfig has no field 'lazy_images'</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="$ python3 benchmarks/harness/make_configs.py --suite advscale --set lazy_images=offaxis path does not exist in IDPConfig — &#x27;extraction.agentic.lazy_images&#x27;:AgenticConfig has no field &#x27;lazy_images&#x27;"><div></div></button></div></figure></div>
+<p>All 26 axis paths already in the matrix pass the new check; only the new one failed.</p>
+<p><strong>Bug two: the sharded agentic path never ran the pre-flight parse at all.</strong> There are
+two agentic code paths in <code dir="auto">extraction/service.py</code> — the single-pass path inside
+<code dir="auto">_invoke_extraction_model</code>, and <code dir="auto">_build_agentic_shard_plan</code>, which is what
+<code dir="auto">ShardRuntimeFunction</code> executes and which is the <strong>default for any multi-page table
+document</strong>. The pre-flight table parse and the <code dir="auto">lazy_images</code> decision lived only in the
+single-pass path. The sharded path therefore never knew a table had already been parsed
+and never suppressed anything: the shipped default was dead exactly where it mattered
+most.</p>
+<p>Log evidence over a 55-minute window covering ~36 advanced runs on the live stack,
+before the fix:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>log line</th><th align="right">count</th></tr></thead><tbody><tr><td><code dir="auto">Pre-flight table parsing complete</code></td><td align="right"><strong>0</strong></td></tr><tr><td><code dir="auto">Skipping up-front image attachment</code></td><td align="right"><strong>0</strong></td></tr><tr><td><code dir="auto">Attaching N images to extraction prompt</code></td><td align="right"><strong>2,072</strong></td></tr></tbody></table>
+<p>The fix extracts <code dir="auto">_preflight_table_parse</code> and <code dir="auto">_apply_lazy_images</code> as shared helpers
+and calls them from both paths, so there is one rule with one home. Unit coverage went
+in with it (<code dir="auto">TestShardPlanLazyImages</code> in
+<code dir="auto">lib/idp_common_pkg/tests/unit/extraction/test_shard_payloads.py</code>): the sharded plan
+must produce image-free shard payloads when the pre-flight parse succeeds and
+<code dir="auto">lazy_images</code> is true, image-bearing ones when it is false, and must keep the page
+bytes it hands to the in-shard assessment pass either way. Reverting the service fix
+turns the first of those tests red, which is the check that matters.</p>
+<p><strong>Bug three: on the single-pass path, both image knobs were applied to the wrong copy
+of the images.</strong> Fixing bug two made the sharded path honour <code dir="auto">lazy_images</code>, which
+raised the obvious question of whether the single-pass path — the one that had always
+carried the feature — honoured it either. It did not, for a reason that also explains
+§2.</p>
+<p>The prompt content is composed before the agentic branch forms any opinion about
+images. <code dir="auto">_prepare_section_context</code> → <code dir="auto">_build_extraction_content</code> →
+<code dir="auto">_build_prompt_content</code> substitutes <code dir="auto">{DOCUMENT_IMAGE}</code> into the template, which turns
+the placeholder into real image content blocks. Only then does the agentic branch run,
+and what it manipulated was the separate <code dir="auto">page_images=</code> argument passed alongside that
+content — a <strong>second</strong> copy of the same bytes. Three consequences followed from one
+root cause:</p>
+<ul>
+<li><code dir="auto">lazy_images</code> suppressed nothing. It emptied <code dir="auto">page_images</code>, while every page image
+remained in the content that was actually sent.</li>
+<li><code dir="auto">max_images_per_agent</code> capped nothing. <code dir="auto">_cap_agent_images</code> trimmed the same
+argument, so a 25-page section sent 25 images against a default cap of 20 — the
+oversized first turn that the cap exists to prevent, and precisely the
+<code dir="auto">ExtractionInputTooLarge</code> failure in §2.</li>
+<li>With suppression off, every page image was attached <strong>twice</strong> — once by the
+substitution and again by <code dir="auto">_prepare_prompt_content</code> appending <code dir="auto">page_images</code>.</li>
+</ul>
+<p>There was a fourth, subtler effect. <code dir="auto">create_view_image_tool</code> is registered only when
+<code dir="auto">page_images</code> is non-empty, so on the occasions when emptying that argument did have
+an effect, it removed the agent’s ability to look at a page at all — the fallback that
+made lazy images safe in the first place.</p>
+<p>Both offline composition and live logs agree. Composing the first turn for a two-page
+section yields 2 image blocks when <code dir="auto">lazy_images</code> claimed to have suppressed them —
+the two the substitution placed, untouched — and 4 when it did not, which is the
+doubling. On the live stack, <code dir="auto">agentic_idp</code>’s own
+“Attaching images to agentic extraction prompt” line appears <strong>0</strong> times while
+<code dir="auto">service.py</code>’s “Attaching N images to extraction prompt” appears 8 times in
+<code dir="auto">ExtractionFunction</code> and 2,546 times in <code dir="auto">ShardRuntimeFunction</code>: every image that
+reached the model came from the substitution, never from the argument the knobs
+controlled.</p>
+<p>The fix makes the <strong>content</strong> authoritative. A new
+<code dir="auto">ExtractionService._limit_content_images</code> enforces an image budget on the
+already-rendered content (limit 0 for <code dir="auto">lazy_images</code>, otherwise
+<code dir="auto">max_images_per_agent</code>, <code dir="auto">None</code> for unlimited), and all three <code dir="auto">structured_output</code> call
+sites now pass <code dir="auto">attach_page_images=False</code> — <code dir="auto">page_images</code> still travels, but only as
+the pool <code dir="auto">view_image</code> draws from, so the agent keeps its fallback while the first turn
+stays inside the budget. <code dir="auto">_prepare_prompt_content</code>, <code dir="auto">structured_output</code> and
+<code dir="auto">structured_output_async</code> gained the <code dir="auto">attach_page_images</code> parameter, defaulting to
+<code dir="auto">True</code> so callers whose prompt carries no images of its own are unaffected.</p>
+<p>Coverage is in <code dir="auto">test_image_cap.py</code> (<code dir="auto">TestLimitContentImages</code>, <code dir="auto">TestNoDoubleAttachment</code>)
+and a new <code dir="auto">tests/unit/extraction/agentic_idp/test_single_pass_image_policy.py</code> that
+runs the real branch with Bedrock stubbed and counts images in the composed first
+turn. Reverting the service fix fails all three of the latter with exactly the counts
+this section predicts: 3 images sent where 0 were expected under <code dir="auto">lazy_images</code>, 7
+where the cap allowed 2, and 8 where 4 pages should have produced 4.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="5-parse-first-the-table-tools-rows-were-being-thrown-away-over-date-formats">5. Parse-first: the table tool’s rows were being thrown away over date formats</h2><a class="sl-anchor-link" href="#5-parse-first-the-table-tools-rows-were-being-thrown-away-over-date-formats"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “5. Parse-first: the table tool’s rows were being thrown away over date formats”</span></a></div>
+<p>The most valuable form of “parse first” is already implemented: <code dir="auto">parse_table</code> →
+<code dir="auto">map_table_to_schema</code> → <code dir="auto">finalize_table_extraction</code> keeps the full parsed rows in
+agent state and shows the model only a head/tail summary, so the rows never have to
+pass through the model’s output tokens. The question was whether it was working.</p>
+<p>It was failing, almost always, for one reason. A JSON-Schema <code dir="auto">format: date</code> field
+becomes a real <code dir="auto">datetime.date</code> in the generated Pydantic model, so a <code dir="auto">MM/DD/YYYY</code>
+string — what bank statements contain and what the parser faithfully extracted —
+can never validate. <code dir="auto">finalize_table_extraction</code> then rejected the whole batch. Over
+2026-09-12 00:00 → 09-14 12:00 on the live stack, counting
+<code dir="auto">finalize_table_extraction validation failed</code> log events in both agentic functions:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code dir="auto">finalize_table_extraction</code> validation failures</th><th align="right"><code dir="auto">ShardRuntimeFunction</code></th><th align="right"><code dir="auto">ExtractionFunction</code></th></tr></thead><tbody><tr><td>mentioning “Input should be a valid date or datetime”</td><td align="right"><strong>961</strong></td><td align="right"><strong>183</strong></td></tr><tr><td>everything else</td><td align="right">1</td><td align="right">18</td></tr></tbody></table>
+<p>98.4% of the 1,163 failure events were date formats, and each event threw away a whole
+batch: the individual row-level errors inside them number 291,498, between 4 and 1,989
+per event. A failure is expensive twice: the
+deterministic path yields nothing, and the agent falls back to emitting rows as
+output tokens — the exact cost the tool exists to avoid. The old failure message did
+not help it recover either; it reported the validation errors and the agent’s natural
+response was to re-emit the same rows.</p>
+<p>Two changes address it. <code dir="auto">map_table_to_schema</code> gained explicit date transforms —
+<code dir="auto">date_to_iso</code> (auto-detect), <code dir="auto">date_to_iso_mdy</code>, <code dir="auto">date_to_iso_dmy</code> — so the conversion
+happens in the deterministic layer, with per-call refusal accounting and a cap of
+three warnings so a bad column cannot flood the transcript. And
+<code dir="auto">finalize_table_extraction</code>’s failure message now names the offending fields
+explicitly (<code dir="auto">date_format_fields</code>), names the transform to apply, and tells the agent
+to re-map rather than re-emit. The unit suite pins all four behaviours, including
+that a structural failure does <strong>not</strong> claim a date remedy.</p>
+<p>One further asymmetry was found while fixing §4 and was <strong>left unfixed on purpose for
+the duration of this study</strong>. When the pre-flight parse succeeds, the single-pass path
+appends a “PRE-PARSED TABLE DATA AVAILABLE” block to the agent’s instructions: the
+table count, the total row count, the column list, and a four-step workflow ending in
+<code dir="auto">finalize_table_extraction</code>. That block is written for shards — it explains the
+<code dir="auto">--- PAGE N ---</code> markers and tells the agent to extract only its assigned page range
+— but <code dir="auto">_build_agentic_shard_plan</code> never added it, so the agents that need it were the
+ones that did not receive it. Adding it is a prompt change whose cost and accuracy
+effect would have to be measured on a fresh arm, and doing that mid-study would have
+broken comparability with every number on this page, so it was filed as
+<a href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900">issue #900</a>
+rather than folded in. The pre-flight logging <em>was</em> moved into the shared
+<code dir="auto">_preflight_table_parse</code> helper, so both paths already left evidence that they ran;
+that is observability only, with no effect on what the model sees.</p>
+<blockquote>
+<p><strong>Resolved after this study closed (#900).</strong> The block now lives in one shared
+helper, <code dir="auto">ExtractionService._append_preflight_table_guidance</code>, called from both the
+single-pass path and <code dir="auto">_build_agentic_shard_plan</code>, so shard agents receive it too.
+The sharded copy carries one extra paragraph the single-pass copy does not: a scope
+note telling the shard that its text already holds only its own pages (header block
+included, so <code dir="auto">parse_table</code> keeps the column headers) and that the block’s table and
+row totals are section-wide, so parsing fewer rows is correct for a shard.
+The single-pass text is byte-identical to what produced the numbers on this page —
+a unit test asserts the block against the pre-refactor literal — so those numbers
+remain valid as the pre-change baseline. <strong>The token saving on the sharded path is
+unmeasured</strong>: confirming it needs the <code dir="auto">advscale</code> arm re-run before and after on a
+live stack. The expected direction (fewer Extraction output tokens, recall
+unchanged at 1.000) is inferred from the 1,512,506 → 681,222 output-token drop
+measured below for the analogous single-pass fix, not observed for this change.</p>
+</blockquote>
+<div class="sl-heading-wrapper level-h3"><h3 id="what-the-two-fixes-are-worth-measured">What the two fixes are worth, measured</h3><a class="sl-anchor-link" href="#what-the-two-fixes-are-worth-measured"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “What the two fixes are worth, measured”</span></a></div>
+<p>Both fixes — the date transforms from this section and the sharded-path <code dir="auto">lazy_images</code>
+fix from §4 — were deployed to the live stack’s extraction Lambdas, and the same 12-run
+arm was re-run twice: once with <code dir="auto">lazy_images</code> forced <strong>off</strong>, which leaves the §4 fix
+inert and isolates the date fix, and once with the shipped default <strong>on</strong>. Together
+with the pre-fix baseline that gives a three-point decomposition on identical inputs:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>arm (12 runs each)</th><th align="right">total cost</th><th align="right">mean recall</th><th align="right">Extraction input tokens</th><th align="right">Extraction output tokens</th></tr></thead><tbody><tr><td>pre-fix baseline</td><td align="right">$68.82</td><td align="right">0.976</td><td align="right">30,869,254</td><td align="right">1,512,506</td></tr><tr><td>post-fix, images on (<code dir="auto">lazy_images: false</code>)</td><td align="right">$35.44</td><td align="right">0.917</td><td align="right">15,361,412</td><td align="right">663,203</td></tr><tr><td>post-fix, shipped default (<code dir="auto">lazy_images: true</code>)</td><td align="right"><strong>$31.60</strong></td><td align="right"><strong>1.000</strong></td><td align="right"><strong>9,530,718</strong></td><td align="right">681,222</td></tr></tbody></table>
+<p>The date fix is the large one: <strong>48% off the arm total</strong> ($68.82 → $35.44) with
+<code dir="auto">lazy_images</code> still doing nothing, and the mechanism is visible in the token mix —
+output tokens fall 56% (1,512,506 → 663,203) because the rows now leave through
+<code dir="auto">finalize_table_extraction</code> instead of the model’s mouth, and input tokens fall 50%
+because the agent no longer loops re-emitting rejected batches. Per document the saving
+runs from 20% (scale_1600) to 63% (scale_3200), 41–49% on the two smallest; the
+biggest table saves the most, as the mechanism predicts, but the spread is wide enough
+that only the arm total is worth quoting.</p>
+<p>The <code dir="auto">lazy_images</code> fix adds a further <strong>11%</strong> ($35.44 → $31.60). Its effect on tokens
+is much larger than its effect on cost: input tokens drop another 38% (15.4M → 9.5M),
+almost entirely cache reads (11.35M → 6.10M) and cache writes (−52%), while output is
+unchanged. Cache reads bill at a tenth of the fresh rate, so removing 5.2M of them
+saves real money but not proportionally. Wall time also improves on the larger
+documents (scale_1600 mean 497 s → 257 s). Per document the cost ratio is 0.84–0.86 on
+four of six documents, 0.49 on scale_1600, and 1.08 on scale_3200 — the first four are
+consistent, the last two are inside the §0 noise envelope in opposite directions.</p>
+<p>The same log lines that showed the old behaviour now show the new one. Over the two
+post-fix lanes, <code dir="auto">Skipping up-front image attachment</code> fires <strong>89</strong> times where it fired
+0 before, and date-format rejections collapse: normalising by runs, the three pre-fix
+lanes (36 runs, 21:46–22:41) produced <strong>202</strong> date-format rejection events destroying
+<strong>53,774</strong> rows, while the two post-fix lanes (24 runs, 23:31–00:07) produced <strong>7</strong>
+events destroying <strong>46</strong> rows — 5.6 events per run down to 0.29, and 1,494 rejected
+rows per run down to 1.9. The seven survivors reject 4 to 12 rows each rather than
+hundreds, which is the agent recovering on a real edge case rather than the whole
+batch dying on a format.</p>
+<p>One caveat on the middle row: the images-on arm lost one run of dense_250 to a
+<code dir="auto">FAILED</code> status (recall 0.000), which is why its mean recall is 0.917 and why its
+dense_250 token counts are a single run rather than two. That failure is the same
+class of tail event as §0’s short runs, not a property of the configuration — the
+shipped-default arm returned every row on the same document in both repeats.</p>
+<p><strong>Everything above this subsection was measured on the pre-fix stack.</strong> The §0 noise
+floor, the §1 and §2 arms, the §3 cache shares, the §6 Textract comparison and the §7
+phase shares all predate the date fix, so their absolute costs on this corpus are
+roughly twice what the same runs would cost today. The comparisons within each arm are
+unaffected, since both sides of every one of them ran on the same image.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="6-textract-feature-set-layout-alone-is-23-cheaper-and-breaks-the-parser-on-the-densest-document">6. Textract feature set: <code dir="auto">[LAYOUT]</code> alone is 23% cheaper and breaks the parser on the densest document</h2><a class="sl-anchor-link" href="#6-textract-feature-set-layout-alone-is-23-cheaper-and-breaks-the-parser-on-the-densest-document"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “6. Textract feature set: [LAYOUT] alone is 23% cheaper and breaks the parser on the densest document”</span></a></div>
+<p>This was not one of the seven, but it fell out of the same corpus and it is the only
+real cost lever measured here, so it belongs on the page. The <code dir="auto">advscalelayout</code> suite
+runs the same six documents through cell <code dir="auto">core-tl-adv-sep</code>, which asks Textract for
+<code dir="auto">[LAYOUT]</code> only instead of <code dir="auto">[TABLES, LAYOUT]</code>. Textract’s table feature is billed
+separately, so dropping it is a direct saving on the OCR phase:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>document (rows)</th><th align="right"><code dir="auto">[TABLES, LAYOUT]</code> $/run</th><th align="right"><code dir="auto">[LAYOUT]</code> $/run</th><th align="right">ratio</th><th align="right">recall with TABLES</th><th align="right">recall with LAYOUT</th></tr></thead><tbody><tr><td>med_narrow (400)</td><td align="right">1.60</td><td align="right">1.45</td><td align="right">0.91</td><td align="right">1.000</td><td align="right">1.000</td></tr><tr><td>large_narrow (800)</td><td align="right">3.23</td><td align="right">2.92</td><td align="right">0.90</td><td align="right">1.000</td><td align="right">1.000</td></tr><tr><td>dense_250 (250)</td><td align="right">1.66</td><td align="right">1.56</td><td align="right">0.94</td><td align="right">0.902 (mean)</td><td align="right"><strong>0.098 (mean)</strong></td></tr><tr><td>scale_1200 (1,200)</td><td align="right">4.20</td><td align="right">3.43</td><td align="right">0.82</td><td align="right">1.000</td><td align="right">1.000</td></tr><tr><td>scale_1600 (1,600)</td><td align="right">6.88</td><td align="right">4.99</td><td align="right">0.73</td><td align="right">1.000</td><td align="right">1.000</td></tr><tr><td>scale_3200 (3,200)</td><td align="right">16.85</td><td align="right">12.09</td><td align="right">0.72</td><td align="right">0.954 (mean)</td><td align="right">1.000</td></tr><tr><td><strong>12-run total</strong></td><td align="right"><strong>$68.82</strong></td><td align="right"><strong>$52.89</strong></td><td align="right"><strong>0.77</strong></td><td align="right">0.976</td><td align="right">0.850</td></tr></tbody></table>
+<p>The saving is real and grows with document size — 23% overall, 28% on the largest
+document — and it is outside the noise envelope from §0 because it is a per-page
+Textract charge, not a variable-length agent loop. Five of the six documents lost
+nothing: recall 1.000, cell accuracy 1.000.</p>
+<p>The sixth is the problem. dense_250, the document with the tightest table layout,
+scored 0.196 and 0.000 recall on its two repeats — a mean of 0.098 against 0.902 with
+tables enabled. The mechanism is the deterministic parser’s input: with <code dir="auto">[TABLES, LAYOUT]</code>, Textract’s table blocks are rendered as Markdown pipe tables, which
+<code dir="auto">parse_table</code> consumes. With <code dir="auto">[LAYOUT]</code> alone there are no table blocks, the page
+renders as tab-separated text, <code dir="auto">parse_table</code> finds no table, and the agent is left
+extracting a 250-row table through its own output tokens — where it truncates.</p>
+<p><strong>Verdict: a real saving, but not a safe default.</strong> <code dir="auto">[LAYOUT]</code> only is the right
+choice when the documents are known to be layout-simple or when the deterministic
+table path is not in use; it is the wrong choice for the exact workload advanced
+extraction exists for. If it were ever made a default it would need the pre-flight
+parse result as a guard — if no table parses, the feature set is wrong for the
+document — which is a larger change than this study’s scope.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="7-passing-ocr-confidence-through-instead-of-asking-a-model-not-a-cost-lever">7. Passing OCR confidence through instead of asking a model: not a cost lever</h2><a class="sl-anchor-link" href="#7-passing-ocr-confidence-through-instead-of-asking-a-model-not-a-cost-lever"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “7. Passing OCR confidence through instead of asking a model: not a cost lever”</span></a></div>
+<p>The proposal was to report Textract’s per-cell OCR confidence for cells the
+deterministic parser produced, instead of running a separate model pass to score
+them. As a <strong>cost</strong> argument it does not survive contact with the phase breakdown.
+Per-document cost by phase, baseline arm, two runs per document:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>document</th><th align="right">total $</th><th align="right">OCR</th><th align="right">Classification</th><th align="right">Extraction</th><th align="right">Assessment</th></tr></thead><tbody><tr><td>dense_250</td><td align="right">1.66</td><td align="right">24%</td><td align="right">1%</td><td align="right">74%</td><td align="right">1%</td></tr><tr><td>med_narrow</td><td align="right">1.60</td><td align="right">8%</td><td align="right">1%</td><td align="right">90%</td><td align="right">1%</td></tr><tr><td>large_narrow</td><td align="right">3.23</td><td align="right">8%</td><td align="right">1%</td><td align="right">90%</td><td align="right">1%</td></tr><tr><td>scale_1200</td><td align="right">4.20</td><td align="right">9%</td><td align="right">1%</td><td align="right">89%</td><td align="right">2%</td></tr><tr><td>scale_1600</td><td align="right">6.88</td><td align="right">7%</td><td align="right">0%</td><td align="right">91%</td><td align="right">1%</td></tr><tr><td>scale_3200</td><td align="right">16.85</td><td align="right">6%</td><td align="right">0%</td><td align="right">93%</td><td align="right">1%</td></tr></tbody></table>
+<p>The separate confidence pass is <strong>1–2% of document cost</strong> (it runs on Nova Lite, and
+0.6.8 already cut it by a third by fixing a repetition loop). Extraction is 74–93%.
+Removing the confidence pass entirely would be inside the noise envelope from §0.
+Nor is there an accuracy case on this corpus: cell accuracy is 1.000 and mean
+confidence 0.96–0.99, so there is no miscalibration left to correct.</p>
+<p><strong>Verdict: not for cost.</strong> The remaining argument is honesty — an OCR confidence is a
+measurement of the OCR, while a model’s self-reported confidence on a cell it did not
+read is closer to a guess — and reliability, since the model pass has historically
+truncated and looped. Those are real arguments, but they are not this study’s, and
+they would have to be made on a corpus with actual OCR errors.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="8-bedrock-batch-inference-at-50-the-agentic-path-cannot-use-it-and-it-would-not-pay">8. Bedrock batch inference at 50%: the agentic path cannot use it, and it would not pay</h2><a class="sl-anchor-link" href="#8-bedrock-batch-inference-at-50-the-agentic-path-cannot-use-it-and-it-would-not-pay"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “8. Bedrock batch inference at 50%: the agentic path cannot use it, and it would not pay”</span></a></div>
+<p>Two independent findings, either one sufficient.</p>
+<p>First, eligibility. The Bedrock documentation is explicit: <em>“Batch inference does not
+support tool calling (function calling) or structured output (<code dir="auto">response_format</code>). Each
+record in the input JSONL file is processed independently without multi-turn
+interaction, so features that require back-and-forth exchanges between the model and
+client are not available.”</em>
+(<a href="https://docs.aws.amazon.com/bedrock/latest/userguide/batch-inference.html">Process multiple prompts with batch inference</a>).
+Advanced extraction is tool calling and multi-turn by construction — the three-table
+pipeline, <code dir="auto">view_image</code>, the escalation retries. There is no version of the agentic
+path that fits in a batch record. The operational constraints point the same way: a
+minimum of 100 records per job and best-effort completion within 24 hours do not fit a
+per-document pipeline whose SLA is minutes.</p>
+<p>Second, price, ignoring eligibility entirely. Batch is 50% off, but batch records are
+independent, so <strong>there is no prompt cache</strong> — every input token is billed fresh at
+half the fresh rate, against on-demand’s mix of fresh, cache-write at 1.25× and
+cache-read at 0.10×. Counterfactual over every advanced run available (cost priced
+from the measured token mix per cell):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>cell</th><th align="right">cache-read share</th><th align="right">on-demand $</th><th align="right">batch-at-50%, no cache $</th><th align="right">delta</th></tr></thead><tbody><tr><td><code dir="auto">astra-adv-sep</code></td><td align="right">0.97</td><td align="right">107.77</td><td align="right">209.04</td><td align="right"><strong>+94%</strong></td></tr><tr><td><code dir="auto">core-bda-adv-sep</code></td><td align="right">0.72</td><td align="right">117.45</td><td align="right">124.71</td><td align="right">+6%</td></tr><tr><td><code dir="auto">core-tt-adv-sep</code></td><td align="right">0.71</td><td align="right">466.29</td><td align="right">485.78</td><td align="right">+4%</td></tr><tr><td><code dir="auto">core-tt-adv-int</code></td><td align="right">0.70</td><td align="right">140.60</td><td align="right">144.32</td><td align="right">+3%</td></tr><tr><td><code dir="auto">sonnet5-adv-sep</code></td><td align="right">0.70</td><td align="right">76.01</td><td align="right">77.21</td><td align="right">+2%</td></tr><tr><td><code dir="auto">core-tl-adv-sep</code></td><td align="right">0.71</td><td align="right">112.68</td><td align="right">102.48</td><td align="right">−9%</td></tr></tbody></table>
+<p>The sign follows the cache-read share: on a well-cached workload the 50% discount does
+not cover losing a 10× discount on 70–97% of input tokens, and the one cell where
+batch wins does so by less than the noise floor. Measured per cell across all
+available runs it is roughly a wash for Claude arms (+2% to +6%), clearly worse only
+for the highest-caching arm, and marginally better for one — not the 50% saving the
+price sheet suggests.</p>
+<div class="sl-heading-wrapper level-h2"><h2 id="9-deliberately-not-measured">9. Deliberately not measured</h2><a class="sl-anchor-link" href="#9-deliberately-not-measured"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “9. Deliberately not measured”</span></a></div>
+<p>Two items were dropped before spending anything, and both deserve a sentence so the
+next person does not re-run them.</p>
+<p><strong>OCR DPI.</strong> The only cost-motivated move here would be <em>lowering</em> DPI back to 150,
+and that direction is contraindicated already. v0.6.7 raised <code dir="auto">ocr.image.dpi</code> from 150
+to 300 (#740), and the v0.6.7 release audit names that change as the likely cause of
+an LLM-OCR completeness jump from 0.564 to 1.000 on 9 of 9 runs — likely, but
+<a href="../../../benchmarking/releases/v0.6.7/">explicitly untested</a>. Meanwhile the whole OCR phase is 6–24%
+of document cost against extraction’s 74–93%, so the best case is shaving part of a
+phase that is not the problem while risking faint characters that Textract drops below
+about 200 DPI. Not worth an arm; if anyone does test it, the question to answer is
+whether the 0.564 → 1.000 attribution is real, not whether 150 is cheaper.</p>
+<p><strong>Larger-context models generally.</strong> §1 and §2 are the measurement. On this corpus a
+bigger window buys nothing that a retry does not: the auto-sized default already
+returns every row in 12 of 12 runs, the <code dir="auto">:1m</code> arm’s token consumption is 1.06× the
+baseline’s, and the one configuration that genuinely exploits a wider window — 25-page
+shards — fails on every document above 800 rows for reasons that have nothing to do
+with the context limit. There is no reason to expect a different answer from a
+different large-context model.</p>
+<hr>
+<div class="sl-heading-wrapper level-h2"><h2 id="reproduce">Reproduce</h2><a class="sl-anchor-link" href="#reproduce"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 1 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 0 0-1.42-1.42m8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 1 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l3.88-3.89a4.49 4.49 0 0 0 0-6.33M8.83 15.17a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.92-4.92a1 1 0 1 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42"></path></svg></span><span class="sr-only" data-pagefind-ignore="">Section titled “Reproduce”</span></a></div>
+<div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">source</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">.venv/bin/activate</span><span style="--0:#D6DEEB;--1:#403F53"> &#x26;&#x26; </span><span style="--0:#C792EA;--1:#8844AE">export</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">PYTHONPATH</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#C5E478;--1:#3B61B0">$PWD</span><span style="--0:#D6DEEB;--1:#403F53">/</span><span style="--0:#C5E478;--1:#3B61B0">lib</span><span style="--0:#D6DEEB;--1:#403F53">/</span><span style="--0:#C5E478;--1:#3B61B0">idp_common_pkg</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">export</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">AWS_PROFILE</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#C5E478;--1:#3B61B0">default</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §0/§1 — baseline, its replicate, and the :1m arm (12 runs each)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/make_configs.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscale</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--class</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">bank_statement</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet5</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscale</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet5</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">4</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscale</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet5_1m</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">4</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/aggregate.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--run</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;runId></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--out</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/v0.6.8/advscale__extraction-model-sonnet5</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §1 — Extraction token volumes per arm, to separate rate card from spend</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">scratch/adv-refine/tokens.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">base=benchmarks/results/&#x3C;run-dir></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">1m=benchmarks/results/&#x3C;run-dir></span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §2 — the wide-shard arm. Pre-fix, 6 of 12 runs fail with ExtractionInputTooLarge;</span></div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># post-fix, the same command produces the $158.00 arm (2 assessment failures).</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscale</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet5_1m</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">shard_pages=wide25</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">4</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §3/§7/§8 — phase shares, cache-read shares and the batch counterfactual, from the</span></div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># tracking table's metering records for an existing run</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">scratch/adv-refine/phase_cost.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/&#x3C;run-dir></span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">scratch/adv-refine/batch_vs_cache.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/results/&#x3C;run-dir></span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §4 — the axis-path validator (should refuse a path IDPConfig does not have)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/make_configs.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscale</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lazy_images=off</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §5 — the two post-fix arms that decompose the date fix from the lazy_images fix</span></div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># (same suite, on extraction Lambdas carrying both fixes)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscale</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet5</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lazy_images=off</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">4</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscale</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet5</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">4</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §6 — the Textract [LAYOUT]-only arm</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">benchmarks/harness/run_matrix.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--stack</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">&#x3C;STACK></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--suite</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">advscalelayout</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#82AAFF;--1:#3B61B0">--set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">extraction_model=sonnet5</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--native-upload</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--max-inflight</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">4</span></div></div><div class="ec-line"><div class="code">
+</div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># §4/§5 — the unit coverage that pins all four fixes</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-m</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">pytest</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lib/idp_common_pkg/tests/unit/extraction/test_shard_payloads.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">lib/idp_common_pkg/tests/unit/extraction/test_image_cap.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">lib/idp_common_pkg/tests/unit/extraction/test_finalize_table_extraction.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">lib/idp_common_pkg/tests/unit/extraction/test_map_table_to_schema.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-q</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">python3</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-m</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">pytest</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-m</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">agentic</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#ECC48D;--1:#3B61B0">lib/idp_common_pkg/tests/unit/extraction/agentic_idp/test_single_pass_image_policy.py</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-q</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="source .venv/bin/activate &#x26;&#x26; export PYTHONPATH=$PWD/lib/idp_common_pkgexport AWS_PROFILE=defaultpython3 benchmarks/harness/make_configs.py --suite advscale --class bank_statement \    --set extraction_model=sonnet5python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite advscale \    --set extraction_model=sonnet5 --native-upload --max-inflight 4python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite advscale \    --set extraction_model=sonnet5_1m --native-upload --max-inflight 4python3 benchmarks/harness/aggregate.py --run <runId> \    --out benchmarks/results/v0.6.8/advscale__extraction-model-sonnet5python3 scratch/adv-refine/tokens.py base=benchmarks/results/<run-dir> \    1m=benchmarks/results/<run-dir>python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite advscale \    --set extraction_model=sonnet5_1m --set shard_pages=wide25 \    --native-upload --max-inflight 4python3 scratch/adv-refine/phase_cost.py benchmarks/results/<run-dir>python3 scratch/adv-refine/batch_vs_cache.py benchmarks/results/<run-dir>python3 benchmarks/harness/make_configs.py --suite advscale --set lazy_images=offpython3 benchmarks/harness/run_matrix.py --stack <STACK> --suite advscale \    --set extraction_model=sonnet5 --set lazy_images=off --native-upload --max-inflight 4python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite advscale \    --set extraction_model=sonnet5 --native-upload --max-inflight 4python3 benchmarks/harness/run_matrix.py --stack <STACK> --suite advscalelayout \    --set extraction_model=sonnet5 --native-upload --max-inflight 4python3 -m pytest lib/idp_common_pkg/tests/unit/extraction/test_shard_payloads.py \    lib/idp_common_pkg/tests/unit/extraction/test_image_cap.py \    lib/idp_common_pkg/tests/unit/extraction/test_finalize_table_extraction.py \    lib/idp_common_pkg/tests/unit/extraction/test_map_table_to_schema.py -qpython3 -m pytest -m agentic \    lib/idp_common_pkg/tests/unit/extraction/agentic_idp/test_single_pass_image_policy.py -q"><div></div></button></div></figure></div>
+<p>Result sets, all under <code dir="auto">benchmarks/results/v0.6.8/</code>:
+<code dir="auto">advscale__extraction-model-sonnet5</code> (pre-fix baseline),
+<code dir="auto">advscale__lazy-images-off</code> (the accidental replicate, §0),
+<code dir="auto">advscale__extraction-model-sonnet5-1m</code> (§1),
+<code dir="auto">advscale__sonnet5-1m-wide25</code> (§2, pre-fix),
+<code dir="auto">advfix2__sonnet5-1m-wide25</code> (§2, the post-fix re-run),
+<code dir="auto">advscalelayout__extraction-model-sonnet5</code> (§6), and the two post-fix arms
+<code dir="auto">advfix__lazy-images-off</code> and <code dir="auto">advfix__lazy-images-on</code> (§5).</p>
+<hr>
+<blockquote>
+<p>See <a href="../../../benchmarking/config-guidance/">Configuration Guidance</a> for which settings to pick, and
+the <a href="../../../benchmarking/index/">Benchmarking Guide</a> for how the suite is designed.</p>
+</blockquote></div><footer class="sl-flex astro-xhxjzfa7"><div class="meta sl-flex astro-xhxjzfa7"></div><div class="pagination-links print:hidden astro-jgq3vlii" dir="ltr"><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/releases/v068/" rel="prev" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg><span class="astro-jgq3vlii">Previous<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Release Benchmark Audit — v0.6.8</span></span></a><a href="/accelerated-intelligent-document-processing-on-aws/benchmarking/studies/classification-confidence/" rel="next" class="astro-jgq3vlii"><svg aria-hidden="true" class="astro-jgq3vlii astro-n5k4ipy7" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg><span class="astro-jgq3vlii">Next<br class="astro-jgq3vlii"><span class="link-title astro-jgq3vlii">Classification Confidence — Does the Score Carry Signal?</span></span></a></div></footer></div></div></main></div></div></div></div></body></html>
