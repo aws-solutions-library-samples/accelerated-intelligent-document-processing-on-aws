@@ -478,3 +478,221 @@ def test_real_template_headless_drops_external_idp_email_mutable_and_its_conditi
     for group in interface.get("ParameterGroups", []):
         assert "ExternalIdPEmailMutable" not in group.get("Parameters", [])
     assert "ExternalIdPEmailMutable" not in interface.get("ParameterLabels", {})
+
+
+# ---------------------------------------------------------------------------
+# #981: the transform must REPORT the IAM policy statements it deletes.
+#
+# Dropping a statement cannot fail at deploy time — a policy with fewer
+# statements is still a valid policy — so an over-deletion only shows up later
+# as a runtime access-denied in the deployed partition. These tests assert both
+# halves: that exactly the CloudFront statement goes, AND that the removal is
+# reported with the resource it came from. The reporting half is what is new;
+# the filtering was already correct, so a test that only checked the filtering
+# would pass with the reporting deleted again.
+# ---------------------------------------------------------------------------
+
+_KEEP_SID = "AllowPipelineReads"
+_CLOUDFRONT_SID = "AllowCloudFrontLogs"
+
+
+def _template_with_mixed_bucket_policy():
+    """Minimal template whose surviving bucket policy mixes both statements."""
+    template = _minimal_template()
+    template["Resources"]["LoggingBucketPolicy"] = {
+        "Type": "AWS::S3::BucketPolicy",
+        "Properties": {
+            "Bucket": {"Ref": "OutputBucket"},
+            "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": _CLOUDFRONT_SID,
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": {"Fn::Sub": "cloudfront.${AWS::URLSuffix}"}
+                        },
+                        "Action": "s3:PutObject",
+                        "Resource": {"Fn::Sub": "${OutputBucket.Arn}/*"},
+                    },
+                    {
+                        "Sid": _KEEP_SID,
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": {"Fn::Sub": "lambda.${AWS::URLSuffix}"}
+                        },
+                        "Action": "s3:GetObject",
+                        "Resource": {"Fn::Sub": "${OutputBucket.Arn}/*"},
+                    },
+                ],
+            },
+        },
+    }
+    return template
+
+
+def _statement_sids(template, resource_name="LoggingBucketPolicy"):
+    policy = template["Resources"][resource_name]["Properties"]["PolicyDocument"]
+    return [s.get("Sid") for s in policy["Statement"]]
+
+
+def test_cloudfront_statement_removed_and_reported(caplog):
+    """Exactly the CloudFront statement goes, and the removal is reported."""
+    t = HeadlessTemplateTransformer()
+    with caplog.at_level("INFO", logger="idp_sdk._core.template_transform"):
+        result = t.apply_transforms(_template_with_mixed_bucket_policy())
+
+    # Filtering: the CloudFront statement goes, the other one stays untouched.
+    assert _statement_sids(result) == [_KEEP_SID]
+
+    # Reporting, machine-readable: one record naming the resource and the count.
+    matching = [
+        r
+        for r in t.policy_statement_removals
+        if r.resource_identifier == "LoggingBucketPolicy"
+    ]
+    assert len(matching) == 1, (
+        f"expected one removal record for LoggingBucketPolicy, "
+        f"got {t.policy_statement_removals}"
+    )
+    assert matching[0].removed == 1
+    assert matching[0].narrowed == 0
+    assert "CloudFront" in matching[0].reason
+
+    # Reporting, operator-visible: the resource name and count reach the INFO log
+    # the transform's callers configure, both per-removal and in the summary.
+    messages = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert any("LoggingBucketPolicy" in m and "removed 1" in m for m in messages), (
+        f"no per-removal INFO line naming the resource: {messages}"
+    )
+    summary = [m for m in messages if m.startswith("Removed 1 policy statement(s)")]
+    assert summary, f"no removal summary line: {messages}"
+    assert "LoggingBucketPolicy" in summary[0]
+
+
+def test_policy_statement_removal_summary_reports_zero_when_nothing_removed(caplog):
+    """A template with no CloudFront statement still gets an explicit '0' line.
+
+    Silence and "nothing to remove" must not look the same to an operator
+    auditing what the transform did to a role.
+    """
+    t = HeadlessTemplateTransformer()
+    template = _template_with_mixed_bucket_policy()
+    statements = template["Resources"]["LoggingBucketPolicy"]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+    statements[:] = [s for s in statements if s["Sid"] != _CLOUDFRONT_SID]
+
+    with caplog.at_level("INFO", logger="idp_sdk._core.template_transform"):
+        result = t.apply_transforms(template)
+
+    assert _statement_sids(result) == [_KEEP_SID]
+    assert t.policy_statement_removals == []
+    assert "Removed 0 policy statements" in [r.getMessage() for r in caplog.records]
+
+
+def test_cloudfront_principal_narrowing_is_reported():
+    """A statement that only loses CloudFront from a Service LIST is reported too.
+
+    It survives, so no count of removed statements would mention it, but the
+    role's effective permissions changed all the same.
+    """
+    template = _template_with_mixed_bucket_policy()
+    policy = template["Resources"]["LoggingBucketPolicy"]["Properties"][
+        "PolicyDocument"
+    ]
+    policy["Statement"] = [
+        {
+            "Sid": _KEEP_SID,
+            "Effect": "Allow",
+            "Principal": {
+                "Service": [
+                    {"Fn::Sub": "cloudfront.${AWS::URLSuffix}"},
+                    {"Fn::Sub": "lambda.${AWS::URLSuffix}"},
+                ]
+            },
+            "Action": "s3:GetObject",
+            "Resource": {"Fn::Sub": "${OutputBucket.Arn}/*"},
+        }
+    ]
+
+    t = HeadlessTemplateTransformer()
+    result = t.apply_transforms(template)
+
+    kept = result["Resources"]["LoggingBucketPolicy"]["Properties"]["PolicyDocument"][
+        "Statement"
+    ]
+    assert len(kept) == 1
+    assert kept[0]["Principal"]["Service"] == [{"Fn::Sub": "lambda.${AWS::URLSuffix}"}]
+    records = [
+        r
+        for r in t.policy_statement_removals
+        if r.resource_identifier == "LoggingBucketPolicy"
+    ]
+    assert len(records) == 1
+    assert (records[0].removed, records[0].narrowed) == (0, 1)
+
+
+def test_role_inline_policy_removal_is_reported_with_the_policy_name():
+    """For a role, the identifier must pin down WHICH inline policy changed."""
+    template = _template_with_mixed_bucket_policy()
+    template["Resources"]["LoggingRole"] = {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+            "Policies": [
+                {
+                    "PolicyName": "CloudFrontLogDelivery",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Sid": _CLOUDFRONT_SID,
+                                "Effect": "Allow",
+                                "Principal": {"Service": "cloudfront.amazonaws.com"},
+                                "Action": "s3:PutObject",
+                                "Resource": "*",
+                            },
+                            {
+                                "Sid": _KEEP_SID,
+                                "Effect": "Allow",
+                                "Action": "s3:GetObject",
+                                "Resource": "*",
+                            },
+                        ],
+                    },
+                }
+            ]
+        },
+    }
+
+    t = HeadlessTemplateTransformer()
+    result = t.apply_transforms(template)
+
+    kept = result["Resources"]["LoggingRole"]["Properties"]["Policies"][0][
+        "PolicyDocument"
+    ]["Statement"]
+    assert [s["Sid"] for s in kept] == [_KEEP_SID]
+    assert any(
+        r.resource_identifier == "LoggingRole.CloudFrontLogDelivery" and r.removed == 1
+        for r in t.policy_statement_removals
+    ), t.policy_statement_removals
+
+
+def test_real_template_policy_statement_removals_are_all_attributed():
+    """Against the real template: every removal names a resource and a reason.
+
+    An unattributed record would be exactly the gap #981 describes — a statement
+    gone from a deployed role with nothing saying which role.
+    """
+    t = HeadlessTemplateTransformer()
+    t.apply_transforms(_load_real_template_plain())
+    assert t.policy_statement_removals, (
+        "premise: the real template has statements the headless transform drops "
+        "(a CloudFront log-delivery grant and an AppSync/MCP permission). An "
+        "empty record here means the reporting stopped working, not that the "
+        "transform stopped deleting."
+    )
+    for record in t.policy_statement_removals:
+        assert record.resource_identifier.strip(), record
+        assert record.reason.strip(), record
+        assert record.removed + record.narrowed > 0, record

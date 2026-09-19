@@ -185,6 +185,37 @@ The headless transform strips the following resource groups (matching the
   optimization, and the multi-doc discovery state machine
 - The Feature Platform nested stack (`EnableFeaturePlatform` is forced off)
 
+## Auditing the IAM Statements a Transform Removed
+
+Both transforms delete IAM and S3 bucket policy statements as well as whole
+resources — a CloudFront log-delivery grant, an `appsync:GraphQL` permission, a
+statement whose `Resource` pointed at a function the transform removed. This
+deletion **cannot fail at deploy time**: a policy with fewer statements is still
+a valid policy, so CloudFormation creates the role happily and a statement
+dropped in error only surfaces later as an access-denied at runtime, in the
+partition you deployed to.
+
+So each transform reports every statement it drops, at `INFO`, naming the
+resource (for a role's inline policy, `<RoleLogicalId>.<PolicyName>`) and the
+count, and ends with a single summary line:
+
+```
+INFO: Policy LoggingBucketPolicy: removed 1 statement(s) (CloudFront service principal)
+INFO: Policy CognitoAuthorizedRole.ChatStreamInvoke: removed 1 statement(s) (reference to a resource this transform removed)
+INFO: Removed 2 policy statement(s) from 2 policy document(s) — LoggingBucketPolicy (1: ...), CognitoAuthorizedRole.ChatStreamInvoke (1: ...)
+```
+
+`Removed 0 policy statements` is printed when there was nothing to drop, so
+"nothing was removed" and "the transform said nothing" are distinguishable. If
+a permission is missing after deploying a transformed template, read these lines
+first: they name the role to look at without diffing the two templates by hand.
+
+SDK callers can read the same records without parsing logs — the transformer
+exposes them on the instance as `policy_statement_removals`, a list of
+`(resource_identifier, reason, removed, narrowed)` records. `narrowed` counts
+statements that survived with a shortened principal or resource list, which
+changes a role's effective permissions just as a deletion does.
+
 ## Core Services Retained
 
 All core document-processing functionality is retained in both variants:
