@@ -164,6 +164,29 @@ those, and `srt assess` has no `--exclude` option, so it scans and flags them.
 - Classification **fails closed**: if `git ls-files` cannot be run, every finding
   gates.
 
+### Nested checkouts abort the scan
+
+The missing `--exclude` has a second consequence that post-hoc filtering cannot
+fix. A nested git checkout — an agent worktree under `.claude/worktrees/`, or any
+other clone inside the tree — is not merely extra findings to classify: `srt
+assess` walks it and spawns **one checkov process per template per copy, all
+concurrent**. A tree holding 74 agent worktrees (49 GB) spawned 2,200 checkov
+children, exhausted 123 GiB of RAM plus 8 GiB of swap, held memory pressure at a
+sustained 79% full stall that blocked new SSH logins, and had to be killed after
+2h26m without producing a report. The findings would have duplicated the root
+tree's, so there was nothing to gain.
+
+`run.py` therefore **aborts before scanning** if it finds a nested checkout,
+listing what it found. It counts both worktrees git still lists and orphaned
+directories under `.claude/worktrees/` that hold a `.git` — an abandoned copy
+costs the scanner exactly as much as a live one. Remove or relocate them and
+re-run; `SRT_ALLOW_NESTED_CHECKOUTS=1` overrides. CI is unaffected: its checkout
+contains tracked files only.
+
+Note that `make srt-clean` does **not** remove these. It deletes build artifacts,
+and a worktree may hold work in progress — check `git status` and unmerged commits
+in each before deleting, or move them outside the project root.
+
 Never suppress an `.aws-sam/` finding. SRT keys suppressions on
 `(path, resourceType, resourceName, check_id)`, so an artifact-path entry cannot
 cover the same resource in the source `template.yaml` — and `srt fix` writes it
