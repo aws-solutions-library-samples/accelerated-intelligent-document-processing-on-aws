@@ -291,9 +291,15 @@ def _get_user_allowed_config_versions(caller_email: str) -> list[str] | None:
         query that fails. "Cannot evaluate" is NOT "unrestricted": returning
         ``None`` there silently disables RBAC for every caller whenever the
         stack wiring, the IAM grant or the index name drifts (AUTH.T07,
-        fail-open scope lookup). Callers MUST deny the turn. Mirrors
-        ``_caller_allowed_versions`` in the pii-anonymizer feature API, which
-        is the reference implementation of this fail-closed contract.
+        fail-open scope lookup). Callers MUST deny the turn.
+
+        The pii-anonymizer feature API's ``_caller_allowed_versions`` is the
+        closest sibling: it raises on a DynamoDB error the same way. Its
+        caller-email helper does still substitute another identifier when the
+        claims carry no ``email``, which this function deliberately does not — so
+        copy the exception handling from there, not the identity resolution. See
+        ``_caller_email`` for why a substitution is the same fail-open wearing a
+        different hat.
 
     Every exit from this function is either a scope decision or a raise. There
     is deliberately no path that converts a lookup failure into "unrestricted";

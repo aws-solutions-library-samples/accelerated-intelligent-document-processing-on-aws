@@ -217,11 +217,25 @@ class TestResolverUIPath:
         assert forwarded is not None
 
     @pytest.mark.unit
-    def test_forwarded_identity_ignores_a_non_dict_identity(self):
-        """Mirrors the guard ``_caller_sub`` already carries on the same field."""
+    def test_forwarded_identity_denies_on_a_non_dict_identity(self):
+        """An unreadable identity must deny, not become the stand-down marker.
+
+        ``None`` tells the processor the transport verified nobody, and it proceeds
+        unrestricted. Mapping an identity of the wrong type to ``None`` would be
+        the mirror of the missing-email fallback: an unusable identity promoted to
+        an unrestricted caller. The processor maps this same shape to a denial, so
+        the producer must too.
+        """
         import index
 
-        assert index._forwarded_identity({"identity": "not-a-dict"}) is None
+        assert index._forwarded_identity({"identity": "not-a-dict"}) == {
+            "claims": {"email": ""}
+        }
+        assert index._forwarded_identity({"identity": ["also", "wrong"]}) == {
+            "claims": {"email": ""}
+        }
+        # Only an explicit null is the stand-down marker.
+        assert index._forwarded_identity({"identity": None}) is None
 
     @pytest.mark.unit
     def test_missing_s3uri_raises(self):

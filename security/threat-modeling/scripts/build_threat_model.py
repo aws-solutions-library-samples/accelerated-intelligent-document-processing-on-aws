@@ -117,12 +117,13 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T05": (3, "Mitigated"),
     "AUTH.T06": (2, "Mitigated"),
     # Two consumers fail closed (the pii-anonymizer feature API and
-    # chat_with_document_processor). Five scope-aware resolvers still read a
-    # failed lookup as "unrestricted"; the scope is keyed on an email that can
-    # diverge from the row; nothing constrains which identifier a claims set
-    # yields; and Chat-with-Document is unrestricted on the streaming transport,
-    # which forwards no verified caller (GAP-07). All four are written out in the
-    # entry's Residual risk field.
+    # chat_with_document_processor). Five NAMED scope-aware resolvers — six source
+    # files, list_documents_* being two — still read a failed lookup as
+    # "unrestricted"; the scope is keyed on an email that can diverge from the row;
+    # what identifier the claims yield is unconstrained at the adapter; and
+    # Chat-with-Document is unrestricted on the streaming transport, which forwards
+    # no verified caller (GAP-07). All four are written out in the entry's Residual
+    # risk field.
     "AUTH.T07": (6, "Partially Mitigated"),
     "AUTH.T08": (6, "Mitigated"),
     "AUTH.T09": (6, "Mitigated"),
@@ -341,7 +342,10 @@ def build() -> dict[str, object]:
 #
 # So `--check` now reads the prose back. The files are listed explicitly rather
 # than discovered, because adding a document that states a count should be a
-# visible decision; `scripts/tests/` has no bearing on it either way.
+# visible decision; `scripts/tests/` has no bearing on it either way. A listed
+# file that does not exist is an ERROR, not a skip: a rename would otherwise
+# narrow the gate silently, which is the same failure this whole check exists to
+# stop.
 _COUNTED_DOCS = (
     "README.md",
     "threat-id-glossary.md",
@@ -350,7 +354,27 @@ _COUNTED_DOCS = (
     "deliverables/implementation-guide.md",
     "threat-analysis/stride-analysis.md",
     "../../docs/threat-model.md",
+    # The repository's landing page. It stated a count nobody was checking, which
+    # is the worst place in the tree for one.
+    "../../README.md",
 )
+
+# ⚠️ WHAT THIS CHECK DOES NOT READ. It matches hand-fitted phrasings, so its reach
+# is bounded and a reader should not mistake a pass for corpus-wide consistency:
+#
+#   * counts written as words ("ninety-nine"), or with a thousands separator;
+#   * a count on a line that also records a DELTA — `_DELTA` strips the delta and
+#     re-checks the rest, but a single line carrying both a delta and an unrelated
+#     tally in a shape the delta-strip mangles can still slip;
+#   * any table column this file does not name. Per-component counts and STRIDE
+#     categories ARE read (both drifted once and are covered below); anything else
+#     tabular is not;
+#   * a document not in `_COUNTED_DOCS`.
+#
+# Three of the documents are held by a single bespoke pattern fitted to one
+# sentence, so an ordinary rephrase drops that document's total with no signal.
+# If you rewrite a sentence that states a count, check that a pattern here still
+# matches it — deliberately verify by breaking the number and re-running.
 
 # Every way the corpus writes the total. Each pattern must capture the number in
 # group 1, and must be specific enough that an unrelated figure cannot match it.
@@ -366,6 +390,7 @@ _TOTAL_PATTERNS = (
     r"mitigate the (\d+) identified threats",
     r"holding (\d+) identifiers in their head",
     r"sum to more than (\d+) because",
+    r"STRIDE model of (\d+) threats",
 )
 
 # Status and risk-band tallies, in the row shapes the corpus uses:
@@ -380,26 +405,87 @@ _TOTAL_PATTERNS = (
 # the closing pipe is what makes this readable at all.
 _TALLY_ROW = r"\|\s*\*{{0,2}}{label}\*{{0,2}}(?:\s*\([^)|]*\))?\s*\|\s*\*{{0,2}}(\d+)"
 
-# A line recording a DELTA is history, not a current count, and must not be read
-# as one — the revision table is full of "93 → 98 threats".
-_HISTORY_MARKERS = ("→", "->", "fell ", "behind the export")
+# A DELTA is history, not a current count — the revision table is full of
+# "93 → 98 threats" and "Mitigated 63 → 62". The delta EXPRESSION is stripped and
+# the rest of the line still checked, rather than disabling the whole line: a
+# whole-line skip means one `→` anywhere silently exempts every other count on it.
+_DELTA = re.compile(r"\d+\s*(?:→|->)\s*\d+")
+
+# A STRIDE cell may qualify the category ("Elevation of Privilege (detection
+# gap)"); the tallies count the category.
+_STRIDE_QUALIFIER = re.compile(r"\s*\([^)]*\)\s*$")
+
+# Per-component rows, in the two shapes the corpus uses. Both are anchored at the
+# start of the line because the component name is ordinary prose elsewhere.
+#   | Authentication/RBAC | 0 | 6 | 9 | 1 | 16 |      (bands then total)
+#   | AUTH | Authentication/RBAC | 16 | High (6) | ... |   (total only)
+_COMPONENT_BANDS_ROW = (
+    r"^\|\s*{component}\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*"
+    r"\|\s*\*{{0,2}}(\d+)"
+)
+_COMPONENT_TOTAL_ROW = r"^\|\s*[A-Z]+\s*\|\s*{component}\s*\|\s*\*{{0,2}}(\d+)"
+
+# The column-total row under a per-component table.
+_TOTALS_ROW = (
+    r"^\|\s*\*{0,2}Total\*{0,2}\s*\|\s*\*{0,2}(\d+)\*{0,2}\s*\|\s*\*{0,2}(\d+)\*{0,2}"
+    r"\s*\|\s*\*{0,2}(\d+)\*{0,2}\s*\|\s*\*{0,2}(\d+)\*{0,2}\s*\|\s*\*{0,2}(\d+)"
+)
+
+# Band values inside a mermaid pie block: `"Medium (3-5)" : 44`.
+_PIE_SLICE = r"\"{band} \([0-9–\-]+\)\"\s*:\s*(\d+)"
+
+_BAND_ORDER = ("Critical", "High", "Medium", "Low")
 
 
 def _iter_counted_docs():
-    for rel in _COUNTED_DOCS:
-        path = (ROOT / rel).resolve()
-        if path.is_file():
-            yield path
+    """Every document that states a count. Raises if one has moved."""
+    missing = [rel for rel in _COUNTED_DOCS if not (ROOT / rel).resolve().is_file()]
+    if missing:
+        raise SystemExit(
+            "_COUNTED_DOCS names file(s) that do not exist: "
+            f"{missing} — fix the path rather than letting the count check "
+            "quietly cover one document fewer"
+        )
+    return [(ROOT / rel).resolve() for rel in _COUNTED_DOCS]
+
+
+def _component_tallies(doc: dict[str, object]) -> dict[str, dict[str, int]]:
+    """Per-component band counts and totals, from the export."""
+    out: dict[str, dict[str, int]] = {}
+    for t in doc["threats"]:  # pyright: ignore[reportGeneralTypeIssues]
+        comp = str(t["component"])
+        entry = out.setdefault(comp, {b: 0 for b in _BAND_ORDER} | {"total": 0})
+        entry[band(int(t["riskScore"]))] += 1
+        entry["total"] += 1
+    return out
+
+
+def _stride_tallies(doc: dict[str, object]) -> dict[str, int]:
+    """Per-STRIDE-category counts, from the export.
+
+    A threat may carry several categories, so these sum to more than the total —
+    which is exactly what the corpus's own note beside these tables says.
+    """
+    out: dict[str, int] = {}
+    for t in doc["threats"]:  # pyright: ignore[reportGeneralTypeIssues]
+        for part in str(t["stride"]).replace("STRIDE:", "").split(","):
+            name = _STRIDE_QUALIFIER.sub("", part.strip())
+            if name:
+                out[name] = out.get(name, 0) + 1
+    return out
 
 
 def check_prose_counts(doc: dict[str, object]) -> list[str]:
     """Every count the corpus states in prose, compared with the export.
 
-    Returns a list of human-readable mismatches; empty means consistent.
+    Returns a list of human-readable mismatches; empty means consistent. See the
+    bounded-reach note above `_COUNTED_DOCS` for what this does NOT read.
     """
     total = int(doc["threatCount"])  # pyright: ignore[reportArgumentType]
     risk: dict[str, int] = doc["riskDistribution"]  # pyright: ignore[reportAssignmentType]
     status: dict[str, int] = doc["mitigationStatus"]  # pyright: ignore[reportAssignmentType]
+    components = _component_tallies(doc)
+    stride = _stride_tallies(doc)
     band_labels = {
         "Critical": (r"Critical risk \(8–9\)", r"Critical risk \(score 8-9\)"),
         "High": (r"High risk \(6–7\)", r"High risk \(score 6-7\)"),
@@ -408,39 +494,89 @@ def check_prose_counts(doc: dict[str, object]) -> list[str]:
     }
     problems: list[str] = []
 
+    def report(rel, lineno: int, stated: str, what: str, expected: int) -> None:
+        message = f"{rel}:{lineno}: states {stated} {what}, export has {expected}"
+        if int(stated) != expected and message not in problems:
+            problems.append(message)
+
     repo = ROOT.parent.parent
     for path in _iter_counted_docs():
         rel = path.relative_to(repo)
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if any(marker in line for marker in _HISTORY_MARKERS):
-                continue
+        raw = path.read_text().splitlines()
+        # Each line, plus each line joined with the next. The second form catches a
+        # count reflowed across a line break, which is how the root README's total
+        # escaped a purely per-line check ("...a STRIDE model of 98\n  threats
+        # across...").
+        windows: list[tuple[int, str]] = []
+        for lineno, line in enumerate(raw, 1):
+            windows.append((lineno, line))
+            if lineno < len(raw):
+                windows.append((lineno, f"{line} {raw[lineno].strip()}"))
+
+        for lineno, window in windows:
+            window = _DELTA.sub("", window)
             for pattern in _TOTAL_PATTERNS:
-                for found in re.finditer(pattern, line):
-                    if int(found.group(1)) != total:
-                        problems.append(
-                            f"{rel}:{lineno}: states {found.group(1)} threats, "
-                            f"export has {total}"
-                        )
+                for found in re.finditer(pattern, window):
+                    report(rel, lineno, found.group(1), "threats", total)
             for label, expected in status.items():
                 for found in re.finditer(
-                    _TALLY_ROW.format(label=re.escape(label)), line, re.IGNORECASE
+                    _TALLY_ROW.format(label=re.escape(label)), window, re.IGNORECASE
                 ):
-                    if int(found.group(1)) != expected:
-                        problems.append(
-                            f"{rel}:{lineno}: states {found.group(1)} "
-                            f"{label!r}, export has {expected}"
-                        )
+                    report(rel, lineno, found.group(1), repr(label), expected)
             for band_name, labels in band_labels.items():
-                expected = risk.get(band_name, 0)
                 for label in labels:
                     for found in re.finditer(
-                        _TALLY_ROW.format(label=label), line, re.IGNORECASE
+                        _TALLY_ROW.format(label=label), window, re.IGNORECASE
                     ):
-                        if int(found.group(1)) != expected:
-                            problems.append(
-                                f"{rel}:{lineno}: states {found.group(1)} "
-                                f"{band_name} threats, export has {expected}"
-                            )
+                        report(
+                            rel, lineno, found.group(1),
+                            f"{band_name} threats", risk.get(band_name, 0),
+                        )
+            # STRIDE rows require the bold cell: the glossary carries a bare
+            # "| Spoofing |" per-threat column that a looser anchor reads as a
+            # tally.
+            for name, expected in stride.items():
+                for found in re.finditer(
+                    rf"\|\s*\*\*{re.escape(name)}\*\*\s*\|\s*\*{{0,2}}(\d+)", window
+                ):
+                    report(rel, lineno, found.group(1), f"{name} threats", expected)
+            for band_name in _BAND_ORDER:
+                for found in re.finditer(
+                    _PIE_SLICE.format(band=band_name), window
+                ):
+                    report(
+                        rel, lineno, found.group(1),
+                        f"{band_name} threats", risk.get(band_name, 0),
+                    )
+            for comp, tallies in components.items():
+                escaped = re.escape(comp)
+                for found in re.finditer(
+                    _COMPONENT_BANDS_ROW.format(component=escaped), window
+                ):
+                    for i, band_name in enumerate(_BAND_ORDER):
+                        report(
+                            rel, lineno, found.group(i + 1),
+                            f"{comp} {band_name} threats", tallies[band_name],
+                        )
+                    report(
+                        rel, lineno, found.group(5),
+                        f"{comp} threats", tallies["total"],
+                    )
+                for found in re.finditer(
+                    _COMPONENT_TOTAL_ROW.format(component=escaped), window
+                ):
+                    report(
+                        rel, lineno, found.group(1),
+                        f"{comp} threats", tallies["total"],
+                    )
+            for found in re.finditer(_TOTALS_ROW, window):
+                for i, band_name in enumerate(_BAND_ORDER):
+                    report(
+                        rel, lineno, found.group(i + 1),
+                        f"{band_name} threats (column total)",
+                        risk.get(band_name, 0),
+                    )
+                report(rel, lineno, found.group(5), "threats (column total)", total)
     return problems
 
 

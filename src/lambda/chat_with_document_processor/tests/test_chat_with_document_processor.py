@@ -662,6 +662,27 @@ class TestProcessorScopeFailsClosed:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
+        "identity", ["not-a-dict", ["also", "wrong"], 7], ids=["str", "list", "int"]
+    )
+    def test_unusable_identity_type_denies(self, identity):
+        """An identity of the wrong type is unreadable, not permission to proceed.
+
+        The producer side is held to the same rule
+        (`test_forwarded_identity_denies_on_a_non_dict_identity`), so neither end
+        can start treating a broken identity as the stand-down marker.
+        """
+        import index
+
+        result, _publishes, bedrock, users_table = _run_scope_turn(
+            index, {"identity": identity}
+        )
+
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
+        users_table.query.assert_not_called()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
         "error",
         [
             ClientError(

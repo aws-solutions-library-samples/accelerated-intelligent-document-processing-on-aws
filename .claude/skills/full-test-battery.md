@@ -76,8 +76,12 @@ your change touched.
 
 Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 
-| Suite | Command | Expected (2026-09-11 baseline, all green) |
-|-------|---------|-------------------------------------------|
+Counts are the 2026-09-11 baseline unless a row says otherwise. Two exceptions,
+both re-measured later: the three pii-anonymizer rows at `28d2fc33e` (2026-09-18),
+and the two chat rows at 2026-09-19.
+
+| Suite | Command | Expected (all green) |
+|-------|---------|----------------------|
 | idp_common unit | `cd lib/idp_common_pkg && PYTHONPATH=$PP pytest tests/unit -q -p no:cacheprovider` | **5682 pass, 13 skip, 0 fail** (~2.5 min) |
 | idp_cli | `cd lib/idp_cli_pkg && pytest -q` | 177 pass |
 | idp_sdk | `cd lib/idp_sdk && pytest -m "not integration" -q` | 471 pass (~2.5 min) |
@@ -89,7 +93,7 @@ Per-suite (isolated) — `PP=<checkout>/lib/idp_common_pkg`:
 | config library | `pytest config_library/test_config_library.py -q` | 114 pass |
 | pipeline-hooks | `cd lib/idp_common_pkg && pytest tests/unit/lambdas/test_pipeline_hooks_dispatcher.py -q` | 6 pass |
 | capacity Lambda | `cd src/lambda/calculate_capacity && pytest -q` | 33 pass |
-| chat-with-document | `cd src/lambda/chat_with_document_processor && pytest tests -q` | 39 pass |
+| chat-with-document | `cd src/lambda/chat_with_document_processor && pytest tests -q` | 42 pass |
 | chat-stream | `cd src/lambda/chat_stream_processor && pytest tests -q` | 32 pass |
 
 ## There is no standing failure set — green means green

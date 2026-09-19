@@ -18,8 +18,9 @@ complementary layers that share one source of truth:
 > `dynamodb:Query` IAM grant). Treat a hard fail as real until proven otherwise.
 
 > ⚠️ **"Every operation" is true of the group check, not of the scope check.** The
-> dynamic scope suite exercises `getConfigVersion`, `getConfigVersions` and
-> `listDocuments`. Ops marked `skip_allowed:` in the expectations file are called
+> dynamic scope suite makes exactly **two** calls with the scoped token, against
+> `getConfigVersion` and `getConfigVersions`. No other scope-enforcing operation is
+> exercised live. Ops marked `skip_allowed:` in the expectations file are called
 > only in their *denied* role, because an allowed-role call would start real work —
 > `sendChatDocumentMessage` starts a chat turn — so their scope enforcement is not
 > reached here and is covered by that component's own unit suite instead. The

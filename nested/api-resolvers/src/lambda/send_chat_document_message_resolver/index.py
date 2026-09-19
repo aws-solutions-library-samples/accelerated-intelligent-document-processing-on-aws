@@ -116,10 +116,20 @@ def _forwarded_identity(event: dict) -> dict | None:
     scope cannot be resolved is owed. An identity that is present but carries no
     email is therefore NOT the same as no identity at all, and must not collapse
     into it.
+
+    An identity of an unusable *type* is treated the same way — forwarded as an
+    empty email rather than as ``None``. Mapping it to ``None`` would be the
+    mirror image of the fallback above: it would turn "this identity cannot be
+    read" into "the transport verified nobody, proceed unrestricted", where the
+    processor maps the same shape to a denial. Unreachable through the dispatcher,
+    which builds the object itself, and kept consistent anyway so the two ends
+    cannot disagree about what a broken identity means.
     """
     identity = event.get("identity")
-    if identity is None or not isinstance(identity, dict):
+    if identity is None:
         return None
+    if not isinstance(identity, dict):
+        return {"claims": {"email": ""}}
     claims = identity.get("claims") or {}
     return {"claims": {"email": str(claims.get("email") or "")}}
 
