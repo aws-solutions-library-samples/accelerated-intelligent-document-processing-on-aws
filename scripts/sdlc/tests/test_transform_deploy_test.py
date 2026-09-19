@@ -26,6 +26,8 @@ import transform_deploy_test as tdt
 
 pytestmark = pytest.mark.unit
 
+_STUB_BOUNDARY_ARN = "arn:aws:iam::123456789012:policy/stub-PermissionsBoundary"
+
 
 class _Out:
     def __init__(self, stdout=""):
@@ -65,7 +67,12 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(tdt.cbd, "run_command", fake_run_command)
     monkeypatch.setattr(
-        tdt.cbd, "create_iam_resources", lambda name, create_boundary=True: ("role-arn", "")
+        tdt.cbd,
+        "create_iam_resources",
+        # Deploys go through the CFN service role, which only permits
+        # iam:CreateRole for roles carrying the boundary it was created with — so
+        # the boundary ARN is always non-empty here.
+        lambda name, shared_boundary=False: ("role-arn", _STUB_BOUNDARY_ARN),
     )
     monkeypatch.setattr(
         tdt.cbd, "cleanup_stack", lambda r: calls["cleanups"].append(r["stack_name"])
@@ -278,7 +285,9 @@ def test_existing_stack_mode_neither_deploys_nor_tears_down(wired):
 def test_report_returns_false_when_any_variant_failed():
     assert tdt._print_report([{"name": "a", "success": True}]) is True
     assert (
-        tdt._print_report([{"name": "a", "success": True}, {"name": "b", "success": False}])
+        tdt._print_report(
+            [{"name": "a", "success": True}, {"name": "b", "success": False}]
+        )
         is False
     )
 

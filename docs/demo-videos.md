@@ -22,6 +22,9 @@ This page contains all demonstration videos for the GenAI Intelligent Document P
 - [Rule Validation](#rule-validation)
 - [Monitoring & Operations](#monitoring--operations)
 - [Integration & Extensions](#integration--extensions)
+- [Additional Resources](#additional-resources)
+- [Recording a new demo](#recording-a-new-demo)
+- [Feedback](#feedback)
 
 ---
 
@@ -285,7 +288,7 @@ Comprehensive interface for managing test sets, running benchmark tests, and ana
 
 **Duration**: ~4 minutes
 
-https://github.com/user-attachments/assets/7c5adf30-8d5c-4292-93b0-0149506322c7
+https://github.com/user-attachments/assets/9dfe2aac-f69e-4354-a44e-1fa2cf38fc6a
 
 **Related Documentation**: [Test Studio Documentation](./test-studio.md)
 
@@ -338,6 +341,15 @@ https://github.com/user-attachments/assets/bcd18e62-4795-44ea-9554-637062fd21d7
 
 ---
 
+### Start a Test Set from Documents Alone
+Ground truth is the expensive part of a test set, so a zip holding only an `input/` folder is accepted and creates an *unlabeled* set — a healthy state, with draft labels one action away. Baselines that do not match the uploaded documents are still refused, with a reason naming the missing files.
+
+https://github.com/user-attachments/assets/dc5c9397-8648-4a71-9d58-f9c98b7d7e24
+
+**Related Documentation**: [Creating Custom Test Sets](./creating-custom-test-sets.md)
+
+---
+
 ## Rule Validation
 
 ### Rule Validation Demo
@@ -350,6 +362,15 @@ https://github.com/user-attachments/assets/bac617ec-edb0-4719-827f-175571a4b9f5
 ---
 
 ## Monitoring & Operations
+
+### IDP Monitor
+AI-powered operations dashboard for a production pipeline. Ask a plain-language question about failures, cost, throughput or latency and an analytics agent translates it into SQL against your reporting tables, answers in text, and assembles a live dashboard view from the widget library. The same questions can run on a schedule as Scheduled Agents, with results delivered as in-app notifications.
+
+https://github.com/user-attachments/assets/052ce85e-ad02-4169-ba9f-0f8a7ebd0403
+
+**Related Documentation**: [IDP Monitor Documentation](./extensions/idp-monitor.md)
+
+---
 
 ### Capacity Planning
 Real-time capacity analysis and AWS service quota recommendations — calculate processing capacity before scaling production workloads, identify pipeline bottlenecks, and derive the required Bedrock TPM/RPM quotas for your expected volume.

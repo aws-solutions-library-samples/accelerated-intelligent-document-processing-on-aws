@@ -329,6 +329,22 @@ Resources:
                       - !Sub 'apigateway.${AWS::URLSuffix}'
                       - !Sub 'bedrock.${AWS::URLSuffix}'
                       - !Sub 'bedrock-agentcore.${AWS::URLSuffix}'
+                      # cloudformation itself is NOT redundant here, and leaving it
+                      # out made this role unable to deploy anything at all. This
+                      # solution is built from nested stacks, and a nested stack
+                      # inherits its parent's service role: CloudFormation passes
+                      # this role to itself, an iam:PassRole whose
+                      # iam:PassedToService is cloudformation. Without this entry the
+                      # Resource matches but the condition does not, so the FIRST
+                      # nested stack fails with "no identity-based policy allows the
+                      # iam:PassRole action" on this role's own ARN and the whole
+                      # stack rolls back (59 sibling resources cancelled).
+                      #
+                      # The PassRolePolicy managed policy below grants the same pass
+                      # — but it is for the deploying HUMAN to hold, and is not
+                      # attached to this role, so it does nothing for the role
+                      # passing itself. Two different principals, two grants needed.
+                      - !Sub 'cloudformation.${AWS::URLSuffix}'
                       - !Sub 'cloudfront.${AWS::URLSuffix}'
                       - !Sub 'cloudwatch.${AWS::URLSuffix}'
                       - !Sub 'codebuild.${AWS::URLSuffix}'

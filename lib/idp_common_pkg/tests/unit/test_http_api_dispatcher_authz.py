@@ -381,6 +381,62 @@ def test_groups_asserted_in_the_request_body_are_ignored(idx):
     assert resp["statusCode"] == 403
 
 
+def test_an_invocation_cannot_supply_the_identity_the_group_check_reads(
+    idx, manifest, monkeypatch
+):
+    """A direct invocation cannot state its own groups and be believed (issue #978).
+
+    ``authz.enforce`` reads the groups out of ``identity.claims`` on the normalized
+    event, which is trustworthy exactly as far as ``api_adapter.normalize_event``
+    makes it so. Before the fix, an event carrying its own top-level ``arguments``
+    and ``identity`` was passed through that function unchanged, so the group
+    comparison was made against the caller's own claim and a payload asserting the
+    operation's required group was dispatched.
+
+    Nothing here is written down as a constant: the operation and the groups it
+    needs both come from the committed manifest, so the probe follows the policy
+    rather than a copy of it, and the contrast arm proves the refusal is about
+    where the groups came from rather than about the operation being unroutable.
+    """
+    group_scoped = sorted(f for f, p in manifest.items() if isinstance(p, list))
+    assert group_scoped, "no group-scoped operation in the manifest — probe is broken"
+    field = group_scoped[0]
+    required = manifest[field]
+
+    fake = _FakeLambda({"leaked": "resolver output"})
+    monkeypatch.setattr(idx, "_lambda", fake)
+    idx.FIELD_FUNCTION_MAP[idx.FIELD_ALIASES.get(field, field)] = ARN
+
+    # The legacy resolver event shape: top-level arguments + identity + info, with
+    # the groups the operation requires asserted by the caller itself.
+    asserted = {
+        "arguments": {},
+        "identity": {
+            "claims": {"cognito:groups": list(required), "email": "self@example.com"},
+            "username": "self@example.com",
+        },
+        "info": {"fieldName": field},
+    }
+    resp = idx.handler(asserted)
+
+    assert resp["statusCode"] == 403, (
+        f"{field} requires {required}; an invocation that merely ASSERTS those "
+        "groups must be refused, not dispatched"
+    )
+    assert _error(resp)["errorType"] == "Unauthorized"
+    assert fake.calls == 0, "the resolver must not be invoked for a refused identity"
+
+    # Contrast: the same operation and the same groups, arriving where the gateway
+    # authorizer puts them, are not refused. Only the status is compared (argument
+    # validation may still answer 400 for an operation with required arguments) —
+    # what matters is that the 403 above was about the identity's provenance.
+    verified = idx.handler(_http_event(field, groups=list(required)))
+    assert verified["statusCode"] != 403, (
+        f"{field} with the same groups VERIFIED must not be refused — the probe "
+        "above would then prove nothing about where the groups came from"
+    )
+
+
 def test_authorization_runs_before_argument_validation(idx):
     """A denied caller must not learn the operation's argument shape."""
     # getDocument requires ObjectKey; omitting it is a 400 for an allowed caller.

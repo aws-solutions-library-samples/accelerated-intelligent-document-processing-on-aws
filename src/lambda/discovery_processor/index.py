@@ -13,6 +13,7 @@ import requests
 from aws_requests_auth.aws_auth import AWSRequestsAuth
 from idp_common.discovery.classes_discovery import ClassesDiscovery
 from idp_common.discovery.rules_discovery import RulesDiscovery
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -41,7 +42,7 @@ def handler(event, context):
     Returns:
         dict: Processing results
     """
-    logger.info(f"Received event: {json.dumps(event)}")
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
     results = []
     status = 'SUCCESS'

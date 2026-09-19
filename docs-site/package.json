@@ -13,12 +13,14 @@
     "astro": "astro"
   },
   "dependencies": {
+    "@astrojs/markdown-remark": "^7.3.1",
     "@astrojs/starlight": "^0.41.4",
     "astro": "^7.2.8",
     "sharp": "^0.35.4",
     "zod": "^3.25.76"
   },
   "overrides": {
+    "devalue": ">=5.9.2",
     "esbuild": ">=0.28.1",
     "nanoid": "^3.3.18",
     "js-yaml": "^4.3.2",

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """SRT run script to execute security assessment."""
 
+import os
 import shlex
 import subprocess
 import sys
@@ -50,6 +51,75 @@ def warn_about_build_artifacts(project_root):
         "   LOCAL-ONLY below) and crash checkov on the largest templates.\n"
         "   Run 'make srt-clean' first to match CI exactly."
     )
+
+
+def nested_checkouts(project_root):
+    """Return git checkouts nested inside the tree, as repo-relative paths.
+
+    Finds both worktrees git still has registered and directories under
+    `.claude/worktrees/` that hold a `.git` but are no longer registered — an
+    orphaned copy costs the scanner exactly as much as a live one.
+    """
+    root = project_root.resolve()
+    found = set()
+
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            path = Path(line[len("worktree ") :]).resolve()
+            if path != root and root in path.parents:
+                found.add(path.relative_to(root).as_posix())
+
+    agent_dir = root / ".claude" / "worktrees"
+    if agent_dir.is_dir():
+        for child in agent_dir.iterdir():
+            if child.is_dir() and (child / ".git").exists():
+                found.add(child.resolve().relative_to(root).as_posix())
+
+    return sorted(found)
+
+
+def abort_on_nested_checkouts(project_root):
+    """Refuse to scan a tree that contains nested git checkouts.
+
+    `srt assess` walks the whole path it is given and has no `--exclude` option,
+    so every nested checkout multiplies the scan: one checkov process per
+    template per copy, all concurrent. A tree holding 74 agent worktrees (49 GB)
+    spawned 2,200 checkov children, exhausted 123 GiB of RAM plus 8 GiB of swap,
+    drove memory pressure to a sustained 79% full stall that blocked new SSH
+    logins, and had to be killed after 2h26m without producing a report. The
+    findings would have duplicated the root tree's in any case, so there is
+    nothing to gain by scanning them.
+
+    Set `SRT_ALLOW_NESTED_CHECKOUTS=1` to scan anyway.
+    """
+    if os.getenv("SRT_ALLOW_NESTED_CHECKOUTS"):
+        return
+
+    nested = nested_checkouts(project_root)
+    if not nested:
+        return
+
+    shown = "\n".join(f"     {path}" for path in nested[:10])
+    more = f"\n     ... and {len(nested) - 10} more" if len(nested) > 10 else ""
+    print(
+        f"\n❌ {len(nested)} nested git checkout(s) inside the tree. `srt assess` has\n"
+        "   no --exclude option, so it would scan every copy concurrently — one\n"
+        "   checkov process per template per checkout — for findings that merely\n"
+        "   duplicate this tree's.\n"
+        f"{shown}{more}\n\n"
+        "   Remove or relocate them, then re-run. To scan anyway (it can exhaust\n"
+        "   RAM and swap on a large host), set SRT_ALLOW_NESTED_CHECKOUTS=1."
+    )
+    sys.exit(1)
 
 
 def report_scanner_health(srt_dir, project_root, scan_started, is_ci):
@@ -187,8 +257,6 @@ def restore_register(project_root, srt_dir):
 
 def main():
     """Run SRT security assessment."""
-    import os
-
     project_root = Path(__file__).parent.parent.parent
     srt_dir = project_root / ".srt"
     srt_executable = srt_dir / "srt"
@@ -215,6 +283,7 @@ def main():
     project_path = str(project_root)
     print(f"Scanning project: {project_path}")
 
+    abort_on_nested_checkouts(project_root)
     warn_about_build_artifacts(project_root)
 
     # Start every scan from the COMMITTED disposition register. `srt assess`

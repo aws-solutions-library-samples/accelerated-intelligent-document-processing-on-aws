@@ -162,8 +162,20 @@ def _solution_templates() -> list[tuple[Path, str]]:
         rel = path.relative_to(REPO_ROOT)
         if rel.parts[0] in NON_SOLUTION_TREES:
             continue
+        # `scratch/` and `.claude/` are gitignored local work and hold whole git
+        # worktrees, i.e. full copies of every template. Keep in step with the
+        # sibling gates (test_repo_walk_guards_prune_local_work.py asserts it).
         if any(
-            p in {"node_modules", ".aws-sam", ".venv", "build", "dist"}
+            p
+            in {
+                "node_modules",
+                ".aws-sam",
+                ".venv",
+                "build",
+                "dist",
+                "scratch",
+                ".claude",
+            }
             for p in rel.parts
         ):
             continue

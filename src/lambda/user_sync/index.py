@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import boto3
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -19,7 +20,12 @@ REVIEWER_GROUP = os.environ.get("REVIEWER_GROUP", "Reviewer")
 
 def handler(event, context):
     """Handle DynamoDB stream events for user table changes."""
-    logger.info(f"Received DynamoDB stream event: {json.dumps(event, default=str)}")
+    # Redacted before logging: the stream records are rows of the user table, so
+    # each one carries the account attributes of a real person.
+    logger.info(
+        f"Received DynamoDB stream event: "
+        f"{json.dumps(sanitize_event_for_logging(event), default=str)}"
+    )
 
     for record in event.get("Records", []):
         try:

@@ -12,7 +12,10 @@ The Test Studio consists of two main tabs:
 1. **Test Sets**: Create and manage reusable collections of test documents
 2. **Test Executions**: Execute tests, view results, and compare test runs
 
-https://github.com/user-attachments/assets/7c5adf30-8d5c-4292-93b0-0149506322c7
+
+
+https://github.com/user-attachments/assets/9dfe2aac-f69e-4354-a44e-1fa2cf38fc6a
+
 
 
 ## Generating synthetic test sets

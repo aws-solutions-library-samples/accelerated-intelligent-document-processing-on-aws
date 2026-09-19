@@ -6,6 +6,7 @@ import logging
 
 import boto3
 import cfnresponse
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -17,7 +18,7 @@ def handler(event, context):
     UpdateSettingsValues overwrites it with "Unified".
     This detects Pattern-1 → Unified upgrades so BDA can be auto-enabled.
     """
-    logger.info(json.dumps(event))
+    logger.info(json.dumps(sanitize_event_for_logging(event)))
     response_data = {"IDPPattern": ""}
 
     try:

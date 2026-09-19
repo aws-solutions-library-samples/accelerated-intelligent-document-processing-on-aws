@@ -390,23 +390,104 @@ def validate_headless_template(main_template_url):
 _THROTTLE_RETRY_CONFIG = _BotoConfig(retries={"max_attempts": 10, "mode": "adaptive"})
 
 
-def create_iam_resources(stack_name, create_boundary=True):
-    """Create the CFN service role, and (optionally) a permissions boundary.
+# The service-role template requires the IDP stack name to start with this
+# prefix: CloudFormation derives generated role names from the stack name, and
+# the role may only create/re-permission roles matching `<prefix>*`. Every stack
+# name this module builds comes from generate_stack_name(), which starts "idp-".
+MANAGED_STACK_NAME_PREFIX = "idp"
 
-    create_boundary=True (primary suite): also create a no-op {Action:*,Resource:*}
-    permissions-boundary policy and return its ARN, so the deploy exercises the
-    PermissionsBoundaryArn feature (verified by validate_permission_boundaries).
+# One account-wide boundary policy shared by every probe / transform deploy test,
+# never deleted. The primary suite gets its own per-stack policy instead (see
+# create_iam_resources) because test_step13_permission_boundaries asserts against
+# the boundary that stack actually deployed with.
+SHARED_BOUNDARY_POLICY_NAME = "idp-cicd-shared-PermissionsBoundary"
 
-    create_boundary=False (manual probes): skip the boundary — the probe is an
-    infra-deploy smoke test, not a boundary test, so it deploys with an EMPTY
-    PermissionsBoundaryArn (the template's HasPermissionsBoundary gate supports
-    this). Skipping it removes an iam:CreatePolicy + iam:DeletePolicy call per
-    probe, so a `make probes-all` sweep no longer bursts the account-wide IAM
-    rate limit. Returns (role_arn, "") in this mode.
+
+def _ensure_boundary_policy(iam_client, account_id, policy_name):
+    """Idempotently ensure a permissions-boundary policy exists; return its ARN.
+
+    Reads before writing on purpose: iam:CreatePolicy counts against the low,
+    non-adjustable account-wide IAM *mutating* call rate that
+    _THROTTLE_RETRY_CONFIG exists to ride out, while iam:GetPolicy does not. For
+    the shared probe boundary that makes the steady state after the first run
+    cost zero mutating calls, which is what a concurrent `make probes-all` sweep
+    needs.
+    """
+    boundary_arn = f"arn:aws:iam::{account_id}:policy/{policy_name}"
+
+    try:
+        iam_client.get_policy(PolicyArn=boundary_arn)
+        print(f"ℹ️ Permissions boundary already exists: {policy_name}")
+        return boundary_arn
+    except iam_client.exceptions.NoSuchEntityException:
+        pass
+
+    # {Action:*, Resource:*} deliberately. The service role's
+    # CreateOrChangeRolesOnlyWithBoundary condition compares the boundary ARN and
+    # never its contents, so a wide document still exercises the delegation
+    # end-to-end, whereas a boundary sized to real least privilege would break
+    # the deployed Lambdas this suite then tests. This is a disposable CI
+    # account: do NOT copy this document into a customer deployment, where the
+    # boundary is the entire containment argument for the service role. See
+    # iam-roles/cloudformation-management/README.md.
+    boundary_policy = {
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+    }
+    try:
+        iam_client.create_policy(
+            PolicyName=policy_name,
+            PolicyDocument=json.dumps(boundary_policy),
+            Description="CI permissions boundary for IDP integration-test deployments",
+        )
+        print(f"✅ Created permissions boundary: {policy_name}")
+    except iam_client.exceptions.EntityAlreadyExistsException:
+        # Raced with a concurrent probe creating the shared policy.
+        print(f"ℹ️ Permissions boundary already exists: {policy_name}")
+
+    return boundary_arn
+
+
+def create_iam_resources(stack_name, shared_boundary=False):
+    """Create the permissions boundary, then the CFN service role that requires it.
+
+    That order is a hard requirement, not a preference. The service-role
+    template's CreatedRolePermissionsBoundaryArn is REQUIRED with no default,
+    because its iam:CreateRole grant is gated on
+    `StringEquals iam:PermissionsBoundary: !Ref CreatedRolePermissionsBoundaryArn`
+    — the condition that stops the role being a transitive account admin
+    (issue #927). So the policy must exist and its ARN be known BEFORE
+    create_stack; creating the role first fails the CreateStack call outright
+    with "Parameters: [CreatedRolePermissionsBoundaryArn] must have values".
+
+    The returned boundary ARN must also be passed as the IDP stack's own
+    PermissionsBoundaryArn parameter. The two must be the SAME value or every
+    iam:CreateRole in the deploy is denied by that condition — an empty
+    PermissionsBoundaryArn is no longer a usable mode for a deploy that runs
+    through this service role.
+
+    shared_boundary=False (primary suite): a per-stack boundary policy, torn down
+    by cleanup_iam_resources.
+    shared_boundary=True (manual probes, transform deploy tests): the shared
+    account-wide policy, so a concurrent sweep adds no iam:CreatePolicy calls to
+    the burst.
+
+    Returns (role_arn, boundary_arn), or (None, None) on failure.
     """
     print(f"[{stack_name}] Creating IAM resources...")
 
     try:
+        # Step 0a: the boundary policy, which the service role stack requires.
+        iam_client = boto3.client("iam", config=_THROTTLE_RETRY_CONFIG)
+        account_id = boto3.client("sts").get_caller_identity()["Account"]
+        boundary_name = (
+            SHARED_BOUNDARY_POLICY_NAME
+            if shared_boundary
+            else f"{stack_name}-PermissionsBoundary"
+        )
+        boundary_arn = _ensure_boundary_policy(iam_client, account_id, boundary_name)
+
+        # Step 0b: the service role itself.
         cf_client = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
         iam_stack_name = f"{stack_name}-iam"
 
@@ -422,6 +503,19 @@ def create_iam_resources(stack_name, create_boundary=True):
                 StackName=iam_stack_name,
                 TemplateBody=template_body,
                 Capabilities=["CAPABILITY_NAMED_IAM"],
+                Parameters=[
+                    {
+                        "ParameterKey": "CreatedRolePermissionsBoundaryArn",
+                        "ParameterValue": boundary_arn,
+                    },
+                    # Passed explicitly rather than relying on the template's
+                    # default, so a change to that default cannot silently
+                    # narrow which stacks this role may deploy.
+                    {
+                        "ParameterKey": "ManagedStackNamePrefix",
+                        "ParameterValue": MANAGED_STACK_NAME_PREFIX,
+                    },
+                ],
             )
 
             # Wait for stack creation to complete
@@ -448,40 +542,6 @@ def create_iam_resources(stack_name, create_boundary=True):
         if not role_arn:
             raise Exception("Could not find ServiceRoleArn in stack outputs")
 
-        if not create_boundary:
-            # Probe mode: deploy with an EMPTY PermissionsBoundaryArn — no
-            # per-stack boundary policy created (removes an iam:CreatePolicy /
-            # DeletePolicy from the concurrent burst).
-            print(f"[{stack_name}] ℹ️ Skipping permissions boundary (probe mode)")
-            return role_arn, ""
-
-        # Create permission boundary policy. Adaptive retry so a burst of
-        # concurrent iam:CreatePolicy calls rides through the account-wide IAM
-        # throttle instead of failing at "reached max retries: 4".
-        iam_client = boto3.client("iam", config=_THROTTLE_RETRY_CONFIG)
-        boundary_name = f"{stack_name}-PermissionsBoundary"
-        boundary_policy = {
-            "Version": "2012-10-17",
-            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
-        }
-
-        try:
-            iam_client.create_policy(
-                PolicyName=boundary_name,
-                PolicyDocument=json.dumps(boundary_policy),
-                Description=f"Permissions boundary for {stack_name} IDP deployment",
-            )
-            print(f"[{stack_name}] ✅ Created permissions boundary: {boundary_name}")
-        except iam_client.exceptions.EntityAlreadyExistsException:
-            print(
-                f"[{stack_name}] ℹ️ Permissions boundary already exists: {boundary_name}"
-            )
-
-        # Get account ID for boundary ARN
-        sts_client = boto3.client("sts")
-        account_id = sts_client.get_caller_identity()["Account"]
-        boundary_arn = f"arn:aws:iam::{account_id}:policy/{boundary_name}"
-
         return role_arn, boundary_arn
 
     except Exception as e:
@@ -490,7 +550,17 @@ def create_iam_resources(stack_name, create_boundary=True):
 
 
 def cleanup_iam_resources(stack_name):
-    """Clean up IAM CloudFormation stack"""
+    """Delete the IAM stack, then this stack's own permissions boundary policy.
+
+    Order matters: the boundary is attached to every role the IDP stack created,
+    and IAM refuses to delete a policy still in use as a boundary, so the IDP
+    stack (deleted by our caller, cleanup_stack) and then the service-role stack
+    must go first.
+
+    Only `<stack_name>-PermissionsBoundary` is deleted. The shared probe boundary
+    (SHARED_BOUNDARY_POLICY_NAME) never matches that name and so survives, which
+    is what lets concurrent probes share it.
+    """
     print(f"[{stack_name}] Cleaning up IAM stack...")
 
     try:
@@ -513,6 +583,26 @@ def cleanup_iam_resources(stack_name):
                 print(f"[{stack_name}] ℹ️ IAM stack not found: {iam_stack_name}")
             else:
                 print(f"[{stack_name}] ⚠️ Failed to delete IAM stack: {e}")
+
+        # The per-stack boundary policy is created outside CloudFormation, so
+        # nothing deletes it implicitly. Left behind it is a slow leak against
+        # the account's 1500-managed-policy quota, one policy per CI run.
+        iam_client = boto3.client("iam", config=_THROTTLE_RETRY_CONFIG)
+        account_id = boto3.client("sts").get_caller_identity()["Account"]
+        boundary_name = f"{stack_name}-PermissionsBoundary"
+        boundary_arn = f"arn:aws:iam::{account_id}:policy/{boundary_name}"
+        try:
+            iam_client.delete_policy(PolicyArn=boundary_arn)
+            print(f"[{stack_name}] ✅ Deleted permissions boundary: {boundary_name}")
+        except iam_client.exceptions.NoSuchEntityException:
+            print(f"[{stack_name}] ℹ️ Permissions boundary not found: {boundary_name}")
+        except iam_client.exceptions.DeleteConflictException:
+            # Still attached as a boundary somewhere — a role the IDP stack
+            # delete left behind. Warn; the stale-stack reaper picks up the rest.
+            print(
+                f"[{stack_name}] ⚠️ Permissions boundary still in use, not deleted: "
+                f"{boundary_name}"
+            )
 
     except Exception as e:
         print(f"[{stack_name}] ❌ Failed to cleanup IAM stack: {e}")
@@ -1393,12 +1483,13 @@ def test_step11_test_compare(stack_name):
 def test_step13_permission_boundaries(stack_name):
     """Verify the deployed IAM roles actually carry the permissions boundary.
 
-    The primary suite deploys with a non-empty PermissionsBoundaryArn, so the
-    template's HasPermissionsBoundary condition should attach that boundary to
-    every AWS::IAM::Role it creates. This is the ONLY place that boundary
-    behavior is checked end-to-end (probes now deploy WITHOUT a boundary), so it
-    closes a real gap: a template change that drops the PermissionsBoundary from
-    a role would otherwise ship silently.
+    Every deploy here now passes a non-empty PermissionsBoundaryArn — the CFN
+    service role denies iam:CreateRole for a role that lacks the boundary it was
+    created with — so the template's HasPermissionsBoundary condition should
+    attach that boundary to every AWS::IAM::Role it creates. This is the only
+    place that behavior is asserted end-to-end, and it closes a real gap: a
+    template change that drops the PermissionsBoundary from a role would
+    otherwise ship silently.
 
     Read-only IAM (list stack role resources + iam:GetRole), safe in the
     parallel pool. Samples up to 25 roles to bound API calls. Fails if any
@@ -5555,13 +5646,13 @@ def _run_probe_attempt(probe, admin_email, template_url, vpc_params):
     stack_name = f"{generate_stack_name()}-{probe.stack_suffix}"
     result = {"stack_name": stack_name, "success": False, "probe": probe.name}
     try:
-        # Probes don't create their own permissions boundary (only the primary
-        # suite does + tests it) — removes an iam:CreatePolicy/DeletePolicy from
-        # the burst. boundary_arn is "" here; deploy with an empty
-        # PermissionsBoundaryArn (template's HasPermissionsBoundary gate handles
-        # the empty case).
-        role_arn, boundary_arn = create_iam_resources(stack_name, create_boundary=False)
-        if not role_arn:
+        # Probes share ONE account-wide boundary policy rather than creating one
+        # each, which keeps iam:CreatePolicy out of a concurrent sweep's burst.
+        # They cannot skip the boundary: the service role only permits
+        # iam:CreateRole for roles carrying exactly this ARN, so a deploy through
+        # it with an empty PermissionsBoundaryArn is denied on its first role.
+        role_arn, boundary_arn = create_iam_resources(stack_name, shared_boundary=True)
+        if not role_arn or not boundary_arn:
             raise Exception(f"Failed to create IAM resources for probe {probe.name!r}")
 
         # idp-cli --parameters takes ONE comma-separated key=value string. The
@@ -5569,7 +5660,8 @@ def _run_probe_attempt(probe, admin_email, template_url, vpc_params):
         # splits only on commas preceding a `key=`, so the comma-joined subnet
         # list is safe.
         merged = {**probe.deploy_params, **vpc_params}
-        param_pairs = [f"PermissionsBoundaryArn={boundary_arn}"]  # empty = feature off
+        # Must equal the service role's CreatedRolePermissionsBoundaryArn.
+        param_pairs = [f"PermissionsBoundaryArn={boundary_arn}"]
         param_pairs += [f"{k}={v}" for k, v in merged.items()]
         params = ",".join(param_pairs)
         cmd = (

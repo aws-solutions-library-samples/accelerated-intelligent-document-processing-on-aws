@@ -79,8 +79,7 @@ three version numbers rather than retyping it:
   here.
 - **No trailing whitespace** on any line — the `eu-central-1` line ends at the
   closing backtick — then exactly one blank line before the next `## [x.y.z]`.
-  (No block in the file carries the trailing spaces an earlier version of this
-  skill claimed; don't add them.)
+  No block in the file carries trailing spaces; don't add them.
 - The filename is `idp-main_<version>.yaml` — the version-pinned artifact, not
   the `idp-main.yaml` floating pointer used by the README launch buttons.
 

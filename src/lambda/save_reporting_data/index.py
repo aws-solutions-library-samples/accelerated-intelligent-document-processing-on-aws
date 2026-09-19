@@ -14,6 +14,7 @@ from idp_common.config import get_config
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.models import Document
 from idp_common.reporting import SaveReportingData
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Configure logging
 logger = logging.getLogger()
@@ -32,7 +33,8 @@ def handler(event, context):
         Dict with status and message
     """
     logger.info(
-        f"Starting save_reporting_data process with event: {json.dumps(event, indent=2)}"
+        "Starting save_reporting_data process with event: "
+        f"{json.dumps(sanitize_event_for_logging(event), indent=2)}"
     )
 
     try:

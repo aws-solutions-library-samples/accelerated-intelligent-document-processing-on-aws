@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import boto3
 from idp_common.docs_service import create_document_service
 from idp_common.models import Status
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -26,7 +27,7 @@ TEST_SET_BUCKET = os.environ.get("TEST_SET_BUCKET", "")
 
 def handler(event, context):
     """Handle section review completion from AppSync."""
-    logger.info(f"Received event: {json.dumps(event)}")
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
     field_name = event.get("info", {}).get("fieldName", "")
     arguments = event.get("arguments", {})

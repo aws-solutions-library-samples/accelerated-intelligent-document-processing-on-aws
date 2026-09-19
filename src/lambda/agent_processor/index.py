@@ -20,6 +20,7 @@ from botocore.exceptions import ClientError
 from idp_common.agents.analytics import get_analytics_config, parse_agent_response
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Configure logging for both application and Strands framework
 # This will respect both LOG_LEVEL and STRANDS_LOG_LEVEL environment variables
@@ -247,8 +248,9 @@ def handler(event, context):
     Returns:
         The updated job record
     """
-    logger.info(f"Received event: {json.dumps(event)}")
-    
+    # Redacted: the event carries the caller's question and identity attributes.
+    logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
+
     try:
         # Extract user ID and job ID from the event
         user_id = event.get("userId")

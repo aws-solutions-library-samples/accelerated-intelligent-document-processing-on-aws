@@ -4,14 +4,18 @@
 """
 API transport adapter for resolver Lambdas.
 
-This module lets a single resolver Lambda serve BOTH:
+This module normalizes two event shapes into the one the resolver handlers expect:
 
-1. AWS AppSync (legacy) — event shape: ``{"arguments": {...},
-   "identity": {"claims": {...}, "username": ...}, "info": {"fieldName": ...}}``
-2. API Gateway **HTTP API** (payload format 2.0) with a Cognito **JWT
-   authorizer** — claims live at
-   ``event["requestContext"]["authorizer"]["jwt"]["claims"]`` and the request
-   body carries ``{"arguments": {...}}``.
+1. The legacy AWS AppSync resolver shape — ``{"arguments": {...},
+   "identity": {"claims": {...}, "username": ...}, "info": {"fieldName": ...}}``.
+   AppSync was **removed** in release 0.6.0, so nothing produces this shape from a
+   transport that authenticated the caller; what is left of it is covered in the
+   second CRITICAL note below.
+2. API Gateway with a Cognito authorizer — the deployed API is a REST API, whose
+   Lambda proxy integration sends payload format 1.0 and puts claims at
+   ``event["requestContext"]["authorizer"]["claims"]``; the HTTP API / JWT
+   authorizer form (``...["authorizer"]["jwt"]["claims"]``) is read too. The
+   request body carries ``{"arguments": {...}}``.
 
 The migration off AppSync (which is unavailable in GovCloud and not
 FedRAMP-compliant) reuses the existing resolver Lambdas unchanged; this adapter
@@ -28,6 +32,40 @@ depending on serialization). Every resolver's RBAC depends on ``cognito:groups``
 being a *list*. :func:`_coerce_groups` restores it. Getting this wrong either
 locks every user out or fails open — it is the single most important detail in
 the AppSync migration and is covered by unit tests.
+
+CRITICAL — an ``identity`` in the event is never authoritative
+-------------------------------------------------------------
+AppSync itself is gone (removed in 0.6.0), so nothing legitimate delivers a
+resolver-shaped event over a transport that has already authenticated the user.
+The only caller that can present one is a principal holding
+``lambda:InvokeFunction`` directly on the function, and the ``identity`` it puts
+in that payload is its own assertion — no signed token backs it. Passing it
+through unchanged let such a caller state its own ``cognito:groups`` and have the
+group check made against its own claim.
+
+:func:`normalize_event` therefore applies the same precedence rule the chat
+streaming endpoint applies to a body-supplied ``callerSub``
+(``resolve_caller_sub`` in ``src/lambda/chat_stream_processor/sse.py``): **the
+principal the transport verified wins, and an asserted one that contradicts it is
+refused rather than silently preferred.** Where there is no verified principal to
+compare against, an asserted identity cannot be honoured at all and is refused
+with :class:`CallerIdentityRefused`.
+
+The one shape that still passes through is an event whose ``identity`` is
+explicitly ``None``. Across this repository that is the established marker for a
+service-to-service invocation gated by IAM on the function ARN rather than by
+Cognito groups (``idp_common.testset_scope.is_direct_invoke``,
+``_enforce_agent_chat_groups`` in ``src/lambda/agent_chat_processor``). Be precise
+about what those consumers do with it: they do **not** evaluate it as an ungrouped
+caller, they skip the Cognito group check altogether, because IAM on the function
+ARN is the control instead. On the dispatcher path that is bounded — the
+group-scoped operations in ``api_rbac_manifest.json`` deny a groupless caller, and
+the ``IAM_ONLY`` ones deny outright — but the operations declared ``ANY`` do not
+check groups at all (issue #979). So the thing an invocation could assert here is
+the *absence* of an identity, not a group list. It is still passed through:
+refusing it would break those backend paths, and rewriting a refused assertion to
+``None`` instead would be worse than either —
+it would promote a caller's failed assertion into the trusted-backend marker.
 """
 
 import base64
@@ -37,9 +75,30 @@ import os
 import re
 from decimal import Decimal
 from functools import wraps
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class CallerIdentityRefused(PermissionError):
+    """A caller-supplied ``identity`` was refused instead of being honoured.
+
+    Raised when an event carries its own ``identity`` object and either
+    contradicts the principal the transport verified, or arrives with no verified
+    principal at all — in which case there is nothing that could establish the
+    claim, so the authorization decision is refused rather than made from it.
+
+    A subclass of :class:`PermissionError` so every existing mapping treats it as
+    an authorization denial: the dispatcher and :func:`api_resolver` both turn a
+    ``PermissionError`` into HTTP 403 with ``errorType: "Unauthorized"``.
+
+    The sibling of ``CallerIdentityConflict`` in
+    ``src/lambda/chat_stream_processor/sse.py``, which applies the same rule to
+    that transport's body-supplied ``callerSub``. The two are deliberately not one
+    class: ``sse.py`` lives inside a Lambda's ``CodeUri`` and is not importable
+    from this library, and the identifiers it reconciles (SigV4 principals) are
+    not the ones reconciled here (Cognito claim sets).
+    """
 
 
 class _DecimalEncoder(json.JSONEncoder):
@@ -96,8 +155,110 @@ def _coerce_groups(groups: Any) -> List[str]:
 
 
 def _is_appsync_event(event: Dict[str, Any]) -> bool:
-    """An AppSync resolver event always carries ``arguments`` and ``identity``."""
+    """An AppSync resolver event always carries ``arguments`` and ``identity``.
+
+    A true answer says only that the event has the *shape* AppSync used, not that
+    anything authenticated the caller — AppSync was removed in 0.6.0, so nothing
+    but a direct ``lambda:InvokeFunction`` produces this shape now. See
+    :func:`normalize_event` for what is done with the ``identity`` it carries.
+    """
     return isinstance(event, dict) and "arguments" in event and "identity" in event
+
+
+def _verified_claims(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The claim set the transport verified for this request, or ``None``.
+
+    This is the ONLY trustworthy source of ``cognito:groups`` on the API path: API
+    Gateway's Cognito authorizer validates the token and writes the claims into
+    the request context, which a caller cannot reach from the request body. That
+    holds for a caller arriving through the gateway. A principal invoking this
+    function directly builds the whole payload, request context included, so for
+    that caller nothing here establishes provenance -- the control on that path is
+    IAM on the function ARN, not this function.
+
+    Both authorizer shapes are read, because both occur: a REST API's Lambda proxy
+    integration (payload format 1.0, which is what this solution deploys) puts
+    them at ``requestContext.authorizer.claims``, while an HTTP API JWT authorizer
+    (payload format 2.0) puts them at ``requestContext.authorizer.jwt.claims``.
+    ``None`` means the event carries no authorizer context at all — i.e. it did not
+    arrive through the gateway.
+    """
+    rc = event.get("requestContext") if isinstance(event, dict) else None
+    if not isinstance(rc, dict):
+        return None
+    authorizer = rc.get("authorizer")
+    if not isinstance(authorizer, dict):
+        return None
+    jwt_claims = (authorizer.get("jwt") or {}).get("claims")
+    if isinstance(jwt_claims, dict) and jwt_claims:
+        return jwt_claims
+    claims = authorizer.get("claims")
+    if isinstance(claims, dict) and claims:
+        return claims
+    return None
+
+
+def _principal_names(claims: Dict[str, Any]) -> List[str]:
+    """Every identifier a claim set offers for the principal it describes.
+
+    Resolvers key per-object scope off ``identity.username`` and ``identity.sub``
+    interchangeably (the AppSync convention was email in ``username``), so a
+    comparison has to accept any of them as naming the same principal.
+    """
+    return [
+        str(v)
+        for v in (
+            claims.get("sub"),
+            claims.get("email"),
+            claims.get("cognito:username"),
+            claims.get("username"),
+        )
+        if v
+    ]
+
+
+def _refuse_if_contradicts_verified(
+    asserted: Any, verified_claims: Dict[str, Any]
+) -> None:
+    """Refuse an asserted identity that disagrees with the verified principal.
+
+    The verified claims win either way — :func:`normalize_event` rebuilds the
+    identity from them and never reads the asserted object. This raises so that a
+    disagreement is a refusal rather than a silent discard: an asserted identity
+    that names a different principal, or claims a group the token does not carry,
+    is never a legitimate request, and answering it with the verified caller's own
+    (lesser) permissions would hide the attempt.
+    """
+    if not isinstance(asserted, dict):
+        raise CallerIdentityRefused(
+            "Unauthorized: the event asserts an identity of type "
+            f"{type(asserted).__name__}, which cannot be reconciled with the "
+            "identity the transport verified"
+        )
+
+    asserted_claims = asserted.get("claims")
+    if not isinstance(asserted_claims, dict):
+        asserted_claims = {}
+
+    extra_groups = set(_coerce_groups(asserted_claims.get("cognito:groups"))) - set(
+        _coerce_groups(verified_claims.get("cognito:groups"))
+    )
+    if extra_groups:
+        raise CallerIdentityRefused(
+            "Unauthorized: the event asserts group membership the verified token "
+            f"does not carry ({sorted(extra_groups)})"
+        )
+
+    verified_names = set(_principal_names(verified_claims))
+    asserted_names = set(_principal_names(asserted_claims)) | set(
+        _principal_names(asserted)
+    )
+    conflicting = asserted_names - verified_names
+    if conflicting:
+        raise CallerIdentityRefused(
+            "Unauthorized: the event asserts a caller identity that does not "
+            "match the identity the transport verified"
+        )
 
 
 def _parse_body(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -153,23 +314,58 @@ def _field_from_event(event: Dict[str, Any]) -> str:
 
 
 def normalize_event(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Return an AppSync-shaped event regardless of the incoming transport.
+    """Return an AppSync-shaped event whose ``identity`` is one the transport proved.
 
-    AppSync events pass through unchanged. HTTP API (payload v2.0 + JWT
-    authorizer) events are converted to ``{"arguments", "identity", "info"}``
-    with ``identity.claims['cognito:groups']`` restored to a list.
+    Gateway events (a REST proxy event with a Cognito authorizer, or an HTTP API
+    payload-v2.0 event with a JWT authorizer) are converted to ``{"arguments",
+    "identity", "info"}`` with ``identity`` built from the **verified** claims and
+    ``identity.claims['cognito:groups']`` restored to a list.
+
+    An event that carries its own ``identity`` is handled by the rule in this
+    module's docstring, and only these three things can happen to it:
+
+    * ``identity`` is explicitly ``None`` and no verified claims accompany it —
+      the IAM-gated service-to-service invocation. Passed through unchanged; it
+      asserts no groups. Note what the consumers do with that: a group-scoped
+      operation denies it, while an operation declared ``ANY`` and several
+      resolver-level checks skip the Cognito check entirely rather than failing
+      it, IAM on the function ARN being the control on that path.
+    * Verified claims are present — they win, the identity is rebuilt from them,
+      and the asserted object is refused if it contradicts them
+      (:func:`_refuse_if_contradicts_verified`).
+    * Neither — an asserted identity with nothing that could establish it. Refused
+      with :class:`CallerIdentityRefused`, which the dispatcher and
+      :func:`api_resolver` render as 403.
+
+    :raises CallerIdentityRefused: for the two refusal cases above. It subclasses
+        ``PermissionError``, so callers that already map authorization denials need
+        no new branch.
     """
+    verified = _verified_claims(event)
+
     if _is_appsync_event(event):
-        return event
+        # The key is present by definition of the shape, so an explicit null is
+        # distinguishable from an absent key here — and the two mean different
+        # things: null is the IAM-gated service-to-service marker.
+        asserted = event["identity"]
+        if verified is None:
+            if asserted is None:
+                return event
+            logger.warning(
+                "Refusing an event that asserts its own identity with no verified "
+                "claims to support it (a direct invocation cannot choose its own "
+                "Cognito groups)"
+            )
+            raise CallerIdentityRefused(
+                "Unauthorized: this invocation asserts a caller identity that no "
+                "transport verified"
+            )
+        _refuse_if_contradicts_verified(asserted, verified)
+        # Fall through: the identity below is rebuilt from the verified claims, so
+        # the asserted object is never read even when it agreed.
 
     rc = event.get("requestContext") or {}
-    authorizer = rc.get("authorizer") or {}
-    jwt_claims = (authorizer.get("jwt") or {}).get("claims") or {}
-
-    # Some configurations surface claims directly under authorizer (lambda
-    # authorizer) — tolerate that too.
-    if not jwt_claims and "claims" in authorizer:
-        jwt_claims = authorizer.get("claims") or {}
+    jwt_claims = verified or {}
 
     groups = _coerce_groups(jwt_claims.get("cognito:groups"))
     username = jwt_claims.get("cognito:username") or jwt_claims.get("sub") or ""
@@ -254,19 +450,21 @@ def api_resolver(fn: Callable[[Dict[str, Any], Any], Any]) -> Callable:
         * anything else                 -> 500
       The error body matches the GraphQL shape the UI already parses:
       ``{"errors": [{"message": ..., "errorType": ...}]}``.
-    - For AppSync invocations, returns the handler result unchanged and lets
-      exceptions propagate (AppSync maps them to GraphQL errors).
+    - For a resolver-shaped (direct) invocation, returns the handler result
+      unchanged and lets exceptions propagate — including the
+      :class:`CallerIdentityRefused` that :func:`normalize_event` raises for an
+      invocation asserting its own identity, which surfaces to the invoker as a
+      function error rather than as a 200.
     """
 
     @wraps(fn)
     def wrapper(event: Dict[str, Any], context: Any = None) -> Any:
         is_http = not _is_appsync_event(event)
-        normalized = normalize_event(event)
         if not is_http:
-            return fn(normalized, context)
+            return fn(normalize_event(event), context)
 
         try:
-            result = fn(normalized, context)
+            result = fn(normalize_event(event), context)
         except PermissionError as e:
             logger.warning("Authorization denied: %s", e)
             return _http_response(

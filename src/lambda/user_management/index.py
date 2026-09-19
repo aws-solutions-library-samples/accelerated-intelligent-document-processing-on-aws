@@ -23,6 +23,7 @@ from datetime import datetime
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -71,7 +72,10 @@ def _get_caller_identity(event):
 
 def handler(event, context):
     """Handle user management operations from AppSync."""
-    logger.info(f"Received event: {event}")
+    # Redacted before logging: this is the user-administration API, so the event
+    # carries the caller's `identity.claims` alongside the arguments naming the
+    # account being operated on.
+    logger.info(f"Received event: {sanitize_event_for_logging(event)}")
 
     field = event.get("info", {}).get("fieldName", "")
     arguments = event.get("arguments", {})

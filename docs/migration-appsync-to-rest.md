@@ -182,9 +182,14 @@ migration preserves parity as follows:
     tracked as issue
     [#979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979).
     The `idp_common.api_adapter` passthrough for events that already carry their
-    own `arguments` + `identity` is likewise **outside** this check and is tracked
-    as
-    [#978](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/978).
+    own `arguments` + `identity` used to sit **outside** this check — an invocation
+    of that shape supplied the groups the check was made against — and is now
+    closed
+    ([#978](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/978)):
+    the adapter builds `identity` from the verified claims, and an asserted one is
+    refused whether it contradicts them or arrives with none to contradict. An
+    explicitly null `identity` (the IAM-gated service-to-service marker, which
+    asserts no groups) still passes through.
   - The manifest is **generated from `scripts/api_rbac_expectations.yaml`** by
     [`scripts/sdlc/generate_api_rbac_manifest.py`](../scripts/sdlc/generate_api_rbac_manifest.py)
     into `api_rbac_manifest.json`, committed in the dispatcher's CodeUri (so SAM

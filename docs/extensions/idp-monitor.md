@@ -9,6 +9,12 @@ title: "IDP Monitor"
 
 Once an IDP Accelerator pipeline is in production, the questions change. Is throughput keeping up? Which document type is failing, and why? What did yesterday cost, and which configuration version or model drove it? Which documents came back with low confidence and are waiting for human review? Answering these from raw CloudWatch logs, Step Functions histories and reporting tables is slow, and it gets slower as volume grows. IDP Monitor puts the answers on one screen — ask a question in plain language and get an instant answer with the relevant widgets, or browse the dashboard directly.
 
+
+
+https://github.com/user-attachments/assets/052ce85e-ad02-4169-ba9f-0f8a7ebd0403
+
+
+
 ## AI Assistant and Insights
 
 An **AI Assistant** panel opens from the toolbar. Ask a plain-language question:

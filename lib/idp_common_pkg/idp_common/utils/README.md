@@ -116,26 +116,34 @@ its name is added to `_DEFAULT_DENY_KEY_SUBSTRINGS` (or passed as
 argument and field *names* operators need to read a log at all.
 
 ⚠️ **`log_sanitizer.py` is the one file in this package with committed copies
-elsewhere in the repo, and editing it is not a one-file change.** Nine Lambda
-functions under `nested/api-resolvers/src/lambda/` carry no `idp-common` layer.
-SAM packages each function from its own `CodeUri` directory, so they can reach
-neither this library nor a sibling function's directory at runtime — and attaching
-the base layer (Pillow, pypdfium2, requests: tens of MB) to a handful of tiny
-resolvers to reach a stdlib-only module is the wrong trade. So each of those nine
-holds a **byte-identical** copy as `log_sanitizer.py` and imports it as a
-top-level sibling module.
+elsewhere in the repo, and editing it is not a one-file change.** Lambda functions
+under both `nested/api-resolvers/src/lambda/` and `src/lambda/` carry no
+`idp-common` layer. SAM packages each function from its own `CodeUri` directory, so
+they can reach neither this library nor a sibling function's directory at runtime —
+and attaching the base layer (Pillow, pypdfium2, requests: tens of MB) to a handful
+of tiny resolvers and custom resources to reach a stdlib-only module is the wrong
+trade. So each of them holds a **byte-identical** copy as `log_sanitizer.py` and
+imports it as a top-level sibling module. The count is deliberately not quoted
+here: it changes whenever a layer-free function starts logging its event, and the
+authoritative answer is whatever `scripts/sync_resolver_log_sanitizer.sh` reports
+on its last line.
 
 The contract:
 
 1. **Edit only this file.** Never edit a copy.
-2. Then run **`scripts/sync_resolver_log_sanitizer.sh`**, which rewrites all nine.
+2. Then run **`scripts/sync_resolver_log_sanitizer.sh`**, which rewrites every
+   copy. It derives its destinations from the handler sources — a directory is a
+   destination because a file in it imports the sibling `log_sanitizer` module — so
+   there is no target list to keep in step.
 3. `scripts/tests/test_resolver_log_sanitizer.py` is a **blocking** test. It fails
-   if any copy differs by one byte, if the sync script's target list stops matching
-   the set of layer-free resolvers that import it, if a resolver imports the
+   if any copy differs by one byte, if a function imports the sibling module
+   without holding a copy (or holds an unused one), if a function imports the
    canonical module while its CloudFormation function declares no `IDPCommon*Layer`
-   (an ImportError at cold start), or if any resolver hand-rolls a local key list
-   again.
+   (an ImportError at cold start), if the sync script stops scanning the same
+   Lambda trees the test does, if any handler hand-rolls a local key list again, or
+   if any handler under either tree logs its whole invocation event without passing
+   it through `sanitize_event_for_logging`.
 
 Keep this file `ruff format`-clean and stdlib-only. Adding a third-party import
-would break the nine layer-free copies at cold start, and a formatting difference
+would break every layer-free copy at cold start, and a formatting difference
 between this file and a copy breaks byte-identity.

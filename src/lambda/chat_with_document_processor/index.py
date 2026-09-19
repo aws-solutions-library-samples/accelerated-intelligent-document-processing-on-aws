@@ -49,6 +49,7 @@ from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
 from idp_common.config_scope import scope_allows
+from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -702,7 +703,13 @@ def handler(event, _context):  # noqa: ANN001
     caller_sub = event.get("callerSub") or ""
 
     if not (session_id and prompt and object_key):
-        logger.error("Missing required fields in chat-doc event: %s", event)
+        # Redacted: this event carries the user's prompt and `callerSub`. The
+        # sanitizer preserves which keys were present, which is the whole point of
+        # this message — it reports a missing field, not a value.
+        logger.error(
+            "Missing required fields in chat-doc event: %s",
+            sanitize_event_for_logging(event),
+        )
         _emit(
             session_id=session_id or "unknown",
             method="assistant_error",

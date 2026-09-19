@@ -39,7 +39,17 @@ def resolver(monkeypatch):
         )
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
+        # The resolver's own directory must be on sys.path for the exec, because
+        # that is where Lambda puts it: index.py imports a sibling by bare name
+        # (``from log_sanitizer import ...``), which loading the file by path
+        # alone does not reproduce. Without this the import only succeeded when
+        # some other test in the run happened to have left the directory on
+        # sys.path — see the same note on ``_load`` in test_agent_chat_rbac.py.
+        sys.path.insert(0, os.path.dirname(_RESOLVER))
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
         yield module
 
 

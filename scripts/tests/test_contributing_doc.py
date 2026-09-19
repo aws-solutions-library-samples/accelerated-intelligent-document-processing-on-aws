@@ -460,16 +460,24 @@ def test_cfn_lint_pin_matches_makefile() -> None:
     )
 
 
-@pytest.mark.unit
-def test_test_root_count_matches_registry() -> None:
-    count = _run_root_count()
-    quoted = _doc_numbers(r"\*\*(\d+) separate roots\*\*")
-    assert quoted == [str(count)], (
-        f"CONTRIBUTING.md says the tests live in {quoted or ['<no figure found>']} "
-        f"roots; run_all_tests.py registers {count} existing RUN_ROOTS "
-        "(the number `make test-list` prints)."
-    )
-
+# test_test_root_count_matches_registry was here, and it was a mistake. It
+# asserted that CONTRIBUTING.md's "the tests live in N separate roots" matched
+# the length of RUN_ROOTS in scripts/run_all_tests.py, deriving N at test time
+# so the prose could not drift.
+#
+# The mechanism is right and the target was wrong. Deriving a number is worth
+# doing when the NUMBER is the claim a reader acts on -- how many resource
+# policies deny non-TLS requests, how many alarms reach a subscribed topic --
+# because a stale one there misleads about the security posture. This number was
+# scenery. The sentence's load-bearing content is that there are many roots, one
+# per package and per Lambda directory, each with its own conftest.py, so a bare
+# pytest from the root collides; the count adds nothing a reader can act on.
+#
+# What it cost was real: registering one more test suite -- a routine and
+# desirable act -- failed a blocking gate for a purely cosmetic reason, which
+# teaches people to read gate failures as bureaucracy and erodes the gates that
+# matter. The prose now says "many separate roots" and there is nothing to keep
+# in step. Do not reinstate this without a reason a reader would act on.
 
 @pytest.mark.unit
 def test_prerequisite_floors_match_their_sources() -> None:
