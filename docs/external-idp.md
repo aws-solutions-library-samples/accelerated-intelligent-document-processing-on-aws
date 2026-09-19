@@ -84,9 +84,41 @@ Whether to set `ExternalIdPAnnotatorGroupName` at all is therefore a real choice
 - **Set it** to make the IdP authoritative for the role, the same as Admin, Author,
   Reviewer and Viewer. Membership is then synced on each fresh federated sign-in in
   both directions: a user whose claim gains the annotator group is added, and a user
-  whose claim no longer names it is **removed**. Do not set it and also assign
-  Annotator by hand — the hand-assigned membership is stripped at the user's next
-  sign-in.
+  whose claim still maps to some other role but no longer names the annotator group
+  is **removed** from `Annotator`. Do not set it and also assign Annotator by hand —
+  the hand-assigned membership is stripped the next time that user signs in afresh.
+
+### Removal by claim is not a way to revoke access
+
+Removal happens only on a sign-in that still maps to **at least one** group, for
+`Annotator` and for the other four roles alike. A fresh federated sign-in whose
+claim maps to nothing — because every group was stripped in the IdP, or the claim
+is absent altogether — leaves the user's existing Cognito groups exactly as they
+were. The trigger returns before the sync so that a missing or unreadable claim
+cannot silently strip a user's access, which means clearing someone's IdP groups
+is **not** a way to deprovision them here. Remove them from the application by
+deleting or disabling the Cognito user, or by moving them to a lower-privileged
+IdP group rather than none.
+
+Two further points of timing, once the IdP is authoritative:
+
+- A change in the IdP takes effect at the user's next **fresh** sign-in, not
+  immediately and not at a refresh. `TokenGeneration_RefreshTokens` is deliberately
+  not a trusted trigger source, so a token refresh neither maps nor re-maps groups.
+  Until that fresh sign-in the user keeps the role in Cognito and in their token.
+- At that fresh sign-in the token is correct straight away — the trigger overrides
+  the group claim as well as updating Cognito. What lags is a session that is
+  *already open* when membership changes by some other route (an Admin editing it in
+  User Management, or the same person signing in elsewhere): that session's token
+  keeps the old groups until its next refresh. Server-side checks read the token, so
+  for those few minutes the API and the page can disagree. Signing out and back in
+  resolves it.
+- The **Role** shown in User Management is written when a user's record is first
+  created and is not rewritten afterwards, so for any IdP-mapped role it can show
+  what the user had at their first sign-in rather than what they hold now.
+  Authorization is unaffected: every check reads the groups in the caller's token,
+  never that stored value. The Cognito console, or `admin-list-groups-for-user`, is
+  the authoritative view of current membership.
 
 ## Storing the OIDC Client Secret
 

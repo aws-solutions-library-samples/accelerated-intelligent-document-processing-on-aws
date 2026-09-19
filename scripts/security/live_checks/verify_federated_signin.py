@@ -19,10 +19,17 @@ import urllib.parse
 
 import boto3
 import requests
+from cognito_groups import cognito_role_groups
 
 ADMIN_IDP_GROUP = "IdP-Admins"
 VIEWER_IDP_GROUP = "IdP-Viewers"
-MANAGED = {"Admin", "Author", "Reviewer", "Viewer"}
+
+# The app's role groups, read from template.yaml rather than written out here.
+# A literal list silently kept describing four roles when Annotator was added to
+# the deployment (#968), and because MANAGED is the filter in managed_groups()
+# below, a role missing from it is discarded from every comparison — including
+# the negative assertions, which would then pass for the wrong reason.
+MANAGED = cognito_role_groups()
 
 FED_EMAIL = "fed-admin@example.invalid"
 NATIVE_EMAIL = "native-probe@example.invalid"

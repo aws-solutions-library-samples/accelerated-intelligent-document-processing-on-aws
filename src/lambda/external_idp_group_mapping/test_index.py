@@ -970,6 +970,74 @@ class TestCognitoGroupCoverage:
 
 
 @pytest.mark.unit
+class TestGroupSyncOnBothCopies:
+    """The add/remove side effects, run against both copies of the handler.
+
+    `TestHandler` covers these against `index.py` only, and
+    `TestDeployedInlineCopy` covers provenance and freshness against the
+    InlineCode without ever asserting a group was added or removed. The whole
+    nine-line removal loop could therefore be deleted from the copy that deploys
+    with every test still passing, which is what these four exist to stop.
+
+    Comparing `GROUP_MAPPING` between the copies, as `TestCognitoGroupCoverage`
+    does, catches a divergent mapping but says nothing about divergent *logic* —
+    and the copies are not textually identical (`index.py` factors claim parsing
+    into `parse_idp_groups`, the inline copy inlines it), so the possibility is
+    real rather than theoretical.
+    """
+
+    @pytest.fixture(params=sorted(COPY_LOADERS), autouse=True)
+    def _load(self, request):
+        mod = COPY_LOADERS[request.param](ENV_VARS)
+        self.handler = mod.handler
+        self.mock_cognito = MagicMock()
+        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+        mod.cognito = self.mock_cognito
+
+    def test_adds_the_mapped_group(self):
+        self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+
+        result = self.handler(_make_event(idp_groups="IdP-Admins"), None)
+
+        self.mock_cognito.admin_add_user_to_group.assert_called_once_with(
+            UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
+        )
+        assert _override_groups(result) == ["Admin"]
+
+    def test_removes_a_managed_group_the_claim_no_longer_names(self):
+        """The removal loop. Deleting it passed every other test in this file."""
+        self.mock_cognito.admin_list_groups_for_user.return_value = {
+            "Groups": [{"GroupName": "Admin"}, {"GroupName": "Author"}]
+        }
+
+        self.handler(_make_event(idp_groups="IdP-Authors"), None)
+
+        self.mock_cognito.admin_remove_user_from_group.assert_called_once_with(
+            UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
+        )
+        self.mock_cognito.admin_add_user_to_group.assert_not_called()
+
+    def test_does_not_remove_a_group_it_does_not_manage(self):
+        """Only groups in COGNITO_GROUPS are eligible for removal."""
+        self.mock_cognito.admin_list_groups_for_user.return_value = {
+            "Groups": [{"GroupName": "CustomGroup"}, {"GroupName": "Author"}]
+        }
+
+        self.handler(_make_event(idp_groups="IdP-Authors"), None)
+
+        self.mock_cognito.admin_remove_user_from_group.assert_not_called()
+
+    def test_does_not_re_add_a_group_the_user_already_holds(self):
+        self.mock_cognito.admin_list_groups_for_user.return_value = {
+            "Groups": [{"GroupName": "Admin"}]
+        }
+
+        self.handler(_make_event(idp_groups="IdP-Admins"), None)
+
+        self.mock_cognito.admin_add_user_to_group.assert_not_called()
+
+
+@pytest.mark.unit
 class TestAnnotatorClaimGrantsTheAnnotatorGroup:
     """A federated claim naming the annotator IdP group yields `Annotator`."""
 

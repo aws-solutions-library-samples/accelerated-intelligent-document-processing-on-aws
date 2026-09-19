@@ -195,8 +195,8 @@ Parameters:
       (Optional) The group name in your external IdP that should map to the Cognito Annotator role.
       For example: IDP-Annotators.
       Leave empty to keep Annotator membership under manual control in User Management; setting it
-      makes the IdP authoritative, so a federated user whose claim omits this group is removed from
-      Annotator at their next sign-in.
+      makes the IdP authoritative, so a federated user whose claim maps to some other role but omits
+      this group is removed from Annotator at their next fresh sign-in (not at a token refresh).
 
   ExternalIdPViewerGroupName:
     Type: String
