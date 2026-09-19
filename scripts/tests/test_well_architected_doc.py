@@ -132,8 +132,6 @@ NOT_LOGICAL_IDS = {
     "PublicAccessBlockConfiguration": "S3 bucket property name",
     "RedrivePolicy": "SQS queue property name",
     "Retry": "Step Functions state field name",
-    "TracingConfiguration": "state-machine property the template deliberately does "
-    "NOT set — the page's point is its absence",
     "VisibilityTimeout": "SQS queue property name",
     "WARN": "LogLevel enum value",
 }

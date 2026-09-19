@@ -264,6 +264,18 @@ Parameters:
     Description: SageMaker MLflow tracking server ARN
 
 Conditions:
+  # Gates the state machine's Tracing.Enabled AND every Lambda's Tracing mode.
+  # Each traced function writes `Tracing: !If [EnableXRayTracingCondition,
+  # Active, PassThrough]` rather than a literal, so setting the parameter to
+  # "false" actually turns Lambda tracing off; a hardcoded `Active` cannot be
+  # turned off at all, which is what the parameter's description promises.
+  # PassThrough — not an absent property — is written on the false branch: the
+  # two resolve identically, and naming it says the choice was made. SAM
+  # attaches AWSXrayWriteOnlyAccess whenever Tracing is declared in ANY form —
+  # it cannot evaluate the Fn::If — so neither branch changes a function's IAM,
+  # and a function that gains a Tracing property gains that grant. Asserted by
+  # scripts/tests/test_xray_tracing.py.
+  EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, "true"]
   DeployInVPC: !Not [!Equals [!Ref VpcId, ""]]
   HasGuardrailConfig:
     !And [
@@ -3992,7 +4004,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA invocation. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4072,7 +4084,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA result parsing. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4221,7 +4233,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc BDA completion signal. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -4474,7 +4486,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document. See docs/reporting-sql-layer.md §10.3.
         # The rollup Lambda discovers stack membership via the native
@@ -4667,7 +4679,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -4837,7 +4849,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5014,7 +5026,7 @@ Resources:
           - "sfn_runtime_handler.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — per-doc (or per-shard) Bedrock batch runtime. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
@@ -5171,7 +5183,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5691,7 +5703,7 @@ Resources:
       # value.)
       Timeout: 900
       MemorySize: 256
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — sync-invoked from pipeline per doc for pre/post-process hooks.
         # See docs/reporting-sql-layer.md §10.3.
@@ -5751,7 +5763,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Tags:
         # Data plane — runs per document.
         idp:plane: data
@@ -5906,7 +5918,7 @@ Resources:
         - !Ref LambdaArchitecture
       Timeout: 900
       MemorySize: 4096
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
@@ -6009,6 +6021,12 @@ Resources:
           OUTPUT_BUCKET: !Ref OutputBucket
           REPORTING_BUCKET: !Ref ReportingBucket
           SAVE_REPORTING_FUNCTION_NAME: !Ref SaveReportingFunctionName
+      # Declared because index.py calls xray_recorder.put_annotation: an
+      # annotation is only queryable if a segment exists to hold it, and with no
+      # Tracing property the function defaults to PassThrough, which creates one
+      # only when an upstream caller already sampled. Same reasoning as the other
+      # annotating pipeline stages (OCR, classification, extraction, assessment).
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationPolicyClassificationFunctionLogGroup
       Policies:
@@ -6147,6 +6165,9 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+      # Declared because index.py calls xray_recorder.put_annotation — see the
+      # note on RuleValidationPolicyClassificationFunction above.
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationFunctionLogGroup
       Policies:
@@ -6313,6 +6334,10 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+      # index.py wraps its handler in @xray_recorder.capture, which records a
+      # subsegment. Under PassThrough there is no segment to attach it to unless
+      # an upstream caller sampled, so the decorator's work is usually discarded.
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       LoggingConfig:
         LogGroup: !Ref RuleValidationOrchestrationFunctionLogGroup
       Policies:
@@ -6457,7 +6482,7 @@ Resources:
           - "index.handler"
       Timeout: 900
       MemorySize: 1024
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Environment:
         Variables:
           MLFLOW_TRACKING_URI: !Ref MlflowTrackingURI
