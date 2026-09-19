@@ -307,8 +307,10 @@ and makes it the *active reference*, so every subsequent test run records which
 ground truth it scored against — which is what lets you tell later whether a
 metric moved because your configuration changed or because the labels did.
 
-1. Go to **Test Studio** → **Test Sets** tab
-2. Select the test set and click **Publish version**
+1. Go to **Test Studio** → **Test Sets** tab and click the test set's name to open it
+2. Click **Publish version** at the top of the page
+3. Optionally give the version a label and notes, and choose whether it becomes the
+   active reference; then click **Publish version** in the dialog
 
 You don't need every document reviewed first: unreviewed fields keep their
 machine labels and stay flagged as such, so a time-boxed "first pass" benchmark

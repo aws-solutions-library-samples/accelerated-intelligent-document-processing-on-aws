@@ -39,9 +39,11 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import {
   getTestSetDocuments,
+  getTestSetVersions,
   generateDraftLabels,
   getDraftLabelJob,
   clearDraftLabels,
+  publishTestSetVersion,
   resetTestSetLabels,
   removeDocumentsFromTestSet,
 } from '../../graphql/generated';
@@ -58,6 +60,7 @@ import ReviewEffortModal from './ReviewEffortModal';
 import GenerateDraftLabelsModal from './GenerateDraftLabelsModal';
 import GenerateSyntheticDataModal from './GenerateSyntheticDataModal';
 import AddDocumentsModals, { type AddDocumentsMode } from './AddDocumentsModals';
+import PublishVersionModal, { type PublishVersionInput } from './PublishVersionModal';
 import RemoveDocumentsModal from './RemoveDocumentsModal';
 import type { TestSetDocumentSectionRef } from './GroundTruthVisualEditor';
 
@@ -395,7 +398,18 @@ const TestSetDetail = (): React.JSX.Element => {
   const [isStartingLabels, setIsStartingLabels] = useState(false);
   const [showEffortModal, setShowEffortModal] = useState(false);
   const [showLabelModal, setShowLabelModal] = useState(false);
-  const { isAdmin } = useUserRole();
+  // `canWrite` is Admin-or-Author, the two groups `publishTestSetVersion` is
+  // declared for in scripts/api_rbac_expectations.yaml. The server is the
+  // authority; this only stops offering a control that would come back 403.
+  const { isAdmin, canWrite } = useUserRole();
+  const [showPublishModal, setShowPublishModal] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [publishedMessage, setPublishedMessage] = useState<string | null>(null);
+  /**
+   * Highest version this set has published, for the publish dialog. Read when the
+   * dialog opens rather than on page load, and `null` until then.
+   */
+  const [latestVersion, setLatestVersion] = useState<number | null>(null);
   const [showClearDraftsModal, setShowClearDraftsModal] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
   const [isResetting, setIsResetting] = useState(false);
@@ -558,6 +572,57 @@ const TestSetDetail = (): React.JSX.Element => {
     }
   };
 
+  /**
+   * Open the publish dialog, and read the set's existing versions so it can name the
+   * number it is about to create.
+   *
+   * Read here rather than on page load because `getTestSetVersions` is Admin-or-Author
+   * while this page is also reachable by an Annotator, and because nobody who never
+   * opens the dialog needs it. A failure is logged and leaves the number unknown with
+   * the dialog still usable — the server assigns the real number either way.
+   */
+  const openPublishDialog = async () => {
+    setError(null);
+    setPublishedMessage(null);
+    setLatestVersion(null);
+    setShowPublishModal(true);
+    try {
+      const response = await client.graphql({
+        query: getTestSetVersions,
+        variables: { testSetId: testSetId ?? '' },
+      });
+      const numbers = (response.data?.getTestSetVersions ?? []).map((v) => v?.version ?? 0);
+      setLatestVersion(numbers.length > 0 ? Math.max(...numbers) : 0);
+    } catch (err) {
+      logger.error('Error loading test set versions:', err);
+    }
+  };
+
+  const handlePublishVersion = async (input: PublishVersionInput) => {
+    if (!testSetId) return;
+    setIsPublishing(true);
+    setError(null);
+    try {
+      const response = await client.graphql({
+        query: publishTestSetVersion,
+        variables: { input: { testSetId, ...input } },
+      });
+      const published = response.data?.publishTestSetVersion;
+      setShowPublishModal(false);
+      setPublishedMessage(
+        input.setAsActiveReference
+          ? `Published version ${published?.version ?? ''} and made it the active reference.`
+          : `Published version ${published?.version ?? ''}. The active reference is unchanged.`,
+      );
+    } catch (err) {
+      logger.error('Error publishing test set version:', err);
+      setShowPublishModal(false);
+      setError(`Could not publish a version: ${getErrorMessage(err)}`);
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+
   const handleResetLabels = async () => {
     setIsResetting(true);
     setError(null);
@@ -716,7 +781,25 @@ const TestSetDetail = (): React.JSX.Element => {
                   { text: testSetId ?? '', href: '' },
                 ]}
               />
-              <Header variant="h1" description="Browse this test set's documents and view or edit their ground truth">
+              <Header
+                variant="h1"
+                description="Browse this test set's documents and view or edit their ground truth"
+                actions={
+                  // Set-level, so it belongs on the page header rather than in the
+                  // Documents table's action row, which acts on rows. It sits here
+                  // rather than on the table page because publishing completes the
+                  // pass that Generate draft labels and Annotate below begin.
+                  canWrite ? (
+                    <Button
+                      onClick={openPublishDialog}
+                      disabled={isLoading || totalCount === 0 || labelJob?.status === 'RUNNING'}
+                      loading={isPublishing}
+                    >
+                      Publish version
+                    </Button>
+                  ) : undefined
+                }
+              >
                 Test Set: {testSetId}
               </Header>
             </SpaceBetween>
@@ -746,6 +829,12 @@ const TestSetDetail = (): React.JSX.Element => {
             {removedMessage && (
               <Alert type="success" dismissible onDismiss={() => setRemovedMessage(null)}>
                 {removedMessage}
+              </Alert>
+            )}
+
+            {publishedMessage && (
+              <Alert type="success" dismissible onDismiss={() => setPublishedMessage(null)}>
+                {publishedMessage}
               </Alert>
             )}
 
@@ -981,6 +1070,16 @@ const TestSetDetail = (): React.JSX.Element => {
               submitting={isStartingLabels}
               onDismiss={() => setShowLabelModal(false)}
               onSubmit={handleGenerateDraftLabels}
+            />
+
+            <PublishVersionModal
+              visible={showPublishModal}
+              testSetId={testSetId ?? ''}
+              documentCount={totalCount}
+              latestVersion={latestVersion}
+              submitting={isPublishing}
+              onDismiss={() => setShowPublishModal(false)}
+              onConfirm={handlePublishVersion}
             />
 
             <RemoveDocumentsModal

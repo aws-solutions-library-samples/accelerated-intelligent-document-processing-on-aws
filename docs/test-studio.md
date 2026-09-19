@@ -637,8 +637,9 @@ as it exists in the bucket; everything after it is matched regardless of case.
 directly into the TestSetBucket under `<set-name>/input/…` are auto-detected.
 
 Once a set exists, select it and use **Actions** to browse its documents, annotate
-its ground truth, add more documents, publish a version, edit its details, or
-delete it.
+its ground truth, add more documents, edit its details, or delete it. Opening the
+set — by clicking its name, or **Actions** → **Browse documents** — is where you
+generate draft labels, annotate, prune documents and publish a version.
 
 ### Browsing Test Set Documents and Ground Truth
 
@@ -651,6 +652,11 @@ browser as rows scroll into view (for PDFs only the byte ranges needed for
 page 1 are fetched, so large packets stay cheap). Each document name links
 to a per-document detail page (`/test-studio/sets/<id>/doc/<file>`) —
 mirroring the app's Document List → Document Details structure.
+
+This page is where a set is worked on end to end: **Publish version** at the top
+acts on the set as a whole, while **Add documents**, **Generate draft labels**,
+**Annotate**, **Clear draft labels** and **Remove** sit above the document list and
+act on its documents. See [Publishing a version](#publishing-a-version).
 
 The document detail page offers two views:
 
@@ -783,15 +789,26 @@ follows.
 > different things. See the
 > [terminology table](configuration-profiles.md#terminology-which-word-means-what).
 
-Select a COMPLETED test set and click **Publish version**. This freezes the
-current document and label state into a numbered version (`v1`, `v2`, …) and, by
-default, marks it the **active reference** — the version that test runs record
-themselves as having scored against. Publishing does not require every document
-to be reviewed; unreviewed fields keep their machine labels and remain flagged
-as such, which supports time-boxed "first pass" golden sets.
+Open the test set and click **Publish version** at the top of its page — beside the
+label-generation and annotation controls, since publishing is what completes the pass
+those two begin. The dialog names the version number it will create and how many
+documents it freezes, and takes an optional **Label** and **Notes** that appear
+wherever versions are listed.
 
-The **Version** column shows the active reference, and notes when the latest
-published version is ahead of it.
+Publishing freezes the current document and label state into a numbered version
+(`v1`, `v2`, …) and, by default, marks it the **active reference** — the version that
+test runs record themselves as having scored against. Clear **Make this the active
+reference** to publish a version without moving that pointer, leaving existing runs
+comparable against the version it already points at. Publishing does not require
+every document to be reviewed; unreviewed fields keep their machine labels and remain
+flagged as such, which supports time-boxed "first pass" golden sets.
+
+The button is available to Admins and Authors, the two groups
+`publishTestSetVersion` is restricted to, and is disabled while a draft-labelling run
+is still writing labels or the set has no documents.
+
+On the **Test Sets** table the **Version** column shows each set's active reference,
+and notes when the latest published version is ahead of it.
 
 Concurrency: version numbers are allocated atomically, so two people publishing
 at the same moment get distinct versions rather than one silently overwriting

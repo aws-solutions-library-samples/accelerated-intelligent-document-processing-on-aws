@@ -120,9 +120,12 @@ describe('an empty set', () => {
     expect(RUNNER).toMatch(/disabled=\{Boolean\(runDisabledReason\)\}/);
   });
 
-  it('cannot be published or annotated from the table', () => {
-    const publish = TEST_SETS.slice(TEST_SETS.indexOf("id: 'publish'"), TEST_SETS.indexOf('},', TEST_SETS.indexOf("id: 'publish'")));
-    expect(publish).toMatch(/!selectedItems\[0\]\?\.fileCount/);
+  it('cannot be published from its own page', () => {
+    const publish = DETAIL.slice(DETAIL.indexOf('onClick={openPublishDialog}'), DETAIL.indexOf('Publish version'));
+    expect(publish).toMatch(/totalCount === 0/);
+  });
+
+  it('cannot be annotated from the table', () => {
     expect(TEST_SETS).toMatch(
       /id: 'annotate', text: 'Annotate ground truth', disabled: selectedItems\.length !== 1 \|\| !selectedItems\[0\]\?\.fileCount/,
     );
