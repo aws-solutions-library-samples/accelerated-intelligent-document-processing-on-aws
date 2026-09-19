@@ -1,6 +1,6 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { fetchSharedAuthSession } from '../api/auth-session';
 import { generateClient } from '../api/client-shim';
 import { getMyProfile } from '../graphql/generated';
@@ -162,6 +162,15 @@ interface UserRoleReturn {
    * dependency array, so nothing retries it for the life of the mount.
    */
   sessionError: boolean;
+  /**
+   * Re-run the session read after a `sessionError`.
+   *
+   * Worth offering rather than only a page reload: `fetchSharedAuthSession` clears
+   * its in-flight slot in a `finally`, so a rejection is **not** cached and a retry
+   * issues a genuinely new `fetchAuthSession` — a reload would work too, but it
+   * discards the rest of the app's state to do the same thing.
+   */
+  retrySession: () => void;
   loading: boolean;
 }
 
@@ -171,18 +180,40 @@ const useUserRole = (): UserRoleReturn => {
   const [allowedTestSets, setAllowedTestSets] = useState<string[] | null>(null);
   const [sessionError, setSessionError] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Bumped by `retrySession`, and the effect's only dependency. The effect is still
+  // once-per-mount for every caller that never retries.
+  const [attempt, setAttempt] = useState(0);
+
+  const retrySession = useCallback(() => {
+    setSessionError(false);
+    setLoading(true);
+    setAttempt((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     const fetchUserData = async () => {
       try {
         // Fetch Cognito groups from auth session
         const session = await fetchSharedAuthSession();
-        const userGroups = session?.tokens?.idToken?.payload?.['cognito:groups'] || [];
+        // A resolved session with no ID token is "the groups are UNKNOWN", not
+        // "there are none". Reachable in Amplify v6 — cached Identity Pool
+        // credentials can still be valid while the ID token is no longer
+        // refreshable — and it RESOLVES rather than rejecting, so the outer catch
+        // never sees it and `sessionError` would otherwise stay false while
+        // `hasNoRole` went true.
+        if (!session?.tokens?.idToken) {
+          console.warn('Auth session carries no ID token; the caller groups are unknown');
+          setSessionError(true);
+          setLoading(false);
+          return;
+        }
+        const userGroups = session.tokens.idToken.payload?.['cognito:groups'] || [];
         let groupsArray = Array.isArray(userGroups) ? (userGroups as string[]) : [userGroups as string];
 
         // For federated users on first login, groups may not be in the initial token.
         // Force a single token refresh to pick up groups assigned by the PreTokenGeneration Lambda.
-        // This only runs once (empty deps array) so it won't cause excessive refresh calls.
+        // Once per mount (the effect re-runs only on an explicit retry), so this
+        // will not cause excessive refresh calls.
         const isFederated = (session?.tokens?.idToken?.payload?.['identities'] as string | undefined) !== undefined;
         const appGroups = groupsArray.filter((g) => APP_GROUPS.includes(g));
         if (isFederated && appGroups.length === 0) {
@@ -191,7 +222,18 @@ const useUserRole = (): UserRoleReturn => {
             const refreshedGroups = refreshed?.tokens?.idToken?.payload?.['cognito:groups'] || [];
             groupsArray = Array.isArray(refreshedGroups) ? (refreshedGroups as string[]) : [refreshedGroups as string];
           } catch (refreshErr) {
+            // This branch is reached only when the caller IS federated and holds no
+            // app group yet — precisely the state where "no group" and "the group
+            // claim has not arrived in the token yet" are indistinguishable, so it
+            // is the last place to assume the former. The forced refresh shares one
+            // in-flight slot across every consumer of this hook, so a single
+            // `400 NotAuthorizedException` reaches all of them at once, and the
+            // empty dependency array means nothing retries for the life of the
+            // mount. Report it as unknown, like the outer catch.
             console.warn('Token refresh for federated group sync failed:', refreshErr);
+            setSessionError(true);
+            setLoading(false);
+            return;
           }
         }
 
@@ -230,7 +272,9 @@ const useUserRole = (): UserRoleReturn => {
       }
     };
     fetchUserData();
-  }, []);
+    // `attempt` only changes when the user explicitly retries after a
+    // `sessionError`, so this remains one read per mount in the normal case.
+  }, [attempt]);
 
   const isAdmin = groups.includes('Admin');
   const isAuthor = groups.includes('Author');
@@ -281,6 +325,7 @@ const useUserRole = (): UserRoleReturn => {
     allowedTestSets,
     hasNoRole,
     sessionError,
+    retrySession,
     loading,
   };
 };

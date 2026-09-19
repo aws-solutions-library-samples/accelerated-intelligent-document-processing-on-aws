@@ -314,9 +314,11 @@ their result rows by it, and **8** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
-`make api-test`. It records one accepted gap, **GAP-02**: `queryKnowledgeBase`
-performs no group check, so any authenticated user can query a configured
-knowledge base.
+`make api-test`. It records two accepted gaps. **GAP-02**: the `queryKnowledgeBase`
+*resolver* performs no group check of its own, so the dispatcher's floor — which
+requires an assigned group — is the only group gate on it. **GAP-07**: the chat
+Function URL transport carries no `cognito:groups` claim, so neither chat route's
+group check can be applied to callers arriving that way.
 
 Two mechanical details matter when reading resolver code. The REST authorizer
 places claims at `requestContext.authorizer.claims` (not where an AppSync-era

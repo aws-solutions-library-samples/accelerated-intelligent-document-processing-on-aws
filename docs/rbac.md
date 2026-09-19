@@ -454,10 +454,11 @@ enforcement itself is Layer 2.
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
 | `processChanges`, `completeSectionReview`, `claimReview`, `releaseReview`, `skipAllSectionsReview` | Admin, Reviewer |
 | `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
-| `deleteChatSession`, `updateChatSessionTitle`, `deleteAgentJob` | All authenticated users (session-scoped; see note below) |
+| `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |
+| `updateChatSessionTitle` | All authenticated users (session-scoped) |
 | `updateAgentChatMessage` | All authenticated users (also IAM for backend) |
 
-> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. The session-scoped operations (`deleteChatSession`, `getChatMessages`, `listChatSessions`, etc.) remain open to any authenticated user, bounded by **session scoping** (each user only sees their own sessions).
+> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. The session-scoped **reads** (`getChatMessages`, `listChatSessions`) remain open to any authenticated user, bounded by **session scoping** (each user only sees their own sessions); the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
 >
 > *(Previously the Reviewer exclusion was UI-only — tracked as accepted-risk gap GAP-03 — because AppSync could not combine a `cognito_groups` restriction with `@aws_iam` on one field. AppSync has since been removed, so the real groups are now enforced.)*
 
@@ -465,8 +466,10 @@ enforcement itself is Layer 2.
 
 | Query | Allowed Roles |
 |-------|---------------|
-| `getDocument`, `listDocuments`, `listDocumentsByDateRange`, etc. | All authenticated (server-side filtering in resolvers) |
-| `getFileContents`, `getStepFunctionExecution` | All authenticated |
+| `getDocument`, `listDocuments`, `listDocumentsByDateRange` | Any assigned group (`ANY_GROUP`); server-side row filtering in resolvers on top |
+| `getDocumentVersion`, `compareDocumentVersions` | Any assigned group (`ANY_GROUP`) |
+| `getFileContents`, `getFilePresignedUrl` | Any assigned group (`ANY_GROUP`); bucket allow-list, **not** key-level scoping |
+| `getDocumentCount`, `listDocumentVersions`, `listDocumentsDateHour`, `listDocumentsDateShard`, `getStepFunctionExecution` | All authenticated — counts, run ids and index partitions, not content |
 | `getConfigVersions`, `getConfigVersion`, `getPricing`, `getModelConfigLimits`, `calculateCapacity` | Admin, Author, Viewer |
 | `listConfigProfileRevisions`, `getConfigProfileRevision` | Admin, Author, Viewer |
 | `listAvailableAgents` | Admin, Author, Viewer (Reviewer excluded; enforced server-side — see Agent Chat note above) |
@@ -476,8 +479,8 @@ enforcement itself is Layer 2.
 | `listDiscoveryJobs` | Admin, Author |
 | `getTestRun`, `getTestRuns`, `getTestRunStatus`, `compareTestRuns`, `getTestSets`, `validateTestFileName` | Admin, Author |
 | `listFinetuningJobs`, `getFinetuningJob`, `validateTestSetForFinetuning`, `listAvailableModels` | All authenticated (UI limited to Admin, Author) |
-| `queryKnowledgeBase` | All authenticated |
-| `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | All authenticated; resolver enforces per-session ownership and processor enforces `allowedConfigVersions` scope on the target document |
+| `queryKnowledgeBase` | Any assigned group (`ANY_GROUP`); the resolver itself has no group check (GAP-02), so the dispatcher's floor is the only one |
+| `sendChatDocumentMessage` (mutation), `onChatDocumentMessageUpdate` (subscription) | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07); the processor enforces per-session ownership and `allowedConfigVersions` scope on the target document |
 | `listUsers` | All authenticated (non-admin sees only self in resolver) |
 | `getMyProfile` | All authenticated |
 

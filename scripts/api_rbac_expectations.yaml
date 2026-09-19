@@ -1052,6 +1052,7 @@ function_url_endpoints:
           is not refused here.
       POST /chat/agent:
         groups: [Admin, Author, Viewer]
+        transport_enforces: ANY
         equivalent_op: sendAgentChatMessage
         enforced_in: src/lambda/agent_chat_processor/index.py
         residual_gap: GAP-07
@@ -1061,6 +1062,13 @@ function_url_endpoints:
           the verified transport principal only. The group check is enforced for
           callers whose groups are known (the dispatcher path forwards them);
           this transport forwards no group claim at all, hence GAP-07.
+          transport_enforces: ANY states that plainly — _caller_identity() in
+          chat_stream_processor/app.py returns None unconditionally and
+          _enforce_agent_chat_groups returns early on a null identity, so the
+          declared three-group policy applies on neither half of this route. The
+          span is wider than /chat/document's (three groups' worth of denial lost
+          rather than the group-less caller's), which is why the key belongs on
+          both rather than only on the route whose policy this branch changed.
 
 # ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization

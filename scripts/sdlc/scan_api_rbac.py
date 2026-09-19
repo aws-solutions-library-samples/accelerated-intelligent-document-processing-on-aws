@@ -134,6 +134,48 @@ POLICY_ANY_GROUP = "ANY_GROUP"
 POLICY_IAM_ONLY = "IAM_ONLY"
 POLICY_SENTINELS = (POLICY_ANY, POLICY_ANY_GROUP, POLICY_IAM_ONLY)
 
+# How much each policy restricts, weakest first. Used only to check that a route's
+# `transport_enforces:` is genuinely WEAKER than its declared `groups:` — the key
+# exists to record "this transport cannot apply the policy", so a value that
+# restricts MORE is a self-contradiction, and without this check the scan would
+# print it back as a recorded gap ("declares 'ANY' but can only enforce
+# 'ANY_GROUP'") and pass.
+_POLICY_STRENGTH = {POLICY_ANY: 0, POLICY_ANY_GROUP: 1, POLICY_IAM_ONLY: 3}
+_GROUP_LIST_STRENGTH = 2  # an explicit subset of groups is narrower than ANY_GROUP
+
+
+def _policy_strength(policy: object) -> int:
+    if isinstance(policy, str):
+        return _POLICY_STRENGTH.get(policy, _GROUP_LIST_STRENGTH)
+    return _GROUP_LIST_STRENGTH
+
+
+def weaker_policy_problem(enforceable: object, declared: object) -> str | None:
+    """Why ``enforceable`` is not strictly weaker than ``declared``, or ``None``.
+
+    Two group lists compare by inclusion: enforcing a SUPERSET of the declared
+    groups is weaker (it admits callers the policy would refuse), which is the
+    direction this key records.
+    """
+    e_rank, d_rank = _policy_strength(enforceable), _policy_strength(declared)
+    if e_rank > d_rank:
+        return (
+            f"transport_enforces {enforceable!r} restricts MORE than the declared "
+            f"groups {declared!r}; the key records what the transport cannot apply, "
+            "so its value must be weaker"
+        )
+    if e_rank < d_rank:
+        return None
+    if isinstance(enforceable, list) and isinstance(declared, list):
+        if not set(declared) < set(enforceable):
+            return (
+                f"transport_enforces {sorted(enforceable)} is not a strict superset "
+                f"of the declared groups {sorted(declared)}, so it is not weaker"
+            )
+        return None
+    # Same rank, both sentinels: equal, which the caller reports separately.
+    return None
+
 # Substrings that count as a server-side enforcement pattern in a resolver.
 ENFORCE_PATTERNS = (
     "PermissionError",
@@ -953,11 +995,17 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     url_resources = lambda_url_resources(main_text)
 
     # S0 over the route policies too — a route's `groups:` is read by the same
-    # code paths and a typo there is just as permissive.
+    # code paths and a typo there is just as permissive. `transport_enforces:` goes
+    # through the same validation: it is a policy value, and a misspelling in it
+    # would otherwise surface only as the S9 WARN printing the typo back verbatim.
     for _logical, _ep in endpoints.items():
         for _route, _rc in (_ep.get("routes") or {}).items():
             if "groups" in (_rc or {}):
                 _policy_findings("route", _route, _rc["groups"])
+            if "transport_enforces" in (_rc or {}):
+                _policy_findings(
+                    "route transport_enforces on", _route, _rc["transport_enforces"]
+                )
 
     def route_gap_or_fail(route_cfg: dict, route: str, check: str, message: str):
         """As gap_or_fail, but for a route.
@@ -1213,6 +1261,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                             f"route declares transport_enforces {enforceable!r}, "
                             "which equals its groups — remove the key rather than "
                             "asserting a divergence that does not exist",
+                            route,
+                        )
+                    )
+                elif weaker_policy_problem(enforceable, declared_floor):
+                    findings.append(
+                        Finding(
+                            "S9", "FAIL",
+                            weaker_policy_problem(enforceable, declared_floor) or "",
                             route,
                         )
                     )

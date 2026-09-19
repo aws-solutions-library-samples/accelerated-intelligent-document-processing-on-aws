@@ -240,6 +240,8 @@ def _make_fixture(
     the dispatcher stubs are empty, so S1-S5 contribute nothing and the S6-S9
     findings under test stand alone.
     """
+    # Tolerate a subdirectory of tmp_path, so one test can build two fixture trees.
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "scripts").mkdir()
     nested = tmp_path / "nested" / "api-resolvers"
     disp = nested / "src" / "lambda" / "http_api_dispatcher"
@@ -486,6 +488,68 @@ def test_s9_rejects_a_transport_enforces_that_asserts_no_divergence(tmp_path):
         "        residual_gap: GAP-99\n",
     )
     assert any("equals its groups" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_s0_validates_transport_enforces_as_a_policy_value(tmp_path):
+    """A typo in it would otherwise surface only as an S9 WARN printing it back."""
+    repo = _with_route_and_op(
+        tmp_path, "        transport_enforces: ANYY\n        residual_gap: GAP-99\n"
+    )
+    assert any("not a group list" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s9_rejects_a_transport_enforces_that_is_stronger_than_the_policy(tmp_path):
+    """The key records what the transport CANNOT apply, so it must be weaker.
+
+    Without this, `groups: ANY` with `transport_enforces: ANY_GROUP` scanned clean and
+    printed "declares 'ANY' but can only enforce 'ANY_GROUP'" — a self-contradiction
+    accepted as a recorded gap.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = _make_fixture(
+        tmp_path,
+        route_policy=(
+            "        groups: ANY\n"
+            "        transport_enforces: ANY_GROUP\n"
+            "        residual_gap: GAP-99\n"
+        ),
+    )
+    assert any("restricts MORE" in m for m in _fails(repo, "S9"))
+
+
+@pytest.mark.unit
+def test_s9_requires_a_weaker_group_list_to_be_a_strict_superset(tmp_path):
+    """Between two group lists, weaker means admitting more callers."""
+    # A narrower list is not weaker.
+    repo = _with_route_and_op(
+        tmp_path / "narrower",
+        "        transport_enforces: [Admin]\n        residual_gap: GAP-99\n",
+    )
+    assert any("not a strict superset" in m for m in _fails(repo, "S9"))
+
+    # A strict superset is weaker, and is reported as the recorded divergence.
+    # The handler's own group constant has to match the DECLARED policy, or the
+    # pre-existing code-vs-declaration arm of S9 fires instead.
+    repo2 = _make_fixture(
+        tmp_path / "wider",
+        gate_src=(
+            '_AGENT_CHAT_GROUPS = ("Admin", "Author")\n\n\n'
+            "def _enforce_agent_chat_groups(event):\n"
+            '    groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups")\n'
+            "    if groups is not None and not set(groups) & set(_AGENT_CHAT_GROUPS):\n"
+            '        raise PermissionError("Unauthorized")\n'
+        ),
+        route_policy=(
+            "        groups: [Admin, Author]\n"
+            "        transport_enforces: [Admin, Author, Viewer]\n"
+            "        enforced_in: src/lambda/proc/index.py\n"
+            "        residual_gap: GAP-99\n"
+        ),
+    )
+    assert not _fails(repo2, "S9")
+    assert _levels(repo2, "S9") == ["WARN"]
 
 
 @pytest.mark.unit

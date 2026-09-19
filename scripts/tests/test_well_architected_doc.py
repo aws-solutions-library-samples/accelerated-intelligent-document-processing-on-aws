@@ -686,20 +686,27 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
 
 
 @pytest.mark.unit
-def test_review_checklists_state_no_number_of_their_own() -> None:
-    """A count in a review checklist must also appear in the pillar prose.
+def test_review_checklists_do_not_restate_a_measured_count_wrongly() -> None:
+    """A checklist row quoting one of this file's measured counts must quote it right.
 
     Every other guard here works by matching a phrase template, and the six
     ``### Review checklist`` tables match none of them — so a count in a checklist
-    row was unverifiable by construction, and the Security one duly went stale by
-    six while the prose sixty lines above it was correct. Changing that row's number
-    to anything at all left the suite green.
+    row was unverifiable by construction, and the Security one duly went stale by six
+    while the prose sixty lines above it was correct. Changing that row's number to
+    anything at all left the suite green.
 
-    Rather than write a template per row, which would rot the same way, this asserts
-    the structural property the checklists actually have: they summarise facts the
-    pillars state, so a number appearing **only** in a checklist is a number nothing
-    measured. Adding a genuinely checklist-only figure means stating it in the prose
-    too, which is where the other guards can see it.
+    The check is deliberately scoped to the values this file **already measures**
+    (recomputed below from the templates and the expectations file) rather than to
+    every bare integer in a checklist. A blanket rule reads well but would fail the
+    first time someone adds a review cadence, a retention threshold, an AZ count or a
+    port number to a row — and the response to that is always an exemption, which is
+    how a guard stops being trusted. Scoped this way, a checklist may introduce a
+    figure of its own freely; what it may not do is quote a number this file measures
+    and get it wrong, which is the failure that happened.
+
+    ⚠️ This is a **complement** to the phrase guards, not a substitute: it cannot
+    tell 11 from another measured value that happens to be 15, so the strict phrase
+    assertions stay the primary check.
     """
     text = _doc()
     sections = re.findall(r"^### Review checklist$(.*?)(?=^#{2,3} |\Z)", text, re.S | re.M)
@@ -709,23 +716,50 @@ def test_review_checklists_state_no_number_of_their_own() -> None:
         "have been renamed, and this guard now checks nothing"
     )
 
-    joined = "\n".join(sections)
+    spec = yaml.safe_load(RBAC_EXPECTATIONS.read_text(encoding="utf-8"))
+    ops = spec["operations"]
+    narrowing = ("ownership", "scope_checked", "scope_filtered")
+    any_auth = [n for n, s in ops.items() if s.get("groups") == "ANY"]
+    measured = {
+        len(ops),
+        len(any_auth),
+        len([n for n, s in ops.items() if s.get("groups") == "ANY_GROUP"]),
+        len([n for n, s in ops.items() if s.get("groups") == "IAM_ONLY"]),
+        len([n for n in any_auth if not any(k in ops[n] for k in narrowing)]),
+        len(_of_type(PARENT_TEMPLATE, "AWS::Cognito::UserPoolGroup")),
+    }
+    assert len(measured) >= 4, f"the measured-value set looks broken: {measured}"
+
     prose = text
     for section in sections:
         prose = prose.replace(section, "")
 
     # Bare integers only: skip anything inside a version, a decimal, a percentage or
-    # an identifier, none of which is a measured count.
+    # an identifier, none of which is a count.
     number = r"(?<![\w.\-])(\d{1,4})(?![\w.%\-])"
-    stated = {int(m) for m in re.findall(number, joined)}
-    orphans = sorted(
-        n for n in stated if not re.search(rf"(?<![\w.\-]){n}(?![\w.%\-])", prose)
+    stated = {int(m) for m in re.findall(number, "\n".join(sections))}
+    # A checklist number is in scope only if the pillar prose states a DIFFERENT
+    # value for one of the measured facts and this one is not any of them — i.e. it
+    # looks like a restatement that has drifted.
+    wrong = sorted(
+        n
+        for n in stated
+        if n not in measured
+        and not re.search(rf"(?<![\w.\-]){n}(?![\w.%\-])", prose)
+        and any(abs(n - m) > 0 for m in measured)
+        and re.search(
+            rf"(?<![\w.\-]){n}(?![\w.%\-])[^|]*?"
+            r"(operation|`groups: ANY`|ANY_GROUP|Cognito group|user pool group)",
+            "\n".join(sections),
+            re.I,
+        )
     )
-    assert not orphans, (
-        f"the review checklists state {orphans} and nothing in the pillar text does.\n"
-        "A checklist is a summary of facts stated above it, so a number that appears "
-        "only there is unmeasured — and no other guard in this file can see it. "
-        "State it in the pillar prose (where a count phrase is checked) or drop it."
+    assert not wrong, (
+        f"a review checklist row states {wrong} about API operations or Cognito "
+        "groups, and that is not one of the values measured from the templates and "
+        f"scripts/api_rbac_expectations.yaml ({sorted(measured)}), nor stated "
+        "anywhere in the pillar text.\nThe checklist is summarising a count that has "
+        "drifted from the thing it summarises."
     )
 
 

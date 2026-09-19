@@ -48,7 +48,22 @@ describe('useUserRole hasNoRole', () => {
     resetSharedProfileScope();
     // A groupless caller is refused getMyProfile's siblings but not getMyProfile
     // itself, which stays ANY precisely so this case can resolve.
-    graphql.mockResolvedValue({ data: { getMyProfile: { allowedConfigVersions: [], allowedTestSets: [] } } });
+    //
+    // ⚠️ Deferred by a macrotask on purpose, not decorated. `mockResolvedValue`
+    // settles inside the same microtask drain, so React coalesces `setGroups` and
+    // the `finally`'s `setLoading(false)` into ONE render and no intermediate state
+    // is ever observable. Measured: under an already-resolved mock, inverting the
+    // two (publishing `setLoading(false)` before the profile await and `setGroups`
+    // after) still passed every case here — the render-sequence guard below
+    // recorded [false, false] and proved nothing. A real network call takes at
+    // least a macrotask; with `setTimeout` the same inversion records
+    // [false, true, false] and fails, which is the regression that matters.
+    graphql.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ data: { getMyProfile: { allowedConfigVersions: [], allowedTestSets: [] } } }), 0);
+        }),
+    );
   });
 
   it('is true for a self-registered user whose groups claim is absent', async () => {
@@ -118,6 +133,39 @@ describe('useUserRole hasNoRole', () => {
     // Admin to go and ask an administrator for a role sends them to someone with
     // nothing to fix, and nothing retries this effect for the life of the mount.
     fetchSharedAuthSession.mockRejectedValue(new Error('NotAuthorizedException'));
+
+    const { result } = renderHook(() => useUserRole());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.sessionError).toBe(true);
+    expect(result.current.hasNoRole).toBe(false);
+  });
+
+  it('reports a session with no ID token as sessionError', async () => {
+    // Resolves rather than rejecting, so the outer catch never sees it: cached
+    // Identity Pool credentials can outlive a refreshable ID token. Without the
+    // explicit check this yielded groups=[] and hasNoRole=true from a read that
+    // simply did not answer the question.
+    fetchSharedAuthSession.mockResolvedValue({ tokens: {} });
+
+    const { result } = renderHook(() => useUserRole());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.sessionError).toBe(true);
+    expect(result.current.hasNoRole).toBe(false);
+  });
+
+  it('reports a failed federated group refresh as sessionError', async () => {
+    // Only reachable when the caller is federated and holds no app group — the one
+    // state where "no group" and "the claim has not arrived yet" look identical, so
+    // assuming the former is least safe here.
+    fetchSharedAuthSession.mockImplementation((opts?: { forceRefresh?: boolean }) =>
+      opts?.forceRefresh
+        ? Promise.reject(new Error('NotAuthorizedException'))
+        : Promise.resolve({
+            tokens: { idToken: { payload: { identities: 'idp', sub: 'user-1' } } },
+          }),
+    );
 
     const { result } = renderHook(() => useUserRole());
 

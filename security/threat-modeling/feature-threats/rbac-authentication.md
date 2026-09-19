@@ -79,8 +79,12 @@ Authorization is enforced at multiple layers:
 > authentication**, which includes a caller in no group at all.
 > 13 additionally enforce config-version scope, 4 filter
 > list rows by it, and 8 enforce per-object ownership. `scripts/api_rbac_expectations.yaml`
-> is the manifest of record for all of this, and records exactly one accepted
-> open gap (**GAP-02**, `queryKnowledgeBase` carries no group check).
+> is the manifest of record for all of this, and records two accepted open gaps:
+> **GAP-02**, the `queryKnowledgeBase` *resolver* carries no group check of its own
+> (the operation is `ANY_GROUP`, so the dispatcher's floor is now the only group
+> gate on it), and **GAP-07**, the chat Function URL transport carries no
+> `cognito:groups` claim, so neither chat route's group check can be applied to
+> callers arriving that way.
 >
 > **Naming trap.** The CloudFormation logical id is `HttpApi` and much of the
 > surrounding code says "HTTP API" / "JWT authorizer", but the deployed resource

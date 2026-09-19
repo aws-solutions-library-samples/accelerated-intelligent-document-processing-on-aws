@@ -73,12 +73,17 @@ export function extractGraphQLErrorMessage(err: unknown): string {
  * Two things about the message arm, which is a fallback for resolvers that raise a
  * bare error and rely on the dispatcher's message-prefix mapping.
  *
- * ⚠️ The `access denied` substring is **load-bearing** and must not be removed: the
- * configuration and sync resolvers report an out-of-scope configuration version
- * **in band**, as HTTP 200 with a body whose message begins "Access denied:", and
- * that wording is the only thing identifying it.
+ * The `access denied` substring is a **forward-looking** guard, not a current
+ * dependency. The configuration and sync resolvers report an out-of-scope
+ * configuration version **in band**, as HTTP 200 with a body whose message begins
+ * "Access denied:", and that wording is the only thing identifying it — but
+ * `rest-client.ts` throws only when `!response.ok`, so an in-band denial comes back
+ * as `data` and never reaches this function, and none of this helper's six call
+ * sites is a configuration or sync path. Everything that does throw today carries an
+ * `errorType`. Keep the arm for the resolver that raises a bare message and relies on
+ * the dispatcher's prefix mapping; do not claim anything currently depends on it.
  *
- * ⚠️ But the same substring also matches a **server-side** IAM failure.
+ * ⚠️ The same substring also matches a **server-side** IAM failure.
  * `get_file_contents_resolver` wraps any unexpected `ClientError` as
  * `Error accessing S3: <message>`, and S3's message for a denial by the *Lambda's*
  * role, the bucket policy or the KMS key is literally "Access Denied". That

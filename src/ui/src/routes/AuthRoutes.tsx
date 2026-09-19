@@ -45,7 +45,7 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isAnnotatorOnly, hasNoRole, sessionError } = useUserRole();
+  const { isAnnotatorOnly, hasNoRole, sessionError, retrySession } = useUserRole();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -107,7 +107,7 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   if (sessionError) {
     return (
       <SettingsContext.Provider value={settingsContextValue}>
-        <SessionError />
+        <SessionError onRetry={retrySession} />
       </SettingsContext.Provider>
     );
   }

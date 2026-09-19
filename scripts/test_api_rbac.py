@@ -60,7 +60,7 @@ import argparse
 import base64
 import json
 import os
-import re
+import importlib.util
 import secrets
 import subprocess
 import sys
@@ -143,25 +143,29 @@ def _resolve_any_group(ops):
     expected to be denied, and every role being correctly allowed would be
     reported as a failure.
 
-    The vocabulary comes from ``template.yaml``, the same source
-    ``generate_api_rbac_manifest.py`` resolves it from, so the harness asserts
-    the group set the dispatcher actually enforces. An unresolvable sentinel is
-    fatal — running the matrix against a policy we could not read would report
-    passes that mean nothing.
+    The vocabulary is read by ``generate_api_rbac_manifest.cognito_group_names``,
+    the same function the generator resolves the manifest with and the same one
+    ``scan_api_rbac.app_group_names`` delegates to — so the harness asserts the
+    group set the dispatcher actually enforces, and there is no fourth regex of
+    this fact to drift. An unresolvable sentinel is fatal: running the matrix
+    against a policy we could not read would report passes that mean nothing.
     """
     if not any(o.get("groups") == ANY_GROUP for o in ops.values()):
         return
-    template = EXPECTATIONS_PATH.resolve().parent.parent / "template.yaml"
-    names = sorted(
-        set(
-            re.findall(
-                r"Type:\s*AWS::Cognito::UserPoolGroup\b[\s\S]*?"
-                r"GroupName:\s*([A-Za-z]\w*)\s*$",
-                template.read_text(),
-                re.M,
-            )
-        )
+    repo = EXPECTATIONS_PATH.resolve().parent.parent
+    template = repo / "template.yaml"
+    # Loaded by path, not imported: this script is run directly, so `scripts/sdlc`
+    # is not on sys.path.
+    spec = importlib.util.spec_from_file_location(
+        "_gen_api_rbac_manifest_for_harness",
+        repo / "scripts" / "sdlc" / "generate_api_rbac_manifest.py",
     )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        print(f"ERROR: could not load the manifest generator from {repo}", file=sys.stderr)
+        sys.exit(2)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    names = sorted(gen.cognito_group_names(template.read_text()))
     if not names:
         print(
             f"ERROR: no AWS::Cognito::UserPoolGroup found in {template}, so "
