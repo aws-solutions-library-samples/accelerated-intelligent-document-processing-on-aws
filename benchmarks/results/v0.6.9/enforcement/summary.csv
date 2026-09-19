@@ -1,0 +1,13 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+enforce-off,valuenoise_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,,,,,0.9964,0.0,,,,,61.549423,0.1458
+enforce-off,valuenoise_100.pdf,,1,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,,,,,0.996,0.0,,,,,59.317856,0.1458
+enforce-off,valuenoise_100.pdf,,2,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,,,,,0.9974,0.0,,,,,57.646276,0.1457
+enforce-off,small_narrow.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,,,,,0.9999,0.0,,,,,57.275785,0.1446
+enforce-off,small_narrow.pdf,,1,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,,,,,0.9999,0.0,,,,,57.584995,0.1447
+enforce-off,small_narrow.pdf,,2,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,,,,,0.9999,0.0,,,,,57.456865,0.1447
+enforce-warn,valuenoise_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9966,0.0,,,,,57.249645,0.1461
+enforce-warn,valuenoise_100.pdf,,1,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9971,0.0,,,,,57.112746,0.1457
+enforce-warn,valuenoise_100.pdf,,2,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9973,0.0,,,,,60.731159,0.1455
+enforce-warn,small_narrow.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9999,0.0,,,,,58.832504,0.1447
+enforce-warn,small_narrow.pdf,,1,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9999,0.0,,,,,57.220494,0.1447
+enforce-warn,small_narrow.pdf,,2,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9999,0.0,,,,,57.95259,0.1448
