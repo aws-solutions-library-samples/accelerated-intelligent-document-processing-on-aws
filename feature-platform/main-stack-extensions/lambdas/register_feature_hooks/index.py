@@ -35,6 +35,13 @@ So this resolver:
 Hooks contributed by other features are preserved untouched: a post-step list
 keeps other features' entries, and a flat section owned by a DIFFERENT featureId
 is left alone rather than hijacked (only one hook can own a flat point).
+
+A registration is also checked against the hook points the target
+configuration's processing mode actually reaches — see :func:`_check_reachability`
+and hook_point_reachability.py, which is generated from the state machine
+definition. `postOcr`, `postClassification` and `postExtraction` do not exist in
+BDA mode, and a hook registered there with `onError: fail` is refused rather than
+accepted as a gate that cannot gate (#982).
 """
 
 from __future__ import annotations
@@ -45,9 +52,10 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import boto3
+from hook_point_reachability import unreachable_hook_points
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -186,6 +194,90 @@ def _validate_hook(h: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _coerce_bool(raw: Any) -> Optional[bool]:
+    """A stored config flag as a bool, or None when it is not a boolean at all.
+
+    Config rows are written with their values STRINGIFIED, so `use_bda` arrives
+    as `"true"`/`"false"` as often as a real bool. None for anything else, which
+    makes the check below silent rather than guessing a processing mode — a wrong
+    guess would refuse a registration that is perfectly valid.
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no", ""):
+            return False
+    return None
+
+
+def _check_reachability(
+    payload: Dict[str, Any], feature_id: str, hooks: List[Dict[str, Any]]
+) -> List[str]:
+    """Refuse a gating hook that cannot fire; warn about an advisory one.
+
+    Three of the seven hook points — `postOcr`, `postClassification`,
+    `postExtraction` — exist only on the Pipeline branch of the state machine,
+    because BDA performs OCR, classification and extraction inside one Bedrock
+    Data Automation invocation. Registering a hook at one of them while the
+    target configuration sets `use_bda: true` produces a hook that is never
+    invoked at all, and until now that was accepted in silence: the config record
+    showed the hook, the UI showed the hook, and the execution history showed
+    nothing, because the dispatcher was never called (#982).
+
+    The policy the hook declares decides what happens here:
+
+    * `onError: fail` is a SECURITY POSTURE, not a preference — the caller is
+      saying the document must be aborted if the hook fails. A registration that
+      can never fire cannot honour that, so it is REFUSED. Failing the feature
+      stack's install is loud, immediate and fixable in one field; an inert
+      compliance gate is invisible and its harm is unbounded. The refusal names
+      the three remedies.
+    * anything else is advisory, so it is accepted with a WARNING returned to the
+      caller and logged. Refusing would block a legitimate "install now, switch
+      to pipeline mode later" sequence for a hook that gates nothing.
+
+    Registration-time checking cannot be the whole answer in either case, because
+    `use_bda` can change AFTER a hook is registered. The dispatcher re-checks on
+    every execution and records what it finds in `$.HookResults.preprocessing`.
+    """
+    use_bda = _coerce_bool(payload.get("use_bda"))
+    if use_bda is None:
+        return []
+    unreachable = unreachable_hook_points(use_bda)
+    if not unreachable:
+        return []
+    mode = "bda" if use_bda else "pipeline"
+    warnings: List[str] = []
+    for h in hooks:
+        point = h["point"]
+        if point not in unreachable:
+            continue
+        detail = (
+            f"hook point {point!r} does not exist in the {mode} processing mode "
+            f"of the active configuration (use_bda={use_bda}), so a hook "
+            f"registered there is never invoked"
+        )
+        if h["onError"] == "fail":
+            raise ValueError(
+                f"Refusing to register {feature_id!r} at {point!r} with "
+                f"onError='fail': {detail}, and its fail policy therefore cannot "
+                f"gate anything. Register the hook at 'preprocessing' (the one "
+                f"point both processing modes reach), or set onError to "
+                f"'continue'/'skip-remaining' if it is advisory, or activate a "
+                f"configuration with use_bda=false."
+            )
+        message = (
+            f"Hook {feature_id} registered at {point} will NOT run: {detail}. "
+            f"onError={h['onError']} (advisory), so the registration is accepted."
+        )
+        logger.warning(message)
+        warnings.append(message)
+    return warnings
+
+
 def _replace_pack_entries(
     payload: Dict[str, Any],
     feature_id: str,
@@ -299,10 +391,14 @@ def _register(feature_id: str, hooks_in: List[Dict[str, Any]]) -> Dict[str, Any]
         )
     payload = _decompress(item)
 
+    validated = [_validate_hook(raw) for raw in hooks_in]
+    # Before writing anything: a hook at a point this configuration's processing
+    # mode never reaches is either refused (onError: fail) or warned about.
+    warnings = _check_reachability(payload, feature_id, validated)
+
     # Group input hooks by step.
     by_step: Dict[str, List[Dict[str, Any]]] = {}
-    for raw in hooks_in:
-        v = _validate_hook(raw)
+    for v in validated:
         step = _HOOK_POINT_TO_STEP[v["point"]]
         by_step.setdefault(step, []).append(
             {
@@ -337,11 +433,19 @@ def _register(feature_id: str, hooks_in: List[Dict[str, Any]]) -> Dict[str, Any]
         feature_id,
         config_key,
     )
-    return {
+    out: Dict[str, Any] = {
         "featureId": feature_id,
         "hookCount": pack_count,
         "registeredAt": timestamp,
     }
+    if warnings:
+        # Extra key, not part of the GraphQL FeatureHooksRegistration type: this
+        # resolver is invoked DIRECTLY by a feature stack's custom resource, which
+        # gets the raw dict (and logs it). The runtime half of the signal — the
+        # dispatcher's `unreachableHooks` in the execution history — is what an
+        # operator reads after the fact.
+        out["warnings"] = warnings
+    return out
 
 
 def _unregister(feature_id: str) -> bool:

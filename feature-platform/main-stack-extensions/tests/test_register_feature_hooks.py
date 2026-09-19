@@ -430,3 +430,152 @@ def test_unregister_leaves_another_features_flat_hook_running(
     assert pp["enabled"] is True
     assert pp["arn"] == _FLAT_ARN
     assert pp["featureId"] == "pii-anonymizer"
+
+
+# --------------------------------------------------------------------------
+# Registering at a hook point the active configuration's processing mode cannot
+# reach (#982).
+#
+# `postOcr`, `postClassification` and `postExtraction` are states on the Pipeline
+# branch of the state machine only — BDA does OCR, classification and extraction
+# in one invocation, so there is no separate step to hook after. A registration
+# there under `use_bda: true` used to succeed silently: the config record showed
+# the hook, the UI showed the hook, and the execution history showed nothing,
+# because the dispatcher was never invoked for that point.
+#
+# `onError: fail` is refused (it declares a gate that cannot gate); any other
+# policy is advisory and is accepted with a warning.
+# --------------------------------------------------------------------------
+
+_OCR_POINT_HOOK = {
+    "point": "postOcr",
+    "arn": "arn:aws:lambda:us-east-1:123456789012:function:redact-hook",
+    "order": 50,
+    "onError": "fail",
+    "enabled": True,
+}
+
+
+def _seed_bda_active(version: str = "zz-bda-v1", use_bda=True) -> None:
+    """An ACTIVE config row in BDA mode.
+
+    `use_bda` is parameterised because config values are written STRINGIFIED into
+    DynamoDB, so `"true"` is as ordinary as `True` and both must be understood.
+    """
+    _table().put_item(
+        Item={
+            "Configuration": f"Config#{version}",
+            "IsActive": True,
+            "_config_format": "full",
+            "use_bda": use_bda,
+            "classes": [{"name": "Invoice"}],
+        }
+    )
+
+
+def test_gating_hook_at_a_bda_unreachable_point_is_refused(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The fail-open closed: a gate that cannot fire is an error, not a silence.
+
+    Accepting this registration is how an operator ends up with a PII-redaction
+    gate that never runs and a document that completes un-redacted, with nothing
+    anywhere to say so (#982). Failing the feature install instead is loud,
+    immediate and fixable in one field.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_active()
+
+    with pytest.raises(ValueError) as excinfo:
+        mod.handler(_register_event("pii-redactor", [_OCR_POINT_HOOK]), None)
+
+    message = str(excinfo.value)
+    assert "postOcr" in message
+    assert "onError='fail'" in message
+    # The refusal has to say what to do instead, or it is just an obstacle.
+    assert "preprocessing" in message
+
+    # And nothing was written: the refusal happens before the put_item.
+    row = _table().get_item(Key={"Configuration": "Config#zz-bda-v1"})["Item"]
+    assert "ocr" not in row
+
+
+def test_refusal_reads_a_stringified_use_bda(
+    monkeypatch, configuration_table, load_lambda
+):
+    """Config rows store their values as strings; `"true"` must still refuse."""
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_active(use_bda="true")
+
+    with pytest.raises(ValueError, match="postOcr"):
+        mod.handler(_register_event("pii-redactor", [_OCR_POINT_HOOK]), None)
+
+
+def test_advisory_hook_at_a_bda_unreachable_point_is_accepted_with_a_warning(
+    monkeypatch, configuration_table, load_lambda
+):
+    """An observing hook is not a gate, so refusing it would block a legitimate
+    "install now, switch to pipeline mode later" sequence. It registers, and the
+    warning rides back on the response the feature stack's custom resource logs."""
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_active()
+    advisory = {**_OCR_POINT_HOOK, "onError": "continue"}
+
+    result = mod.handler(_register_event("observer", [advisory]), None)
+
+    assert result["hookCount"] == 1
+    assert len(result["warnings"]) == 1
+    assert "postOcr" in result["warnings"][0]
+    assert "NOT run" in result["warnings"][0]
+    row = _table().get_item(Key={"Configuration": "Config#zz-bda-v1"})["Item"]
+    assert [h["featureId"] for h in row["ocr"]["postHook"]] == ["observer"]
+
+
+def test_pipeline_mode_registers_the_same_gating_hook_without_complaint(
+    monkeypatch, configuration_table, load_lambda
+):
+    """The other direction: the point exists in pipeline mode, so nothing is wrong.
+
+    Without this, a check that refused everything would look equally green.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_active(use_bda=False)
+
+    result = mod.handler(_register_event("pii-redactor", [_OCR_POINT_HOOK]), None)
+
+    assert result["hookCount"] == 1
+    assert "warnings" not in result
+    row = _table().get_item(Key={"Configuration": "Config#zz-bda-v1"})["Item"]
+    assert [h["featureId"] for h in row["ocr"]["postHook"]] == ["pii-redactor"]
+
+
+def test_gating_hook_at_a_shared_point_is_accepted_in_bda_mode(
+    monkeypatch, configuration_table, load_lambda
+):
+    """`preprocessing` and the shared tail exist in BOTH modes, so a gate there
+    is exactly what the docs tell an extension author to use — it must not be
+    caught by a check aimed at the three Pipeline-only points."""
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_bda_active()
+
+    result = mod.handler(
+        _register_event("pii-anonymizer", [_flat_hook("preprocessing")]), None
+    )
+    assert result["hookCount"] == 1
+    assert "warnings" not in result
+
+
+def test_registration_is_unchanged_when_the_mode_is_not_recorded(
+    monkeypatch, configuration_table, load_lambda
+):
+    """A config row with no `use_bda` at all gives no basis to refuse anything.
+
+    Guessing the mode would refuse valid registrations; the dispatcher's runtime
+    audit covers this row once a document actually runs against it.
+    """
+    mod = _preload(monkeypatch, load_lambda)
+    _seed_versions("zz-active-v1", filler=1)
+
+    result = mod.handler(_register_event("pii-redactor", [_OCR_POINT_HOOK]), None)
+    assert result["hookCount"] == 1
+    assert "warnings" not in result

@@ -1356,6 +1356,7 @@ class ConfigurationManager:
         if save_as_default:
             # Frontend sends the complete config to become the new default
             config = IDPConfig(**config_dict)
+            self._reject_inert_gating_hooks(config)
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
                 config,
@@ -1389,6 +1390,7 @@ class ConfigurationManager:
                 deep_update(full_dict, config_dict)
                 # Validate
                 full_config = IDPConfig(**full_dict)
+                self._reject_inert_gating_hooks(full_config)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     full_config,
@@ -1401,6 +1403,7 @@ class ConfigurationManager:
             else:
                 # No default available, try to save as-is
                 config = IDPConfig(**config_dict)
+                self._reject_inert_gating_hooks(config)
                 self.save_configuration(
                     CONFIG_TYPE_CONFIG,
                     config,
@@ -1446,6 +1449,7 @@ class ConfigurationManager:
 
         # Validate and save the full config
         updated_config = IDPConfig(**current_dict)
+        self._reject_inert_gating_hooks(updated_config)
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
             updated_config,
@@ -1459,6 +1463,44 @@ class ConfigurationManager:
         return True
 
     # ===== Private Methods =====
+
+    @staticmethod
+    def _reject_inert_gating_hooks(config: IDPConfig) -> None:
+        """Refuse to save a config whose `onError: fail` hook can never fire.
+
+        Three hook points — postOcr, postClassification, postExtraction — exist
+        only on the Pipeline branch of the state machine, so with
+        ``use_bda: true`` a hook registered at one of them is never invoked and
+        its `onError: fail` policy never gates anything (#982). Accepting that
+        save is fail-open: the config record shows the hook, the UI shows the
+        hook, and the execution history shows nothing, because the dispatcher was
+        never called.
+
+        Raised only for the GATING policy. An advisory hook (`continue` /
+        `skip-remaining`) is logged and saved — a config may legitimately carry an
+        observing hook for a mode it will be switched to later — and the
+        dispatcher repeats the whole audit at runtime into
+        `$.HookResults.preprocessing`, which is what covers a `use_bda` flip made
+        after the hook was registered.
+
+        This is the WRITE boundary only. It is deliberately NOT an IDPConfig
+        validator: a record already in the table with this shape (written by an
+        earlier release, or by `register_feature_hooks` writing to DynamoDB
+        directly) must still LOAD, or every Lambda that reads the configuration
+        would start failing on upgrade.
+        """
+        from .hook_reachability import unreachable_hook_registrations
+
+        findings = unreachable_hook_registrations(config.model_dump(mode="python"))
+        gating = [f for f in findings if f["gating"]]
+        for finding in findings:
+            if not finding["gating"]:
+                logger.warning(finding["message"])
+        if gating:
+            raise ValueError(
+                "Configuration rejected: "
+                + "; ".join(f["message"] for f in gating)
+            )
 
     def _get_full_config_for_version(self, version: str) -> Optional[IDPConfig]:
         """

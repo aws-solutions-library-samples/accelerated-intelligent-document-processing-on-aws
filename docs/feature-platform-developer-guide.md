@@ -396,7 +396,10 @@ Create (and clears them on Delete) — the same custom-resource pattern as
 at **every hook point the active processing mode reaches** (see "Gating with
 `onError: fail`" below); before v0.6.9 it aborted only at `preprocessing`. Note
 that `postOcr`, `postClassification` and `postExtraction` do not exist in BDA
-mode, so a hook registered there — `fail` policy included — never runs at all.
+mode, so a hook registered there never runs at all — and with `onError: fail` the
+registration is **refused**, which fails your stack's install rather than handing
+you a gate that cannot gate. Register a gating hook at `preprocessing`, which both
+modes reach.
 
 **`preprocessing` / `postprocessing` shape.** Unlike the post-step lists, these
 two are standalone top-level config sections each holding ONE flat hook (its
@@ -451,18 +454,33 @@ and routed the document forward, so a gating hook could fail and the document wa
 processed as though it had succeeded, with no signal
 ([#919](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/919)).
 
-⚠️ **Three of the seven hook points do not exist in BDA mode, and a `fail`
-policy there is silently inert.** Walking the ASL graph from `StartAt` down each
-side of the `RouteByProcessingMode` Choice: `PreprocessingHook` precedes the
-Choice, so it runs in both modes; the BDA branch (`BDA_CheckExistingData`)
-reaches only `PostRuleValidationHook`, `PostSummarizationHook` and
-`PostprocessingHook`; the Pipeline branch (`OCRStep`) additionally reaches
-`PostOcrHook`, `PostClassificationHook` and — inside the `ProcessSections` Map —
+⚠️ **Three of the seven hook points do not exist in BDA mode, so a `fail` policy
+there has nothing to gate.** Walking the ASL graph from `StartAt` down each side
+of the `RouteByProcessingMode` Choice: `PreprocessingHook` precedes the Choice, so
+it runs in both modes; the BDA branch (`BDA_CheckExistingData`) reaches only
+`PostRuleValidationHook`, `PostSummarizationHook` and `PostprocessingHook`; the
+Pipeline branch (`OCRStep`) additionally reaches `PostOcrHook`,
+`PostClassificationHook` and — inside the `ProcessSections` Map —
 `PostExtractionHook`. In BDA mode there is no state to invoke the dispatcher for
-those three points, so nothing raises `HookFatalError` and no catcher fires: the
-document completes as though the gate had passed, with nothing in the execution
-history to say otherwise. `patterns/unified/tests/test_workflow_hook_fatal_catch.py`
-pins this reachability so the table cannot drift from the graph. Tracked as
+those three points, so nothing raises `HookFatalError` and no catcher fires.
+
+Because nothing runs at those points, nothing there can report the problem
+either, so the host does it from the two places that do run:
+`registerFeatureHooks` **refuses** an `onError: fail` registration at a point the
+active configuration's mode cannot reach (advisory policies are accepted with a
+warning), and the `preprocessing` dispatch — ahead of the routing Choice, in both
+modes — lists every unreachable registered hook at
+`$.HookResults.preprocessing.Payload.unreachableHooks`, which is what covers a
+`use_bda` flip made after the hook was registered.
+
+The reachability table all three consumers read is GENERATED from the state
+machine definition by `scripts/generate_hook_point_reachability.py` into
+`hook_point_reachability.py` beside the dispatcher, beside
+`register_feature_hooks`, and in `idp_common/config/` — a hand-written list of
+three point names would go stale the moment a point moved.
+`patterns/unified/tests/test_hook_point_reachability.py` re-derives it from the
+ASL and fails if any committed copy drifts or if the per-branch table changes.
+Mapping the three points onto BDA's own output boundaries remains open under
 [#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982);
 the mode-by-point table is in
 [Feature Platform → hook points by processing mode](feature-platform.md#not-every-hook-point-exists-in-every-processing-mode).

@@ -78,6 +78,28 @@ Each resolver enforces its own Cognito-group check, because the authorizer only
 authenticates. See [`docs/migration-appsync-to-rest.md`](../../docs/migration-appsync-to-rest.md)
 §5 for the full transport description.
 
+## Hook registration is checked against the processing mode
+
+`registerFeatureHooks` writes a feature's hooks inline into the **active** config
+version, and three of the seven hook points — `postOcr`, `postClassification`,
+`postExtraction` — exist only on the Pipeline branch of the unified state machine.
+So a registration at one of them while the active configuration sets
+`use_bda: true` produces a hook that is never invoked.
+
+With `onError: fail` that registration is **refused** (a `ValueError`, which fails
+the feature stack's install): the policy declares a gate, and a hook that cannot
+run cannot gate. Any other policy is advisory, so it registers and the response
+carries a `warnings` entry, which the calling custom resource logs. The point-mode
+table comes from `lambdas/register_feature_hooks/hook_point_reachability.py`,
+generated from the state machine definition by
+`scripts/generate_hook_point_reachability.py`.
+
+Registration time cannot be the whole check, because `use_bda` can change after a
+hook is registered — the dispatcher repeats the audit on every document and
+records it at `$.HookResults.preprocessing.Payload.unreachableHooks`. Both halves
+are described in
+[`docs/feature-platform.md`](../../docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode).
+
 ## Why additive + flag-gated?
 
 The main `template.yaml` declares an `EnableFeaturePlatform` parameter (default `'true'`), and everything in this directory is deployed (or not) by a single nested-stack `AWS::CloudFormation::Stack` resource — `FeaturePlatformStack` — guarded by the `IsFeaturePlatformEnabled` condition. The GraphQL schema fragment in `appsync/feature-platform.graphql` — a vestigial directory name, kept only so existing references still resolve — is merged into `nested/api-resolvers/src/api/schema.graphql`, wrapped in clearly-marked `# === Feature Platform (optional) ===` block comments so it can be lifted back out if needed. That schema file is no longer served by AppSync — AppSync was removed — but it remains the authoritative baseline for field-level RBAC (`scripts/sdlc/scan_api_rbac.py`) and for the dispatcher's argument validation spec (`scripts/sdlc/generate_api_validation_spec.py`), so a new feature field still has to be declared there.

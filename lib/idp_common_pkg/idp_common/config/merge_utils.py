@@ -636,8 +636,36 @@ def validate_config(
     _validate_simple_integrated_lists(merged, result)
     _validate_prompt_cache_prefix(merged, result)
     _validate_discovery_openai(merged, result)
+    _validate_pipeline_hook_reachability(merged, result)
 
     return result
+
+
+def _validate_pipeline_hook_reachability(
+    merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Reject a pipeline hook that gates at a point this mode never reaches.
+
+    `postOcr`, `postClassification` and `postExtraction` exist only on the
+    Pipeline branch of the state machine — BDA does OCR, classification and
+    extraction in one invocation, so there is no separate step to hook after. A
+    config with ``use_bda: true`` and a hook at one of those points describes a
+    hook that never runs: the dispatcher is not invoked there, so nothing
+    executes, nothing fails, and nothing reaches the execution history (#982).
+
+    An ``onError: fail`` registration is an ERROR, because that policy is a
+    declared gate and this configuration cannot honour it. Any other policy is
+    advisory, so it is a WARNING — a config may legitimately carry an observing
+    hook for the mode it will be switched to later.
+    """
+    from .hook_reachability import unreachable_hook_registrations
+
+    for finding in unreachable_hook_registrations(merged_config):
+        if finding["gating"]:
+            result["valid"] = False
+            result["errors"].append(finding["message"])
+        else:
+            result["warnings"].append(finding["message"])
 
 
 def _load_valid_bedrock_models() -> set:
