@@ -100,6 +100,26 @@ Variant = namedtuple(
 # Structural helpers (CloudFormation introspection)
 # ---------------------------------------------------------------------------
 
+#: Region every shelled-out `aws` call below must target, set once by main().
+#
+# These helpers shell out to the AWS CLI rather than using boto3, and the CLI
+# resolves its region from the environment or the profile — NOT from this
+# script's --region. So with `--region us-west-2` and a `default` profile whose
+# region is us-east-1, the deploy went to us-west-2 (idp-cli takes --region) and
+# every assertion below then asked us-east-1, where the stack does not exist:
+# "Stack with id ... does not exist", reported as a validation failure on a stack
+# that had in fact reached CREATE_COMPLETE. The run passed or failed depending on
+# whether AWS_REGION happened to be exported, which is the worst kind of
+# conditional gate. Same defect class as the seller stack-test's unforwarded
+# --region. The validators keep their (stack_name -> result) signature so they
+# stay reusable by the probe framework, hence a module global rather than a
+# parameter.
+_REGION = None
+
+
+def _region_flag():
+    return f" --region {_REGION}" if _REGION else ""
+
 
 def _stack_resource_types(stack_name):
     """Return {logical_id: resource_type} for every resource in the stack.
@@ -110,7 +130,7 @@ def _stack_resource_types(stack_name):
     out = cbd.run_command(
         f"aws cloudformation list-stack-resources --stack-name {stack_name} "
         "--query 'StackResourceSummaries[].[LogicalResourceId,ResourceType]' "
-        "--output json"
+        f"--output json{_region_flag()}"
     )
     try:
         pairs = json.loads(out.stdout or "[]")
@@ -123,7 +143,7 @@ def _stack_outputs(stack_name):
     """Return {OutputKey: OutputValue} for the stack."""
     out = cbd.run_command(
         f"aws cloudformation describe-stacks --stack-name {stack_name} "
-        "--query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output json"
+        f"--query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output json{_region_flag()}"
     )
     try:
         pairs = json.loads(out.stdout or "[]")
@@ -135,7 +155,8 @@ def _stack_outputs(stack_name):
 def _stack_parameters(stack_name):
     out = cbd.run_command(
         f"aws cloudformation describe-stacks --stack-name {stack_name} "
-        "--query 'Stacks[0].Parameters[].[ParameterKey,ParameterValue]' --output json"
+        "--query 'Stacks[0].Parameters[].[ParameterKey,ParameterValue]' "
+        f"--output json{_region_flag()}"
     )
     try:
         pairs = json.loads(out.stdout or "[]")
@@ -198,6 +219,7 @@ def _run_sample_document_test(stack_name, sample_file, sample_dir):
                 verify_classification,
             ),
         ],
+        region=_REGION,
     )
 
 
@@ -454,7 +476,7 @@ def run_variant(
 
         status = cbd.run_command(
             f"aws cloudformation describe-stacks --stack-name {stack_name} "
-            "--query 'Stacks[0].StackStatus' --output text"
+            f"--query 'Stacks[0].StackStatus' --output text{_region_flag()}"
         )
         # Match the status EXACTLY. A substring test for "COMPLETE" is a trap:
         # ROLLBACK_COMPLETE and UPDATE_ROLLBACK_COMPLETE both contain it, so a
@@ -592,6 +614,12 @@ def main(argv=None):
             "[REGION=...] [ADMIN_EMAIL=...]"
         )
         return 0 if args.list else 2
+
+    # Pin the region for every shelled-out `aws` call. Without this they follow
+    # the profile's region, which need not be the one being deployed to — see
+    # the note on _REGION.
+    global _REGION
+    _REGION = args.region
 
     selected = list(VARIANTS) if args.variant == "both" else [by_key[args.variant]]
 
