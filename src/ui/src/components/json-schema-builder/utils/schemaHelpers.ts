@@ -67,11 +67,13 @@ export const resolveAttributeType = (
  * entry.
  *
  * `type` is in this list. A `$ref` with a sibling `type: 'object'` is legal draft
- * 2020-12 — both keywords apply — but it is redundant when the target is an
- * object and contradictory when it is not, and a designer node carrying it reads
- * back differently from one without: `resolveAttributeType` above prefers a
- * sibling `type`, so a spurious `'object'` masks the real type of a `$ref` to a
- * scalar definition.
+ * 2020-12 — both keywords apply — and redundant for every target the designer can
+ * hold, since it writes every `$defs` entry as an object. What it costs is that a
+ * node carrying it reads back differently from one without: `resolveAttributeType`
+ * above prefers a sibling `type` over following the pointer, so the same attribute
+ * answers differently depending on which route created it. Were a `$ref` to a
+ * non-object definition ever to appear, the sibling would also be contradictory
+ * rather than merely redundant.
  */
 const INLINE_OBJECT_KEYWORDS = ['type', 'properties', 'required', 'minProperties', 'maxProperties', 'additionalProperties'] as const;
 

@@ -872,9 +872,11 @@ const SchemaInspector = ({
                         // One shared shape for "this attribute references a class", so that
                         // picking a class here and picking one in the Add Attribute modal
                         // produce the same JSON (#957). `type` goes with the inline-object
-                        // keywords: the referenced `$defs` entry declares the type, and
-                        // keeping `type: 'object'` here would mask the real type of a
-                        // reference to a non-object definition.
+                        // keywords, because the referenced `$defs` entry declares the type.
+                        // The helper clears them by explicit `undefined`, which is what
+                        // `updateAttribute` treats as "delete this key" — deleting them from
+                        // a copy of the attribute instead left `properties` and `required`
+                        // in place underneath the new `$ref`.
                         onUpdate(refAttributeUpdates(detail.selectedOption.value));
                       } else {
                         // Dropping the reference leaves the attribute with nothing declaring

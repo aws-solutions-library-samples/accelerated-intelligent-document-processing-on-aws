@@ -16,10 +16,12 @@
  * changes the shape fails here rather than surfacing as an intermittent bug.
  *
  * Why the shape is the bare `$ref`: the referenced `$defs` entry declares the
- * type, and a sibling `type: 'object'` on a reference to a *non-object*
- * definition is actively wrong. The backend derives the type by following the
- * pointer (`bedrock/tool_schema.py` annotates outgoing `$ref` nodes with the
- * target's real type), so there is nothing for the designer to supply.
+ * type, and the backend derives it by following the pointer — `tool_schema.py`
+ * annotates outgoing `$ref` nodes with the target's real type — so there is
+ * nothing for the designer to supply. It also stays correct *if* a `$ref` to a
+ * non-object definition ever appears, which the designer cannot currently hold:
+ * `convertJsonSchemaToClasses` builds every `$defs` entry as `type: 'object'`
+ * and `exportSchema` writes every one back the same way.
  */
 
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -154,11 +156,16 @@ describe("the inspector's Reference Existing Class picker", () => {
   });
 
   /**
-   * The designer holds every `$defs` target as a class, and an imported schema can
-   * define one that is not an object — a constrained string, say. Stamping
-   * `type: 'object'` onto a reference to it is not merely redundant: the Pydantic
-   * model generator drops the `$ref` and yields an unconstrained `dict[str, Any]`,
-   * and the tool schema tells the model the field is an object.
+   * A forward guard on a constructed fixture, not a state this product can reach:
+   * `convertJsonSchemaToClasses` flattens every imported `$defs` entry to
+   * `type: 'object'` and `exportSchema` writes them all back that way, so the
+   * designer cannot hold a class standing for a non-object definition today.
+   *
+   * It is worth pinning because of what a mismatch costs if that changes, measured
+   * against the backend: stamping `type: 'object'` onto a reference to a scalar
+   * definition makes the Pydantic generator drop the `$ref` and yield an
+   * unconstrained `dict[str, Any]`, and makes the tool schema tell the model the
+   * field is an object. Both fail silently.
    */
   it('adds no contradictory type for a reference to a non-object definition', async () => {
     const scalarClass = {
@@ -200,11 +207,16 @@ describe('refAttributeUpdates', () => {
   });
 
   it('clears by explicit undefined, which is how updateAttribute deletes a key', () => {
-    // An omitted key means "leave it alone" to `updateAttribute`, so the cleared
-    // keywords have to be present and undefined rather than simply absent.
+    // An omitted key means "leave it alone" to `updateAttribute`, so a keyword has to
+    // be present and undefined to go. This is load-bearing beyond `type`: the previous
+    // inspector code built a copy of the attribute and `delete`d `properties` and
+    // `required` from it, which left both on the stored attribute as orphan state
+    // underneath the `$ref`.
     const updates = refAttributeUpdates('#/$defs/Address');
-    expect(Object.keys(updates)).toContain('type');
-    expect(updates.type).toBeUndefined();
+    for (const keyword of ['type', 'properties', 'required']) {
+      expect(Object.keys(updates)).toContain(keyword);
+      expect(updates[keyword]).toBeUndefined();
+    }
   });
 });
 
