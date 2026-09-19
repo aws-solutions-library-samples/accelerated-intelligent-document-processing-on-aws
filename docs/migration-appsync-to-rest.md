@@ -175,12 +175,13 @@ migration preserves parity as follows:
   transport had otherwise lost: under AppSync a field the caller's groups did not
   satisfy was rejected at the API layer, and a field with no directive was not
   reachable by a lower-privilege caller by accident.
-  - ⚠️ **Restored for group-scoped operations only.** 26 of the 118 declared
+  - ⚠️ **Restored for group-scoped operations only.** 15 of the 118 declared
     operations are declared `ANY`, where the dispatcher checks authentication but
     not group membership, so for those a forgotten resolver check is still
-    reachable by any authenticated caller. Which of them should be narrowed is
-    tracked as issue
-    [#979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979).
+    reachable by any authenticated caller. They are enumeration, platform and
+    profile reads; 101 operations require a group, 11 of them via `ANY_GROUP`
+    ("any group the stack creates", so a self-registered caller in no group is
+    refused). See [RBAC](./rbac.md) for the full breakdown.
     The `idp_common.api_adapter` passthrough for events that already carry their
     own `arguments` + `identity` used to sit **outside** this check — an invocation
     of that shape supplied the groups the check was made against — and is now

@@ -279,13 +279,62 @@ operation whose required groups were never declared is closed rather than open �
 this is what makes a forgotten resolver check on a **group-scoped** operation a
 visible 403 instead of an unprotected endpoint.
 
-⚠️ **This does not cover every operation.** 26 of the 118 declared operations are
-declared `ANY`, which means the dispatcher enforces authentication but *not* group
-membership for them, so a forgotten resolver check on one of those is still
-reachable by any authenticated caller — `getFileContents`, for example, bounds
-itself with a bucket allowlist rather than a group check. Deciding which of the 26
-should be narrowed is tracked as issue
-[#979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979).
+**Four policies, and the difference between two of them is easy to miss.** An
+operation declares one of:
+
+| Policy | The dispatcher requires | Count |
+|---|---|---|
+| a group list, e.g. `[Admin, Author]` | one of those groups | 90 |
+| `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 11 |
+| `ANY` | authentication only; group membership is not consulted | 15 |
+| `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
+
+`ANY` means authenticated, not vetted, and that is weaker than it reads. When you
+set `AllowedSignUpEmailDomain`, the user pool permits self-service sign-up
+(`AllowAdminCreateUserOnly: false`), so anyone with an address at that domain can
+register themselves and hold a valid token whose `cognito:groups` claim is
+**empty**. Such a caller satisfies every `ANY` operation and no group-scoped one.
+`ANY_GROUP` is the declaration for "an administrator has onboarded this person,
+whichever role they were given"; the document-content reads (`getDocument`,
+`listDocuments`, `listDocumentsByDateRange`, `getDocumentVersion`,
+`compareDocumentVersions`, `getFileContents`, `getFilePresignedUrl`,
+`queryKnowledgeBase`) and three mutations (`deleteAgentJob`, `deleteChatSession`,
+`sendChatDocumentMessage`) carry it.
+
+`ANY_GROUP` is written as a sentinel rather than as the five group names because
+the policy is about the *vocabulary*, not about five particular names:
+`scripts/sdlc/generate_api_rbac_manifest.py` resolves it against the
+`AWS::Cognito::UserPoolGroup` resources in `template.yaml` on every build, so a
+sixth group added there is covered without editing any operation. The Lambda never
+sees the sentinel — it is expanded before the manifest is written, so the runtime
+keeps one comparison, and an unexpanded `ANY_GROUP` in the manifest means a broken
+build and is rejected as one (deny-all) rather than guessed at.
+
+⚠️ **The `ANY` operations are still only authenticated.** The dispatcher enforces
+authentication but *not* group membership for those 15, so a forgotten resolver
+check on one of them is reachable by any authenticated caller, including a caller
+in no group. They are enumeration, platform, profile and feature-catalog reads —
+counts, index partitions, run-id lists, the caller's own profile, the published
+release number, breaker status, fine-tuning job status, the feature catalog — and
+each entry in `scripts/api_rbac_expectations.yaml` carries a note saying why `ANY`
+is the intended answer for it. Four of the 15 are narrowed further by record
+ownership or by the caller's allowed configuration versions.
+
+⚠️ **A group check is not a per-document check.** `ANY_GROUP` establishes that the
+caller was onboarded; it does not establish that this document is theirs. A Viewer
+may read any document a Viewer can see, and `getFileContents` bounds itself with a
+bucket allowlist rather than a per-document scope. If your documents must be
+private to their submitter or to a tenant, group membership is the wrong axis.
+
+⚠️ **This layer gates the REST route only.** Chat streaming is served by a Lambda
+Function URL that reaches the chat processors directly, without the dispatcher, and
+that transport forwards no `cognito:groups` claim at all. So
+`sendChatDocumentMessage` refuses a caller in no group on the REST route, and
+`POST /chat/document` on the Function URL does not — recorded as `GAP-07` in
+`scripts/api_rbac_expectations.yaml`. The Function URL exists in the commercial
+partition only; on GovCloud the UI falls back to the dispatcher plus polling, where
+the floor applies.
+
 **An `identity` carried on the event is no longer authoritative for this check.**
 `idp_common.api_adapter` used to pass an event carrying its own `arguments` +
 `identity` through untouched, so an invocation of that shape chose the groups this

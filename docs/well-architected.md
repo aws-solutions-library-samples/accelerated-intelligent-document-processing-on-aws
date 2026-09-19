@@ -208,22 +208,36 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-118 operations. 90 of them are restricted to named Cognito groups and 2
+118 operations. 101 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
-principals, rejecting every Cognito caller. The remaining 26 are declared `groups: ANY`,
-which that file defines as any authenticated Cognito user. Nine of those 26 are narrowed
-further, by record ownership or by the caller's allowed configuration versions; the other
-17 are not, so a valid session is the whole check. That set is read-oriented but it is not
-trivial — it includes `getDocument`, `getFileContents`, `getFilePresignedUrl`,
-`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
-`queryKnowledgeBase` and `getMyProfile`. Some carry other controls that are real but are
-not group or per-document controls: `getFilePresignedUrl` and `getFileContents` resolve
-through `_validate_bucket()` in
+principals, rejecting every Cognito caller. 11 of those accept any assigned group
+rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
+the full list of groups `template.yaml` creates, so what they refuse is a caller an
+administrator has not placed in any group. That set is the document-content reads
+(`getDocument`, `listDocuments`, `listDocumentsByDateRange`, `getDocumentVersion`,
+`compareDocumentVersions`, `getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`)
+plus three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`).
+
+The remaining 15 are declared `groups: ANY`, which that file defines as any authenticated
+Cognito user — including one in no group, which self-service sign-up produces when you set
+`AllowedSignUpEmailDomain`. Four of those 15 are narrowed further, by record ownership or
+by the caller's allowed configuration versions; the other 11 are not, so a valid session is
+the whole check. They are enumeration, platform and profile reads —
+`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`, `getMyProfile`,
+`getLatestPublishedVersion`, `getCircuitBreakerStatus`, the two fine-tuning job reads and
+the three feature-catalog reads — so they disclose the existence, volume and timing of
+processed documents, and what this deployment has installed, rather than document content.
+
+Two caveats on what the group floor does and does not buy you. It is a check on *who may
+ask*, not on *which document they may read*: a Viewer may read any document a Viewer can
+see, so if your documents need to be private to their submitter or to a tenant, group
+membership is the wrong axis and no setting of these declarations fixes it. And the other
+controls on the file reads are real but are not per-document either — `getFilePresignedUrl`
+and `getFileContents` resolve through `_validate_bucket()` in
 `nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py`, which allow-lists
 the stack's own buckets and so prevents reading arbitrary S3, not reading another user's
-document. This is the designed posture rather than a defect, but it means every
-authenticated user of your pool can read processed document content. Decide whether that
-is acceptable for your data classification, and see [RBAC](./rbac.md).
+document. Decide whether that is acceptable for your data classification, and see
+[RBAC](./rbac.md).
 
 The API Gateway REST transport replaced AWS AppSync entirely — there are no
 `AWS::AppSync` resources in any template — see

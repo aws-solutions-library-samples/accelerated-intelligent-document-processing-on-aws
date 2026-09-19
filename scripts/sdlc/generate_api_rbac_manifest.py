@@ -36,6 +36,13 @@ list next to it — is the point: a third copy of the policy is the defect this
 repo has already been bitten by, and drift between copies is invisible until
 somebody is either denied or let in.
 
+The one policy this script does not merely copy is ``ANY_GROUP`` ("authenticated
+AND in at least one group this stack creates"), which is resolved here into the
+concrete group names declared by ``AWS::Cognito::UserPoolGroup`` in
+``template.yaml``. See the note beside the ``ANY_GROUP`` constant below for why
+the vocabulary is read from the template on every build rather than spelled out
+per operation, and why the expansion happens here rather than in the Lambda.
+
 USAGE
 -----
   python3 scripts/sdlc/generate_api_rbac_manifest.py           # (re)write the JSON
@@ -79,11 +86,44 @@ MANIFEST_OUT = (
 # understand rather than guessing at a shape it was not written for.
 MANIFEST_VERSION = 1
 
-# The two non-list policies the expectations file uses, carried through verbatim
+# The two non-list policies that appear in the MANIFEST, carried through verbatim
 # so the runtime does not have to reinterpret them:
 #   ANY       — any authenticated Cognito caller (row/ownership scoping only)
 #   IAM_ONLY  — backend/IAM principals only; every Cognito caller is rejected
 SENTINELS = ("ANY", "IAM_ONLY")
+
+# A third policy the EXPECTATIONS file may declare, which is resolved here and
+# therefore never reaches the manifest:
+#   ANY_GROUP — authenticated AND holding at least one of the groups this stack
+#               creates. Expanded to the concrete list of
+#               ``AWS::Cognito::UserPoolGroup`` names in ``template.yaml``.
+#
+# WHY A SENTINEL RATHER THAN WRITING THE FIVE GROUP NAMES IN THE YAML
+# -------------------------------------------------------------------
+# "At least one assigned group" is a statement about the group vocabulary, not
+# about five particular names. Spelling the names out would be transparent but
+# would silently stop covering a SIXTH group added to ``template.yaml`` later:
+# the operation would keep naming five groups while the deployment had six, and
+# nothing would say so. That is the "fix applied to the instance and not the
+# class" defect this repository keeps hitting. The sentinel is evaluated against
+# the template on every build, so a new group joins the set by construction.
+#
+# WHY IT IS EXPANDED HERE RATHER THAN CARRIED TO THE RUNTIME
+# ----------------------------------------------------------
+# The Lambda has no copy of ``template.yaml``, so it could not resolve the
+# vocabulary itself — it could only implement the weaker "holds any group at
+# all", which is a different policy. Expanding at build time means the runtime
+# keeps exactly one comparison (list intersection, already fail-closed and
+# already tested) and gains no new concept. It also means an ``ANY_GROUP``
+# string reaching ``api_rbac_manifest.json`` is a build fault, and ``authz.py``
+# treats it as one: it is not in the manifest's sentinel set, so the whole
+# manifest is rejected and every operation is denied, rather than the unknown
+# policy being read as permissive.
+ANY_GROUP = "ANY_GROUP"
+
+# Every policy string the expectations file may use. An unrecognised one is a
+# hard error (exit 2), never a default.
+EXPECTATION_SENTINELS = SENTINELS + (ANY_GROUP,)
 
 
 class GeneratorError(Exception):
@@ -136,6 +176,10 @@ def build_manifest(spec: dict, valid_groups: set[str] | None = None) -> dict:
     (``kind``, ``enforced_in``, ``scope_checked``, ``args``, ``known_gap``, …)
     describes how the policy is tested or scoped, which is a build-time and
     test-time concern; the request path needs the group floor and nothing else.
+
+    ``ANY_GROUP`` is the one policy that is *resolved* rather than copied: it
+    becomes the sorted list of ``valid_groups``, i.e. the groups the stack
+    actually creates. See the note beside ``ANY_GROUP`` above.
     """
     ops = (spec or {}).get("operations") or {}
     if not ops:
@@ -147,9 +191,25 @@ def build_manifest(spec: dict, valid_groups: set[str] | None = None) -> dict:
             raise GeneratorError(f"{field}: entry has no 'groups' key")
         groups = entry["groups"]
         if isinstance(groups, str):
+            if groups == ANY_GROUP:
+                # Resolved against the template, never against a list in this
+                # script: the vocabulary is the stack's. An empty vocabulary
+                # would expand to an empty list, which the runtime rejects as a
+                # malformed policy and which reads as "denied to everyone" — so
+                # refuse to emit it and name the cause instead.
+                if not valid_groups:
+                    raise GeneratorError(
+                        f"{field}: groups '{ANY_GROUP}' means 'any group this "
+                        "stack creates', but no AWS::Cognito::UserPoolGroup was "
+                        f"found in {ROOT_TEMPLATE.name}, so it cannot be "
+                        "resolved"
+                    )
+                operations[field] = sorted(valid_groups)
+                continue
             if groups not in SENTINELS:
                 raise GeneratorError(
-                    f"{field}: groups '{groups}' is not a list or one of {SENTINELS}"
+                    f"{field}: groups '{groups}' is not a list or one of "
+                    f"{EXPECTATION_SENTINELS}"
                 )
             operations[field] = groups
             continue

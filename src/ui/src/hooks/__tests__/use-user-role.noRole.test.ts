@@ -1,0 +1,103 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * A signed-in account in no application role has to be recognisable as such.
+ *
+ * The API refuses such a caller the document reads (`listDocuments`, `getDocument`,
+ * `getFileContents`, …) with 403, because those operations require an assigned
+ * Cognito group. Without `hasNoRole` the app mounted the full Viewer navigation for
+ * them — `navigation.tsx` falls through to `viewerNavItems` when no role flag is set
+ * — so every page failed in turn and the result read as a broken deployment rather
+ * than an account nobody had finished setting up.
+ *
+ * Two properties matter and are easy to get wrong:
+ *
+ *  * it must be false while the session is still resolving, or a normal sign-in
+ *    flashes the "no access" screen;
+ *  * it must test membership of the app's own group vocabulary, not
+ *    `groups.length`. An IdP-mapped group name this app does not know grants
+ *    nothing here, so it must not read as a role.
+ */
+
+import { renderHook, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const fetchSharedAuthSession = vi.fn();
+const graphql = vi.fn();
+
+vi.mock('../../api/auth-session', () => ({
+  fetchSharedAuthSession: (...args: unknown[]) => fetchSharedAuthSession(...args),
+}));
+
+vi.mock('../../api/client-shim', () => ({
+  generateClient: () => ({ graphql: (...args: unknown[]) => graphql(...args) }),
+}));
+
+// Imported after the mocks, which vitest hoists.
+import useUserRole, { resetSharedProfileScope } from '../use-user-role';
+
+const sessionWithGroups = (groups: string[] | undefined) => ({
+  tokens: { idToken: { payload: { ...(groups ? { 'cognito:groups': groups } : {}), sub: 'user-1' } } },
+});
+
+describe('useUserRole hasNoRole', () => {
+  beforeEach(() => {
+    fetchSharedAuthSession.mockReset();
+    graphql.mockReset();
+    resetSharedProfileScope();
+    // A groupless caller is refused getMyProfile's siblings but not getMyProfile
+    // itself, which stays ANY precisely so this case can resolve.
+    graphql.mockResolvedValue({ data: { getMyProfile: { allowedConfigVersions: [], allowedTestSets: [] } } });
+  });
+
+  it('is true for a self-registered user whose groups claim is absent', async () => {
+    fetchSharedAuthSession.mockResolvedValue(sessionWithGroups(undefined));
+
+    const { result } = renderHook(() => useUserRole());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.hasNoRole).toBe(true);
+    expect(result.current.groups).toEqual([]);
+  });
+
+  it('is true when the claim carries only a group this app does not know', async () => {
+    fetchSharedAuthSession.mockResolvedValue(sessionWithGroups(['SomeIdpGroup']));
+
+    const { result } = renderHook(() => useUserRole());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.hasNoRole).toBe(true);
+  });
+
+  it.each(['Admin', 'Author', 'Reviewer', 'Annotator', 'Viewer'])('is false for a %s', async (group) => {
+    fetchSharedAuthSession.mockResolvedValue(sessionWithGroups([group]));
+
+    const { result } = renderHook(() => useUserRole());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.hasNoRole).toBe(false);
+  });
+
+  it('is false while the session is still being read', () => {
+    // A promise that never settles: the hook is mid-flight, which must not render
+    // as "no access".
+    fetchSharedAuthSession.mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useUserRole());
+
+    expect(result.current.loading).toBe(true);
+    expect(result.current.hasNoRole).toBe(false);
+  });
+
+  it('is true when the session cannot be read at all', async () => {
+    // The hook's own catch sets groups to [] and stops loading. There is no role,
+    // and saying so is better than mounting an app whose every call 403s.
+    fetchSharedAuthSession.mockRejectedValue(new Error('no session'));
+
+    const { result } = renderHook(() => useUserRole());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.hasNoRole).toBe(true);
+  });
+});

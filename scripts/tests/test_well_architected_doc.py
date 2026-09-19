@@ -586,15 +586,18 @@ def test_redrive_policy_table_matches_the_queues() -> None:
 def test_api_authorization_counts_match_the_expectations_file() -> None:
     """``scripts/api_rbac_expectations.yaml`` is the declared source of truth.
 
-    The page claimed authorization was enforced per operation on group membership.
-    It is not: a quarter of the operations are ``groups: ANY``, and most of those
-    carry no ownership or configuration-version narrowing either. That is the
-    designed posture, so the code is not the defect — the page was.
+    Authorization is not uniform across the operations, and the page has to say so
+    in the numbers the file actually declares. Three policies coexist: an explicit
+    group list, ``ANY_GROUP`` (any group an administrator assigned), and ``ANY``
+    (authenticated, group or no group — which self-service sign-up produces). The
+    page previously flattened them and read as if group membership were checked
+    everywhere.
     """
     spec = yaml.safe_load(RBAC_EXPECTATIONS.read_text(encoding="utf-8"))
     ops = spec["operations"]
     iam_only = sorted(n for n, s in ops.items() if s.get("groups") == "IAM_ONLY")
     any_auth = sorted(n for n, s in ops.items() if s.get("groups") == "ANY")
+    any_group = sorted(n for n, s in ops.items() if s.get("groups") == "ANY_GROUP")
     group_restricted = len(ops) - len(iam_only) - len(any_auth)
     narrowing = ("ownership", "scope_checked", "scope_filtered")
     unnarrowed = sorted(n for n in any_auth if not any(k in ops[n] for k in narrowing))
@@ -606,8 +609,16 @@ def test_api_authorization_counts_match_the_expectations_file() -> None:
     )
     _assert_count_phrase(
         group_restricted,
-        "{n} of them are restricted to named Cognito groups",
-        f"{group_restricted} operations declare an explicit group list.",
+        "{n} of them require Cognito group membership",
+        f"{group_restricted} operations require a group: "
+        f"{group_restricted - len(any_group)} declare an explicit list and "
+        f"{len(any_group)} accept any assigned group.",
+    )
+    _assert_count_phrase(
+        len(any_group),
+        "{n} of those accept any assigned group",
+        f"{len(any_group)} operations are declared ANY_GROUP — any of the groups "
+        "template.yaml creates, so a self-registered user in no group is refused.",
     )
     _assert_count_phrase(
         len(iam_only),

@@ -11,6 +11,7 @@ import useSettingsContext from '../../contexts/settings';
 import generateS3PresignedUrl from '../common/generate-s3-presigned-url';
 import useAppContext from '../../contexts/app';
 import { getFileContents, getFilePresignedUrl } from '../../graphql/generated';
+import { FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { useDocumentVersion } from '../../contexts/document-version';
 
 interface FileViewerProps {
@@ -200,7 +201,9 @@ const FileViewer = ({ objectKey, bucket, presignVia = 'client' }: FileViewerProp
       }
     } catch (err) {
       logger.error('Error preparing document for viewing:', err);
-      setError('Failed to load document. Please try again.');
+      // "Please try again" is advice that cannot work for a 403, and the file reads
+      // now require an assigned Cognito group — so branch on the error.
+      setError(isAuthorizationError(err) ? FILE_ACCESS_DENIED_MESSAGE : 'Failed to load document. Please try again.');
     } finally {
       setIsLoading(false);
     }

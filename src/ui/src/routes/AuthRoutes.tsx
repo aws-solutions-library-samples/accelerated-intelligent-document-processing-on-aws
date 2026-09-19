@@ -20,6 +20,7 @@ import AgentChatRoutes from './AgentChatRoutes';
 import QuickStartWidget from '../components/agent-chat/QuickStartWidget';
 import FeaturesRoutes from './FeaturesRoutes';
 import WelcomePage from '../pages/WelcomePage';
+import { NoRoleAssigned } from './SessionStates';
 
 import {
   DOCUMENTS_PATH,
@@ -44,7 +45,7 @@ interface AuthRoutesProps {
 
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
-  const { isAnnotatorOnly } = useUserRole();
+  const { isAnnotatorOnly, hasNoRole } = useUserRole();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -91,6 +92,20 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh' }}>
           <Spinner size="large" />
         </div>
+      </SettingsContext.Provider>
+    );
+  }
+
+  // An account in no Cognito group is refused every document read by the API, so
+  // mounting the app would hand it the Viewer navigation (see the fall-through in
+  // navigation.tsx) and fail on each page in turn — which reads as a broken
+  // deployment rather than an account nobody has finished setting up. Say it once
+  // instead. `hasNoRole` is false while the session is still resolving, so this
+  // cannot fire on a user whose groups simply have not arrived yet.
+  if (hasNoRole) {
+    return (
+      <SettingsContext.Provider value={settingsContextValue}>
+        <NoRoleAssigned onSignOut={signOut} />
       </SettingsContext.Provider>
     );
   }

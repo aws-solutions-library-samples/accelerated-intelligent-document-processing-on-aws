@@ -106,6 +106,9 @@ def handles(field: str) -> bool:
 # only authenticates, so the group check must be re-applied here (defense in
 # depth, matching the Lambda-backed resolvers).
 #   - value = set of allowed groups (caller must be in at least one)
+#   - value = _ANY_GROUP      -> any caller holding at least one group; a caller
+#                                in NO group is refused. Mirrors the expectations
+#                                file's ANY_GROUP policy (see below).
 #   - value = _ANY_AUTHENTICATED -> any authenticated user (schema type-default)
 #   - value = _IAM_ONLY       -> backend/IAM principals only; NEVER a Cognito
 #                                user. These are unreachable from the UI and the
@@ -117,11 +120,29 @@ def handles(field: str) -> bool:
 # uses the absence of an entry to mean the OPPOSITE — deny. One value with two
 # opposite meanings across two tables in one request path is a defect waiting to
 # happen, so each table names its own sentinel and neither uses ``None``. (See
-# ``authz._UNDECLARED``.) The values themselves are unchanged.
+# ``authz._UNDECLARED``.)
+#
+# WHY ``_ANY_GROUP`` IS "AT LEAST ONE GROUP" AND NOT THE FIVE NAMES
+# -----------------------------------------------------------------
+# The policy in ``scripts/api_rbac_expectations.yaml`` is "at least one of the
+# groups this stack creates", and the generator resolves that vocabulary out of
+# ``template.yaml`` into ``api_rbac_manifest.json``. ``authz.enforce`` applies
+# that exact list, and it runs EARLIER IN THE SAME REQUEST than anything here —
+# ``dispatch`` is only reached from the handler, after the floor. So spelling the
+# five names out again in this module would buy nothing and would go stale the
+# day a sixth group is added to the template, which is the defect class this repo
+# keeps hitting. Asserting only "the caller holds some group" keeps this layer
+# free of a group-name list while still refusing the caller the tightening is
+# about: the self-registered user whose ``cognito:groups`` claim is empty.
+# ``test_ddb_direct_required_groups_agrees_with_the_manifest`` pins the
+# relationship, requiring the manifest's policy for an ``_ANY_GROUP`` field to be
+# the full vocabulary rather than some narrower list this check would not catch.
 _IAM_ONLY = object()
 _ANY_AUTHENTICATED = object()
+_ANY_GROUP = object()
 _REQUIRED_GROUPS: Dict[str, Any] = {
-    "getDocument": _ANY_AUTHENTICATED,
+    # document content: an assigned group is required (expectations: ANY_GROUP)
+    "getDocument": _ANY_GROUP,
     "listDocumentsDateHour": _ANY_AUTHENTICATED,
     "listDocumentsDateShard": _ANY_AUTHENTICATED,
     "listDiscoveryJobs": {"Admin", "Author"},
@@ -130,8 +151,8 @@ _REQUIRED_GROUPS: Dict[str, Any] = {
     "getAgentJobStatus": {"Admin", "Author", "Viewer"},
     "listAgentJobs": {"Admin", "Author", "Viewer"},
     "updateAgentJobStatus": _IAM_ONLY,
-    # any authed; further scoped to the caller's own PK inside the handler
-    "deleteAgentJob": _ANY_AUTHENTICATED,
+    # a mutation; further scoped to the caller's own PK inside the handler
+    "deleteAgentJob": _ANY_GROUP,
     "getCircuitBreakerStatus": _ANY_AUTHENTICATED,
 }
 
@@ -158,6 +179,21 @@ def _enforce_rbac(field: str, event: Dict[str, Any]) -> None:
     if required is _IAM_ONLY:
         logger.warning("Rejected IAM-only op %s from Cognito caller", field)
         raise PermissionError(f"Unauthorized: {field} is not callable via the API")
+    if required is _ANY_GROUP:
+        # An assigned group, whichever one. authz.enforce has already checked the
+        # caller's groups against the stack's actual vocabulary for this field
+        # (see the note on _ANY_GROUP above), so the only thing left to refuse
+        # here is the empty claim.
+        if not _caller_groups(event):
+            logger.warning(
+                "Forbidden: caller in no group attempted %s (requires an "
+                "assigned group)",
+                field,
+            )
+            raise PermissionError(
+                f"Unauthorized: {field} requires an assigned group"
+            )
+        return
     groups = _caller_groups(event)
     if not (set(required).intersection(groups)):
         logger.warning(

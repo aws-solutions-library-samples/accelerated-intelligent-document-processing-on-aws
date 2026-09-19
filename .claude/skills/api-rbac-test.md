@@ -75,8 +75,14 @@ Notes:
 - **Config-version scope denials are IN-BAND:** the configuration & sync
   resolvers return `{success:false, error:{type:"Unauthorized"}}` with **HTTP
   200** (NOT a 403). The harness treats an in-band `Unauthorized` as a denial.
-- **4 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Viewer(3),
-  defined in `template.yaml`.
+- **5 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Annotator(3) >
+  Viewer(4), defined in `template.yaml`. That template is where the group
+  vocabulary lives — `generate_api_rbac_manifest.py` reads it to resolve
+  `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
+  ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in
+  `scripts/test_api_rbac.py`); it creates **no groupless user**, so
+  "denied to a caller in no group" is asserted offline only, in
+  `test_http_api_dispatcher_authz.py`.
 - **`@aws_auth(cognito_groups)` is SILENTLY IGNORED** on this multi-auth API
   (it also allows AWS_IAM). Only `@aws_cognito_user_pools(...)` directives and
   server-side checks are real. Server-side enforcement is the source of truth;
@@ -238,5 +244,29 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 > endpoint. Declaring an operation `ANY` to make a 403 go away is exactly the
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
-> any authenticated caller. 26 of the 118 operations are currently `ANY`; narrowing
-> them is tracked as issue #979.
+> any authenticated caller — including one in no group, which self-signup produces.
+> 15 of the 118 operations are `ANY`, each with a note in the expectations file
+> saying why that is the intended answer for it; they are enumeration, platform,
+> profile and feature-catalog reads.
+
+### The three policies — pick the weakest one that is still correct
+
+| Declare | Means | Use for |
+|---|---|---|
+| `[Admin, Author, ...]` | one of those groups | anything only a subset of roles should do |
+| `ANY_GROUP` | **any** group `template.yaml` creates; a caller in no group is refused | operations every onboarded role legitimately needs, where "onboarded at all" is the real requirement — document content, and mutations |
+| `ANY` | authentication only | the caller's own profile, public metadata, enumeration that discloses no content |
+| `IAM_ONLY` | no Cognito caller at all | backend-written status updates |
+
+⚠️ **Do not spell `ANY_GROUP` out as the five group names.** The sentinel is
+resolved against the `AWS::Cognito::UserPoolGroup` resources in `template.yaml` by
+`generate_api_rbac_manifest.py` on every build, so a sixth group is covered
+automatically; five names written per operation would silently stop covering it —
+the "fix applied to the instance and not the class" defect this repo keeps hitting.
+The `schema.graphql` directive *does* have to name them all, because GraphQL cannot
+express "any group"; check **S2** fails until it does, which is the intended way to
+be told a group was added. Check **S0** rejects an unrecognised sentinel outright,
+because S2 would otherwise compare a set of its *characters* and S3 would accept a
+resolver with no check at all — a typo would read as "open". `authz.py` never sees
+`ANY_GROUP`: it is expanded before the manifest is written, and an unexpanded one
+there means a broken build and is treated as one (deny-all).

@@ -114,6 +114,23 @@ interface UserRoleReturn {
    * server denies every test set (the scope check fails closed).
    */
   allowedTestSets: string[] | null;
+  /**
+   * True once loading has finished and the caller is in NONE of `APP_GROUPS`.
+   *
+   * This is not the same as `groups.length === 0`: the claim can carry a group
+   * this app does not recognise (an IdP-mapped name, say), which grants nothing
+   * here, so the test is membership of the app's own vocabulary. Self-service
+   * sign-up is what produces such an account — with `AllowedSignUpEmailDomain`
+   * set, the user pool allows self-registration and the new user is in no group
+   * until an administrator assigns one.
+   *
+   * It matters because the API refuses such a caller the document reads
+   * (`listDocuments`, `getDocument`, `getFileContents`, …) with 403: the server is
+   * the authority, and this flag only lets the UI say so once and clearly instead
+   * of failing operation by operation. Always false while `loading`, so a
+   * mid-flight session never renders as "no access".
+   */
+  hasNoRole: boolean;
   loading: boolean;
 }
 
@@ -190,6 +207,11 @@ const useUserRole = (): UserRoleReturn => {
   const canDeleteConfig = isAdmin;
   const canReview = isAdmin || isReviewer;
   const canAnnotate = isAdmin || isAuthor || isAnnotator;
+  // Membership of APP_GROUPS, not `groups.length`: an unrecognised group name
+  // grants nothing in this app, so it must not read as a role. Gated on
+  // `!loading` so the flag is never true merely because the session has not
+  // resolved yet.
+  const hasNoRole = !loading && !groups.some((g) => APP_GROUPS.includes(g));
 
   return {
     groups,
@@ -208,6 +230,7 @@ const useUserRole = (): UserRoleReturn => {
     canAnnotate,
     allowedConfigVersions,
     allowedTestSets,
+    hasNoRole,
     loading,
   };
 };

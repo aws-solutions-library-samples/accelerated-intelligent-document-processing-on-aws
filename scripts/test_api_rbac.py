@@ -60,6 +60,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -105,6 +106,9 @@ OUT_OF_SCOPE_VERSION = "default"  # exists, but outside the scoped user's set
 
 ANY = "ANY"
 IAM = "IAM_ONLY"
+# Resolved to the stack's group names by _resolve_any_group before the matrix
+# runs, so nothing downstream has to handle a third sentinel.
+ANY_GROUP = "ANY_GROUP"
 EXPECTATIONS_PATH = Path(__file__).resolve().parent / "api_rbac_expectations.yaml"
 
 
@@ -123,7 +127,52 @@ def load_expectations():
         sys.exit(2)
     with EXPECTATIONS_PATH.open() as fh:
         spec = yaml.safe_load(fh)
-    return spec["operations"], (spec.get("known_gaps") or {})
+    ops = spec["operations"]
+    _resolve_any_group(ops)
+    return ops, (spec.get("known_gaps") or {})
+
+
+def _resolve_any_group(ops):
+    """Expand ``groups: ANY_GROUP`` into the group names the stack creates.
+
+    Done here, once, so the rest of the harness only ever sees a plain group
+    list or one of the two sentinels it already understands. Leaving the string
+    in place would be actively wrong rather than merely unhandled: the matrix
+    builds ``set(groups)`` for a non-sentinel policy, and ``set("ANY_GROUP")``
+    is a set of nine CHARACTERS, which no role matches — every role would be
+    expected to be denied, and every role being correctly allowed would be
+    reported as a failure.
+
+    The vocabulary comes from ``template.yaml``, the same source
+    ``generate_api_rbac_manifest.py`` resolves it from, so the harness asserts
+    the group set the dispatcher actually enforces. An unresolvable sentinel is
+    fatal — running the matrix against a policy we could not read would report
+    passes that mean nothing.
+    """
+    if not any(o.get("groups") == ANY_GROUP for o in ops.values()):
+        return
+    template = EXPECTATIONS_PATH.resolve().parent.parent / "template.yaml"
+    names = sorted(
+        set(
+            re.findall(
+                r"Type:\s*AWS::Cognito::UserPoolGroup\b[\s\S]*?"
+                r"GroupName:\s*([A-Za-z]\w*)\s*$",
+                template.read_text(),
+                re.M,
+            )
+        )
+    )
+    if not names:
+        print(
+            f"ERROR: no AWS::Cognito::UserPoolGroup found in {template}, so "
+            f"'{ANY_GROUP}' cannot be resolved.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    for o in ops.values():
+        if o.get("groups") == ANY_GROUP:
+            o["groups"] = names
+    print(f"  {ANY_GROUP} resolves to {names}")
 
 
 def setup_users(ctx):

@@ -259,8 +259,23 @@ def _make_fixture(
     proc.mkdir(parents=True)
     (proc / "index.py").write_text(gate_src)
 
+    # The Cognito groups are part of the minimum tree, not decoration: S0 reads
+    # the group vocabulary from this template to resolve ANY_GROUP and to reject a
+    # group name the stack does not create, and reports a FAIL when it finds none.
     (tmp_path / "template.yaml").write_text(
         "Resources:\n"
+        "  AdminGroup:\n"
+        "    Type: AWS::Cognito::UserPoolGroup\n"
+        "    Properties:\n"
+        "      GroupName: Admin\n"
+        "  AuthorGroup:\n"
+        "    Type: AWS::Cognito::UserPoolGroup\n"
+        "    Properties:\n"
+        "      GroupName: Author\n"
+        "  ViewerGroup:\n"
+        "    Type: AWS::Cognito::UserPoolGroup\n"
+        "    Properties:\n"
+        "      GroupName: Viewer\n"
         "  StreamUrl:\n"
         "    Type: AWS::Lambda::Url\n"
         "    Properties:\n"
@@ -310,8 +325,146 @@ def _levels(tmp_path: Path, check: str, strict: bool = False) -> list[str]:
 def test_fixture_baseline_is_clean(tmp_path):
     """The fixture must pass before each mutation, or nothing below means anything."""
     repo = _make_fixture(tmp_path)
-    for check in ("S6", "S7", "S8", "S9"):
+    for check in ("S0", "S6", "S7", "S8", "S9"):
         assert not _fails(repo, check)
+
+
+# --- S0: the policy vocabulary -----------------------------------------------
+#
+# S0 exists because every other check reads an unrecognised `groups:` string as
+# the most permissive branch it has: S2 compares a set of the string's characters
+# against the schema directive, and S3's `else` branch — written for `ANY` —
+# accepts a resolver with no enforcement at all. So a typo would read as "open".
+# These drive `run_checks` over a tree that CONTAINS the typo, for the reason
+# given above `_GOOD_APP`: asserting on a re-implemented predicate here would
+# stay green if the S0 block were deleted.
+
+
+def _with_operation(tmp_path: Path, entry: str) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = _make_fixture(tmp_path)
+    path = repo / "scripts" / "api_rbac_expectations.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "operations: {}\n",
+            "operations:\n"
+            "  someOp:\n"
+            f"{entry}"
+            "    kind: read\n"
+            "    enforced_in: src/lambda/proc/index.py\n",
+        )
+    )
+    return repo
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("policy", ("ANY", "ANY_GROUP", "IAM_ONLY", "[Admin]"))
+def test_s0_accepts_every_known_policy(tmp_path, policy):
+    repo = _with_operation(tmp_path, f"    groups: {policy}\n")
+    assert not _fails(repo, "S0")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("policy", ("ANYGROUP", "ANY_GROUPS", "any_group", "EVERYONE"))
+def test_s0_fails_on_an_unrecognised_policy_sentinel(tmp_path, policy):
+    """A near-miss spelling of ANY_GROUP must fail, not default to permissive."""
+    repo = _with_operation(tmp_path, f"    groups: {policy}\n")
+    assert any("not a group list" in m for m in _fails(repo, "S0")), (
+        f"groups: {policy} was accepted"
+    )
+
+
+@pytest.mark.unit
+def test_s0_fails_on_a_group_the_stack_does_not_create(tmp_path):
+    """An unmatchable group name denies the operation to everyone."""
+    repo = _with_operation(tmp_path, "    groups: [Admn]\n")
+    assert any("unmatchable group name" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s0_fails_when_the_group_vocabulary_cannot_be_read(tmp_path):
+    """No UserPoolGroup means ANY_GROUP cannot be resolved and names are unchecked."""
+    repo = _with_operation(tmp_path, "    groups: ANY_GROUP\n")
+    template = repo / "template.yaml"
+    template.write_text(
+        template.read_text().replace("AWS::Cognito::UserPoolGroup", "AWS::IAM::Role")
+    )
+    assert any("group vocabulary" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s0_fails_on_an_unrecognised_policy_on_a_function_url_route(tmp_path):
+    """The route policies go through the same vocabulary check as the operations."""
+    repo = _make_fixture(
+        tmp_path,
+        route_policy=(
+            "        groups: ANYGROUP\n"
+            "        enforced_in: src/lambda/proc/index.py\n"
+        ),
+    )
+    assert any("not a group list" in m for m in _fails(repo, "S0"))
+
+
+@pytest.mark.unit
+def test_s0_is_not_downgraded_by_a_known_gap(tmp_path):
+    """A gap records weak enforcement, not an unreadable declaration."""
+    repo = _with_operation(
+        tmp_path, "    groups: EVERYONE\n    known_gap: GAP-99\n"
+    )
+    assert _fails(repo, "S0"), "a known_gap must not downgrade an S0 finding"
+
+
+@pytest.mark.unit
+def test_s2_resolves_any_group_against_the_template_vocabulary(tmp_path):
+    """ANY_GROUP must match a directive naming every group, and only that.
+
+    GraphQL cannot say "any group", so the faithful directive is the vocabulary
+    written out — and a group added to the template must fail this check until the
+    directive names it too, which is the whole reason the comparison is resolved
+    from the template rather than from a list in the scanner.
+    """
+    repo = _with_operation(tmp_path, "    groups: ANY_GROUP\n")
+    schema = repo / "nested" / "api-resolvers" / "src" / "api" / "schema.graphql"
+
+    schema.write_text(
+        "type Query @aws_cognito_user_pools {\n"
+        "  someOp: String\n"
+        '    @aws_cognito_user_pools(\n'
+        '      cognito_groups: ["Admin", "Author", "Viewer"]\n'
+        "    )\n"
+        "}\n"
+    )
+    assert not _fails(repo, "S2")
+
+    # One group short of the vocabulary is drift, and must be reported.
+    schema.write_text(
+        "type Query @aws_cognito_user_pools {\n"
+        "  someOp: String\n"
+        '    @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])\n'
+        "}\n"
+    )
+    assert _fails(repo, "S2")
+
+
+@pytest.mark.unit
+def test_s3_does_not_demand_a_resolver_group_check_for_any_group(tmp_path):
+    """ANY_GROUP's enforcement point is the dispatcher manifest, not the resolver.
+
+    An explicit group list names groups the resolver has to tell apart, so S3
+    requires the check to be visible there. ANY_GROUP names no particular group —
+    the policy is "an administrator onboarded this caller", a field-level fact the
+    generated manifest already carries for every routable operation. Asserting the
+    difference here keeps it a decision rather than an accident of the branch
+    ANY_GROUP happens to fall into.
+    """
+    repo = _with_operation(tmp_path, "    groups: ANY_GROUP\n")
+    (repo / "src" / "lambda" / "proc" / "index.py").write_text("def handler(e):\n    return {}\n")
+    assert not _fails(repo, "S3")
+
+    # The same resolver under an explicit group list IS an S3 failure.
+    repo2 = _with_operation(tmp_path / "explicit", "    groups: [Admin]\n")
+    (repo2 / "src" / "lambda" / "proc" / "index.py").write_text("def handler(e):\n    return {}\n")
+    assert _fails(repo2, "S3")
 
 
 @pytest.mark.unit

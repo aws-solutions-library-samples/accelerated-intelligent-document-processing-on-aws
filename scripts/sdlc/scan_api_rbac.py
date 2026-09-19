@@ -28,14 +28,26 @@ so an authorization defect on them was invisible to the gate. S6-S9 cover them.
 
 CHECKS
 ------
+  S0  Declaration integrity — every `groups:` value is a list of group names or
+      one of the three known policy sentinels (`ANY`, `ANY_GROUP`, `IAM_ONLY`),
+      and every `known_gap:`/`residual_gap:` id is defined in the register (in
+      both directions). An unrecognised sentinel is a FAIL, never a default:
+      every other check treats a string policy it does not know as the
+      most-permissive branch it has, so a typo would read as "open".
   S1  Manifest completeness — every routable op has an expectations entry, and
       every expectations entry maps to a real op (no stale rows).
   S2  Schema <-> expectations consistency — cognito_groups directives in
       schema.graphql match the expected groups (documented drift allowed via
-      `schema_groups:` / `known_gap:`).
+      `schema_groups:` / `known_gap:`). `ANY_GROUP` is compared against the full
+      set of `AWS::Cognito::UserPoolGroup` names, since GraphQL has no way to
+      say "any group" — so adding a group to the template fails this check until
+      the directives name it too.
   S3  Resolver enforcement — each op's `enforced_in` source file contains a
       recognized enforcement pattern (group check, ownership, or IAM-only
-      rejection). ANY-auth ops with no pattern must carry a known_gap.
+      rejection). `ANY`/`ANY_GROUP` ops with no pattern must carry a known_gap or
+      declare ownership; `ANY_GROUP` demands no resolver-side group check because
+      its enforcement point is the dispatcher's generated manifest, which S1 and
+      the manifest drift guard already require to exist for every routable op.
   S4  Scope enforcement — ops flagged `scope_checked`/`scope_filtered` must
       reference allowedConfigVersions in their enforced_in file.
   S5  Template auth — every API Gateway Method is COGNITO_USER_POOLS except the
@@ -90,6 +102,24 @@ ALLOWED_UNAUTH_METHODS = {
     "WebUIRootMethod",       # GET / static SPA
     "WebUIProxyMethod",      # GET /{proxy+} static SPA
 }
+
+# The complete policy vocabulary of the `groups:` key, in the expectations file
+# and in a function_url_endpoints route policy. Anything else is an S0 FAIL.
+#
+#   ANY        any authenticated Cognito caller, group or no group
+#   ANY_GROUP  authenticated AND holding at least one group the stack creates;
+#              resolved to the concrete names by generate_api_rbac_manifest.py
+#   IAM_ONLY   backend/IAM principals only; every Cognito caller is rejected
+#
+# S0 exists because the rest of this scanner cannot be relied on to notice a
+# typo. S2 would compare a set of the string's CHARACTERS against the schema
+# directive, and S3's `else` branch — written for ANY — would accept no resolver
+# enforcement at all. So an unrecognised policy string would read as the most
+# permissive answer available, which is the one thing it must never do.
+POLICY_ANY = "ANY"
+POLICY_ANY_GROUP = "ANY_GROUP"
+POLICY_IAM_ONLY = "IAM_ONLY"
+POLICY_SENTINELS = (POLICY_ANY, POLICY_ANY_GROUP, POLICY_IAM_ONLY)
 
 # Substrings that count as a server-side enforcement pattern in a resolver.
 ENFORCE_PATTERNS = (
@@ -209,6 +239,31 @@ def field_function_map_ops(template_text: str) -> set[str]:
     blob = m.group(1) if m else template_text
     # keys look like:   "fieldName": "${...}"
     return set(re.findall(r'"([a-zA-Z][a-zA-Z0-9]*)"\s*:\s*"\$\{', blob))
+
+
+def app_group_names(root_template_text: str) -> set[str]:
+    """The group names the stack creates, for resolving ``ANY_GROUP``.
+
+    Delegates to ``generate_api_rbac_manifest.cognito_group_names`` rather than
+    re-implementing the extraction, so the vocabulary the scan compares against
+    is byte-for-byte the one the generator writes into the manifest. Two parsers
+    for one fact is how the sets silently diverge.
+
+    Loaded by absolute path, not by ``import``: this module is executed both as a
+    script and via ``importlib.util.spec_from_file_location`` from the unit
+    tests, and only the former reliably has ``scripts/sdlc`` on ``sys.path``.
+    """
+    import importlib.util
+
+    gen_path = Path(__file__).resolve().parent / "generate_api_rbac_manifest.py"
+    spec = importlib.util.spec_from_file_location(
+        "_gen_api_rbac_manifest_for_scan", gen_path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise RuntimeError(f"could not load {gen_path}")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    return gen.cognito_group_names(root_template_text)
 
 
 def ddb_direct_ops(ddb_text: str) -> set[str]:
@@ -331,7 +386,14 @@ def _parse_directive(defn: str) -> object | None:
     # authenticated user. Flag it as a distinct value so S2 can call it out.
     if "@aws_auth" in defn and not has_cognito:
         return "AWS_AUTH_IGNORED"
-    gm = re.search(r"@aws_cognito_user_pools\(cognito_groups:\s*\[([^\]]*)\]", defn)
+    # Whitespace (including newlines) is allowed after the `(` and inside the
+    # list, because a five-group directive does not fit on one line. A regex that
+    # only matched the single-line spelling read a wrapped directive as if the
+    # field had none at all — i.e. as the type default, the most permissive
+    # value — so the tolerance is not cosmetic.
+    gm = re.search(
+        r"@aws_cognito_user_pools\(\s*cognito_groups:\s*\[([^\]]*)\]", defn, re.S
+    )
     if gm:
         return set(re.findall(r'"([^"]+)"', gm.group(1)))
     if has_cognito:
@@ -665,6 +727,68 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         suffix = f" [{gap}]" if gap else ""
         findings.append(Finding(check, level, message + suffix, op_name))
 
+    # --- S0: the policy vocabulary ------------------------------------------
+    # Runs FIRST, and deliberately not through gap_or_fail: a `known_gap` records
+    # that enforcement is weaker than intended, not that the declaration is
+    # unreadable, so a gap must not be able to downgrade this.
+    main_text = _read(repo / "template.yaml")
+    app_groups = app_group_names(main_text)
+    if not app_groups:
+        findings.append(
+            Finding(
+                "S0", "FAIL",
+                "no AWS::Cognito::UserPoolGroup found in template.yaml, so the "
+                "group vocabulary could not be read — ANY_GROUP cannot be "
+                "resolved and every group name below is unverifiable",
+            )
+        )
+
+    def _policy_findings(where: str, name: str, groups: object) -> None:
+        if isinstance(groups, str):
+            if groups not in POLICY_SENTINELS:
+                findings.append(
+                    Finding(
+                        "S0", "FAIL",
+                        f"{where} '{name}' declares groups '{groups}', which is "
+                        f"not a group list nor one of {list(POLICY_SENTINELS)} — "
+                        "an unrecognised policy would be read as the most "
+                        "permissive branch by the checks below",
+                        name,
+                    )
+                )
+            return
+        if not isinstance(groups, list) or not groups:
+            findings.append(
+                Finding(
+                    "S0", "FAIL",
+                    f"{where} '{name}' declares groups {groups!r}; expected a "
+                    f"non-empty list of group names or one of "
+                    f"{list(POLICY_SENTINELS)}",
+                    name,
+                )
+            )
+            return
+        bogus = sorted(g for g in groups if g not in app_groups) if app_groups else []
+        if bogus:
+            findings.append(
+                Finding(
+                    "S0", "FAIL",
+                    f"{where} '{name}' requires group(s) {bogus} that no "
+                    f"AWS::Cognito::UserPoolGroup in template.yaml creates "
+                    f"(known: {sorted(app_groups)}) — an unmatchable group name "
+                    "denies the operation to everyone",
+                    name,
+                )
+            )
+
+    for op, o in ops.items():
+        if "groups" not in (o or {}):
+            findings.append(
+                Finding("S0", "FAIL", f"operation '{op}' has no 'groups' key", op)
+            )
+            continue
+        _policy_findings("operation", op, o["groups"])
+
     # --- S1: manifest completeness -----------------------------------------
     dispatcher_text = _read(dispatcher_dir / "index.py")
     routable = (
@@ -709,10 +833,17 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 "instead (server-side resolver check is the only real gate)",
             )
             continue
-        want = (
-            exp_for_schema if exp_for_schema in ("ANY", "IAM_ONLY", "AWS_AUTH_IGNORED")
-            else set(exp_for_schema)
-        )
+        if exp_for_schema == POLICY_ANY_GROUP:
+            # GraphQL cannot say "any group", so the faithful directive is the
+            # full vocabulary written out. Resolving it from the template rather
+            # than from a list here means a group added to template.yaml makes
+            # this check fail until the directives name it — the drift is
+            # surfaced instead of being silently absent from the schema.
+            want: object = set(app_groups)
+        elif exp_for_schema in ("ANY", "IAM_ONLY", "AWS_AUTH_IGNORED"):
+            want = exp_for_schema
+        else:
+            want = set(exp_for_schema)
         if want != dec:
             dw = sorted(dec) if isinstance(dec, set) else dec
             ww = sorted(want) if isinstance(want, set) else want
@@ -731,14 +862,28 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             continue
         text = src.read_text()
         groups = o["groups"]
-        if isinstance(groups, list) or groups == "IAM_ONLY":
+        if isinstance(groups, list) or groups == POLICY_IAM_ONLY:
             # must have a real enforcement pattern
             if not any(p in text for p in ENFORCE_PATTERNS):
                 gap_or_fail(
                     op, "S3",
                     f"no group-enforcement pattern found in {o['enforced_in']}",
                 )
-        else:  # ANY-auth
+        else:  # ANY / ANY_GROUP
+            # ANY_GROUP joins the ANY branch rather than the list branch, and
+            # that is a deliberate difference from S2. An explicit list names
+            # groups the resolver has to be able to tell apart, so the resolver is
+            # where that check has to be visible. ANY_GROUP names no particular
+            # group: the whole policy is "an administrator has onboarded this
+            # caller", which is a field-level fact, and the dispatcher's manifest
+            # is the enforcement point for it — mechanically, because S1 requires
+            # an entry for every routable op, the generator refuses a malformed
+            # one, and authz.py denies a field it cannot find. Demanding a second,
+            # hand-written copy of that check in each resolver would be asking for
+            # a duplicate of a control the gate already guarantees. What the
+            # resolver still owns is per-object scope, and the `ownership`/
+            # `scope_checked` requirements below and in S4 are unchanged for
+            # ANY_GROUP ops.
             if o.get("ownership"):
                 if not any(p in text for p in OWNERSHIP_PATTERNS):
                     gap_or_fail(
@@ -791,8 +936,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
 
     # --- S6-S9: Lambda Function URL routes ----------------------------------
     endpoints: dict[str, dict] = spec.get("function_url_endpoints") or {}
-    main_text = _read(repo / "template.yaml")
     url_resources = lambda_url_resources(main_text)
+
+    # S0 over the route policies too — a route's `groups:` is read by the same
+    # code paths and a typo there is just as permissive.
+    for _logical, _ep in endpoints.items():
+        for _route, _rc in (_ep.get("routes") or {}).items():
+            if "groups" in (_rc or {}):
+                _policy_findings("route", _route, _rc["groups"])
 
     def route_gap_or_fail(route_cfg: dict, route: str, check: str, message: str):
         """As gap_or_fail, but for a route.
