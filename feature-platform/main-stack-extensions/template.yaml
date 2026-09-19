@@ -40,10 +40,9 @@ Parameters:
       stacks that need to read document state (e.g. docs-by-status) grant
       themselves `dynamodb:Scan`/`Query` on this table name. Re-exported as
       `<MainStackName>-TrackingTableName` for Fn::ImportValue usage by
-      feature stacks. The main stack's `TrackingTableName` export is
-      conditionally suppressed when EnableFeaturePlatform=true so this
-      nested stack is the sole producer (avoids "Export already exported
-      by stack" errors during stack updates).
+      feature stacks. This nested stack is its sole producer, because the main
+      stack keeps a plain `TrackingTableName` Output with no `Export` and so can
+      never collide with it.
 
   CustomerManagedEncryptionKeyArn:
     Type: String
@@ -956,12 +955,18 @@ Outputs:
       Re-export of main stack's TrackingTable name. Feature stacks that
       need document state (e.g. docs-by-status) read this via
       Fn::ImportValue '<MainStackName>-TrackingTableName' and grant
-      themselves scoped dynamodb:Scan/Query on the resulting ARN. The
-      main stack's template.yaml also has a TrackingTableName Output
-      with the same export name, but it is conditionally suppressed
-      whenever EnableFeaturePlatform=true so that this nested stack is
-      the sole producer of the export (avoids the "Export already
-      exported by stack" error during stack updates).
+      themselves scoped dynamodb:Scan/Query on the resulting ARN.
+      This stack is the sole producer of the export, unconditionally.
+      The main stack's template.yaml keeps a TrackingTableName Output
+      carrying the same value but declares no Export for it, because an
+      export name cannot change producing stack in a single update:
+      CloudFormation writes a stack's exports at the END of its update
+      while a nested stack claims its own during the resource phase, so
+      a second declaration there would collide with this one on the
+      transition to EnableFeaturePlatform=true. Do not add one — and do
+      not move this export to the parent either: feature stacks import
+      it, and CloudFormation will not let this stack withdraw a name
+      that is in use. See scripts/tests/test_cfn_export_ownership.py.
     Value: !Ref TrackingTableName
     Export:
       Name: !Sub '${MainStackName}-TrackingTableName'

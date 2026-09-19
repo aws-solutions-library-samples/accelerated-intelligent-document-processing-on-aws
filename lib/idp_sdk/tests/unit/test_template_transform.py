@@ -43,9 +43,6 @@ def _minimal_template():
             "IsFeaturePlatformEnabled": {
                 "Fn::Equals": [{"Ref": "EnableFeaturePlatform"}, "true"]
             },
-            "IsFeaturePlatformDisabled": {
-                "Fn::Equals": [{"Ref": "EnableFeaturePlatform"}, "false"]
-            },
             "UsePrivateAppSync": {
                 "Fn::Equals": [{"Ref": "AppSyncVisibility"}, "PRIVATE"]
             },
@@ -95,10 +92,7 @@ def _minimal_template():
                     ]
                 },
             },
-            "TrackingTableName": {
-                "Condition": "IsFeaturePlatformDisabled",
-                "Value": {"Ref": "TrackingTable"},
-            },
+            "TrackingTableName": {"Value": {"Ref": "TrackingTable"}},
         },
     }
 
@@ -148,11 +142,16 @@ def test_appsync_dns_output_removed():
 
 
 def test_enable_feature_platform_forced_false():
-    """EnableFeaturePlatform default flips to 'false' so the export stays live."""
+    """EnableFeaturePlatform default flips to 'false' — the nested stack is gone.
+
+    Leaving the default at 'true' would ask CloudFormation to create a nested
+    stack the transform has stripped out.
+    """
     t = HeadlessTemplateTransformer()
     result = t.apply_transforms(_minimal_template())
     assert result["Parameters"]["EnableFeaturePlatform"]["Default"] == "false"
-    # TrackingTableName export (gated on IsFeaturePlatformDisabled) must survive.
+    # The TrackingTableName Output is unconditional (and carries no Export), so
+    # it survives either way and stays readable from describe-stacks.
     assert "TrackingTableName" in result["Outputs"]
 
 

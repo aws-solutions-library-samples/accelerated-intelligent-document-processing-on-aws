@@ -16,17 +16,13 @@ title: "Feature Platform"
 > Subscribe → Active flow) is wired but unused until paid extensions ship. Set
 > `EnableFeaturePlatform=false` to remove the platform entirely.
 >
-> ⚠️ **Known limitation: decide at create time.** `EnableFeaturePlatform` can be
-> turned **off** on an existing stack, but it cannot be turned back **on** by a
-> stack update: the update fails with `Export with name <StackName>-TrackingTableName
-> is already exported by stack <StackName>` and rolls back cleanly. The main
-> template exports that name while the platform is off and the nested platform
-> stack exports it while the platform is on; CloudFormation creates the nested
-> stack (and its export) during the resource phase but only retires the parent's
-> export at the end of the update, so on the `false` → `true` transition both
-> exist at once. To adopt the platform on a stack created with it off, deploy a
-> new stack with the default `true`. Tracked in
-> [#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845).
+> `EnableFeaturePlatform` can be flipped in either direction on a live stack, so a
+> stack created with the platform off can adopt it later
+> ([#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845)).
+> Coming from 0.6.9 or earlier, enabling it takes **two separate stack updates** —
+> see [Enabling the platform on an existing stack](#enabling-the-platform-on-an-existing-stack).
+> Turning it **off** deletes the platform resources, so uninstall any extension
+> stacks first — see [Turning the platform off](#turning-the-platform-off).
 
 The Feature Platform turns the IDP Accelerator main stack into a **host** for
 *installable extensions* — add-ons that are discovered and installed at runtime
@@ -777,12 +773,74 @@ The default brings up:
 - the `InstalledFeatures` DDB table + feature-platform Lambdas,
 - the `FeatureBucket` pre-loaded with the bundled sample feature.
 
-To turn the feature platform off entirely, set `EnableFeaturePlatform=false` —
-no platform resources are created, and the Extensions nav section is empty
-(apart from the Browse catalog link, whose page reports no extensions).
-Turning it off is a one-way change on a live stack: setting the parameter back
-to `true` later fails on the `TrackingTableName` export collision described at
-the top of this page ([#845](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/845)).
+### Enabling the platform on an existing stack
+
+On a stack **already running 0.6.10 or later**, setting `EnableFeaturePlatform=true`
+is a single ordinary update. Nothing else is needed.
+
+Coming from **0.6.9 or earlier** it takes **two separate stack updates**, in this
+order:
+
+1. **Upgrade the stack to 0.6.10 or later**, leaving `EnableFeaturePlatform=false`.
+2. **Then set `EnableFeaturePlatform=true`** in a second update.
+
+⚠️ Do not combine those two. Both are ordinary updates and neither needs anything
+uninstalled, but a single update that changes the template *and* flips the
+parameter fails — 0.6.9's main template declares the cross-stack export
+`<StackName>-TrackingTableName`, the nested platform stack declares the same name
+once enabled, and CloudFormation writes a stack's exports only at the *end* of its
+update while a nested stack claims its own during the resource phase. The nested
+stack is created first, the name is still held by the parent, and the update rolls
+back reporting that the export is already exported by the stack. Splitting it in
+two removes the parent's declaration first, so there is nothing left to collide
+with when the nested stack claims it.
+
+#### Before upgrading a platform-off stack past 0.6.9
+
+Step 1 above — and the plain upgrade every platform-off stack takes, whether or not
+it ever wants the platform — **withdraws** the main stack's
+`<StackName>-TrackingTableName` export. On 0.6.9 and earlier that export was live
+on a platform-off stack and importable by *any* stack in the same account and
+region, so if something imports it the upgrade fails and rolls back. Check first:
+
+```bash
+aws cloudformation list-imports --export-name <StackName>-TrackingTableName
+```
+
+An empty result (`does not exist` for an unimported export) means nothing to do.
+The name is documented solely as a feature-stack reference and nothing in this
+repository imports it outside `feature-platform/`, so this is unlikely — the case
+worth checking is a **`--headless`** deployment, where the platform is stripped out
+and the main stack's export was the only producer, and where hand-wired cross-stack
+references are more common. If something does import it, read the name from the
+stack's `TrackingTableName` **output** instead (unchanged, and now present in every
+configuration) before upgrading.
+
+Upgrading a stack that already has the platform **on** needs no special step,
+whatever extensions are installed: from 0.6.10 the nested platform stack keeps
+producing exactly the export names it produced before, so nothing is withdrawn
+from under an installed extension.
+
+### Turning the platform off
+
+Set `EnableFeaturePlatform=false` — no platform resources are created, and the
+Extensions nav section is empty (apart from the Browse catalog link, whose page
+reports no extensions). Three things to know before turning it off:
+
+- **Delete any installed extension stacks first.** They are separate stacks
+  outside the main stack's dependency graph, and they hold `Fn::ImportValue`
+  references to host exports (`<StackName>-RegisterFeatureFunctionArn`,
+  `-InstalledFeaturesTableName`, …). Turning the platform off deletes the nested
+  stack that produces those, and CloudFormation does not allow an export another
+  stack imports to go away — the wording for the delete case is `Cannot delete
+  export <name> as it is in use by <stack>` — so while an extension is installed
+  the update fails and rolls back.
+- **Extension stacks own their own data, and deleting them destroys it.** Their
+  DynamoDB tables and buckets are part of the extension stack, so a `delete-stack`
+  takes any configuration and history the extension stored with it. Export
+  anything you need first.
+- **The `InstalledFeatures` table is deleted with the platform.** Turning the
+  platform back on gives you an empty one; extensions have to be re-installed.
 
 ### Tear-down
 
