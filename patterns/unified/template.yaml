@@ -270,11 +270,12 @@ Conditions:
   # "false" actually turns Lambda tracing off; a hardcoded `Active` cannot be
   # turned off at all, which is what the parameter's description promises.
   # PassThrough — not an absent property — is written on the false branch: the
-  # two resolve identically, and naming it says the choice was made. SAM
-  # attaches AWSXrayWriteOnlyAccess whenever Tracing is declared in ANY form —
-  # it cannot evaluate the Fn::If — so neither branch changes a function's IAM,
-  # and a function that gains a Tracing property gains that grant. Asserted by
-  # scripts/tests/test_xray_tracing.py.
+  # two resolve identically, and naming it says the choice was made. Neither
+  # branch changes a function's IAM: SAM attaches AWSXrayWriteOnlyAccess to a
+  # role it GENERATES whenever Tracing is declared in any form, because it
+  # cannot evaluate the Fn::If. A function with an explicit `Role:` gets
+  # nothing from SAM and must carry the X-Ray grant itself — checked by
+  # scripts/tests/test_xray_tracing.py, along with the rest of this.
   EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, "true"]
   DeployInVPC: !Not [!Equals [!Ref VpcId, ""]]
   HasGuardrailConfig:
@@ -5619,6 +5620,15 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        # X-Ray write. This is the one traced function in this template with an
+        # explicit Role, and SAM only attaches this policy to roles it
+        # GENERATES — so the function declared a tracing mode and could not
+        # write a segment. Attached unconditionally, exactly as SAM attaches it
+        # to the generated roles: the grant is write-only and useless without a
+        # segment to write, and making it conditional would give this role a
+        # different shape from the other fourteen for no benefit. Enforced by
+        # scripts/tests/test_xray_tracing.py.
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess"
       Policies:
         - PolicyName: ReadActiveConfigForHooks
           PolicyDocument:

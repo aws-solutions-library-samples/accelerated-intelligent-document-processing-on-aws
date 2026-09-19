@@ -38,11 +38,19 @@ Rules enforced:
    ``test_templates_without_the_parameter_are_the_known_set``, so an eighth one
    fails rather than joining a silent exemption.
 2. **A template that declares tracing wires the parameter.** It defines the
-   condition, the condition tests the parameter, and the parameter exists. A
-   nested template also has to be *passed* the parameter by its parent.
+   condition, the condition tests the parameter, and the parameter exists — and a
+   nested template that declares the parameter is *passed* it by the parent, in
+   the stack resource that instantiates **that** template. "Passed to some
+   nested stack" is not the same claim and would let a new nested stack trace
+   unconditionally while the gate stayed green.
 3. **A Lambda whose source imports the X-Ray SDK declares a tracing mode.**
    Instrumentation with no ``Tracing`` property is instrumentation whose output
    depends on somebody else's sampling decision.
+4. **A traced function's role can write a trace segment.** SAM attaches the X-Ray
+   managed policy only to a role it *generates*, so a function with an explicit
+   ``Role:`` can declare a mode, deploy cleanly, and write nothing —
+   ``PipelineHooksDispatcherFunction`` was in that state. Its role now carries
+   ``AWSXrayWriteOnlyAccess``.
 
 Rule 1 is the one that stops #983 regressing: the next Lambda added is otherwise
 as likely as not to copy whichever convention its neighbour uses.
@@ -92,8 +100,9 @@ NON_RUNTIME_FILE = re.compile(r"(^test_|^conftest\.py$|_test\.py$)")
 #: below either means discovery broke — which would make every rule below pass
 #: vacuously — rather than that the repo genuinely shrank. Measured on the tree
 #: that fixed #983: 22 functions declare a conditional tracing mode (7 in
-#: ``template.yaml``, 15 in ``patterns/unified/template.yaml``) and 8 source
-#: directories import the X-Ray SDK.
+#: ``template.yaml``, 15 in ``patterns/unified/template.yaml``) and 9 source
+#: directories import the X-Ray SDK — the 8 with ``put_annotation`` plus
+#: ``rule-validation-orchestration-function``, which only decorates its handler.
 MIN_TRACED_FUNCTIONS = 20
 MIN_XRAY_SOURCE_DIRS = 6
 
@@ -171,22 +180,41 @@ def _tracing_of(body: dict) -> Any:
         return None
     if body.get("Type") == LAMBDA_FUNCTION:
         config = props.get("TracingConfig")
-        return config.get("Mode") if isinstance(config, dict) else None
+        if config is None:
+            return None
+        if isinstance(config, dict) and "Mode" in config:
+            return config["Mode"]
+        # An intrinsic standing in for the whole ``TracingConfig`` block, or a
+        # malformed one: returned as-is so rule 1 JUDGES it. Reading ``Mode``
+        # out of it would yield ``None``, and rule 1 reads ``None`` as "not
+        # traced", which is the one answer that must not be inferred from a
+        # shape this function does not understand.
+        return config
     return props.get("Tracing")
 
 
 def _is_conditional_on_tracing(node: Any) -> bool:
-    """True when ``node`` is ``Fn::If`` keyed on the tracing condition.
+    """True when ``node`` is ``Fn::If`` on the tracing condition, ``Active`` first.
 
-    The branch *values* are not checked. Whether "off" is spelled
-    ``PassThrough`` or omitted is a readability choice that resolves the same
-    way, and pinning it here would fail a template for a cosmetic difference
-    while proving nothing more about the control.
+    The TRUE branch is pinned to ``Active`` because an inverted
+    ``!If [EnableXRayTracingCondition, PassThrough, Active]`` is a copy-paste
+    slip with no other signal: the template still reads as wired to the
+    parameter, cfn-lint accepts it, and the only symptom is tracing being on
+    exactly when the operator asked for it to be off.
+
+    The FALSE branch is deliberately left free. Whether "off" is spelled
+    ``PassThrough`` or the property is omitted on that leg resolves the same
+    way, so pinning it would fail a template over a cosmetic difference.
     """
     if not isinstance(node, dict):
         return False
     value = node.get("Fn::If")
-    return isinstance(value, list) and len(value) == 3 and value[0] == TRACING_CONDITION
+    return (
+        isinstance(value, list)
+        and len(value) == 3
+        and value[0] == TRACING_CONDITION
+        and value[1] == "Active"
+    )
 
 
 def _condition_tests_the_parameter(node: Any) -> bool:
@@ -239,6 +267,97 @@ def _hardcoded_tracing(template: dict) -> dict[str, Any]:
 
 def _declares_the_parameter(template: dict) -> bool:
     return TRACING_PARAMETER in (template.get("Parameters") or {})
+
+
+# --------------------------------------------------------------------------
+# Rule 4: a traced function can actually write a segment.
+# --------------------------------------------------------------------------
+
+#: The X-Ray write actions a traced function needs. ``*`` and ``xray:*`` count
+#: too, and are matched as prefixes below.
+XRAY_WRITE_ACTIONS = {"xray:puttracesegments", "xray:puttelemetryrecords"}
+
+#: Managed policies that carry those actions. Matched case-insensitively on the
+#: ARN's policy name, so the ``${AWS::Partition}`` prefix does not matter.
+XRAY_MANAGED_POLICIES = {
+    "awsxraywriteonlyaccess",
+    "awsxraydaemonwriteaccess",
+    "awsxrayfullaccess",
+}
+
+
+def _explicit_role_logical_id(body: dict) -> str | None:
+    """The logical id in ``Role: !GetAtt SomeRole.Arn``, or ``None``.
+
+    Returns ``None`` both when there is no ``Role`` (SAM generates one) and when
+    the value is a shape this cannot resolve; the caller distinguishes the two.
+    """
+    role = (body.get("Properties") or {}).get("Role")
+    if role is None:
+        return None
+    if isinstance(role, dict):
+        target = role.get("Fn::GetAtt")
+        if isinstance(target, str):
+            return target.split(".")[0]
+        if isinstance(target, list) and target:
+            return str(target[0])
+    return None
+
+
+def _grants_xray_write(role_body: dict) -> bool:
+    """True when an ``AWS::IAM::Role`` can write X-Ray segments."""
+    props = role_body.get("Properties") or {}
+
+    for arn in props.get("ManagedPolicyArns") or []:
+        for text in _flatten_strings(arn):
+            if text.rsplit("/", 1)[-1].lower() in XRAY_MANAGED_POLICIES:
+                return True
+
+    for policy in props.get("Policies") or []:
+        document = (policy or {}).get("PolicyDocument") or {}
+        for statement in document.get("Statement") or []:
+            if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
+                continue
+            actions = statement.get("Action")
+            actions = [actions] if isinstance(actions, str) else (actions or [])
+            for action in actions:
+                lowered = str(action).lower()
+                if lowered in XRAY_WRITE_ACTIONS or lowered in {"*", "xray:*"}:
+                    return True
+    return False
+
+
+def _traced_without_a_grant(template: dict) -> dict[str, str]:
+    """Rule 4: traced functions whose role cannot write a trace segment.
+
+    SAM attaches the X-Ray managed policy only to a role it **generates**. A
+    function with an explicit ``Role:`` gets nothing, so it can declare a tracing
+    mode, be deployed, and silently write no segment — the #983 defect one layer
+    down, and the state ``PipelineHooksDispatcherFunction`` was in.
+
+    An unresolvable ``Role`` (an imported ARN, a ``!Ref`` to a parameter, a role
+    defined in another template) is reported rather than skipped: this gate
+    cannot see whether that role grants anything, and reading "cannot tell" as
+    "fine" is how the original defect survived.
+    """
+    resources = template.get("Resources") or {}
+    findings: dict[str, str] = {}
+    for name, body in _functions(template).items():
+        if _tracing_of(body) is None:
+            continue
+        if (body.get("Properties") or {}).get("Role") is None:
+            continue  # SAM generates the role and attaches the policy itself
+        role_id = _explicit_role_logical_id(body)
+        if role_id is None:
+            findings[name] = "Role is a shape this gate cannot resolve"
+            continue
+        role_body = resources.get(role_id)
+        if not isinstance(role_body, dict) or role_body.get("Type") != "AWS::IAM::Role":
+            findings[name] = f"Role {role_id} is not an AWS::IAM::Role in this template"
+            continue
+        if not _grants_xray_write(role_body):
+            findings[name] = f"{role_id} grants no xray:PutTraceSegments"
+    return findings
 
 
 # --------------------------------------------------------------------------
@@ -455,44 +574,115 @@ def test_instrumented_functions_declare_a_tracing_mode(path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_every_nested_template_is_passed_the_parameter() -> None:
-    """A nested stack's own parameter is inert unless the parent passes it.
-
-    Checked against the parent's ``AWS::CloudFormation::Stack`` resources rather
-    than assumed, because a nested template can declare the parameter, define the
-    condition and reference it correctly and still trace unconditionally — on the
-    default the parent supplies — if the wiring in the middle is missing.
-    """
-    parent = _load(REPO_ROOT / "template.yaml")
-    stacks = {
-        name: body
-        for name, body in (parent.get("Resources") or {}).items()
-        if isinstance(body, dict) and body.get("Type") == "AWS::CloudFormation::Stack"
-    }
-    assert stacks, "template.yaml declares no nested stacks; discovery is broken"
-
-    nested_needing_it = []
-    for path in ALL_TEMPLATES:
-        if path.name == "template.yaml" and path.parent == REPO_ROOT:
-            continue
-        template = _load(path)
-        if TRACING_PARAMETER in (template.get("Parameters") or {}):
-            nested_needing_it.append(path.relative_to(REPO_ROOT))
-    assert nested_needing_it, (
-        f"no nested template declares {TRACING_PARAMETER} any more, so this test "
-        f"proves nothing — delete it or update it to the template that does"
+@pytest.mark.parametrize("path", ALL_TEMPLATES, ids=TEMPLATE_IDS)
+def test_every_traced_function_can_write_a_segment(path: Path) -> None:
+    findings = _traced_without_a_grant(_load(path))
+    assert not findings, (
+        f"{path.relative_to(REPO_ROOT)}: these functions declare a tracing mode "
+        f"but their role cannot write a trace segment, so tracing is declared and "
+        f"does nothing — the #983 defect one layer down: {findings}. SAM attaches "
+        f"AWSXrayWriteOnlyAccess only to a role it GENERATES; a function with an "
+        f"explicit `Role:` has to carry the grant itself."
     )
 
-    passed_by = {
-        name
-        for name, body in stacks.items()
-        if TRACING_PARAMETER in ((body.get("Properties") or {}).get("Parameters") or {})
-    }
-    assert passed_by, (
-        f"template.yaml passes {TRACING_PARAMETER} to no nested stack, yet "
-        f"{[str(p) for p in nested_needing_it]} declare it — the nested "
-        f"parameter would sit at its own default and the parent's setting would "
-        f"not reach it"
+
+# --------------------------------------------------------------------------
+# Rule 2's second half: the parent must pass the parameter to THIS nested stack.
+# --------------------------------------------------------------------------
+
+#: ``TemplateURL: ./<dir>/.aws-sam/packaged.yaml`` -> ``<dir>/template.yaml``.
+#: Same mapping ``scripts/tests/test_nested_stack_parameters.py`` uses, for the
+#: same reason: the URL points at a build artifact, so the only way to reason
+#: about the nested stack's parameters offline is to resolve it back to source.
+_PACKAGED_URL = re.compile(r"^\./(.+?)/\.aws-sam/packaged\.ya?ml$")
+
+
+def _source_template_for(template_url: Any) -> str | None:
+    if not isinstance(template_url, str):
+        return None
+    match = _PACKAGED_URL.match(template_url.strip())
+    if not match:
+        return None
+    for candidate in (
+        f"{match.group(1)}/template.yaml",
+        f"{match.group(1)}/template.yml",
+    ):
+        if (REPO_ROOT / candidate).is_file():
+            return candidate
+    return None
+
+
+def _nested_stacks() -> list[tuple[str, str]]:
+    """(logical id, source template path) for each nested stack of the parent."""
+    resources = _load(REPO_ROOT / "template.yaml").get("Resources") or {}
+    found = []
+    for name, body in resources.items():
+        if not isinstance(body, dict):
+            continue
+        if body.get("Type") != "AWS::CloudFormation::Stack":
+            continue
+        source = _source_template_for((body.get("Properties") or {}).get("TemplateURL"))
+        if source:
+            found.append((name, source))
+    return sorted(found)
+
+
+NESTED_STACKS = _nested_stacks()
+
+
+@pytest.mark.unit
+def test_nested_stacks_are_discovered() -> None:
+    """A silent zero here would make the per-stack rule below vacuous."""
+    assert len(NESTED_STACKS) >= 5, (
+        f"expected at least 5 nested stacks in template.yaml, found "
+        f"{len(NESTED_STACKS)}: {NESTED_STACKS}. If TemplateURL no longer points "
+        f"at '<dir>/.aws-sam/packaged.yaml', update _source_template_for()."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "logical_id,source", NESTED_STACKS, ids=[f"{n}->{s}" for n, s in NESTED_STACKS]
+)
+def test_a_nested_template_declaring_the_parameter_is_passed_it(
+    logical_id: str, source: str
+) -> None:
+    """Checked per stack, not "to at least one stack".
+
+    A nested template can declare the parameter, define the condition and write
+    the ``!If`` correctly and STILL trace unconditionally, if the parent forgets
+    ``EnableXRayTracing: !Ref EnableXRayTracing`` in that stack's ``Parameters``:
+    the nested parameter then sits at its own default of ``true`` and a deploy
+    with ``false`` leaves those functions tracing. That is #983 reintroduced
+    through the one route this rule exists to close, so the check has to name the
+    stack rather than be satisfied by a sibling.
+    """
+    nested = _load(REPO_ROOT / source)
+    if not _declares_the_parameter(nested):
+        pytest.skip(f"{source} does not declare {TRACING_PARAMETER}")
+
+    parent = _load(REPO_ROOT / "template.yaml")
+    body = (parent.get("Resources") or {})[logical_id]
+    passed = (body.get("Properties") or {}).get("Parameters") or {}
+    assert TRACING_PARAMETER in passed, (
+        f"{source} declares {TRACING_PARAMETER} but template.yaml does not pass "
+        f"it to {logical_id}, so the nested parameter sits at its own default "
+        f"and the parent's setting never reaches those functions"
+    )
+
+
+@pytest.mark.unit
+def test_at_least_one_nested_template_declares_the_parameter() -> None:
+    """Otherwise every case of the rule above skips and it proves nothing."""
+    declaring = [
+        source
+        for _, source in NESTED_STACKS
+        if _declares_the_parameter(_load(REPO_ROOT / source))
+    ]
+    assert declaring, (
+        f"no nested template declares {TRACING_PARAMETER} any more, so "
+        f"test_a_nested_template_declaring_the_parameter_is_passed_it skips every "
+        f"case — delete it or point it at the template that does"
     )
 
 
@@ -566,6 +756,26 @@ Resources:
         )
         assert "Regressed" in _hardcoded_tracing(_load_text(text))
 
+    @pytest.mark.parametrize(
+        "branches",
+        ["PassThrough, Active", "Disabled, Disabled", "PassThrough, PassThrough"],
+        ids=["inverted", "both-disabled", "both-off"],
+    )
+    def test_the_branch_values_are_checked_not_just_the_condition(
+        self, branches: str
+    ) -> None:
+        """Wiring to the right condition is not the same as wiring it the right
+        way round: an inverted ``!If`` traces exactly when the operator asked for
+        tracing off, and nothing else in the template would show it."""
+        text = self.BASE + (
+            f"  Regressed:\n"
+            f"    Type: AWS::Serverless::Function\n"
+            f"    Properties:\n"
+            f"      CodeUri: nowhere/\n"
+            f"      Tracing: !If [EnableXRayTracingCondition, {branches}]\n"
+        )
+        assert "Regressed" in _hardcoded_tracing(_load_text(text))
+
     def test_globals_is_not_a_loophole(self) -> None:
         """One line under ``Globals`` sets the mode for every function at once."""
         text = self.BASE.replace(
@@ -590,6 +800,19 @@ Resources:
             "    Properties:\n"
             "      TracingConfig:\n"
             "        Mode: Active\n"
+        )
+        assert "Regressed" in _hardcoded_tracing(_load_text(text))
+
+    def test_an_intrinsic_whole_tracing_config_is_not_a_loophole(self) -> None:
+        """``TracingConfig`` itself replaced by an intrinsic, so there is no
+        ``Mode`` key to read. Reading that as "no tracing declared" would let the
+        raw resource type back in through the one shape rule 1 does not parse."""
+        text = self.BASE + (
+            "  Regressed:\n"
+            "    Type: AWS::Lambda::Function\n"
+            "    Properties:\n"
+            "      TracingConfig: !If [SomeOtherCondition, {Mode: Active}, "
+            "!Ref 'AWS::NoValue']\n"
         )
         assert "Regressed" in _hardcoded_tracing(_load_text(text))
 
@@ -640,3 +863,95 @@ Resources:
         )
         template_path.write_text(text, encoding="utf-8")
         assert _instrumented_without_tracing(_load_text(text), template_path) == []
+
+    ROLE_FIXTURE = """
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  Traced:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: nowhere/
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
+      Role: !GetAtt Role.Arn
+"""
+
+    def test_an_explicit_role_without_the_grant_is_caught(self) -> None:
+        """The state PipelineHooksDispatcherFunction was in: a declared mode and
+        a role SAM never touches, so no segment is ever written."""
+        findings = _traced_without_a_grant(_load_text(self.BASE + self.ROLE_FIXTURE))
+        assert "Traced" in findings
+
+    @pytest.mark.parametrize(
+        "grant",
+        [
+            "        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess\n",
+            "        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess'\n",
+        ],
+        ids=["literal-arn", "partition-substituted-arn"],
+    )
+    def test_the_managed_policy_satisfies_rule_4(self, grant: str) -> None:
+        text = (self.BASE + self.ROLE_FIXTURE).replace(
+            "        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole\n",
+            "        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole\n"
+            + grant,
+        )
+        assert _traced_without_a_grant(_load_text(text)) == {}
+
+    def test_an_inline_statement_satisfies_rule_4(self) -> None:
+        text = (self.BASE + self.ROLE_FIXTURE).replace(
+            "  Traced:\n",
+            "      Policies:\n"
+            "        - PolicyName: XRay\n"
+            "          PolicyDocument:\n"
+            "            Statement:\n"
+            "              - Effect: Allow\n"
+            "                Action:\n"
+            "                  - xray:PutTraceSegments\n"
+            "                  - xray:PutTelemetryRecords\n"
+            "                Resource: '*'\n"
+            "  Traced:\n",
+        )
+        assert _traced_without_a_grant(_load_text(text)) == {}
+
+    def test_a_deny_statement_does_not_satisfy_rule_4(self) -> None:
+        text = (self.BASE + self.ROLE_FIXTURE).replace(
+            "  Traced:\n",
+            "      Policies:\n"
+            "        - PolicyName: XRay\n"
+            "          PolicyDocument:\n"
+            "            Statement:\n"
+            "              - Effect: Deny\n"
+            "                Action: xray:PutTraceSegments\n"
+            "                Resource: '*'\n"
+            "  Traced:\n",
+        )
+        assert "Traced" in _traced_without_a_grant(_load_text(text))
+
+    def test_a_generated_role_is_not_reported(self) -> None:
+        """No ``Role:`` means SAM generates one and attaches the policy."""
+        assert _traced_without_a_grant(_load_text(self.BASE)) == {}
+
+    def test_an_unresolvable_role_is_reported_rather_than_skipped(self) -> None:
+        text = self.BASE + (
+            "  Traced:\n"
+            "    Type: AWS::Serverless::Function\n"
+            "    Properties:\n"
+            "      CodeUri: nowhere/\n"
+            "      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]\n"
+            "      Role: arn:aws:iam::123456789012:role/SomeImportedRole\n"
+        )
+        assert "Traced" in _traced_without_a_grant(_load_text(text))
+
+    def test_an_untraced_function_with_a_bare_role_is_not_reported(self) -> None:
+        """Rule 4 is about tracing, not about roles."""
+        text = self.BASE + (
+            "  Untraced:\n"
+            "    Type: AWS::Serverless::Function\n"
+            "    Properties:\n"
+            "      CodeUri: nowhere/\n"
+            "      Role: arn:aws:iam::123456789012:role/SomeImportedRole\n"
+        )
+        assert _traced_without_a_grant(_load_text(text)) == {}
