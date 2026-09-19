@@ -51,6 +51,34 @@ For issues not covered by the Error Analyzer, use the manual troubleshooting ste
 | **Classification returns "other"** | Review document class definitions. Consider adding more detailed class descriptions or adding few-shot examples.                     |
 | **Extraction missing fields**      | Review attribute descriptions and prompt engineering. Check if fields are present but in an unusual format or location.              |
 
+**The execution fails with `ExtractionShardMapFailed` (or, before 0.6.10, a bare
+`States.ExceedToleratedFailureThreshold`) and the document has zero rows extracted.**
+That comes from `ExtractionShardMap`, the Distributed Map that runs advanced (agentic)
+extraction one shard per Lambda invocation. It tolerates no shard failures by design,
+so it fails whenever any shard fails — including when its siblings succeeded. The
+`ExtractionShardMapFailed` cause names the section and carries the Map's error output;
+two further steps identify the shard and the reason:
+
+1. Open the **Map Run** from the `ExtractionShardMap` entry in the Step Functions
+   execution history. A Distributed Map records each iteration's failure there, not on
+   the parent execution, so this is where the failing shard's own error is.
+2. If that shard reports `Sandbox.Timedout`, the invocation was killed at its
+   900-second ceiling. Check its log for a `ReadTimeoutError` /
+   `EventLoopException` followed by silence up to the timeout: that pattern is a
+   stalled Bedrock request that consumed the rest of the invocation.
+
+Shards persist their results to S3 as they finish and the Map is retried once, so a
+single transient shard failure re-runs only the incomplete shards and keeps the
+completed ones. A stall long enough to consume the whole invocation defeats that,
+because Step Functions classifies a Lambda timeout as deterministic and retries it
+once at most. The per-invocation time budget that keeps a stall recoverable — the
+Bedrock read timeout, the retry backoff allowance and the function timeout — is in
+[configuration.md](configuration.md#sharded-extraction-the-shard-map-and-the-budget-inside-one-shard).
+The load-sensitive case is a long-running configuration: advanced extraction with
+**integrated** confidence does extraction and confidence scoring in one invocation, so
+its exposure to a stall is several times that of **separate** confidence over the same
+document.
+
 ### Confidence (Assessment) Failures
 
 Confidence scoring runs as its own step after extraction. Two failure shapes have

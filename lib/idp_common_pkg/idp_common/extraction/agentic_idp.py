@@ -2049,8 +2049,12 @@ async def structured_output_async(
                     Increase this value if your AWS account has low throttling limits.
         connect_timeout: Connection timeout in seconds (default: 60.0).
                         Increase if experiencing connection timeout errors.
-        read_timeout: Read timeout in seconds (default: 300.0 = 5 minutes).
-                     Increase for large documents or slow model responses.
+        read_timeout: How long ONE request may stall with no response before
+                     botocore gives up, in seconds. Defaults to
+                     ``AGENT_READ_TIMEOUT_SECONDS`` (180). Raising it eats into the
+                     time the retry ladder and the work itself have inside one
+                     shard invocation - see the budget in
+                     ``idp_common.utils.bedrock_utils`` before changing it.
 
     Returns:
         Tuple of (extracted data, bedrock response with token usage)

@@ -84,6 +84,51 @@ except Exception as e:
     raise  # hard errors keep their own name and are not retried
 ```
 
+### The shard invocation's time budget (`bedrock_utils`)
+
+Four module constants in `bedrock_utils` are only correct **relative to each other**,
+so they are defined together rather than at the call sites that use them:
+
+| Constant | Value | Bounds |
+|---|---|---|
+| `LAMBDA_MAX_TIMEOUT_SECONDS` | 900 | The shard function's `Timeout`, which is also Lambda's maximum |
+| `AGENT_READ_TIMEOUT_SECONDS` | 180 | One Bedrock request stalling with no response, before botocore gives up |
+| `AGENT_MAX_TOTAL_BACKOFF_SECONDS` | 300 | Total sleep the retry ladder may spend across all attempts |
+| `AGENT_MAX_BACKOFF_SECONDS` | 60 | A single sleep |
+
+The invariant is `AGENT_READ_TIMEOUT_SECONDS + AGENT_MAX_TOTAL_BACKOFF_SECONDS <
+LAMBDA_MAX_TIMEOUT_SECONDS`, with room left over for the work itself: one stalled
+request plus the whole backoff allowance must still leave the shard time to produce a
+result. When it does not, the shard is killed by the Lambda timeout instead of
+returning, Step Functions reports `Sandbox.Timedout`, and that is classified
+**deterministic** with one attempt — so the transient failure a retry would have
+cleared becomes the one that is not retried, and `ExtractionShardMap`, which tolerates
+no shard failures, discards the sibling shards that had already succeeded
+([#1014](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1014)).
+This is the same shape as the `max_delay=1800`-inside-a-900-second-function error the
+comments in that module describe, one layer down: in the boto3 client config rather
+than the retry decorator.
+
+They live here, not in `extraction.agentic_idp`, because `extraction.runtime` needs
+them too and is deliberately importable without the strands-backed agentic stack.
+`AGENT_READ_TIMEOUT_SECONDS` is the default of every `read_timeout` parameter on both
+modules — a constant the callers do not read would satisfy the arithmetic and change
+nothing.
+
+`tests/unit/extraction/test_shard_timeout_budget.py` asserts the inequality, that both
+modules take their default from the constant, that the deployed function's `Timeout`
+still matches the assumed ceiling, and — on a simulated clock — that a shard meeting an
+injected `ReadTimeoutError` returns it as a transient error with a full read-timeout
+window still left to retry in.
+
+Note what a reserve cannot promise. `clamp_sleep_to_budgets` keeps
+`_DEADLINE_RESERVE_SECONDS` of the remaining budget unspent so a sleep does not end
+exactly at the wall, but an agent call can legitimately take minutes, so the reserve is
+a floor on usefulness rather than a guarantee that the next attempt completes. It also
+only ever **shortens** a sleep: it never converts one into a failure, because being
+killed by the Lambda timeout is retried by the caller while the underlying error name
+is not.
+
 ### Parse LLM Responses
 
 ```python

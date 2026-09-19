@@ -631,8 +631,24 @@
                 "BackoffRate": 1.0
               }
             ],
+            "Catch": [
+              {
+                "Comment": "Without this, a shard failure surfaces on the ExecutionFailed event as a bare States.ExceedToleratedFailureThreshold with no section, no shard and no cause - the operator has to find the Map Run by hand before learning anything at all (#1014). The catcher names ONE concrete error rather than States.ALL on purpose: States.ALL would also take States.DataLimitExceeded, States.Runtime and a raw States.TaskFailed, each of which already reports a specific and differently-actionable condition, and would feed the Fail state below an error-output shape that is not guaranteed. ResultPath keeps the Map state input intact under $ and files the error alongside it, which is what lets the Cause name the SECTION as well as the error - a default ResultPath of $ would replace the input with the error object and lose $.section_id.",
+                "ErrorEquals": [
+                  "States.ExceedToleratedFailureThreshold"
+                ],
+                "ResultPath": "$.ShardMapError",
+                "Next": "ExtractionShardMapFailed"
+              }
+            ],
             "ResultPath": "$.ShardResults",
             "Next": "ExtractionMergeStep"
+          },
+          "ExtractionShardMapFailed": {
+            "Type": "Fail",
+            "Comment": "Reached only from ExtractionShardMap's Catch, and only for States.ExceedToleratedFailureThreshold. CausePath reads $.ShardMapError and $.section_id, both of which that one catcher guarantees: ShardMapError is the error output it files there, and section_id comes from the enclosing ProcessSections ItemSelector. Neither is the optional $.Cause that PostStepHookFailed depends on, so the States.Runtime hazard documented on PreprocessingHookFailed does not apply here - but pointing a broader catcher at this state would reintroduce it, which patterns/unified/tests/test_workflow_hook_fatal_catch.py asserts against. States.JsonToString is used because $.ShardMapError is an object and States.Format takes only scalars.",
+            "Error": "ExtractionShardMapFailed",
+            "CausePath": "States.Format('Sharded extraction failed for section {} because at least one shard did not complete. ExtractionShardMap tolerates ZERO shard failures on purpose: finishing a document with shards missing is silent data loss, which is worse than the failure it would replace. The Map has already been retried once - per-shard results persist to S3, so that retry re-inferred only the shards still incomplete and kept the ones that had succeeded. Map error output: {}. For the failing shard-s OWN error, open the Map Run from the ExtractionShardMap event in this execution history: the per-iteration failure is recorded there, not on this event. A shard killed at its Lambda timeout reports Sandbox.Timedout, which is retried once and no more because a timeout is deterministic (#917); if that is what happened, the shard needed more time than one invocation allows and the read-timeout budget in idp_common.utils.bedrock_utils is where that arithmetic lives (#1014).', $.section_id, States.JsonToString($.ShardMapError))"
           },
           "ExtractionMergeStep": {
             "Type": "Task",

@@ -150,8 +150,8 @@ LAMBDA_TASKS = _task_names(_DEFINITION)
 def test_enumeration_is_not_vacuous(definition):
     """A parsing bug must not turn the gates below into no-ops.
 
-    The floor is 22 against 24 actually found today (52 states in the definition:
-    24 Task, 16 Pass, 7 Choice, 3 Map, 2 Fail, no Parallel). Two states of
+    The floor is 22 against 24 actually found today (55 states in the definition:
+    24 Task, 16 Pass, 7 Choice, 5 Fail, 3 Map, no Parallel). Two states of
     headroom, deliberately: retiring a genuinely obsolete task should not require
     editing this number, and a floor pinned exactly at the current count turns
     every legitimate deletion into a spurious failure. It is still far above what
@@ -200,7 +200,7 @@ def test_timeout_retrier_is_single_attempt(definition, task):
             "deterministic timeout fails identically on every attempt, so this "
             "burns attempts x the function timeout of a concurrency slot before "
             "failing (#917). Give the timeout codes their own retrier with "
-            'MaxAttempts 1, as EvaluationStep does — do NOT shorten the ladder '
+            "MaxAttempts 1, as EvaluationStep does — do NOT shorten the ladder "
             "the throttles share."
         )
 
@@ -261,9 +261,9 @@ def test_transient_ladder_is_not_weakened(definition, task):
     Non-Lambda states are out of scope by construction: this test is parametrized
     over ``LAMBDA_TASKS``, which only holds ``Type: Task`` states whose
     ``Resource`` is a Lambda invoke. ``Fail``, ``Choice``, ``Wait``, ``Succeed``,
-    ``Pass`` and ``Map`` states can never be reported by it, so the two ``Fail``
-    states in the definition — and any added later, for instance by a pipeline
-    hook's ``onError: fail`` policy — are unaffected.
+    ``Pass`` and ``Map`` states can never be reported by it, so every ``Fail``
+    state in the definition — and any added later, for instance by a pipeline
+    hook's ``onError: fail`` policy or a Map's failure ``Catch`` — is unaffected.
     """
     state = _lambda_tasks(definition)[task]
     ladders = [
@@ -350,7 +350,9 @@ def _shape_of_path(path: str) -> Shape:
     serialized document has no ``document`` key (asserted separately below). That is
     what makes an alternating ``{document: ...}`` / bare-document envelope checkable.
     """
-    return Shape(absent=frozenset({"document"})) if _leaf(path) == "document" else UNKNOWN
+    return (
+        Shape(absent=frozenset({"document"})) if _leaf(path) == "document" else UNKNOWN
+    )
 
 
 def _param_keys(block: dict[str, Any]) -> frozenset[str]:
@@ -385,6 +387,17 @@ def _referenced_keys(state: dict[str, Any]) -> set[str]:
         value = state.get(field)
         if isinstance(value, str):
             keys.add(_first_segment(value) or "")
+    # A ``Fail`` state's ``CausePath``/``ErrorPath`` are evaluated against its input
+    # too, and an unresolvable one there is the worst place for it: the state exists
+    # to report a failure, and Step Functions replaces the reported error with
+    # ``States.Runtime``, masking whatever actually broke. They hold either a bare
+    # JSONPath or an intrinsic-function call, so the paths are matched by pattern
+    # rather than by parsing the intrinsic.
+    for field in ("CausePath", "ErrorPath"):
+        value = state.get(field)
+        if isinstance(value, str):
+            for match in re.finditer(r"\$\.[A-Za-z0-9_\[\]]+", value):
+                keys.add(_first_segment(match.group(0)) or "")
     # ``OutputPath`` is deliberately absent: it filters the state's RESULT (after
     # ResultPath), not its input, so ``"OutputPath": "$.Payload"`` refers to a
     # Lambda's return envelope rather than to anything the input must carry.
@@ -400,7 +413,11 @@ def _result_shape(state: dict[str, Any], incoming: Shape) -> Shape:
             return Shape(_param_keys(state["Parameters"]), closed=True)
         if "Result" in state:
             result = state["Result"]
-            return Shape(frozenset(result), closed=True) if isinstance(result, dict) else UNKNOWN
+            return (
+                Shape(frozenset(result), closed=True)
+                if isinstance(result, dict)
+                else UNKNOWN
+            )
         if "InputPath" in state:
             return _shape_of_path(state["InputPath"])
         return incoming
@@ -449,7 +466,9 @@ def _edges(state: dict[str, Any]) -> list[tuple[str, str, Shape | None]]:
     return out
 
 
-def _analyze(states: dict[str, Any], seed: Shape, scope: str, findings: list[str]) -> None:
+def _analyze(
+    states: dict[str, Any], seed: Shape, scope: str, findings: list[str]
+) -> None:
     """Propagate shapes to a fixed point, checking every edge as it is taken."""
     start = states["StartAt"] if "StartAt" in states else None
     scope_states: dict[str, Any] = states["States"] if "States" in states else states

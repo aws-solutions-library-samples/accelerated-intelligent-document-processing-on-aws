@@ -598,6 +598,61 @@ If a future state genuinely must not retry — an idempotency hazard, for instan
 it to a named, commented exemption set in that test file rather than deleting the
 assertion.
 
+#### Sharded extraction: the shard Map, and the budget inside one shard
+
+Advanced (agentic) extraction splits a section into shards and runs each in its own
+Lambda invocation through a Distributed Map, `ExtractionShardMap`. Three things about
+how that Map handles failure, because they interact:
+
+**No shard failure is tolerated, on purpose.** The Map sets neither
+`ToleratedFailurePercentage` nor `ToleratedFailureCount`, so Step Functions' default
+of zero applies and one failed shard fails the Map. Raising the tolerance would let a
+document *complete* with shards missing, and a document that reports success with
+part of its data absent is worse than one that fails: nothing downstream — not
+confidence scoring, not evaluation, not the UI — can tell that anything is gone.
+
+**The Map itself is retried once.** Every shard persists its own result to S3 as soon
+as it finishes, and a shard whose result is already there loads it instead of
+re-inferring. So retrying the Map re-runs only the shards that did not complete,
+which is what that persistence exists for. One attempt and no more: a shard that
+failed deterministically — a schema it cannot satisfy, a request over the model's cap
+— fails the same way on the second pass.
+
+**A failed Map names the section and the cause.** The `Catch` on
+`ExtractionShardMap` routes to a `Fail` state, so the execution reports
+`ExtractionShardMapFailed` with a cause carrying the section id and the Map's error
+output rather than a bare `States.ExceedToleratedFailureThreshold`. The failing shard's
+individual error lives in the **Map Run**, reachable from the `ExtractionShardMap`
+entry in the execution history — a Distributed Map records per-iteration failures there
+rather than on the parent execution. The catcher names that one error rather than
+`States.ALL`, because the Map's other failure modes (`States.DataLimitExceeded`,
+`States.Runtime`) already report a specific and differently-actionable condition.
+
+Inside one shard, three durations draw on the same invocation and only add up if they
+are chosen together:
+
+| | Value | What it bounds |
+|---|---|---|
+| Bedrock client `read_timeout` | 180 s | How long **one** request may stall with no response before botocore gives up |
+| Retry backoff allowance | 300 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
+| Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
+
+One stalled request plus the entire backoff allowance has to leave working time
+behind it, and at 180 s it leaves 420 s. A stall then surfaces as a `ReadTimeoutError`
+with most of the invocation still available, the ladder retries inside the same
+invocation, and the shard returns a result. The alternative is that the invocation is
+killed at 900 s: Step Functions reports that as `Sandbox.Timedout`, which is
+deterministic and retried once (see above), so the transient blip a retry would have
+cleared becomes the failure that is not retried.
+
+A legitimately slow single request is therefore cut off and retried rather than waited
+out. Observed per-call latency is far below the ceiling — a 3,200-row document
+completes in about 408 s spread over many calls — so this affects stalls rather than
+slow work. The three numbers live together in
+`idp_common.utils.bedrock_utils`, and
+`lib/idp_common_pkg/tests/unit/extraction/test_shard_timeout_budget.py` asserts the
+relationship between them along with the Map's `Retry`, `Catch` and zero tolerance.
+
 ### Concurrency Control
 
 - **Workflow Limits**: Maximum concurrent Step Function executions, controlled by `MaxConcurrentWorkflows` parameter

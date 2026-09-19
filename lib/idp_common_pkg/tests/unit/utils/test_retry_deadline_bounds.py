@@ -21,6 +21,7 @@ makes these tests HANG (50 x 1800s) and burn the CI job timeout instead of faili
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -28,6 +29,8 @@ import botocore.exceptions
 import pytest
 
 from idp_common.utils.bedrock_utils import (
+    AGENT_MAX_BACKOFF_SECONDS,
+    AGENT_MAX_TOTAL_BACKOFF_SECONDS,
     async_exponential_backoff_retry,
     clamp_sleep_to_budgets,
     exponential_backoff_retry,
@@ -331,15 +334,40 @@ def test_thread_pool_does_not_inherit_the_deadline():
 def test_agent_backoff_constants_fit_inside_one_lambda_invocation():
     """Pins the reported bug. ``max_delay`` was 1800 — twice the whole invocation.
     The bounds are asserted tightly, so a regression to a merely-less-absurd value
-    (say 200s inside a 900s function) still fails."""
-    pytest.importorskip("strands", reason="agentic extras not installed")
-    from idp_common.extraction.agentic_idp import (
-        _AGENT_MAX_BACKOFF_SECONDS,
-        _AGENT_MAX_TOTAL_BACKOFF_SECONDS,
-    )
+    (say 200s inside a 900s function) still fails.
 
-    assert _AGENT_MAX_BACKOFF_SECONDS <= 60
-    assert _AGENT_MAX_TOTAL_BACKOFF_SECONDS <= 300
+    The two constants live in ``utils.bedrock_utils``, next to the Bedrock client's
+    read timeout and the shard function's Lambda ceiling, because all three are only
+    correct *relative to each other* and ``extraction.runtime`` needs them without
+    the strands-backed agentic stack (#1014). ``test_shard_timeout_budget.py``
+    asserts the inequality between the three; this test asserts the absolute bounds
+    on the backoff pair, which is the part #917's fix established.
+
+    It reads the values back out of the decorator's closure rather than only
+    asserting on the module constants. Module constants alone leave the decorator
+    unconstrained — ``invoke_agent_with_retry`` could be given a literal, or a
+    different constant, and every assertion here would still pass while the running
+    ladder used the wrong number. The closure is what actually executes.
+    """
+    assert AGENT_MAX_BACKOFF_SECONDS <= 60
+    assert AGENT_MAX_TOTAL_BACKOFF_SECONDS <= 300
+
+    pytest.importorskip("strands", reason="agentic extras not installed")
+    from idp_common.extraction.agentic_idp import invoke_agent_with_retry
+
+    bound = inspect.getclosurevars(invoke_agent_with_retry).nonlocals
+    assert bound["max_delay"] == AGENT_MAX_BACKOFF_SECONDS, (
+        f"invoke_agent_with_retry runs with max_delay={bound['max_delay']}, not the "
+        f"{AGENT_MAX_BACKOFF_SECONDS}s constant the bounds above are asserted on"
+    )
+    assert bound["max_total_delay"] == AGENT_MAX_TOTAL_BACKOFF_SECONDS, (
+        f"invoke_agent_with_retry runs with "
+        f"max_total_delay={bound['max_total_delay']}, not the "
+        f"{AGENT_MAX_TOTAL_BACKOFF_SECONDS}s constant the bounds above are "
+        "asserted on"
+    )
+    assert bound["max_delay"] <= 60
+    assert bound["max_total_delay"] <= 300
 
 
 if __name__ == "__main__":
