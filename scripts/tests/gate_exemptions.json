@@ -1,0 +1,771 @@
+{
+  "$comment": [
+    "Registry of every gate exemption in this repository. Consumed by",
+    "scripts/tests/test_gate_exemption_registry.py.",
+    "",
+    "MEMBERSHIP IS DERIVED, REASONS ARE AUTHORED. scripts/exemption_discovery.py finds",
+    "every exemption surface in the tree -- Python constants by name AND by the prose of",
+    "their attached comment, Make variables, shell variables, linter config keys and JSON",
+    "baselines -- and the meta-test fails in BOTH directions: a surface that is not",
+    "registered here, and an entry here whose surface has vanished. This file is itself a",
+    "list, and the whole subject of the change that created it is that hand-maintained",
+    "lists go stale, so only the judgement in it is hand-maintained.",
+    "",
+    "WHY IT EXISTS. Four exemption lists stated a premise that was false for at least one",
+    "member, and in each case the false member was the one the gate most needed to see.",
+    "Every one was the same bug: ONE justification attached to a SET, where the",
+    "justification is a property of individual members. Read in aggregate -- 'does this",
+    "reason hold broadly?' -- all four pass. So the rule this registry encodes is that a",
+    "reason answers for one member, and a premise that can be computed is computed.",
+    "",
+    "FIELDS.",
+    "  kind      exemption        a real carve-out: members escape an assertion",
+    "            enforced-universe the list IS the enforced set; the risk is omission",
+    "            prune             build output / gitignored local work, not a carve-out",
+    "            fixture           test data that matched the vocabulary; turns nothing off",
+    "            capability        a runtime allow/deny grant, not a gate",
+    "  turnsOff  what stops being asserted for a member (required, non-empty)",
+    "  premise   the name of a predicate in scripts/tests/gate_premises.py that the owning",
+    "            gate evaluates PER MEMBER, or JUDGEMENT when there is genuinely nothing to",
+    "            compute. JUDGEMENT is not an escape from scrutiny: a reason is then",
+    "            required, and the ratchets still apply.",
+    "  reason    required when premise is JUDGEMENT",
+    "  ratchet   what makes the exemption finite even where the premise cannot be checked:",
+    "            non-vacuity (it must shield something), count-pinned (it shields only as",
+    "            many sites as were audited), universe-closure (nothing may sit outside",
+    "            both sets), staleness (a dead entry fails), prune-meta-test (deferred to",
+    "            test_repo_walk_guards_prune_local_work.py), or none",
+    "  ratchetGap required when ratchet is none: what is consequently unprotected. These",
+    "            are the honest residuals of this mechanism, and they are enumerable --",
+    "            which is the point. An unmeasured gap is how this class started.",
+    "  crossReferences  other entries that must be audited with this one. Two exemptions",
+    "            pointed at each other in comments and two independent surveys audited one",
+    "            half and never followed the pointer.",
+    "",
+    "  premiseWiring  'pending' on an entry whose premise IS computable but whose gate",
+    "            does not yet call the predicate. It requires a reason and is counted:",
+    "            MAX_PENDING_WIRING in the meta-test may shrink and not grow. This state",
+    "            exists so that 'computable but unchecked' is distinguishable from",
+    "            'nothing to compute' -- collapsing the two into JUDGEMENT is how a",
+    "            checkable premise stops being checked."
+  ],
+  "exemptions": {
+    "Makefile::ARN_PARTITION_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the hardcoded arn:aws: / service-principal / console-domain checks, for matching lines of one template",
+      "premise": "JUDGEMENT",
+      "ratchet": "non-vacuity",
+      "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
+      "crossReferences": [
+        "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS"
+      ]
+    },
+    "Makefile::CFN_LINT_IGNORE": {
+      "kind": "exemption",
+      "turnsOff": "cfn-lint rule E3043 (parent vs nested stack parameters) repo-wide",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "TemplateURL points at a build artifact, so the rule is skipped in CI and reports false positives against a stale copy locally. The compensating control is named: scripts/tests/test_nested_stack_parameters.py asserts the wiring against the source templates.",
+      "ratchetGap": "Per-RULE rather than per-path, so there is no member set to count and nothing to be vacuous about. The ratchet that would matter is that the named compensating gate still runs; scripts/tests/test_ci_gate_parity.py covers whether it is in both CIs, but nothing asserts the citation itself."
+    },
+    "lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py::METERING_KEY_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the 'metering key strips the :1m suffix' check for one file",
+      "premise": "JUDGEMENT",
+      "ratchet": "count-pinned",
+      "reason": "OpenAI Responses models have no :1m variant. The value pins the number of raw sites audited, and the comment states the principle this registry generalises: the exemption covers the sites audited when it was written, not the filename forever. The count-pinning model."
+    },
+    "lib/idp_common_pkg/tests/unit/extraction/test_few_shot_examples.py::CLASS_WITHOUT_EXAMPLES": {
+      "kind": "fixture",
+      "turnsOff": "nothing; a document-class schema fixture with no examples",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Test data. Matched on _WITHOUT_.",
+      "ratchetGap": "Not an exemption."
+    },
+    "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_COVERAGE_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the 'every selectable model has a pricing row' check for three model ids",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Embedding models emit no metering entry, so there is no key for a pricing row to price. test_coverage_exempt_has_no_stale_entries asserts each is still encountered by the enumeration.",
+      "crossReferences": [
+        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_NO_CACHE_UNITS_EXPECTED"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_NO_CACHE_UNITS_EXPECTED": {
+      "kind": "exemption",
+      "turnsOff": "the cache-pricing coverage requirement for eleven model ids",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Same shape as its sibling. Entry strength varies: some are one-line checks against CACHEPOINT_SUPPORTED_MODELS, one is an unrepeatable live measurement.",
+      "crossReferences": [
+        "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_COVERAGE_EXEMPT"
+      ]
+    },
+    "lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py::_TEMPLATES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the templates the model enumeration reads",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Enforced universe for the enumeration.",
+      "ratchetGap": "A missing template makes the coverage check narrower without saying so -- the failure this file already had once, fixed in PR #952."
+    },
+    "lib/idp_common_pkg/tests/unit/test_suite_hygiene.py::_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the no-global-sys.modules-stubbing rule for conftest.py",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "conftest.py owns the conditional stubbing. Note it matches by basename, so it exempts every conftest.py in the walked tree.",
+      "ratchetGap": "No staleness check, and the basename match is broader than the reason."
+    },
+    "pyrightconfig.json::exclude": {
+      "kind": "exemption",
+      "turnsOff": "basedpyright type checking for the listed paths",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Generated, vendored and build-output trees. scripts/tests/test_pyright_config.py asserts every include path exists and every first-party distribution is covered, which is the closure half."
+    },
+    "ruff.toml::extend-exclude": {
+      "kind": "exemption",
+      "turnsOff": "ruff lint AND format for the listed paths, repo-wide",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Pre-existing debt, declared as such in the file: the comment says 'do not add to the list' and records the finding count. Note it excludes all of scripts/, so every gate in scripts/tests is unformatted and unlinted by the repo's own linter.",
+      "ratchetGap": "Nothing asserts an entry still corresponds to real debt, so an entry whose file was since fixed keeps a whole tree unlinted. The per-file spelling for idp_common/config shows the intended direction."
+    },
+    "scripts/check_data_plane_tags.py::DATA_PLANE_ALLOWLIST": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; membership is what turns the idp:plane=data requirement ON",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Per-member judgement about invocation cause ('invoked per document'), argued in each inline comment. _check_inverse_drift fails if a non-listed Lambda carries the tag, so the list is closed in both directions.",
+      "crossReferences": [
+        "scripts/check_data_plane_tags.py::allowlisted_by_template"
+      ]
+    },
+    "scripts/check_filtered_scans.py::PRUNE_MARKERS": {
+      "kind": "prune",
+      "turnsOff": "discovery, for build output and vendored trees",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Build output and local work."
+    },
+    "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS": {
+      "kind": "exemption",
+      "turnsOff": "the hardcoded arn:aws: check for any Python file whose path contains a fragment",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Tests and build/vendor trees, plus the checker itself, plus two named SDLC harness modules that provision the pipeline's own commercial-account IAM. The `/scripts/sdlc/` DIRECTORY form is gone: it stated its own expiry condition ('if the harness ever grows a GovCloud probe, drop this exclusion'), that condition had fired -- transform_deploy_test.py is documented to run against us-gov-west-1 and branches on the partition -- and the directory form put the one GovCloud-capable harness file inside the blind spot.",
+      "ratchetGap": "No check that a fragment still excludes anything, so a fragment whose file is deleted keeps a standing exemption for whatever next takes the path. Non-vacuity per fragment is the missing ratchet and is the obvious next step here.",
+      "crossReferences": [
+        "Makefile::ARN_PARTITION_EXEMPT"
+      ]
+    },
+    "scripts/check_python_arn_partitions.py::SCAN_ROOTS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing directly; anything outside these roots is simply never scanned",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "First-party Python that runs against AWS. Widened from lib/idp_sdk/idp_sdk to lib/idp_sdk: naming the inner package silently excluded the sibling examples/ tree, which is neither test, generated nor vendored, and held two hardcoded commercial managed-policy ARNs in a documented deploy recipe.",
+      "ratchetGap": "Coverage is measured only by the file count the gate prints (610 today), not asserted, so a root narrowing again would not fail. Universe closure over `git ls-files '*.py'` minus a declared exclusion list is the fix."
+    },
+    "scripts/hooks/check_commit_text.py::ALLOWED_EMAILS": {
+      "kind": "exemption",
+      "turnsOff": "the internal-address check for these literal strings",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Addresses that are legitimately public. The hook's own docstring requires a comment per entry saying why.",
+      "ratchetGap": "No check that an allowlisted literal still appears anywhere, so a stale entry silently re-permits a string nobody uses."
+    },
+    "scripts/hooks/check_commit_text.py::ALLOWED_HOSTS": {
+      "kind": "exemption",
+      "turnsOff": "the internal-hostname check for these literal hosts",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Hostnames that resolve publicly.",
+      "ratchetGap": "Same as ALLOWED_EMAILS: no staleness check."
+    },
+    "scripts/run_all_tests.py::PRUNE_DIR_MARKERS": {
+      "kind": "prune",
+      "turnsOff": "test-root discovery, for build output, vendored copies and gitignored local work",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "The canonical shared prune list; scripts/tests/test_repo_walk_guards_prune_local_work.py pins that it carries scratch/ and .claude/ and lets other gates delegate to it.",
+      "crossReferences": [
+        "scripts/tests/test_api_adapter_identity_provenance.py::_SKIP_DIR_PARTS",
+        "scripts/tests/test_cfn_export_ownership.py::_SKIP_PARTS",
+        "scripts/tests/test_scope_lookup_fail_closed.py::_SKIP_DIR_PARTS",
+        "scripts/tests/test_xray_annotations.py::SKIP_DIR_NAMES"
+      ]
+    },
+    "scripts/run_all_tests.py::PRUNE_FILE_SUFFIXES": {
+      "kind": "prune",
+      "turnsOff": "test-file discovery, for nbconvert output",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Generated -converted.py artifacts from `make srt-scan`."
+    },
+    "scripts/run_all_tests.py::QUARANTINE": {
+      "kind": "exemption",
+      "turnsOff": "`make test` entirely, for the listed directories",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Roots known not to run in the shared gate, each with a reason. Two reasons are dependency-availability facts (huggingface_hub, cfnresponse) that an import could check; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry.",
+      "ratchetGap": "The 'collects zero pytest tests' claim is mechanically checkable by collecting, and is not checked. classify() also deliberately does not propagate quarantine to children, so a nested root must register itself.",
+      "crossReferences": [
+        "scripts/run_all_tests.py::RUN_ROOTS"
+      ]
+    },
+    "scripts/run_all_tests.py::RUN_ROOTS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; membership is what makes a suite run",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "The enforced universe. A discovered directory in neither registry is a hard error, which is the closure that makes QUARANTINE trustworthy.",
+      "crossReferences": [
+        "scripts/run_all_tests.py::QUARANTINE"
+      ]
+    },
+    "scripts/sdlc/codebuild_deployment.py::PROBE_VARIANTS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the deploy-variant probes it lists",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Harness configuration, not a gate exemption.",
+      "ratchetGap": "Not a gate; nothing to ratchet."
+    },
+    "scripts/sdlc/failure_agent.py::_ALLOWED_TOOLS": {
+      "kind": "capability",
+      "turnsOff": "nothing in any gate; it grants an agent read-only AWS verbs at runtime",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "A capability grant, not a gate exemption. Registered so the vocabulary match is accounted for rather than silently dropped.",
+      "ratchetGap": "Out of scope for this registry by construction. If the registry ever widens to privilege grants this belongs there."
+    },
+    "scripts/sdlc/retired_services.json::retired_services.json": {
+      "kind": "exemption",
+      "turnsOff": "the retired-service documentation check, per (path, linePattern) pair and per excludedPaths glob",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Triaged historical or vestigial mentions, each with a bucket and justification. This is the shape the ARN exemption was rebuilt on."
+    },
+    "scripts/sdlc/scan_api_rbac.py::ALLOWED_UNAUTH_METHODS": {
+      "kind": "exemption",
+      "turnsOff": "the 'this API method declares an authorizer' finding for three methods",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "A CORS preflight MOCK integration and two static-SPA GETs. The integration type and HTTP method are readable from the template, so this is a candidate for a real predicate.",
+      "ratchetGap": "No check that each named method is still the MOCK/static method the reason describes, so a method that gained a real integration would keep its exemption."
+    },
+    "scripts/sdlc/scan_api_rbac.py::SCOPE_PATTERNS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; these are the patterns the scan recognises",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Detection patterns, not an exemption. Registered because a pattern set that fails to match is indistinguishable from a clean tree.",
+      "ratchetGap": "A pattern that matches nothing makes the scan silently vacuous for that rule."
+    },
+    "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES": {
+      "kind": "exemption",
+      "turnsOff": "the 'every config field has a UI control' check, for a subtree and everything under it",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Per subtree, and the comment justifies subtree granularity: the reason is a property of the subtree, not the field. Two of five members rest on checkable code facts; three are product decisions.",
+      "crossReferences": [
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::KNOWN_UI_GAPS",
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE"
+      ]
+    },
+    "scripts/sdlc/tests/test_config_ui_schema_parity.py::KNOWN_UI_GAPS": {
+      "kind": "exemption",
+      "turnsOff": "the 'every config field has a UI control' check, for one exact path",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "An acknowledged backlog -- 'accepted, not endorsed'. No fact to check. Note effective membership is five larger than the literal: a module-scope loop adds per-stage entries, which is why this registry records the constant rather than its members.",
+      "crossReferences": [
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES"
+      ]
+    },
+    "scripts/sdlc/tests/test_config_ui_schema_parity.py::NOT_USER_SETTABLE": {
+      "kind": "exemption",
+      "turnsOff": "the same check, for fields no user should set",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Same family as its two siblings, and policed by the same staleness test. Found by comment rather than name.",
+      "crossReferences": [
+        "scripts/sdlc/tests/test_config_ui_schema_parity.py::EXEMPT_SUBTREES"
+      ]
+    },
+    "scripts/sdlc/tests/test_iam_trust_policy_partitions.py::PRUNE_PATH_MARKERS": {
+      "kind": "prune",
+      "turnsOff": "discovery, for build output and gitignored local work",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Build output and local work."
+    },
+    "scripts/sdlc/tests/test_resolver_layer_coverage.py::VENDORED_MODULES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the vendored import names the layer check tolerates",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Its comment is largely about a deliberate non-listing (log_sanitizer) while insisting it is not a general allowlist of import names.",
+      "ratchetGap": "The deliberate omission it argues for is prose, not a check."
+    },
+    "scripts/sdlc/tests/test_resolver_layer_coverage.py::_SCANNER_SOURCES_WITHOUT_AN_IMPORT": {
+      "kind": "fixture",
+      "turnsOff": "nothing; a negative-fixture table proving the scanner does not false-positive",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Test data. Matched on _WITHOUT_.",
+      "ratchetGap": "Not an exemption."
+    },
+    "scripts/sdlc/tests/test_retired_models_not_offered.py::_OFFERING_SURFACES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the files that must not name a retired model",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "An enforced universe with no closure check: a seventh surface would simply not be scanned, and the add-a-model checklist names more files than these.",
+      "ratchetGap": "No closure check against the add-a-model file list."
+    },
+    "scripts/sdlc/tests/test_retired_services_not_documented.py::STALE_LINES_AT_HEAD": {
+      "kind": "fixture",
+      "turnsOff": "nothing; fixture data for the retired-services checker's own tests",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Test data.",
+      "ratchetGap": "Not an exemption."
+    },
+    "scripts/sdlc/tests/test_retired_services_not_documented.py::STALE_LINES_NEAR_NEW_MARKERS": {
+      "kind": "fixture",
+      "turnsOff": "nothing; fixture data for the retired-services checker's own tests",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Test data.",
+      "ratchetGap": "Not an exemption."
+    },
+    "scripts/sdlc/tests/test_userpool_attribute_permissions.py::_ALL_KNOWN_ATTRIBUTES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the attribute universe the permission check is computed against",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Enforced universe, not an exemption."
+    },
+    "scripts/sdlc/validate_service_role_permissions.py::BOUNDARY_ACTIONS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing directly; the actions the service role must hold",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "An enforced list whose comment argues at length for one action deliberately left OUT (iam:DeleteRolePermissionsBoundary), with FORBIDDEN_SERVICE_ROLE_ACTIONS turning that into a hard check. A prose exclusion with a named compensating control.",
+      "crossReferences": [
+        "scripts/sdlc/validate_service_role_permissions.py::FORBIDDEN_SERVICE_ROLE_ACTIONS"
+      ]
+    },
+    "scripts/sdlc/validate_service_role_permissions.py::FORBIDDEN_SERVICE_ROLE_ACTIONS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it is the hardening denylist",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "The compensating control BOUNDARY_ACTIONS cites.",
+      "crossReferences": [
+        "scripts/sdlc/validate_service_role_permissions.py::BOUNDARY_ACTIONS"
+      ]
+    },
+    "scripts/security/dep_audit_allowlist.json::dep_audit_allowlist.json": {
+      "kind": "exemption",
+      "turnsOff": "the OSV dependency-vulnerability gate, per advisory id",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Advisories triaged as unreachable, each with a justification. Mirrored by .ash/.ash.yaml, and scripts/security/tests/test_dep_audit.py fails on an ASH entry with no allowlist twin.",
+      "crossReferences": [
+        "scripts/security/dep_audit.py::suppressed"
+      ]
+    },
+    "scripts/srt/issues.json::issues.json": {
+      "kind": "exemption",
+      "turnsOff": "the SRT security gate, per finding",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "SRT findings suppressed with a justification through `make srt-fix`."
+    },
+    "scripts/tests/test_api_adapter_identity_provenance.py::_SKIP_DIR_PARTS": {
+      "kind": "prune",
+      "turnsOff": "discovery, for build output, vendored code and gitignored local work",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Build output and local work; its comment names the three sibling sets it must stay in step with.",
+      "crossReferences": [
+        "scripts/run_all_tests.py::PRUNE_DIR_MARKERS"
+      ]
+    },
+    "scripts/tests/test_asl_placeholder_substitution.py::_SKIP_DIRS": {
+      "kind": "prune",
+      "turnsOff": "discovery, for build output, caches and gitignored local work",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Build output and local work. One member, workshop/, is a real source directory excluded without a stated reason."
+    },
+    "scripts/tests/test_cfn_export_ownership.py::EXPECTED_EXTENSION_SOURCES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the expected producing stacks",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Enforced expectation, not an exemption."
+    },
+    "scripts/tests/test_cfn_export_ownership.py::EXPECTED_HOST_SOURCES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the expected producing stacks",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Enforced expectation, not an exemption."
+    },
+    "scripts/tests/test_cfn_export_ownership.py::_SKIP_PARTS": {
+      "kind": "prune",
+      "turnsOff": "extension-template discovery, for build output and vendored trees",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Build output and vendored trees. Not in step with the four sibling sets (no scratch/ or .claude/) and this gate is not in REPO_WALKING_GATES.",
+      "ratchetGap": "Not covered by the prune meta-test despite walking the repo.",
+      "crossReferences": [
+        "scripts/run_all_tests.py::PRUNE_DIR_MARKERS"
+      ]
+    },
+    "scripts/tests/test_check_branch_protection.py::MUST_STAY_ADVISORY": {
+      "kind": "exemption",
+      "turnsOff": "the required-status-check eligibility assertion for three CI contexts",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Two workflows are path-filtered and one check is created behind a conditional, so requiring any would leave it pending forever. Readable from the workflow YAML.",
+      "ratchetGap": "No check that a named workflow is still path-filtered, so a workflow that loses its paths: filter keeps an exemption it no longer needs.",
+      "crossReferences": [
+        "scripts/sdlc/check_branch_protection.py::allowed"
+      ]
+    },
+    "scripts/tests/test_classification_prompt_copies_in_sync.py::EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the 'every committed copy carries the #653 rules' check for four files",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Two deliberate pre-fix control prompts for the benchmark, the suite declaring them, and this guard, which has to spell out the string it forbids.",
+      "ratchetGap": "One of the two control-prompt files has no individual reason -- the inline comment covers only the first."
+    },
+    "scripts/tests/test_classification_prompt_copies_in_sync.py::PRUNE": {
+      "kind": "prune",
+      "turnsOff": "discovery, for build output and gitignored local work",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Build output and local work; the one gate that had the complete set from the start."
+    },
+    "scripts/tests/test_codeowners.py::LINK_CHECK_EXCLUDED": {
+      "kind": "exemption",
+      "turnsOff": "the Markdown link check for two root documents",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "One is an append-only historical record; the other is being rewritten separately. Each is asserted to still exist and be reachable.",
+      "crossReferences": [
+        "scripts/tests/test_testing_doc.py::OVERCLAIM_EXEMPT"
+      ]
+    },
+    "scripts/tests/test_contributing_doc.py::PATHS_EXPECTED_ABSENT": {
+      "kind": "exemption",
+      "turnsOff": "the 'every path the document names exists' check",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Paths the document names BECAUSE they are absent. An inverse test requires each to stay absent."
+    },
+    "scripts/tests/test_csp_policies_in_sync.py::_SCRIPT_SRC_KEYWORDS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; CSP keywords recognised when comparing policies",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Detection vocabulary, not an exemption.",
+      "ratchetGap": "Not a gate exemption."
+    },
+    "scripts/tests/test_data_plane_component_labels.py::EXPECTED_COMPONENT": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the expected component label per resource",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Enforced expectation, not an exemption."
+    },
+    "scripts/tests/test_iam_privilege_escalation.py::DEPLOYMENT_ROLE_TEMPLATES": {
+      "kind": "exemption",
+      "turnsOff": "the role-creation and wildcard-PassRole findings for three role-provisioning templates",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Creating roles is these templates' function; they are assumed by CloudFormation or a human deployer, never by stack runtime code. Found by this registry via its COMMENT, not its name -- it is exempted in the same boolean expression as PASS_ROLE_WILDCARD_ALLOWED, and two name-based surveys found the empty list beside it and missed this one.",
+      "crossReferences": [
+        "scripts/tests/test_iam_privilege_escalation.py::PASS_ROLE_WILDCARD_ALLOWED"
+      ]
+    },
+    "scripts/tests/test_iam_privilege_escalation.py::PASS_ROLE_WILDCARD_ALLOWED": {
+      "kind": "exemption",
+      "turnsOff": "the wildcard iam:PassRole finding for a named template",
+      "premise": "JUDGEMENT",
+      "ratchet": "non-vacuity",
+      "reason": "Empty by design -- a ratchet that may shrink but never grow.",
+      "crossReferences": [
+        "scripts/tests/test_iam_privilege_escalation.py::DEPLOYMENT_ROLE_TEMPLATES"
+      ]
+    },
+    "scripts/tests/test_iam_privilege_escalation.py::PRUNED_DIRS": {
+      "kind": "prune",
+      "turnsOff": "discovery, for build output and gitignored local work",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Build output and local work."
+    },
+    "scripts/tests/test_lambda_log_groups.py::CUSTOM_RESOURCE_ONLY": {
+      "kind": "exemption",
+      "turnsOff": "the dedicated-log-group and retention rules for the listed log groups",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Lambdas that run only during a stack operation. The property is re-derived from the template by test_exemptions_are_really_custom_resource_only rather than trusted -- the model this registry points at.",
+      "crossReferences": [
+        "scripts/tests/test_log_group_encryption.py::CUSTOM_RESOURCE_ONLY_EXEMPT"
+      ]
+    },
+    "scripts/tests/test_log_group_encryption.py::CUSTOM_RESOURCE_ONLY_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the KmsKeyId requirement for two log groups",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Same custom-resource-only class as its sibling, and likewise re-derived structurally plus required to carry a cfn_nag W84 suppression with a written reason.",
+      "crossReferences": [
+        "scripts/tests/test_lambda_log_groups.py::CUSTOM_RESOURCE_ONLY"
+      ]
+    },
+    "scripts/tests/test_log_group_encryption.py::OPTIONAL_KEY_TEMPLATES": {
+      "kind": "exemption",
+      "turnsOff": "the unconditional-CMK requirement where the key is a parameter",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Templates taking the key as an optional parameter."
+    },
+    "scripts/tests/test_log_group_encryption.py::OUTSIDE_CMK_TEMPLATES": {
+      "kind": "exemption",
+      "turnsOff": "the CMK requirement for templates outside the main deployment",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Categorised universe: test_every_log_group_template_is_categorised fails if any template is in no category, which is how eleven log groups missed by the first hand-built inventory were found."
+    },
+    "scripts/tests/test_log_group_encryption.py::RETENTION_PARAMETERS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the parameter names accepted as a retention value",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Self-described allowlist, deliberately not 'any parameter'.",
+      "ratchetGap": "A name that stops being used leaves a dead entry."
+    },
+    "scripts/tests/test_log_level_default.py::LOG_LEVEL_DEFAULT_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the LogLevel-defaults-to-WARN check for the named feature directories",
+      "premise": "installer_manifest_pins_parameter",
+      "ratchet": "universe-closure"
+    },
+    "scripts/tests/test_package_discovery.py::IGNORED_DIR_NAMES": {
+      "kind": "prune",
+      "turnsOff": "the explicit-__init__.py requirement, for non-source directory names",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Directory names never part of a distribution's importable source.",
+      "crossReferences": [
+        "scripts/tests/test_pyright_config.py::COVERAGE_EXEMPTIONS"
+      ]
+    },
+    "scripts/tests/test_package_discovery.py::WHEEL_OMISSIONS_ALLOWED": {
+      "kind": "exemption",
+      "turnsOff": "the 'every source package is in the built wheel' check",
+      "premise": "JUDGEMENT",
+      "ratchet": "non-vacuity",
+      "reason": "Empty, and the comment says it should stay that way."
+    },
+    "scripts/tests/test_pyright_config.py::COVERAGE_EXEMPTIONS": {
+      "kind": "exemption",
+      "turnsOff": "the 'every first-party distribution is typechecked' check",
+      "premise": "JUDGEMENT",
+      "ratchet": "non-vacuity",
+      "reason": "Empty. The comment carries a dated measurement (0 basedpyright errors for three distributions) that a meta-test could re-measure.",
+      "crossReferences": [
+        "scripts/tests/test_package_discovery.py::IGNORED_DIR_NAMES"
+      ]
+    },
+    "scripts/tests/test_repo_quality_review_skill.py::CLINE_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the 'every .claude skill has a .cline symlink' check",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Live tiers that drive real stacks. The comment states outright that this is a judgement about another assistant's capabilities and that adding a symlink to shorten the list would invert the decision. The cleanest JUDGEMENT case in the repo."
+    },
+    "scripts/tests/test_resolver_log_sanitizer.py::UNCOVERED_LAMBDA_TREES": {
+      "kind": "exemption",
+      "turnsOff": "the invocation-event redaction check for every handler under the listed tree",
+      "premise": "JUDGEMENT",
+      "ratchet": "count-pinned",
+      "reason": "Scope and event shape, per entry. The structural claims a reason might borrow (nested stack, built together) are asserted separately and per member, so a reason may no longer assert them."
+    },
+    "scripts/tests/test_scope_lookup_fail_closed.py::PENDING_FIX": {
+      "kind": "exemption",
+      "turnsOff": "named rules for named files, never a whole file",
+      "premise": "JUDGEMENT",
+      "ratchet": "non-vacuity",
+      "reason": "Empty. Keyed to specific rules so a finding from any other rule still fails, and test_the_pending_exemption_is_still_needed fails when a named rule stops firing -- the repo's only expiring exemption."
+    },
+    "scripts/tests/test_scope_lookup_fail_closed.py::SUPPRESSING_CONTEXT_MANAGERS": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the context managers recognised as swallowing an exception",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Detection vocabulary, not an exemption.",
+      "ratchetGap": "A missing spelling makes the rule silently miss a swallow."
+    },
+    "scripts/tests/test_scope_lookup_fail_closed.py::_SKIP_DIR_PARTS": {
+      "kind": "prune",
+      "turnsOff": "discovery, for directories with no deployed code",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Narrower than the four sibling prune sets: no scratch/ or .claude/, and this gate is not registered in REPO_WALKING_GATES, so nothing notices the divergence.",
+      "ratchetGap": "Not covered by the prune meta-test, and the divergence from the canonical list is live rather than cosmetic.",
+      "crossReferences": [
+        "scripts/run_all_tests.py::PRUNE_DIR_MARKERS"
+      ]
+    },
+    "scripts/tests/test_secure_transport_deny.py::TRANSPORT_CONTROL_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the deny-non-TLS resource-policy requirement for seven resource types",
+      "premise": "JUDGEMENT",
+      "ratchet": "non-vacuity",
+      "reason": "Recorded per type, and the constant's own comment states the rule this registry generalises: every reason must state a fact about THIS tree. Two members (Glue database, OpenSearch Serverless collection) rest on an AWS-behaviour claim instead, and the SNS member rests on runtime behaviour that needs a live check."
+    },
+    "scripts/tests/test_secure_transport_deny.py::TRUST_POLICY_PROPERTIES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the property names treated as trust policies",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Named so it can be excluded from the resource-policy sweep.",
+      "ratchetGap": "Single member, no staleness check."
+    },
+    "scripts/tests/test_testing_doc.py::LIVE_TIER_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the 'every live-tier make target is documented' requirement",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "Discovery helpers and aliases of documented targets. Both facts are readable from the Makefile recipe."
+    },
+    "scripts/tests/test_testing_doc.py::OVERCLAIM_EXEMPT": {
+      "kind": "exemption",
+      "turnsOff": "the 'no document promises per-method coverage' check for one file",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "CHANGELOG.md must quote the corrected claim; it is an append-only historical record.",
+      "ratchetGap": "No staleness check, though the same premise is registered for the same file in test_codeowners.py.",
+      "crossReferences": [
+        "scripts/tests/test_codeowners.py::LINK_CHECK_EXCLUDED"
+      ]
+    },
+    "scripts/tests/test_well_architected_doc.py::NON_SOLUTION_TREES": {
+      "kind": "prune",
+      "turnsOff": "discovery, for trees that are not the deployed solution",
+      "premise": "JUDGEMENT",
+      "ratchet": "prune-meta-test",
+      "reason": "Trees outside the deployed solution."
+    },
+    "scripts/tests/test_well_architected_doc.py::NOT_LOGICAL_IDS": {
+      "kind": "exemption",
+      "turnsOff": "the 'every backticked identifier resolves to a resource' check",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Property names, metric names and enum values the page quotes, each with a reason. Checkable against the CloudFormation and CloudWatch schemas.",
+      "ratchetGap": "No staleness check: an identifier the page stops quoting keeps its entry."
+    },
+    "scripts/tests/test_xray_annotations.py::SKIP_DIR_NAMES": {
+      "kind": "prune",
+      "turnsOff": "discovery, for build output and vendored trees",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Build output and vendored trees. This is the one prune set in the repo with NO stated premise at all -- no comment is attached to it.",
+      "ratchetGap": "No stated reason to check, not in REPO_WALKING_GATES, and diverges from the canonical prune list.",
+      "crossReferences": [
+        "scripts/run_all_tests.py::PRUNE_DIR_MARKERS"
+      ]
+    },
+    "scripts/tests/test_xray_tracing.py::HARDCODED_WITHOUT_PARAMETER": {
+      "kind": "exemption",
+      "turnsOff": "the 'EnableXRayTracing controls tracing' check for seven extension templates",
+      "premise": "not_a_nested_stack_of_parent",
+      "ratchet": "universe-closure",
+      "premiseWiring": "pending",
+      "reason": "The premise -- every member is an independently deployed extension stack, not a nested stack of template.yaml -- is exactly not_a_nested_stack_of_parent, and is the premise that was FALSE for one member of this list: main-stack-extensions is a nested stack receiving 26 parameters, so nine Lambdas kept tracing on with the parameter off. That member has been removed and the gate now asserts the set exactly in both directions, but it does so against its own private nested-stack walk rather than through gate_premises, so the predicate is named here and not yet wired. Wiring it is a one-line change to a file an in-flight branch owns; it is left to that branch rather than conflicted with."
+    },
+    "scripts/check_data_plane_tags.py::allowlisted_by_template": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the per-template index the inverse-drift check is computed against",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Derived from DATA_PLANE_ALLOWLIST at run time, not an independent decision.",
+      "crossReferences": [
+        "scripts/check_data_plane_tags.py::DATA_PLANE_ALLOWLIST"
+      ]
+    },
+    "scripts/check_threat_model_currency.py::skipped": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; an accumulator of documents the currency check could not read",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "A run-time tally, reported rather than a decision recorded in source.",
+      "ratchetGap": "A document that becomes unreadable is counted and reported but does not fail the gate, so a parse regression degrades coverage quietly."
+    },
+    "scripts/deploy-vpc-endpoints.py::skip_params": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; CloudFormation parameters the deploy helper does not forward",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Deploy-helper argument handling, not a gate exemption.",
+      "ratchetGap": "Not a gate; nothing to ratchet."
+    },
+    "scripts/deploy-vpc-endpoints.py::skip_list": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the same parameter list, as a list",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Deploy-helper argument handling, not a gate exemption.",
+      "ratchetGap": "Not a gate; nothing to ratchet."
+    },
+    "scripts/sdlc/check_branch_protection.py::allowed": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; the required-check contexts considered acceptable for a run",
+      "premise": "JUDGEMENT",
+      "ratchet": "universe-closure",
+      "reason": "Computed from the workflows plus MUST_STAY_ADVISORY, not an independent decision.",
+      "crossReferences": [
+        "scripts/tests/test_check_branch_protection.py::MUST_STAY_ADVISORY"
+      ]
+    },
+    "scripts/sdlc/codebuild_deployment.py::skipped": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; an accumulator of deploy-variant probes that did not run",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "A run-time tally of probes skipped because their infrastructure was absent.",
+      "ratchetGap": "A probe that silently stops running is reported but does not fail the harness, so coverage can shrink without a failure."
+    },
+    "scripts/sdlc/integration_test_deployment.py::excludes": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; paths excluded from the source bundle uploaded for a test deploy",
+      "premise": "JUDGEMENT",
+      "ratchet": "none",
+      "reason": "Packaging, not a gate exemption.",
+      "ratchetGap": "Not a gate; nothing to ratchet. An over-broad exclude would show up as a failed deploy."
+    },
+    "scripts/security/dep_audit.py::suppressed": {
+      "kind": "exemption",
+      "turnsOff": "the OSV finding, for advisories matched by the allowlist file",
+      "premise": "JUDGEMENT",
+      "ratchet": "staleness",
+      "reason": "The run-time application of dep_audit_allowlist.json; the decisions live in that file, which is registered separately and has its own staleness check.",
+      "crossReferences": [
+        "scripts/security/dep_audit_allowlist.json::dep_audit_allowlist.json"
+      ]
+    }
+  }
+}

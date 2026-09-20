@@ -148,6 +148,35 @@ pytest -v --tb=short         # Verbose with short tracebacks
 pytest --cov=idp_common --cov-report=html   # Coverage report
 ```
 
+## Writing a gate exemption
+
+Turning a gate off for anything means registering it in
+`scripts/tests/gate_exemptions.json`; `test_gate_exemption_registry.py` fails on an
+unregistered exemption list and names it. The full rules are in CLAUDE.md
+("Every gate exemption is registered"), but the four that decide most reviews:
+
+1. **One entry per file, ideally per line.** A reason bound to a directory answers for
+   every file under it, and an aggregate reading of it passes even when it is false of
+   most of them. That is the exact shape of four shipped defects.
+2. **Compute the premise if you can.** `scripts/tests/gate_premises.py` holds the
+   predicates (`not_a_nested_stack_of_parent`, `built_separately_from_main_stack`,
+   `file_absent_or_untracked`, `installer_manifest_pins_parameter`). Each takes **one**
+   member — parametrise over your members rather than asking whether the reason holds
+   generally.
+3. **`JUDGEMENT` is allowed, with a written reason.** It says there is nothing to
+   compute; it does not say nobody looked.
+4. **Give it a ratchet**, or declare the gap in `ratchetGap`. Non-vacuity (it must
+   shield something today), count pinning (it shields only as many sites as were
+   audited), universe closure (nothing may sit outside both sets), staleness.
+
+Two patterns worth copying rather than reinventing:
+`lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py` stores
+`(reason, site count)` so a new site in an exempt file still fails, and
+`scripts/tests/test_log_group_encryption.py::test_every_log_group_template_is_categorised`
+derives its universe and fails if any member is in no category — which is why its
+categories can be trusted, and how it found eleven log groups a hand-built inventory
+missed.
+
 ## How `make test` finds every suite (scripts/run_all_tests.py)
 The repo's Python tests live in ~30 separate roots (packages + per-Lambda dirs).
 A single `pytest` from the repo root FAILS: the many `tests/conftest.py` files

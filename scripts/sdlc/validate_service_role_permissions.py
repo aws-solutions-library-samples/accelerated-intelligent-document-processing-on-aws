@@ -620,17 +620,35 @@ def extract_required_permissions_from_templates(templates):
     wildcard_permissions = set()
     required_iam_actions = set()
     
-    # Services to ignore (not real AWS services)
-    ignore_services = {'serverless', 'opensearchserverless', 'cognito'}
-    
+    # The CloudFormation namespace is not always the IAM prefix, so `AWS::X::Y` ->
+    # `x:*` is wrong for some services. This used to be an ignore set of three
+    # entries whose stated reason was "not real AWS services", and that was true of
+    # exactly one of them: Cognito and OpenSearch Serverless are very real, they were
+    # listed because their DERIVED TOKEN is not their IAM prefix, and ignoring them
+    # meant the role's Cognito and OpenSearch grants were never derived at all. The
+    # gate would have reported success with `cognito-idp:*` removed and every deploy
+    # broken. The fix is a translation, not an exclusion.
+    #
+    # `AWS::Serverless::*` is the one genuine non-service: it is the SAM transform's
+    # namespace. But it EXPANDS to real resources, so ignoring it also silently
+    # dropped the `states:*` and `apigateway:*` requirements -- two more grants hidden
+    # behind the one correct member of the old set.
+    iam_prefixes = {
+        'cognito': {'cognito-idp', 'cognito-identity'},
+        'opensearchserverless': {'aoss'},
+        'serverless': {'lambda', 'apigateway', 'states'},
+    }
+
     for template_path in templates:
         if os.path.exists(template_path):
             services = extract_aws_services_from_template(template_path)
             iam_actions = extract_iam_actions_from_template(template_path)
-            
+
             for service in services:
-                if service != 'iam' and service not in ignore_services:
-                    wildcard_permissions.add(f'{service}:*')
+                if service == 'iam':
+                    continue
+                for prefix in iam_prefixes.get(service, {service}):
+                    wildcard_permissions.add(f'{prefix}:*')
             
             # Only add IAM actions to required_iam_actions
             for action in iam_actions:

@@ -343,10 +343,15 @@ def matching_lines(
 #: Predicates a registry entry may name, by the exact string it names them with.
 #: ``JUDGEMENT`` is deliberately absent: it is not a predicate, it is the recorded
 #: admission that there is no predicate, and the registry treats it separately.
+#
+#: ``installer_manifest_pins_parameter`` takes the parameter name as a second
+#: argument, so a caller binds it rather than calling it bare. It is listed here
+#: because the registry names predicates by string and must be able to resolve it.
 PREDICATES = {
     "not_a_nested_stack_of_parent": not_a_nested_stack_of_parent,
     "built_separately_from_main_stack": built_separately_from_main_stack,
     "file_absent_or_untracked": file_absent_or_untracked,
+    "installer_manifest_pins_parameter": installer_manifest_pins_parameter,
 }
 
 #: The marker an entry uses instead of a predicate when its premise genuinely
