@@ -438,8 +438,18 @@ def call(api_base, field, args, token):
     except (ValueError, TypeError):
         return status, UNREADABLE_BODY, None, request_id
     if isinstance(p, dict):
-        if isinstance(p.get("errors"), list) and p["errors"]:
-            et = p["errors"][0].get("errorType")
+        errors = p.get("errors")
+        if isinstance(errors, list) and errors:
+            # `errors` is not always the dispatcher's GraphQL-shaped envelope. A
+            # resolver may return 200 with its own per-item failure list of plain
+            # STRINGS — abortWorkflow does, one entry per object key it could not
+            # abort. Reading `.get` off that raises AttributeError and takes the
+            # whole run down with no report, which is what happened when this
+            # access moved out from under a bare `except Exception`. Narrowing
+            # that handler was right; the element type has to be checked here.
+            first = errors[0]
+            if isinstance(first, dict):
+                et = first.get("errorType")
         err = p.get("error")
         if isinstance(err, dict):
             in_band = err.get("type")

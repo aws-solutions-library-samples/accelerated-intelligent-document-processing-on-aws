@@ -122,6 +122,29 @@ class TestCallReportsWhatItCouldNotEstablish:
 
         assert (status, et) == (200, h.UNREADABLE_BODY)
 
+    def test_an_errors_list_of_plain_strings_does_not_abort_the_run(self, monkeypatch):
+        """``errors`` is not always the dispatcher's GraphQL-shaped envelope.
+
+        ``abortWorkflow``'s resolver returns 200 with ``errors`` as its own list of
+        plain STRINGS, one per object key it could not abort. Reading ``.get`` off
+        that element raises ``AttributeError``, which is not caught by the narrowed
+        ``(ValueError, TypeError)`` handler around ``json.loads`` — so it escapes
+        ``call()`` and takes the whole 118-operation run down with no report at all.
+
+        That is exactly what happened: the run died after 14 operations, exit 2. The
+        previous revision survived it only because this block sat under a bare
+        ``except Exception: pass``, which also swallowed real parse failures — so the
+        remedy is to check the element type, not to widen the handler back.
+        """
+        _transport(
+            monkeypatch,
+            _Resp(200, json.dumps({"errors": ["could not abort a", "or b"]})),
+        )
+
+        status, et, in_band, _ = h.call(API, "abortWorkflow", {}, "tok")
+
+        assert (status, et, in_band) == (200, None, None)
+
     def test_a_good_body_is_not_marked(self, monkeypatch):
         _transport(monkeypatch, _Resp(200, '{"Documents": []}'))
 
