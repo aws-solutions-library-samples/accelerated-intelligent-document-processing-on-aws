@@ -181,6 +181,13 @@ DEPLOY_CALL_MARKERS = (
     ".update_stack(",
     ".create_change_set(",
     "--parameter-overrides",
+    # idp_feature_sdk's own wrapper around create/update. Without it the feature
+    # CLI's deploy — which submits two parameters unconditionally — was invisible to
+    # the walk even after the roots were widened, because the boto3 call it
+    # ultimately makes lives in pack.py rather than in the module choosing the
+    # parameters. test_the_walk_finds_every_deployer_it_is_supposed_to_police is what
+    # surfaced that.
+    "create_or_update_stack(",
 )
 
 # Directories walked for unregistered deployers. ``lib/`` is here because two live
@@ -290,6 +297,37 @@ def _tracked_python_files() -> list[str]:
         f"modules it is supposed to check: {result.stderr.strip()}"
     )
     return [p for p in result.stdout.splitlines() if p.endswith(".py")]
+
+
+@pytest.mark.unit
+def test_the_walk_finds_every_deployer_it_is_supposed_to_police():
+    """Universe closure, the direction ``test_registry_is_complete`` cannot check.
+
+    That test only reports modules the walk finds and the registry does not list, so
+    narrowing ``DEPLOYER_SEARCH_ROOTS`` or weakening ``DEPLOY_CALL_MARKERS`` makes it
+    *quieter*, never red — which is exactly how the old ``scripts/``-only walk could
+    sit beside two live mismatches in ``lib/`` and stay green. This asserts the other
+    direction: every module already known to deploy a template must be REACHABLE by
+    the walk and RECOGNISED by the detector.
+
+    So a root removed, or a call shape dropped from the markers, fails here by name.
+    """
+    reachable = set(_tracked_python_files())
+    for module in sorted(REGISTERED_FILES):
+        assert module in reachable, (
+            f"{module} is registered as a deployer but the walk cannot reach it: it "
+            f"is not a git-tracked .py file under {DEPLOYER_SEARCH_ROOTS}. Widen "
+            "DEPLOYER_SEARCH_ROOTS, or the walk polices a set that excludes a "
+            "deployer this file already knows about."
+        )
+        source = (REPO_ROOT / module).read_text()
+        matched = [m for m in DEPLOY_CALL_MARKERS if m in source]
+        assert matched, (
+            f"{module} is registered as a deployer but none of "
+            f"{list(DEPLOY_CALL_MARKERS)} appears in it, so the detector would not "
+            "recognise a NEW module deploying a template the same way. Add that "
+            "call shape to DEPLOY_CALL_MARKERS."
+        )
 
 
 @pytest.mark.unit
