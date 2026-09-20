@@ -20,7 +20,9 @@ that quietly restore file scope, and each of those ways is pinned below:
 * a comparison operator has to be read, or `if f != "op":` counts as dispatching
   *to* `op` and attributes a sibling's branch to it;
 * the "sole operation in this file" fallback must be counted over every operation
-  declared against the file, not only the scope-flagged ones.
+  declared against the file, not only the scope-flagged ones — otherwise a file holding
+  one scope-flagged operation beside five unflagged ones takes the module-scope
+  fallback, which is the very thing this check moved away from.
 
 The snippets model those shapes directly, so the rules keep their teeth
 independently of the live repo state — which, once correct, exercises only the
@@ -35,6 +37,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 _SDLC_DIR = Path(__file__).resolve().parents[1]
 if str(_SDLC_DIR) not in sys.path:
@@ -158,6 +161,12 @@ class TestDispatchRecognition:
             ('f != "countThings"', False),
             ('f not in ("countThings",)', False),
             ('f == "listThings"', False),
+            # Negation OUTSIDE the comparison: reading the inner `Compare` on its own
+            # inverts the attribution exactly.
+            ('not (f == "countThings")', False),
+            ('not f in ("countThings",)', False),
+            # A negation elsewhere in the test must not suppress a real selection.
+            ('f == "countThings" and not stale', True),
         ],
     )
     def test_only_a_positive_comparison_selects_a_branch(
@@ -195,6 +204,59 @@ def handler(event):
 
         assert "scope_allows" in reachable
         assert "handle_alpha" in reachable
+
+
+class TestSoleOpCountsEveryDeclaredOperation:
+    """`operations_per_enforced_file` counts ALL operations, not just flagged ones.
+
+    Pinned two ways, because neither alone holds. The first drives the helper with a
+    synthetic registry where the two countings disagree, so reverting the rule fails
+    here regardless of what the live data looks like. The second reads the real
+    registry and says what is true of it today: no live file currently flips
+    `sole_op`, which is why a live-tree-only assertion would have passed either way.
+    """
+
+    def test_the_helper_counts_unflagged_operations_too(self):
+        ops = {
+            "flagged": {"enforced_in": "shared.py", "scope_checked": True},
+            "unflagged": {"enforced_in": "shared.py"},
+            "alone": {"enforced_in": "solo.py", "scope_checked": True},
+            "no_file": {},
+        }
+
+        counts = scanner.operations_per_enforced_file(ops)
+
+        # Counting only the scope-flagged operations would give shared.py 1, and S4
+        # would then hand it the module-scope fallback.
+        assert counts == {"shared.py": 2, "solo.py": 1}
+
+    def test_no_shared_file_would_get_the_module_scope_fallback(self):
+        expectations = yaml.safe_load(
+            (scanner.REPO / "scripts" / "api_rbac_expectations.yaml").read_text()
+        )
+        ops = expectations["operations"]
+
+        all_counts = scanner.operations_per_enforced_file(ops)
+        flagged_counts: dict[str, int] = {}
+        for cfg in ops.values():
+            enforced_in = cfg.get("enforced_in")
+            if enforced_in and (
+                cfg.get("scope_checked") or cfg.get("scope_filtered")
+            ):
+                flagged_counts[enforced_in] = flagged_counts.get(enforced_in, 0) + 1
+
+        # Any file where the narrow count says "sole" but the real count says "shared"
+        # is a file that would silently revert to module scope.
+        would_regress = {
+            path
+            for path, flagged in flagged_counts.items()
+            if flagged == 1 and all_counts[path] > 1
+        }
+        assert not would_regress, (
+            "these files hold one scope-flagged operation beside others, so counting "
+            "only the flagged ones would grant them the module-scope fallback — the "
+            "exact weakening this rule exists to prevent: " + str(sorted(would_regress))
+        )
 
 
 class TestScopePatterns:

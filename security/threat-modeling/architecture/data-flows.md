@@ -364,7 +364,7 @@ sequenceDiagram
     Lambda-->>Browser: Confirmation
 ```
 
-**Security note**: Configuration includes model IDs, prompts, extraction schemas, and processing parameters. Malicious configuration could influence all subsequent document processing (PM.T06). The config-version scope lookup **fails closed**: a missing IAM grant, an unwired UsersTable or a claims set carrying no `email` all refuse the request rather than reading as "this caller has no restriction". An *empty page* — no UsersTable row for the caller — still means unrestricted, which is the opt-in-scoping default. One shared implementation enforces this for every consumer, gated at the class by `scripts/tests/test_scope_lookup_fail_closed.py` (AUTH.T07).
+**Security note**: Configuration includes model IDs, prompts, extraction schemas, and processing parameters. Malicious configuration could influence all subsequent document processing (PM.T06). On this flow the config-version scope lookup **fails closed**: a missing IAM grant, an unwired UsersTable or a claims set carrying no `email` all refuse the request rather than reading as "this caller has no restriction". An *empty page* — no UsersTable row for the caller — still means unrestricted, which is the opt-in-scoping default. One shared implementation is used by every REST consumer, with `scripts/tests/test_scope_lookup_fail_closed.py` gating key provenance and failure handling across the class; AUTH.T07 records what that gate does not cover, including the one module it discovers and suppresses.
 
 ### 3.4 Document Upload Flow (UI)
 

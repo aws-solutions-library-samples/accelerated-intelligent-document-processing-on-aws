@@ -438,11 +438,16 @@ def get_document_count(event, context=None):
     with the rows underneath.
 
     The scoped tally is **bounded** — see `_COUNT_MAX_PAGES`. If it stops early the
-    response carries `approximate: true` and the reason is logged at WARNING. That
-    flag is deliberately not added to the `DocumentCount` type in `schema.graphql`:
-    the schema is no longer a runtime contract (the REST dispatcher validates inputs
-    only), and declaring it would require regenerating the UI's typed client for a
-    diagnostic the header does not render. The log is where an operator sees it.
+    response carries `approximate: true` and the reason is logged at WARNING.
+
+    ⚠️ Nothing surfaces that flag to a user. It is not in the `DocumentCount` type in
+    `schema.graphql`, so the UI's generated client drops it, and no alarm watches the
+    log line — so a scoped caller on a very large date range sees a low number with no
+    indication it was truncated. Declaring the field means regenerating the UI's typed
+    client and rendering it (a "10,000+" affordance), which is the finished version of
+    this and is deliberately not done here. Until then, the WARNING in this function's
+    log group is the only signal, and reading a scoped count as exact requires checking
+    for it.
 
     Args (from GraphQL):
         startDateTime: ISO 8601 start time

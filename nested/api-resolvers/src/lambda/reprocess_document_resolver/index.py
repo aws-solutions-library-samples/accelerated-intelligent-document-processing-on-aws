@@ -37,22 +37,28 @@ _dynamodb = boto3.resource("dynamodb")
 
 # ----- Caller-scope enforcement for multi-user RBAC deployments ----------
 # See docs/rbac.md. When a customer assigns a non-admin user
-# `allowedConfigVersions` in UsersTable (EmailIndex), reprocessDocument must
-# refuse BOTH halves of the request:
+# `allowedConfigVersions` in UsersTable (EmailIndex), reprocessDocument must keep the
+# request inside that scope in BOTH directions:
 #
-#   * the `version` argument, when one is supplied — the profile the document
-#     will be re-run under. Mirrors sync_bda_idp_resolver and
-#     configuration_resolver.
-#   * the profile each named document was *last processed under*. Checking only
-#     the argument made the whole control depend on the caller volunteering it:
-#     omit `version` and any `objectKey` in the deployment was reprocessable,
-#     which is the same object the document-list resolvers already hide from a
-#     scoped caller.
+#   * **Backward** — the profile each named document was *last processed under*.
+#     Checking only the `version` argument made the whole control depend on the
+#     caller volunteering it: omit `version` and any `objectKey` in the deployment
+#     was reprocessable, including the documents the list resolvers already hide from
+#     a scoped caller.
+#   * **Forward** — the profile the documents will be re-run *under*. An explicit
+#     `version` argument is matched against the scope, as sync_bda_idp_resolver and
+#     configuration_resolver do. When it is omitted, a scoped caller's reprocess is
+#     **pinned** to the document's own (already-verified) profile, because an
+#     unpinned document reaches queue_processor with no `config_version` and is
+#     resolved to the *globally active* profile — a value nothing scope-checks, which
+#     would move the caller's own document out of their scope and stamp the tracking
+#     row accordingly. See `_version_for_document`.
 #
-# Both fail closed. A document whose `ConfigVersion` cannot be read — no tracking
-# row, an unstamped row, or a failed GetItem — is refused, because a document with
-# no profile name cannot be proven in scope. That is the same rule the list
+# Both directions fail closed. A document whose `ConfigVersion` cannot be read — no
+# tracking row, an unstamped row, or a failed GetItem — is refused, because a document
+# with no profile name cannot be proven in scope. That is the same rule the list
 # resolvers apply, so a scoped caller cannot see such a document to reprocess it.
+# Admins and unscoped callers are unaffected in either direction.
 _user_scope_cache: dict = {}
 _USER_SCOPE_CACHE_TTL = 60  # seconds
 
@@ -145,9 +151,13 @@ def _enforce_document_scope(allowed_versions, object_keys):
     check does not depend on the caller supplying a ``version`` argument. Runs
     before any document is queued, so a batch is refused whole rather than
     part-processed.
+
+    Returns the profile each document currently carries, so the caller can pin the
+    reprocess to it — see ``_version_for_document``.
     """
+    current: dict = {}
     if not allowed_versions:
-        return
+        return current
     for object_key in object_keys:
         current_version = _document_config_version(object_key)
         if not scope_allows(allowed_versions, current_version):
@@ -161,6 +171,30 @@ def _enforce_document_scope(allowed_versions, object_keys):
                 "Access denied: one or more of the requested documents is "
                 "outside your allowed configuration scope"
             )
+        current[object_key] = current_version
+    return current
+
+
+def _version_for_document(requested_version, object_key, current_versions):
+    """The profile to reprocess one document under.
+
+    An explicit ``version`` argument wins — it has already been scope-checked. When
+    none is given, a **scoped** caller's reprocess is pinned to the profile the
+    document already carries, which `_enforce_document_scope` has just verified is in
+    their scope.
+
+    That pin is the forward half of the same control. Left unpinned, the document
+    reaches `queue_processor` with no `config_version`, which resolves the
+    **globally active** profile — a value nothing scope-checks, and one that may sit
+    outside the caller's scope. Reprocessing would then move the caller's own
+    document *out* of their scope, and stamp the tracking row accordingly.
+
+    Unscoped callers and Admins get an empty ``current_versions`` and so keep the
+    previous behaviour exactly: no pin, and the active profile is used.
+    """
+    if requested_version:
+        return requested_version
+    return current_versions.get(object_key) or None
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
@@ -298,7 +332,7 @@ def handler(event, context):
 
         # (b) the profile each document was last processed under. Independent of
         #     (a): omitting `version` must not stand the check down.
-        _enforce_document_scope(allowed_versions, object_keys)
+        current_versions = _enforce_document_scope(allowed_versions, object_keys)
 
         logger.info(
             f"Reprocessing {len(object_keys)} documents"
@@ -309,7 +343,11 @@ def handler(event, context):
         success_count = 0
         for object_key in object_keys:
             try:
-                reprocess_document(object_key, version, revision)
+                reprocess_document(
+                    object_key,
+                    _version_for_document(version, object_key, current_versions),
+                    revision,
+                )
                 success_count += 1
             except Exception as e:
                 logger.error(

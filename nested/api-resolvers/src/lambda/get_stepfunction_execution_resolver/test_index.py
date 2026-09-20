@@ -2,12 +2,26 @@
 # SPDX-License-Identifier: MIT-0
 
 import json
+import os
 from datetime import datetime
 from unittest.mock import MagicMock
 
-import index
-import pytest
-from index import find_step_name_for_failure_event, parse_execution_history
+# Set BEFORE `import index`. That import reaches
+# idp_common.utils.log_sanitizer, whose package __init__ pulls settings_helper,
+# which builds an SSM client at module scope — and botocore raises NoRegionError at
+# COLLECTION with no region configured. The Lambda runtime always sets AWS_REGION, so
+# this is a test-harness assumption rather than a defect in the handler, but it means
+# the suite passes on a developer machine (which has an ambient region) and aborts on
+# a CI runner. No credentials are needed or used. Same trap as #988, and the reason
+# `make test-packages-cicd` pins AWS_DEFAULT_REGION for three src/lambda suites.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
+import index  # noqa: E402
+import pytest  # noqa: E402
+from index import (  # noqa: E402
+    find_step_name_for_failure_event,
+    parse_execution_history,
+)
 
 
 @pytest.mark.unit

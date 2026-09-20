@@ -134,7 +134,25 @@ SUBSTITUTE_IDENTIFIER_CLAIMS = frozenset(
     }
 )
 
-# Names that identify a call as "resolve this caller's config-version scope".
+# Every key name that identifies a *caller*. The nested-default rule is gated on
+# this set, because `dict.get(a, dict.get(b, c))` is an extremely common shape that
+# has nothing to do with identity — Bedrock stream-error handling spells
+# `event.get("internalServerException", event.get("throttlingException", {}))` — and
+# flagging it made a false SCOPE1 finding that kept a stale exemption alive. Gating on
+# the *claim names* rather than on the receiver's spelling keeps `_is_claim_read`'s
+# property that a rule cannot be dodged by renaming a variable.
+IDENTITY_CLAIMS = SUBSTITUTE_IDENTIFIER_CLAIMS | {"email"}
+
+# Names that identify a call as "resolve this caller's config-version scope" when the
+# callee is NOT defined in the module under inspection — the shared helper, imported
+# from `idp_common.config_scope`, plus the wrapper names this tree happens to use.
+#
+# ⚠️ This list is a fallback, not the mechanism. A module's own scope-resolving
+# functions are found by **analysis** (`_scope_resolving_functions`): any local
+# function that performs a UsersTable query, transitively, counts — whatever it is
+# called. Depending on the spelling would make the rule dodgeable by renaming a
+# private wrapper, which is precisely the property `_is_claim_read` gives up the
+# receiver name to avoid.
 LOOKUP_CALL_NAMES = frozenset(
     {
         "resolve_allowed_config_versions",
@@ -180,6 +198,14 @@ REFUSAL_DICT_KEYS = frozenset({"error", "errorType", "errors", "reason", "denied
 # Directories with no deployed code in them.
 _SKIP_DIR_PARTS = frozenset({"__pycache__", "node_modules", ".aws-sam", "build", "dist"})
 
+# `try:` and `try: ... except*:` are distinct node types. Every rule that inspects
+# exception handling has to name both, or `except* Exception:` — which swallows a
+# failure exactly as `except Exception:` does — is outside the rule's universe. Same
+# class of hole as a lookup inside `contextlib.suppress`.
+_TRY_NODES: tuple[type, ...] = (
+    (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
+)
+
 # The two modules PR #1020 fixes, which this branch must not touch. Both carry the
 # class's ORIGINAL instance: a lookup keyed on a request-body `callerSub`, against an
 # index no template declares, with the failure caught and returned as "unrestricted".
@@ -187,16 +213,27 @@ _SKIP_DIR_PARTS = frozenset({"__pycache__", "node_modules", ".aws-sam", "build",
 # its table — so the findings are withheld here rather than the files being excluded
 # from discovery.
 #
-# ⚠️ This entry is asserted to be NECESSARY by
-# `test_the_pending_exemption_is_still_needed`. The moment those files comply, that
-# test fails and tells you to delete the two paths below. An exemption that outlives
-# its reason is how a gate goes quiet, so this one cannot.
-PENDING_FIX = frozenset(
-    {
-        "src/lambda/chat_with_document_processor/index.py",
-        "src/lambda/chat_stream_processor/vendored/chat_with_document_processor.py",
-    }
-)
+# Keyed by path to the SPECIFIC rules the exemption is for, not to the file. Two
+# consequences, both deliberate:
+#
+#   * a finding from any other rule in these files still fails the gate, so the
+#     exemption cannot quietly grow into a blanket one;
+#   * `test_the_pending_exemption_is_still_needed` requires every rule named here to
+#     still fire. A file-scoped "any finding at all" check does not work: a single
+#     unrelated finding — a false positive is enough — keeps the entry looking
+#     necessary forever, and the two modules then sit outside enforcement
+#     permanently, which is the recurring defect this gate exists to prevent.
+#
+# ⚠️ When #1020 lands, that test fails and the only correct response is to delete the
+# entry it names.
+PENDING_FIX: dict[str, frozenset[str]] = {
+    "src/lambda/chat_with_document_processor/index.py": frozenset(
+        {"SCOPE1", "SCOPE2", "SCOPE3"}
+    ),
+    "src/lambda/chat_stream_processor/vendored/chat_with_document_processor.py": (
+        frozenset({"SCOPE1", "SCOPE2", "SCOPE3"})
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -327,33 +364,91 @@ def _mentions_users_table(node: ast.AST) -> bool:
     return False
 
 
+def _is_users_table_construction(node: ast.AST) -> bool:
+    """`<anything>.Table(<expression naming USERS_TABLE_NAME>)`."""
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node) == "Table"
+        and any(_mentions_users_table(arg) for arg in node.args)
+    )
+
+
 def _users_table_bindings(tree: ast.AST) -> set[str]:
-    """Names bound to a DynamoDB Table resource for the UsersTable.
+    """Names that stand for a DynamoDB Table resource for the UsersTable.
 
     Collected module-wide rather than per-function, deliberately: the binding and the
     query can sit in different functions, and over-collecting here only widens the
     net, which for this gate is the safe direction.
+
+    Both ways a name can come to mean the table are collected — assignment, and a
+    **factory** whose return value constructs it. Without the second, a query behind
+    `_users_table().query(...)` escapes discovery entirely and no rule applies to it
+    at all, which is the quietest possible failure for this gate.
     """
     bound: set[str] = set()
+
     for node in ast.walk(tree):
+        # (a) assignment: `table = _ddb.Table(USERS_TABLE_NAME)`
         targets: list[ast.expr] = []
         if isinstance(node, ast.Assign):
             targets = list(node.targets)
         elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
             targets = [node.target]
-        else:
-            continue
-        value = node.value
-        if not isinstance(value, ast.Call) or _call_name(value) != "Table":
-            continue
-        if not any(_mentions_users_table(arg) for arg in value.args):
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                bound.add(target.id)
-            elif isinstance(target, ast.Attribute):
-                bound.add(target.attr)
+        if targets and _is_users_table_construction(node.value):
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    bound.add(target.id)
+                elif isinstance(target, ast.Attribute):
+                    bound.add(target.attr)
+
+        # (b) factory: `def _users(): return _ddb.Table(USERS_TABLE_NAME)`
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Return) and _is_users_table_construction(
+                    child.value
+                ):
+                    bound.add(node.name)
+                    break
+
     return bound
+
+
+def _scope_resolving_functions(tree: ast.AST, users_table_bindings: set[str]) -> set[str]:
+    """Local functions that resolve a caller's scope, found by analysis not by name.
+
+    A function qualifies if it performs a UsersTable query itself, or calls another
+    function in this module that does. Iterated to a fixed point, so a chain of
+    private wrappers is followed however deep it goes.
+
+    This is what stops the failure-handling rule depending on a hardcoded list of
+    wrapper names: renaming `_get_user_allowed_config_versions` to `_profiles_for`
+    used to make an identical fail-open invisible.
+    """
+    functions: dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.setdefault(node.name, node)
+
+    resolving: set[str] = set()
+    for name, node in functions.items():
+        if any(_is_scope_query(child, users_table_bindings) for child in ast.walk(node)):
+            resolving.add(name)
+
+    changed = True
+    while changed:
+        changed = False
+        for name, node in functions.items():
+            if name in resolving:
+                continue
+            called = {
+                _call_name(child)
+                for child in ast.walk(node)
+                if isinstance(child, ast.Call)
+            }
+            if called & (resolving | LOOKUP_CALL_NAMES):
+                resolving.add(name)
+                changed = True
+    return resolving
 
 
 def _is_scope_query(node: ast.AST, users_table_bindings: set[str]) -> bool:
@@ -372,16 +467,25 @@ def _is_scope_query(node: ast.AST, users_table_bindings: set[str]) -> bool:
 
     receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
     if receiver is not None:
-        if isinstance(receiver, ast.Name) and receiver.id in users_table_bindings:
-            return True
-        if isinstance(receiver, ast.Attribute) and receiver.attr in (
-            users_table_bindings
-        ):
+        # `table.query(...)`, `self._users.query(...)` and `_users().query(...)` all
+        # reach the same table; the third is the factory shape.
+        receiver_name = None
+        if isinstance(receiver, ast.Name):
+            receiver_name = receiver.id
+        elif isinstance(receiver, ast.Attribute):
+            receiver_name = receiver.attr
+        elif isinstance(receiver, ast.Call):
+            receiver_name = _call_name(receiver)
+        if receiver_name is not None and receiver_name in users_table_bindings:
             return True
         if _mentions_users_table(receiver):
             return True
 
     for keyword in node.keywords:
+        # `TableName=` is how the low-level client names its target, where the
+        # resource API uses a Table object. Both spellings reach the same table.
+        if keyword.arg == "TableName" and _mentions_users_table(keyword.value):
+            return True
         if keyword.arg != "IndexName":
             continue
         value = keyword.value
@@ -392,11 +496,21 @@ def _is_scope_query(node: ast.AST, users_table_bindings: set[str]) -> bool:
     return False
 
 
-def _performs_scope_lookup(node: ast.AST, users_table_bindings: set[str]) -> bool:
+def _performs_scope_lookup(
+    node: ast.AST,
+    users_table_bindings: set[str],
+    local_resolvers: set[str] = frozenset(),  # type: ignore[assignment]
+) -> bool:
+    """Whether this subtree queries the UsersTable, directly or through a wrapper.
+
+    ``local_resolvers`` is the analysed set from ``_scope_resolving_functions``; the
+    hardcoded ``LOOKUP_CALL_NAMES`` only covers callees defined outside the module.
+    """
     for child in ast.walk(node):
         if _is_scope_query(child, users_table_bindings):
             return True
-        if _call_name(child) in LOOKUP_CALL_NAMES:
+        name = _call_name(child)
+        if name is not None and (name in LOOKUP_CALL_NAMES or name in local_resolvers):
             return True
     return False
 
@@ -498,7 +612,7 @@ def _terminates_in_a_refusal(body: list[ast.stmt]) -> bool:
         return bool(last.orelse) and _terminates_in_a_refusal(
             last.body
         ) and _terminates_in_a_refusal(last.orelse)
-    if isinstance(last, ast.Try):
+    if isinstance(last, _TRY_NODES):
         return _terminates_in_a_refusal(last.body) and all(
             _terminates_in_a_refusal(h.body) for h in last.handlers
         )
@@ -571,6 +685,87 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
                 )
 
     findings.extend(_check_nested_get_defaults(path, tree))
+    findings.extend(_check_reassigned_from_a_substitute_claim(path, tree))
+    return findings
+
+
+def _assignments_by_name(scope: ast.AST) -> dict[str, list[ast.AST]]:
+    """Every value assigned to each plain name directly inside one function body."""
+    assigned: dict[str, list[ast.AST]] = {}
+    for node in ast.walk(scope):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+            targets = [node.target]
+        else:
+            continue
+        if node.value is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                assigned.setdefault(target.id, []).append(node)
+    return assigned
+
+
+def _check_reassigned_from_a_substitute_claim(
+    path: str, tree: ast.AST
+) -> list[Finding]:
+    """SCOPE2, written across two statements instead of one expression.
+
+        key = claims.get("email", "")
+        if not key:
+            key = claims.get("sub", "")
+
+    is the `or` chain with a line break in it, and neither the `BoolOp` rule nor the
+    nested-default rule sees it. The name-based rules do not either, because the
+    author is free to call it anything.
+
+    The signal needs no name list: within one function, a name that is assigned the
+    **email claim** anywhere and a **substitute identifier** anywhere else is a
+    fallback chain, whatever it is called and however far apart the two statements
+    sit.
+    """
+    findings: list[Finding] = []
+    for scope in ast.walk(tree):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for name, nodes in _assignments_by_name(scope).items():
+            from_email = [
+                n for n in nodes if SCOPE_KEY_CLAIM in _claims_read_in(n.value)
+            ]
+            if not from_email:
+                continue
+            substituted: set[str] = set()
+            offender = None
+            for node in nodes:
+                # A *different* statement from the one that reads the email claim.
+                # Reading both identifiers in a single expression is either the `or`
+                # chain SCOPE1 already covers, or a legitimate non-scope use — the
+                # reviewer filter deliberately matches an owner against a username
+                # AND an email in one comprehension, and flagging that is noise.
+                if node in from_email:
+                    continue
+                found = (
+                    _claims_read_in(node.value) - {SCOPE_KEY_CLAIM}
+                ) & SUBSTITUTE_IDENTIFIER_CLAIMS
+                if found:
+                    substituted |= found
+                    offender = offender or node
+            if not substituted:
+                continue
+            findings.append(
+                Finding(
+                    "SCOPE2",
+                    path,
+                    offender.lineno,
+                    f"{name!r} is assigned the {SCOPE_KEY_CLAIM!r} claim and also "
+                    f"{sorted(substituted)} in {scope.name!r} — a fallback chain "
+                    "split across statements. An identifier that is not an email "
+                    "matches no UsersTable row, and the empty page reads as "
+                    "'unrestricted'.",
+                )
+            )
     return findings
 
 
@@ -579,35 +774,47 @@ def _check_nested_get_defaults(path: str, tree: ast.AST) -> list[Finding]:
 
     `claims.get("email", claims.get("cognito:username", claims.get("sub", "")))` is
     the same fallback chain as the `or` form and has the same consequence, but it
-    produces no `BoolOp`, so a rule that looks for one never sees it. The signal here
-    is structural and independent of which claim is outermost: a claim read whose
-    **default** argument reads another claim.
+    produces no `BoolOp`, so a rule that looks for one never sees it. The signal is a
+    read whose **default** argument is itself a read, and it is independent of which
+    key is outermost.
+
+    Gated on `IDENTITY_CLAIMS`, because `dict.get(a, dict.get(b, c))` is a common
+    shape with nothing to do with identity and flagging all of it is noise that
+    outlives its usefulness — a false hit on Bedrock stream-error handling was enough
+    to keep a stale exemption looking necessary. At least one key in the chain must
+    name a caller.
     """
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if _is_claim_read(node) is None or not isinstance(node, ast.Call):
+        outer = _is_claim_read(node)
+        if outer is None or not isinstance(node, ast.Call):
             continue
         if len(node.args) < 2:
             continue
         nested = _claims_read_in(node.args[1])
         if not nested:
             continue
+        if not (nested | {outer}) & IDENTITY_CLAIMS:
+            continue
         findings.append(
             Finding(
                 "SCOPE1",
                 path,
                 node.lineno,
-                f"a claim read defaults to another claim {sorted(nested)} — the same "
-                "fallback chain as an `or`, with the same consequence: an identifier "
-                "that is not an email matches no UsersTable row, and the empty page "
-                "reads as 'unrestricted'.",
+                f"the {outer!r} read defaults to another claim {sorted(nested)} — the "
+                "same fallback chain as an `or`, with the same consequence: an "
+                "identifier that is not an email matches no UsersTable row, and the "
+                "empty page reads as 'unrestricted'.",
             )
         )
     return findings
 
 
 def _check_failure_denies(
-    path: str, tree: ast.AST, users_table_bindings: set[str]
+    path: str,
+    tree: ast.AST,
+    users_table_bindings: set[str],
+    local_resolvers: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> list[Finding]:
     """SCOPE3 — a lookup that cannot answer denies; it never returns unrestricted."""
     findings: list[Finding] = []
@@ -617,7 +824,7 @@ def _check_failure_denies(
             if not _suppresses_exceptions(node):
                 continue
             if not any(
-                _performs_scope_lookup(stmt, users_table_bindings)
+                _performs_scope_lookup(stmt, users_table_bindings, local_resolvers)
                 for stmt in node.body
             ):
                 continue
@@ -634,10 +841,11 @@ def _check_failure_denies(
             )
             continue
 
-        if not isinstance(node, ast.Try):
+        if not isinstance(node, _TRY_NODES):
             continue
         guards_lookup = any(
-            _performs_scope_lookup(stmt, users_table_bindings) for stmt in node.body
+            _performs_scope_lookup(stmt, users_table_bindings, local_resolvers)
+            for stmt in node.body
         )
         for handler in node.handlers:
             if not (guards_lookup or _handler_catches_scope_error(handler)):
@@ -682,19 +890,29 @@ def scan(root: Path) -> tuple[list[Path], list[Finding]]:
         except (SyntaxError, UnicodeDecodeError):
             continue
         bindings = _users_table_bindings(tree)
-        if not _performs_scope_lookup(tree, bindings):
+        resolvers = _scope_resolving_functions(tree, bindings)
+        if not _performs_scope_lookup(tree, bindings, resolvers):
             continue
         discovered.append(path)
         rel = path.relative_to(root).as_posix()
         findings.extend(_check_key_provenance(rel, tree))
-        findings.extend(_check_failure_denies(rel, tree, bindings))
+        findings.extend(_check_failure_denies(rel, tree, bindings, resolvers))
 
     return discovered, findings
 
 
 def _enforced(findings: list[Finding], rules: set[str]) -> list[Finding]:
-    """The findings the gate fails on: the named rules, outside ``PENDING_FIX``."""
-    return [f for f in findings if f.rule in rules and f.path not in PENDING_FIX]
+    """The findings the gate fails on.
+
+    A finding is withheld only when its path AND its rule are both named in
+    ``PENDING_FIX`` — so an exempt file breaking a rule the exemption does not cover
+    still fails the gate.
+    """
+    return [
+        f
+        for f in findings
+        if f.rule in rules and f.rule not in PENDING_FIX.get(f.path, frozenset())
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -715,18 +933,28 @@ def test_the_scan_finds_the_consumers_it_is_meant_to_police(scanned):
     discovered, _ = scanned
     names = {path.parent.name for path in discovered}
 
-    assert len(discovered) >= 8, (
-        "the scope-lookup scan found fewer modules than the tree contains — the "
-        f"discovery predicate has gone stale. Found: {sorted(names)}"
+    # A floor close to the real count, not a token one. A generous `>= 8` against 12
+    # discovered means three consumers could drop out of discovery — and a module that
+    # escapes discovery has NO rule applied to it, silently — while the assertion
+    # still passed. Raise this when a consumer is added; lowering it needs a reason.
+    assert len(discovered) >= 12, (
+        f"the scope-lookup scan discovered only {len(discovered)} modules. A module "
+        "that escapes discovery has no rule applied to it at all, so a drop here is "
+        f"a silent loss of coverage, not a cleanup. Found: {sorted(names)}"
     )
-    # Named not as an inventory to maintain, but because these five are where the
-    # rule is enforced on five different entry paths; losing one silently is the
-    # failure this assertion is for.
+    # Every directory that holds a consumer of this rule. An inventory, deliberately:
+    # each is a distinct enforcement point on a distinct entry path, and being
+    # explicit is what makes losing one a failure rather than a smaller number.
     for expected in (
         "configuration_resolver",
+        "get_stepfunction_execution_resolver",
         "list_documents_gsi_resolver",
         "list_documents_range_resolver",
+        "reprocess_document_resolver",
+        "sync_bda_idp_resolver",
         "user_management",
+        "chat_with_document_processor",
+        "vendored",
         "feature-api",
     ):
         assert expected in names, f"{expected} no longer looks like a scope consumer"
@@ -751,24 +979,32 @@ def test_no_scope_lookup_failure_is_read_as_unrestricted(scanned):
 
 
 def test_the_pending_exemption_is_still_needed(scanned):
-    """Each ``PENDING_FIX`` entry must still be non-compliant, or be deleted.
+    """Every rule a ``PENDING_FIX`` entry names must still fire, or the entry goes.
 
     The two chat modules carry the class's original instance and belong to a
     concurrent change, so their findings are set aside rather than the files being
     hidden from discovery. An exemption nobody revisits is how a gate goes quiet, so
-    this asserts the exemption is *load-bearing*: once those files comply, this test
-    fails and the only correct response is to delete the entry it names.
+    this asserts the exemption is *load-bearing*.
+
+    It checks **per rule**, not per file. "Any finding at all keeps the entry alive"
+    is too weak by exactly the margin that matters: one unrelated finding — and a
+    false positive is enough — makes a fully-compliant file look non-compliant
+    forever, and the module then sits outside enforcement permanently.
     """
     _, findings = scanned
-    by_path: dict[str, list[Finding]] = {}
+    seen: dict[str, set[str]] = {}
     for finding in findings:
-        by_path.setdefault(finding.path, []).append(finding)
+        seen.setdefault(finding.path, set()).add(finding.rule)
 
-    for path in sorted(PENDING_FIX):
-        assert by_path.get(path), (
-            f"{path} no longer breaks any rule, so its PENDING_FIX entry is dead "
-            "config. Delete it from PENDING_FIX in this file — the gate then "
-            "enforces the rules on it like every other consumer."
+    for path, expected_rules in sorted(PENDING_FIX.items()):
+        still_firing = seen.get(path, set()) & expected_rules
+        satisfied = expected_rules - still_firing
+        assert not satisfied, (
+            f"{path} no longer breaks {sorted(satisfied)}, so its PENDING_FIX entry "
+            f"is (partly) dead config — it claims {sorted(expected_rules)} and only "
+            f"{sorted(still_firing)} still fire. Narrow the entry to the rules that "
+            "remain, or delete it entirely; the gate then enforces those rules on "
+            "this file like every other consumer."
         )
 
 
@@ -889,6 +1125,66 @@ def handler(event):
     return _get_user_allowed_config_versions(caller_sub)
 '''
 
+_PRIVATELY_NAMED_WRAPPER = '''
+def _profiles_for(key):
+    table = _ddb.Table(USERS_TABLE_NAME)
+    resp = table.query(KeyConditionExpression=Key("email").eq(key))
+    return resp.get("Items")
+
+
+def handler(event):
+    try:
+        return _profiles_for(_caller_email(event))
+    except Exception as e:
+        logger.warning("scope lookup failed: %s", e)
+        return None
+'''
+
+_EXCEPT_STAR = '''
+def lookup(email):
+    scope = None
+    try:
+        resp = users_table.query(KeyConditionExpression=Key("email").eq(email))
+        scope = resp.get("Items")
+    except* Exception as eg:
+        logger.warning("scope lookup failed: %s", eg)
+    return scope
+'''
+
+_TWO_STATEMENT_FALLBACK = '''
+def _resolve(event):
+    claims = event["identity"]["claims"]
+    whoami = claims.get("email", "")
+    if not whoami:
+        whoami = claims.get("sub", "")
+    return _get_user_allowed_config_versions(whoami)
+'''
+
+_TABLE_FROM_A_FACTORY = '''
+def _users():
+    return boto3.resource("dynamodb").Table(os.environ["USERS_TABLE_NAME"])
+
+
+def lookup(email):
+    try:
+        return _users().query(KeyConditionExpression=Key("email").eq(email))
+    except Exception:
+        return None
+'''
+
+_LOW_LEVEL_CLIENT_QUERY = '''
+def lookup(caller_sub):
+    try:
+        return _ddb_client.query(
+            TableName=USERS_TABLE_NAME,
+            IndexName="SubIndex",
+            KeyConditionExpression="sub = :s",
+        )
+    except Exception as e:
+        logger.error("scope lookup FAILED OPEN: %s", e)
+        return None
+'''
+
 _COMPLIANT = '''
 def _caller_email(claims):
     return str(claims.get("email") or "")
@@ -932,12 +1228,41 @@ def handler(event):
     return allowed
 '''
 
+# One compliant counterpart per must-flag rule. Without these, a rule can be made to
+# pass by over-firing — which is not a hypothetical failure mode here: an ungated
+# nested-default rule produced a false SCOPE1 on Bedrock stream-error handling, and
+# that single false finding was enough to keep a stale exemption looking necessary.
+
+_COMPLIANT_EMAIL_ONLY_ASSIGNMENT = '''
+def _get_caller_info(event):
+    claims = event.get("identity", {}).get("claims", {})
+    # `username` is NOT a scope key — it matches HITLReviewOwner — so its own
+    # fallback chain is legitimate and must not be flagged.
+    username = claims.get("cognito:username", "") or claims.get("sub", "")
+    caller_email = str(claims.get("email") or "").strip()
+    return {"email": caller_email, "username": username}
+'''
+
+_COMPLIANT_CONSTANT_DEFAULT = '''
+def _caller_email(claims):
+    return claims.get("email", "")
+'''
+
+_COMPLIANT_NON_IDENTITY_NESTED_GET = '''
+def _stream_error(event):
+    # Not identity at all: the nested-default shape is ubiquitous, and flagging it
+    # everywhere is noise that discredits the rule.
+    detail = event.get("internalServerException", event.get("throttlingException", {}))
+    return detail.get("message", "")
+'''
+
 
 def _findings_for(source: str) -> list[Finding]:
     tree = ast.parse(source)
     bindings = _users_table_bindings(tree)
+    resolvers = _scope_resolving_functions(tree, bindings)
     return _check_key_provenance("snippet.py", tree) + _check_failure_denies(
-        "snippet.py", tree, bindings
+        "snippet.py", tree, bindings, resolvers
     )
 
 
@@ -948,6 +1273,7 @@ def _findings_for(source: str) -> list[Finding]:
         (_NESTED_GET_DEFAULTS, "SCOPE1"),
         (_BODY_SUPPLIED_KEY, "SCOPE1"),
         (_BODY_SUPPLIED_KEY, "SCOPE2"),
+        (_TWO_STATEMENT_FALLBACK, "SCOPE2"),
         (_SWALLOWED_FAILURE, "SCOPE3"),
         (_FALL_THROUGH_FAILURE, "SCOPE3"),
         (_CONSUMER_SWALLOWS_REFUSAL, "SCOPE3"),
@@ -955,12 +1281,17 @@ def _findings_for(source: str) -> list[Finding]:
         (_REFUSAL_SHAPED_SUCCESS, "SCOPE3"),
         (_CONDITIONAL_RAISE_THEN_FALLS_THROUGH, "SCOPE3"),
         (_WRONG_INDEX_ON_THE_USERS_TABLE, "SCOPE3"),
+        (_PRIVATELY_NAMED_WRAPPER, "SCOPE3"),
+        (_EXCEPT_STAR, "SCOPE3"),
+        (_TABLE_FROM_A_FACTORY, "SCOPE3"),
+        (_LOW_LEVEL_CLIENT_QUERY, "SCOPE3"),
     ],
     ids=[
         "or-chain-key",
         "nested-get-defaults",
         "body-supplied-key-or-chain",
         "body-supplied-key-substitute-claim",
+        "two-statement-fallback",
         "except-returns-None",
         "except-falls-through",
         "consumer-swallows",
@@ -968,6 +1299,10 @@ def _findings_for(source: str) -> list[Finding]:
         "refusal-shaped-success-payload",
         "conditional-raise-then-falls-through",
         "wrong-index-on-the-users-table",
+        "privately-named-wrapper",
+        "except-star",
+        "table-from-a-factory",
+        "low-level-client-query",
     ],
 )
 def test_the_rule_catches_the_shape_it_is_for(source, rule):
@@ -976,14 +1311,48 @@ def test_the_rule_catches_the_shape_it_is_for(source, rule):
 
 @pytest.mark.parametrize(
     "source",
-    [_COMPLIANT, _COMPLIANT_IN_BAND_DENIAL, _COMPLIANT_RESPONSE_DENIAL],
-    ids=["raises", "in-band-Unauthorized", "403-response"],
+    [_PRIVATELY_NAMED_WRAPPER, _TABLE_FROM_A_FACTORY, _LOW_LEVEL_CLIENT_QUERY],
+    ids=["privately-named-wrapper", "table-from-a-factory", "low-level-client-query"],
+)
+def test_discovery_does_not_depend_on_a_spelling(source):
+    """A module that escapes discovery has no rule applied to it at all.
+
+    So discovery must not hinge on a wrapper's name, on the table object being bound
+    by assignment, or on the resource API being used rather than the low-level client.
+    """
+    tree = ast.parse(source)
+    bindings = _users_table_bindings(tree)
+    resolvers = _scope_resolving_functions(tree, bindings)
+
+    assert _performs_scope_lookup(tree, bindings, resolvers)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        _COMPLIANT,
+        _COMPLIANT_IN_BAND_DENIAL,
+        _COMPLIANT_RESPONSE_DENIAL,
+        _COMPLIANT_EMAIL_ONLY_ASSIGNMENT,
+        _COMPLIANT_CONSTANT_DEFAULT,
+        _COMPLIANT_NON_IDENTITY_NESTED_GET,
+    ],
+    ids=[
+        "raises",
+        "in-band-Unauthorized",
+        "403-response",
+        "email-only-assignment-beside-a-username-chain",
+        "constant-default",
+        "non-identity-nested-get",
+    ],
 )
 def test_the_compliant_shapes_are_accepted(source):
     """A default of "" beside the email claim is a coercion, not a fallback.
 
-    And a refusal may be *returned* rather than raised, in any of the three shapes
-    this tree actually uses — as long as the value names the denial.
+    A refusal may be *returned* rather than raised, in any of the three shapes this
+    tree actually uses, as long as the value names the denial. And a rule that
+    over-fires is a rule that gets ignored, so each must-flag shape has a
+    near-neighbour here that must NOT flag.
     """
     assert _findings_for(source) == []
 

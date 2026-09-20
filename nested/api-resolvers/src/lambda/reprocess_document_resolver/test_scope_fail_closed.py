@@ -305,6 +305,93 @@ class TestTheDocumentsOwnScopeIsChecked:
 
 
 @pytest.mark.unit
+class TestTheForwardDirectionStaysInScope:
+    """Omitting `version` must not move a document OUT of the caller's scope.
+
+    An unpinned reprocess reaches `queue_processor` with no `config_version`, which
+    resolves the **globally active** profile — a value nothing scope-checks. So a
+    caller scoped to `tenant-b`, reprocessing their own in-scope document with no
+    `version`, would have it re-run under whatever is active and the tracking row
+    stamped accordingly. A scoped caller's reprocess is therefore pinned to the
+    document's own profile, which the backward check has just verified.
+    """
+
+    def _queued(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            index,
+            "reprocess_document",
+            lambda key, version=None, revision=None: calls.append((key, version)),
+        )
+        return calls
+
+    def test_a_scoped_caller_is_pinned_to_the_documents_own_profile(
+        self, users_table, document_version, monkeypatch
+    ):
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version("tenant-a")
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", "tenant-a")]
+
+    def test_an_explicit_version_still_wins(
+        self, users_table, document_version, monkeypatch
+    ):
+        """It has already been scope-checked, so the caller's choice stands."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a", "tenant-a2"]}])
+        document_version("tenant-a")
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version="tenant-a2"), None)
+
+        assert calls == [("acme/statement.pdf", "tenant-a2")]
+
+    def test_an_unscoped_caller_is_not_pinned(
+        self, users_table, document_version, monkeypatch
+    ):
+        """Unchanged behaviour: no pin, so the active profile is resolved as before."""
+        users_table(items=[])
+        document_version("tenant-a")
+        calls = self._queued(monkeypatch)
+
+        index.handler(_event(_author_claims(), version=None), None)
+
+        assert calls == [("acme/statement.pdf", None)]
+
+    def test_an_admin_is_not_pinned(self, users_table, document_version, monkeypatch):
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version("tenant-a")
+        calls = self._queued(monkeypatch)
+
+        index.handler(
+            _event(
+                {"cognito:groups": ["Admin"], "email": "admin@example.com"},
+                version=None,
+            ),
+            None,
+        )
+
+        assert calls == [("acme/statement.pdf", None)]
+
+    def test_each_document_is_pinned_to_its_own_profile(
+        self, users_table, monkeypatch
+    ):
+        """A batch spanning two in-scope profiles keeps each document where it is."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-*"]}])
+        versions = {"a.pdf": "tenant-a", "b.pdf": "tenant-b"}
+        monkeypatch.setattr(index, "_document_config_version", versions.get)
+        calls = self._queued(monkeypatch)
+        event = _event(_author_claims(), version=None)
+        event["arguments"]["objectKeys"] = ["a.pdf", "b.pdf"]
+
+        index.handler(event, None)
+
+        assert calls == [("a.pdf", "tenant-a"), ("b.pdf", "tenant-b")]
+
+
+@pytest.mark.unit
 class TestTheLookupIsTheSharedOne:
     def test_the_wrapper_delegates_to_idp_common(self, users_table):
         """One implementation of this rule, not a seventh copy of it."""

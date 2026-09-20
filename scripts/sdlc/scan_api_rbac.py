@@ -112,9 +112,18 @@ SCOPE_PATTERNS = (
     # handler and each operation's own branch only *consumes* it, by calling
     # `scope_allows`, so the DynamoDB attribute name appears nowhere in the branch.
     #
-    # Deliberately NOT including the bare local name `allowed_versions`: a variable
-    # name is satisfied by a docstring or a parameter list, which is weaker evidence
-    # than a call to the matcher or a reference to the stored attribute.
+    # The bare local name `allowed_versions` is deliberately NOT here: it is the
+    # weakest of the candidates, and dropping it costs nothing (all 17 flagged
+    # operations — 4 `scope_filtered` + 13 `scope_checked` — still pass on the three
+    # above).
+    #
+    # It does not make the check strict, though, and nothing here should be read as
+    # claiming otherwise: these are substring matches over unparsed source, so a
+    # docstring, a function name or an unused parameter mentioning one of them
+    # satisfies S4 just as a real call does. Two such benign mentions already exist in
+    # `list_documents_gsi_resolver/index.py`. S4 establishes that an operation's own
+    # code path *refers* to the scope; the per-site unit suites establish that it
+    # enforces it.
     "scope_allows",
 )
 
@@ -729,14 +738,22 @@ def _selects_literal(test: ast.AST, literal: str) -> bool:
     three shapes the resolvers in this tree use. Two things it deliberately does not
     treat as a dispatch:
 
-    * a **negated** comparison. `if field != "op":` and `if field not in (...)` name
-      the operation while selecting the branch where it is *not* handled, so reading
-      them as its dispatch would attribute a sibling's code to it.
+    * a **negated** comparison, in either spelling. `if field != "op":` and `if field
+      not in (...)` negate at the operator; `if not (field == "op"):` negates
+      *outside* it, and reading the inner `Compare` on its own inverts the
+      attribution exactly. Both name the operation while selecting the branch where
+      it is not handled.
     * a string that merely appears elsewhere in the module — a required-groups dict
       key, a log message — which is not an `if` test at all.
     """
+    negated = {
+        id(child)
+        for node in ast.walk(test)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
+        for child in ast.walk(node.operand)
+    }
     for node in ast.walk(test):
-        if not isinstance(node, ast.Compare):
+        if not isinstance(node, ast.Compare) or id(node) in negated:
             continue
         left = node.left
         for operator, comparator in zip(node.ops, node.comparators):
@@ -773,6 +790,23 @@ def _dispatch_branches(tree: ast.Module, op: str) -> list[ast.stmt]:
         if isinstance(node, ast.If) and _selects_literal(node.test, op):
             statements.extend(node.body)
     return statements
+
+
+def operations_per_enforced_file(ops: dict[str, dict]) -> dict[str, int]:
+    """How many operations each ``enforced_in`` file is responsible for.
+
+    Counted over EVERY operation, not only the scope-flagged ones. S4 uses this to
+    decide whether a file has a single operation — and so whether falling back to the
+    module's handler closure is safe. A file holding one scope-flagged operation
+    beside five unflagged ones is still a file where module scope credits an operation
+    with a sibling's code, which is the whole reason S4 became per-operation.
+    """
+    counts: dict[str, int] = {}
+    for cfg in ops.values():
+        enforced_in = cfg.get("enforced_in")
+        if enforced_in:
+            counts[enforced_in] = counts.get(enforced_in, 0) + 1
+    return counts
 
 
 def op_scope_source(
@@ -974,15 +1008,7 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         for name, cfg in ops.items()
         if cfg.get("scope_checked") or cfg.get("scope_filtered")
     }
-    # Counted over EVERY operation declared against a file, not only the
-    # scope-flagged ones. A file holding one scope-flagged op beside five unflagged
-    # ones is still a file where module scope credits an operation with a sibling's
-    # code, which is the whole reason this check became per-operation.
-    ops_per_file: dict[str, int] = {}
-    for cfg in ops.values():
-        enforced_in = cfg.get("enforced_in")
-        if enforced_in:
-            ops_per_file[enforced_in] = ops_per_file.get(enforced_in, 0) + 1
+    ops_per_file = operations_per_enforced_file(ops)
 
     for op in sorted(scope_flagged):
         o = ops[op]

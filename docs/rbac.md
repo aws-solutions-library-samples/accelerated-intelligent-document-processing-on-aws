@@ -218,30 +218,54 @@ obeys two rules of its own, in `resolve_allowed_config_versions` in the same mod
 An **empty page still means unrestricted**, which is the first matching rule above
 and must stay that way — most users have no scope row.
 
-`scripts/tests/test_scope_lookup_fail_closed.py` fails if any module that queries the
-UsersTable derives the key from something other than the `email` claim, or reads a
-caught lookup failure as unrestricted. It recognises a scope query by the **table**,
-not by the index name, because naming the index wrongly is itself one of the ways
-this has failed.
+`scripts/tests/test_scope_lookup_fail_closed.py` fails if a module that queries the
+UsersTable derives the key from something other than the `email` claim, or handles a
+lookup failure with anything but a refusal. It recognises a scope query by the
+**table**, not by the index name, because naming the index wrongly is itself one of
+the ways this has failed.
 
-Most consumers reach that one function by import. **Four** artifacts carry the rule
-in their own code instead, and the gate covers all four so they cannot drift
-unnoticed:
+Two limits on what that gate asserts, because a green run is easy to over-read:
 
-| Artifact | Why it is not an import |
-|---|---|
-| Both document-list resolvers | No `idp_common` layer — they sit on the hottest UI query and are kept dependency-free, so they vendor `config_scope.py` byte-for-byte (a unit test fails if the copies differ) |
-| `src/lambda/user_management` | No `idp_common` layer; it vendors `log_sanitizer` for the same reason. States the key rule for its own-profile lookup |
-| `feature-platform/pii-anonymizer/feature-api` | Ships as its own stack, so it cannot depend on the host's layer. States the key rule, the scope normaliser and the glob matcher |
-| The Chat-with-Document processor | Imports the matcher but implements its own lookup, and is vendored into the chat-streaming bundle |
+- It checks **key provenance and failure handling only**. There is no rule about the
+  *matcher* or about the empty-page rule, so a divergent `scope_allows` would not be
+  caught — only the two byte-identical vendored copies are held to the letter, by a
+  separate file-comparison test.
+- One module is **discovered and suppressed** rather than checked: the
+  Chat-with-Document processor, via a `PENDING_FIX` entry naming the specific rules,
+  because a concurrent change owns that file. A test asserts that exemption is still
+  load-bearing, so it cannot outlive its reason. The same gap is recorded on AUTH.T07
+  in `security/threat-modeling/feature-threats/rbac-authentication.md`.
+
+Most consumers reach the shared function by import. Six files across four artifacts
+carry the rule in their own code instead:
+
+| Artifact | Files | Why it is not an import |
+|---|---|---|
+| Both document-list resolvers | 2 | No `idp_common` layer — they sit on the hottest UI query and are kept dependency-free, so they vendor `config_scope.py` byte-for-byte (a unit test fails if the copies differ) |
+| `src/lambda/user_management` | 1 | No `idp_common` layer; it vendors `log_sanitizer` for the same reason. States the key rule for its own-profile lookup |
+| `feature-platform/pii-anonymizer/feature-api` | 1 | Ships as its own stack, so it cannot depend on the host's layer. States the key rule, the scope normaliser and the glob matcher |
+| The Chat-with-Document processor | 2 | Imports the matcher but implements its own lookup, and is vendored into the chat-streaming bundle |
 
 The two vendored `config_scope.py` copies are byte-identical by construction. The
 **restatements** are not, and are not claimed to be: the PII-anonymizer copy omits
 the canonical lookup's `Limit=1` and its per-container cache, both of which are
-performance rather than policy. What the gate holds constant is the part that decides
-access — the key comes from the `email` claim, an unevaluable scope denies, an empty
-result is unrestricted, and a set scope is matched with glob support and denies an
-unnamed target.
+performance rather than policy. Its matcher is behaviourally identical to
+`scope_allows` today — both delegate to `fnmatchcase` under the same
+normalise-and-deny-unnamed rules — and nothing mechanical holds it there.
+
+⚠️ **Known limitation — the UI cannot express a glob.** `useConfigurationVersions`
+filters with an exact membership test, so a user scoped to `tenant-a_*` sees an empty
+Configuration Profile dropdown and the Reprocess button stays disabled, even though
+the server-side checks now honour the pattern. Scope a user to exact profile names if
+they need those controls.
+
+⚠️ **Known limitation — a scoped document count can be truncated silently.** A scoped
+caller's `getDocumentCount` is tallied from index rows rather than taken from
+DynamoDB's `Count`, and is bounded by pages and remaining invocation time so a very
+large date range cannot time out. When the bound is hit the response carries
+`approximate: true` and the resolver logs a WARNING — but the UI's generated client
+drops the extra field and nothing alarms on the log line, so the header shows a low
+number with no indication. Narrow the date range if a scoped count looks wrong.
 
 ### Scope Enforcement Points
 
