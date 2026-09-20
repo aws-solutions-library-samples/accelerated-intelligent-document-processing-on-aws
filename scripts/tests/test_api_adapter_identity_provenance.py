@@ -41,6 +41,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from repo_files import tracked_paths
 
 pytestmark = pytest.mark.unit
 
@@ -62,9 +63,17 @@ _HANDLES_REFUSAL = frozenset(
 # either describes nothing that ships, but it parses like a consumer, so scanning
 # them turns local debris into a red gate — 19 mutants failed this rule on the
 # maintainer's tree, and 157 failures across four sibling gates came from
-# `.claude/worktrees/`. Same reasoning and same names as the sets in
-# test_iam_privilege_escalation.py, test_lambda_log_groups.py and
-# test_log_group_encryption.py; keep the four in step.
+# `.claude/worktrees/`.
+#
+# `repo_files.tracked_paths` already excludes all of these, because every one is
+# gitignored. The set is kept as a second filter on the **repo-relative** path so
+# that the fallback walk (used only against a synthetic tree outside a checkout) and
+# the git listing agree, and so a directory that is added to the tree but not to
+# `.gitignore` is still skipped. It must never be matched against the ABSOLUTE path:
+# an agent worktree lives at `<checkout>/.claude/worktrees/agent-*`, so from inside
+# one, `.claude` appears in every absolute path and the filter discards the entire
+# checkout — leaving `test_every_consumer_turns_the_refusal_into_a_denial` to trip
+# its own "discovery is broken" self-guard. See repo_files.py.
 _SKIP_DIR_PARTS = frozenset(
     {
         ".git",
@@ -166,7 +175,7 @@ def test_the_iam_gated_backend_shape_still_passes_through(adapter):
 # --------------------------------------------------------------------------- #
 # every consumer renders the refusal as a denial
 # --------------------------------------------------------------------------- #
-def _is_staged_library_copy(path: Path) -> bool:
+def _is_staged_library_copy(path: Path, root: Path) -> bool:
     """True for a build-staging copy of ``idp_common_pkg`` outside ``lib/``.
 
     ``feature-platform/idp-data-generator`` stages the library into its own build
@@ -176,23 +185,31 @@ def _is_staged_library_copy(path: Path) -> bool:
     that ships — what ships is whatever ``lib/`` says when the image is built. The
     canonical file is excluded separately, by exact path.
     """
-    canonical = (_REPO / _ADAPTER_REL).parents[1]  # lib/idp_common_pkg
+    canonical = (root / _ADAPTER_REL).parents[1]  # lib/idp_common_pkg
     for parent in path.parents:
         if parent.name == "idp_common_pkg" and parent != canonical:
             return True
     return False
 
 
-def _python_sources():
-    for path in _REPO.rglob("*.py"):
-        parts = set(path.parts)
+def _python_sources(root: Path | None = None):
+    """Every deployed ``.py`` file in the checkout at ``root``.
+
+    ``root`` is a parameter so the sweep can be driven against a synthetic tree —
+    ``test_repo_walk_guards_prune_local_work.py`` points it at a checkout whose path
+    contains ``.claude`` and asserts the result is not empty, which is the failure
+    this discovery had.
+    """
+    root = (root or _REPO).resolve()
+    for path in tracked_paths(root, "*.py"):
+        parts = set(path.relative_to(root).parts)
         if parts & _SKIP_DIR_PARTS:
             continue
         if path.name.startswith("test_") or "tests" in parts:
             continue
-        if path.resolve() == (_REPO / _ADAPTER_REL).resolve():
+        if path.resolve() == (root / _ADAPTER_REL).resolve():
             continue
-        if _is_staged_library_copy(path):
+        if _is_staged_library_copy(path, root):
             continue
         yield path
 
