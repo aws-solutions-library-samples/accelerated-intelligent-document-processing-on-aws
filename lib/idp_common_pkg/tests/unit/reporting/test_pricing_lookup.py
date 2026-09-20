@@ -401,7 +401,6 @@ _COVERAGE_EXEMPT = {
 # price it, so the model must get real cache rates and come off this list — which
 # is what that test will then demand.
 _NO_CACHE_UNITS_EXPECTED = {
-    "us.amazon.nova-premier-v1:0": "not in CACHEPOINT_SUPPORTED_MODELS",
     "amazon.nova-lite-v1:0": "bare GovCloud ID; GovCloud caching unverified",
     "amazon.nova-pro-v1:0": "bare GovCloud ID; GovCloud caching unverified",
     "us.anthropic.claude-3-haiku-20240307-v1:0": ("not in CACHEPOINT_SUPPORTED_MODELS"),

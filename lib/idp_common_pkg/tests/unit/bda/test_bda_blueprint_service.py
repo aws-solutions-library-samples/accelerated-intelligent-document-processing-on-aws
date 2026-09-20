@@ -208,8 +208,12 @@ class TestBdaBlueprintService:
             # Verify boto3 client was called for BDABlueprintCreator
             mock_boto_client.assert_called_with(service_name="bedrock-data-automation")
 
-            # Verify DynamoDB table was set up
-            mock_dynamodb.assert_called_once_with("dynamodb")
+            # Verify DynamoDB table was set up. `region_name=None` is ConfigurationManager
+            # deferring to boto3's own region resolution, which is what this
+            # in-Lambda caller wants; an out-of-region caller passes a region
+            # instead. Asserted explicitly rather than dropped, so a hardcoded
+            # region appearing here would still fail.
+            mock_dynamodb.assert_called_once_with("dynamodb", region_name=None)
 
     def test_create_blueprints_from_custom_configuration_no_config(self, service):
         """Test handling when no custom configuration exists."""
