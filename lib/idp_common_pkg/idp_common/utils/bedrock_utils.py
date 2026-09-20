@@ -81,8 +81,16 @@ _LAMBDA_DEADLINE_EPOCH: ContextVar[float | None] = ContextVar(
 # Seconds of the remaining budget left unspent when clamping, so a sleep does not
 # end exactly at the wall with no room for the attempt that follows it. This is a
 # floor on usefulness, not a guarantee: an agent call can legitimately take minutes
-# (read_timeout is 600s), so no reserve can promise the next attempt completes.
+# (up to ``timeout_budget.AGENT_READ_TIMEOUT_SECONDS``), so no reserve can promise
+# the next attempt completes.
 _DEADLINE_RESERVE_SECONDS = 30.0
+
+# The shard invocation's time budget — how long one Bedrock request may stall,
+# how much backoff this ladder may spend, and the function's Lambda ceiling —
+# lives in ``idp_common.timeout_budget``, because those numbers are only correct
+# relative to each other and ``extraction.runtime`` needs them at import time
+# without pulling in this package (#1014). The decorators below enforce the
+# backoff half of it; see that module for the whole inequality.
 
 
 def set_lambda_deadline_epoch(deadline_epoch: float | None) -> None:

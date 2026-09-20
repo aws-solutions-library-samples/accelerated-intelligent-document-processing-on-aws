@@ -38,6 +38,13 @@ from pydantic import BaseModel
 
 from idp_common.config.models import IDPConfig
 
+# A leaf module with no imports of its own, deliberately: the ``read_timeout``
+# defaults below are evaluated at import time, and importing them from
+# ``idp_common.utils`` would pull in an SSM client built at module scope there —
+# breaking this module's import-lightness and making it need an AWS region to
+# import at all. See ``idp_common/timeout_budget.py``.
+from idp_common.timeout_budget import AGENT_READ_TIMEOUT_SECONDS
+
 logger = logging.getLogger(__name__)
 
 
@@ -435,7 +442,7 @@ async def extract_one_shard(
     context: str = "Extraction",
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     max_tokens: int | None = None,
     checkpoint_callback: Any | None = None,
     custom_instruction: str | None = None,
@@ -745,7 +752,7 @@ class ExtractionRuntime(abc.ABC):
         context: str = "Extraction",
         max_retries: int = 7,
         connect_timeout: float = 10.0,
-        read_timeout: float = 600.0,
+        read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
         max_tokens: int | None = None,
         checkpoint_callback: Any | None = None,
         custom_instruction: str | None = None,
@@ -782,7 +789,7 @@ class InProcessRuntime(ExtractionRuntime):
         context: str = "Extraction",
         max_retries: int = 7,
         connect_timeout: float = 10.0,
-        read_timeout: float = 600.0,
+        read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
         max_tokens: int | None = None,
         checkpoint_callback: Any | None = None,
         custom_instruction: str | None = None,

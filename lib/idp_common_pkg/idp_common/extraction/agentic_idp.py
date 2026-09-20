@@ -54,6 +54,12 @@ from idp_common.bedrock.model_utils import (
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.topk_resolver import resolve_candidates
+from idp_common.timeout_budget import (
+    AGENT_MAX_BACKOFF_SECONDS,
+    AGENT_MAX_TOTAL_BACKOFF_SECONDS,
+    AGENT_READ_TIMEOUT_SECONDS,
+    BOTOCORE_TOTAL_MAX_ATTEMPTS,
+)
 from idp_common.utils.bedrock_utils import (
     async_exponential_backoff_retry,
 )
@@ -1114,16 +1120,22 @@ ROW COUNT VALIDATION:
 # Lambda deadline (``utils.bedrock_utils.set_lambda_deadline_epoch``), so on a
 # short-remaining invocation it gives up sooner than either constant implies.
 # ``max_retries=50`` is left alone: the real bound is time, not attempts.
-_AGENT_MAX_BACKOFF_SECONDS = 60
-_AGENT_MAX_TOTAL_BACKOFF_SECONDS = 300
+#
+# The rest of the same budget — how long ONE request may stall before botocore
+# gives up and this ladder gets its turn, on each of the two clients a shard uses,
+# and how many times botocore may retry that stall by itself — lives in
+# ``idp_common.timeout_budget``, because those numbers are only correct relative to
+# each other and to the function's Lambda timeout. See that module, and
+# ``tests/unit/extraction/test_shard_timeout_budget.py``, which asserts the
+# inequality so this cannot regress into a comment nobody re-checks (#1014).
 
 
 @async_exponential_backoff_retry(
     max_retries=50,
     initial_delay=5,
-    max_delay=_AGENT_MAX_BACKOFF_SECONDS,
+    max_delay=AGENT_MAX_BACKOFF_SECONDS,
     jitter=0.5,
-    max_total_delay=_AGENT_MAX_TOTAL_BACKOFF_SECONDS,
+    max_total_delay=AGENT_MAX_TOTAL_BACKOFF_SECONDS,
 )
 async def invoke_agent_with_retry(input: AgentInput, agent: Agent):
     return await agent.invoke_async(input)
@@ -1252,9 +1264,12 @@ def _build_model_config(
     Args:
         model_id: Bedrock model identifier (supports us.*, eu.*, and global.anthropic.*)
         max_tokens: Optional max tokens override (will be capped at model max)
-        max_retries: Maximum retry attempts for API calls
+        max_retries: Upper bound on botocore's attempt count; it can only lower it
+                    below ``BOTOCORE_TOTAL_MAX_ATTEMPTS``, never raise it
         connect_timeout: Connection timeout in seconds
-        read_timeout: Read timeout in seconds
+        read_timeout: Seconds one socket read may block with no data. This path
+                    streams, so it bounds the gap between response events, not the
+                    total generation time
 
     Returns:
         Dictionary of model configuration parameters for create_strands_bedrock_model.
@@ -1271,10 +1286,24 @@ def _build_model_config(
             "Strands extraction. Use standard extraction (agentic.enabled=false)."
         )
 
-    # Configure retry behavior and timeouts using boto3 Config
+    # Configure retry behavior and timeouts using boto3 Config.
+    #
+    # botocore's attempt count is pinned to the shard time budget's
+    # ``BOTOCORE_TOTAL_MAX_ATTEMPTS`` (1), not to ``max_retries``. botocore treats a
+    # read timeout as transient and retries it itself, so passing ``max_attempts=7``
+    # here let one stalled request consume EIGHT read timeouts — botocore's client
+    # ``max_attempts`` is a RETRY count and becomes ``total_max_attempts + 1`` —
+    # inside a single ``await``, well past the whole 900 s shard invocation, where
+    # neither the application ladder nor the deadline check could observe it
+    # (#1014). Retries belong to ``invoke_agent_with_retry``, which is bounded by a
+    # cumulative sleep allowance AND the Lambda deadline. ``max_retries`` may still
+    # lower the count but can no longer raise it above what the budget is computed
+    # for, so no caller can reopen the hole.
     boto_config = Config(
         retries={
-            "max_attempts": max_retries,
+            "total_max_attempts": max(
+                1, min(int(max_retries) + 1, BOTOCORE_TOTAL_MAX_ATTEMPTS)
+            ),
             "mode": "adaptive",  # Uses exponential backoff with adaptive retry mode
         },
         connect_timeout=connect_timeout,
@@ -1900,7 +1929,7 @@ async def concurrent_structured_output_async(
     context: str = "Extraction",
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     max_tokens: int | None = None,
     checkpoint_callback: Any | None = None,
     custom_instruction: str | None = None,
@@ -1994,7 +2023,7 @@ async def structured_output_async(
     context: str = "Extraction",
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     max_tokens: int | None = None,
     checkpoint_callback: Any | None = None,
     checkpoint_buffer_data: dict[str, Any] | None = None,
@@ -2036,12 +2065,25 @@ async def structured_output_async(
         custom_instruction: **RECOMMENDED** - Additional task-specific instructions
                            appended to the system prompt. Use this for domain-specific
                            guidance, field clarifications, or extraction rules.
-        max_retries: Maximum number of retry attempts for Bedrock API calls (default: 5).
-                    Increase this value if your AWS account has low throttling limits.
-        connect_timeout: Connection timeout in seconds (default: 60.0).
+        max_retries: Upper bound on botocore's own attempt count (default: 7). It can
+                    only LOWER that count, never raise it above
+                    ``BOTOCORE_TOTAL_MAX_ATTEMPTS``, which the shard time budget
+                    fixes at one attempt: botocore retries a read timeout itself, so
+                    a second layer of retries underneath the bounded, deadline-aware
+                    ladder multiplied ``read_timeout`` by its attempt count inside a
+                    single call (#1014). Throttling retries are handled by that
+                    ladder instead, which respects the Lambda deadline.
+        connect_timeout: Connection timeout in seconds (default: 10.0).
                         Increase if experiencing connection timeout errors.
-        read_timeout: Read timeout in seconds (default: 300.0 = 5 minutes).
-                     Increase for large documents or slow model responses.
+        read_timeout: How long one socket read may block with no data before
+                     botocore gives up, in seconds. Defaults to
+                     ``AGENT_READ_TIMEOUT_SECONDS`` (180). This path STREAMS, so it
+                     bounds the gap between response events — time to first event,
+                     then each inter-event gap — not total generation time: a
+                     healthy long generation emits deltas continuously and never
+                     approaches it. Raising it eats into the time the retry ladder
+                     and the work itself have inside one shard invocation — see the
+                     budget in ``idp_common.timeout_budget`` before changing it.
 
     Returns:
         Tuple of (extracted data, bedrock response with token usage)
@@ -2416,7 +2458,7 @@ def structured_output(
     config: IDPConfig = IDPConfig(),
     max_retries: int = 7,
     connect_timeout: float = 10.0,
-    read_timeout: float = 600.0,
+    read_timeout: float = AGENT_READ_TIMEOUT_SECONDS,
     checkpoint_callback: Any | None = None,
     checkpoint_buffer_data: dict[str, Any] | None = None,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
