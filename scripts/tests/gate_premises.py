@@ -71,8 +71,27 @@ _PUBLISH_PACKAGE = "lib/idp_sdk"
 # --------------------------------------------------------------------------- #
 
 
+#: Repo-relative prefixes that can hold a whole copy of this tree: local verification
+#: work and agent worktrees. Pruned in ADDITION to ``--exclude-standard``, not instead
+#: of it.
+#:
+#: Asking git is not sufficient on its own, and the difference is easy to miss.
+#: ``git ls-files --others`` lists files under ``scratch/`` and ``.claude/`` whenever
+#: those are not gitignored — measured, not assumed. In *this* repository they are
+#: (``.gitignore`` lines 33 and 114), so ``--exclude-standard`` happens to cover them
+#: and dropping this set would change nothing today. That is exactly why it is here:
+#: a helper that is correct only because of two lines in a sibling file is a latent
+#: bug, and this class of gate has already produced 157 false failures from worktrees
+#: once. A `git worktree` checkout is additionally protected by git listing a nested
+#: repository as a bare directory rather than its contents, but a plain copy is not.
+LOCAL_WORK_PREFIXES = ("scratch/", ".claude/")
+
+
 def tracked_files(
-    *globs: str, root: Path | None = None, include_untracked: bool = False
+    *globs: str,
+    root: Path | None = None,
+    include_untracked: bool = False,
+    prune_local_work: bool = True,
 ) -> tuple[str, ...]:
     """Repo-relative POSIX paths that git reports, sorted.
 
@@ -83,9 +102,14 @@ def tracked_files(
     findings against files that ship nowhere.
 
     ``include_untracked`` adds files that exist but are not yet committed (still
-    honouring ``.gitignore``), matching ``scripts/discover_templates.sh``. Leave it
-    off for a gate whose expectation is "what is in the repository"; turn it on for
-    one that must see a file the author has not committed yet.
+    honouring ``.gitignore``), matching ``scripts/discover_templates.sh``. Turn it on
+    for a gate that must see a file the author has not committed yet — otherwise the
+    gate's verdict changes at ``git add`` time, which this module's own registry
+    discovered on itself.
+
+    ``prune_local_work`` additionally drops :data:`LOCAL_WORK_PREFIXES`, matched
+    against the **repo-relative** path so that where the checkout sits cannot exclude
+    it. See that constant for why ``--exclude-standard`` alone is not enough.
     """
     root = root or REPO_ROOT
     args = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--exclude-standard"]
@@ -95,7 +119,12 @@ def tracked_files(
         args.append("--")
         args.extend(globs)
     out = subprocess.run(args, check=True, capture_output=True, text=True).stdout
-    return tuple(sorted(p for p in out.split("\0") if p))
+    found = (p for p in out.split("\0") if p)
+    if prune_local_work:
+        found = (
+            p for p in found if not any(p.startswith(x) for x in LOCAL_WORK_PREFIXES)
+        )
+    return tuple(sorted(found))
 
 
 def is_tracked(rel_path: str, root: Path | None = None) -> bool:
@@ -340,6 +369,50 @@ def matching_lines(
     return tuple(hits)
 
 
+def collects_zero_tests(member: str) -> Verdict:
+    """``pytest --collect-only`` finds no test in this directory.
+
+    The premise behind "not a test suite" / "collects zero pytest tests". It is worth
+    computing because the identical sentence has already been wrong once here: the
+    same claim was made about ``samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency``
+    and that directory collects six tests, all passing, so six gated tests were
+    excluded from every gate on the strength of a reason nobody ran.
+
+    A collection **error** is reported as *not holding*, deliberately. Zero tests
+    collected because an import failed is a different premise -- "requires a
+    dependency this environment does not have" -- and conflating the two would let a
+    dependency problem masquerade as "there is nothing here", which is the more
+    dangerous direction: the tests exist and nobody runs them.
+    """
+    target = REPO_ROOT / _normalise(member)
+    if not target.is_dir():
+        return (False, f"{member} is not a directory")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", str(target)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    out = result.stdout + result.stderr
+    # pytest's exit code is the reliable signal, not the summary text: a collection
+    # error ALSO prints "no tests collected", so substring matching reports an
+    # unimportable suite as an empty one -- the exact conflation the docstring above
+    # says must not happen. 5 = nothing collected, 2 = interrupted by a collection
+    # error, 0 = tests were collected.
+    if result.returncode == 2:
+        return (
+            False,
+            f"collection ERRORED in {member} rather than finding nothing, so the "
+            "premise to record is the unavailable dependency; the tests may well "
+            "exist and simply never run",
+        )
+    if result.returncode == 5:
+        return (True, f"pytest collects no test in {member}")
+    match = re.search(r"^(\d+) tests? collected", out, re.M)
+    collected = match.group(1) if match else "some"
+    return (False, f"{member} collects {collected} test(s), which nothing runs")
+
+
 #: Predicates a registry entry may name, by the exact string it names them with.
 #: ``JUDGEMENT`` is deliberately absent: it is not a predicate, it is the recorded
 #: admission that there is no predicate, and the registry treats it separately.
@@ -352,6 +425,7 @@ PREDICATES = {
     "built_separately_from_main_stack": built_separately_from_main_stack,
     "file_absent_or_untracked": file_absent_or_untracked,
     "installer_manifest_pins_parameter": installer_manifest_pins_parameter,
+    "collects_zero_tests": collects_zero_tests,
 }
 
 #: The marker an entry uses instead of a predicate when its premise genuinely

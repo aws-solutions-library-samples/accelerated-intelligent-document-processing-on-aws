@@ -73,7 +73,7 @@ RATCHETS = {
 #: the same shape ``PASS_ROLE_WILDCARD_ALLOWED`` uses. Pinning it is what stops the
 #: honest "declare the gap" escape hatch from becoming the default: declaring a gap is
 #: allowed, and quietly adding a 30th is not.
-MAX_UNRATCHETED = 35
+MAX_UNRATCHETED = 34
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place
@@ -335,4 +335,85 @@ def test_discovery_sees_a_file_that_is_not_committed_yet() -> None:
         assert "scripts/ignored.py::IGNORED_EXEMPT" not in found, (
             "a gitignored file is visible to discovery, which is how a gate comes to "
             f"report findings against build output: {sorted(found)}"
+        )
+
+#: For each predicate, wording in a reason that means its domain is in play. A reason
+#: that talks about nested stacks while recording JUDGEMENT has to say why the
+#: nested-stack predicate does not settle it.
+#:
+#: This is a lint on the REGISTRY, not a claim about the world -- which is what makes
+#: it safe to use here. It cannot be wrong about whether a template is a nested stack,
+#: because it never asks; it only refuses to let a reason invoke a subject a predicate
+#: already covers without engaging with it. The repo's own rule is that a weak proxy
+#: must not be called a check, and this is not standing in for a premise: it is the
+#: thing that stops JUDGEMENT being used INSTEAD of a premise.
+PREDICATE_DOMAIN_WORDING = {
+    "not_a_nested_stack_of_parent": ("nested stack", "nested stacks", "parameters reach"),
+    "built_separately_from_main_stack": (
+        "built separately",
+        "built and versioned separately",
+        "versioned separately",
+        "same publish run",
+        "publish run",
+    ),
+    "installer_manifest_pins_parameter": ("feature.yaml", "defaultparameters"),
+    "file_absent_or_untracked": ("does not exist", "no longer exists", "only after a build"),
+    "collects_zero_tests": ("collects zero", "collects no", "zero pytest tests"),
+}
+
+
+@pytest.mark.parametrize("key", sorted(_registry()))
+def test_judgement_does_not_stand_in_for_an_available_predicate(key: str) -> None:
+    """``JUDGEMENT`` must not be used where a predicate here already applies.
+
+    This answers the obvious objection to the whole mechanism: if `JUDGEMENT` and
+    `ratchetGap` are both permitted, what stops a future author reaching for them to
+    avoid writing a predicate? Nothing, unless something asks. So this asks.
+
+    If a reason's wording invokes the subject of an existing predicate -- nested
+    stacks, the publisher's build, an installer manifest, test collection -- the entry
+    must either name that predicate or list it in ``predicateConsidered`` with a
+    sentence saying why it does not settle the question. Both are cheap; neither is
+    automatic, and that is the point. The failure is not "your reason is wrong", it is
+    "a predicate exists for this and you have not said why it does not apply".
+
+    **This does not make JUDGEMENT safe in general, and it is not claimed to.** An
+    author can still write a premise this vocabulary does not recognise, and no test
+    can read a sentence. What it removes is the specific, cheap failure mode of
+    restating in prose a fact the tree can compute -- which is exactly what all four
+    original defects did.
+    """
+    entry = _registry()[key]
+    if entry["premise"] != gate_premises.JUDGEMENT:
+        return
+
+    text = f"{entry.get('reason', '')} {entry.get('turnsOff', '')}".lower()
+    considered = set(entry.get("predicateConsidered", {}))
+    implicated = sorted(
+        predicate
+        for predicate, wording in PREDICATE_DOMAIN_WORDING.items()
+        if any(phrase in text for phrase in wording) and predicate not in considered
+    )
+    assert not implicated, (
+        f"{key} records JUDGEMENT, but its reason invokes the subject of "
+        f"{implicated} -- predicate(s) that exist in gate_premises.py and are computed "
+        "from this tree. Either name the predicate as the premise and evaluate it per "
+        "member in the owning gate, or add it to 'predicateConsidered' with a sentence "
+        "saying why it does not settle the question. A premise restated in prose that "
+        "the tree can compute is the original defect, four times over."
+    )
+
+
+@pytest.mark.parametrize("key", sorted(_registry()))
+def test_a_considered_predicate_is_named_and_explained(key: str) -> None:
+    """``predicateConsidered`` must name real predicates and say why each was set aside."""
+    entry = _registry()[key]
+    for predicate, why in (entry.get("predicateConsidered") or {}).items():
+        assert predicate in gate_premises.PREDICATES, (
+            f"{key}: predicateConsidered names {predicate!r}, which is not in "
+            f"gate_premises.PREDICATES ({sorted(gate_premises.PREDICATES)})"
+        )
+        assert why.strip(), (
+            f"{key}: predicateConsidered[{predicate!r}] has no explanation. Setting a "
+            "predicate aside silently is the same act as never looking for it."
         )

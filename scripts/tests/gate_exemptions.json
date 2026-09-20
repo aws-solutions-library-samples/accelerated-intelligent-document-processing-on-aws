@@ -47,7 +47,42 @@
     "            MAX_PENDING_WIRING in the meta-test may shrink and not grow. This state",
     "            exists so that 'computable but unchecked' is distinguishable from",
     "            'nothing to compute' -- collapsing the two into JUDGEMENT is how a",
-    "            checkable premise stops being checked."
+    "            checkable premise stops being checked.",
+    "",
+    "  predicateConsidered  {predicate: why it does not settle the question}. Required when",
+    "            a JUDGEMENT reason invokes the subject of a predicate that exists --",
+    "            nested stacks, the publisher's build, an installer manifest, test",
+    "            collection. See the LIMIT below for what this does and does not buy.",
+    "",
+    "THE LIMIT OF JUDGEMENT AND ratchetGap, STATED PLAINLY.",
+    "",
+    "Both are escape hatches, and a mechanism that pretends otherwise would be the defect",
+    "it is meant to fix. So, precisely what each is worth:",
+    "",
+    "  * A JUDGEMENT reason cannot be checked. No test reads a sentence. What IS checked is",
+    "    narrower and is the failure mode that actually occurred four times: a reason that",
+    "    RESTATES IN PROSE a fact this tree can compute. If the wording invokes a",
+    "    predicate's subject, the entry must name that predicate or set it aside in",
+    "    predicateConsidered with a sentence. That is a lint on this file, not a claim about",
+    "    the world -- it never asks whether a template is a nested stack, only whether an",
+    "    author who wrote 'nested stack' engaged with the predicate that answers it.",
+    "",
+    "  * An author can still write a premise the vocabulary does not recognise, and get",
+    "    JUDGEMENT plus ratchetGap for it. Nothing here stops that, and nothing here",
+    "    pretends to. The bound on it is quantitative rather than semantic:",
+    "    MAX_UNRATCHETED and MAX_PENDING_WIRING may shrink and not grow, so the cost of",
+    "    reaching for the hatch is a deliberate, visible edit to a pinned number in a test",
+    "    -- which is a review moment, not a check.",
+    "",
+    "  * PREDICATE_DOMAIN_WORDING is therefore the thing to keep current. It is the only",
+    "    part of this mechanism that degrades silently: a new predicate whose subject is",
+    "    not listed there can be restated in prose with nothing objecting. Adding a",
+    "    predicate to gate_premises.PREDICATES means adding its wording there too.",
+    "",
+    "  * What none of this covers: whether a JUDGEMENT reason is TRUE. That remains a",
+    "    reviewer's job, and it is why every reason here is required to state a fact about",
+    "    this tree rather than restate AWS behaviour from memory -- the rule",
+    "    TRANSPORT_CONTROL_EXEMPT states in its own comment, generalised."
   ],
   "exemptions": {
     "Makefile::ARN_PARTITION_EXEMPT": {
@@ -58,7 +93,10 @@
       "reason": "Cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised. Not machine-checkable: whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree.",
       "crossReferences": [
         "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS"
-      ]
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "Matched only on the phrase 'does not exist', which here describes cross-partition IAM trust rather than a path. The exempt file is tracked and present, and the non-vacuity ratchet already asserts it shields a real finding."
+      }
     },
     "Makefile::CFN_LINT_IGNORE": {
       "kind": "exemption",
@@ -66,7 +104,11 @@
       "premise": "JUDGEMENT",
       "ratchet": "none",
       "reason": "TemplateURL points at a build artifact, so the rule is skipped in CI and reports false positives against a stale copy locally. The compensating control is named: scripts/tests/test_nested_stack_parameters.py asserts the wiring against the source templates.",
-      "ratchetGap": "Per-RULE rather than per-path, so there is no member set to count and nothing to be vacuous about. The ratchet that would matter is that the named compensating gate still runs; scripts/tests/test_ci_gate_parity.py covers whether it is in both CIs, but nothing asserts the citation itself."
+      "ratchetGap": "Per-RULE rather than per-path, so there is no member set to count and nothing to be vacuous about. The ratchet that would matter is that the named compensating gate still runs; scripts/tests/test_ci_gate_parity.py covers whether it is in both CIs, but nothing asserts the citation itself.",
+      "predicateConsidered": {
+        "file_absent_or_untracked": "The absent build artifact is real and the predicate would confirm it, but this exemption is per-RULE and has no path members to evaluate it over -- E3043 is switched off repo-wide, not for a listed file. Applying the predicate would mean inventing a member set the exemption does not have. The compensating control is named instead: scripts/tests/test_nested_stack_parameters.py asserts the parent/nested parameter wiring against the source templates.",
+        "not_a_nested_stack_of_parent": "The phrase 'nested stack' here names what the DISABLED RULE is about (E3043 compares a parent's Parameters with the nested stack's), not a property being claimed of an exempt member. Same structural objection as the other predicate on this entry: a per-rule exemption has no member set over which to evaluate anything. scripts/tests/test_nested_stack_parameters.py does read the nested-stack graph and asserts that wiring directly, which is why switching the rule off is defensible."
+      }
     },
     "lib/idp_common_pkg/tests/unit/bedrock/test_long_context_metering_key.py::METERING_KEY_EXEMPT": {
       "kind": "exemption",
@@ -210,12 +252,14 @@
       "kind": "exemption",
       "turnsOff": "`make test` entirely, for the listed directories",
       "premise": "JUDGEMENT",
-      "ratchet": "none",
+      "ratchet": "universe-closure",
       "reason": "Roots known not to run in the shared gate, each with a reason. Two reasons are dependency-availability facts (huggingface_hub, cfnresponse) that an import could check; one is 'collects zero pytest tests', which the RUN_ROOTS comment records as having been false for a sibling entry.",
-      "ratchetGap": "The 'collects zero pytest tests' claim is mechanically checkable by collecting, and is not checked. classify() also deliberately does not propagate quarantine to children, so a nested root must register itself.",
       "crossReferences": [
         "scripts/run_all_tests.py::RUN_ROOTS"
-      ]
+      ],
+      "predicateConsidered": {
+        "collects_zero_tests": "It DOES apply to the subset whose reason makes that claim, and it is now applied: test_run_all_tests_registry.py runs the collector per member for every QUARANTINE reason matching that wording. It is recorded here rather than as this entry's premise because the constant's members are heterogeneous -- an unavailable dependency, a mis-collection, a source tree, an absence of tests -- so no single predicate is the premise for the constant."
+      }
     },
     "scripts/run_all_tests.py::RUN_ROOTS": {
       "kind": "enforced-universe",
@@ -602,7 +646,11 @@
       "turnsOff": "the invocation-event redaction check for every handler under the listed tree",
       "premise": "JUDGEMENT",
       "ratchet": "count-pinned",
-      "reason": "Scope and event shape, per entry. The structural claims a reason might borrow (nested stack, built together) are asserted separately and per member, so a reason may no longer assert them."
+      "reason": "Scope and event shape, per entry. The structural claims a reason might borrow (nested stack, built together) are asserted separately and per member, so a reason may no longer assert them.",
+      "predicateConsidered": {
+        "not_a_nested_stack_of_parent": "Both predicates apply and both are evaluated, per member, by test_no_uncovered_tree_claims_to_be_built_apart in the owning gate -- not as this entry's premise, because four of the members ARE nested stacks built in the same run and are legitimately exempt for a different reason (scope and event shape). What the predicates enforce is that no reason may CLAIM independence: the false blanket premise here asserted exactly that for all twelve.",
+        "built_separately_from_main_stack": "See the note on not_a_nested_stack_of_parent: asserted per member in the owning gate, as a prohibition on the claim rather than as the entry's premise."
+      }
     },
     "scripts/tests/test_scope_lookup_fail_closed.py::PENDING_FIX": {
       "kind": "exemption",

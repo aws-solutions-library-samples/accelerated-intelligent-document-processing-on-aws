@@ -143,6 +143,21 @@ is set to, and you should lower it on the extension's own stack for production. 
 `idp-feature-cli deploy` passes the parameter only when `--log-level` is given, so pass
 it there rather than relying on the manifest.
 
+**Raise it deliberately, and lower it again.** Above `WARN`, handlers across the
+solution log their invocation events. Known-sensitive keys are redacted before an event
+is written — tokens, credentials and identity claims, by a single shared denylist
+(`idp_common.utils.log_sanitizer`) that every handler either imports or carries a
+byte-identical copy of — but a denylist cannot anticipate what a caller puts in a
+free-text field, so an event can still carry document content or caller-supplied text.
+That is exactly what makes `INFO` and `DEBUG` useful for diagnosis, and what makes them
+unsuitable as a steady state.
+
+So treat raising the level as scoped and temporary: raise it for a specific
+investigation, gather what you need, and lower it again. Note that the data written
+while it was raised persists for the log group's whole retention period, so lowering the
+level does not undo it. `LogRetentionDays` and the CMK-encrypted log groups described
+above bound that exposure; the level is what creates it.
+
 Be aware of what that safe default costs you in observability. The REST API stage's
 structured JSON access log — which carries the authorizer status, WAF response code and
 integration latency, and is the only thing that diagnoses a request rejected before it
