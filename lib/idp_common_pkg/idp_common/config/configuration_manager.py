@@ -168,7 +168,7 @@ class ConfigurationManager:
             )
 
         self.region = region
-        self.dynamodb = boto3.resource("dynamodb", region_name=region)
+        self.dynamodb = boto3.resource("dynamodb", region_name=self.region)
         self.table = self.dynamodb.Table(table_name)  # pyright: ignore[reportAttributeAccessIssue]
         self.table_name = table_name
         # Revision history for Configuration Profiles. Disabled (no-op) when no
@@ -176,7 +176,7 @@ class ConfigurationManager:
         # test that does not exercise history keeps working unchanged. The region
         # is passed through for the same reason as above: the revision objects
         # live in the configuration bucket of the stack we just resolved.
-        self.revisions = ConfigRevisionStore(self.table, region=region)
+        self.revisions = ConfigRevisionStore(self.table, region=self.region)
         logger.info(f"ConfigurationManager initialized with table: {table_name}")
 
     def get_configuration(

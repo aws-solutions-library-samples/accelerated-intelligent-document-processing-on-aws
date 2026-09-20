@@ -515,7 +515,13 @@ def test_selectable_model_enumeration_is_not_vacuous():
     # under Metadata (which this guard read none of until PR #952), and a preset.
     assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in ids  # AllowedValues
     assert "global.amazon.nova-pro-v1:0" in ids  # Metadata schema enum:
-    assert "us.anthropic.claude-3-5-sonnet-20240620-v1:0" in ids  # config_library
+    # A preset-sourced id: it appears in config_library/unified/
+    # lending-package-sample-govcloud/config.yaml and in no template enum, so it
+    # can only be here if the config_library walk works. The previous example,
+    # us.anthropic.claude-3-5-sonnet-20240620-v1:0, stopped being preset-sourced
+    # when that model reached end of life and was removed from the five
+    # ocr-benchmark presets.
+    assert "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0" in ids  # config_library
 
 
 @pytest.mark.unit

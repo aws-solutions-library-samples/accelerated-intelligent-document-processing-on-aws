@@ -250,6 +250,13 @@ def write_summary(rm, rows, out):
             f"never launched: {rm['cells_skipped_config_upload']}. This summary "
             "does not cover the whole suite."
         )
+    if rm.get("docs_missing_truth"):
+        print(
+            "⚠ scored WITHOUT exact ground truth for "
+            f"{rm['docs_missing_truth']} — these rows come from the stack's own "
+            "evaluation, which is a different scorer and not comparable with "
+            "locally-scored rows."
+        )
     cells = cell_stats(rows)
     json.dump(
         {"meta": _meta(rm), "rows": rows, "cell_stats": cells},

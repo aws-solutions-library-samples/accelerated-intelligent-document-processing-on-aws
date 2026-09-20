@@ -206,7 +206,14 @@ class TestBdaBlueprintService:
             )
 
             # Verify boto3 client was called for BDABlueprintCreator
-            mock_boto_client.assert_called_with(service_name="bedrock-data-automation")
+            # `region_name=None` is BDABlueprintCreator deferring to boto3's own
+            # region resolution, which is what this in-Lambda caller wants; an
+            # out-of-region caller (idp-cli config-sync-bda --region) passes one.
+            # Asserted explicitly rather than dropped, so a hardcoded region
+            # appearing here would still fail.
+            mock_boto_client.assert_called_with(
+                service_name="bedrock-data-automation", region_name=None
+            )
 
             # Verify DynamoDB table was set up. `region_name=None` is ConfigurationManager
             # deferring to boto3's own region resolution, which is what this
