@@ -178,13 +178,24 @@ def test_a_retired_model_id_still_loads_in_a_stored_config(model_id: str):
 
 @pytest.mark.parametrize("model_id", sorted(RETIRED_MODEL_IDS))
 def test_config_validate_now_reports_it_as_an_invalid_model(model_id: str):
-    """Dropping the pricing entry turns the runtime failure into a pre-flight one.
+    """A retired model is a pre-flight error, not a runtime one.
 
     ``validate_config`` (``idp-cli config-validate`` / ``client.config.validate()``)
-    checks model IDs against ``config_library/pricing.yaml``, so removing the
-    retired model's pricing block makes a config that pins it fail validation
-    instead of failing at the first ``Converse`` call — which is what #708 asked
-    for. This path is the *only* consumer of ``validate_config``: neither the
+    rejects a configuration that pins a retired model, so it fails before a
+    document does instead of at the first ``Converse`` call — which is what #708
+    asked for.
+
+    It rejects on **retirement itself**, via
+    ``config.retired_models.retirement_of``. It used to reject as a side effect of
+    the model having been deleted from ``config_library/pricing.yaml``, because
+    ``validate_config`` derives its valid-model set from that file. That coupling
+    could not survive a retired model whose pricing row must be RETAINED so
+    historical cost reports still resolve its rate — see the note on
+    ``_OFFERING_SURFACES`` above and ``config/retired_models.py``. Two of the
+    models this test is parametrised over are in exactly that position, so the old
+    mechanism would no longer reject them.
+
+    This path is the *only* consumer of ``validate_config``: neither the
     stack-update custom resource nor the configuration save calls it, so the
     stricter answer cannot wedge a deployment.
     """
@@ -199,6 +210,12 @@ def test_config_validate_now_reports_it_as_an_invalid_model(model_id: str):
     result = merge_utils.validate_config({"extraction": {"model": model_id}})
     assert result["valid"] is False, result
     assert any("invalid model ID" in err for err in result["errors"]), result["errors"]
+    assert any("end of life" in err for err in result["errors"]), (
+        "the rejection no longer names retirement as the reason, so it is coming "
+        "from somewhere other than the retired-model registry — most likely the "
+        "pricing-absence side effect this test used to rely on",
+        result["errors"],
+    )
 
 
 def test_model_limits_still_cover_the_retired_family():

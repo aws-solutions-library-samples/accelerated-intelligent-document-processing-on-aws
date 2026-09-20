@@ -16,7 +16,7 @@ from idp_common.bedrock import invoke_model
 
 # Basic model invocation
 response = invoke_model(
-    model_id="anthropic.claude-3-haiku-20240307-v1:0",
+    model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
     system_prompt="You are a helpful assistant.",
     content=[{"text": "What are the main features of AWS Bedrock?"}],
     temperature=0.0,

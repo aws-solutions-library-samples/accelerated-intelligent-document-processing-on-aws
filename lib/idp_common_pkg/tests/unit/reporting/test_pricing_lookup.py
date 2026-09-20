@@ -403,8 +403,6 @@ _COVERAGE_EXEMPT = {
 _NO_CACHE_UNITS_EXPECTED = {
     "amazon.nova-lite-v1:0": "bare GovCloud ID; GovCloud caching unverified",
     "amazon.nova-pro-v1:0": "bare GovCloud ID; GovCloud caching unverified",
-    "us.anthropic.claude-3-haiku-20240307-v1:0": ("not in CACHEPOINT_SUPPORTED_MODELS"),
-    "eu.anthropic.claude-3-haiku-20240307-v1:0": ("not in CACHEPOINT_SUPPORTED_MODELS"),
     "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0": (
         "verified live: cachePoint does not reduce input tokens through this "
         "GovCloud inference profile"
@@ -508,7 +506,12 @@ def _selectable_model_ids() -> set:
 def test_selectable_model_enumeration_is_not_vacuous():
     """Guard the guard: a regex or path drift that finds nothing must fail loudly."""
     ids = _selectable_model_ids()
-    assert len(ids) >= 80, f"only found {len(ids)} selectable model IDs: {sorted(ids)}"
+    # A floor against collapse, not a claim about the exact count — which falls
+    # legitimately whenever a retired model is removed from the enums. It dropped
+    # from 85 to 78 when seven end-of-life ids went (Claude 3 Haiku, 3.5 Sonnet
+    # 20241022, 3.7 Sonnet and Opus 4, in their us. and eu. spellings). 70 still
+    # fails loudly on a regex or path drift that finds nothing.
+    assert len(ids) >= 70, f"only found {len(ids)} selectable model IDs: {sorted(ids)}"
     # Spot-check one ID from each source so a broken source is not masked by the
     # others still working. The three are deliberately distinct SHAPES of source:
     # a CFN parameter AllowedValues list, a configuration-schema ``enum:`` block

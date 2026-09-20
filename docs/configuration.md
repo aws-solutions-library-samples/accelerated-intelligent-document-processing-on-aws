@@ -216,7 +216,9 @@ See the [config_library README](../config_library/README.md) for available confi
 
 Bedrock retires model versions over time. A retired model is removed from the
 model picklists (the enums in `patterns/unified/template.yaml` and
-`template.yaml`) and from `config_library/pricing.yaml`. Model IDs in a
+`template.yaml`) but **keeps** its `config_library/pricing.yaml` entry, so a cost
+report covering documents processed while it was still selectable resolves the
+right rate. Model IDs in a
 configuration are plain strings, not a closed enum, so **a stored configuration
 that still names a retired model keeps loading** — it just fails at invoke time
 with:
@@ -278,7 +280,7 @@ Summarization can be controlled via the configuration file rather than CloudForm
 ```yaml
 summarization:
   enabled: true  # Set to false to disable summarization
-  model: us.anthropic.claude-3-7-sonnet-20250219-v1:0
+  model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0
   # ... other summarization settings
 ```
@@ -1080,7 +1082,7 @@ ocr:
   bda_project_arn: null
 
   # For Bedrock backend:
-  bedrock_model: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+  bedrock_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   system_prompt: "You are an OCR expert..."
   task_prompt: "Extract all text from this document..."
 ```

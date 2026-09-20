@@ -266,15 +266,15 @@ The Agent Analysis feature is configured through CloudFormation parameters:
 ```yaml
 ChatCompanionModelId:
   Type: String
-  Default: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
+  Default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
   Description: Model to use for Document Analysis Agent (analytics queries)
 ```
 
 **Supported Models:**
 
-- `us.anthropic.claude-3-7-sonnet-20250219-v1:0` (Default - Recommended)
-- `us.anthropic.claude-3-5-sonnet-20241022-v2:0`
-- `us.anthropic.claude-3-haiku-20240307-v1:0`
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (Default - Recommended)
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `us.amazon.nova-pro-v1:0`
 - `us.amazon.nova-lite-v1:0`
 

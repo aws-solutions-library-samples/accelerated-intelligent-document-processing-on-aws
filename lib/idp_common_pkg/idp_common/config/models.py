@@ -2737,8 +2737,11 @@ class EvaluationLLMMethodConfig(BaseModel):
     )
 
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Claude Haiku 4.5, not Claude 3 Haiku. The latter reached end of life, so
+    # LLM-based evaluation ran a dead model out of the box; this is the current
+    # Haiku-class model and keeps the same cost/latency intent.
     model: str = Field(
-        default="us.anthropic.claude-3-haiku-20240307-v1:0",
+        default="us.anthropic.claude-haiku-4-5-20251001-v1:0",
         description="Bedrock model ID for evaluation",
     )
     system_prompt: str = Field(

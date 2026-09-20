@@ -2839,7 +2839,6 @@ Resources:
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-5"
                       - "us.anthropic.claude-sonnet-5:1m"
-                      - "us.anthropic.claude-opus-4-20250514-v1:0"
                       - "us.anthropic.claude-opus-4-6-v1:1m"
                       - "us.anthropic.claude-opus-4-7"
                       - "us.anthropic.claude-opus-4-7:1m"
