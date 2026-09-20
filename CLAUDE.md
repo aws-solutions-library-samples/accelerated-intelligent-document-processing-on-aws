@@ -320,7 +320,9 @@ The per-tier procedures stay in
 `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
 
 ```bash
-# Run all tests (idp_common_pkg + idp_cli + srt security scan)
+# Run every non-integration suite (auto-discovered; see scripts/run_all_tests.py).
+# Note this does NOT run the SRT security scan - that is `make srt-scan`, and it is
+# in neither the lint nor the test gate set, so Bandit findings surface only in CI.
 make test
 
 # Run tests in idp_common_pkg only
@@ -333,7 +335,7 @@ cd lib/idp_common_pkg && make test-unit
 cd lib/idp_common_pkg && make test-integration
 
 # Run idp_cli tests
-cd idp_cli && python -m pytest -v
+cd lib/idp_cli_pkg && python -m pytest -v
 
 # Run specific test markers
 pytest -m "unit"
@@ -547,7 +549,7 @@ See `lib/idp_common_pkg/idp_common/extraction/README.md` for detailed documentat
   - Automatic merging of table fragments split by page breaks
   - Hybrid extraction: agent uses parsing for tables, LLM for complex layouts
 
-**`idp_cli`** (`idp_cli/`):
+**`idp_cli`** (`lib/idp_cli_pkg/idp_cli/`):
 - Command-line interface for deployment and batch processing
 - Stack deployment and updates
 - Batch document processing
@@ -593,7 +595,7 @@ Custom configurations override selected pattern presets when specified.
 
 ### Testing Standards
 
-- Tests located in `lib/idp_common_pkg/tests/` and `idp_cli/tests/`
+- Tests located in `lib/idp_common_pkg/tests/` and `lib/idp_cli_pkg/tests/`
 - Use pytest markers: `@pytest.mark.unit` and `@pytest.mark.integration`
 - Integration tests require AWS resources
 

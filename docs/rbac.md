@@ -496,7 +496,8 @@ directly.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a **single*
 `authenticated` role with **no `RoleMappings`**, so group membership plays no part
 in which role a signed-in user assumes. That role, `CognitoAuthorizedRole`, grants
 `s3:GetObject`, `s3:GetObjectVersion` and `s3:ListBucket` on the Input, Output and
-Configuration buckets plus `kms:Decrypt` on the customer-managed key — to **every**
+Configuration buckets, plus five KMS actions on the customer-managed key
+(`Encrypt`, `Decrypt`, `ReEncrypt*`, `GenerateDataKey*`, `DescribeKey`) — to **every**
 authenticated user, including one in no group. This is the production read path, not
 a theoretical one: `FileViewer` defaults to `presignVia = 'client'`, and the page
 thumbnails, the page-image viewer and the document export all sign S3 GETs in the
