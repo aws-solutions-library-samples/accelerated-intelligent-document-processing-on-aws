@@ -117,8 +117,9 @@ const PublishVersionModal = ({
     >
       <SpaceBetween size="m">
         {error && (
-          <Alert type="error" header="Could not publish a version">
-            {error} Your entries are kept — publishing again retries the same attempt rather than creating a second version.
+          <Alert type="warning" header="This publish did not complete">
+            {error} It may still be running and may yet succeed. Your entries are kept — publishing again retries the same attempt, so it
+            returns the version that attempt created rather than creating a second one.
           </Alert>
         )}
 

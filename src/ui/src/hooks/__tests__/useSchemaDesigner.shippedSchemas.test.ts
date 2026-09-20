@@ -26,7 +26,8 @@
  * is the point at which the fixture, not the rule, should change.
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderHook } from '@testing-library/react';
 import yaml from 'js-yaml';
@@ -34,23 +35,30 @@ import { describe, expect, it } from 'vitest';
 import { useSchemaDesigner } from '../useSchemaDesigner';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..', '..');
-const CONFIG_LIBRARY = join(REPO_ROOT, 'config_library');
 const STANDARD_CLASSES = join(REPO_ROOT, 'src', 'ui', 'src', 'data', 'standard-classes.json');
 
 type Json = Record<string, unknown>;
 
-const yamlFiles = (dir: string): string[] =>
-  readdirSync(dir).flatMap((entry) => {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) return yamlFiles(full);
-    return /\.ya?ml$/.test(entry) ? [full] : [];
-  });
+/**
+ * Every YAML **tracked by git** under `config_library`.
+ *
+ * Deliberately not a filesystem walk. A scratch config left in the tree would join the run and
+ * red-line the suite on one machine only, which CI cannot reproduce — this repository's most
+ * repeated gate defect. `git ls-files` sees exactly what a reviewer and CI see. Discovery is
+ * still by content within that set, so a new configuration joins the run by existing, with no
+ * list here to update.
+ */
+const trackedYamlFiles = (): string[] =>
+  execFileSync('git', ['ls-files', '-z', '--', 'config_library'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter((path) => /\.ya?ml$/.test(path))
+    .map((path) => join(REPO_ROOT, path));
 
 /** Every shipped list of class schemas, as `[label, schemas]`. */
 const shippedClassLists = (): [string, Json[]][] => {
   const lists: [string, Json[]][] = [];
 
-  yamlFiles(CONFIG_LIBRARY).forEach((file) => {
+  trackedYamlFiles().forEach((file) => {
     let parsed: unknown;
     try {
       parsed = yaml.load(readFileSync(file, 'utf8'));

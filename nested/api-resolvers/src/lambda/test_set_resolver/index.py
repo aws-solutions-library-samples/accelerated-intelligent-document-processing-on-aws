@@ -787,8 +787,15 @@ def _version_sk(n):
     return f"version#{int(n):06d}"
 
 
-def _list_version_items(test_set_id):
-    """Return all version items for a test set, ascending by version number."""
+def _list_version_items(test_set_id, consistent=False):
+    """Return all version items for a test set, ascending by version number.
+
+    ``consistent`` is for the one caller whose answer decides whether to publish again
+    (``_version_for_client_token``): an eventually consistent read inside the winner's
+    replication window would report no version and send a retry down the refusal path. It is
+    deliberately not the default — ``get_test_set_versions`` reads the same rows for display
+    and would double its cost for no benefit.
+    """
     from boto3.dynamodb.conditions import Key as DDBKey
 
     tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
@@ -799,6 +806,8 @@ def _list_version_items(test_set_id):
             & DDBKey("SK").begins_with("version#")
         ),
     }
+    if consistent:
+        query_kwargs["ConsistentRead"] = True
     while True:
         resp = tracking_table.query(**query_kwargs)
         items.extend(resp.get("Items", []))
@@ -868,9 +877,19 @@ def _publish_claim_key(test_set_id, client_token):
 # is 60s against skew normally measured in milliseconds, but the threshold is **not** relied
 # on for correctness, only for liveness: it decides whether to wait or to proceed. Whether
 # proceeding would duplicate a version is a separate question, answered by the version row
-# (see ``_version_for_client_token``), which needs no clock. Even if two attempts did overlap,
-# each copies to the prefix of its own reserved version number, so they cannot corrupt one
-# another's snapshot — the worst case is a second version row, which the row check catches.
+# (see ``_version_for_client_token``).
+#
+# What the row check can and cannot do is worth stating precisely. It stops a *third* and
+# later attempt, because by then a row exists. It cannot stop a *second* one running
+# concurrently with the first, because such an attempt exists only in the window before any
+# row does — which is why both the takeover and the release are conditional writes, so two
+# callers cannot both conclude they own one claim. What bounds the damage if one ever does get
+# through is that each attempt copies to the prefix of its own reserved version number: two
+# overlapping attempts cannot corrupt one another's snapshot, and the visible outcome is a
+# duplicate version row, never a lost or mixed one.
+#
+# The relationship to the function's Timeout is asserted against the deployed value by
+# ``test_the_stale_threshold_stays_clear_of_the_deployed_timeout`` rather than trusted here.
 _PUBLISH_CLAIM_STALE_SECONDS = 120
 
 # Claims are transient bookkeeping, so they are given the tracking table's TTL rather than
@@ -888,40 +907,103 @@ def _version_for_client_token(test_set_id, client_token):
     landed server-side. Either way the claim understates what happened and the row does not,
     so the row is what decides whether a retry republishes.
     """
-    for item in _list_version_items(test_set_id):
+    for item in _list_version_items(test_set_id, consistent=True):
         if item.get("clientToken") == client_token:
             return item
     return None
 
 
-def _claim_publish_attempt(test_set_id, client_token):
-    """Take ownership of one publish attempt, or return the claim that already owns it.
+def _new_publish_claim(test_set_id, client_token):
+    return {
+        **_publish_claim_key(test_set_id, client_token),
+        "ItemType": "testset_publish_claim",
+        "claimedAt": datetime.now(timezone.utc).isoformat(),
+        "ExpiresAfter": int(time.time()) + _PUBLISH_CLAIM_TTL_SECONDS,
+    }
 
-    ``None`` means the caller owns the attempt. Anything else is the existing claim: with
-    ``versionNumber`` if that attempt recorded one, without if it is still running or was
-    killed before it could.
+
+def _take_over_publish_claim(test_set_id, client_token, observed):
+    """Replace a claim nothing can still be using.
+
+    Returns the new ``claimedAt``, or ``None`` if another caller got there first.
+
+    Conditional on the claim still carrying the ``claimedAt`` that was read. Written
+    unconditionally, two retries that read the same abandoned claim would both conclude they
+    own it, both find no version row, and both publish.
+    """
+    from boto3.dynamodb.conditions import Attr
+
+    claim = _new_publish_claim(test_set_id, client_token)
+    observed_at = (observed or {}).get("claimedAt")
+    condition = (
+        Attr("claimedAt").eq(observed_at)
+        if observed_at
+        else Attr("claimedAt").not_exists()
+    )
+    tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+    try:
+        tracking_table.put_item(Item=claim, ConditionExpression=condition)
+        return claim["claimedAt"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        logger.info(
+            f"Lost the race to take over the publish claim on test set '{test_set_id}'; "
+            "another attempt owns it now"
+        )
+        return None
+
+
+def _release_publish_claim(test_set_id, client_token, claimed_at):
+    """Give up a claim this attempt owns, so a failure does not lock the token out.
+
+    Conditional on still owning it. An unconditional delete can land *after* a retry has
+    claimed cleanly — the release is issued before the dispatcher gives up, and nothing orders
+    the two — and would then delete the retry's claim, leaving a third attempt free to run
+    concurrently with the second.
+    """
+    from boto3.dynamodb.conditions import Attr
+
+    tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+    try:
+        tracking_table.delete_item(
+            Key=_publish_claim_key(test_set_id, client_token),
+            ConditionExpression=Attr("claimedAt").eq(claimed_at),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        logger.info(
+            f"Publish claim on test set '{test_set_id}' is no longer this attempt's; "
+            "leaving it for whoever owns it now"
+        )
+
+
+def _claim_publish_attempt(test_set_id, client_token):
+    """Take ownership of one publish attempt.
+
+    Returns ``(held_by_other, my_claimed_at)``, exactly one of which is set: the existing claim
+    if another attempt owns it, otherwise the ``claimedAt`` this call wrote, which
+    ``_release_publish_claim`` needs so a failure gives up only its own claim.
 
     The conditional write is what makes this work while the first attempt is in flight. A
     check against written version rows cannot: at the moment the dispatcher gives up on its
     invoke, the resolver is still executing and its row does not exist yet.
     """
     key = _publish_claim_key(test_set_id, client_token)
-    claim = {
-        **key,
-        "ItemType": "testset_publish_claim",
-        "claimedAt": datetime.now(timezone.utc).isoformat(),
-        "ExpiresAfter": int(time.time()) + _PUBLISH_CLAIM_TTL_SECONDS,
-    }
+    claim = _new_publish_claim(test_set_id, client_token)
     try:
         db_client.put_item(claim, condition_expression="attribute_not_exists(SK)")
-        return None
+        return None, claim["claimedAt"]
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
 
     existing = db_client.get_item(key) or {}
     if _as_int(existing.get("versionNumber")):
-        return existing
+        # Handed back for the caller to reconcile against the version row, since only the
+        # caller knows whether that version still exists.
+        return existing, None
 
     age = _claim_age_seconds(existing.get("claimedAt"))
     if age is None or age > _PUBLISH_CLAIM_STALE_SECONDS:
@@ -930,10 +1012,10 @@ def _claim_publish_attempt(test_set_id, client_token):
             "attempt can still be running, and whether one already produced a version is "
             "decided by the version row rather than by this"
         )
-        db_client.put_item(claim)
-        return None
+        mine = _take_over_publish_claim(test_set_id, client_token, existing)
+        return (None, mine) if mine else (existing, None)
 
-    return existing
+    return existing, None
 
 
 def _claim_age_seconds(claimed_at):
@@ -1002,8 +1084,9 @@ def publish_test_set_version(args, event=None):
             "publishing a version"
         )
 
+    my_claimed_at = None
     if client_token:
-        held_by_other = _claim_publish_attempt(test_set_id, client_token)
+        held_by_other, my_claimed_at = _claim_publish_attempt(test_set_id, client_token)
 
         # Consulted whether or not this call owns the claim, because the version row is the
         # durable record and the claim is not: an attempt can die between the two writes, and
@@ -1033,14 +1116,33 @@ def publish_test_set_version(args, event=None):
             return replay
 
         if held_by_other is not None:
-            # In flight, and it has produced no version yet. Publishing now would duplicate
-            # the work that attempt is about to finish, which is the whole failure this token
-            # exists to prevent.
-            raise Exception(
-                f"A publish of test set '{test_set_id}' for this attempt is already "
-                "running. It may still succeed — wait for it to finish rather than "
-                "publishing again."
-            )
+            if _as_int(held_by_other.get("versionNumber")):
+                # The claim names a version and the lookup above found none, so the row it
+                # names is gone. Refusing would lock the token out for good, so the claim is
+                # treated as abandoned — conditionally, so a racing retry cannot also take it.
+                logger.warning(
+                    f"Publish claim on test set '{test_set_id}' names version "
+                    f"{held_by_other.get('versionNumber')}, whose row no longer exists; "
+                    "treating the claim as abandoned and publishing a new version"
+                )
+                my_claimed_at = _take_over_publish_claim(
+                    test_set_id, client_token, held_by_other
+                )
+                if my_claimed_at is None:
+                    raise Exception(
+                        f"A publish of test set '{test_set_id}' for this attempt is already "
+                        "running. It may still succeed — wait for it to finish rather than "
+                        "publishing again."
+                    )
+            else:
+                # In flight, and it has produced no version yet. Publishing now would
+                # duplicate the work that attempt is about to finish, which is the whole
+                # failure this token exists to prevent.
+                raise Exception(
+                    f"A publish of test set '{test_set_id}' for this attempt is already "
+                    "running. It may still succeed — wait for it to finish rather than "
+                    "publishing again."
+                )
 
     # Everything from here to the version row is the work a claim covers. A failure
     # releases the claim, so a retry can attempt the publish again instead of being told
@@ -1108,8 +1210,8 @@ def publish_test_set_version(args, event=None):
         # Versions are immutable, even if the counter were rewound by hand.
         db_client.put_item(version_item, condition_expression="attribute_not_exists(SK)")
     except Exception:
-        if client_token:
-            db_client.delete_item(_publish_claim_key(test_set_id, client_token))
+        if client_token and my_claimed_at:
+            _release_publish_claim(test_set_id, client_token, my_claimed_at)
         raise
 
     # The claim now names the version it produced, so a retry replays it rather than being

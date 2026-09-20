@@ -816,9 +816,9 @@ yet.
 Retrying a publish that reported an error is safe, and the dialog stays open holding what you
 entered so that retrying is the obvious thing to do. The copy can outlast that budget, so a
 failure message does not always mean nothing happened: the retry either returns the version
-the first attempt created, or tells you that attempt is still running and to wait for it. It
-will not create a second version or a second copy. Closing the dialog ends the attempt, so
-publishing afterwards starts a new one.
+the first attempt created, or tells you that attempt is still running and to wait for it —
+those two outcomes are what it does instead of publishing again. Closing the dialog ends the
+attempt, so publishing afterwards starts a new one.
 
 ⚠️ **A version published before 0.6.10 has no such copy.** Its number refers to whatever
 the set's labels were when annotation was next started on it, which is not necessarily the

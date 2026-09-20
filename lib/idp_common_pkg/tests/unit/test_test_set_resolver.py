@@ -3673,6 +3673,105 @@ class TestTestSetResolver:
             for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
         ] == [1]
 
+    def test_two_retries_reading_one_abandoned_claim_do_not_both_publish(
+        self, labeling_env
+    ):
+        """Both read the same abandoned claim before either writes. An unconditional takeover
+        lets both conclude they own it, both find no version row, and both publish."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        abandoned = (datetime.utcnow() - timedelta(seconds=600)).isoformat() + "Z"
+        observed = {
+            "PK": "testset#ts1",
+            "SK": "publishclaim#tok-1",
+            "ItemType": "testset_publish_claim",
+            "claimedAt": abandoned,
+        }
+        table.put_item(Item=observed)
+
+        # The first retry takes it over, which replaces `claimedAt`.
+        first = test_set_index._take_over_publish_claim("ts1", "tok-1", observed)
+        # The second retry read the same claim a moment earlier, so it is conditioning on a
+        # value that no longer exists.
+        second = test_set_index._take_over_publish_claim("ts1", "tok-1", observed)
+
+        assert first is not None
+        assert second is None, "the loser must not also be told it owns the claim"
+
+    def test_a_late_release_does_not_delete_the_retrys_claim(self, labeling_env):
+        """The release is issued before the dispatcher gives up, and nothing orders the two, so
+        it can land after a retry has claimed cleanly. Deleting the retry's claim would leave a
+        third attempt free to run concurrently with it."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        mine = "2026-01-01T00:00:00+00:00"
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": mine,
+            }
+        )
+        # A retry claims, replacing claimedAt with its own.
+        theirs = datetime.now(timezone.utc).isoformat()
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": theirs,
+            }
+        )
+
+        # The first attempt's release lands now.
+        test_set_index._release_publish_claim("ts1", "tok-1", mine)
+
+        surviving = table.get_item(
+            Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"}
+        )["Item"]
+        assert surviving["claimedAt"] == theirs, "the retry's claim must survive"
+
+    def test_a_claim_naming_a_missing_version_does_not_lock_the_token_out(
+        self, labeling_env
+    ):
+        """A claim that names a version whose row is gone would otherwise refuse every retry
+        forever: the row lookup finds nothing, and the claim is never treated as abandoned
+        because it carries a version number."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+        table.delete_item(Key={"PK": "testset#ts1", "SK": "version#000001"})
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 2
+
+    def test_the_stale_threshold_stays_clear_of_the_deployed_timeout(self):
+        """Two constants in two files with nothing linking them. The threshold is only sound
+        while it exceeds the longest an attempt can live, which the template decides."""
+        template = pathlib.Path(test_set_index.__file__).parents[3] / "template.yaml"
+        block = template.read_text(encoding="utf-8").split("TestSetResolverFunction:")[
+            1
+        ]
+        # Up to the next top-level resource, so this reads that function's own Timeout.
+        boundary = re.search(r"\n  \w+:\n    Type:", block)
+        if boundary:
+            block = block[: boundary.start()]
+        found = re.search(r"^\s+Timeout:\s*(\d+)", block, re.MULTILINE)
+        assert found, "TestSetResolverFunction declares no Timeout"
+        timeout = int(found.group(1))
+
+        assert test_set_index._PUBLISH_CLAIM_STALE_SECONDS >= 2 * timeout, (
+            f"a claim is assumed abandoned after "
+            f"{test_set_index._PUBLISH_CLAIM_STALE_SECONDS}s, but the resolver may run for "
+            f"{timeout}s"
+        )
+
     def test_a_claim_expires_on_its_own_rather_than_accumulating(self, labeling_env):
         # One row per publish, forever, is the alternative. Cleanup only — TTL deletion is
         # best-effort, so nothing depends on it having happened.
