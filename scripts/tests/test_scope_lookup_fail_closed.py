@@ -100,6 +100,7 @@ import functools
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
@@ -148,6 +149,14 @@ SCOPE_INDEX_CONSTANT = "USERS_TABLE_SCOPE_INDEX"
 # The DynamoDB reads that can resolve a caller's scope. One per key space: `query`
 # for the `EmailIndex` GSI, `get_item` for the `SUB#<sub>` pointer, which is
 # addressed by the table's base key and so names no index at all.
+#
+# ⚠️ `scan` and `batch_get_item` are NOT here, and a module whose only UsersTable read
+# is one of those escapes **discovery** — so no rule applies to it at all, which is the
+# quietest failure this gate has. Neither shape appears in the tree today (a `Scan` to
+# resolve one caller's scope would be a performance defect an author would notice), and
+# adding them needs care: `user_management` scans the table legitimately, in the
+# back-fill, so `scan` would discover a writer and every failure-handling rule would
+# then apply to code that is not a lookup.
 _SCOPE_READ_CALLS = frozenset({"query", "get_item"})
 
 # The two claims a scope lookup key may come from, one per key space, and the only
@@ -278,26 +287,26 @@ _TRY_NODES: tuple[type, ...] = (
     (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
 )
 
-# The two modules PR #1020 fixes, which this branch must not touch. Both carry the
-# class's ORIGINAL instance: a lookup keyed on a request-body `callerSub`, against an
-# index no template declares, with the failure caught and returned as "unrestricted".
-# The rules below see all of it — which is the point of recognising a scope query by
-# its table — so the findings are withheld here rather than the files being excluded
-# from discovery.
+# Consumers the gate DISCOVERS but does not enforce. The findings are withheld here
+# rather than the files being excluded from discovery — which is the point of
+# recognising a scope read by its table: an exempt file breaking a rule the exemption
+# does not name still fails.
 #
 # Keyed by path to the SPECIFIC rules the exemption is for, not to the file. Two
 # consequences, both deliberate:
 #
-#   * a finding from any other rule in these files still fails the gate, so the
+#   * a finding from any other rule in an exempt file still fails the gate, so an
 #     exemption cannot quietly grow into a blanket one;
 #   * `test_the_pending_exemption_is_still_needed` requires every rule named here to
 #     still fire. A file-scoped "any finding at all" check does not work: a single
 #     unrelated finding — a false positive is enough — keeps the entry looking
-#     necessary forever, and the two modules then sit outside enforcement
-#     permanently, which is the recurring defect this gate exists to prevent.
+#     necessary forever, and the file then sits outside enforcement permanently,
+#     which is the recurring defect this gate exists to prevent. It is also why
+#     `SCOPE5` exists: a rule that misreports a *correct* module is a false finding,
+#     and a false finding here is load-bearing in the wrong direction.
 #
-# ⚠️ When #1020 lands, that test fails and the only correct response is to delete the
-# entry it names.
+# ⚠️ An entry is deleted, never narrowed to nothing. When the rules it names stop
+# firing, that test fails and removing the entry is the only correct response.
 PENDING_FIX: dict[str, frozenset[str]] = {
     # The ``allowedTestSets`` axis, which is not this gate's subject and is not fixed
     # here. It became visible when ``lib/idp_common_pkg/idp_common`` entered
@@ -377,28 +386,152 @@ def _python_files(root: Path):
             yield path
 
 
-def _claim_named_by(node: ast.AST) -> str | None:
-    """The claim a subscript/`get` key names, whether written literally or as a name.
+def _string_bindings(tree: ast.AST) -> dict[str, str]:
+    """Every name bound to a string literal in one module, for key resolution.
 
-    The tree spells these keys **both** ways. `claims.get("email")` is the literal
+    This is what stops the claim-key rules resting on a hardcoded name list. A new
+    consumer — which the module docstring names as the case this gate exists for —
+    will not use this repository's constant names: it will write
+    ``EMAIL_ATTR = "email"``, or alias one (``k = USERS_TABLE_SCOPE_KEY``), and every
+    rule that resolved only a literal or a known name then examined nothing while the
+    code was genuinely fail-open.
+
+    Collected **module-wide** rather than per-scope, on the same reasoning as
+    :func:`_users_table_bindings`: the binding and the use can sit in different
+    functions, and over-collecting only widens the net, which for this gate is the
+    safe direction. Aliases are followed to a fixed point. Where a name is bound to
+    more than one literal, a value in the claim vocabulary wins — that is the binding
+    the rules are about.
+
+    Seeded with :data:`CLAIM_CONSTANTS` so a module that *imports* a constant rather
+    than defining it still resolves; a module that defines one **overrides** the seed,
+    which is what lets SCOPE5 see a repointed constant instead of silently believing
+    this file's idea of its value.
+    """
+    literals: dict[str, str] = {}
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+            targets = [node.target]
+        else:
+            continue
+        if node.value is None:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if isinstance(node.value, ast.Constant) and isinstance(
+                node.value.value, str
+            ):
+                value = node.value.value
+                if target.id not in literals or (
+                    value in IDENTITY_CLAIMS and literals[target.id] not in IDENTITY_CLAIMS
+                ):
+                    literals[target.id] = value
+            elif isinstance(node.value, ast.Name):
+                aliases.setdefault(target.id, node.value.id)
+
+    resolved = dict(CLAIM_CONSTANTS)
+    resolved.update(literals)
+    # Follow aliases to a fixed point, so `k = USERS_TABLE_SCOPE_KEY` resolves.
+    for _ in range(len(aliases) + 1):
+        changed = False
+        for name, source in aliases.items():
+            if name not in resolved and source in resolved:
+                resolved[name] = resolved[source]
+                changed = True
+        if not changed:
+            break
+    return resolved
+
+
+def _claim_named_by(node: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS) -> str | None:
+    """The claim a subscript/`get`/condition key names, however it is spelled.
+
+    The tree spells these keys several ways. `claims.get("email")` is the literal
     form; `claims.get(SCOPE_KEY_CLAIM)` is the house style in the four consumers that
     ship without an `idp_common` layer and restate the rule with their own constants.
     A rule that saw only the literal went quiet in exactly those four files — and
     `claims.get(SCOPE_KEY_CLAIM) or claims.get(SCOPE_SUB_CLAIM)` is then the *natural*
     way to write the fallback this gate exists to forbid.
 
-    Resolved by **name**, deliberately, rather than by importing the module under
-    inspection: importing it would move both sides of the comparison at once, and a
-    rename would silence the rule instead of failing it.
+    Four spellings are resolved, because each of them was a way to write genuinely
+    fail-open code and keep this gate green:
+
+    * a string literal;
+    * any name bound to one somewhere in the module (``bindings``), which covers a
+      new consumer's own constant and an alias of an existing one;
+    * an f-string wrapping a single such value, ``f"{USERS_TABLE_SCOPE_KEY}"``;
+    * a mapping lookup with a literal key, ``ATTRS["email"]`` — the attribute name is
+      still present in the source, which is the honest signal.
+
+    Resolved from the **parsed tree**, never by importing the module under inspection:
+    importing it would move both sides of the comparison at once, so a rename would
+    silence the rule instead of failing it. ``SCOPE5`` covers the remaining direction,
+    where a module *repoints* one of this file's constants to a different claim.
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.Name):
-        return CLAIM_CONSTANTS.get(node.id)
+        return bindings.get(node.id)
+    if isinstance(node, ast.Subscript):
+        return _claim_named_by(node.slice, bindings)
+    if isinstance(node, ast.JoinedStr):
+        parts = [
+            v for v in node.values if not (isinstance(v, ast.Constant) and v.value == "")
+        ]
+        if len(parts) == 1 and isinstance(parts[0], ast.FormattedValue):
+            return _claim_named_by(parts[0].value, bindings)
     return None
 
 
-def _is_claim_read(node: ast.AST) -> str | None:
+def _check_repointed_claim_constants(path: str, tree: ast.AST) -> list[Finding]:
+    """SCOPE5 — a scanned module must not bind one of these names to another claim.
+
+    :data:`CLAIM_CONSTANTS` is how this gate knows that `claims.get(SCOPE_KEY_CLAIM)`
+    reads the ``email`` claim. A module that redefines `SCOPE_KEY_CLAIM` to something
+    else breaks that in both directions at once, and both are bad: the *fail-open*
+    direction, where the code now reads a username into the email key and every
+    key-provenance rule believes it is reading an email; and the *false-failure*
+    direction, where a correctly-used constant is reported as a substitution. The
+    second matters as much here as the first — this gate's own history records that a
+    single false SCOPE1 finding "was enough to keep a stale exemption looking
+    necessary", and ``test_the_pending_exemption_is_still_needed`` is satisfied by any
+    matching rule firing, a false one included.
+
+    So the mismatch is reported *as itself* rather than left to distort another rule.
+    """
+    findings: list[Finding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not (isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name) or target.id not in CLAIM_CONSTANTS:
+                continue
+            if node.value.value != CLAIM_CONSTANTS[target.id]:
+                findings.append(
+                    Finding(
+                        "SCOPE5",
+                        path,
+                        node.lineno,
+                        f"{target.id!r} is bound to {node.value.value!r}, but every "
+                        f"rule here reads it as {CLAIM_CONSTANTS[target.id]!r}. "
+                        "Repointing it makes the key-provenance rules describe a "
+                        "claim the code does not read — in whichever direction. Use a "
+                        "differently-named constant for a different claim.",
+                    )
+                )
+    return findings
+
+
+def _is_claim_read(
+    node: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS
+) -> str | None:
     """The claim name a node reads, or None.
 
     Matches both `claims.get("email", "")` and `claims["email"]`, whatever the
@@ -413,19 +546,21 @@ def _is_claim_read(node: ast.AST) -> str | None:
             isinstance(func, ast.Attribute)
             and func.attr == "get"
             and node.args
-            and _claim_named_by(node.args[0]) is not None
+            and _claim_named_by(node.args[0], bindings) is not None
         ):
-            return _claim_named_by(node.args[0])
+            return _claim_named_by(node.args[0], bindings)
     if isinstance(node, ast.Subscript):
-        return _claim_named_by(node.slice)
+        return _claim_named_by(node.slice, bindings)
     return None
 
 
-def _claims_read_in(node: ast.AST) -> set[str]:
+def _claims_read_in(
+    node: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS
+) -> set[str]:
     return {
         claim
         for child in ast.walk(node)
-        if (claim := _is_claim_read(child)) is not None
+        if (claim := _is_claim_read(child, bindings)) is not None
     }
 
 
@@ -438,7 +573,9 @@ def _unwrap(node: ast.AST) -> ast.AST:
     return node
 
 
-def _is_claim_read_of(node: ast.AST, claim: str) -> bool:
+def _is_claim_read_of(
+    node: ast.AST, claim: str, bindings: Mapping[str, str] = CLAIM_CONSTANTS
+) -> bool:
     """Whether a node IS the named claim, rather than merely mentioning it.
 
     Directness matters. `claims.get("email") or identity.get("username")` is an
@@ -446,12 +583,14 @@ def _is_claim_read_of(node: ast.AST, claim: str) -> bool:
     if v] or [SENTINEL]` merely contains an email-keyed read inside an unrelated
     expression, and flagging that would make the rule noise.
     """
-    return _is_claim_read(_unwrap(node)) == claim
+    return _is_claim_read(_unwrap(node), bindings) == claim
 
 
-def _is_email_claim_read(node: ast.AST) -> bool:
+def _is_email_claim_read(
+    node: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS
+) -> bool:
     """Whether a node IS the email claim. See :func:`_is_claim_read_of`."""
-    return _is_claim_read_of(node, SCOPE_KEY_CLAIM)
+    return _is_claim_read_of(node, SCOPE_KEY_CLAIM, bindings)
 
 
 def _is_constant_operand(node: ast.AST) -> bool:
@@ -760,16 +899,22 @@ def _terminates_in_a_refusal(body: list[ast.stmt]) -> bool:
 # --------------------------------------------------------------------------- #
 # the rules
 # --------------------------------------------------------------------------- #
-def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
+def _check_key_provenance(
+    path: str, tree: ast.AST, bindings: Mapping[str, str] | None = None
+) -> list[Finding]:
     """SCOPE1/SCOPE2 — the lookup key comes from the `email` claim, or nothing."""
+    if bindings is None:
+        bindings = _string_bindings(tree)
     findings: list[Finding] = []
 
     for node in ast.walk(tree):
         if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
-            if not any(_is_email_claim_read(operand) for operand in node.values):
+            if not any(
+                _is_email_claim_read(operand, bindings) for operand in node.values
+            ):
                 continue
             for operand in node.values:
-                if _is_email_claim_read(operand):
+                if _is_email_claim_read(operand, bindings):
                     continue
                 if _is_constant_operand(operand):
                     continue
@@ -808,7 +953,7 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
                 # second source for one key — and only one source can be right for the
                 # key space that name reaches.
                 if not all(
-                    _is_claim_read_of(operand, permitted)
+                    _is_claim_read_of(operand, permitted, bindings)
                     or _is_constant_operand(operand)
                     for operand in node.value.values
                 ):
@@ -822,7 +967,9 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
                             "`or` fallback chain",
                         )
                     )
-            substituted = (_claims_read_in(node.value) - {permitted}) & forbidden
+            substituted = (
+                _claims_read_in(node.value, bindings) - {permitted}
+            ) & forbidden
             if substituted:
                 findings.append(
                     Finding(
@@ -834,13 +981,16 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
                     )
                 )
 
-    findings.extend(_check_nested_get_defaults(path, tree))
-    findings.extend(_check_reassigned_from_a_substitute_claim(path, tree))
-    findings.extend(_check_key_space_confusion(path, tree))
+    findings.extend(_check_nested_get_defaults(path, tree, bindings))
+    findings.extend(_check_reassigned_from_a_substitute_claim(path, tree, bindings))
+    findings.extend(_check_key_space_confusion(path, tree, bindings))
+    findings.extend(_check_repointed_claim_constants(path, tree))
     return findings
 
 
-def _email_key_condition_value(node: ast.AST) -> ast.expr | None:
+def _email_key_condition_value(
+    node: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS
+) -> ast.expr | None:
     """The value put to an ``email``-keyed DynamoDB key condition, or None.
 
     Matches ``<factory>("email").eq(x)`` and ``<factory>(USERS_TABLE_SCOPE_KEY).eq(x)``
@@ -868,10 +1018,13 @@ def _email_key_condition_value(node: ast.AST) -> ast.expr | None:
     key_call = node.func.value
     if not isinstance(key_call, ast.Call) or not key_call.args:
         return None
-    return node.args[0] if _claim_named_by(key_call.args[0]) == SCOPE_KEY_CLAIM else None
+    named = _claim_named_by(key_call.args[0], bindings)
+    return node.args[0] if named == SCOPE_KEY_CLAIM else None
 
 
-def _check_key_space_confusion(path: str, tree: ast.AST) -> list[Finding]:
+def _check_key_space_confusion(
+    path: str, tree: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS
+) -> list[Finding]:
     """SCOPE4 — the value put to the email-keyed index must be the email.
 
     The two key spaces are disjoint, and only one direction of confusing them fails
@@ -888,7 +1041,7 @@ def _check_key_space_confusion(path: str, tree: ast.AST) -> list[Finding]:
     """
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        value = _email_key_condition_value(node)
+        value = _email_key_condition_value(node, bindings)
         if value is None:
             continue
         inner = _unwrap(value)
@@ -940,7 +1093,7 @@ def _assignments_by_name(scope: ast.AST) -> dict[str, list[ast.AST]]:
 
 
 def _check_reassigned_from_a_substitute_claim(
-    path: str, tree: ast.AST
+    path: str, tree: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS
 ) -> list[Finding]:
     """SCOPE2, written across two statements instead of one expression.
 
@@ -966,7 +1119,9 @@ def _check_reassigned_from_a_substitute_claim(
             continue
         for name, nodes in _assignments_by_name(scope).items():
             from_email = [
-                n for n in nodes if SCOPE_KEY_CLAIM in _claims_read_in(n.value)
+                n
+                for n in nodes
+                if SCOPE_KEY_CLAIM in _claims_read_in(n.value, bindings)
             ]
             if not from_email:
                 continue
@@ -981,7 +1136,7 @@ def _check_reassigned_from_a_substitute_claim(
                 if node in from_email:
                     continue
                 found = (
-                    _claims_read_in(node.value) - {SCOPE_KEY_CLAIM}
+                    _claims_read_in(node.value, bindings) - {SCOPE_KEY_CLAIM}
                 ) & FALLBACK_FORBIDDEN_CLAIMS
                 if found:
                     substituted |= found
@@ -1003,7 +1158,9 @@ def _check_reassigned_from_a_substitute_claim(
     return findings
 
 
-def _check_nested_get_defaults(path: str, tree: ast.AST) -> list[Finding]:
+def _check_nested_get_defaults(
+    path: str, tree: ast.AST, bindings: Mapping[str, str] = CLAIM_CONSTANTS
+) -> list[Finding]:
     """SCOPE1, written as a nested default rather than an `or`.
 
     `claims.get("email", claims.get("cognito:username", claims.get("sub", "")))` is
@@ -1020,12 +1177,12 @@ def _check_nested_get_defaults(path: str, tree: ast.AST) -> list[Finding]:
     """
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        outer = _is_claim_read(node)
+        outer = _is_claim_read(node, bindings)
         if outer is None or not isinstance(node, ast.Call):
             continue
         if len(node.args) < 2:
             continue
-        nested = _claims_read_in(node.args[1])
+        nested = _claims_read_in(node.args[1], bindings)
         if not nested:
             continue
         if not (nested | {outer}) & IDENTITY_CLAIMS:
@@ -1223,13 +1380,21 @@ def test_no_identifier_is_put_to_the_wrong_key_space(scanned):
     assert not offenders, "\n".join(["scope key space:", *map(str, offenders)])
 
 
+def test_no_module_repoints_a_claim_constant(scanned):
+    """SCOPE5. See `_check_repointed_claim_constants` for why both directions matter."""
+    _, findings = scanned
+    offenders = _enforced(findings, {"SCOPE5"})
+
+    assert not offenders, "\n".join(["claim constants:", *map(str, offenders)])
+
+
 def test_the_pending_exemption_is_still_needed(scanned):
     """Every rule a ``PENDING_FIX`` entry names must still fire, or the entry goes.
 
-    The two chat modules carry the class's original instance and belong to a
-    concurrent change, so their findings are set aside rather than the files being
-    hidden from discovery. An exemption nobody revisits is how a gate goes quiet, so
-    this asserts the exemption is *load-bearing*.
+    An entry names a module the gate discovers and deliberately does not enforce,
+    with the specific rules the exemption covers. Its findings are set aside rather
+    than the file being hidden from discovery. An exemption nobody revisits is how a
+    gate goes quiet, so this asserts each one is *load-bearing*.
 
     It checks **per rule**, not per file. "Any finding at all keeps the entry alive"
     is too weak by exactly the margin that matters: one unrelated finding — and a
@@ -1471,6 +1636,115 @@ def _resolve(event):
     return _get_user_allowed_config_versions("", caller_sub)
 '''
 
+
+# Five ways to name the `email` attribute without writing the literal, each of them
+# genuinely fail-open — the attribute really *is* `email`, so DynamoDB returns an
+# empty page for a `sub` and the lookup reads that as unrestricted. A rule that
+# resolved only a literal or a name on a hardcoded list examined none of them, which
+# is exactly the case the module docstring names: a NEW consumer, written by someone
+# who never read these tests and who will not use this repository's constant names.
+_SUB_TO_A_LOCALLY_NAMED_EMAIL_KEY = '''
+EMAIL_ATTR = "email"
+
+
+def lookup(caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.query(
+            IndexName="EmailIndex", KeyConditionExpression=Key(EMAIL_ATTR).eq(caller_sub)
+        )
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
+_SUB_TO_AN_F_STRING_EMAIL_KEY = '''
+USERS_TABLE_SCOPE_KEY = "email"
+
+
+def lookup(caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.query(
+            IndexName="EmailIndex",
+            KeyConditionExpression=Key(f"{USERS_TABLE_SCOPE_KEY}").eq(caller_sub),
+        )
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
+_SUB_TO_AN_ALIASED_EMAIL_KEY = '''
+USERS_TABLE_SCOPE_KEY = "email"
+k = USERS_TABLE_SCOPE_KEY
+
+
+def lookup(caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.query(
+            IndexName="EmailIndex", KeyConditionExpression=Key(k).eq(caller_sub)
+        )
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
+_SUB_TO_A_MAPPED_EMAIL_KEY = '''
+ATTRS = {"email": "email"}
+
+
+def lookup(caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.query(
+            IndexName="EmailIndex",
+            KeyConditionExpression=Key(ATTRS["email"]).eq(caller_sub),
+        )
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
+# Repointing one of this gate's own constants, in both directions. The first is a real
+# fail-open that every key-provenance rule would otherwise describe as reading an
+# email; the second uses its constant *correctly* and must produce SCOPE5 and nothing
+# else — a false SCOPE2 here is what keeps a stale `PENDING_FIX` entry looking
+# necessary, which this gate's own history records.
+_A_REPOINTED_EMAIL_CLAIM_CONSTANT = '''
+SCOPE_KEY_CLAIM = "cognito:username"
+
+
+def _get_caller_identity(event):
+    claims = event.get("identity", {}).get("claims", {})
+    email = str(claims.get(SCOPE_KEY_CLAIM) or "").strip()
+    return {"email": email}
+
+
+def lookup(email):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.query(
+            IndexName="EmailIndex", KeyConditionExpression=Key("email").eq(email)
+        )
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
+_A_REPOINTED_SUB_CLAIM_CONSTANT_USED_CORRECTLY = '''
+SCOPE_SUB_CLAIM = "email"
+
+
+def _caller(event):
+    claims = event.get("identity", {}).get("claims", {})
+    caller_sub = str(claims.get(SCOPE_SUB_CLAIM) or "").strip()
+    return caller_sub
+
+
+def lookup(caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.get_item(Key={"PK": "SUB#" + caller_sub})
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
 _COMPLIANT = '''
 def _caller_email(claims):
     return str(claims.get("email") or "")
@@ -1587,10 +1861,10 @@ def lookup(caller_email, caller_sub):
 
 def _findings_for(source: str) -> list[Finding]:
     tree = ast.parse(source)
-    bindings = _users_table_bindings(tree)
-    resolvers = _scope_resolving_functions(tree, bindings)
+    tables = _users_table_bindings(tree)
+    resolvers = _scope_resolving_functions(tree, tables)
     return _check_key_provenance("snippet.py", tree) + _check_failure_denies(
-        "snippet.py", tree, bindings, resolvers
+        "snippet.py", tree, tables, resolvers
     )
 
 
@@ -1617,6 +1891,13 @@ def _findings_for(source: str) -> list[Finding]:
         (_SUB_PUT_TO_THE_EMAIL_INDEX, "SCOPE4"),
         (_EMAIL_KEY_FROM_AN_OR_CHAIN, "SCOPE4"),
         (_SUB_KEY_FROM_A_BODY_FIELD, "SCOPE2"),
+        (_SUB_TO_A_LOCALLY_NAMED_EMAIL_KEY, "SCOPE4"),
+        (_SUB_TO_AN_F_STRING_EMAIL_KEY, "SCOPE4"),
+        (_SUB_TO_AN_ALIASED_EMAIL_KEY, "SCOPE4"),
+        (_SUB_TO_A_MAPPED_EMAIL_KEY, "SCOPE4"),
+        (_A_REPOINTED_EMAIL_CLAIM_CONSTANT, "SCOPE5"),
+        (_A_REPOINTED_EMAIL_CLAIM_CONSTANT, "SCOPE2"),
+        (_A_REPOINTED_SUB_CLAIM_CONSTANT_USED_CORRECTLY, "SCOPE5"),
     ],
     ids=[
         "or-chain-key",
@@ -1639,10 +1920,30 @@ def _findings_for(source: str) -> list[Finding]:
         "sub-put-to-the-email-index",
         "email-key-from-an-or-chain",
         "sub-key-from-a-body-field",
+        "sub-to-a-locally-named-email-key",
+        "sub-to-an-f-string-email-key",
+        "sub-to-an-aliased-email-key",
+        "sub-to-a-mapped-email-key",
+        "repointed-email-claim-constant",
+        "repointed-email-claim-constant-also-substitutes",
+        "repointed-sub-claim-constant-used-correctly",
     ],
 )
 def test_the_rule_catches_the_shape_it_is_for(source, rule):
     assert rule in {f.rule for f in _findings_for(source)}
+
+
+def test_a_correctly_used_repointed_constant_reports_only_scope5():
+    """The false-failure direction, which matters as much as the fail-open one.
+
+    A rule that fired SCOPE2 here would report a substitution that is not happening —
+    and ``test_the_pending_exemption_is_still_needed`` is satisfied by *any* matching
+    rule firing, a false one included, so a false finding can keep a stale suppression
+    alive. This gate's own docstring records that happening once already.
+    """
+    rules = {f.rule for f in _findings_for(_A_REPOINTED_SUB_CLAIM_CONSTANT_USED_CORRECTLY)}
+
+    assert rules == {"SCOPE5"}
 
 
 @pytest.mark.parametrize(

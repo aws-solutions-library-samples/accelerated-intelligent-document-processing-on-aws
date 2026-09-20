@@ -43,13 +43,27 @@
  *   `fnmatch.fnmatchcase` semantics: case-**sensitive**, anchored at both ends.
  *
  * **What is identical and what is not.** The *value* returned agrees with the
- * Python for every input the two have been compared on: a differential harness
- * of 351,540 pattern/name pairs, covering every character class up to three
- * members drawn from the characters that are structural to a class or to a regex
- * (`] ! - ^ \ [ ? * & | ~`) bare and embedded in a longer pattern, `*` runs and
- * interleavings, and names holding backslashes, brackets and embedded newlines —
- * plus the cases in `__tests__/config-scope.test.ts`. The **worst-case running
- * time** does not
+ * Python for every input the two have been compared on except one class of
+ * pattern, named at the end of this paragraph. Two differential harnesses have
+ * been run. The first is 351,540 pattern/name pairs over the characters that are
+ * structural to a class or to a regex (`] ! - ^ \ [ ? * & | ~`): every character
+ * class up to three members, bare and embedded in a longer pattern, `*` runs and
+ * interleavings, and names holding backslashes, brackets and embedded newlines.
+ * It contains **no character outside the Basic Multilingual Plane**, so it says
+ * nothing about those. The second, 4,837,316 pairs, adds them — astral literals
+ * in both pattern and name, `?` and `*` against them, and them as class members
+ * and as class *range endpoints* — together with lone surrogates and BMP
+ * characters above the surrogate range. 1,113 of those pairs disagree (474 where
+ * this side admits a name the Python refuses, 639 the other way), and every one
+ * of them is **a character class with a range endpoint outside the BMP**; see the
+ * note in `translateClass` for why and for what each direction costs. Nothing
+ * else in the second harness diverges, which is what the `u` flag on the compiled
+ * RegExp buys: without it the pattern and the name are matched by UTF-16 code
+ * unit, so `.` matches half a surrogate pair and `?` admits a name the Python
+ * refuses. Neither harness is committed — each is a throwaway run against the
+ * Python of the day. What runs on every change is
+ * `__tests__/config-scope.test.ts`, which carries a sample of each harness's
+ * cases, including the divergence above. The **worst-case running time** does not
  * agree, and cannot: CPython 3.12 and later wrap each interior `*` in an atomic
  * group (`(?>.*?…)`), a construct JavaScript has no equivalent of, so a pattern
  * built to force backtracking (`a*` repeated a dozen times before a letter the
@@ -158,10 +172,27 @@ const findClassEnd = (pattern: string, start: number): number => {
  * - Nothing remains and the class **was** negated (`[!z-a]`) — "none of nothing"
  *   is every character, so emit `.`.
  *
- * One narrow difference from the Python, in a case profile names do not reach:
- * endpoints are ordered by UTF-16 code unit here and by code point there, so a
- * range endpoint outside the Basic Multilingual Plane could be ordered
- * differently.
+ * This ordering test is the one thing that still differs from the Python. It
+ * compares UTF-16 code units here and code points there, so for a range with an
+ * endpoint outside the Basic Multilingual Plane the two sides can disagree about
+ * whether the range is out of order — and the collapse then takes a code *unit*
+ * off each side where the Python takes a code point. It breaks two ways:
+ *
+ * - `[😀-😃]` is a well-ordered range of four code points to the Python. Here its
+ *   endpoints compare as the low surrogate `\uDE00` against the high surrogate
+ *   `\uD83D`, so it is read as out of order and collapsed to the single member
+ *   `😃` — **stricter** than the server, which is the direction that hides a
+ *   profile the server would serve.
+ * - `[😀-\uFFFF]` is out of order to the Python (U+1F600 above U+FFFF), which
+ *   discards it. Here the endpoints compare as `\uDE00` against `\uFFFF` and the
+ *   range is kept, and `RegExp` then rejects it under the `u` flag. The
+ *   `try`/`catch` in `globToRegExp` turns that into a never-matching entry, which
+ *   is the same answer the Python reaches for a positive class — both match
+ *   nothing — but stricter for a negated one (`[!😀-\uFFFF]`), where the Python's
+ *   emptied negated class matches any single character.
+ *
+ * Reaching either needs an admin to write a glob whose range endpoint is an
+ * astral character, which the Admin UI's fixed profile list cannot produce.
  */
 const translateClass = (pattern: string, start: number, end: number): string => {
   const body = pattern.slice(start, end);
@@ -230,6 +261,17 @@ const STAR = Symbol('star');
  *
  * The `s` flag and `^…$` (without `m`, so `$` is end-of-input) together give
  * Python's `(?s:…)\Z`.
+ *
+ * The `u` flag is what makes `.`, a class member and a literal each one **code
+ * point** rather than one UTF-16 code unit, which is the unit Python matches in.
+ * Without it `?` matches half a surrogate pair, so `tenant-??_x` admits
+ * `tenant-😀_x` where the server refuses it, and `[😀]` becomes a class of two
+ * surrogates that matches either half alone. `u` is also **stricter about
+ * escapes** than the default: outside a class it accepts an escape only of a
+ * syntax character (`^ $ \ . * + ? ( ) [ ] { } |`) or `/`, and inside a class
+ * those plus `\-` and `\b`. Everything `escapeLiteral` and `escapeClassMember`
+ * emit is within that set, so neither needed loosening — measured over the
+ * 4,837,316-pair harness, no pattern's escaping fails to compile.
  */
 const globToRegExp = (pattern: string): RegExp => {
   const fragments: (string | typeof STAR)[] = [];
@@ -255,12 +297,17 @@ const globToRegExp = (pattern: string): RegExp => {
   }
   const source = fragments.map((fragment) => (fragment === STAR ? '.*' : fragment)).join('');
   try {
-    return new RegExp(`^(?:${source})$`, 's');
+    return new RegExp(`^(?:${source})$`, 'su');
   } catch {
     // A safety net, not the mechanism: the range handling above covers the
-    // classes fnmatch accepts and `RegExp` rejects. Anything that still fails to
-    // compile must leave its own entry unable to match rather than throw out of
-    // the render that called this.
+    // classes fnmatch accepts and `RegExp` rejects, bar one shape it cannot see —
+    // a class range whose left endpoint is an astral code point and whose right
+    // endpoint is a BMP one at or above U+DC00, which looks well-ordered to a
+    // code-unit comparison and is rejected by a `u`-flag `RegExp` (see
+    // `translateClass`). Over the 4,837,316-pair harness that shape is the only
+    // thing that reaches this arm: 20 of 9,812 patterns, and never an escaping
+    // fault. Whatever lands here must leave its own entry unable to match rather
+    // than throw out of the render that called this.
     return NEVER_MATCHES;
   }
 };

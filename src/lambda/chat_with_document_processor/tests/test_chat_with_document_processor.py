@@ -684,6 +684,40 @@ class TestProcessorScopeFailsClosed:
         users_table.query.assert_not_called()
 
     @pytest.mark.unit
+    def test_a_stale_pointer_at_an_unscoped_row_does_not_widen_the_scope(self):
+        """The pointer leg is read first, so it must not be able to say 'unrestricted'.
+
+        The writer only creates a pointer for a row carrying a restriction, because
+        this leg decides the answer. One at an unscoped row means the invariant is
+        broken — a pointer whose `delete_item` failed and was only logged, or a
+        superseded one left behind when a row's recorded sub changed — and believing
+        it would pin "unrestricted" ahead of the scoped row the email join finds, on
+        an out-of-scope document. It is treated as stale instead.
+
+        All four readers of the pointer must agree on this, or the claim that
+        resolving through a pointer can only tighten is not true of the deployment
+        even though it is true of `idp_common.config_scope`.
+        """
+        import index
+
+        sub = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
+        result, _publishes, bedrock, users_table = _run_scope_turn(
+            index,
+            {"identity": {"claims": {"email": "alice.new@example.com", "sub": sub}}},
+            # The email join finds a SCOPED row; the pointer finds an unscoped one.
+            users_items=[{"allowedConfigVersions": ["tenant-a"]}],
+            users_store={
+                f"SUB#{sub}": {"userId": "u-1", "cognitoSub": sub},
+                "USER#u-1": {"userId": "u-1", "email": "alice.old@example.com"},
+            },
+        )
+
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+        # And it got there by falling through to the email leg, not by guessing.
+        users_table.query.assert_called_once()
+
+    @pytest.mark.unit
     def test_a_row_with_no_pointer_is_still_found_by_email(self):
         """The transition case: every row predates the pointer writer.
 

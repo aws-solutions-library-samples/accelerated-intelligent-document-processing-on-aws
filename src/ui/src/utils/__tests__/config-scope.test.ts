@@ -10,6 +10,12 @@
  * disagrees is not a matter of taste: a client stricter than the server hides a
  * profile the server would serve (which is the bug this matcher fixed), and a
  * client looser than the server offers one the server will refuse.
+ *
+ * The one exception is the last `describe` block, which pins the single input
+ * class where the two do **not** agree — a character-class range with an endpoint
+ * outside the Basic Multilingual Plane — and states the server's answer for each
+ * case in a comment rather than in the assertion. Its purpose is the opposite of
+ * the rest: to make a change in that behaviour visible instead of silent.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -226,6 +232,96 @@ describe('scopeAllows — runs of *', () => {
     const started = performance.now();
     expect(scopeAllows([`a${'*'.repeat(24)}b`], name)).toBe(false);
     expect(performance.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe('scopeAllows — characters outside the Basic Multilingual Plane', () => {
+  // A profile name may hold an astral character, and an astral character is two
+  // UTF-16 code units in a JavaScript string but one character to Python's
+  // fnmatch. The `u` flag on the compiled RegExp is what reconciles the two; each
+  // expectation below is what the server returns for that pair.
+  const GRIN = '\u{1F600}'; // 😀 U+1F600, one code point, two code units
+  const SMILE = '\u{1F603}'; // 😃 U+1F603
+  const LONE_HIGH = '\uD83D'; // the high half of 😀, on its own
+
+  it('counts an astral character as one ? and not two', () => {
+    expect(scopeAllows(['tenant-?_x'], `tenant-${GRIN}_x`)).toBe(true);
+    expect(scopeAllows(['tenant-??_x'], `tenant-${GRIN}_x`)).toBe(false);
+    expect(scopeAllows(['tenant-??_x'], `tenant-${GRIN}${GRIN}_x`)).toBe(true);
+    expect(scopeAllows(['tenant-?_x'], `tenant-${GRIN}${GRIN}_x`)).toBe(false);
+    expect(scopeAllows(['?'], GRIN)).toBe(true);
+    expect(scopeAllows(['??'], GRIN)).toBe(false);
+    // A lone surrogate is a code point of its own, so it is also one `?`.
+    expect(scopeAllows(['?'], LONE_HIGH)).toBe(true);
+  });
+
+  it('matches an astral character as a literal in a glob entry', () => {
+    expect(scopeAllows([`tenant-${GRIN}_*`], `tenant-${GRIN}_prod`)).toBe(true);
+    expect(scopeAllows([`tenant-${GRIN}_*`], `tenant-${GRIN}_`)).toBe(true);
+    expect(scopeAllows([`tenant-${GRIN}_*`], `tenant-${SMILE}_prod`)).toBe(false);
+    // Half of the pair must not match on its own.
+    expect(scopeAllows([`tenant-${GRIN}_*`], `tenant-${LONE_HIGH}_prod`)).toBe(false);
+  });
+
+  it('spans astral characters with *', () => {
+    expect(scopeAllows(['a*b'], `a${GRIN}b`)).toBe(true);
+    expect(scopeAllows(['a*b'], `a${GRIN}${SMILE}b`)).toBe(true);
+    expect(scopeAllows([`*${GRIN}*`], `x${GRIN}y`)).toBe(true);
+    expect(scopeAllows([`*${GRIN}*`], `x${SMILE}y`)).toBe(false);
+  });
+
+  it('treats an astral character in a class as one member', () => {
+    expect(scopeAllows([`v[${GRIN}${SMILE}]`], `v${GRIN}`)).toBe(true);
+    expect(scopeAllows([`v[${GRIN}${SMILE}]`], `v${SMILE}`)).toBe(true);
+    expect(scopeAllows([`v[${GRIN}${SMILE}]`], `v\u{1F602}`)).toBe(false);
+    // Neither half of the pair is a member of the class on its own.
+    expect(scopeAllows([`v[${GRIN}${SMILE}]`], `v${LONE_HIGH}`)).toBe(false);
+    expect(scopeAllows([`[a${GRIN}]`], GRIN)).toBe(true);
+    expect(scopeAllows([`[a${GRIN}]`], LONE_HIGH)).toBe(false);
+  });
+
+  it('excludes exactly the astral member a negated class names', () => {
+    expect(scopeAllows([`v[!${GRIN}]`], `v${GRIN}`)).toBe(false);
+    expect(scopeAllows([`v[!${GRIN}]`], `v${SMILE}`)).toBe(true);
+    expect(scopeAllows([`v[!${GRIN}]`], 'va')).toBe(true);
+  });
+});
+
+describe('scopeAllows — where an astral range endpoint diverges from the server', () => {
+  // The only input class the two implementations answer differently. The range
+  // ordering test in `translateClass` compares UTF-16 code units while Python
+  // compares code points, so a range with an endpoint outside the BMP can be read
+  // as out of order on one side and well-ordered on the other. Every divergence
+  // below runs **stricter** than the server, never looser, so the client offers
+  // fewer profiles than the server would serve rather than more. Some assertions
+  // here do agree with the server; each comment says which.
+
+  it('keeps only the last code point of a well-ordered astral range', () => {
+    // The server reads `[😀-😃]` as the four code points U+1F600..U+1F603 and
+    // returns true for each. Here the range collapses to its last member.
+    expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '\u{1F603}')).toBe(true);
+    expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '\u{1F600}')).toBe(false);
+    expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '\u{1F601}')).toBe(false);
+  });
+
+  it('matches nothing when a u-flag RegExp rejects an astral range', () => {
+    // `[😀-\uFFFF]` looks well-ordered compared by code unit, so it survives to
+    // `RegExp`, which rejects it; the entry is then unable to match. The server
+    // discards the range instead, which for a positive class is the same answer…
+    expect(scopeAllows(['[\u{1F600}-\uFFFF]'], 'a')).toBe(false);
+    expect(scopeAllows(['[\u{1F600}-\uFFFF]'], '\uFFFF')).toBe(false);
+    // …and for a negated one is not: an emptied negated class matches any single
+    // character on the server, so it returns true for both of these.
+    expect(scopeAllows(['[!\u{1F600}-\uFFFF]'], 'a')).toBe(false);
+    expect(scopeAllows(['[!\u{1F600}-\uFFFF]'], '\u{1F600}')).toBe(false);
+  });
+
+  it('still admits a profile whose name is such an entry verbatim', () => {
+    // The equality branch runs before any of this, so a profile really called
+    // `[😀-😃]` is in scope — the same guarantee the discarded-range cases above
+    // rely on.
+    expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '[\u{1F600}-\u{1F603}]')).toBe(true);
+    expect(scopeAllows(['[!\u{1F600}-\uFFFF]'], '[!\u{1F600}-\uFFFF]')).toBe(true);
   });
 });
 

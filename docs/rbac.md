@@ -259,9 +259,13 @@ is a property readers depend on rather than a saving. A row with no restriction 
 to "unrestricted" through either key, so a pointer for it changes no answer — but the
 pointer is read *first*, so one at an unrestricted row would pin "unrestricted" ahead of
 whatever the email join would have found. Restricted to scoped rows, resolving through a
-pointer can only ever *tighten*. The reader enforces the same invariant from its side: a
-pointer that resolves an unscoped row is treated as stale, logged, and the email join is
-tried instead.
+pointer can only ever *tighten*. **Every** reader enforces the same invariant from its
+side — a pointer that resolves an unscoped row is treated as stale, logged, and the email
+join is tried instead — and *every* is load-bearing: the claim is about the deployment,
+not about one module, so a single reader that believed such a pointer would make it
+untrue. That is five implementations: `resolve_allowed_config_versions` (which both
+vendored copies inherit byte-for-byte), the Chat-with-Document processor and its vendored
+twin, the PII-anonymizer feature API, and `getMyProfile`.
 
 `src/lambda/user_management` is the writer:
 

@@ -34,6 +34,7 @@ from datetime import datetime
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -140,7 +141,7 @@ def _is_scoped(row):
     return any(str(entry).strip() for entry in raw)
 
 
-def _record_cognito_sub(table, user_id, caller_sub, *, scoped):
+def _record_cognito_sub(table, user_id, caller_sub, *, scoped, delete_stale_pointer=True):
     """Record a user's Cognito ``sub`` on their row, and maintain its pointer.
 
     ⚠️ **A pointer exists only for a row that carries a restriction**, which is what
@@ -197,10 +198,11 @@ def _record_cognito_sub(table, user_id, caller_sub, *, scoped):
             pointer[USERS_TABLE_SUB_ATTRIBUTE] = caller_sub
             pointer["updatedAt"] = now
             table.put_item(Item=pointer)
-        else:
+        elif delete_stale_pointer:
             # Unrestricted now, so no pointer may survive: a scope removed through
             # updateUser must not leave one behind pointing at the row it used to
-            # restrict.
+            # restrict. Callers that know none can exist yet pass
+            # ``delete_stale_pointer=False`` rather than paying for the call.
             table.delete_item(Key=_sub_pointer_key(caller_sub))
     except Exception as e:  # noqa: BLE001
         logger.warning(
@@ -410,11 +412,25 @@ def update_user(args):
     if remove_parts:
         update_expr += f" REMOVE {', '.join(remove_parts)}"
 
-    table.update_item(
-        Key=_user_row_key(user_id),
-        UpdateExpression=update_expr,
-        ExpressionAttributeValues=expr_values,
-    )
+    # `attribute_exists(PK)` because `update_item` UPSERTS, and the existence check
+    # above is a separate read: a concurrent `deleteUser` landing between the two is
+    # enough for this to *recreate* the row with only the attributes named here — no
+    # `email`, no `userId`. The Admin sees an error either way, but a phantom row
+    # persists, and both `list_users` and the Cognito sync's scan loop index those two
+    # keys directly. Those are the only route into User Management *and* the only thing
+    # that runs the sub back-fill, so one such item bricks the page for every Admin.
+    try:
+        table.update_item(
+            Key=_user_row_key(user_id),
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values,
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        # Deleted between the read above and this write. Same answer the read gives.
+        raise ValueError(f"User {user_id} not found") from e
 
     # Return updated user
     updated = table.get_item(Key=_user_row_key(user_id))
@@ -504,6 +520,15 @@ def _row_for_caller(table, caller):
 
     Returns None when neither key finds a row, which the caller answers from the
     verified Cognito claims instead.
+
+    ⚠️ The ``sub`` leg cannot return an unrestricted row — a pointer resolving one is
+    treated as stale and the email join is tried instead. This is the same invariant
+    every other reader of the pointer enforces (``_row_by_sub`` in
+    ``idp_common.config_scope``, and the pii-anonymizer feature API), and it is what
+    makes resolving through a pointer only ever *tighten*. It matters less here than
+    there — this decides what the UI displays, not what the server permits — but a
+    reader that disagreed with the others would make the invariant untrue of the
+    deployment rather than of one module.
     """
     caller_sub = caller.get("sub") or ""
     if caller_sub:
@@ -511,8 +536,14 @@ def _row_for_caller(table, caller):
         user_id = str((pointer or {}).get("userId") or "").strip()
         if user_id:
             row = table.get_item(Key=_user_row_key(user_id)).get("Item")
-            if row:
+            if row and _is_scoped(row):
                 return row
+            if row:
+                logger.warning(
+                    "A UsersTable %s pointer names a row carrying no "
+                    "allowedConfigVersions; treating it as stale",
+                    USERS_TABLE_SUB_POINTER_PREFIX,
+                )
 
     caller_email = caller.get("email") or ""
     if not caller_email:
@@ -707,7 +738,19 @@ def sync_cognito_users_to_dynamodb():
         for item in existing_response.get("Items", []):
             row_email = item[USERS_TABLE_SCOPE_KEY]
             rows_by_email[row_email] = item
-            rows_by_folded_email.setdefault(row_email.casefold(), item)
+            folded = row_email.casefold()
+            if folded in rows_by_folded_email:
+                # Two rows whose addresses differ only in case. The case-insensitive
+                # match below would resolve them by scan order and then bind an
+                # immutable `sub` and its pointer to whichever won, invisibly. The pool
+                # is created with `CaseSensitive: false`, so this needs rows written
+                # outside user management, but it must not be silent.
+                logger.warning(
+                    "Two user rows have addresses differing only in case; a Cognito "
+                    "account matching neither exactly will be bound to one of them by "
+                    "scan order. Reconcile the duplicate rows."
+                )
+            rows_by_folded_email.setdefault(folded, item)
             recorded = str(item.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
             if recorded:
                 rows_by_sub[recorded] = item
@@ -747,23 +790,46 @@ def sync_cognito_users_to_dynamodb():
                     )
 
             if existing is not None:
-                # Record the sub if it is new or has changed (an account deleted and
-                # recreated under the same address), and bring the pointer into line
-                # with whether this row carries a restriction. The superseded pointer
-                # is deliberately left behind: its sub belongs to an account that no
-                # longer exists and so can never authenticate again, and deleting it
-                # would need a read to confirm it is not some *other* live user's,
-                # which this loop does not have.
                 recorded = str(existing.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
-                if caller_sub and (
-                    recorded != caller_sub or _is_scoped(existing)
-                ):
-                    _record_cognito_sub(
-                        table,
-                        existing.get("userId"),
-                        caller_sub,
-                        scoped=_is_scoped(existing),
-                    )
+                scoped = _is_scoped(existing)
+                if caller_sub and (recorded != caller_sub or scoped):
+                    # A row can only record one sub. Where it already recorded a
+                    # different one, that pointer is superseded and is **deleted**: a
+                    # native and a federated Cognito account can share one address and
+                    # both be live, so the previous sub may well still authenticate,
+                    # and a pointer it still resolves would keep naming this row after
+                    # the row stops recording it. Leaving it behind is what puts a
+                    # pointer out of step with the row it names.
+                    if recorded and recorded != caller_sub:
+                        logger.warning(
+                            "A user row's recorded Cognito %s changed; replacing its "
+                            "pointer. If two live accounts share this address, only "
+                            "the one this row now records resolves through the %s key "
+                            "space.",
+                            SCOPE_SUB_CLAIM,
+                            USERS_TABLE_SUB_POINTER_PREFIX,
+                        )
+                        try:
+                            table.delete_item(Key=_sub_pointer_key(recorded))
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "Could not delete a superseded sub pointer: %s", e
+                            )
+                    # Skip the write entirely when there is nothing to change: the sub
+                    # already matches and the row is unscoped, so neither the attribute
+                    # nor the (absent) pointer would move. The first `listUsers` after
+                    # an upgrade would otherwise cost two writes per row.
+                    if recorded != caller_sub or scoped:
+                        _record_cognito_sub(
+                            table,
+                            existing.get("userId"),
+                            caller_sub,
+                            scoped=scoped,
+                            # A pointer cannot exist yet for a row that records no sub,
+                            # so there is nothing to delete — which matters on the first
+                            # run after an upgrade, when that is every row.
+                            delete_stale_pointer=bool(recorded),
+                        )
                 continue
 
             # Get user's groups to determine persona

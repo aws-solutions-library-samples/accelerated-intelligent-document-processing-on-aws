@@ -39,6 +39,8 @@ from idp_common.config_scope import (
     USERS_TABLE_SCOPE_INDEX,
     USERS_TABLE_SCOPE_KEY,
     USERS_TABLE_SUB_ATTRIBUTE,
+    USERS_TABLE_SUB_POINTER_PREFIX,
+    USERS_TABLE_USER_KEY_PREFIX,
     ScopeLookupError,
     caller_email_from_claims,
     caller_sub_from_claims,
@@ -94,6 +96,52 @@ def _pointing_at(user_id, row, sub=_SUB):
         sub_pointer_key(sub)["PK"]: {"userId": user_id, USERS_TABLE_SUB_ATTRIBUTE: sub},
         user_row_key(user_id)["PK"]: row,
     }
+
+
+@pytest.mark.unit
+class TestTheKeysThemselves:
+    """The literal keys, asserted against literals rather than against the helpers.
+
+    Every other test here builds its fixture store with ``sub_pointer_key`` and
+    ``user_row_key`` — the same functions the code under test uses — so fixture and
+    code move together and a rename of the prefix is invisible. Renaming
+    ``USERS_TABLE_SUB_POINTER_PREFIX`` to anything else and re-syncing the vendored
+    copies exactly as their drift test instructs left the whole suite green, while
+    every host resolver read the new prefix and ``user_management`` still wrote
+    ``SUB#`` — so every caller's ``sub`` leg silently returned nothing and the lookup
+    reverted to email-only.
+
+    The writer and the pii-anonymizer handler are already pinned by accident, because
+    both hardcode ``f"SUB#{sub}"``; the canonical reader, which every host resolver
+    imports, was the only one unpinned. This is the exact failure mode
+    ``sub_pointer_key``'s own docstring warns about.
+    """
+
+    def test_the_sub_pointer_key_is_the_literal_every_writer_writes(self):
+        assert sub_pointer_key(_SUB) == {"PK": f"SUB#{_SUB}", "SK": f"SUB#{_SUB}"}
+
+    def test_the_user_row_key_is_the_literal_user_management_writes(self):
+        assert user_row_key("u-1") == {"PK": "USER#u-1", "SK": "USER#u-1"}
+
+    def test_the_prefixes_are_distinct_and_neither_prefixes_the_other(self):
+        """A pointer must not be mistakable for a row by a ``begins_with`` filter.
+
+        ``list_users`` and the Cognito sync both scan on ``begins_with(PK, "USER#")``,
+        and the UsersTable stream consumer's ``is_user_record`` tests the same prefix.
+        A pointer prefix that started with the row prefix would put pointer items into
+        all three.
+        """
+        assert not USERS_TABLE_SUB_POINTER_PREFIX.startswith(
+            USERS_TABLE_USER_KEY_PREFIX
+        )
+        assert not USERS_TABLE_USER_KEY_PREFIX.startswith(
+            USERS_TABLE_SUB_POINTER_PREFIX
+        )
+
+    def test_the_email_index_and_its_key_are_the_declared_names(self):
+        assert USERS_TABLE_SCOPE_INDEX == "EmailIndex"
+        assert USERS_TABLE_SCOPE_KEY == "email"
+        assert USERS_TABLE_SUB_ATTRIBUTE == "cognitoSub"
 
 
 @pytest.mark.unit

@@ -353,6 +353,23 @@ def _get_user_allowed_config_versions(
             user_id = str((pointer or {}).get("userId") or "").strip()
             if user_id:
                 row = table.get_item(Key=_user_row_key(user_id)).get("Item") or None
+            # ⚠️ This leg cannot return an unrestricted row. The writer only creates
+            # a pointer for a row that carries `allowedConfigVersions`, because the
+            # pointer is read FIRST and so decides the answer — one at an unscoped
+            # row would pin "unrestricted" ahead of whatever the email join would
+            # have found. A pointer resolving an unscoped row means that invariant
+            # is broken, so it is treated as stale and the email join is tried,
+            # which can only tighten. Mirrors `_row_by_sub` in
+            # `idp_common.config_scope` and `_caller_allowed_versions` in the
+            # pii-anonymizer feature API; all four readers must agree, or "resolving
+            # through a pointer can only tighten" is not true of the deployment.
+            if row is not None and not row.get("allowedConfigVersions"):
+                logger.warning(
+                    "A UsersTable %s pointer names a row carrying no "
+                    "allowedConfigVersions; treating it as stale",
+                    USERS_TABLE_SUB_POINTER_PREFIX,
+                )
+                row = None
         if row is None and caller_email:
             resp = table.query(
                 IndexName=USERS_TABLE_SCOPE_INDEX,

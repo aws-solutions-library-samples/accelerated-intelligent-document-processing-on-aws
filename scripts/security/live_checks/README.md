@@ -3,6 +3,13 @@
 
 # Live authorization checks
 
+> ⚠️ **`verify_execution_scope.py` cannot pass today.** It zips `index.py` alone, and
+> the resolver it deploys now imports `idp_common.utils.log_sanitizer` and
+> `idp_common.config_scope`; neither is bundled and no Layer is attached, so every
+> invoke returns `ImportModuleError` and eight of its nine checks fail on that rather
+> than on the control. It exits 1 reporting `1/9`, so it cannot pass vacuously. See the
+> module docstring for what fixing it needs.
+
 Two self-contained harnesses that verify an authorization control against **real
 AWS services** rather than mocks. Each one creates its own throwaway resources,
 asserts, and deletes everything in a `finally` block — none of them touch a

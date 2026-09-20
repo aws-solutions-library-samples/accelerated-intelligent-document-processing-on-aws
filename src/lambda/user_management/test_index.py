@@ -536,6 +536,45 @@ class TestUpdateUserMaintainsThePointer:
 
         assert "Item" not in self._pointer(users_table)
 
+    def test_a_row_deleted_between_the_read_and_the_write_is_not_recreated(
+        self, users_table
+    ):
+        """``update_item`` UPSERTS, and the existence check above it is a separate read.
+
+        A concurrent ``deleteUser`` landing between the two would otherwise *recreate*
+        the row with only the attributes the update names — no ``email``, no
+        ``userId``. Both ``list_users`` and the Cognito sync's scan loop index those
+        keys directly, and both are on the ``listUsers`` path, which is the only route
+        into User Management *and* the only thing that runs the sub back-fill. The
+        caller sees the same "not found" the read would have raised.
+        """
+        index = _load_index()
+        self._seed(users_table)
+        real_get_item = users_table.get_item
+
+        def _delete_after_the_read(**kwargs):
+            result = real_get_item(**kwargs)
+            users_table.delete_item(Key={"PK": "USER#u-1", "SK": "USER#u-1"})
+            return result
+
+        with patch.object(index, "dynamodb") as ddb:
+            table = MagicMock(wraps=users_table)
+            table.get_item.side_effect = _delete_after_the_read
+            ddb.Table.return_value = table
+            with pytest.raises(ValueError, match="not found"):
+                index.update_user(
+                    {"userId": "u-1", "allowedConfigVersions": ["tenant-a"]}
+                )
+
+        assert "Item" not in users_table.get_item(
+            Key={"PK": "USER#u-1", "SK": "USER#u-1"}
+        )
+        # And the readers that index `email`/`userId` directly still work.
+        with patch.object(index, "sync_cognito_users_to_dynamodb"):
+            assert index.list_users(
+                {"identity": {"claims": {"cognito:groups": ["Admin"]}}}
+            ) == {"users": []}
+
     def test_a_row_recording_no_sub_gets_no_pointer(self, users_table):
         """Self-healing rather than raising: the next Cognito sync records the sub."""
         index = _load_index()
@@ -697,6 +736,76 @@ class TestTheBackFill:
         assert len(rows) == 1, f"a duplicate row was created: {rows}"
         assert self._pointer(users_table)["Item"]["userId"] == "u-1"
 
+    def test_a_superseded_pointer_is_deleted_when_the_recorded_sub_changes(
+        self, users_table
+    ):
+        """A row records one sub, so the previous one's pointer must not survive.
+
+        A native and a federated Cognito account can share one address and both be
+        live, so "the old sub can never authenticate again" does not hold. A pointer
+        the old sub still resolves would keep naming this row after the row stopped
+        recording it — a pointer out of step with the row it names, which is the
+        precondition for the reader's stale-pointer path.
+        """
+        index = _load_index()
+        old_sub = "11111111-2222-3333-4444-555555555555"
+        users_table.put_item(
+            Item=dict(
+                ANNOTATOR_ITEM,
+                cognitoSub=old_sub,
+                allowedConfigVersions=["tenant-a"],
+            )
+        )
+        index._record_cognito_sub(users_table, "u-1", old_sub, scoped=True)
+        assert "Item" in self._pointer(users_table, old_sub)
+
+        self._run(index, users_table, ANNOTATOR_ITEM["email"])
+
+        assert "Item" not in self._pointer(users_table, old_sub)
+        assert self._pointer(users_table)["Item"]["userId"] == "u-1"
+
+    def test_an_unchanged_unscoped_row_costs_no_writes(self, users_table):
+        """The first ``listUsers`` after an upgrade must not write twice per row.
+
+        A row that already records this sub and carries no restriction has nothing to
+        change: neither the attribute nor the (absent) pointer would move. This runs
+        inside a 30s / 256MB Lambda over every user in the pool.
+        """
+        index = _load_index()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM, cognitoSub=_SUB))
+        pages = self._page(ANNOTATOR_ITEM["email"], _SUB)
+
+        with patch.object(index, "cognito", _cognito_double(list_users_pages=pages)):
+            with patch.object(index, "dynamodb") as ddb:
+                table = MagicMock(wraps=users_table)
+                ddb.Table.return_value = table
+                index.sync_cognito_users_to_dynamodb()
+
+        table.update_item.assert_not_called()
+        table.put_item.assert_not_called()
+        table.delete_item.assert_not_called()
+
+    def test_back_filling_an_unscoped_row_costs_one_write_not_two(self, users_table):
+        """The first ``listUsers`` after an upgrade, where every row is un-backfilled.
+
+        Recording the sub needs one ``update_item``. Deleting a pointer would be a
+        second call for an item that cannot exist yet — no pointer has ever been
+        written for a row that records no sub — and this runs once per user in the pool
+        inside a 30s / 256MB Lambda.
+        """
+        index = _load_index()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM))  # unscoped, records no sub
+        pages = self._page(ANNOTATOR_ITEM["email"], _SUB)
+
+        with patch.object(index, "cognito", _cognito_double(list_users_pages=pages)):
+            with patch.object(index, "dynamodb") as ddb:
+                table = MagicMock(wraps=users_table)
+                ddb.Table.return_value = table
+                index.sync_cognito_users_to_dynamodb()
+
+        assert table.update_item.call_count == 1
+        table.delete_item.assert_not_called()
+
     def test_a_row_that_already_records_its_sub_is_not_rewritten(self, users_table):
         index = _load_index()
         users_table.put_item(Item=dict(ANNOTATOR_ITEM, cognitoSub=_SUB))
@@ -742,6 +851,44 @@ class TestGetMyProfileUsesBothKeys:
 
         profile = index.get_my_profile(
             self._event({"email": "Renamed.User@example.com", "sub": _SUB})
+        )
+
+        assert profile["userId"] == "u-1"
+        assert profile["allowedConfigVersions"] == ["tenant-a"]
+
+    def test_a_stale_pointer_at_an_unscoped_row_falls_back_to_email(self, users_table):
+        """The same invariant every other reader of the pointer enforces.
+
+        A pointer at an unscoped row means the writer's invariant is broken. Believing
+        it here would show a scoped user an unscoped profile, so the UI would offer
+        them every Configuration Profile — a display defect rather than a permission
+        one, because the server decides separately, but the same class.
+        """
+        index = _load_index()
+        # The email join finds the SCOPED row; the pointer finds an unscoped one.
+        users_table.put_item(
+            Item=dict(ANNOTATOR_ITEM, allowedConfigVersions=["tenant-a"])
+        )
+        users_table.put_item(
+            Item={
+                "PK": "USER#u-unscoped",
+                "SK": "USER#u-unscoped",
+                "userId": "u-unscoped",
+                "email": "someone.else@example.com",
+                "persona": "Viewer",
+            }
+        )
+        users_table.put_item(
+            Item={
+                "PK": f"SUB#{_SUB}",
+                "SK": f"SUB#{_SUB}",
+                "userId": "u-unscoped",
+                "cognitoSub": _SUB,
+            }
+        )
+
+        profile = index.get_my_profile(
+            self._event({"email": ANNOTATOR_ITEM["email"], "sub": _SUB})
         )
 
         assert profile["userId"] == "u-1"
