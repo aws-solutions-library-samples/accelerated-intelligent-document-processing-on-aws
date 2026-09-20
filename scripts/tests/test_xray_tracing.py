@@ -35,8 +35,12 @@ Rules enforced:
    Templates that hardcode a mode and have **no** parameter to hang it on are the
    independently deployed ``feature-platform/`` extension stacks; they are listed
    exactly, in both directions, by
-   ``test_templates_without_the_parameter_are_the_known_set``, so an eighth one
-   fails rather than joining a silent exemption.
+   ``test_templates_without_the_parameter_are_the_known_set``, so a seventh one
+   fails rather than joining a silent exemption. "Independently deployed" is that
+   exemption's whole justification, so it is itself checked, by
+   ``test_exempt_templates_are_not_nested_stacks_of_the_parent``: the list held a
+   template that ``template.yaml`` deploys as a nested stack and already passes 27
+   parameters to, while the written reason said the parameter could not reach it.
 2. **A template that declares tracing wires the parameter.** It defines the
    condition, the condition tests the parameter, and the parameter exists — and a
    nested template that declares the parameter is *passed* it by the parent, in
@@ -98,9 +102,10 @@ NON_RUNTIME_FILE = re.compile(r"(^test_|^conftest\.py$|_test\.py$)")
 
 #: Floors, not exact counts, so adding a function does not edit this file. A drop
 #: below either means discovery broke — which would make every rule below pass
-#: vacuously — rather than that the repo genuinely shrank. Measured on the tree
-#: that fixed #983: 22 functions declare a conditional tracing mode (7 in
-#: ``template.yaml``, 15 in ``patterns/unified/template.yaml``) and 9 source
+#: vacuously — rather than that the repo genuinely shrank. Measured: 31 functions
+#: declare a conditional tracing mode (7 in ``template.yaml``, 15 in
+#: ``patterns/unified/template.yaml``, 9 in
+#: ``feature-platform/main-stack-extensions/template.yaml``) and 9 source
 #: directories import the X-Ray SDK — the 8 with ``put_annotation`` plus
 #: ``rule-validation-orchestration-function``, which only decorates its handler.
 MIN_TRACED_FUNCTIONS = 20
@@ -238,7 +243,8 @@ def _globals_tracing(template: dict) -> Any:
 
     Covered because it is the cheapest possible bypass of a per-resource rule:
     one line at the top of a template sets the mode for the whole stack, and the
-    seven ``feature-platform/`` extension templates really do declare it there.
+    six independently deployed ``feature-platform/`` extension templates really do
+    declare it there.
     """
     function_globals = (template.get("Globals") or {}).get("Function")
     if not isinstance(function_globals, dict):
@@ -488,23 +494,45 @@ def test_no_function_hardcodes_its_tracing_mode(path: Path) -> None:
 
 
 #: Templates that hardcode a tracing mode and have no ``EnableXRayTracing``
-#: parameter to hang it on. Every entry is an **independently deployed**
-#: ``feature-platform/`` extension stack: it is installed from the Extensions
-#: catalog with its own parameters, not as a nested stack of ``template.yaml``,
-#: so the main stack's parameter cannot reach it. Each declares
-#: ``Globals.Function.Tracing: Active``, which means tracing is unconditional
-#: there for the same reason it used to be unconditional in the main templates.
+#: parameter to hang it on. Each declares ``Globals.Function.Tracing: Active``,
+#: which means tracing is unconditional there for the same reason it used to be
+#: unconditional in the main templates.
 #:
-#: Giving these stacks their own parameter is a separate change with its own
-#: default to choose, and it is not in scope for #983. The list is asserted
-#: EXACTLY, in both directions, so an eighth such template fails this test
-#: instead of joining a silent exemption, and removing a hardcode from one of
-#: these forces the entry to be deleted rather than left behind.
+#: The reason each entry is here is **structural, and it is the only reason that
+#: counts**: the stack is installed from the Extensions catalog as its own
+#: CloudFormation stack, launched by the operator with its own parameters, and
+#: nothing in ``template.yaml`` instantiates it. The main stack's parameter has no
+#: route to it. Concretely, the catalog's install URL
+#: (``get_feature_launch_url``) pre-fills exactly two host-derived values,
+#: ``MainStackName`` and ``FeatureBucket``, plus whatever the extension's own
+#: ``feature.yaml`` advertises in ``defaultParameters`` — an extension-authored
+#: default, not a host value. So a per-extension ``EnableXRayTracing`` parameter
+#: would be a knob the operator has to find and set on each installed stack
+#: separately; it would not make the main stack's setting reach them.
+#:
+#: ``feature-platform/main-stack-extensions/template.yaml`` was in this list and is
+#: not any more, because for that one the reason was **false**: it is a nested
+#: stack of ``template.yaml`` (``FeaturePlatformStack``), already receives 27
+#: parameters from the parent including ``LogLevel`` and ``LogRetentionDays``, and
+#: now receives ``EnableXRayTracing`` the same way. Its nine Lambdas were the whole
+#: of #983 surviving inside the main deployment.
+#:
+#: What remains here is a real, documented limitation rather than an oversight:
+#: ``EnableXRayTracing=false`` on the main stack does not turn tracing off in an
+#: installed extension stack. ``docs/monitoring.md`` states it, and says which
+#: functions it costs money for — of the 21 functions in these six templates, the
+#: 13 with a SAM-generated role get ``AWSXrayWriteOnlyAccess`` attached
+#: automatically (SAM does that whenever ``Tracing`` is declared) and do emit
+#: traces; the 8 with an explicit role carry no X-Ray grant, so they cannot write
+#: a segment and emit nothing.
+#:
+#: The list is asserted EXACTLY, in both directions, so a seventh such template
+#: fails this test instead of joining a silent exemption, and removing a hardcode
+#: from one of these forces the entry to be deleted rather than left behind.
 HARDCODED_WITHOUT_PARAMETER = {
     "feature-platform/confbench-testset/template.yaml",
     "feature-platform/feature-template/template.yaml",
     "feature-platform/idp-data-generator/template.yaml",
-    "feature-platform/main-stack-extensions/template.yaml",
     "feature-platform/pii-anonymizer/template.yaml",
     "feature-platform/sample-feature/template.yaml",
     "feature-platform/sample-health-insurance-review/template.yaml",
@@ -668,6 +696,39 @@ def test_a_nested_template_declaring_the_parameter_is_passed_it(
         f"{source} declares {TRACING_PARAMETER} but template.yaml does not pass "
         f"it to {logical_id}, so the nested parameter sits at its own default "
         f"and the parent's setting never reaches those functions"
+    )
+
+
+@pytest.mark.unit
+def test_exempt_templates_are_not_nested_stacks_of_the_parent() -> None:
+    """The exemption's stated reason, checked instead of believed.
+
+    ``HARDCODED_WITHOUT_PARAMETER`` excuses a template from rule 1 on exactly one
+    ground: the stack is installed from the Extensions catalog on its own, so the
+    main stack's parameter has no route to it. That is a **structural** claim about
+    ``template.yaml``, and until this test existed it was only a comment — so the
+    list carried ``feature-platform/main-stack-extensions/template.yaml``, which
+    ``template.yaml`` deploys as ``FeaturePlatformStack`` and already hands 27
+    parameters to, including ``LogLevel`` and ``LogRetentionDays``. Nine Lambdas
+    inside the main deployment therefore kept tracing with the parameter set to
+    ``false``, and every rule in this file skipped them, because the one list that
+    mentioned the template said not to look.
+
+    A wrong entry here is worse than a missing one: a missing entry fails
+    ``test_templates_without_the_parameter_are_the_known_set`` loudly, while a wrong
+    one turns the whole gate off for that template and reads as a decision.
+    """
+    nested_sources = {source for _, source in NESTED_STACKS}
+    reachable = sorted(HARDCODED_WITHOUT_PARAMETER & nested_sources)
+    assert not reachable, (
+        f"these templates are exempt from rule 1 on the ground that they are "
+        f"deployed independently and cannot receive {TRACING_PARAMETER}, but "
+        f"template.yaml deploys them as nested stacks and so can pass it: "
+        f"{reachable}. Give each one the parameter, the condition and a conditional "
+        f"tracing mode, pass `{TRACING_PARAMETER}: !Ref {TRACING_PARAMETER}` from "
+        f"the parent, and delete the entry. A nested stack has no route to a "
+        f"per-extension parameter an operator could set, so the exemption's reason "
+        f"cannot be true for it."
     )
 
 

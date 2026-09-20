@@ -383,6 +383,48 @@ only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
   default on a new stack or to preserve the current value on an update. Passing
   `--log-level INFO` is honoured; it used to be silently treated as "unset".
 
+## X-Ray Tracing
+
+`EnableXRayTracing` (default `true`) controls AWS X-Ray tracing. On `true` each
+covered Lambda runs in `Active` mode and both state machines set
+`TracingConfiguration.Enabled`; on `false` the Lambdas run in `PassThrough`, which
+records nothing of their own and continues a trace only if a caller already sampled
+the request, and the state machines stop tracing. X-Ray is billed per trace
+recorded, so `false` is how you take that line of the bill to zero.
+
+It covers **31 Lambda functions plus both state machines**, across three templates:
+7 in the main stack (`template.yaml`), 15 in the unified pattern
+(`patterns/unified/template.yaml`), and 9 in the nested feature-platform stack
+(`feature-platform/main-stack-extensions/template.yaml`), which receives the
+parameter from the main stack the same way it receives `LogLevel` and
+`LogRetentionDays`.
+
+### Installed extensions trace unconditionally
+
+An extension you install from the Extensions catalog — `pii-anonymizer`,
+`idp-data-generator`, `confbench-testset`, `sample-feature`,
+`sample-health-insurance-review`, or a stack scaffolded from `feature-template` — is
+its own CloudFormation stack with its own parameters, launched by you rather than
+created by the main stack. The install URL pre-fills only two host-derived values,
+`MainStackName` and `FeatureBucket`, so **the main stack's `EnableXRayTracing` does
+not reach it**, the same way its `LogLevel` does not (see above). Each of those
+templates sets `Tracing: Active` for every function in its `Globals` block, so
+setting `EnableXRayTracing=false` on the main stack leaves them tracing.
+
+What that costs depends on the function's execution role, because SAM attaches the
+X-Ray write policy only to a role it *generates*:
+
+| Functions in the six extension templates | Traces recorded |
+|---|---|
+| 13 with a SAM-generated role | Yes — SAM attaches `AWSXrayWriteOnlyAccess` because `Tracing` is declared, so these emit segments and are billed |
+| 8 with an explicit `Role:` (each `UiDeployerFunction`, plus `idp-data-generator`'s `DockerBuildRunFunction` and `AgentCoreRuntimeManagerFunction`) | No — their roles carry no `xray:PutTraceSegments`, so tracing is declared and produces nothing |
+
+To stop the 13 from tracing, either delete the extension stack or change
+`Globals.Function.Tracing` in the extension's template to `PassThrough` and
+republish it; there is no stack parameter to set. `scripts/tests/test_xray_tracing.py`
+records these six templates exactly, in both directions, so a seventh cannot join
+them silently and converting one forces its entry to be removed.
+
 ## Pattern-Specific Monitoring
 
 Each pattern includes additional monitoring tailored to its specific workflow:

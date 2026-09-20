@@ -3216,6 +3216,13 @@ Resources:
         # groups, which carry NO retention policy, so their logs accumulated
         # and were billed indefinitely (issue #826).
         LogRetentionDays: !Ref LogRetentionDays
+        # Tracing for this stack's nine Lambdas. Without this they hardcoded
+        # `Tracing: Active`, so EnableXRayTracing=false left them tracing —
+        # the #983 defect surviving in the one extension template that IS part
+        # of the main deployment. The six catalog extensions are separate
+        # stacks with their own parameters and cannot be reached this way; see
+        # docs/monitoring.md.
+        EnableXRayTracing: !Ref EnableXRayTracing
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,
         # accounts with an SCP that requires a boundary on every role fail
