@@ -188,6 +188,16 @@ Parameters:
       (Optional) The group name in your external IdP that should map to the Cognito Reviewer role.
       For example: IDP-Reviewers
 
+  ExternalIdPAnnotatorGroupName:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) The group name in your external IdP that should map to the Cognito Annotator role.
+      For example: IDP-Annotators.
+      Leave empty to keep Annotator membership under manual control in User Management; setting it
+      makes the IdP authoritative, so a federated user whose claim maps to some other role but omits
+      this group is removed from Annotator at their next fresh sign-in (not at a token refresh).
+
   ExternalIdPViewerGroupName:
     Type: String
     Default: ""
@@ -467,13 +477,16 @@ Parameters:
     Type: Number
     Default: 10
     Description: >-
-      Number of document sections degraded to "no confidence scores" within a
-      15-minute window before AssessmentConfidenceUnavailableAlarm fires. A single
-      degraded section is an expected, self-limiting outcome (one unusually large
-      section against a small-context confidence model), so the alarm watches
-      volume rather than the first occurrence. Raise this if one large
-      multi-section document can legitimately produce that many degrades in your
-      corpus; lower it to be told sooner.
+      Number of document sections left with "no confidence scores" within a
+      15-minute window before AssessmentConfidenceUnavailableAlarm fires. Counted
+      whether the confidence pass ran and failed deterministically, or never ran
+      because the section had nothing to assess. A single such section is an
+      expected, self-limiting outcome (one unusually large section against a
+      small-context confidence model, or one section whose extraction produced no
+      fields), so the alarm watches volume rather than the first occurrence. Raise
+      this if a single document in your corpus can legitimately produce that many
+      -- a large multi-section document against a small-context confidence model,
+      or many sections with nothing to assess; lower it to be told sooner.
     MinValue: 1
 
   QueueStalledAgeThresholdSeconds:
@@ -1370,6 +1383,18 @@ Conditions:
   # Without DeployInVPC, Lambdas run on the public Lambda network and cannot
   # reach the VPCE hostname — setting endpoint_url would cause timeouts.
   HasS3VpcEndpointAndVpc: !And [!Condition HasS3VpcEndpoint, !Condition DeployInVPC]
+  # Gates the state machines' Tracing.Enabled AND every Lambda's Tracing mode.
+  # Each traced function writes `Tracing: !If [EnableXRayTracingCondition,
+  # Active, PassThrough]` rather than a literal, so setting the parameter to
+  # "false" actually turns Lambda tracing off; a hardcoded `Active` cannot be
+  # turned off at all, which is what the parameter's description promises.
+  # PassThrough — not an absent property — is written on the false branch: the
+  # two resolve identically, and naming it says the choice was made. Neither
+  # branch changes a function's IAM: SAM attaches AWSXrayWriteOnlyAccess to a
+  # role it GENERATES whenever Tracing is declared in any form, because it
+  # cannot evaluate the Fn::If. A function with an explicit `Role:` gets
+  # nothing from SAM and must carry the X-Ray grant itself — checked by
+  # scripts/tests/test_xray_tracing.py, along with the rest of this.
   EnableXRayTracingCondition: !Equals [ !Ref EnableXRayTracing, "true" ]
   UsePrivateApi: !Equals [ !Ref ApiGatewayVisibility, "PRIVATE" ]
   HasArtifactsBucketKmsKey: !Not [ !Equals [ !Ref ArtifactsBucketKmsKeyArn, "" ] ]
@@ -1381,11 +1406,6 @@ Conditions:
 
   # Feature Platform
   IsFeaturePlatformEnabled: !Equals [ !Ref EnableFeaturePlatform, 'true' ]
-  # Inverse condition used to gate the main stack's
-  # `${AWS::StackName}-TrackingTableName` Output so that it isn't declared at
-  # the same time as the FeaturePlatformStack's identically-named export
-  # (which would fail with "Export already exported by stack ...").
-  IsFeaturePlatformDisabled: !Equals [ !Ref EnableFeaturePlatform, 'false' ]
   # NB: there is deliberately no "IsAutoSubscribeMode" condition inferring the
   # subscription mode from whether FeaturePlatformSimulatorEndpoint is set.
   # Inferring it coupled two independent choices — WHICH API to call and WHERE
@@ -1481,6 +1501,7 @@ Metadata:
           - ExternalIdPAdminGroupName
           - ExternalIdPAuthorGroupName
           - ExternalIdPReviewerGroupName
+          - ExternalIdPAnnotatorGroupName
           - ExternalIdPViewerGroupName
           - ExternalIdPAutoLogin
           - ExternalIdPEmailMutable
@@ -5473,7 +5494,7 @@ Resources:
       Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, control_plane_hourly, and data_plane_lambda_hourly tables.
       MemorySize: 512
       Timeout: 900
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Layers:
         # pyarrow + boto3 + idp_common (metrics helper etc.). Same layer the
         # migration Lambda uses. Bundling pyarrow in this function too would
@@ -6866,7 +6887,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7008,7 +7029,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7163,7 +7184,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7383,7 +7404,7 @@ Resources:
         idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt JobTrackerDLQ.Arn
@@ -7490,7 +7511,7 @@ Resources:
       Layers:
         - !Ref IDPCommonBaseLayer
       MemorySize: 512
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt PostProcessingDecompressorDLQ.Arn
@@ -7593,7 +7614,7 @@ Resources:
       Layers:
         - !Ref IDPCommonReportingLayer
       MemorySize: 1024
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7953,6 +7974,14 @@ Resources:
   # the same topic is the cheaper answer, and only applies at all when the
   # circuit breaker is enabled (it defaults to off).
   #
+  # One more cause with the same signature, and the correlation above does NOT
+  # separate it: a sustained failure to READ the breaker's state also refuses
+  # admission without deleting messages (queue_processor/index.py
+  # check_circuit_breaker, ERROR_TRANSIENT), and it emits no Bedrock error
+  # metrics, so BedrockServiceOutageAlarm stays CLEAR and the runbook above reads
+  # it as a wedge. The CircuitBreakerCheckFailed metric is what distinguishes it,
+  # and the AlarmDescription names it.
+  #
   # FILL(m2, 0) is load-bearing, not defensive. SQS publishes
   # NumberOfMessagesDeleted only when deletions occur, so the totally stalled
   # case — the one this alarm exists for — produces NO datapoint. Without FILL
@@ -7963,7 +7992,7 @@ Resources:
   DocumentQueueStalledAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when the oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — i.e. the queue is not draining at all, rather than merely deep. Check the Workflow Concurrency Counter widget on the dashboard (a counter pinned at MaxConcurrentWorkflows with no running executions is a leaked slot; ConcurrencyCounterDriftAlarm covers that case), whether the QueueProcessor event-source mapping is enabled, and QueueProcessor errors and throttles. If BedrockServiceOutageAlarm is also active this is a circuit-breaker pause, not a wedge: the paused processor holds messages without deleting them, so this alarm fires too and clears on its own when the breaker closes. If executions ARE running and simply take longer than 30 minutes each, this is a capacity shortfall rather than a wedge: raise MaxConcurrentWorkflows, or raise QueueStalledAgeThresholdSeconds to accept it."
+      AlarmDescription: !Sub "The oldest document in the ${AWS::StackName} queue has waited more than ${QueueStalledAgeThresholdSeconds}s AND not one message left the queue for 30 minutes — the queue is not draining at all, rather than merely deep. Four causes, each with a different signal: a leaked concurrency slot (Workflow Concurrency Counter widget, also covered by ConcurrencyCounterDriftAlarm); a disabled QueueProcessor event-source mapping; a circuit-breaker pause (BedrockServiceOutageAlarm also active, clears itself) or a failure to READ the breaker state (CircuitBreakerCheckFailed, Classification=TRANSIENT — emits no Bedrock metrics, so it looks like a wedge); or simply executions slower than 30 minutes each, which is capacity, not a wedge. See docs/monitoring.md."
       Metrics:
         - Id: e1
           Label: QueueStalled
@@ -8116,7 +8145,7 @@ Resources:
   AssessmentConfidenceUnavailableAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Many sections in ${AWS::StackName} were degraded to 'no confidence scores' in 15 minutes, which indicates a SYSTEMIC confidence-assessment failure rather than a few awkward documents. Those documents still COMPLETE with their extracted data intact; what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds). Diagnose from the AssessmentFunction logs - list on the /${AWS::StackName}-PATTERNSTACK log-group prefix, as the group carries the NESTED stack's generated name - where the recorded issue's root_cause names the exception. Usual causes: a confidence model whose input limit the sections exceed (lower extraction.confidence.list_batch_size or pick a larger-context model), a missing bedrock:InvokeModel grant, or a model id not enabled in this region. See docs/monitoring.md#confidence-assessment-degraded."
+      AlarmDescription: !Sub "Many sections in ${AWS::StackName} were left with 'no confidence scores' in 15 minutes, which indicates something SYSTEMIC rather than a few awkward documents. Those documents still COMPLETE with their extracted data intact; what is missing is the confidence surface, so those sections are not covered by confidence-based review (HITL thresholds). Diagnose from the AssessmentFunction logs - list on the /${AWS::StackName}-PATTERNSTACK log-group prefix, as the group carries the NESTED stack's generated name - and from the recorded issue's code and root_cause. Usual causes: a confidence model whose input limit the sections exceed (lower extraction.confidence.list_batch_size or pick a larger-context model), a missing bedrock:InvokeModel grant, a model id not enabled in this region, or sections arriving with nothing to assess. See docs/monitoring.md#confidence-assessment-degraded."
       MetricName: AssessmentConfidenceUnavailable
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -9259,9 +9288,13 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
-            # RBAC scope enforcement — processor queries UsersTable.SubIndex
-            # to fetch the caller's `allowedConfigVersions` and rejects
-            # chats against documents outside that scope.
+            # RBAC scope enforcement — the processor queries the UsersTable
+            # EmailIndex GSI for the caller's `allowedConfigVersions` and rejects
+            # chats against documents outside that scope. Email is the join key:
+            # the table's own PK/SK are USER#<userId>, a uuid4 unrelated to the
+            # Cognito sub. The caller is taken from the verified claims the
+            # dispatcher's resolver forwards; the query failing for any reason
+            # (including a missing grant here) DENIES the turn.
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -9828,7 +9861,14 @@ Resources:
               Condition:
                 StringLike:
                   "aws:ResourceTag/idp:feature-id": "*"
-            # RBAC scope enforcement — query UsersTable.SubIndex.
+            # RBAC scope enforcement — query the UsersTable EmailIndex GSI for the
+            # caller's `allowedConfigVersions`. Retained for this function because
+            # it runs the same Chat-with-Document processor code, but on THIS
+            # transport the check stands down and the grant goes unused: a Function
+            # URL forwards no Cognito claims, so there is no verified per-user
+            # caller to resolve a scope for (GAP-07 in
+            # scripts/api_rbac_expectations.yaml). It becomes live the moment that
+            # endpoint verifies an ID token, with no IAM change needed.
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -11021,6 +11061,7 @@ Resources:
           ADMIN_GROUP_NAME: !Ref ExternalIdPAdminGroupName
           AUTHOR_GROUP_NAME: !Ref ExternalIdPAuthorGroupName
           REVIEWER_GROUP_NAME: !Ref ExternalIdPReviewerGroupName
+          ANNOTATOR_GROUP_NAME: !Ref ExternalIdPAnnotatorGroupName
           VIEWER_GROUP_NAME: !Ref ExternalIdPViewerGroupName
           # The only provider whose assertions may grant groups. The trigger
           # requires the signing-in user to be linked to it before it reads
@@ -11074,6 +11115,7 @@ Resources:
             ("ADMIN_GROUP_NAME", "Admin"),
             ("AUTHOR_GROUP_NAME", "Author"),
             ("REVIEWER_GROUP_NAME", "Reviewer"),
+            ("ANNOTATOR_GROUP_NAME", "Annotator"),
             ("VIEWER_GROUP_NAME", "Viewer"),
         ]:
             idp_group = os.environ.get(env_key, "").strip()
@@ -11192,9 +11234,24 @@ Resources:
 
             # Determine target Cognito groups from mapping
             target_groups = set()
+            unmapped_groups = []
             for idp_group in idp_groups:
                 if idp_group in GROUP_MAPPING:
                     target_groups.add(GROUP_MAPPING[idp_group])
+                else:
+                    unmapped_groups.append(idp_group)
+
+            # Name every discarded claim value. Without this a claim carrying one
+            # mapped name plus an unmapped one produced no diagnostic at all: the
+            # warning below is skipped because target_groups is non-empty, so the
+            # role the operator expected went missing with nothing to point at.
+            # Group names only — never the token or the whole claim set.
+            if unmapped_groups:
+                logger.warning(
+                    f"Ignoring IdP group(s) with no Cognito mapping for user "
+                    f"{username}: {unmapped_groups}. Set the matching "
+                    f"ExternalIdP*GroupName stack parameter to map them."
+                )
 
             if not target_groups:
                 logger.warning(f"No matching Cognito groups for user {username} with IdP groups {idp_groups}")
@@ -14403,8 +14460,17 @@ Outputs:
       See scripts/vpc-endpoints.yaml for the endpoint template.
     Value: !GetAtt LambdaVpcSecurityGroup.GroupId
   TrackingTableName:
-    Condition: IsFeaturePlatformDisabled
-    Description: Name of the DynamoDB document tracking table (feature-stack cross-stack ref)
+    Description: >-
+      Name of the DynamoDB document tracking table. A plain Output with no
+      `Export`, deliberately: the cross-stack export `<StackName>-TrackingTableName`
+      that feature stacks import is owned solely by the nested FeaturePlatformStack,
+      which declares it unconditionally. Do not add an `Export` here. An export
+      name has one producing stack, and that stack cannot change in a single
+      update: CloudFormation writes a stack's exports at the END of its update
+      while a nested stack claims its own during the resource phase, so a second
+      declaration here would collide with the nested one on the transition to
+      EnableFeaturePlatform=true ("Export with name ... is already exported by
+      stack ...") — see scripts/tests/test_cfn_export_ownership.py. An Output
+      without an Export cannot collide, and unlike the export it is readable from
+      `describe-stacks` in every configuration.
     Value: !Ref TrackingTable
-    Export:
-      Name: !Sub "${AWS::StackName}-TrackingTableName"

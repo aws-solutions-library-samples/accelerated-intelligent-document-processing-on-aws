@@ -9,6 +9,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { Editor } from '@monaco-editor/react';
 import type * as Monaco from 'monaco-editor';
 import { getFileContents, uploadDocument } from '../../graphql/generated';
+import { FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import MarkdownViewer from './MarkdownViewer';
 
 interface TextEditorViewProps {
@@ -291,7 +292,7 @@ const MarkdownJsonViewer = ({
       setLoadedUri(uriToFetch as string);
     } catch (err) {
       logger.error('Error fetching content:', err);
-      setError(`Failed to load ${fileType} content. Please try again.`);
+      setError(isAuthorizationError(err) ? FILE_ACCESS_DENIED_MESSAGE : `Failed to load ${fileType} content. Please try again.`);
     } finally {
       setIsLoading(false);
     }

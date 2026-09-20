@@ -432,7 +432,27 @@ def test_neither_route_rebinds_the_caller_identity_after_resolving_it():
         fn = routes.get(route)
         assert fn is not None, f"{route} not found in app.py"
 
-        # The name(s) that receive a transport-verified identity resolution.
+        # The resolution must happen exactly once, and where its refusal can
+        # escape: `_resolve_caller_sub` raises a 403 for a body identity that
+        # contradicts the verified one, and a call nested in a `try` or an `if`
+        # could swallow or skip that.
+        calls = _calls_named(fn, "_resolve_caller_sub")
+        assert len(calls) == 1, (
+            f"{route}: expected exactly one _resolve_caller_sub call, found "
+            f"{len(calls)}"
+        )
+        guard = _enclosing(fn, calls[0])
+        assert guard is fn, (
+            f"{route}: the caller-identity resolution is nested inside a "
+            f"{type(guard).__name__} at app.py line {calls[0].lineno}, where its "
+            f"403 can be skipped or swallowed"
+        )
+
+        # The name(s) that receive a transport-verified identity resolution. A
+        # route may bind none — /chat/document calls the resolver for its refusal
+        # and reads the caller from `identity` instead of a body field — but one
+        # that binds a name must bind it once, or a later assignment can put a
+        # client-supplied value where the verified one was.
         resolved: set[str] = set()
         for st in _own_scope_statements(fn):
             if not isinstance(st, ast.Assign):
@@ -443,19 +463,54 @@ def test_neither_route_rebinds_the_caller_identity_after_resolving_it():
                 if isinstance(tgt, ast.Name):
                     resolved.add(tgt.id)
 
-        assert len(resolved) == 1, (
-            f"{route}: expected exactly one variable to receive the "
-            f"transport-verified caller identity, found {sorted(resolved)}"
+        assert len(resolved) <= 1, (
+            f"{route}: more than one variable receives the transport-verified "
+            f"caller identity ({sorted(resolved)}) — resolve it once"
         )
-        name = resolved.pop()
-        bindings = _bindings_of(fn, name)
-        lines = sorted(st.lineno for st in bindings)
-        assert len(bindings) == 1, (
-            f"{route}: '{name}' holds the transport-verified caller identity but "
-            f"is bound {len(bindings)} times (app.py lines {lines}). A second "
-            f"binding lets a client-supplied value overwrite the verified one "
-            f"regardless of how it is spelled."
-        )
+        for name in resolved:
+            bindings = _bindings_of(fn, name)
+            lines = sorted(st.lineno for st in bindings)
+            assert len(bindings) == 1, (
+                f"{route}: '{name}' holds the transport-verified caller identity "
+                f"but is bound {len(bindings)} times (app.py lines {lines}). A "
+                f"second binding lets a client-supplied value overwrite the "
+                f"verified one regardless of how it is spelled."
+            )
+
+
+@pytest.mark.unit
+def test_doc_route_forwards_an_identity_key_to_the_processor():
+    """The doc processor denies a turn whose event carries no ``identity`` key.
+
+    That is deliberate: it is how a producer that stops forwarding the caller
+    fails closed instead of silently switching the config-version scope check
+    off. So this transport must always include the key — today with the value
+    ``None``, because it can verify no caller identity (GAP-07) — and it must take
+    it from ``_caller_identity()`` rather than from anything in the request body,
+    which the caller chooses.
+    """
+    routes = _route_functions(_app_ast())
+    fn = routes.get("POST /chat/document")
+    assert fn is not None, "POST /chat/document not found in app.py"
+
+    identity_values = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if isinstance(key, ast.Constant) and key.value == "identity":
+                identity_values.append(value)
+    assert len(identity_values) == 1, (
+        "the processor event built by POST /chat/document must carry exactly one "
+        f"'identity' key, found {len(identity_values)}"
+    )
+    value = identity_values[0]
+    assert isinstance(value, ast.Call) and getattr(value.func, "id", None) == (
+        "_caller_identity"
+    ), (
+        "'identity' must come from _caller_identity() — the one place a verified "
+        "claims source plugs in — not from the request body"
+    )
 
 
 @pytest.mark.unit

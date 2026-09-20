@@ -4,13 +4,16 @@
 import json
 import logging
 import os
-import time
 from datetime import datetime, timedelta, timezone
 
 import boto3
-from boto3.dynamodb.conditions import Key as DDBKey
 from idp_common.docs_service import create_document_service
-from idp_common.config_scope import scope_allows
+from idp_common.config_scope import (
+    ScopeLookupError,
+    caller_email_from_claims,
+    resolve_allowed_config_versions,
+    scope_allows,
+)
 from idp_common.document_versions import delete_current_output_objects
 
 # Import IDP Common modules
@@ -34,22 +37,46 @@ _dynamodb = boto3.resource("dynamodb")
 
 # ----- Caller-scope enforcement for multi-user RBAC deployments ----------
 # See docs/rbac.md. When a customer assigns a non-admin user
-# `allowedConfigVersions` in UsersTable (EmailIndex), reprocessDocument
-# MUST NOT accept a `version` argument outside that scope. Mirrors the
-# same check performed in sync_bda_idp_resolver and configuration_resolver.
+# `allowedConfigVersions` in UsersTable (EmailIndex), reprocessDocument must keep the
+# request inside that scope in BOTH directions:
+#
+#   * **Backward** — the profile each named document was *last processed under*.
+#     Checking only the `version` argument made the whole control depend on the
+#     caller volunteering it: omit `version` and any `objectKey` in the deployment
+#     was reprocessable, including the documents the list resolvers already hide from
+#     a scoped caller.
+#   * **Forward** — the profile the documents will be re-run *under*. An explicit
+#     `version` argument is matched against the scope, as sync_bda_idp_resolver and
+#     configuration_resolver do. When it is omitted, a scoped caller's reprocess is
+#     **pinned** to the document's own (already-verified) profile, because an
+#     unpinned document reaches queue_processor with no `config_version` and is
+#     resolved to the *globally active* profile — a value nothing scope-checks, which
+#     would move the caller's own document out of their scope and stamp the tracking
+#     row accordingly. See `_version_for_document`.
+#
+# Both directions fail closed. A document whose `ConfigVersion` cannot be read — no
+# tracking row, an unstamped row, or a failed GetItem — is refused, because a document
+# with no profile name cannot be proven in scope. That is the same rule the list
+# resolvers apply, so a scoped caller cannot see such a document to reprocess it.
+# Admins and unscoped callers are unaffected in either direction.
 _user_scope_cache: dict = {}
 _USER_SCOPE_CACHE_TTL = 60  # seconds
 
 
 def _get_caller_info(event):
-    """Extract caller's email and groups from AppSync event identity."""
+    """Extract caller's email and groups from the resolver event identity.
+
+    ``email`` is the config-version scope lookup key and comes from the ``email``
+    claim alone — see ``caller_email_from_claims``. ``username`` keeps its
+    fallback chain: it is not a scope key.
+    """
     identity = event.get("identity") or {}
     claims = identity.get("claims") or {}
     groups = claims.get("cognito:groups") or []
     if isinstance(groups, str):
         groups = [groups]
     username = claims.get("cognito:username") or claims.get("sub") or ""
-    email = claims.get("email") or identity.get("username") or username
+    email = caller_email_from_claims(claims)
     return {
         "email": email,
         "username": username,
@@ -59,31 +86,115 @@ def _get_caller_info(event):
 
 
 def _get_user_allowed_config_versions(caller_email):
-    """Look up the caller's `allowedConfigVersions` from UsersTable (TTL-cached)."""
-    users_table_name = os.environ.get("USERS_TABLE_NAME", "")
-    if not users_table_name or not caller_email:
+    """The caller's `allowedConfigVersions`, or None for an unrestricted caller.
+
+    Thin wrapper over the shared fail-closed lookup so every consumer of this
+    rule resolves it identically. Raises `ScopeLookupError` when the scope cannot
+    be evaluated; the caller must deny rather than proceed unrestricted.
+    """
+    return resolve_allowed_config_versions(
+        caller_email,
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_dynamodb,
+        cache=_user_scope_cache,
+        cache_ttl=_USER_SCOPE_CACHE_TTL,
+    )
+
+
+def _caller_scope_or_deny(caller):
+    """The caller's config-version scope for one request, or a denial.
+
+    Admins are unrestricted and never looked up. For everyone else this fails
+    CLOSED: a scope that cannot be *evaluated* (no UsersTable wired, no email
+    claim on the verified identity, a failed DynamoDB query) is not a caller
+    without restrictions (AUTH.T07).
+    """
+    if caller["is_admin"]:
         return None
-    now = time.time()
-    cached = _user_scope_cache.get(caller_email)
-    if cached and (now - cached["timestamp"]) < _USER_SCOPE_CACHE_TTL:
-        return cached["scope"]
     try:
-        users_table = _dynamodb.Table(users_table_name)
-        resp = users_table.query(
-            IndexName="EmailIndex",
-            KeyConditionExpression=DDBKey("email").eq(caller_email),
+        return _get_user_allowed_config_versions(caller["email"])
+    except ScopeLookupError as e:
+        logger.error(
+            "Denying reprocessDocument: config-version scope could not be "
+            "resolved: %s",
+            e,
         )
-        items = resp.get("Items", [])
-        if items:
-            scope = items[0].get("allowedConfigVersions")
-            result = list(scope) if scope and len(scope) > 0 else None
-        else:
-            result = None
-    except Exception as e:
-        logger.warning(f"Failed to look up user scope for {caller_email}: {e}")
-        result = None
-    _user_scope_cache[caller_email] = {"scope": result, "timestamp": now}
-    return result
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+
+
+def _document_config_version(object_key):
+    """The Configuration Profile a document was last processed under, or None.
+
+    ``None`` means "cannot be established" — no tracking row, a row carrying no
+    ``ConfigVersion``, or a read that failed. The caller treats all three the same
+    way, because a document with no profile name cannot be proven to be in a
+    scoped caller's scope.
+    """
+    try:
+        document = document_service.get_document(object_key)
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "Could not read the tracking row for a reprocess target, so its "
+            "configuration profile cannot be established: %s",
+            e,
+        )
+        return None
+    return getattr(document, "config_version", None) if document else None
+
+
+def _enforce_document_scope(allowed_versions, object_keys):
+    """Refuse a scoped caller any document outside their scope.
+
+    Applies to the profile each document was **last processed under**, so the
+    check does not depend on the caller supplying a ``version`` argument. Runs
+    before any document is queued, so a batch is refused whole rather than
+    part-processed.
+
+    Returns the profile each document currently carries, so the caller can pin the
+    reprocess to it — see ``_version_for_document``.
+    """
+    current: dict = {}
+    if not allowed_versions:
+        return current
+    for object_key in object_keys:
+        current_version = _document_config_version(object_key)
+        if not scope_allows(allowed_versions, current_version):
+            logger.warning(
+                "Rejecting reprocessDocument: a requested document was processed "
+                "under config version %r, and the caller is scoped to %s",
+                current_version,
+                sorted(allowed_versions),
+            )
+            raise PermissionError(
+                "Access denied: one or more of the requested documents is "
+                "outside your allowed configuration scope"
+            )
+        current[object_key] = current_version
+    return current
+
+
+def _version_for_document(requested_version, object_key, current_versions):
+    """The profile to reprocess one document under.
+
+    An explicit ``version`` argument wins — it has already been scope-checked. When
+    none is given, a **scoped** caller's reprocess is pinned to the profile the
+    document already carries, which `_enforce_document_scope` has just verified is in
+    their scope.
+
+    That pin is the forward half of the same control. Left unpinned, the document
+    reaches `queue_processor` with no `config_version`, which resolves the
+    **globally active** profile — a value nothing scope-checks, and one that may sit
+    outside the caller's scope. Reprocessing would then move the caller's own
+    document *out* of their scope, and stamp the tracking row accordingly.
+
+    Unscoped callers and Admins get an empty ``current_versions`` and so keep the
+    previous behaviour exactly: no pin, and the active profile is used.
+    """
+    if requested_version:
+        return requested_version
+    return current_versions.get(object_key) or None
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
@@ -198,28 +309,30 @@ def handler(event, context):
                 "Unauthorized: reprocessDocument requires Admin or Author group"
             )
 
-        # RBAC: scope-enforce the `version` argument for non-admins. Authors
-        # with `allowedConfigVersions` restricted to a subset of versions
-        # must not be able to reprocess documents against a version outside
-        # their scope. Admins are unrestricted. If no scope is set, all
-        # callers are unrestricted (preserves pre-fix behavior for single-
-        # user / pre-RBAC deployments).
-        if version:
-            if not caller["is_admin"]:
-                allowed_versions = _get_user_allowed_config_versions(caller["email"])
-                if not scope_allows(allowed_versions, version):
-                    logger.warning(
-                        "Rejecting reprocessDocument: caller %s is scoped to %s "
-                        "but requested version=%r",
-                        caller["email"],
-                        sorted(allowed_versions),
-                        version,
-                    )
-                    # Raise so AppSync propagates a GraphQL error to the client.
-                    raise PermissionError(
-                        f"Access denied: version '{version}' is not in your "
-                        "allowed scope"
-                    )
+        # RBAC: an Author whose `allowedConfigVersions` restricts them to a subset
+        # of profiles must not reprocess outside it, in either direction. Both
+        # checks fail closed; an unset scope is unrestricted, which is the opt-in
+        # default for single-user and pre-RBAC deployments. See the note at the top
+        # of this module for why the document's own profile is checked and not only
+        # the argument.
+        allowed_versions = _caller_scope_or_deny(caller)
+
+        # (a) the profile the documents would be re-run UNDER, when one is named.
+        if version and not scope_allows(allowed_versions, version):
+            logger.warning(
+                "Rejecting reprocessDocument: caller is scoped to %s but "
+                "requested version=%r",
+                sorted(allowed_versions),
+                version,
+            )
+            # Raised so the dispatcher answers 403 rather than a 200 with a body.
+            raise PermissionError(
+                f"Access denied: version '{version}' is not in your allowed scope"
+            )
+
+        # (b) the profile each document was last processed under. Independent of
+        #     (a): omitting `version` must not stand the check down.
+        current_versions = _enforce_document_scope(allowed_versions, object_keys)
 
         logger.info(
             f"Reprocessing {len(object_keys)} documents"
@@ -230,7 +343,11 @@ def handler(event, context):
         success_count = 0
         for object_key in object_keys:
             try:
-                reprocess_document(object_key, version, revision)
+                reprocess_document(
+                    object_key,
+                    _version_for_document(version, object_key, current_versions),
+                    revision,
+                )
                 success_count += 1
             except Exception as e:
                 logger.error(

@@ -54,7 +54,8 @@ The clearest way to read this document is to know the split up front.
 **Provided by the accelerator, active on a default deployment.** Infrastructure as code
 for the whole stack; fourteen CloudWatch alarms (a fifteenth is declared but only
 created when you enable the Bedrock circuit breaker); two CloudWatch dashboards; AWS
-X-Ray tracing on the document-processing Lambda functions; Step Functions retry and catch
+X-Ray tracing on the document-processing Lambda functions and both state machines, which
+`EnableXRayTracing` turns off in one place if you do not want it; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
 encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 32 TLS-only
 resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
@@ -114,13 +115,17 @@ ingestion, queue depth, the concurrency counter and workflow outcomes, and one i
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: `Tracing: Active` is set on
-nineteen Lambda functions across the two main templates — seven in `template.yaml` and
-twelve in `patterns/unified/template.yaml` — plus seven of the eight optional
-`feature-platform/` extension templates (`seller-entitlement-service` is the
-exception). Note the boundary: the Step Functions state machine declares no `TracingConfiguration` and the
-REST API stage does not enable X-Ray, so a trace covers Lambda-to-service calls rather
-than the whole orchestration.
+Distributed tracing is instrumented, not merely recommended: twenty-two Lambda functions
+across the two main templates — seven in `template.yaml` and fifteen in
+`patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
+optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
+section (`seller-entitlement-service` is the exception). In the two main templates the
+mode is `!If [EnableXRayTracingCondition, Active, PassThrough]` rather than a literal, so
+the single `EnableXRayTracing` parameter — default `true` — turns the whole stack's
+tracing on or off; `scripts/tests/test_xray_tracing.py` fails a function that hardcodes it
+instead. The extension templates are deployed independently, with their own parameters,
+so that switch does not reach them. Note the boundary: the REST API stage does not enable
+X-Ray, so an API-initiated call is traced from the Lambda inward rather than from the edge.
 
 Logging verbosity is a single deploy-time parameter. `LogLevel` defaults to `WARN` and
 applies across the Lambda functions and the API stage;
@@ -153,7 +158,7 @@ is in `benchmarks/`, with sample documents in `samples/`.
 | Have you tuned `ErrorThreshold`, `ExecutionTimeThresholdMs` and `QueueStalledAgeThresholdSeconds` to your document mix, or are you running the defaults? | | | |
 | Is `LogLevel` still `WARN` or `ERROR` in this deployment? If it was raised to `INFO` or `DEBUG` for troubleshooting, was it lowered again? | | | |
 | Does `LogRetentionDays` meet your retention obligation, and have you set retention on the custom-resource log groups that keep CloudWatch's indefinite default? | | | |
-| Do you accept that the state machine and the REST API stage are not X-Ray traced, or do you need to add `TracingConfiguration` and stage tracing? | | | |
+| Do you accept that the REST API stage is not X-Ray traced, or do you need to add stage tracing? Is `EnableXRayTracing` set the way you want it? It defaults to `true` and controls the Lambda functions as well as the state machines, so it is also the X-Ray cost lever. | | | |
 | At the default `LogLevel=WARN` the API access log is off. Do you accept that, or do you need request-level API telemetry enough to raise the level and accept the PII exposure that comes with it? | | | |
 | Who owns the runbook for a stalled queue, and has `DocumentQueueStalledAlarm` been exercised at least once? | | | |
 | How do you validate a configuration change before it reaches production — the integration suite, the `benchmarks/` harness against your own corpus, or a separate stack? | | | |
@@ -208,22 +213,50 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-118 operations. 90 of them are restricted to named Cognito groups and 2
+118 operations. 101 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
-principals, rejecting every Cognito caller. The remaining 26 are declared `groups: ANY`,
-which that file defines as any authenticated Cognito user. Nine of those 26 are narrowed
-further, by record ownership or by the caller's allowed configuration versions; the other
-17 are not, so a valid session is the whole check. That set is read-oriented but it is not
-trivial — it includes `getDocument`, `getFileContents`, `getFilePresignedUrl`,
-`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`,
-`queryKnowledgeBase` and `getMyProfile`. Some carry other controls that are real but are
-not group or per-document controls: `getFilePresignedUrl` and `getFileContents` resolve
-through `_validate_bucket()` in
+principals, rejecting every Cognito caller. 11 of those accept any assigned group
+rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
+the full list of groups `template.yaml` creates, so what they refuse is a caller an
+administrator has not placed in any group. That set is the document-content reads
+(`getDocument`, `listDocuments`, `listDocumentsByDateRange`, `getDocumentVersion`,
+`compareDocumentVersions`, `getFileContents`, `getFilePresignedUrl`, `queryKnowledgeBase`)
+plus three mutations (`deleteAgentJob`, `deleteChatSession`, `sendChatDocumentMessage`).
+
+The remaining 15 are declared `groups: ANY`, which that file defines as any authenticated
+Cognito user — including one in no group, which self-service sign-up produces when you set
+`AllowedSignUpEmailDomain`. Four of those 15 are narrowed further, by record ownership or
+by the caller's allowed configuration versions; the other 11 are not, so a valid session is
+the whole check. They are enumeration, platform and profile reads —
+`listDocumentsDateHour`, `listDocumentsDateShard`, `listDocumentVersions`, `getMyProfile`,
+`getLatestPublishedVersion`, `getCircuitBreakerStatus`, the two fine-tuning job reads and
+the three feature-catalog reads — so they disclose the existence, volume and timing of
+processed documents, and what this deployment has installed, rather than document content.
+
+Three caveats on what the group floor does and does not buy you, and the third is the one
+that bounds the other two. It is a check on *who may ask*, not on *which document they may
+read*: a Viewer may read any document a Viewer can see, so if your documents need to be
+private to their submitter or to a tenant, group membership is the wrong axis and no setting
+of these declarations fixes it. The other controls on the file reads are real but are not
+per-document either — `getFilePresignedUrl` and `getFileContents` resolve through
+`_validate_bucket()` in
 `nested/api-resolvers/src/lambda/get_file_contents_resolver/index.py`, which allow-lists
 the stack's own buckets and so prevents reading arbitrary S3, not reading another user's
-document. This is the designed posture rather than a defect, but it means every
-authenticated user of your pool can read processed document content. Decide whether that
-is acceptable for your data classification, and see [RBAC](./rbac.md).
+document.
+
+And **the declarations above govern the API, not the buckets.**
+`CognitoIdentityPoolSetRole` attaches a single `authenticated` role and declares no role
+mappings, so group membership plays no part in which role a signed-in user assumes,
+and that role — `CognitoAuthorizedRole` — grants `s3:GetObject`, `s3:GetObjectVersion` and
+`s3:ListBucket` on the Input, Output and Configuration buckets plus `kms:Decrypt` on the
+customer-managed key to every authenticated user, group or no group. The web UI uses that
+path deliberately: the file viewer defaults to signing in the browser, as do the page
+thumbnails, the page-image viewer and the document export. So a caller who is refused
+`getFileContents` can still read the object, and the pair that remain `groups: ANY` —
+`listDocumentsDateHour` and `listDocumentsDateShard` — return the object keys needed to do
+it. Narrowing this is a change to the document-viewing data path — group-scoped identity
+pool role mappings, or a resolver-only read path — and it has not been made. Decide whether
+the current posture is acceptable for your data classification, and see [RBAC](./rbac.md).
 
 The API Gateway REST transport replaced AWS AppSync entirely — there are no
 `AWS::AppSync` resources in any template — see
@@ -283,9 +316,9 @@ justification in `scripts/security/dep_audit_allowlist.json`.
 
 | Review item | Your comment | Owner | Date |
 |---|---|---|---|
-| Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed and accept that a self-registered user in no group can still read document content? | | | |
+| Who is allowed to create an account? Is `AllowedSignUpEmailDomain` still empty, keeping sign-up administrator-only, and if you have set it, do you control every domain listed? A self-registered user is in no group, so the API refuses them the document-content operations — but `CognitoAuthorizedRole` still grants them `s3:GetObject`/`ListBucket` on the document buckets directly | | | |
 | Is MFA enabled on the Cognito user pool? The pool sets no `MfaConfiguration`, so a default deployment has it off | | | |
-| Do you accept that every authenticated user of your pool can read processed document content through the 17 `groups: ANY` operations that carry no ownership or scope check, or do you need a group check added for your data classification? | | | |
+| Do you accept that the 11 `groups: ANY` operations carrying no ownership or scope check are reachable by any authenticated user, including one in no group? They are enumeration, platform and profile reads rather than document content — but two of them (`listDocumentsDateHour`, `listDocumentsDateShard`) return object keys, and `CognitoAuthorizedRole` grants every authenticated user `s3:GetObject`/`ListBucket` on the document buckets, so key enumeration plus a direct S3 read reaches document bytes without an API call. Does that meet your data classification? | | | |
 | Have you restricted `WAFAllowedIPv4Ranges`, and if the API is reachable from the internet, have you added AWS Managed Rules and a rate-based rule beyond the IP allow-list? | | | |
 | Have you supplied a `PermissionsBoundaryArn`, and does your organization require one? | | | |
 | Is the 123-statement `Resource: "*"` surface acceptable under your service control policies, and have you reviewed the statements that are not forced by an account-scoped API? | | | |

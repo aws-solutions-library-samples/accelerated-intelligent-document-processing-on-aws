@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 # Threat Model
 
-This solution ships with a STRIDE threat model: **98 threats** across the
+This solution ships with a STRIDE threat model: **99 threats** across the
 architecture, the processing pipeline, the web UI and API, the agent and chat
 features, the extensibility points, and the analytics stack, each with a risk
 score, the controls that address it, and — where a control does not fully cover

@@ -139,38 +139,68 @@ def doc_row(
     return {k: ddb_to_py(v) for k, v in it.items()}
 
 
-def poll_run(tracking, run_id):
-    """Count per-doc statuses for a run via scan+contains. Returns dict."""
-    obj = evl = tot = fail = 0
-    st = {}
+def _empty_poll():
+    return {"total": 0, "obj_done": 0, "eval_done": 0, "failed": 0, "statuses": {}}
+
+
+def poll_runs(tracking, run_ids):
+    """Per-doc status counts for MANY runs in ONE table pass. {run_id: dict}.
+
+    A document's key is ``doc#<run_id>/<doc_name>``, and ``PK`` is the partition
+    key — so ``begins_with`` is unavailable (DynamoDB allows it on the sort key
+    only) and resolving a run means scanning. That is survivable once per poll
+    iteration and is not survivable once per RUN per iteration, which is what
+    calling ``poll_run`` in a loop did: a 171-run suite against a stack whose
+    tracking table holds months of documents issued 171 full scans per cycle and
+    spent longer inside one drain iteration than the runs themselves took (#1016).
+    The same call on the launch path is why throughput sat at 12-20 concurrent
+    executions against a stack cap of 100 — the harness was scanning, not
+    launching. Cost per iteration now scales with the table, not with the table
+    times the run count.
+
+    Runs are matched by prefix in memory rather than by a ``contains()`` filter:
+    a filter is applied server-side AFTER the read, so it saves transfer but not
+    the scan, and one filter cannot select several run ids at once.
+    """
+    wanted = [r for r in run_ids if r]
+    out = {r: _empty_poll() for r in wanted}
+    if not wanted:
+        return out
+    prefixes = [(f"doc#{r}/", r) for r in wanted]
+
     kw = {
         "TableName": tracking,
-        "FilterExpression": "contains(PK, :r)",
-        "ExpressionAttributeValues": {":r": {"S": f"doc#{run_id}/"}},
-        "ProjectionExpression": "ObjectStatus, EvaluationStatus",
+        "ProjectionExpression": "PK, ObjectStatus, EvaluationStatus",
     }
     while True:
         r = ddb().scan(**kw)
         for it in r.get("Items", []):
-            tot += 1
-            o = it.get("ObjectStatus", {}).get("S", "")
-            st[o] = st.get(o, 0) + 1
-            if o == "COMPLETED":
-                obj += 1
-            if o in ("FAILED", "ERROR"):
-                fail += 1
-            if it.get("EvaluationStatus", {}).get("S", "") == "COMPLETED":
-                evl += 1
+            pk = it.get("PK", {}).get("S", "")
+            if not pk.startswith("doc#"):
+                continue
+            for prefix, rid in prefixes:
+                if pk.startswith(prefix):
+                    acc = out[rid]
+                    acc["total"] += 1
+                    o = it.get("ObjectStatus", {}).get("S", "")
+                    acc["statuses"][o] = acc["statuses"].get(o, 0) + 1
+                    if o == "COMPLETED":
+                        acc["obj_done"] += 1
+                    if o in ("FAILED", "ERROR"):
+                        acc["failed"] += 1
+                    if it.get("EvaluationStatus", {}).get("S", "") == "COMPLETED":
+                        acc["eval_done"] += 1
+                    break
         if "LastEvaluatedKey" not in r:
             break
         kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
-    return {
-        "total": tot,
-        "obj_done": obj,
-        "eval_done": evl,
-        "failed": fail,
-        "statuses": st,
-    }
+    return out
+
+
+def poll_run(tracking, run_id):
+    """Per-doc status counts for one run. Prefer :func:`poll_runs` in a loop over
+    several runs — see the cost note there."""
+    return poll_runs(tracking, [run_id])[run_id]
 
 
 # ----------------------------------------------------------------------------- S3

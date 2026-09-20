@@ -576,7 +576,7 @@ Chat-with-Document runs as an asynchronous workflow so it can use long-latency l
 1. A **status pill** appears above the input area and transitions as the backend makes progress: **Queued → Loading document text → Querying {model} → Streaming response**.
 2. As soon as the model starts producing output, the assistant bubble appears with a blinking cursor and **tokens stream in** live (throttled to ~200 ms / 200-char batches server-side so the UI stays responsive under heavy throttling).
 3. When generation completes the status pill clears and the bubble finalizes with a timestamp and the model ID used.
-4. Errors (including RBAC scope denials on documents outside your `allowedConfigVersions`) render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation.
+4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-version scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, on deployments where the chat turn reaches the backend through the REST API. Chat streamed from the Lambda Function URL is not restricted by that scope; see [Known Limitations in the RBAC guide](./rbac.md#known-limitations).
 
 The session is scoped to your user — other users cannot subscribe to or continue your chat session even if they know the session ID.
 

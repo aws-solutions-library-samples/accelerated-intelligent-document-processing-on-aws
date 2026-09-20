@@ -26,7 +26,7 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("TRACKING_TABLE_NAME", "tracking-table")
 os.environ.setdefault("CONFIGURATION_TABLE_NAME", "config-table")
 os.environ.setdefault("OUTPUT_BUCKET", "output-bucket")
-# Must be non-empty: an unset UsersTable now DENIES the turn (fail-closed scope
+# Must be non-empty: an unset UsersTable DENIES the turn (fail-closed scope
 # lookup), so leaving it blank would make every test a scope denial. Tests that
 # exercise the unset case override it explicitly.
 os.environ.setdefault("USERS_TABLE_NAME", "users-table")

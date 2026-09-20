@@ -25,6 +25,7 @@ import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatchcase
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
@@ -77,8 +78,30 @@ def _caller_claims(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _caller_email(event: Dict[str, Any]) -> str:
-    c = _caller_claims(event)
-    return c.get("email") or c.get("cognito:username") or c.get("sub") or ""
+    """The caller's email, from the ``email`` claim and nothing else.
+
+    The value is the key of a ``UsersTable`` ``EmailIndex`` query, and email is
+    the only identifier that joins a Cognito principal to a row there — the row's
+    key is a ``uuid4`` unrelated to the Cognito ``sub``, and no ``sub`` attribute
+    is stored on the table at all.
+
+    ⚠️ **There is deliberately no fallback to another claim.** A ``sub`` or a
+    ``cognito:username`` is not an email address for every caller, so querying an
+    email-keyed index with one matches no row — and an empty page is
+    indistinguishable from "this user has no restriction". A fallback therefore
+    converts an *unresolvable* caller into an *unrestricted* one, with no AWS
+    fault required, on the route that reveals the PII re-identification mapping.
+    Returning the empty string instead makes ``_caller_allowed_versions`` raise,
+    and the request is denied.
+
+    This mirrors ``caller_email_from_claims`` in the host's
+    ``idp_common.config_scope``, which is the canonical statement of the rule.
+    The logic is restated here rather than imported because this extension ships
+    as its own stack with no ``idp_common`` layer; the shared static gate in
+    ``scripts/tests/test_scope_lookup_fail_closed.py`` covers this file so the
+    two cannot drift.
+    """
+    return str(_caller_claims(event).get("email") or "").strip()
 
 
 def _caller_groups(event: Dict[str, Any]) -> list:
@@ -110,11 +133,13 @@ def _caller_allowed_versions(email: str) -> Optional[list]:
         )
         items = resp.get("Items", [])
         if items:
-            scope = items[0].get("allowedConfigVersions")
-            return list(scope) if scope else None
+            return _normalize_scope(items[0].get("allowedConfigVersions"))
         return None  # user has no explicit scope row → unrestricted
     except Exception as exc:  # noqa: BLE001
-        logger.warning("User scope lookup failed for %s: %s", email, exc)
+        # No caller email in the message: it lands in a log group and is re-raised
+        # to a route that may surface it. Mirrors the canonical module, which omits
+        # it for the same reason.
+        logger.warning("User scope lookup failed on EmailIndex: %s", exc)
         raise ScopeLookupError(str(exc)) from exc
 
 
@@ -201,13 +226,65 @@ def _read_mapping(doc_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _normalize_scope(raw: Any) -> Optional[list]:
+    """Coerce a raw ``allowedConfigVersions`` attribute into a scope list.
+
+    Returns None for "unrestricted" — absent, empty, or nothing usable left after
+    blank entries are dropped, because a stray empty string must not become a rule
+    that matches nothing. Mirrors ``normalize_scope`` in
+    ``idp_common.config_scope``; see ``_scope_allows`` for why it is restated here.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        logger.warning(
+            "Ignoring unusable allowedConfigVersions of type %s", type(raw).__name__
+        )
+        return None
+    entries = [str(entry).strip() for entry in raw if str(entry).strip()]
+    return entries or None
+
+
+def _scope_allows(allowed: Optional[list], profile_name: Optional[str]) -> bool:
+    """Whether a scope permits a configuration profile name.
+
+    Entries may be exact names (``lending``) or **glob patterns**
+    (``lending-*``, ``uc?-prod``): patterns are first-class in this scope axis
+    because deployments predating revision history encode lineage in the profile
+    *name*. A plain ``in`` test would deny a pattern-scoped user every row they are
+    entitled to — fail-closed, so not a leak, but wrong.
+
+    An empty or unset scope is unrestricted; a set scope **denies an unnamed
+    target**, because an object with no profile name cannot be proven in scope.
+
+    ⚠️ This restates ``scope_allows`` from ``idp_common.config_scope``, which is
+    canonical. It is not imported because this extension ships as its own stack
+    with no ``idp_common`` layer — the same reason ``_caller_email`` restates
+    ``caller_email_from_claims``. Keep the two in step; a scope matcher that
+    differs between call sites is the same class of bug as a lookup that does.
+    """
+    entries = _normalize_scope(allowed)
+    if not entries:
+        return True
+    if not profile_name:
+        return False
+    name = str(profile_name)
+    return any(
+        entry == name
+        or (any(c in entry for c in ("*", "?", "[")) and fnmatchcase(name, entry))
+        for entry in entries
+    )
+
+
 def _visible_to(row: Dict[str, Any], is_admin: bool, allowed: Optional[list]) -> bool:
     """Config-version RBAC for a report row: Admins and unrestricted users see
     all; a scoped user sees a row only if the ORIGINAL's config version is in
     their allowedConfigVersions."""
-    if is_admin or allowed is None:
+    if is_admin:
         return True
-    return (row.get("originalConfigVersion") or "") in allowed
+    return _scope_allows(allowed, row.get("originalConfigVersion"))
 
 
 def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
@@ -237,12 +314,24 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
             return _response(400, {"error": str(exc)})
         since = datetime.now(timezone.utc) - window if window else None
         # RBAC: scope the list to config versions the caller may see. A scope
-        # lookup failure denies (empty list) rather than leaking all rows.
+        # lookup failure denies with the same 403 the two /report/{docId} routes
+        # below return for the identical condition.
+        #
+        # Two shapes this must NOT take. Encoding the denial as an empty `allowed`
+        # list for `_visible_to` to interpret works only while that function reads
+        # `None` — and not any falsy value — as unrestricted, which is one
+        # refactor away from inverting it. And answering 200 with an empty row set
+        # is worse than either: no rows are served, so it is still fail-closed,
+        # but this is an *audit* view, and an empty report is the truthful answer
+        # when nothing was redacted. A missing IAM grant, a throttle or a caller
+        # with no email claim would all present to a reviewer as "the anonymizer
+        # redacted nothing" — the UI renders `rows: []` as a legitimate zero and
+        # only raises its error banner on a non-2xx.
         try:
             allowed = _caller_allowed_versions(_caller_email(event))
         except ScopeLookupError:
-            logger.warning("Scope lookup failed for report list — returning empty")
-            allowed = []
+            logger.warning("Scope lookup failed for the report list — denying")
+            return _response(403, {"error": "Access denied: could not verify scope."})
         try:
             rows = [r for r in _list_report(since) if _visible_to(r, is_admin, allowed)]
         except Exception as exc:  # noqa: BLE001

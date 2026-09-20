@@ -17,6 +17,18 @@ complementary layers that share one source of truth:
 > (config-version scope silently failing open because a resolver was missing a
 > `dynamodb:Query` IAM grant). Treat a hard fail as real until proven otherwise.
 
+> ⚠️ **"Every operation" is true of the group check, not of the scope check.** The
+> dynamic scope suite makes exactly **two** calls with the scoped token, against
+> `getConfigVersion` and `getConfigVersions`. No other scope-enforcing operation is
+> exercised live. Ops marked `skip_allowed:` in the expectations file are called
+> only in their *denied* role, because an allowed-role call would start real work —
+> `sendChatDocumentMessage` starts a chat turn — so their scope enforcement is not
+> reached here and is covered by that component's own unit suite instead. The
+> static scan's **S4** is a grep: it asserts the `enforced_in` file mentions
+> `allowedConfigVersions`, which a file containing a broken lookup also does.
+> Neither layer would have caught issue #970, where the lookup named a DynamoDB
+> index no template declares.
+
 ### Mandatory security-focused test cases (AppSec checklist)
 
 `make api-test` covers the AppSec "Minimum Mandatory Security Focused Test Cases
@@ -75,8 +87,14 @@ Notes:
 - **Config-version scope denials are IN-BAND:** the configuration & sync
   resolvers return `{success:false, error:{type:"Unauthorized"}}` with **HTTP
   200** (NOT a 403). The harness treats an in-band `Unauthorized` as a denial.
-- **4 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Viewer(3),
-  defined in `template.yaml`.
+- **5 groups** (precedence): Admin(0) > Author(1) > Reviewer(2) > Annotator(3) >
+  Viewer(4), defined in `template.yaml`. That template is where the group
+  vocabulary lives — `generate_api_rbac_manifest.py` reads it to resolve
+  `ANY_GROUP` and to reject a group name no `AWS::Cognito::UserPoolGroup` creates.
+  ⚠️ `make api-test`'s live matrix drives four of them (`ROLES` in
+  `scripts/test_api_rbac.py`); it creates **no groupless user**, so
+  "denied to a caller in no group" is asserted offline only, in
+  `test_http_api_dispatcher_authz.py`.
 - **`@aws_auth(cognito_groups)` is SILENTLY IGNORED** on this multi-auth API
   (it also allows AWS_IAM). Only `@aws_cognito_user_pools(...)` directives and
   server-side checks are real. Server-side enforcement is the source of truth;
@@ -102,6 +120,18 @@ processors **directly** — no dispatcher, no resolver. Consequences:
 - A request-body `callerSub` is a **fallback only** — the transport-verified
   principal wins, and a body value that *contradicts* it is refused (403), not
   silently preferred. Both routes go through one helper so they cannot drift.
+  It is nonetheless the **effective** identity on this transport, because the
+  verified value is that pool-wide constant, so it must not be used as an
+  authorization key. Both processors read `identity` for that instead, and this
+  route can only report it as `None`.
+- **`allowedConfigVersions` is therefore not enforced on `POST /chat/document`.**
+  The processor resolves the caller from verified claims and denies a turn whose
+  scope it cannot evaluate; with no claims to resolve from, it stands the check
+  down and logs that it did so once per turn rather than appearing to have
+  consulted the UsersTable. The REST path through the dispatcher does enforce it.
+  Both halves of GAP-07 close when this endpoint verifies a Cognito ID token —
+  and the claims it then returns must include `email`, which is the only
+  identifier that joins a Cognito principal to a UsersTable row.
 
 Declare every Function URL and route in the **`function_url_endpoints:`** section
 of `scripts/api_rbac_expectations.yaml`. The scanner's Function-URL checks:
@@ -204,11 +234,18 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
    never declared, so the floor denies everyone. Declare them and regenerate the
    manifest (see the checklist below); do not widen the manifest to make the
    symptom go away.
-5. **Real leak / fail-open?** If a scoped/lower-privilege caller is ALLOWED,
-   check the resolver's IAM grants (a caught `AccessDeniedException` on the
-   UsersTable scope query fails OPEN to unrestricted) and the actual group gate.
-   Confirm via the resolver's CloudWatch logs (look for
-   "Config scope for ...: unrestricted" right after an AccessDenied WARNING).
+5. **Real leak / fail-open?** If a scoped/lower-privilege caller is ALLOWED, check
+   the actual group gate. On every REST operation the scope **lookup** fails closed —
+   `resolve_allowed_config_versions` in `idp_common.config_scope` raises
+   `ScopeLookupError` for a missing UsersTable, an absent `email` claim or any
+   failed `dynamodb:Query`, and each REST consumer turns that into a refusal — so a
+   missing IAM grant presents as a **denial**, not as an unrestricted caller. In
+   the resolver's CloudWatch logs, look for "config-version scope lookup failed on
+   EmailIndex" at ERROR. ⚠️ The **chat-streaming** transport is the exception and is
+   not a REST operation: see GAP-07 and AUTH.T07's residuals. An *empty page* is
+   still deliberately unrestricted
+   (scoping is opt-in), so a caller with no UsersTable row legitimately sees
+   everything: check the row exists before reading a broad result as a leak.
 
 ## Adding a new API operation — checklist
 
@@ -238,5 +275,39 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
 > endpoint. Declaring an operation `ANY` to make a 403 go away is exactly the
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
-> any authenticated caller. 26 of the 118 operations are currently `ANY`; narrowing
-> them is tracked as issue #979.
+> any authenticated caller — including one in no group, which self-signup produces.
+> 15 of the 118 operations are `ANY`, each with a note in the expectations file
+> saying why that is the intended answer for it; they are enumeration, platform,
+> profile and feature-catalog reads.
+
+### The four policies — pick the weakest one that is still correct
+
+| Declare | Means | Use for |
+|---|---|---|
+| `[Admin, Author, ...]` | one of those groups | anything only a subset of roles should do |
+| `ANY_GROUP` | **any** group `template.yaml` creates; a caller in no group is refused | operations every onboarded role legitimately needs, where "onboarded at all" is the real requirement — document content, and mutations |
+| `ANY` | authentication only | the caller's own profile, public metadata, enumeration that discloses no content |
+| `IAM_ONLY` | no Cognito caller at all | backend-written status updates |
+
+⚠️ **Do not spell `ANY_GROUP` out as the five group names.** The sentinel is
+resolved against the `AWS::Cognito::UserPoolGroup` resources in `template.yaml` by
+`generate_api_rbac_manifest.py` on every build, so a sixth group is covered
+automatically; five names written per operation would silently stop covering it —
+the "fix applied to the instance and not the class" defect this repo keeps hitting.
+The `schema.graphql` directive *does* have to name them all, because GraphQL cannot
+express "any group"; check **S2** fails until it does, which is the intended way to
+be told a group was added. Check **S0** rejects an unrecognised sentinel outright,
+because the *scanner alone* would not notice one — S2 would compare a set of its
+*characters* and S3 would accept a resolver with no check at all. (`make
+api-test-static` would still fail, one command later, on the generator's `--check`;
+S0 is what makes the scanner sound on its own and what covers a Function-URL route
+policy, which the generator never reads.) `authz.py` never sees `ANY_GROUP`: it is
+expanded before the manifest is written, and an unexpanded one there means a broken
+build and is treated as one (deny-all).
+
+⚠️ **A group floor is not the whole control.** It gates the REST API. The Identity
+Pool attaches one `authenticated` role with no role mappings, so every signed-in
+user — group or no group — holds `s3:GetObject`/`ListBucket` on the document
+buckets, and the UI reads them directly by default. Do not describe an `ANY_GROUP`
+operation as making document content unreachable; it makes that *operation*
+unreachable. See the residuals in `docs/rbac.md` and AUTH.T03.

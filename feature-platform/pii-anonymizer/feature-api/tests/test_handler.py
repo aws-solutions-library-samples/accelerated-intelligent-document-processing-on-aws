@@ -202,7 +202,16 @@ def test_report_list_rbac_filters_scoped_user(mod):
 
 
 def test_report_list_fails_closed_on_scope_error(mod):
-    """If the UsersTable scope lookup fails, a non-admin gets an EMPTY list."""
+    """A failed UsersTable scope lookup DENIES the report list with a 403.
+
+    Not a 200 carrying an empty row set. No rows are served either way, so both
+    are fail-closed on the property that matters — but this is an audit view, and
+    an empty report is the truthful answer when nothing was redacted. A 200 makes
+    a missing IAM grant, a throttle or a caller with no email claim present to a
+    reviewer as "the anonymizer redacted nothing": the UI assigns `rows` straight
+    into state and raises its error banner only on a non-2xx. The two
+    `/report/{docId}` routes return this same 403 for the identical condition.
+    """
     table = _make_table()  # users table intentionally NOT created
     table.put_item(
         Item={
@@ -213,8 +222,90 @@ def test_report_list_fails_closed_on_scope_error(mod):
         }
     )
     resp = _get(mod, "/report", email="viewer@x", groups="[Viewer]")
-    assert resp["statusCode"] == 200
-    assert json.loads(resp["body"])["total"] == 0
+    assert resp["statusCode"] == 403
+    body = json.loads(resp["body"])
+    assert "error" in body
+    # The denial must not be mistakable for a truthful empty report.
+    assert "rows" not in body and "total" not in body
+
+
+def test_report_list_denial_matches_the_single_row_routes(mod):
+    """One condition, one answer, across all three /report routes."""
+    audit = _make_table()  # users table intentionally NOT created
+    _seed_mapping_doc(audit, _make_mapping_table(), "same.pdf", "secret-v1")
+
+    statuses = {
+        _get(mod, path, email="viewer@x", groups="[Viewer]")["statusCode"]
+        for path in ("/report", "/report/same.pdf", "/report/same.pdf/mapping")
+    }
+
+    assert statuses == {403}
+
+
+def test_a_pattern_scope_matches_the_rows_it_covers(mod):
+    """Scope entries may be globs; a plain `in` test would deny every row."""
+    table = _make_table()
+    _make_users_table()
+    for doc_id, version in (("one.pdf", "tenant-a_v1"), ("two.pdf", "other_v1")):
+        table.put_item(
+            Item={
+                "documentId": doc_id,
+                "gsiPk": "ALL",
+                "createdAt": "2026-07-22T10:00:00Z",
+                "piiCount": 1,
+                "originalConfigVersion": version,
+            }
+        )
+    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
+        Item={"id": "u9", "email": "glob@x", "allowedConfigVersions": ["tenant-a_*"]}
+    )
+
+    body = json.loads(_get(mod, "/report", email="glob@x", groups="[Viewer]")["body"])
+
+    assert [r["documentId"] for r in body["rows"]] == ["one.pdf"]
+
+
+def test_a_blank_scope_entry_does_not_become_a_rule(mod):
+    """A stray empty string must read as unrestricted, not as "matches nothing"."""
+    table = _make_table()
+    _make_users_table()
+    table.put_item(
+        Item={
+            "documentId": "one.pdf",
+            "gsiPk": "ALL",
+            "createdAt": "2026-07-22T10:00:00Z",
+            "piiCount": 1,
+            "originalConfigVersion": "tenant-a",
+        }
+    )
+    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
+        Item={"id": "u8", "email": "blank@x", "allowedConfigVersions": ["", "  "]}
+    )
+
+    body = json.loads(_get(mod, "/report", email="blank@x", groups="[Viewer]")["body"])
+
+    assert body["total"] == 1
+
+
+def test_an_unstamped_row_is_denied_to_a_scoped_caller(mod):
+    """Fails closed: a row naming no config version cannot be proven in scope."""
+    table = _make_table()
+    _make_users_table()
+    table.put_item(
+        Item={
+            "documentId": "one.pdf",
+            "gsiPk": "ALL",
+            "createdAt": "2026-07-22T10:00:00Z",
+            "piiCount": 1,
+        }
+    )
+    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
+        Item={"id": "u7", "email": "scoped@x", "allowedConfigVersions": ["tenant-a"]}
+    )
+
+    body = json.loads(_get(mod, "/report", email="scoped@x", groups="[Viewer]")["body"])
+
+    assert body["total"] == 0
 
 
 def test_report_detail(mod):
@@ -357,3 +448,68 @@ def test_mapping_404_when_not_stored(mod):
     )
     resp = _get(mod, "/report/doc5.pdf/mapping", email="admin@x", groups="[Admin]")
     assert resp["statusCode"] == 404
+
+
+# ---- The scope lookup key comes from the `email` claim, and nothing else ----
+#
+# The lookup is a UsersTable EmailIndex query, and email is the only identifier
+# that joins a Cognito principal to a row there. Substituting another identifier
+# when the claim is absent looks harmless and is not: an identifier that is not an
+# email matches no row, an empty page means "this user has no restriction", and so
+# an *unresolvable* caller becomes an *unrestricted* one — on the route that
+# reveals the re-identification mapping, and with no AWS fault required.
+#
+# `test_mapping_fails_closed_on_scope_error` above covers the other half (a lookup
+# that errors). An empty page is still deliberately unrestricted, which
+# `test_report_list_and_aggregate` relies on.
+
+
+def _get_with_claims(mod, path, claims):
+    event = {
+        "rawPath": path,
+        "queryStringParameters": {},
+        "requestContext": {
+            "http": {"method": "GET"},
+            "authorizer": {"jwt": {"claims": claims}},
+        },
+    }
+    return mod.lambda_handler(event, None)
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        # Every Cognito identifier EXCEPT an email.
+        {
+            "sub": "11111111-2222-3333-4444-555555555555",
+            "cognito:username": "viewer",
+            "username": "viewer",
+            "cognito:groups": "[Viewer]",
+        },
+        {"email": "", "cognito:groups": "[Viewer]"},
+        {"cognito:groups": "[Viewer]"},
+    ],
+)
+def test_mapping_denied_when_the_claims_carry_no_email(mod, claims):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc6.pdf", "secret-v1")
+
+    resp = _get_with_claims(mod, "/report/doc6.pdf/mapping", claims)
+
+    assert resp["statusCode"] == 403
+
+
+def test_the_scope_key_is_the_email_claim_alone(mod):
+    """No substitute identifier is accepted, whatever else the claims carry."""
+    event_claims = {
+        "email": "a@example.com",
+        "cognito:username": "other",
+        "sub": "11111111-2222-3333-4444-555555555555",
+    }
+    event = {"requestContext": {"authorizer": {"jwt": {"claims": event_claims}}}}
+
+    assert mod._caller_email(event) == "a@example.com"
+
+    del event_claims["email"]
+    assert mod._caller_email(event) == ""

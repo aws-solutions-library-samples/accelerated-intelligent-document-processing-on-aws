@@ -11,7 +11,18 @@ import boto3
 import pytest
 from moto import mock_aws
 
-# Mock environment variables and dependencies before importing
+# Mock environment variables and dependencies before importing.
+#
+# The credentials matter as much as the region, and for a less obvious reason.
+# ``index.py`` builds ``s3_presign_client`` at module scope, so it is constructed
+# by the ``exec_module`` below, and botocore freezes the session's credentials
+# object into a client when the client is created. ``generate_presigned_post``
+# signs offline with exactly that object, so a client built at a moment when no
+# credentials were resolvable can never presign — it raises ``AttributeError:
+# 'NoneType' object has no attribute 'access_key'`` however many credentials
+# appear afterwards, including the ones ``mock_aws`` sets for the fixtures. Naming
+# them here makes this module's import self-contained instead of dependent on
+# whatever the rest of the session has already done to the environment (#988).
 with patch.dict(
     os.environ,
     {
@@ -20,6 +31,10 @@ with patch.dict(
         "TEST_SET_BUCKET": "test-set-bucket",
         "TEST_SET_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
         "AWS_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - fake moto credential  # pragma: allowlist secret
+        "AWS_SESSION_TOKEN": "testing",  # nosec B105 - fake moto credential
     },
 ):
     with patch("idp_common.dynamodb.DynamoDBClient"):
@@ -4785,6 +4800,37 @@ class TestTestSetResolver:
 
         page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
         assert page["activeLabelJobId"] == "run9"
+
+    def test_documents_page_carries_the_sets_own_status(self, labeling_env):
+        """The set's page has no other source for its status.
+
+        There is no per-set query, and getTestSets is Admin-or-Author (the page is
+        reachable by an Annotator) and repairs stale state as a side effect, so it
+        cannot go on a page load. The Publish version control reads this field to
+        refuse a set whose contents are still being written, and its client-side
+        check permits an absent status — it has to, since the field is unknown until
+        this call returns. So dropping the field here silently re-enables publishing
+        mid-copy with every UI test still green: this is what stops that.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1, status="COPYING")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        assert page["status"] == "COPYING"
+
+    def test_documents_page_status_is_present_even_when_the_row_has_none(
+        self, labeling_env
+    ):
+        """A row written before the field existed reports None, not a missing key,
+        so a caller can tell "no status recorded" from "this build dropped it"."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        assert "status" in page
+        assert page["status"] is None
 
     def test_the_annotation_queue_carries_the_class_through(self, labeling_env):
         """End to end: the queue is a different resolver from the documents page,

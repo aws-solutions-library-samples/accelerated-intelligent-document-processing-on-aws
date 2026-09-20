@@ -159,7 +159,12 @@ Agentic extraction requires models with tool-use support:
   mid-stream tool-use failure described below and the grid was abandoned, so it is
   unmeasured on this path rather than known to be incapable. Treat it as unproven
   until a benchmark run completes on it
-- **Amazon Nova Premier** (for complex multi-modal extraction)
+- ~~**Amazon Nova Premier**~~ — **not usable.** As of 2026-09-20 every
+  `us.amazon.nova-premier-v1:0` call in `us-west-2`, including a trivial baseline,
+  returns `ResourceNotFoundException: This model version has reached the end of its
+  life`. That applies to extraction, classification and confidence, not just the
+  agentic path. The model id still appears in the selectable list; pick a different
+  one.
 
 > **⚠️ Amazon Nova Lite does not complete Advanced (agentic) extraction as
 > shipped.** On the agentic path Nova Lite fails mid-stream with Bedrock's
@@ -172,21 +177,60 @@ Agentic extraction requires models with tool-use support:
 > classified as **deterministic**: the shard fails in seconds with a message naming
 > the model and the remedies instead of being retried by the state machine.
 >
-> **What causes it is not fully settled.** AWS's
+> **Greedy decoding does not help — that is measured.** AWS's
 > [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
-> — the guide Bedrock's own error message points at — attributes this error
-> primarily to inference parameters and output budget rather than to raw model
-> capability: greedy decoding (`temperature: 0` **and** `topK: 1`, the latter sent
-> via `additionalModelRequestFields`), a `maxTokens` large enough for a long
-> tool-output turn, and not stripping the model's chain-of-thought. This repository
-> satisfies part of that — extraction sets `temperature: "0.0"` and the agentic path
-> always requests the model's maximum output — but it does **not** send `top_k` on
-> the agentic path (only on the Simple path), and Nova's output ceiling in
-> `config_library/model_config_limits.yaml` is 10,000 tokens, which is small for a
-> large sharded table. So the observed failure is consistent with a configuration
-> the vendor explicitly warns about, and calling it a hard capability limit would
-> overstate what has been measured. Failing fast is still the right behaviour: as
-> configured today it recurs on every attempt.
+> — the guide Bedrock's own error message points at — attributes this error primarily
+> to inference parameters rather than to raw model capability, and recommends greedy
+> decoding: `temperature: 0` **and** `topP: 1` **and** `topK: 1`. All three were sent
+> and the failure rate did not move
+> ([#956](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/956)).
+> In 160 direct Bedrock calls per arm, interleaved so capacity drift hit both arms
+> equally, Nova Lite emitted an invalid tool-use sequence in **0.787** of calls with
+> no `topK`, **0.812** with `topK: 1`, and **0.838** with the full greedy triple
+> (Fisher exact *p* = 0.68 for `topK: 1` against the pooled no-topK arm, and *p* = 1.00
+> for the greedy triple against the no-topK arm measured in the same batch). Every
+> point estimate moved in the unhelpful direction, none of them significantly.
+>
+> ⚠️ **Read that as "no large effect", not as "proven identical".** At the observed
+> base rate and n = 160 per arm, 80% power detects an improvement only down to a
+> failure rate of 0.65 — 18% relative. Ruling out a 10-point absolute improvement
+> would need ~303 calls per arm and a 5-point one ~1,140. A small benefit is not
+> excluded; a large one is.
+>
+> **`topK` is also not a setting you can simply turn on**, which is why the
+> accelerator exposes no option for it. `inferenceConfig.topK` is not a Converse
+> field at all — botocore rejects it client-side for every model — so it can only
+> travel in `additionalModelRequestFields`, in a shape that differs per provider:
+>
+> | Family | Carrier that works | Valid range |
+> |---|---|---|
+> | Nova Lite / Pro / 2 Lite | `additionalModelRequestFields.inferenceConfig.topK` | 1–128 |
+> | Claude ≤ 4.6 (Haiku 4.5, Sonnet 4.5, Sonnet 4.6, Opus 4.5) | `additionalModelRequestFields.top_k` | −1 – 100,000,000 |
+> | Claude 4.7+ (Opus 4.7, Opus 5, Sonnet 5) | none — `` `top_k` is deprecated for this model `` | — |
+> | OpenAI GPT-6 Astra | none — `Unknown parameter: 'top_k'` | — |
+> | xAI Grok 4.6 | unverifiable — returns 200 for any unknown key, including a deliberately bogus control | — |
+>
+> Each family rejects the other's spelling, so there is no single request shape that
+> would set it across the models offered here.
+>
+> **What does trigger it is the request *shape*, not its size.** Walking the request
+> from trivial to real on Nova Lite: a two-property scalar schema succeeds; a schema
+> holding **only** a transactions array succeeds and returns all 30 rows, at both 284
+> and 1,696 characters; the same array **plus three sibling scalar properties** — 401
+> characters, smaller than the one that succeeded — fails. Removing `format`,
+> `pattern` and `anyOf`, inlining `$defs`, and removing the system-prompt schema
+> restatement each changed nothing; removing the document text made it pass. So the
+> trigger is **a list-of-objects property that must be closed before further
+> top-level keys are emitted, with real content to fill it** — which is the shape of
+> almost every useful extraction class. Whether that is the *only* triggering shape is
+> open: one variant with no array in the schema at all also failed, under a prompt
+> that demanded rows the schema could not hold, so it is confounded. Full tables,
+> sample sizes and the power analysis:
+> [Greedy decoding and invalid tool-use sequences](benchmarking/studies/greedy-decoding-tool-use.md).
+>
+> Failing fast remains the right behaviour: the failure recurs on every attempt with
+> the same request, and no inference-parameter setting available on this model changes
+> that.
 >
 > **Remedies**, in the order worth trying: reduce
 > `extraction.agentic.shard_token_budget` / `extraction.agentic.max_pages_per_shard`
@@ -260,26 +304,45 @@ extraction:
     restate_schema_in_system_prompt: true   # default; false removes copy 2
 ```
 
-Left **on by default** deliberately. Restating a schema in prose often improves
-adherence, so this is a token/adherence trade rather than a free saving: on a
-list-heavy document, an agent that drifts from the schema returns fewer rows. If
-you turn it off, judge the result on **completeness**, not on the token count.
-The schema-reminder tool is unaffected either way, so the agent can always ask for
-the schema again mid-run.
+Left **on by default** deliberately. Restating a schema in prose often improves how
+closely a model follows it, so this is a token/adherence trade rather than a free
+saving — an agent that drifts from the schema on a list-heavy document returns fewer
+rows. No such loss appeared in the 50-run measurement below, but that measurement used
+one model and three synthetic documents, so on your own documents judge the result on
+**completeness**, not on the token count. The schema-reminder tool is unaffected either
+way, so the agent can always ask for the schema again mid-run.
 
-> **What to expect if you turn it off: nothing much, and that is measured.** On the
-> benchmark suite it cost no completeness and no accuracy — and it did not save
-> anything measurable either. Two reasons, both worth knowing before you tune:
-> the copies sit inside the **prompt cache**, so they are billed at roughly a tenth
-> of input price; and reclaiming them frees shard budget only since
-> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775):
-> the pipeline now subtracts the measured prompt overhead (system prompt, rendered
-> schema, few-shot text, tool schema, this restatement) when it decides how to split
-> a document, where before the schema text was not counted at all. Whether the
-> freed headroom changes a given document's shard count depends on it sitting near
-> a boundary, and the page ceiling still closes shards regardless. Treat this as a
-> setting for measuring the question on your own documents, not as a recommended
-> optimisation.
+> **What to expect if you turn it off: fewer input tokens, no quality change, and a
+> slightly higher bill.** Measured over 50 runs, 25 per arm, on Sonnet 4.6 across
+> three synthetic documents
+> ([full study](benchmarking/studies/schema-restatement-tokens.md)):
+>
+> - **Quality: no cost.** `completeness_recall`, `cell_accuracy` and
+>   `scalar_accuracy` were 1.000 in every one of the 50 runs in both arms, with no
+>   failures and identical `cells_compared`. Both arms sit on the ceiling, so this
+>   excludes a degradation affecting more than roughly one run in ten; it cannot show
+>   an improvement.
+> - **Input tokens: a real saving, on the documents where the agent loop is stable.**
+>   −5.2% on a 400-row statement (175,912 → 166,731 input-side tokens, *p* = 1.3 ×
+>   10⁻⁸) and −6.7% on a 100-row one (*p* = 0.008), with the arms completely
+>   separated. On the third document the point estimate went the other way by +9.5%
+>   and was not significant, because that document's turn count varied run to run and
+>   each turn re-reads the prefix.
+> - **Dollars: not a saving.** Extraction cost's central estimate **rose 7.5%** and
+>   total cost 5.3% with the restatement off (neither significant, *p* ≥ 0.13),
+>   because extraction **output** tokens rose 17.4% (*p* = 1.2 × 10⁻⁵). The
+>   arithmetic is one-sided: the input saving is almost all **cache reads** at a tenth
+>   of input price, worth ~$0.007 per document, while the extra output is worth
+>   ~$0.039.
+>
+> So the reason to use this knob is **shard headroom**, not cost. Since
+> [#775](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/775)
+> the pipeline subtracts the measured prompt overhead (system prompt, rendered schema,
+> few-shot text, tool schema, this restatement) when it decides how to split a
+> document, where before the schema text was not counted at all — so the reclaimed
+> tokens are real budget. Whether the freed headroom changes a given document's shard
+> count depends on it sitting near a boundary, and the page ceiling still closes shards
+> regardless.
 
 **Visible in the Prompt Preview.** With Extraction mode **Advanced**, the
 **Configuration → Prompt Preview → System Prompt** tab ends with the
@@ -1455,12 +1518,23 @@ extraction:
 > whose input limit every section exceeds, a revoked `bedrock:InvokeModel` grant, a
 > model id not enabled in the region — produces no failed executions and moves none
 > of the failure alarms. Each degrade therefore publishes
-> `AssessmentConfidenceUnavailable` to the stack's own metric namespace, and
-> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen minutes —
-> on volume, not on the first occurrence, since one degraded section is an expected
-> outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)).
+> `AssessmentConfidenceUnavailable` to the stack's own metric namespace. So does a
+> section that reached the Assessment step with **nothing to assess** — no
+> extraction result, no pages, or an empty `inference_result` — which records
+> `assessment_skipped_confidence_unavailable` instead and is likewise invisible in
+> the document's own status. The metric covers both, because the alarm's question is
+> whether sections are coming back without confidence; the issue code says which
+> happened. One exception, and you will meet it on ordinary documents: a section
+> whose class has **no attributes to extract** publishes nothing and records
+> nothing, because extraction skipped the model deliberately for it. That covers
+> every page classified `unclassified` — a blank page, a page whose classification
+> errored — so do not expect a data point for those.
+> `AssessmentConfidenceUnavailableAlarm` fires at ten or more in fifteen
+> minutes — on volume, not on the first occurrence, since one such section is an
+> expected outcome ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996),
+> [#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
 > See [Monitoring](./monitoring.md#confidence-assessment-degraded) for the metric,
-> the alarm and the three causes worth checking first.
+> the alarm and the four causes worth checking first.
 >
 > **This replaces granular assessment.** The former "granular assessment"
 > service (a separate thread-pool fan-out with DynamoDB caching) has been
@@ -2248,14 +2322,24 @@ the system automatically adds `confidence_threshold` from configuration.
   ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)).
   The failure message names the model and lists models measured on this path.
 - Remedies: reduce `extraction.agentic.shard_token_budget` /
-  `extraction.agentic.max_pages_per_shard` so each call emits less (AWS's
-  [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
-  attributes this error largely to inference parameters and output budget); set
+  `extraction.agentic.max_pages_per_shard` so each call emits less; set
   `extraction.model` (or a class's `x-aws-idp-extraction-model` override) to a model
   measured on this path; or set `extraction.mode: simple`, which needs no tool use in
   its default configuration. Amazon Nova Lite in particular has not completed the
   Advanced path — see
   [Supported models for agentic extraction](#supported-models-for-agentic-extraction).
+- **Inference parameters are not the lever here, despite what AWS's
+  [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
+  suggests.** Greedy decoding — `temperature: 0` plus `topP: 1` plus `topK: 1`, the
+  setting that guide recommends — leaves Nova Lite's failure rate statistically
+  unchanged — 0.787 with no `topK`, 0.812 with `topK: 1`, 0.838 with the full triple,
+  across 160 direct calls per arm (Fisher *p* = 0.68 and *p* = 1.00; a large improvement
+  is excluded, an improvement smaller than 18% relative is not). What
+  determines the outcome is the **shape** of the request: a schema holding only a list
+  fails far less often than the same list with sibling scalar properties beside it,
+  independently of schema size. Measurements, the per-model `topK` routing table and
+  the power limits:
+  [Greedy decoding and invalid tool-use sequences](benchmarking/studies/greedy-decoding-tool-use.md).
 
 **Template errors**
 

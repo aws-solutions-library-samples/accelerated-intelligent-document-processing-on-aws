@@ -9,14 +9,17 @@ import concurrent.futures
 import boto3
 from botocore.exceptions import ClientError
 
-# Type: ignore for boto3 resource type inference
-dynamodb = boto3.resource("dynamodb")  # type: ignore
-
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
+# Built once per execution environment so warm invocations reuse the connection
+# pool. The region comes from AWS_REGION, which the Lambda runtime always sets;
+# unit tests supply one from conftest.py (see #988) because importing this module
+# is enough to construct both clients.
+# The type: ignore is for boto3's resource-type inference, which has no stub for
+# the dynamodb service resource.
 s3 = boto3.client("s3")
-dynamodb = boto3.resource("dynamodb")
+dynamodb = boto3.resource("dynamodb")  # type: ignore
 
 
 def handler(event, context):

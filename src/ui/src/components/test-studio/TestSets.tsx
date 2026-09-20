@@ -23,14 +23,7 @@ import {
 } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 import useUserRole from '../../hooks/use-user-role';
-import {
-  deleteTestSets,
-  getTestSets,
-  estimateReviewEffort,
-  getDraftLabelJob,
-  updateTestSet,
-  publishTestSetVersion,
-} from '../../graphql/generated';
+import { deleteTestSets, getTestSets, estimateReviewEffort, getDraftLabelJob, updateTestSet } from '../../graphql/generated';
 import type { DocumentClassType } from '../../graphql/generated/schema-types';
 import { getErrorMessage } from '../../utils/errorUtils';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
@@ -467,28 +460,6 @@ const TestSets = (): React.JSX.Element => {
     }
   };
 
-  const handlePublishVersion = async () => {
-    const target = selectedItems[0];
-    if (!target) return;
-
-    setLoading(true);
-    try {
-      const result = await client.graphql({
-        query: publishTestSetVersion,
-        variables: { input: { testSetId: target.id, setAsActiveReference: true } },
-      });
-      const published = result.data.publishTestSetVersion;
-      setSuccessMessage(`Published ${target.name} version ${published?.version ?? ''} as the active reference`);
-      setError('');
-      loadTestSets();
-    } catch (err) {
-      console.error('Error publishing test set version:', err);
-      setError(`Failed to publish version: ${getErrorMessage(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // Suppress an optimistic gen: row once the real registered test set (same
   // id/name) shows up from getTestSets, to avoid a duplicate row.
   const realTestSetIds = new Set(testSets.map((ts) => ts.id));
@@ -682,11 +653,6 @@ const TestSets = (): React.JSX.Element => {
                       { id: 'docs-upload', text: 'From a zip upload' },
                     ],
                   },
-                  {
-                    id: 'publish',
-                    text: 'Publish version',
-                    disabled: selectedItems.length !== 1 || selectedItems[0]?.status !== 'COMPLETED' || !selectedItems[0]?.fileCount,
-                  },
                   { id: 'edit', text: 'Edit details', disabled: selectedItems.length !== 1 },
                   { id: 'delete', text: 'Delete' },
                 ]}
@@ -702,8 +668,6 @@ const TestSets = (): React.JSX.Element => {
                   } else if (detail.id === 'docs-upload') {
                     setError('');
                     setAddDocsMode('upload');
-                  } else if (detail.id === 'publish') {
-                    handlePublishVersion();
                   } else if (detail.id === 'edit' && selected) {
                     setEditDescription(selected.description || '');
                     setEditDocumentClassType(

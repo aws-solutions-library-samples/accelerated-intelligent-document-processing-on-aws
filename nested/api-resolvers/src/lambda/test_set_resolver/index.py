@@ -3989,6 +3989,12 @@ def get_test_set_documents(args):
         # Read from the stored counter already fetched above, so this is O(1) and
         # stays O(1) as sets grow.
         "totalCount": _as_int(item.get("fileCount")) or 0,
+        # Surfaced for the same reason as totalCount: the set's own page holds no
+        # set-level row, and getTestSets is Admin-or-Author and not side-effect free,
+        # so a control on that page that must not act on a set still being written
+        # (publishing a version) has nothing else to read. Free here — the metadata
+        # row is already in hand.
+        "status": item.get("status"),
     }
 
     # Surfaced so a page load resumes polling an in-flight job. Labels are harvested

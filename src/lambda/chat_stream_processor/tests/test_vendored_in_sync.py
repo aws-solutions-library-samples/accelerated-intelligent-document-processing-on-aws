@@ -39,7 +39,11 @@ def test_vendored_modules_match_source():
     ]
     for source, vendored in pairs:
         assert vendored.exists(), f"missing vendored copy: {vendored}"
-        assert source.read_text() == vendored.read_text(), (
+        # Compare BYTES, not decoded text. `cp` makes a byte copy, so that is what
+        # "in sync" has to mean here; comparing `read_text()` would accept a copy
+        # that differs by a BOM or an encoding change, which is exactly the
+        # divergence a reader would never spot in a diff.
+        assert source.read_bytes() == vendored.read_bytes(), (
             f"{vendored.name} is out of sync with {source}. "
             f"Run scripts/sync_chat_stream_vendored.sh."
         )

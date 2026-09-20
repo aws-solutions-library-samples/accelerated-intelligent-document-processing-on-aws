@@ -236,8 +236,18 @@ def test_group_restricted_ops_enforce_groups(ddb_env):
     # agent read ops require Admin/Author/Viewer (Reviewer excluded).
     with pytest.raises(PermissionError):
         mod.dispatch("listAgentJobs", _ev({}, groups=("Reviewer",)))
-    # getDocument is open to any authenticated user (no groups needed).
-    mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=()))
+    # getDocument and deleteAgentJob name no particular group but do require an
+    # assigned one (`ANY_GROUP`): document content is not readable by a caller an
+    # administrator has not onboarded, which self-service sign-up produces. Any one
+    # group is enough, so the lowest-privilege role stands in for all five.
+    mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=("Viewer",)))
+    with pytest.raises(PermissionError, match="requires an assigned group"):
+        mod.dispatch("getDocument", _ev({"ObjectKey": "nope"}, groups=()))
+    # listDocumentsDateHour stays open to any authenticated caller — it enumerates an
+    # index partition rather than returning content.
+    mod.dispatch(
+        "listDocumentsDateHour", _ev({"date": "2024-01-01", "hour": 0}, groups=())
+    )
 
 
 # ----------------------------- agent jobs ---------------------------------- #

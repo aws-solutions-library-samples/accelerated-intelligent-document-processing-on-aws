@@ -241,10 +241,26 @@ def _load_index(monkeypatch):
     return _load_module("index", _DISPATCHER_DIR / "index.py")
 
 
-def _http_event(field, arguments):
-    """A normalized HTTP API v2 event the dispatcher's adapter accepts."""
+def _http_event(field, arguments, groups=("Viewer",)):
+    """A normalized HTTP API v2 event the dispatcher's adapter accepts.
+
+    The caller carries a group by default because the two handler tests below drive
+    the full ``handler()`` for ``getDocument``, which requires an assigned Cognito
+    group (`ANY_GROUP`). Without one they would get a 403 from ``authz.enforce``
+    before reaching the argument validation they are about — the group floor doing
+    its job, not a defect in these tests. Any single group satisfies the policy, so
+    the lowest-privilege role is used.
+    """
     return {
-        "requestContext": {"http": {"method": "POST"}},
+        "requestContext": {
+            "http": {"method": "POST"},
+            "authorizer": {
+                "claims": {
+                    "sub": "11111111-2222-3333-4444-555555555555",
+                    "cognito:groups": list(groups),
+                }
+            },
+        },
         "pathParameters": {"field": field},
         "body": json.dumps({"arguments": arguments}),
         "headers": {},

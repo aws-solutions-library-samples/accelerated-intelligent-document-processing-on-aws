@@ -51,6 +51,36 @@ For issues not covered by the Error Analyzer, use the manual troubleshooting ste
 | **Classification returns "other"** | Review document class definitions. Consider adding more detailed class descriptions or adding few-shot examples.                     |
 | **Extraction missing fields**      | Review attribute descriptions and prompt engineering. Check if fields are present but in an unusual format or location.              |
 
+**The execution fails with `ExtractionShardMapFailed` (or, before 0.6.10, a bare
+`States.ExceedToleratedFailureThreshold`) and the document has zero rows extracted.**
+That comes from `ExtractionShardMap`, the Distributed Map that runs advanced (agentic)
+extraction one shard per Lambda invocation. It tolerates no shard failures by design,
+so it fails whenever any shard fails — including when its siblings succeeded. The
+`ExtractionShardMapFailed` cause names the section and carries the Map's error output;
+two further steps identify the shard and the reason:
+
+1. Open the **Map Run** from the `ExtractionShardMap` entry in the Step Functions
+   execution history. A Distributed Map records each iteration's failure there, not on
+   the parent execution, so this is where the failing shard's own error is.
+2. If that shard reports `Sandbox.Timedout`, the invocation was killed at its
+   900-second ceiling. Check its log for a `ReadTimeoutError` /
+   `EventLoopException` followed by silence up to the timeout: that pattern is a
+   stalled Bedrock request that consumed the rest of the invocation.
+
+Shards persist their results to S3 as they finish and the Map is retried once, so a
+single transient shard failure re-runs only the incomplete shards and keeps the
+completed ones. A stall long enough to consume the whole invocation defeats that,
+because Step Functions classifies a Lambda timeout as deterministic and retries it
+once at most. The per-invocation time budget that keeps a stall recoverable — the
+Bedrock read timeout, the retry backoff allowance and the function timeout — is in
+[configuration.md](configuration.md#sharded-extraction-the-shard-map-and-the-budget-inside-one-shard).
+The load-sensitive case is a long-running configuration: advanced extraction with
+**integrated** confidence does extraction and confidence scoring in one inference, so
+its exposure to a stall is several times that of **separate** confidence over the same
+document. `separate` confidence in advanced mode is not exempt for a different reason —
+it runs a second, non-streamed Bedrock call inside the same shard invocation, which is
+the largest single stall the invocation has to absorb.
+
 ### Confidence (Assessment) Failures
 
 Confidence scoring runs as its own step after extraction. Two failure shapes have
@@ -114,6 +144,27 @@ a lower `extraction.confidence.list_batch_size`, or Advanced (agentic) extractio
 which shards the confidence pass. Automatically re-batching an oversized confidence
 input so the pass succeeds rather than degrades remains open as part of
 [#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901).
+
+**`assessment_skipped_confidence_unavailable` on a section.** The sibling of the
+issue above, and it means something different: the confidence model was never
+called, because the section carried nothing to assess — no extraction result was
+written for it, it lists no page IDs, or its extraction result has an empty
+`inference_result`. The consequence for the section is the same (no confidence
+values, so no HITL confidence routing and no UI threshold signals), but the
+confidence model and its context window are not the place to look. The issue's
+`root_cause` names what was missing and which stage to check: **Extraction** for a
+missing or empty result, **Classification** for a section with no pages. Like the
+issue above it is written to the section record only, so look in the **Status**
+column of the Sections panel rather than the Processing Report tab.
+
+One case deliberately reports **nothing**: a class with no attributes to extract.
+Extraction skips the model for those and flags its stub
+`skipped_due_to_empty_attributes`, which covers a section classified
+`unclassified` — a blank page, a page whose classification errored, or a
+deployment with no document types configured — as well as a class authored without
+attributes. Those sections are normal — the same situation as an excluded class,
+reached by a different route — so neither an issue nor a metric point is recorded
+for them.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit
@@ -326,9 +377,15 @@ For Cognito authentication problems:
 
 Use X-Ray tracing for advanced diagnostics:
 
-1. Enable X-Ray tracing in the CloudFormation template
+1. Deploy with `EnableXRayTracing=true` (the default). It controls the Lambda
+   functions and both state machines together; set it to `false` to turn tracing
+   off across the stack.
 2. View service map in X-Ray console
 3. Analyze trace details for latency and error hotspots
+
+The document-processing Lambdas annotate their segments with `document_id` and
+`processing_stage`, so a filter expression like
+`annotation.document_id = "<id>"` narrows the console to one document.
 
 ### Log Correlation
 

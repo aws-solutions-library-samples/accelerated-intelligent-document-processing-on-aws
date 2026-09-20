@@ -43,7 +43,13 @@
       "Admin",
       "Author"
     ],
-    "compareDocumentVersions": "ANY",
+    "compareDocumentVersions": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "compareTestRuns": [
       "Admin",
       "Author"
@@ -68,8 +74,20 @@
     "createUser": [
       "Admin"
     ],
-    "deleteAgentJob": "ANY",
-    "deleteChatSession": "ANY",
+    "deleteAgentJob": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "deleteChatSession": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "deleteConfigProfileRevision": [
       "Admin"
     ],
@@ -148,9 +166,21 @@
       "Author",
       "Viewer"
     ],
-    "getDocument": "ANY",
+    "getDocument": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getDocumentCount": "ANY",
-    "getDocumentVersion": "ANY",
+    "getDocumentVersion": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getDraftLabelJob": [
       "Admin",
       "Annotator",
@@ -159,8 +189,20 @@
     "getFeatureLaunchUrl": [
       "Admin"
     ],
-    "getFileContents": "ANY",
-    "getFilePresignedUrl": "ANY",
+    "getFileContents": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "getFilePresignedUrl": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "getFinetuningJob": "ANY",
     "getLatestPublishedVersion": "ANY",
     "getModelConfigLimits": [
@@ -239,8 +281,20 @@
       "Author"
     ],
     "listDocumentVersions": "ANY",
-    "listDocuments": "ANY",
-    "listDocumentsByDateRange": "ANY",
+    "listDocuments": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
+    "listDocumentsByDateRange": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "listDocumentsDateHour": "ANY",
     "listDocumentsDateShard": "ANY",
     "listFinetuningJobs": "ANY",
@@ -272,7 +326,13 @@
       "Admin",
       "Author"
     ],
-    "queryKnowledgeBase": "ANY",
+    "queryKnowledgeBase": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "reextractTestSetDocument": [
       "Admin",
       "Annotator",
@@ -312,7 +372,13 @@
       "Author",
       "Viewer"
     ],
-    "sendChatDocumentMessage": "ANY",
+    "sendChatDocumentMessage": [
+      "Admin",
+      "Annotator",
+      "Author",
+      "Reviewer",
+      "Viewer"
+    ],
     "sendTestRunToReview": [
       "Admin",
       "Author"

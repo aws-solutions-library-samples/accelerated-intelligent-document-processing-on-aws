@@ -405,6 +405,36 @@ def test_cloudfront_service_policy_statement_removed():
     assert "KeepThis" in sids
 
 
+def test_cloudfront_service_policy_statement_removal_is_attributed(caplog):
+    """#981: the removal names the policy it came from, not just a bare count.
+
+    A statement dropped from a policy cannot fail at deploy time, so an
+    over-deletion surfaces only as a runtime access-denied in GovCloud, where
+    the role is harder to inspect. The transform therefore has to say which
+    resource it changed.
+    """
+    t = GovCloudTemplateTransformer()
+    with caplog.at_level("INFO", logger="idp_sdk._core.template_transform"):
+        t.apply_transforms(_template_with_cloudfront())
+
+    records = [
+        r
+        for r in t.policy_statement_removals
+        if r.resource_identifier == "LoggingBucketPolicy"
+    ]
+    assert len(records) == 1, t.policy_statement_removals
+    assert records[0].removed == 1
+    assert "CloudFront" in records[0].reason
+
+    messages = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert any("LoggingBucketPolicy" in m and "removed 1" in m for m in messages), (
+        f"no per-removal INFO line naming the policy: {messages}"
+    )
+    assert any(
+        m.startswith("Removed ") and "policy statement(s) from" in m for m in messages
+    ), f"no removal summary line: {messages}"
+
+
 def test_lambda_function_url_and_permission_removed():
     """AWS::Lambda::Url (unavailable in GovCloud) + its InvokeFunctionUrl perm go."""
     t = GovCloudTemplateTransformer()

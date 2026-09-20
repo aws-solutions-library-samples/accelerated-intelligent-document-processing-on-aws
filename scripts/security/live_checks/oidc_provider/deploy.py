@@ -30,6 +30,10 @@ import sys
 
 import boto3
 
+# scripts/security/live_checks/oidc_provider/<this file> -> live_checks/
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from cognito_groups import external_idp_group_parameters  # noqa: E402
+
 STACK_NAME = "idpverify-oidc"
 # The NAME of the Secrets Manager secret this creates, not a secret value; the
 # value itself is generated per run by secrets.token_urlsafe() below.
@@ -100,6 +104,10 @@ def up(region: str) -> int:
         secret_arn = sm.describe_secret(SecretId=SECRET_NAME)["ARN"]
 
     print("\nProvider is up. Deploy (or update) the IDP stack with:\n")
+    # The group parameters are derived from template.yaml, so a role added to the
+    # deployment is offered here without an edit — and the stack this prints for
+    # is the one verify_federated_signin.py asserts against, which can only see
+    # a role the stack was told to map (#968).
     for key, value in (
         ("ExternalIdPType", "OIDC"),
         ("ExternalIdPName", IDP_NAME),
@@ -107,10 +115,7 @@ def up(region: str) -> int:
         ("ExternalIdPOIDCClientSecretArn", secret_arn),
         ("ExternalIdPOIDCIssuer", outputs["Issuer"]),
         ("ExternalIdPGroupAttributeName", GROUP_ATTRIBUTE),
-        ("ExternalIdPAdminGroupName", "IdP-Admins"),
-        ("ExternalIdPAuthorGroupName", "IdP-Authors"),
-        ("ExternalIdPReviewerGroupName", "IdP-Reviewers"),
-        ("ExternalIdPViewerGroupName", "IdP-Viewers"),
+        *external_idp_group_parameters(),
     ):
         print(f"    ParameterKey={key},ParameterValue={value}")
     print(f"\nThen run verify_federated_signin.py with:")

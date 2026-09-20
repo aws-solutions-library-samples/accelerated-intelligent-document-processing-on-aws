@@ -111,8 +111,16 @@ RUN_ROOTS = [
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests",
     # Guards the vendored config_scope copies against drifting from the canonical
     # idp_common module — a scope matcher that differs per call site is a
-    # privilege-escalation bug.
+    # privilege-escalation bug — plus the fail-closed scope lookup and the
+    # getDocumentCount filtering that makes its `scope_filtered` declaration true.
     "nested/api-resolvers/src/lambda/list_documents_gsi_resolver",
+    # Sibling of the above: the same fail-closed scope-lookup contract on the
+    # date-range list, and the reviewer-owner matching that an absent email claim
+    # would otherwise widen.
+    "nested/api-resolvers/src/lambda/list_documents_range_resolver",
+    # syncBdaIdp mutates the BDA project linked to a Configuration Profile, so a
+    # caller whose scope cannot be resolved must be refused in-band.
+    "nested/api-resolvers/src/lambda/sync_bda_idp_resolver",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/tests",
     # Configuration-revision pinning on a test run.
     "nested/api-resolvers/src/lambda/test_runner",

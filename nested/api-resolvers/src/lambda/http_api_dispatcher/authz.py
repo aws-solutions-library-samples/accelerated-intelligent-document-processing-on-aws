@@ -85,6 +85,20 @@ _MANIFEST_PATH = os.path.join(os.path.dirname(__file__), "api_rbac_manifest.json
 _SUPPORTED_VERSION = 1
 
 # Policy sentinels, carried through from scripts/api_rbac_expectations.yaml.
+#
+# These are the only two. The expectations file has a THIRD policy, ``ANY_GROUP``
+# ("authenticated and holding at least one of the groups this stack creates"),
+# which deliberately never reaches this module: the generator resolves it against
+# the ``AWS::Cognito::UserPoolGroup`` resources in ``template.yaml`` and emits the
+# concrete group list, so what arrives here is an ordinary list and this module
+# needs no new concept for it. That is also why it is not tolerated below — a
+# Lambda has no copy of the template, so it could not resolve the vocabulary and
+# could only implement the weaker "holds any group at all", which is a different
+# policy. An ``ANY_GROUP`` string in the manifest therefore means the generator
+# did not run, which is a build fault: ``_validated_policy`` rejects it as a bare
+# string that is not a sentinel, the whole manifest is refused, and every
+# operation is denied under ``DENY_ALL_MARKER``. Unrecognised is never read as
+# permissive.
 _ANY = "ANY"  # any authenticated Cognito caller
 _IAM_ONLY = "IAM_ONLY"  # backend/IAM principals only; no Cognito caller
 _SENTINELS = (_ANY, _IAM_ONLY)

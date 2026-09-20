@@ -17,6 +17,7 @@ import {
 } from '../graphql/generated';
 import { DOCUMENT_LIST_SHARDS_PER_DAY, LATEST_PERIODS } from '../components/document-list/documents-table-config';
 import { Document } from '../types/documents';
+import { describeApiError } from './utils/graphql-error';
 
 // Under the HTTP API transport there are no GraphQL subscriptions; the document
 // list is kept fresh by polling instead. AppSync deployments keep using
@@ -232,6 +233,18 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
         .map((r) => (r as PromiseFulfilledResult<GetDocumentResolved>).value?.data?.getDocument)
         .filter((doc): doc is NonNullable<typeof doc> => doc != null) as Document[];
 
+      // `allSettled` + a `fulfilled` filter used to swallow every rejection here,
+      // and the detail view renders its panel only `{document && ...}` — so a
+      // refused getDocument produced a page with nothing on it and nothing in the
+      // console. Report the first rejection instead; the caller still gets whatever
+      // resolved, which is what the polling path relies on.
+      const firstRejection = getDocumentResolutions.find((r) => r.status === 'rejected');
+      if (firstRejection) {
+        const reason = (firstRejection as PromiseRejectedResult).reason;
+        setErrorMessage(describeApiError(reason, 'load this document'));
+        logger.error('Error fetching document details', reason);
+      }
+
       // Merge the rich detail into shared list state so the open detail view picks
       // up the latest Sections/Pages/Metering (e.g. when a document finishes
       // processing while its detail page is open).
@@ -342,12 +355,10 @@ const useGraphQlApi = ({ initialPeriodsToLoad = LATEST_PERIODS }: UseGraphQlApiP
       setIsDocumentsListLoading(false);
     } catch (error: unknown) {
       setIsDocumentsListLoading(false);
-      // Extract meaningful error message from GraphQL/Lambda errors
-      const gqlError = error as { errors?: { message?: string; errorType?: string }[] };
-      const firstError = gqlError?.errors?.[0];
-      const detail = firstError?.message || (error instanceof Error ? error.message : 'Unknown error');
-      const errorType = firstError?.errorType ? ` (${firstError.errorType})` : '';
-      setErrorMessage(`Failed to list documents${errorType}: ${detail}`);
+      // describeApiError branches on errorType: a 403 gets copy the reader can act
+      // on rather than the dispatcher's own words, which name Cognito groups they
+      // cannot grant themselves. Everything else still carries the server's detail.
+      setErrorMessage(describeApiError(error, 'list documents'));
       logger.error('Error fetching documents', error);
     }
   };

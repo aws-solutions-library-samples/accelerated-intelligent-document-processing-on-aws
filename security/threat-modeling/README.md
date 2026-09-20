@@ -4,14 +4,14 @@
 
 | Field | Value |
 |-------|-------|
-| **Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Version** | 3.5 |
+| **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Last reviewed against version** | 0.6.9 |
 | **System** | GenAI Intelligent Document Processing (IDP) Accelerator |
 | **Architecture** | Unified (Pipeline + BDA modes), API Gateway REST transport |
 | **Methodology** | STRIDE |
-| **Total Threats** | 98 |
+| **Total Threats** | 99 |
 | **Classification** | Internal |
 
 > **`Last reviewed against version` is a gated field.** It records the release
@@ -30,13 +30,13 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 
 | Metric | Value |
 |--------|-------|
-| Threats identified | **98** |
+| Threats identified | **99** |
 | Critical risk (8–9) | 9 |
 | High risk (6–7) | 31 |
-| Medium risk (3–5) | 43 |
+| Medium risk (3–5) | 44 |
 | Low risk (1–2) | 15 |
-| Mitigated | 63 (64%) |
-| Partially mitigated | 25 (26%) |
+| Mitigated | 62 (63%) |
+| Partially mitigated | 27 (27%) |
 | Open (real gap, needs work) | **6 (6%)** |
 | Accepted risk | 4 (4%) |
 
@@ -45,9 +45,25 @@ This directory contains the comprehensive threat model for the GenAI IDP Acceler
 > [`scripts/build_threat_model.py`](scripts/build_threat_model.py), which parses
 > the Markdown corpus and joins it with a single curated status table. Run
 > `python3 security/threat-modeling/scripts/build_threat_model.py` after adding
-> or editing a threat; `--check` fails if the export has drifted. (Before v3.0
-> these numbers disagreed across four documents and the JSON export was 25
-> threats behind the corpus.)
+> or editing a threat; `--check` fails if the export has drifted, and `make
+> check-threat-model-currency` runs it in both CI systems.
+>
+> `--check` also **reads the corpus's own stated counts back** and fails when one
+> disagrees with the export, because the export being right has never stopped a
+> document being wrong: it carried 99 threats while eight documents said 98, three
+> were a release behind on the status tally, and `AUTH.T14` was missing from the
+> register and this file's category table while being present in both the corpus
+> and the export.
+>
+> ⚠️ **A pass is not corpus-wide consistency.** The check matches hand-fitted
+> phrasings over a named list of documents. It reads: totals, per-status tallies,
+> per-severity bands (including mermaid pie slices), per-component rows and their
+> column totals, and STRIDE-category rows. It does **not** read counts written as
+> words or with a thousands separator, any table column it does not name, or a
+> document absent from its list — and several documents' totals hang on a single
+> pattern fitted to one sentence, so **rephrasing a sentence that states a count
+> can drop it from the check with no signal**. When you edit such a sentence,
+> break the number deliberately and re-run to confirm it is still read.
 
 ### Open items requiring action
 
@@ -67,16 +83,23 @@ same mistake as one that reports an intention as a control.
 | UI.T06 | Presigned read URLs are bucket-scoped, not key-scoped; callable by any authenticated user | — | [web-ui.md](feature-threats/web-ui.md) |
 | JOB.T02 | Jobs API is outside the automated authorization test harness | — | [jobs-api.md](feature-threats/jobs-api.md) |
 
-Two further threats are **Partially Mitigated** with the remainder of their
-mitigation in flight, and are called out here because the partial state is easy
+Three further threats are **Partially Mitigated** with the remainder of their
+mitigation outstanding, and are called out here because the partial state is easy
 to over-read: **AUTH.T16** (authorization is opt-in per resolver — there is no
-default deny at the dispatcher; **issue #928**) and **AUTH.T15** (divergent
-log-redaction denylists across vendored copies; **issue #921**).
+default deny at the dispatcher; **issue #928**), **AUTH.T15** (divergent
+log-redaction denylists across vendored copies; **issue #921**) and **AUTH.T07**
+(config-version scope — two consumers now deny a lookup they cannot evaluate, but
+**five** named scope-aware resolvers — six source files — still read one as
+"unrestricted"; the scope is keyed on an email that can diverge from the row it
+should match; what identifier the claims yield to the lookup is not constrained at
+the adapter; and Chat-with-Document is unrestricted on the
+streaming transport, which forwards no verified per-user caller — that last half
+closes with `GAP-07` / **issue #920**).
 
-### What "reviewed" covers in v3.2
+### What "reviewed" covers
 
-A threat model that claims to have been re-reviewed should say how deeply. In
-this pass the following documents were re-derived from the templates and source
+A threat model that claims to have been re-reviewed should say how deeply. In the
+v3.2 pass the following documents were re-derived from the templates and source
 rather than edited in place, and their **Applies to release** rows read v0.6.9:
 [`architecture/system-overview.md`](architecture/system-overview.md),
 [`architecture/data-flows.md`](architecture/data-flows.md),
@@ -93,12 +116,16 @@ were last verified against. That is deliberate — a blanket version bump across
 all 24 documents would assert a review that did not happen, which is the failure
 mode the currency gate exists to prevent.
 
+v3.3 is narrower still: a targeted correction to AUTH.T07 and the counts that
+follow from it. No document's **Applies to release** row moved, because no
+document was re-reviewed.
+
 ## Directory Structure
 
 ```
 security/threat-modeling/
 ├── README.md                                    ← You are here
-├── threat-id-glossary.md                        ← All 98 threat IDs with cross-references
+├── threat-id-glossary.md                        ← All 99 threat IDs with cross-references
 │
 ├── architecture/                                ← System architecture & data flows
 │   ├── system-overview.md                       ← Unified architecture, components, trust boundaries
@@ -172,7 +199,7 @@ security/threat-modeling/
 ### Cross-Cutting Analysis
 - **[STRIDE Analysis](threat-analysis/stride-analysis.md)** — Full STRIDE across all components
 - **[Risk Matrix](risk-assessment/risk-matrix.md)** — Complete risk register with scoring and recommendations
-- **[Threat ID Glossary](threat-id-glossary.md)** — All 98 threat IDs with quick reference
+- **[Threat ID Glossary](threat-id-glossary.md)** — All 99 threat IDs with quick reference
 
 ### Implementation & Testing
 - **[Implementation Guide](deliverables/implementation-guide.md)** — Security controls, configuration, and checklists
@@ -190,7 +217,7 @@ security/threat-modeling/
 | CHAT | Companion Chat | 6 | Very High (9) | [companion-chat.md](feature-threats/companion-chat.md) |
 | MCP | MCP Integration | 6 | Critical (8) | [mcp-integration.md](feature-threats/mcp-integration.md) |
 | KB | Knowledge Base | 4 | High (6) | [knowledge-base.md](feature-threats/knowledge-base.md) |
-| AUTH | Authentication/RBAC | 15 | High (6) | [rbac-authentication.md](feature-threats/rbac-authentication.md) |
+| AUTH | Authentication/RBAC | 16 | High (6) | [rbac-authentication.md](feature-threats/rbac-authentication.md) |
 | SDK | SDK/CLI | 5 | Critical (8) | [sdk-cli.md](feature-threats/sdk-cli.md) |
 | HOOK | Lambda Hooks | 7 | Critical (8) | [lambda-hooks.md](feature-threats/lambda-hooks.md) |
 | UI | Web UI | 7 | High (6) | [web-ui.md](feature-threats/web-ui.md) |
@@ -279,6 +306,9 @@ strictly worse than the red build.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.3 | 2026-09-19 | **AUTH.T07 re-derived from the code; status corrected to Partially Mitigated.** The entry recorded the config-version scope lookup as querying an `EmailIndex`/`SubIndex` GSI, and the register recorded the threat as *Mitigated*. There is no `SubIndex`: the UsersTable declares one GSI, `EmailIndex`, keyed on `email` — the only identifier that joins a Cognito principal to a user row, since the row's own `PK`/`SK` are `USER#<userId>` with `userId` a `uuid4` unrelated to the Cognito `sub`. Chat-with-Document's lookup named the absent index, so every query raised and the surrounding handler read the failure as "unrestricted"; that lookup now queries `EmailIndex` from the verified claims its resolver forwards and denies the turn on any failure to evaluate the scope, and a unit check ties the index it names to the one [`template.yaml`](../../template.yaml) declares. Residuals are now recorded on the entry rather than absent from it, four in all: the scope-aware resolvers still read a failed lookup as unrestricted, and Chat-with-Document is **not** scope-restricted on the streaming Lambda Function URL transport, which forwards no verified per-user caller (`GAP-07`, **issue #920**) — the route reports an explicitly null caller identity and the check stands down with a per-turn log line instead of appearing to have consulted the table. AUTH.T07's Mitigations no longer imply the live `make api-test` scope suite covers chat; it does not, and the processor's unit suite does. Its Residual risk now enumerates **five** fail-open resolvers rather than four — `get_stepfunction_execution_resolver` was missing, though its own docstring names this threat — and adds two residuals that were absent: the scope is keyed on an email that can diverge from the row it should match (see [`docs/external-idp.md`](../../docs/external-idp.md), which reaches the same conclusion), and nothing constrains which identifier a claims set yields to the lookup. **Counts reconciled across the whole corpus** against the generated export, which every document had drifted from by hand: 98 → 99 threats in seven places, Medium 43 → 44, Mitigated 63 → 62, Partially 25 → 27, Spoofing 15 → 16, Elevation of Privilege 31 → 32, and `AUTH.T14` — present in the corpus and the export since v3.2 — added to the register and the glossary, which is where the missing threat had gone. `make check-threat-model-currency` now **reads those prose counts back and fails on a mismatch**; it previously checked only release distance and that the export rebuilds byte-identically, so nothing ever compared a stated count to a computed one. Reported in [issue #970](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/970). |
+| 3.4 | 2026-09-19 | **AUTH.T03 mitigation strengthened: the document-content API operations now require an assigned Cognito group.** A control change, not a re-review — `Last reviewed against version` deliberately stays at 0.6.9. The dispatcher's default deny (v3.2, AUTH.T16) made every operation declare its groups but did not decide what those groups should be, and 26 of 118 were declared `ANY`, i.e. authenticated but not vetted: with `AllowedSignUpEmailDomain` set the pool allows self-registration, so a caller could hold a valid token with an empty `cognito:groups` claim and satisfy all 26 ([issue #979](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/979)). Eight document-content reads and three mutations are now declared `ANY_GROUP` — any group `template.yaml` creates, resolved at build time from the `AWS::Cognito::UserPoolGroup` resources rather than written per operation — so the posture is 90 explicit group lists, 11 `ANY_GROUP`, 2 `IAM_ONLY` (which is not a group requirement: those reject every Cognito caller), 15 `ANY`, with each remaining `ANY` entry carrying a recorded reason. The distribution table in [`system-overview.md`](architecture/system-overview.md) and the tally in [`rbac-authentication.md`](feature-threats/rbac-authentication.md) are updated to match. **The corpus was swept for the eleven operation names rather than for the counts**, which is how the rest was found: [`web-ui.md`](feature-threats/web-ui.md)'s UI.T06 described both file reads as `groups: ANY` (its Description, Attack Vector, Mitigations and Open Items are corrected, and the Attack Vector now names the direct-S3 path explicitly, since that is what actually bounds the threat), and [`reporting-analytics.md`](feature-threats/reporting-analytics.md) and [`pii-anonymization.md`](feature-threats/pii-anonymization.md) each attributed a read to "any authenticated user". Both `rbac-authentication.md` and `system-overview.md` also claimed the expectations file records **one** accepted gap; it records two (GAP-02 and GAP-07), and GAP-02 is now scoped to the *resolver* rather than the operation, which does carry a dispatcher group check. `deliverables/security-review-v0.3.15-to-v0.5.5.md` is deliberately untouched: it is a version-pinned review of what was true between those releases, like the snapshots under `security/test-results/`. **Three residuals are unchanged and are stated in AUTH.T03 rather than implied away**, and the third bounds what the first two are worth: a group check is not a per-document check (UI.T06 stays Open); the floor gates the REST route only, so `POST /chat/document` on the chat Function URL still admits a groupless caller (`GAP-07` / AUTH.T14, now declared so that check S9 reports the divergence instead of it disappearing when the declarations were aligned); and **the floor gates the API, not the buckets** — `CognitoIdentityPoolSetRole` attaches one `authenticated` role with no `RoleMappings`, granting every authenticated user `s3:GetObject`/`ListBucket` on the document buckets and `kms:Decrypt` on the key, which the web UI uses by default, so a groupless caller can still enumerate keys through an `ANY` operation and read the object bytes with no resolver in the path. That last point was previously modelled only as UI.T06's key-scoping gap and is now recorded as reachable without any API operation and by a user in no group. No threat added or retired. |
+| 3.5 | 2026-09-20 | **AUTH.T07 closed at the class, and the limits of the gate that closes it recorded.** The config-version scope lookup is now one fail-closed implementation in `idp_common/config_scope.py` used by every REST consumer: the lookup key comes from the `email` claim alone (an absent claim denies, and issues no query), and an unwired UsersTable, a missing key or any failed `dynamodb:Query` raises rather than reading as "unrestricted". An **empty page still means unrestricted** — scoping is opt-in per user — so the distinction the entry now draws is between an *answer* from the table and a failure to get one. AUTH.T07's Description and Attack Vector are re-derived accordingly, and two routes are added that needed no unresolvable caller at all: `getDocumentCount` was declared scope-filtered while resolving no caller, and `reprocessDocument` gated its whole check on the caller supplying a `version` argument — so omitting it reprocessed any object key in the deployment, and left the document to be re-run under the *globally active* profile, which nothing scope-checks. Both directions are now enforced. Four residuals are recorded rather than absent: the email-versus-`sub` join; which Cognito token types the authorizer admits, which is **inferred from the template and unmeasured**; the class gate's scope — it checks key provenance and failure handling, has no rule about the *matcher*, and does not scan `lib/idp_common_pkg`, which leaves `idp_common/testset_scope.py` unpoliced for the independent `allowedTestSets` axis; and the two Chat-with-Document modules, which that gate **discovers and suppresses** under an entry naming the specific rules, because a concurrent change owns them — a test asserts the suppression is still load-bearing and fails the moment they comply. `pii-anonymization.md` 1.0 → 1.1 in the same pass: PII.T03's "the opposite of the host's AUTH.T07 fail-open defect" was half true, since that handler's own key derivation carried the same substitution; its report list also answered HTTP 200 with an empty row set where a scope lookup failed, which on an audit view is indistinguishable from "nothing was redacted", and now returns the 403 its two sibling routes already returned. No threat added or removed; no count changed. |
 | 3.2 | 2026-09-17 | **Currency refresh for v0.6.9, and a gate so the next drift is caught.** Re-derived from source: [`system-overview.md`](architecture/system-overview.md) and [`data-flows.md`](architecture/data-flows.md) (five Cognito groups not four; 118 routable operations not 97, with a corrected group distribution; the dispatcher's lack of a default deny; per-bucket encryption and the TLS-deny bucket policies in place of "SSE-S3 / SSE-KMS"; the concurrency admission-control mechanism; deployment-time privilege as trust boundary TB7), plus [`rbac-authentication.md`](feature-threats/rbac-authentication.md), [`companion-chat.md`](feature-threats/companion-chat.md), [`lambda-hooks.md`](feature-threats/lambda-hooks.md) and [`sdk-cli.md`](feature-threats/sdk-cli.md). Added **AUTH.T16** (no default deny at the dispatcher; authorization is opt-in per resolver), **AUTH.T15** (divergent log-redaction denylists), **HOOK.T07** (`onError: fail` is terminal at one of seven hook points) and **SDK.T05** (the shipped deployment service role reaches account administrator). Corrected two over-claims: CHAT.T03's "the caller's Cognito `sub` is derived from the SigV4 identity" (it is an assumed-role session name) and the hook docs' unqualified "`onError: fail` is terminal". Mitigations that depend on an unmerged change are marked **pending** with their issue number (#919, #920, #921, #927, #928) rather than described as present. Metadata is no longer hardcoded in the builder — it is read from this table, which had drifted (export said 3.0/v0.6.3 while this file said 3.1/v0.6.5.dev1) — and a new `Last reviewed against version` field is gated by `make check-threat-model-currency` in both CI systems. Not every document was re-verified; see "What 'reviewed' covers in v3.2". **The dispatcher default-deny threat was first drafted as `AUTH.T14` and renumbered to `AUTH.T16` before publication**, because a concurrent in-review change (PR #954) had already assigned `AUTH.T14` to a different threat — an alternate entry path bypassing an operation's group check on the streaming Function URL — and referenced that identifier from its CHANGELOG entry, from `.claude/skills/api-rbac-test.md` and from a comment in `scripts/api_rbac_expectations.yaml`, in each case beside the coverage-gap id `GAP-07`. (Measured on that branch, those three are the only occurrences outside `security/threat-modeling/`; its code comments name `GAP-07` rather than the threat id.) `AUTH.T14` is therefore **reserved**, not vacant; see the note under the AUTH table in [`threat-id-glossary.md`](threat-id-glossary.md). Three measured counts were corrected in this pass as well (106 of 109 log groups carry `KmsKeyId`, not 108; 17 SQS queues, not 16 or 18; 68 field aliases, not "roughly 55"), and CHAT.T06's recommendation was **withdrawn and replaced** — see that entry. 93 → 98 threats. |
 | 3.1 | 2026-08-20 | **Seller Entitlement Service.** Added the `SELL` prefix and [`feature-threats/seller-entitlement-service.md`](feature-threats/seller-entitlement-service.md) (**SELL.T01–T10**) — the first threat set whose protected assets belong to the **seller** (token signing key, customer roster, revenue) rather than the deploying customer, and whose caller is a semi-trusted, internet-reachable buyer account. A separate prefix rather than more `FEAT.*` threats because the trust boundary and the asset owner both differ. Six findings from the accompanying security review were fixed in the same change (crash on hostile input, product-existence oracle, unused KMS grant, missing token `kid`, unbounded body parse, allow-list free-tier mislabelling), plus a reserved-concurrency control. 83 → 93 threats. |
 | 3.0 | 2026-07-28 | **AppSec review for v0.6.x.** Corrected controls credited to deleted machinery: UI.T03 (AppSync GraphQL query-depth/introspection limits → REST dispatcher reality), CHAT.T03 (AppSync subscription filters → Lambda Function URL, with newly-identified missing group/ownership checks), UI.T01 CSP (documented `unsafe-inline`/`unsafe-eval` and `https:` script-src as *not* an anti-XSS control). Removed A2I/SageMaker from the HITL flow and trust boundary TB4 (HITL is now a built-in UI portal); removed the AppSync API layer from `system-overview.md`; rewrote all five AppSync sequence diagrams in `data-flows.md`. Added 19 threats for previously-unmodeled surfaces: **FEAT.T01–T04** (Feature Platform / third-party UI bundles in the host origin), **JOB.T01–T03** (Jobs API M2M OAuth realm), **PII.T01–T05** (preprocessing hook + PII redaction), **HOOK.T06** (preprocessing hook power), **PM.T08** (OpenAI GPT-5.x via `bedrock-mantle`), **UI.T06** (presigned-read key scoping), **UI.T07** (CSP divergence by hosting mode), **CHAT.T06** (client-supplied caller identity), **RPT.T07** (ground-truth editor), **RPT.T08** (document version retention). Reconciled counts across all documents (62/64/58 → **83**) and made the JSON export **generated** rather than hand-maintained. 64 → 83 threats. |

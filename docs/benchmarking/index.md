@@ -26,7 +26,7 @@ separate — they answer different questions and are regenerated on different ca
 |----------|--------------------|---------|
 | **This guide** (`index.md`) | *How does the suite work and what do the numbers mean?* | Evergreen; edit when the harness changes. |
 | [Configuration Guidance](./config-guidance.md) | *Which config (OCR / mode / assessment / model) should I pick?* — cross-config at one release | Refreshed per release. |
-| [Classification Confidence](./studies/classification-confidence.md) | *When classification reports a confidence, is it worth acting on — and does that depend on the classifier?* | Re-run when the classifier default or the confidence mode changes. |
+| [Benchmark Studies](./studies/) | *One question each*, asked once during development and not regenerated per release — prompt caching, classification confidence, multi-instance sections, the seven advanced-extraction refinements, schema restatement, greedy decoding on tool use | Added when a one-off question is measured; the [index](./studies/) lists each study's verdict. |
 | [Release Audit Trail](./releases/) | *Is upgrading from the last published release safe / cheaper / faster?* — release-vs-release | **One new entry per release** (never overwritten). |
 
 The release audit trail is the durable history: `docs/benchmarking/releases/vX.Y.Z.md`
@@ -160,20 +160,21 @@ it skipped and why).
 
 "Selectable in the product" and "covered by the published guidance" are different
 things, and the difference is the **`extraction_model` sweep** — the one-axis sweep
-`full` runs (or, as for v0.6.8, `coresynth --set extraction_model=<m>` once per model),
+`full` runs (or, as for v0.6.8 and v0.6.9, `coresynth --set extraction_model=<m>` once per model),
 which is what the [Configuration Guidance](./config-guidance.md) §5 is computed from. A
 model only appears there if it has been swept, and the table records when:
 
 | Model | In the sweep | Measured | Note |
 |---|---|---|---|
-| Nova Lite | ✅ | **2026-09-12, v0.6.8** (full `coresynth`, 133 runs, 32 failed) | simple mode ≤100 rows only; cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) — [guide §5](./config-guidance.md#5-which-model-for-which-documents--the-model-axis-measured) |
-| Nova Pro | ✅ | **2026-09-12, v0.6.8** (`simplegrid`, 63 runs; full grid abandoned after 36 launches — advanced cells stuck in stream-error retries) | simple mode ≤100 rows only |
-| Claude Sonnet 4.6 | held as the sweep's control | 2026-09-12, v0.6.8 (`core`, 893 runs incl. both reference corpora) | the fixed baseline every sweep varies against; **best value in the v0.6.8 grid** |
-| **Claude Sonnet 5** (default), Sonnet 5 `:1m` | ✅ | **2026-09-12, v0.6.8** (133 runs each; Sonnet 5 also `core` with both corpora, `scaling`, `cost`, `intconf`, `advverify`, `astravalue`, `astracap`) | the shipped default; `:1m` matched its accuracy at every size that fits and rescued no request on this corpus (its reported +10% / +51% cost predates the #899 pricing fix and overstates the variant — the two are billed at identical rates, the 1M window carrying no premium) |
-| **Claude Opus 5** | ✅ | **2026-09-12, v0.6.8** (133 runs) | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
-| **OpenAI GPT-6 Astra** | ✅ | **2026-09-12, v0.6.8** (133 runs + `astravalue` 100 + `astracap` 12) | at ceiling on the agentic path at 1.6× Sonnet 5; in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap) |
+| Nova Lite | ✅ | 2026-09-12, **v0.6.8** (full `coresynth`, 133 runs, 32 failed) — not re-measured on v0.6.9 | simple mode ≤100 rows only; cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)) — [guide §5](./config-guidance.md#5-which-model-for-which-documents--the-model-axis-measured) |
+| Nova Pro | ✅ | 2026-09-12, **v0.6.8** (`simplegrid`, 63 runs; not re-measured on v0.6.9; full grid abandoned after 36 launches — advanced cells stuck in stream-error retries) | simple mode ≤100 rows only |
+| Claude Sonnet 4.6 | held as the sweep's control | **2026-09-19, v0.6.9** (`core`, 893 runs incl. both reference corpora) | the fixed baseline every sweep varies against; cheapest of the three measured on v0.6.9 ($0.537/doc) and the only one that failed runs (4 of 133) |
+| **Claude Sonnet 5** (default) | ✅ | **2026-09-19, v0.6.9** (133 runs, plus `scaling`, `scalingsimple`, `cost`, `advverify`, `astravalue`, `astracap`) | the shipped default; 0 failures of 133 at $0.676/doc, no confidence leaf below 0.9 anywhere in the grid |
+| Sonnet 5 `:1m` | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | matched Sonnet 5's accuracy at every size that fits and rescued no request on this corpus (its reported +10% / +51% cost predates the #899 pricing fix and overstates the variant — the two are billed at identical rates, the 1M window carrying no premium) |
+| **Claude Opus 5** | ✅ | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | most complete model in the grid (0.993) at +23% / +41% over Sonnet 5; accuracy identical |
+| **OpenAI GPT-6 Astra** | ✅ | **2026-09-19, v0.6.9** (133 runs + `astravalue` 100 + `astracap` 12) | the only model at recall 1.000 **and** scalar accuracy 1.000 on all 19 v0.6.9 grid cells (documents ≤400 rows), at 2.6× Sonnet 5's cost and marginally behind on per-row cell accuracy (0.977 vs 0.999); in simple mode returns an empty response on the 17-page document (13 of 13 draws) and rewrites descriptions on the 26-page one — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it-astravalue-astracap) |
 | `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | 2026-09-12 (20 runs) | same weights ~10% cheaper (measured $0.94 vs $1.10 on the 9-page document); same simple-mode failure shape |
-| Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | **2026-09-12, v0.6.8** (133 runs) | see the guide §5.3 |
+| Claude Haiku 4.5 (classification only) | ✅ `classification_model` axis | 2026-09-12, **v0.6.8** (133 runs) — not re-measured on v0.6.9 | see the guide §5.3 |
 | xAI Grok 4.6 | ❌ | — | not yet measured — see `docs/grok-models.md` for its documented capabilities |
 
 The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 4.5) and the

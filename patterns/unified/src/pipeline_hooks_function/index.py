@@ -75,6 +75,13 @@ The `Literal` on `PipelineHook.onError` stops a bad value being WRITTEN through
 `onError: fail` also cannot gate at a hook point the active processing mode never
 reaches: in BDA mode the state machine has no postOcr/postClassification/
 postExtraction state, so the dispatcher is never invoked there at all (#982).
+Because nothing runs at those points, nothing there can report the problem
+either — so the `preprocessing` invocation, which happens ahead of the routing
+Choice in BOTH modes, audits the whole registered hook set against
+hook_point_reachability.py (generated from the state machine definition) and
+returns any hook the chosen branch will not reach under `unreachableHooks`. That
+key lands in `$.HookResults.preprocessing` and therefore in the execution
+history, which is where an operator asking "did my gate run?" can find it.
 
 Resolution rules:
   1. If the SFN input has `document.config_version`, use it.
@@ -90,8 +97,9 @@ during pinning, or a document queued by an older release. They are not dead
 code, but reaching them is worth noticing, which is why step 3 logs at WARNING
 and the returned payload always names the version actually used.
 
-Returns immediately when the requested step has no `postHook` entries,
-keeping the no-vertical-pack overhead at one DDB GetItem.
+Returns immediately when the requested step has no `postHook` entries, keeping
+the no-vertical-pack overhead at one DDB GetItem — two at `preprocessing`, which
+re-reads the row for the unreachable-hook audit described above.
 """
 
 from __future__ import annotations
@@ -107,6 +115,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from hook_errors import HookFatalError
+from hook_point_reachability import unreachable_hook_points
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -431,11 +440,27 @@ def _normalize_hook(h: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-def _read_hooks_from_config(
-    table: Any, version: str, point: str
-) -> List[Dict[str, Any]]:
-    """Read the hooks for a point from Config#<version>, returning enabled,
-    normalized entries.
+def _load_config_payload(table: Any, version: str) -> Dict[str, Any]:
+    """The whole Config#<version> payload as a plain dict ({} if unreadable).
+
+    One GetItem. The `preprocessing` invocation makes two calls here — one for its
+    own hooks via :func:`_read_hooks_from_config` and one for the unreachable-hook
+    audit, which needs sections that read does not cover (see
+    :func:`_unreachable_hook_report`). Every other hook point makes one.
+    """
+    try:
+        resp = table.get_item(Key={"Configuration": f"Config#{version}"})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Config row read failed for version=%s: %s", version, exc)
+        return {}
+    item = resp.get("Item") or {}
+    if not item:
+        return {}
+    return _decompress_item(item)
+
+
+def _hooks_from_payload(payload: Dict[str, Any], point: str) -> List[Dict[str, Any]]:
+    """The enabled, normalized hooks registered at `point` in a config payload.
 
     Two shapes:
       - flat points (`preprocessing`, `postprocessing`): a SINGLE inline hook —
@@ -446,15 +471,6 @@ def _read_hooks_from_config(
     if not step:
         logger.warning("Unknown hook point %s", point)
         return []
-    try:
-        resp = table.get_item(Key={"Configuration": f"Config#{version}"})
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Config row read failed for version=%s: %s", version, exc)
-        return []
-    item = resp.get("Item") or {}
-    if not item:
-        return []
-    payload = _decompress_item(item)
     step_block = payload.get(step) or {}
     if not isinstance(step_block, dict):
         return []
@@ -471,6 +487,108 @@ def _read_hooks_from_config(
     valid = [n for n in (_normalize_hook(h) for h in raw) if n]
     valid.sort(key=lambda h: (h["order"], h["featureId"]))
     return valid
+
+
+def _read_hooks_from_config(
+    table: Any, version: str, point: str
+) -> List[Dict[str, Any]]:
+    """Read the enabled, normalized hooks for `point` from Config#<version>."""
+    return _hooks_from_payload(_load_config_payload(table, version), point)
+
+
+def _coerce_bool(raw: Any) -> Optional[bool]:
+    """A stored config flag as a bool, or None when it is not a boolean at all.
+
+    Config rows are written with their values STRINGIFIED (see
+    ConfigurationRecord.to_dynamodb_item), so `use_bda` arrives as `"true"` or
+    `"false"` as often as a real bool. Returning None for anything else keeps the
+    audit below silent rather than guessing a processing mode from a value it does
+    not understand — a wrong guess would name the wrong set of hooks as inert.
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no", ""):
+            return False
+    return None
+
+
+def _resolve_use_bda(document: Any) -> Optional[bool]:
+    """Which branch RouteByProcessingMode will take, or None if undeterminable.
+
+    Read from the DOCUMENT and nowhere else, because `$.document.use_bda` is the
+    path the Choice itself switches on (the queue processor injects it from the
+    resolved config), so it is the branch this execution will take even if the
+    config row has changed since.
+
+    The configuration is deliberately NOT a fallback. With the key absent from the
+    document the Choice cannot select the BDA branch — it takes `Default`, and if
+    the unresolvable path fails the execution outright then no branch runs at all —
+    so a config row saying `use_bda: true` would name hooks as unreachable that are
+    in fact about to run. That is the wrong answer in the only situation the
+    fallback could apply to (a hand-started execution or a redrive), so `None` and
+    silence is the honest result.
+    """
+    if isinstance(document, dict):
+        return _coerce_bool(document.get("use_bda"))
+    return None
+
+
+def _unreachable_hook_report(
+    config_payload: Dict[str, Any], document: Any
+) -> List[Dict[str, Any]]:
+    """Registered hooks at points THIS execution's branch will never invoke.
+
+    `postOcr`, `postClassification` and `postExtraction` exist only on the
+    Pipeline branch of the state machine: BDA performs OCR, classification and
+    extraction inside one Bedrock Data Automation invocation, so there is no
+    separate state to hook after. A hook registered at one of them under
+    `use_bda: true` is never invoked — and neither is its `onError: fail` gate,
+    which is the fail-open in #982. Nothing else can report it: the dispatcher is
+    the only component that runs, and at those points it does not.
+
+    So `preprocessing` — the one point ahead of the routing Choice, reached in
+    both modes — audits the whole hook set once and returns what it finds. The
+    caller logs it AND puts it in the dispatcher's result, which the state machine
+    stores at `$.HookResults.preprocessing`, so it lands in the execution history
+    where an operator looking at a completed document can actually find it.
+
+    Returns one entry per (point, hook), ordered by point then registration order.
+    Empty when the branch reaches every point, when no hooks are registered at an
+    unreachable one, or when the processing mode could not be determined.
+    """
+    use_bda = _resolve_use_bda(document)
+    if use_bda is None:
+        logger.info(
+            "The document carries no use_bda, so the branch this execution will "
+            "take is not knowable here; skipping the unreachable-hook audit"
+        )
+        return []
+    mode = "bda" if use_bda else "pipeline"
+    report: List[Dict[str, Any]] = []
+    for point in sorted(unreachable_hook_points(use_bda)):
+        for hook in _hooks_from_payload(config_payload, point):
+            report.append(
+                {
+                    "hookPoint": point,
+                    "featureId": hook["featureId"],
+                    "arn": hook["arn"],
+                    "onError": hook["onError"],
+                    "processingMode": mode,
+                    "message": (
+                        f"Hook {hook['featureId']} is registered at {point} with "
+                        f"onError={hook['onError']}, but the {mode} processing mode "
+                        f"has no {point} state, so this hook is NOT invoked for this "
+                        f"document and its onError policy cannot gate it. Register "
+                        f"it at `preprocessing` (which runs in both modes) or run "
+                        f"the pipeline mode."
+                    ),
+                }
+            )
+    return report
 
 
 def _set_preprocessing_status(document: Any) -> None:
@@ -815,9 +933,32 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
         return _noop(point, inbound_document)
 
     hooks = _read_hooks_from_config(table, version, point)
+
+    # `preprocessing` is the only point ahead of the BDA/pipeline routing Choice,
+    # so it is the only one guaranteed to run whichever branch this document
+    # takes — which makes it the one place that can report hooks registered at a
+    # point the chosen branch never reaches (#982). Recorded on the result (and so
+    # in $.HookResults in the execution history), not only in CloudWatch: a log
+    # line is not something an operator finds when the question is "did my gate
+    # run?".
+    #
+    # The audit needs sections this point's own read does not cover, so it costs
+    # one extra GetItem — once per document, at one of seven hook points, on a row
+    # this dispatcher already reads at each of them.
+    unreachable: List[Dict[str, Any]] = []
+    if point == "preprocessing":
+        unreachable = _unreachable_hook_report(
+            _load_config_payload(table, version), document
+        )
+        for entry in unreachable:
+            logger.warning("%s", entry["message"])
+
     if not hooks:
         logger.info("No hooks registered for %s in Config#%s", point, version)
-        return _noop(point, inbound_document, version)
+        out = _noop(point, inbound_document, version)
+        if unreachable:
+            out["unreachableHooks"] = unreachable
+        return out
 
     # Surface the preprocessing step in the document's visible status (the
     # generic RUNNING otherwise persists for the whole — possibly long —
@@ -944,4 +1085,6 @@ def lambda_handler(event: Dict[str, Any], _ctx: Any) -> Dict[str, Any]:
     }
     if halt_requested and not halt:
         out["haltIgnored"] = True
+    if unreachable:
+        out["unreachableHooks"] = unreachable
     return out

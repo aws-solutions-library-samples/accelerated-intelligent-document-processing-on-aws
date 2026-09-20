@@ -275,190 +275,16 @@ def test_post_step_hook_state_stays_open_on_a_transient_fault(hook_state):
     )
 
 
-# --------------------------------------------------------------------------
-# Which hook points each processing mode actually reaches.
-#
-# `onError: fail` can only abort a document at a hook point the active mode
-# EXECUTES. In BDA mode the OCR, classification and extraction steps do not
-# exist as separate states, so their hook points are never invoked and a `fail`
-# policy registered there is silently inert. That is documented in
-# docs/feature-platform.md#not-every-hook-point-exists-in-every-processing-mode
-# and docs/feature-platform-developer-guide.md, and tracked as issue #982.
-#
-# The two tests below pin the table in those docs to the graph, so the docs
-# cannot drift from the ASL: if a future change gives the BDA branch its own
-# OCR-equivalent state with a postOcr hook, the doc table becomes wrong and
-# `test_bda_mode_reaches_no_step_specific_hook_point` fails.
-# --------------------------------------------------------------------------
-
-_ROUTER_VARIABLE = "$.document.use_bda"
-
-
-def _reachable(states: dict, start: str, scope: str = "") -> set[str]:
-    """Qualified names of every state reachable from `start` within `states`.
-
-    Follows `Next`, `Default`, `Choices[*].Next` and `Catch[*].Next`. A reached
-    Map or Parallel contributes its nested states too, since entering the parent
-    executes them.
-    """
-    seen: set[str] = set()
-    queue = [start]
-    while queue:
-        name = queue.pop()
-        if name in seen or name not in states:
-            continue
-        seen.add(name)
-        state = states[name]
-        for key in ("Next", "Default"):
-            if isinstance(state.get(key), str):
-                queue.append(state[key])
-        for choice in state.get("Choices") or []:
-            if isinstance(choice.get("Next"), str):
-                queue.append(choice["Next"])
-        for catcher in state.get("Catch") or []:
-            if isinstance(catcher.get("Next"), str):
-                queue.append(catcher["Next"])
-
-    reached = set()
-    for name in seen:
-        reached.add(f"{scope}{name}")
-        state = states[name]
-        for key in ("Iterator", "ItemProcessor"):
-            nested = state.get(key)
-            if isinstance(nested, dict) and isinstance(nested.get("States"), dict):
-                reached |= _reachable(
-                    nested["States"], nested["StartAt"], f"{scope}{name}."
-                )
-        for index, branch in enumerate(state.get("Branches") or []):
-            if isinstance(branch.get("States"), dict):
-                reached |= _reachable(
-                    branch["States"], branch["StartAt"], f"{scope}{name}[{index}]."
-                )
-    return reached
-
-
-def _hook_points_by_mode() -> tuple[str, set[str], set[str], set[str]]:
-    """(start_state, always_run, bda_reachable, pipeline_reachable) hook points.
-
-    The mode router is found by the variable it switches on, not by name.
-    `always_run` is the hook points executed before the router — `preprocessing`
-    is `StartAt`, so it runs in both modes regardless of the branches.
-    """
-    asl = _load_asl()
-    states = asl["States"]
-    router = next(
-        (
-            name
-            for name, state in states.items()
-            if state.get("Type") == "Choice"
-            and any(
-                choice.get("Variable") == _ROUTER_VARIABLE
-                for choice in state.get("Choices") or []
-            )
-        ),
-        None,
-    )
-    assert router, (
-        f"no Choice state switches on {_ROUTER_VARIABLE!r}; the processing-mode "
-        f"router moved or was renamed, and the mode assertions below would be "
-        f"meaningless"
-    )
-    bda_branch = next(
-        choice["Next"]
-        for choice in states[router]["Choices"]
-        if choice.get("Variable") == _ROUTER_VARIABLE
-    )
-    pipeline_branch = states[router]["Default"]
-
-    def points(names: set[str]) -> set[str]:
-        found = set()
-        for hook_state, (state, _siblings) in HOOK_STATES.items():
-            if hook_state not in names:
-                continue
-            point = ((state.get("Parameters") or {}).get("Payload") or {}).get(
-                "hookPoint"
-            )
-            assert isinstance(point, str), (
-                f"{hook_state} declares no literal hookPoint in its Payload; the "
-                f"mode table cannot be checked against the graph"
-            )
-            found.add(point)
-        return found
-
-    # Everything reachable from StartAt but NOT from either branch runs in both
-    # modes ahead of the split.
-    from_start = _reachable(states, asl["StartAt"])
-    from_bda = _reachable(states, bda_branch)
-    from_pipeline = _reachable(states, pipeline_branch)
-    pre_router = from_start - from_bda - from_pipeline
-    return router, points(pre_router), points(from_bda), points(from_pipeline)
-
-
-ROUTER_STATE, ALWAYS_RUN_POINTS, BDA_POINTS, PIPELINE_POINTS = _hook_points_by_mode()
-
-# The three points that exist only as separate pipeline steps. BDA performs OCR,
-# classification and extraction inside one InvokeDataAutomationAsync call, so
-# there is no state to hang them off.
-_STEP_SPECIFIC_POINTS = {"postOcr", "postClassification", "postExtraction"}
-
-
-@pytest.mark.unit
-def test_every_hook_point_is_classified_by_mode():
-    """Non-vacuity guard: the three sets must together cover all seven points."""
-    classified = ALWAYS_RUN_POINTS | BDA_POINTS | PIPELINE_POINTS
-    declared = {
-        ((state.get("Parameters") or {}).get("Payload") or {}).get("hookPoint")
-        for state, _siblings in HOOK_STATES.values()
-    }
-    assert classified == declared, (
-        f"the reachability walk from {ROUTER_STATE} classified {sorted(classified)} "
-        f"but the graph declares {sorted(declared)}. A hook point reachable from "
-        f"neither branch nor before the router is unreachable in BOTH modes, which "
-        f"is a worse bug than #982 — or the walk is broken and the mode assertions "
-        f"below prove nothing."
-    )
-    assert ALWAYS_RUN_POINTS == {"preprocessing"}, (
-        f"expected `preprocessing` to be the only hook point ahead of "
-        f"{ROUTER_STATE}, found {sorted(ALWAYS_RUN_POINTS)}. The docs tell "
-        f"extension authors to register at `preprocessing` precisely because it "
-        f"is the one point both modes always execute."
-    )
-
-
-@pytest.mark.unit
-def test_bda_mode_reaches_no_step_specific_hook_point():
-    """BDA mode must not reach postOcr / postClassification / postExtraction.
-
-    This is the reachability claim the docs make. It is asserted in BOTH
-    directions so the table cannot drift: the three points are absent from the
-    BDA branch and present in the pipeline branch. A `fail` policy registered at
-    one of them is therefore inert under BDA — see issue #982.
-    """
-    leaked = BDA_POINTS & _STEP_SPECIFIC_POINTS
-    assert not leaked, (
-        f"the BDA branch now reaches {sorted(leaked)}. That is not a regression "
-        f"in itself — it may be a fix for #982 — but the mode table in "
-        f"docs/feature-platform.md and docs/feature-platform-developer-guide.md "
-        f"now claims these points are never invoked under BDA, and must be updated."
-    )
-    missing = _STEP_SPECIFIC_POINTS - PIPELINE_POINTS
-    assert not missing, (
-        f"the pipeline branch does NOT reach {sorted(missing)}, so these hook "
-        f"points are dead in both modes. Either a hook state was removed or the "
-        f"walk is wrong; either way the docs are now wrong too."
-    )
-    shared = {"postRuleValidation", "postSummarization", "postprocessing"}
-    for point in sorted(shared):
-        assert point in BDA_POINTS and point in PIPELINE_POINTS, (
-            f"{point} is documented as reachable in BOTH processing modes but is "
-            f"reached from "
-            f"{'pipeline only' if point in PIPELINE_POINTS else 'BDA only'}. "
-            f"An `onError: fail` policy there is inert in the other mode."
-        )
+# Which hook points each processing mode reaches — `postOcr`,
+# `postClassification` and `postExtraction` exist only on the Pipeline branch, so
+# `onError: fail` there cannot abort a BDA-mode document (#982) — is asserted in
+# test_hook_point_reachability.py, which walks the same graph and additionally
+# checks the generated table the dispatcher and `register_feature_hooks` read.
+# One home for that claim, so a change to the branches updates one file.
 
 
 # --------------------------------------------------------------------------
-# `CausePath` may only be fed by a catcher whose error shape guarantees $.Cause.
+# A `CausePath` may only read paths its catcher guarantees.
 # --------------------------------------------------------------------------
 
 
@@ -473,28 +299,87 @@ def _causepath_fail_states() -> dict[str, tuple[dict, dict]]:
 
 CAUSEPATH_FAIL_STATES = _causepath_fail_states()
 
+#: Keys that exist only on a caught **error output**, never on a state's own input.
+_ERROR_OUTPUT_KEYS = frozenset({"Error", "Cause"})
+
+
+def _root_key(path: str) -> str | None:
+    """`$.HookResults.x` -> `HookResults`; `$` and `$$...` -> None."""
+    if not isinstance(path, str) or not path.startswith("$.") or path.startswith("$$"):
+        return None
+    return path[2:].split(".")[0].split("[")[0] or None
+
+
+def _keys_read_by(fail_state: dict) -> set[str]:
+    """Top-level input keys a Fail state's `CausePath` / `ErrorPath` dereference.
+
+    Both fields hold either a bare JSONPath or an intrinsic-function call, so the
+    paths are extracted by pattern rather than by parsing the intrinsic. A bare `$`
+    contributes no key: reading the whole input can never be unsatisfiable.
+
+    The `(?<!\\$)` is load-bearing. Without it the pattern matches the `$.Xxx`
+    SUBSTRING inside a `$$.Xxx` context-object reference, so a cause naming
+    `$$.Execution.Name` — a natural thing for an operator-facing Fail state — would
+    be read as a reference to an input key `Execution` that no catcher provides. It
+    also makes `_root_key`'s own `$$` guard reachable instead of dead code.
+    """
+    keys: set[str] = set()
+    for field in ("CausePath", "ErrorPath"):
+        for match in re.finditer(
+            r"(?<!\$)\$\.[A-Za-z0-9_\[\]]+", str(fail_state.get(field, ""))
+        ):
+            key = _root_key(match.group(0))
+            if key:
+                keys.add(key)
+    return keys
+
 
 @pytest.mark.unit
-def test_causepath_fail_states_are_only_reached_by_named_error_catchers():
-    """A `CausePath` reading `$.Cause` needs a guaranteed Lambda error payload.
+def test_causepath_fail_states_only_read_paths_their_catchers_guarantee():
+    """A `CausePath` must dereference only what the catcher feeding it provides.
 
-    `PostStepHookFailed` and `PostExtractionHookFailed` interpolate the
-    dispatcher's own message — the only place the failing hook's `featureId` and
-    hook point appear — via `States.Format(..., $.Cause)`. Their catchers set no
-    `ResultPath`, so it defaults to `$` and the Lambda error output (which always
-    carries `Error`/`Cause`) becomes the whole input.
+    A Fail state's `Error`/`Cause` REPLACE the original error on the
+    `ExecutionFailed` event, so a static string discards the only description of
+    what actually broke. `CausePath` keeps it — but it is evaluated against the
+    Fail state's *input*, and what that input contains is decided by the catcher,
+    not by the Fail state. Get the pairing wrong and the reference cannot resolve;
+    Step Functions then reports `States.Runtime`, which MASKS the real failure and
+    leaves the operator worse off than the static string would have.
 
-    Pointing a `States.ALL` catcher at one of these states would widen the input
-    to error shapes that carry no `Cause`, and the missing reference would surface
-    as a `States.Runtime` failure that MASKS the real hook error — the operator
-    would be worse off than with the static string this replaced. So every
-    catcher targeting a CausePath-bearing Fail state must name a concrete error,
-    and must not set a `ResultPath` that moves the payload out from under `$`.
+    A catcher's `ResultPath` decides which of the two shapes the Fail state sees:
+
+    * absent or `$` — the caught **error output** becomes the whole input, so
+      `$.Error` and `$.Cause` resolve and the state's own input keys are gone.
+    * `$.Something` — the state's own input survives, with the error output filed
+      under `Something`; `$.Cause` does **not** resolve.
+    * `null` — the error output is discarded entirely, so nothing describes the
+      failure and there is no reason to use `CausePath` at all.
+
+    So the invariant is checked against what each Fail state actually reads rather
+    than against one assumed spelling. `PostStepHookFailed` and
+    `PostExtractionHookFailed` interpolate `$.Cause` and are fed by catchers with
+    no `ResultPath`; `ExtractionShardMapFailed` names the section as well as the
+    error (`$.section_id`, `$.ShardMapError`) and is fed by a catcher that files
+    the error output beside the input it needs. Both are correct, and the rule
+    below admits both while rejecting every mismatch.
+
+    `States.ALL` is refused for all of them regardless of paths: it widens the
+    caught error to shapes whose contents are not guaranteed, which is the
+    condition that produced the `States.Runtime` masking in the first place.
+
+    ⚠️ **This is one half of the invariant.** It checks that the catcher files the
+    error output where the cause looks for it. It does NOT check that an input key
+    the cause reads — `$.section_id` — exists on every path reaching the state; that
+    is `scripts/tests/test_state_machine_retry_policies.py::
+    test_state_input_keys_are_producible`, whose `CausePath` / `ErrorPath` coverage
+    is what makes a `$.sectionId` typo or a `$.totally_bogus_key` fail. Removing
+    either half halves the protection, and each failure mode ends the same way: a
+    `States.Runtime` that masks the real error. Keep both.
     """
-    assert len(CAUSEPATH_FAIL_STATES) >= 2, (
-        f"expected at least the 2 CausePath-bearing Fail states, found "
+    assert len(CAUSEPATH_FAIL_STATES) >= 3, (
+        f"expected at least the 3 CausePath-bearing Fail states, found "
         f"{sorted(CAUSEPATH_FAIL_STATES)}. If they reverted to a static Cause the "
-        f"aborted document again reports nothing about WHICH hook failed."
+        f"aborted document again reports nothing about WHAT failed."
     )
     offenders = []
     for _qualified, state, siblings in _walk(_load_asl()["States"]):
@@ -504,16 +389,52 @@ def test_causepath_fail_states_are_only_reached_by_named_error_catchers():
                 continue
             if "CausePath" not in siblings[target]:
                 continue
+            edge = f"{_qualified} -> {target}"
             errors = catcher.get("ErrorEquals") or []
             if "States.ALL" in errors:
-                offenders.append(f"{_qualified} -> {target}: ErrorEquals={errors}")
-            elif catcher.get("ResultPath") not in (None, "$"):
                 offenders.append(
-                    f"{_qualified} -> {target}: ResultPath="
-                    f"{catcher['ResultPath']!r} moves the error payload off `$`"
+                    f"{edge}: ErrorEquals={errors} widens the caught error to "
+                    f"shapes whose fields are not guaranteed"
+                )
+                continue
+            reads = _keys_read_by(siblings[target])
+            result_path = catcher.get("ResultPath", "$")
+            payload_root = "$" if result_path == "$" else _root_key(result_path or "")
+            if result_path is None:
+                offenders.append(
+                    f"{edge}: ResultPath is null, so the error output is discarded "
+                    f"and nothing the CausePath reads describes the failure"
+                )
+                continue
+            for key in sorted(reads & _ERROR_OUTPUT_KEYS):
+                if payload_root != "$":
+                    offenders.append(
+                        f"{edge}: {target} reads $.{key} but ResultPath="
+                        f"{result_path!r} files the error output under "
+                        f"$.{payload_root}, so $.{key} does not resolve"
+                    )
+            for key in sorted(reads - _ERROR_OUTPUT_KEYS):
+                if payload_root == "$":
+                    offenders.append(
+                        f"{edge}: {target} reads $.{key} from the state input, but "
+                        f"ResultPath {result_path!r} replaces that input with the "
+                        f"error output, so $.{key} does not resolve"
+                    )
+            if payload_root not in reads and payload_root != "$":
+                offenders.append(
+                    f"{edge}: the error output is filed under $.{payload_root}, "
+                    f"which {target}'s CausePath never reads — the description of "
+                    f"the failure is dropped, so the Cause says nothing new"
+                )
+            elif payload_root == "$" and not (reads & _ERROR_OUTPUT_KEYS):
+                offenders.append(
+                    f"{edge}: the error output is the whole input, but {target}'s "
+                    f"CausePath reads none of {sorted(_ERROR_OUTPUT_KEYS)} — the "
+                    f"description of the failure is dropped"
                 )
     assert not offenders, (
         "a CausePath-bearing Fail state is fed by a catcher that does not "
-        f"guarantee `$.Cause`: {offenders}. Use a static Cause at that Fail "
-        "state instead, or give the catcher a concrete ErrorEquals."
+        "guarantee what it reads:\n  " + "\n  ".join(offenders) + "\nEither give "
+        "the catcher a ResultPath that matches what the Cause reads, or use a "
+        "static Cause at that Fail state."
     )

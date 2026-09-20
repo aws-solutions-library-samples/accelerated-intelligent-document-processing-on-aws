@@ -202,3 +202,45 @@ describe('useSchemaDesigner unknown-extension preservation', () => {
     expect('x-aws-idp-source-page-types' in attr!).toBe(false);
   });
 });
+
+/**
+ * Importing a schema with an inline object extracts that object into a shared
+ * class and points the original property at it. The property becomes a bare
+ * `$ref` — the same shape both reference-picking routes in the UI write, so an
+ * imported reference and a hand-built one are indistinguishable afterwards
+ * (GitHub #957). `type` belongs to the extracted `$defs` entry; left beside the
+ * `$ref` it would be what `resolveAttributeType` reads instead of the pointer.
+ */
+describe('useSchemaDesigner inline-object extraction', () => {
+  const schemaWithInlineObject = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    $id: 'Invoice',
+    'x-aws-idp-document-type': 'Invoice',
+    type: 'object',
+    properties: {
+      shipsTo: {
+        type: 'object',
+        description: 'Where the goods go',
+        properties: { street: { type: 'string' } },
+        required: ['street'],
+      },
+    },
+  };
+
+  it('leaves the extracted reference as a bare $ref, with no sibling type', () => {
+    const { result } = renderHook(() => useSchemaDesigner(schemaWithInlineObject));
+
+    const invoice = result.current.classes.find((c) => c.name === 'Invoice');
+    expect(invoice).toBeDefined();
+    expect(invoice!.attributes.properties.shipsTo).toEqual({
+      $ref: '#/$defs/shipsTo',
+      description: 'Where the goods go',
+    });
+
+    // The shape moved to the extracted class rather than being lost.
+    const extracted = result.current.classes.find((c) => c.name === 'shipsTo');
+    expect(extracted).toBeDefined();
+    expect(extracted!.attributes.properties.street).toEqual({ type: 'string' });
+    expect(extracted!.attributes.required).toEqual(['street']);
+  });
+});

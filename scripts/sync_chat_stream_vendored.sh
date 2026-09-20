@@ -9,7 +9,8 @@
 #
 # Run this whenever chat_with_document_processor/index.py or
 # agent_chat_processor/index.py changes. A unit test
-# (test_chat_stream_vendored_in_sync.py) fails if they drift.
+# (src/lambda/chat_stream_processor/tests/test_vendored_in_sync.py) fails if they
+# drift.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
