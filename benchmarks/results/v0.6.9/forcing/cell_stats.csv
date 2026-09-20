@@ -1,0 +1,3 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+force-off,6,0,0.17695,0.0342,0.1933,0.1453,0.2085,1.0,1.0,84.21749
+force-on,6,0,0.17858,0.03107,0.174,0.147,0.2073,1.0,1.0,88.18416
