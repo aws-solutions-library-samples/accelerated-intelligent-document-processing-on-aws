@@ -860,27 +860,57 @@ def _publish_claim_key(test_set_id, client_token):
     return {"PK": f"testset#{test_set_id}", "SK": f"publishclaim#{client_token}"}
 
 
-# A claim older than this cannot have a live owner: the resolver's own Timeout is 60s, so
-# anything past double that was killed mid-attempt and its token must not stay locked.
+# When a claim can be assumed abandoned. The resolver's Timeout is 60s, so no attempt can
+# still be running past that; 120s leaves 60s of slack.
+#
+# ⚠️ This is a wall-clock comparison between two Lambda instances — one wrote ``claimedAt``,
+# another reads it — so it rests on their clocks agreeing. They are NTP-synced and the slack
+# is 60s against skew normally measured in milliseconds, but the threshold is **not** relied
+# on for correctness, only for liveness: it decides whether to wait or to proceed. Whether
+# proceeding would duplicate a version is a separate question, answered by the version row
+# (see ``_version_for_client_token``), which needs no clock. Even if two attempts did overlap,
+# each copies to the prefix of its own reserved version number, so they cannot corrupt one
+# another's snapshot — the worst case is a second version row, which the row check catches.
 _PUBLISH_CLAIM_STALE_SECONDS = 120
+
+# Claims are transient bookkeeping, so they are given the tracking table's TTL rather than
+# accumulating one row per publish forever. Cleanup only: DynamoDB's TTL deletion is
+# best-effort and can lag by days, so nothing here may depend on a claim having expired.
+_PUBLISH_CLAIM_TTL_SECONDS = 24 * 60 * 60
+
+
+def _version_for_client_token(test_set_id, client_token):
+    """The version already published under this token, if there is one.
+
+    The durable record of an attempt, and the reason the claim alone is not enough. An
+    attempt can be killed between writing its version row and recording that row on its
+    claim; and a failure releases its claim even when the write it failed on had in fact
+    landed server-side. Either way the claim understates what happened and the row does not,
+    so the row is what decides whether a retry republishes.
+    """
+    for item in _list_version_items(test_set_id):
+        if item.get("clientToken") == client_token:
+            return item
+    return None
 
 
 def _claim_publish_attempt(test_set_id, client_token):
     """Take ownership of one publish attempt, or return the claim that already owns it.
 
-    ``None`` means the caller owns the attempt and should proceed. Anything else is the
-    existing claim: with ``versionNumber`` if that attempt finished, without if it is still
-    running.
+    ``None`` means the caller owns the attempt. Anything else is the existing claim: with
+    ``versionNumber`` if that attempt recorded one, without if it is still running or was
+    killed before it could.
 
     The conditional write is what makes this work while the first attempt is in flight. A
-    check against written version rows cannot: at the moment the dispatcher gives up, the
-    row does not exist yet.
+    check against written version rows cannot: at the moment the dispatcher gives up on its
+    invoke, the resolver is still executing and its row does not exist yet.
     """
     key = _publish_claim_key(test_set_id, client_token)
     claim = {
         **key,
         "ItemType": "testset_publish_claim",
-        "claimedAt": datetime.utcnow().isoformat() + "Z",
+        "claimedAt": datetime.now(timezone.utc).isoformat(),
+        "ExpiresAfter": int(time.time()) + _PUBLISH_CLAIM_TTL_SECONDS,
     }
     try:
         db_client.put_item(claim, condition_expression="attribute_not_exists(SK)")
@@ -893,25 +923,34 @@ def _claim_publish_attempt(test_set_id, client_token):
     if _as_int(existing.get("versionNumber")):
         return existing
 
-    claimed_at = existing.get("claimedAt")
-    age = None
-    if claimed_at:
-        try:
-            age = (
-                datetime.utcnow()
-                - datetime.fromisoformat(str(claimed_at).rstrip("Z"))
-            ).total_seconds()
-        except ValueError:
-            age = None
+    age = _claim_age_seconds(existing.get("claimedAt"))
     if age is None or age > _PUBLISH_CLAIM_STALE_SECONDS:
         logger.warning(
-            f"Taking over a stale publish claim on test set '{test_set_id}' "
-            f"(age {age}s); the attempt that made it cannot still be running"
+            f"Taking over a publish claim on test set '{test_set_id}' (age {age}s); no "
+            "attempt can still be running, and whether one already produced a version is "
+            "decided by the version row rather than by this"
         )
         db_client.put_item(claim)
         return None
 
     return existing
+
+
+def _claim_age_seconds(claimed_at):
+    """Seconds since a claim was taken, or ``None`` if that cannot be determined.
+
+    ``None`` means "treat as abandoned": an unparseable or missing timestamp is a claim
+    nothing can reason about, and leaving it in place would lock the token out permanently.
+    """
+    if not claimed_at:
+        return None
+    try:
+        stamped = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamped).total_seconds()
 
 
 def publish_test_set_version(args, event=None):
@@ -965,37 +1004,42 @@ def publish_test_set_version(args, event=None):
 
     if client_token:
         held_by_other = _claim_publish_attempt(test_set_id, client_token)
-        if held_by_other is not None:
-            landed = _as_int(held_by_other.get("versionNumber"))
-            if not landed:
-                # In flight. Publishing now would duplicate the work the other attempt is
-                # about to finish, which is the whole failure this token exists to prevent.
-                raise Exception(
-                    f"A publish of test set '{test_set_id}' for this attempt is already "
-                    "running. It may still succeed — wait for it to finish rather than "
-                    "publishing again."
+
+        # Consulted whether or not this call owns the claim, because the version row is the
+        # durable record and the claim is not: an attempt can die between the two writes, and
+        # a released claim does not prove the write it failed on never landed.
+        already = _version_for_client_token(test_set_id, client_token)
+        if already is not None:
+            landed = _as_int(already.get("versionNumber"))
+            if held_by_other is None:
+                # We hold the claim, so record what the row says and let later retries take
+                # the cheap path instead of waiting for this claim to look abandoned.
+                db_client.update_item(
+                    key=_publish_claim_key(test_set_id, client_token),
+                    update_expression="SET versionNumber = :v",
+                    expression_attribute_values={":v": landed},
                 )
-            existing = db_client.get_item(
-                {"PK": f"testset#{test_set_id}", "SK": _version_sk(landed)}
+            logger.info(
+                f"Test set '{test_set_id}' already has version {landed} for this client "
+                "token; returning it rather than publishing again"
             )
-            if existing:
-                logger.info(
-                    f"Test set '{test_set_id}' already has version {landed} for this client "
-                    "token; returning it rather than publishing again"
-                )
-                replay = _version_to_result(
-                    existing,
-                    has_stored_labels=_version_snapshot_exists(
-                        os.environ["TEST_SET_BUCKET"], test_set_id, landed
-                    ),
-                )
-                replay["activeReference"] = _as_int(meta.get("activeReference"))
-                return replay
-            # The claim names a version whose row is gone. Nothing to replay, so fall
-            # through and publish rather than refusing forever.
-            logger.warning(
-                f"Test set '{test_set_id}' claim names version {landed}, which no longer "
-                "exists; publishing a new one"
+            replay = _version_to_result(
+                already,
+                has_stored_labels=_version_snapshot_exists(
+                    os.environ["TEST_SET_BUCKET"], test_set_id, landed
+                ),
+            )
+            replay["activeReference"] = _as_int(meta.get("activeReference"))
+            return replay
+
+        if held_by_other is not None:
+            # In flight, and it has produced no version yet. Publishing now would duplicate
+            # the work that attempt is about to finish, which is the whole failure this token
+            # exists to prevent.
+            raise Exception(
+                f"A publish of test set '{test_set_id}' for this attempt is already "
+                "running. It may still succeed — wait for it to finish rather than "
+                "publishing again."
             )
 
     # Everything from here to the version row is the work a claim covers. A failure

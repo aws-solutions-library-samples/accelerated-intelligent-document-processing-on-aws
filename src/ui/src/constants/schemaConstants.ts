@@ -94,6 +94,17 @@ export const DESIGNER_ONLY_KEYS = ['id', 'name', 'schemaId'] as const;
  * body carrying only these still gets `object`, which is what keeps 113 of the 232 shipped
  * `$defs` entries — typeless, with properties — exporting exactly as they do today. `x-`
  * extensions are allowed by prefix for the same reason: they are type-agnostic.
+ *
+ * The list deliberately runs past `description`/`properties`/`required` to the object-only
+ * *constraint* keywords — `minProperties`, `additionalProperties`, `patternProperties` and
+ * the rest. Stopping at the first three would also be sound, but it would withdraw the
+ * `object` from a typeless body like `{additionalProperties: false, properties: {…}}`, which
+ * has always been written out with one. Including them makes this change narrower, not wider:
+ * the only bodies that lose an invented type are the ones that were being given a
+ * contradictory one.
+ *
+ * `useSchemaDesigner.shippedSchemas.test.ts` is what holds that balance in place, over the
+ * real files rather than over reasoning about them.
  */
 export const OBJECT_BODY_KEYWORDS = [
   'type',

@@ -3612,6 +3612,82 @@ class TestTestSetResolver:
 
         assert result["snapshotObjectCount"] == 1
 
+    def test_a_version_row_beats_a_claim_that_never_recorded_it(self, labeling_env):
+        """The window between the two writes.
+
+        An attempt writes its version row and then records that row on its claim. Killed
+        between the two — or told its row write failed when it had in fact landed — it leaves
+        a version row and a claim that does not name it. The row is the durable record, so a
+        retry must replay it rather than publish a second version once the claim looks
+        abandoned.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+        # Roll the claim back to the state it had before it recorded the version, and age it
+        # past the point where any attempt could still be running.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": (datetime.utcnow() - timedelta(seconds=600)).isoformat()
+                + "Z",
+            }
+        )
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+        assert result["label"] == "reviewed"
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_a_released_claim_does_not_republish_a_version_that_landed(
+        self, labeling_env
+    ):
+        """A failure releases the claim so a retry is not locked out — but the write it
+        failed on may have landed anyway (a lost response, not a lost write). The retry
+        re-claims cleanly, so only the version row can tell it to stop."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+        # The claim as a released one leaves it: absent entirely.
+        table.delete_item(Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"})
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_a_claim_expires_on_its_own_rather_than_accumulating(self, labeling_env):
+        # One row per publish, forever, is the alternative. Cleanup only — TTL deletion is
+        # best-effort, so nothing depends on it having happened.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        claim = table.get_item(Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"})[
+            "Item"
+        ]
+        assert int(claim["ExpiresAfter"]) > int(time.time())
+
     def test_a_claim_older_than_the_function_can_live_is_taken_over(self, labeling_env):
         """A killed attempt leaves a claim nothing will ever complete or release. The
         resolver's Timeout is 60s, so a claim past double that cannot have a live owner."""
