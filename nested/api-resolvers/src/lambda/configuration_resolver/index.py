@@ -23,6 +23,7 @@ from idp_common.config.models import IDPConfig, ModelConfigLimitsConfig, Pricing
 from idp_common.config_scope import (
     ScopeLookupError,
     caller_email_from_claims,
+    caller_sub_from_claims,
     resolve_allowed_config_versions,
     scope_allows,
 )
@@ -58,10 +59,15 @@ def _get_caller_info(event):
     groups = claims.get("cognito:groups", [])
     username = claims.get("cognito:username", "") or claims.get("sub", "")
     email = caller_email_from_claims(claims)
+    # The immutable Cognito sub, the config-version scope lookup's PREFERRED key.
+    # It is not a fallback for the email: the two go to disjoint key spaces on the
+    # UsersTable. See caller_sub_from_claims.
+    caller_sub = caller_sub_from_claims(claims)
     if isinstance(groups, str):
         groups = [groups]
     return {
         "email": email,
+        "sub": caller_sub,
         "username": username,
         "groups": groups,
         "is_admin": "Admin" in groups,
@@ -166,7 +172,7 @@ def _enforce_operation_group(operation, caller):
         )
 
 
-def _get_user_allowed_config_versions(caller_email):
+def _get_user_allowed_config_versions(caller_email, caller_sub=""):
     """The caller's ``allowedConfigVersions``, or None for unrestricted.
 
     Thin wrapper over the shared fail-closed lookup so every consumer of this
@@ -175,6 +181,7 @@ def _get_user_allowed_config_versions(caller_email):
     """
     return resolve_allowed_config_versions(
         caller_email,
+        caller_sub=caller_sub,
         users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
         dynamodb=_dynamodb,
         cache=_user_scope_cache,
@@ -254,7 +261,9 @@ def handler(event, context):
         # one request; the alternative silently serves every configuration profile
         # in the deployment to a caller entitled to a subset.
         try:
-            allowed_versions = _get_user_allowed_config_versions(caller["email"])
+            allowed_versions = _get_user_allowed_config_versions(
+                caller["email"], caller.get("sub", "")
+            )
         except ScopeLookupError as e:
             logger.error(
                 f"Denying '{operation}': config-version scope could not be "

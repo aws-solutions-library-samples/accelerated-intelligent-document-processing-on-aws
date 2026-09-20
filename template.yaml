@@ -9288,12 +9288,14 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
-            # RBAC scope enforcement — the processor queries the UsersTable
-            # EmailIndex GSI for the caller's `allowedConfigVersions` and rejects
-            # chats against documents outside that scope. Email is the join key:
-            # the table's own PK/SK are USER#<userId>, a uuid4 unrelated to the
-            # Cognito sub. The caller is taken from the verified claims the
-            # dispatcher's resolver forwards; the query failing for any reason
+            # RBAC scope enforcement — the processor reads the caller's UsersTable
+            # row for `allowedConfigVersions` and rejects chats against documents
+            # outside that scope. Two key spaces, hence both actions: GetItem for the
+            # SUB#<sub> pointer item (the immutable join, preferred) and Query on
+            # EmailIndex (the compatibility join). The table's own PK/SK are
+            # USER#<userId>, a uuid4 that no token names, which is why a pointer
+            # exists at all. The caller is taken from the verified claims the
+            # dispatcher's resolver forwards; a read failing for any reason
             # (including a missing grant here) DENIES the turn.
             - Effect: Allow
               Action:
@@ -9861,8 +9863,9 @@ Resources:
               Condition:
                 StringLike:
                   "aws:ResourceTag/idp:feature-id": "*"
-            # RBAC scope enforcement — query the UsersTable EmailIndex GSI for the
-            # caller's `allowedConfigVersions`. Retained for this function because
+            # RBAC scope enforcement — read the caller's UsersTable row for their
+            # `allowedConfigVersions`, on either key space (the SUB#<sub> pointer via
+            # GetItem, or EmailIndex via Query). Retained for this function because
             # it runs the same Chat-with-Document processor code, but on THIS
             # transport the check stands down and the grant goes unused: a Function
             # URL forwards no Cognito claims, so there is no verified per-user

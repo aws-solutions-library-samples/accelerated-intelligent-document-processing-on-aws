@@ -19,6 +19,7 @@ _HANDLER_DIR = Path(__file__).resolve().parents[1]
 _AUDIT_TABLE = "TestRedactionAudit"
 _MAPPING_TABLE = "TestRedactionMapping"
 _USERS_TABLE = "TestUsers"
+_SUB = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
 
 
 def _make_table():
@@ -58,15 +59,28 @@ def _make_mapping_table():
 
 
 def _make_users_table():
+    """The HOST's UsersTable, with the key schema the host actually declares.
+
+    ``PK``/``SK`` matters and is not decoration: the scope lookup reads two key
+    spaces on this table — the ``EmailIndex`` GSI, and a ``SUB#<sub>`` pointer item
+    addressed by the base key. A double keyed on anything else answers the pointer
+    ``GetItem`` with a ValidationException, so every ``sub``-carrying caller would
+    appear to be denied for the right reason while actually being denied for the
+    fixture's.
+    """
     ddb = boto3.resource("dynamodb", region_name="us-west-2")
     ddb.create_table(
         TableName=_USERS_TABLE,
         BillingMode="PAY_PER_REQUEST",
         AttributeDefinitions=[
-            {"AttributeName": "id", "AttributeType": "S"},
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
             {"AttributeName": "email", "AttributeType": "S"},
         ],
-        KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
         GlobalSecondaryIndexes=[
             {
                 "IndexName": "EmailIndex",
@@ -76,6 +90,37 @@ def _make_users_table():
         ],
     )
     return ddb.Table(_USERS_TABLE)
+
+
+def _put_user(email, allowed=None, *, user_id="u1", sub=None):
+    """Seed one host user row, and its ``sub`` pointer when ``sub`` is given.
+
+    The pointer carries no ``email``, which is what keeps it out of
+    ``EmailIndex`` — asserted directly in
+    ``test_the_sub_pointer_is_absent_from_the_email_index``.
+    """
+    table = boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE)
+    row = {
+        "PK": f"USER#{user_id}",
+        "SK": f"USER#{user_id}",
+        "userId": user_id,
+        "email": email,
+    }
+    if allowed is not None:
+        row["allowedConfigVersions"] = allowed
+    if sub:
+        row["cognitoSub"] = sub
+    table.put_item(Item=row)
+    if sub:
+        table.put_item(
+            Item={
+                "PK": f"SUB#{sub}",
+                "SK": f"SUB#{sub}",
+                "userId": user_id,
+                "cognitoSub": sub,
+            }
+        )
+    return table
 
 
 @pytest.fixture
@@ -191,9 +236,7 @@ def test_report_list_rbac_filters_scoped_user(mod):
             "originalConfigVersion": "v-theirs",
         }
     )
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "u1", "email": "scoped@x", "allowedConfigVersions": ["v-mine"]}
-    )
+    _put_user("scoped@x", ["v-mine"])
     resp = _get(mod, "/report", email="scoped@x", groups="[Viewer]")
     body = json.loads(resp["body"])
     assert body["total"] == 1
@@ -256,9 +299,7 @@ def test_a_pattern_scope_matches_the_rows_it_covers(mod):
                 "originalConfigVersion": version,
             }
         )
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "u9", "email": "glob@x", "allowedConfigVersions": ["tenant-a_*"]}
-    )
+    _put_user("glob@x", ["tenant-a_*"], user_id="u9")
 
     body = json.loads(_get(mod, "/report", email="glob@x", groups="[Viewer]")["body"])
 
@@ -278,9 +319,7 @@ def test_a_blank_scope_entry_does_not_become_a_rule(mod):
             "originalConfigVersion": "tenant-a",
         }
     )
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "u8", "email": "blank@x", "allowedConfigVersions": ["", "  "]}
-    )
+    _put_user("blank@x", ["", "  "], user_id="u8")
 
     body = json.loads(_get(mod, "/report", email="blank@x", groups="[Viewer]")["body"])
 
@@ -299,9 +338,7 @@ def test_an_unstamped_row_is_denied_to_a_scoped_caller(mod):
             "piiCount": 1,
         }
     )
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "u7", "email": "scoped@x", "allowedConfigVersions": ["tenant-a"]}
-    )
+    _put_user("scoped@x", ["tenant-a"], user_id="u7")
 
     body = json.loads(_get(mod, "/report", email="scoped@x", groups="[Viewer]")["body"])
 
@@ -337,9 +374,7 @@ def test_report_detail_rbac_denied(mod):
             "originalConfigVersion": "secret-v1",
         }
     )
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "u1", "email": "viewer@x", "allowedConfigVersions": ["other-v1"]}
-    )
+    _put_user("viewer@x", ["other-v1"])
     resp = _get(mod, "/report/doc.pdf", email="viewer@x", groups="[Viewer]")
     assert resp["statusCode"] == 403
 
@@ -395,9 +430,7 @@ def test_mapping_denied_for_out_of_scope_user(mod):
     _make_users_table()
     _seed_mapping_doc(audit, _make_mapping_table(), "doc1.pdf", "secret-v1")
     # user scoped to a DIFFERENT version
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "u1", "email": "viewer@x", "allowedConfigVersions": ["other-v1"]}
-    )
+    _put_user("viewer@x", ["other-v1"])
     resp = _get(mod, "/report/doc1.pdf/mapping", email="viewer@x", groups="[Viewer]")
     assert resp["statusCode"] == 403
 
@@ -406,9 +439,7 @@ def test_mapping_allowed_for_in_scope_user(mod):
     audit = _make_table()
     _make_users_table()
     _seed_mapping_doc(audit, _make_mapping_table(), "doc2.pdf", "secret-v1")
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "u2", "email": "ok@x", "allowedConfigVersions": ["secret-v1"]}
-    )
+    _put_user("ok@x", ["secret-v1"], user_id="u2")
     resp = _get(mod, "/report/doc2.pdf/mapping", email="ok@x", groups="[Viewer]")
     assert resp["statusCode"] == 200
     assert json.loads(resp["body"])["mapping"]["John Smith"] == "Jane Doe"
@@ -419,9 +450,7 @@ def test_mapping_allowed_for_admin(mod):
     _make_users_table()
     _seed_mapping_doc(audit, _make_mapping_table(), "doc3.pdf", "secret-v1")
     # Admin with a restrictive scope still passes (admin override)
-    boto3.resource("dynamodb", region_name="us-west-2").Table(_USERS_TABLE).put_item(
-        Item={"id": "a1", "email": "admin@x", "allowedConfigVersions": ["other-v1"]}
-    )
+    _put_user("admin@x", ["other-v1"], user_id="a1")
     resp = _get(mod, "/report/doc3.pdf/mapping", email="admin@x", groups="[Admin]")
     assert resp["statusCode"] == 200
 
@@ -513,3 +542,119 @@ def test_the_scope_key_is_the_email_claim_alone(mod):
 
     del event_claims["email"]
     assert mod._caller_email(event) == ""
+
+
+def test_the_sub_key_is_the_sub_claim_alone(mod):
+    """A body-supplied identifier is never the pointer key."""
+    event = {
+        "requestContext": {
+            "authorizer": {
+                "jwt": {"claims": {"sub": _SUB, "cognito:username": "other"}}
+            }
+        },
+        "body": '{"callerSub": "someone-else"}',
+    }
+
+    assert mod._caller_sub(event) == _SUB
+    assert mod._caller_sub({"body": '{"callerSub": "someone-else"}'}) == ""
+
+
+# ---- The routes must not report which document ids exist ---------------------
+#
+# Both single-record routes used to resolve the record BEFORE the caller's scope,
+# so a caller whose scope could not be resolved still learnt whether a redaction
+# record existed: 404 meant no, 403 meant yes. One bit of the audit table per
+# request, to a caller entitled to none of it.
+
+
+@pytest.mark.parametrize("path", ["/report/{}", "/report/{}/mapping"])
+def test_an_unresolvable_caller_cannot_tell_which_ids_exist(mod, path):
+    """One answer for both, so the response carries no information about the id."""
+    audit = (
+        _make_table()
+    )  # users table intentionally NOT created → scope cannot resolve
+    _seed_mapping_doc(audit, _make_mapping_table(), "present.pdf", "secret-v1")
+
+    present = _get(mod, path.format("present.pdf"), email="viewer@x", groups="[Viewer]")
+    absent = _get(mod, path.format("absent.pdf"), email="viewer@x", groups="[Viewer]")
+
+    assert present["statusCode"] == 403
+    assert absent["statusCode"] == 403
+    assert present["body"] == absent["body"]
+
+
+# ---- The sub join: a diverged address must not lift the restriction ----------
+
+
+def test_a_diverged_email_still_applies_the_scope_through_the_sub(mod):
+    """The residual this join closes, on the route that serves a mapping.
+
+    The caller's address no longer matches the one on their row. The ``EmailIndex``
+    query therefore finds nothing, which alone means *unrestricted* — and would
+    hand this caller a re-identification key for a document outside their scope.
+    The ``SUB#<sub>`` pointer finds the row anyway, so it is refused.
+    """
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc7.pdf", "secret-v1")
+    _put_user("original@x", ["other-v1"], user_id="u-div", sub=_SUB)
+
+    resp = _get_with_claims(
+        mod,
+        "/report/doc7.pdf/mapping",
+        {"email": "Renamed.User@x", "sub": _SUB, "cognito:groups": "[Viewer]"},
+    )
+
+    assert resp["statusCode"] == 403
+
+
+def test_the_sub_pointer_is_absent_from_the_email_index(mod):
+    """The property that keeps the pointer from breaking the email join.
+
+    ``EmailIndex`` is keyed on ``email``, so an item without that attribute is not
+    indexed. If a pointer ever carried one, a ``Limit=1`` email query could return
+    the pointer instead of the row — and a pointer holds no
+    ``allowedConfigVersions``, so the scope would silently lift.
+    """
+    from boto3.dynamodb.conditions import Key
+
+    _make_users_table()
+    table = _put_user("shared@x", ["tenant-a"], user_id="u-ptr", sub=_SUB)
+
+    page = table.query(
+        IndexName="EmailIndex", KeyConditionExpression=Key("email").eq("shared@x")
+    )["Items"]
+
+    assert len(page) == 1
+    assert page[0]["PK"] == "USER#u-ptr"
+
+
+def test_a_row_with_no_pointer_is_still_found_by_email(mod):
+    """The transition case: no pointer items exist on an upgraded deployment."""
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc8.pdf", "secret-v1")
+    _put_user("plain@x", ["secret-v1"], user_id="u-plain")
+
+    resp = _get_with_claims(
+        mod,
+        "/report/doc8.pdf/mapping",
+        {"email": "plain@x", "sub": _SUB, "cognito:groups": "[Viewer]"},
+    )
+
+    assert resp["statusCode"] == 200
+
+
+def test_a_sub_only_caller_with_no_pointer_is_denied(mod):
+    """Not an answer about this caller, so not read as "unrestricted"."""
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc9.pdf", "secret-v1")
+
+    resp = _get_with_claims(
+        mod,
+        "/report/doc9.pdf/mapping",
+        {"sub": _SUB, "cognito:groups": "[Viewer]"},
+    )
+
+    assert resp["statusCode"] == 403

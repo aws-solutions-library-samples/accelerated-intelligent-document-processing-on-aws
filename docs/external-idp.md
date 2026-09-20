@@ -724,17 +724,26 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
   `UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate: [email]`, so
   a user-initiated change takes effect only after a code sent to the *new* address is
   confirmed; a user cannot adopt an address they do not control.
-- **Known limitation on a mutable pool: a scoped native user can widen their own
-  config scope.** `allowedConfigVersions` is keyed on email (`UsersTable`
-  `EmailIndex`), and a caller with **no** user row is treated as unrestricted. A
-  non-admin *native* user whose scope was restricted could therefore call
+- **A changed address no longer moves a user out of their own scope.**
+  `allowedConfigVersions` is resolved from the **immutable Cognito `sub`** first — via a
+  `SUB#<sub>` pointer item on `UsersTable` — and from the `email` claim second, so an
+  address that diverges from the row it should match no longer reads as "no row", and
+  "no row" is what means *unrestricted*. On a mutable pool this closes the case that
+  mattered most: a non-admin *native* user whose scope was restricted could call
   `UpdateUserAttributes` directly (the Web UI offers no such control), verify a fresh
   address they control, and on their next token find no row — losing the restriction,
-  though not gaining a role. This needs a deliberate Cognito API call, applies only to
-  pools created with the flag, and is bounded to profile/document visibility.
-  Mitigations today: keep native accounts on a federated deployment to admins, and
-  manage scoped users through the IdP. The durable fix is to key user scope on the
-  immutable Cognito `sub` rather than email; tracked as a follow-up to
+  though never gaining a role. Their `sub` does not change, so the pointer still finds
+  their row. The same applies to Cognito re-applying the IdP `AttributeMapping` on every
+  federated sign-in, and to a case difference, which exact matching used to miss. See
+  [Resolving *whose* Scope](./rbac.md#resolving-whose-scope--two-keys-and-the-lookup-fails-closed).
+- ⚠️ **It closes for rows that record a `sub`, and not before.** The `sub` is written by
+  `createUser` and back-filled for pre-existing rows by the Cognito sync that runs on
+  every Admin `listUsers` — the workflow an administrator has to go through to set a
+  scope at all. A row the back-fill has not reached still resolves on email alone and
+  keeps the original exposure. After upgrading a federated deployment, open **User
+  Management** once as an Admin to run the back-fill, and keep managing scoped users
+  through the IdP. Nothing in the product reports which rows are still email-only.
+  Tracked as a follow-up to
   [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
   This is also why the flag stays opt-in for federated deployments rather than
   defaulting on for every new stack.
@@ -743,7 +752,9 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
 new User Pool, which in this solution means a new stack. Pre-existing
 `EXTERNAL_PROVIDER` user records cannot be migrated and users must re-federate; their
 new Cognito `sub` orphans per-user rows in `UsersTable` / `AllowedConfigVersions`,
-which an admin can re-key. As a one-shot bridge an admin can
+which an admin can re-key. (A new pool means new `sub` values, so the `sub` pointers
+from the old one point at nothing; re-running the sync from User Management writes the
+new ones.) As a one-shot bridge an admin can
 `aws cognito-idp admin-delete-user` the affected user, which buys exactly one
 additional login. Tracked in [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
 

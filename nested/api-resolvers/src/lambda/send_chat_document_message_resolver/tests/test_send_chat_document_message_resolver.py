@@ -114,10 +114,14 @@ class TestResolverUIPath:
         assert payload["sessionId"] == "s-1"
         assert payload["prompt"] == "hi"
         assert payload["s3Uri"] == "uploads/x.pdf"
-        # The verified caller's email, which is what the processor resolves
-        # `allowedConfigVersions` by. Nothing else from the claims is forwarded:
-        # the processor logs its event, and the email is all its check needs.
-        assert payload["identity"] == {"claims": {"email": _CALLER_EMAIL}}
+        # The two claims the processor's scope lookup reads: the immutable
+        # Cognito sub, which finds the row via its pointer item, and the email,
+        # which finds it via EmailIndex. Nothing else from the claims is
+        # forwarded — the processor logs its event, and these two are all its
+        # check needs.
+        assert payload["identity"] == {
+            "claims": {"email": _CALLER_EMAIL, "sub": "caller-sub"}
+        }
 
     @pytest.mark.unit
     def test_identity_key_is_present_even_with_no_caller(self):
@@ -159,11 +163,13 @@ class TestResolverUIPath:
         assert payload["identity"] is None
 
     @pytest.mark.unit
-    def test_forwarded_identity_carries_only_the_email_claim(self):
-        """Forward the one claim the processor's check reads, and nothing else.
+    def test_forwarded_identity_carries_only_the_two_lookup_claims(self):
+        """Forward the claims the processor's check reads, and nothing else.
 
-        The processor logs its invocation event, so a full claims dict would write
-        the caller's tokens and group list into its log group for no benefit.
+        Those are the ``sub`` and the ``email`` — the two keys its scope lookup
+        puts to the two UsersTable key spaces. The processor logs its invocation
+        event, so a full claims dict would write the caller's tokens and group list
+        into its log group for no benefit.
         """
         import index
 
@@ -187,19 +193,24 @@ class TestResolverUIPath:
                 }
             }
         )
-        assert forwarded == {"claims": {"email": _CALLER_EMAIL}}
+        assert forwarded == {
+            "claims": {"email": _CALLER_EMAIL, "sub": "caller-sub"}
+        }
 
     @pytest.mark.unit
     def test_forwarded_identity_substitutes_nothing_for_a_missing_email_claim(self):
-        """No ``email`` claim must forward an empty email, so the processor denies.
+        """No ``email`` claim must forward an empty email, not something else.
 
         The adapter fills ``identity.username`` from ``cognito:username`` or the
         ``sub`` when there is no ``email`` claim, so a fallback to it can forward a
         value that is not an email address. The processor would then query
         ``EmailIndex`` with an identifier no user row carries, get an empty page,
         and read it as "this caller has no restriction" — an unresolvable caller
-        silently promoted to an unrestricted one. Forwarding an empty string makes
-        the processor raise and deny instead.
+        silently promoted to an unrestricted one.
+
+        The ``sub`` travels in its own slot, which is not a substitution: it is put
+        only to the pointer key space, and a caller whose ``sub`` no row records is
+        denied rather than read as unrestricted.
         """
         import index
 
@@ -216,7 +227,12 @@ class TestResolverUIPath:
                 }
             }
         )
-        assert forwarded == {"claims": {"email": ""}}
+        assert forwarded == {
+            "claims": {
+                "email": "",
+                "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+            }
+        }
         # And NOT None: an identity that exists but carries no email is not the
         # same as no identity, which the processor reads as "stand the check down".
         assert forwarded is not None
@@ -234,10 +250,10 @@ class TestResolverUIPath:
         import index
 
         assert index._forwarded_identity({"identity": "not-a-dict"}) == {
-            "claims": {"email": ""}
+            "claims": {"email": "", "sub": ""}
         }
         assert index._forwarded_identity({"identity": ["also", "wrong"]}) == {
-            "claims": {"email": ""}
+            "claims": {"email": "", "sub": ""}
         }
         # Only an explicit null is the stand-down marker.
         assert index._forwarded_identity({"identity": None}) is None

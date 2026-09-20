@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""A config-version scope lookup must key on the ``email`` claim and fail closed.
+"""A config-version scope lookup must key each identifier correctly and fail closed.
 
 ``allowedConfigVersions`` is the per-user restriction that decides which
 Configuration Profiles a caller may read or edit and which *documents* they may
@@ -8,24 +8,37 @@ see. Discovery finds ten modules in the scanned subtrees that resolve it — nin
 independent artifacts plus one vendored copy — each having grown its own copy of the
 same three lines, and the copies had drifted into two fail-open shapes:
 
-1. **The lookup key came from an ``or``-chain of claims.** The key is the hash key
-   of a ``UsersTable`` ``EmailIndex`` query, and email is the only identifier that
-   joins a Cognito principal to a row there — the row's key is a ``uuid4`` minted
-   locally and unrelated to the Cognito ``sub``, and no ``sub`` attribute is stored
-   on the table at all. So substituting another identifier when the ``email`` claim
-   is absent does not find the row by another route: it matches **no** row, an
-   empty page is indistinguishable from "this user has no restriction", and the
-   caller proceeds unrestricted. No AWS fault is required for that — only claims
-   that differ from the ones the code was tested against.
+1. **The lookup key came from an ``or``-chain of claims.** A ``UsersTable`` row is
+   reached by one of exactly two keys, and they are **disjoint key spaces** on the
+   same table:
 
-2. **A failed query was caught and turned into "unrestricted".** A missing IAM
+   * the ``email`` claim, as the hash key of an ``EmailIndex`` query;
+   * the immutable Cognito ``sub``, as the base key of a ``SUB#<sub>`` pointer item
+     carrying the row's ``userId``.
+
+   Neither may stand in for the other, and no third identifier may stand in for
+   either. Putting a ``sub``, a ``cognito:username`` or an adapter-substituted
+   username to the email-keyed index does not find the row by another route: it
+   matches **no** row, an empty page is indistinguishable from "this user has no
+   restriction", and the caller proceeds unrestricted. No AWS fault is required for
+   that — only claims that differ from the ones the code was tested against. This
+   is the class the ``SubIndex`` instance is named after, and the reason the
+   ``sub`` now has a key space of its own is precisely that it must stop being
+   spelled as a *substitute* for the email.
+
+2. **A failed read was caught and turned into "unrestricted".** A missing IAM
    grant, a wrong index name or a throttle then switched the control off, silently,
-   for every scoped caller — which is the drift the control exists to survive.
+   for every scoped caller — which is the drift the control exists to survive. Both
+   key spaces are covered: a ``get_item`` on the UsersTable is a scope read exactly
+   as a ``query`` is, so a swallowed pointer failure fails this gate too.
 
 What is **not** a defect, and must not be "fixed" into one: an **empty page** still
 means unrestricted. Scoping is opt-in per user, so most users have no row, and
 denying there would lock every ordinary user out of the UI. The distinction this
-gate defends is between an *answer* from the table and a *failure to get one*.
+gate defends is between an *answer* from the table and a *failure to get one*. (A
+``sub`` that no pointer records while the caller carries no email is on the other
+side of that line — there is no second key to try, so it is a failure to get an
+answer, and the per-site suites assert it denies.)
 
 WHY A STATIC GATE
 -----------------
@@ -43,15 +56,20 @@ performs a UsersTable scope query, or calls the shared
 ``resolve_allowed_config_versions``, is in scope — so a new consumer is covered the
 moment it exists rather than when somebody remembers to add it here.
 
-A scope query is recognised by the **table**, not by an index name: a
-``.query(...)`` on an object built from ``USERS_TABLE_NAME`` (in any of its usual
-spellings) counts, whatever index it names. Keying the recognition on the string
-``EmailIndex`` was the wrong axis, because *getting that string wrong* is the
+A scope read is recognised by the **table**, not by an index name: a ``.query(...)``
+or ``.get_item(...)`` on an object built from ``USERS_TABLE_NAME`` (in any of its
+usual spellings) counts, whatever index it names. Keying the recognition on the
+string ``EmailIndex`` was the wrong axis, because *getting that string wrong* is the
 failure mode that produced the original bug — the chat processor queried a
 ``SubIndex`` no template ever declared, which made every lookup raise and, at the
 time, fail open. A rule that only sees correctly-named queries cannot see the
 instance the class is named after. The index-name leg is kept as a second,
 independent signal for the case where the table object is built elsewhere.
+
+``get_item`` is in that set because the ``sub`` key space is addressed by the base
+key, not by an index: a lookup that read the pointer and swallowed the failure would
+otherwise be invisible to every rule here, which is the quietest way for this gate
+to stop covering half of what it polices.
 
 Two limits worth stating rather than discovering:
 
@@ -119,15 +137,30 @@ USERS_TABLE_NAMES = frozenset(
 SCOPE_INDEX_NAME = "EmailIndex"
 SCOPE_INDEX_CONSTANT = "USERS_TABLE_SCOPE_INDEX"
 
-# The claim a scope lookup key may come from, and the only one.
-SCOPE_KEY_CLAIM = "email"
+# The DynamoDB reads that can resolve a caller's scope. One per key space: `query`
+# for the `EmailIndex` GSI, `get_item` for the `SUB#<sub>` pointer, which is
+# addressed by the table's base key and so names no index at all.
+_SCOPE_READ_CALLS = frozenset({"query", "get_item"})
 
-# Claim names that are NOT an email address for every caller, so none of them may
-# stand in as the lookup key. `callerSub` is here because it is how the original
-# instance of this class spelled it — a request-body field, not a Cognito claim.
+# The two claims a scope lookup key may come from, one per key space, and the only
+# ones. The prefix is how the `sub` key space is addressed — see SCOPE4.
+SCOPE_KEY_CLAIM = "email"
+SCOPE_SUB_CLAIM = "sub"
+SUB_POINTER_PREFIX = "SUB#"
+
+# Claim names that are NOT an identifier either key space indexes, so none of them
+# may stand in for either key. `callerSub` is here because it is how the original
+# instance of this class spelled it — a request-body field chosen by the caller being
+# restricted, not a Cognito claim — and it stays forbidden now that `sub` is a
+# legitimate key, because *where the value comes from* is the whole difference.
+#
+# ⚠️ `sub` is deliberately NOT in this set. It has a key space of its own, which is
+# what makes it a second route to the row rather than a substitute for the first. It
+# remains forbidden as a *fallback* (see FALLBACK_FORBIDDEN_CLAIMS) and as the value
+# put to an email-keyed condition (see SCOPE4) — those are the shapes that fail open,
+# and they are the ones this gate is for.
 SUBSTITUTE_IDENTIFIER_CLAIMS = frozenset(
     {
-        "sub",
         "callerSub",
         "cognito:username",
         "username",
@@ -136,6 +169,12 @@ SUBSTITUTE_IDENTIFIER_CLAIMS = frozenset(
     }
 )
 
+# Claims that may never appear as a *fallback* for one another on one name. Two
+# identifiers assigned to the same local, or chained with `or`, is a single key with
+# two sources — and only one of them can be right for the key space it reaches. This
+# includes `sub`, which is legitimate in its own slot and never as a stand-in.
+FALLBACK_FORBIDDEN_CLAIMS = SUBSTITUTE_IDENTIFIER_CLAIMS | {SCOPE_SUB_CLAIM}
+
 # Every key name that identifies a *caller*. The nested-default rule is gated on
 # this set, because `dict.get(a, dict.get(b, c))` is an extremely common shape that
 # has nothing to do with identity — Bedrock stream-error handling spells
@@ -143,7 +182,7 @@ SUBSTITUTE_IDENTIFIER_CLAIMS = frozenset(
 # flagging it made a false SCOPE1 finding that kept a stale exemption alive. Gating on
 # the *claim names* rather than on the receiver's spelling keeps `_is_claim_read`'s
 # property that a rule cannot be dodged by renaming a variable.
-IDENTITY_CLAIMS = SUBSTITUTE_IDENTIFIER_CLAIMS | {"email"}
+IDENTITY_CLAIMS = FALLBACK_FORBIDDEN_CLAIMS | {SCOPE_KEY_CLAIM}
 
 # Names that identify a call as "resolve this caller's config-version scope" when the
 # callee is NOT defined in the module under inspection — the shared helper, imported
@@ -168,12 +207,15 @@ LOOKUP_CALL_NAMES = frozenset(
 # The exception that says "this caller's scope could not be evaluated".
 SCOPE_ERROR_NAME = "ScopeLookupError"
 
-# Local names whose value IS the scope lookup key. Assigning an `or`-chain to one
-# of these, or reading a claim other than `email` into one, is the substitution
-# this gate exists to stop. `caller_sub` is included because the class's original
-# instance bound the key under that name, and a rule that inspected only
-# email-shaped names could not fire on the one site where the key *was* the sub.
-SCOPE_KEY_TARGETS = frozenset(
+# Local names whose value IS a scope lookup key, split by the key space each one
+# reaches. Assigning an `or`-chain to any of them, or reading the *other* key space's
+# claim into one, is the substitution this gate exists to stop.
+#
+# The split is what lets the `sub` be read at all: `caller_sub = claims["sub"]` is
+# correct and `caller_email = claims["sub"]` is the bug, and a single set could not
+# tell them apart. The generic names (`scope_key`, `caller_id`, `caller_key`) stay on
+# the email side, so a future author who means the sub has to say so by naming it.
+EMAIL_KEY_TARGETS = frozenset(
     {
         "email",
         "caller_email",
@@ -182,11 +224,17 @@ SCOPE_KEY_TARGETS = frozenset(
         "scope_key",
         "scope_email",
         "lookup_email",
-        "caller_sub",
         "caller_id",
         "caller_key",
     }
 )
+
+# `caller_sub` is here rather than deleted because the class's original instance
+# bound the key under that name from a *request body*, and the rules below must still
+# fire on that: a name in this set has to come from the verified `sub` claim.
+SUB_KEY_TARGETS = frozenset({"caller_sub", "cognito_sub", "sub_key", "user_sub"})
+
+SCOPE_KEY_TARGETS = EMAIL_KEY_TARGETS | SUB_KEY_TARGETS
 
 # Callables whose whole purpose is to swallow an exception. A scope lookup inside one
 # cannot fail closed, and no `except` clause appears for SCOPE3 to inspect.
@@ -334,15 +382,20 @@ def _unwrap(node: ast.AST) -> ast.AST:
     return node
 
 
-def _is_email_claim_read(node: ast.AST) -> bool:
-    """Whether a node IS the email claim, rather than merely mentioning it.
+def _is_claim_read_of(node: ast.AST, claim: str) -> bool:
+    """Whether a node IS the named claim, rather than merely mentioning it.
 
     Directness matters. `claims.get("email") or identity.get("username")` is an
     or-chain *over* the claim and is the defect; `[v for v in (a, caller["email"])
     if v] or [SENTINEL]` merely contains an email-keyed read inside an unrelated
     expression, and flagging that would make the rule noise.
     """
-    return _is_claim_read(_unwrap(node)) == SCOPE_KEY_CLAIM
+    return _is_claim_read(_unwrap(node)) == claim
+
+
+def _is_email_claim_read(node: ast.AST) -> bool:
+    """Whether a node IS the email claim. See :func:`_is_claim_read_of`."""
+    return _is_claim_read_of(node, SCOPE_KEY_CLAIM)
 
 
 def _is_constant_operand(node: ast.AST) -> bool:
@@ -476,17 +529,22 @@ def _scope_resolving_functions(tree: ast.AST, users_table_bindings: set[str]) ->
 
 
 def _is_scope_query(node: ast.AST, users_table_bindings: set[str]) -> bool:
-    """A DynamoDB Query against the UsersTable.
+    """A DynamoDB read against the UsersTable — a Query, or a pointer GetItem.
 
     Recognised by the **table**, not the index: the receiver is a name bound from
     ``*.Table(<something naming USERS_TABLE_NAME>)``, or the expression itself names
     the table. Naming the wrong index is the failure mode that produced the original
     bug, so a rule that only matched the right index name could not see it.
 
+    ``get_item`` counts for the same reason. The ``sub`` key space is addressed by the
+    table's base key rather than by an index, so a lookup that read a ``SUB#<sub>``
+    pointer and swallowed the failure would be outside every rule here — half the
+    lookup unpoliced, with nothing saying so.
+
     The declared index name is kept as an independent second leg, for a query whose
     table object was built out of this module's sight.
     """
-    if not isinstance(node, ast.Call) or _call_name(node) != "query":
+    if not isinstance(node, ast.Call) or _call_name(node) not in _SCOPE_READ_CALLS:
         return False
 
     receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
@@ -679,9 +737,23 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
             }
             if not targets & SCOPE_KEY_TARGETS:
                 continue
+            # Which claim this name is allowed to hold depends on the key space it
+            # reaches. An email key may only come from the `email` claim; a sub key
+            # only from the verified `sub` claim. Anything else is a substitution,
+            # and so is each of them in the other's slot.
+            if targets & SUB_KEY_TARGETS and not targets & EMAIL_KEY_TARGETS:
+                permitted, forbidden = SCOPE_SUB_CLAIM, SUBSTITUTE_IDENTIFIER_CLAIMS
+            else:
+                permitted, forbidden = SCOPE_KEY_CLAIM, FALLBACK_FORBIDDEN_CLAIMS
             if isinstance(node.value, ast.BoolOp) and isinstance(node.value.op, ast.Or):
+                # `claims.get(<permitted>) or ""` is a coercion of a missing claim to
+                # the empty string, which then denies. `... or claims.get("sub")` on an
+                # email key, or `... or event["callerSub"]` on a sub key, reaches for a
+                # second source for one key — and only one source can be right for the
+                # key space that name reaches.
                 if not all(
-                    _is_email_claim_read(operand) or _is_constant_operand(operand)
+                    _is_claim_read_of(operand, permitted)
+                    or _is_constant_operand(operand)
                     for operand in node.value.values
                 ):
                     findings.append(
@@ -689,14 +761,12 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
                             "SCOPE1",
                             path,
                             node.lineno,
-                            f"{sorted(targets & SCOPE_KEY_TARGETS)} is the scope "
-                            "lookup key and is assigned an `or` fallback chain",
+                            f"{sorted(targets & SCOPE_KEY_TARGETS)} is a scope lookup "
+                            f"key for the {permitted!r} key space and is assigned an "
+                            "`or` fallback chain",
                         )
                     )
-            substituted = (
-                _claims_read_in(node.value)
-                - {SCOPE_KEY_CLAIM}
-            ) & SUBSTITUTE_IDENTIFIER_CLAIMS
+            substituted = (_claims_read_in(node.value) - {permitted}) & forbidden
             if substituted:
                 findings.append(
                     Finding(
@@ -704,12 +774,84 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
                         path,
                         node.lineno,
                         f"the scope lookup key is derived from {sorted(substituted)} "
-                        f"rather than the {SCOPE_KEY_CLAIM!r} claim alone",
+                        f"rather than the {permitted!r} claim alone",
                     )
                 )
 
     findings.extend(_check_nested_get_defaults(path, tree))
     findings.extend(_check_reassigned_from_a_substitute_claim(path, tree))
+    findings.extend(_check_key_space_confusion(path, tree))
+    return findings
+
+
+def _email_key_condition_value(node: ast.AST) -> ast.expr | None:
+    """The value put to an ``email``-keyed DynamoDB key condition, or None.
+
+    Matches ``Key("email").eq(x)`` and ``Key(USERS_TABLE_SCOPE_KEY).eq(x)``, in any
+    of boto3's condition methods, and returns ``x``.
+    """
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return None
+    if not node.args:
+        return None
+    key_call = node.func.value
+    if not isinstance(key_call, ast.Call) or _call_name(key_call) != "Key":
+        return None
+    if not key_call.args:
+        return None
+    named = key_call.args[0]
+    names_email = (
+        isinstance(named, ast.Constant) and named.value == SCOPE_KEY_CLAIM
+    ) or (isinstance(named, ast.Name) and named.id == "USERS_TABLE_SCOPE_KEY")
+    return node.args[0] if names_email else None
+
+
+def _check_key_space_confusion(path: str, tree: ast.AST) -> list[Finding]:
+    """SCOPE4 — the value put to the email-keyed index must be the email.
+
+    The two key spaces are disjoint, and only one direction of confusing them fails
+    *open*: a ``sub`` put to ``EmailIndex`` matches no row, and an empty page means
+    unrestricted. (The reverse — an email put to a ``SUB#`` pointer key — matches no
+    pointer, and the lookup then tries the email join and gets the right answer, so
+    it is a bug and not a fail-open, and is not a rule here.)
+
+    This is the shape none of the other rules see. SCOPE1's ``or``-chain leg needs a
+    direct *claim read* among the operands, and SCOPE2 needs a claim read in the
+    assignment — so ``Key("email").eq(caller_sub or caller_email)``, written while
+    "simplifying" a two-key lookup back into one, passes both. It is also exactly how
+    the instance this gate is named after was spelled.
+    """
+    findings: list[Finding] = []
+    for node in ast.walk(tree):
+        value = _email_key_condition_value(node)
+        if value is None:
+            continue
+        inner = _unwrap(value)
+        if isinstance(inner, ast.Name) and inner.id in SUB_KEY_TARGETS:
+            findings.append(
+                Finding(
+                    "SCOPE4",
+                    path,
+                    node.lineno,
+                    f"{inner.id!r} is a Cognito {SCOPE_SUB_CLAIM!r} and is being put "
+                    f"to the {SCOPE_INDEX_NAME} hash key. It is not an email address "
+                    "for any caller, so it matches no row — and an empty page means "
+                    f"'unrestricted'. Read the {SCOPE_SUB_CLAIM!r} key space with a "
+                    f"{SUB_POINTER_PREFIX} pointer GetItem instead.",
+                )
+            )
+            continue
+        if isinstance(inner, ast.BoolOp) and isinstance(inner.op, ast.Or):
+            findings.append(
+                Finding(
+                    "SCOPE4",
+                    path,
+                    node.lineno,
+                    f"the {SCOPE_INDEX_NAME} hash key is an `or` chain, so a value "
+                    "that is not an email address can reach it. Each identifier goes "
+                    "to the key space that indexes it; a chain over one key does not.",
+                )
+            )
     return findings
 
 
@@ -748,7 +890,10 @@ def _check_reassigned_from_a_substitute_claim(
     The signal needs no name list: within one function, a name that is assigned the
     **email claim** anywhere and a **substitute identifier** anywhere else is a
     fallback chain, whatever it is called and however far apart the two statements
-    sit.
+    sit. The ``sub`` counts as a substitute *here*, where it shares a name with the
+    email, even though it is a legitimate key of its own in its own slot: one name
+    holding either is one key with two sources, and only one of them can be right for
+    the key space that name reaches.
     """
     findings: list[Finding] = []
     for scope in ast.walk(tree):
@@ -772,7 +917,7 @@ def _check_reassigned_from_a_substitute_claim(
                     continue
                 found = (
                     _claims_read_in(node.value) - {SCOPE_KEY_CLAIM}
-                ) & SUBSTITUTE_IDENTIFIER_CLAIMS
+                ) & FALLBACK_FORBIDDEN_CLAIMS
                 if found:
                     substituted |= found
                     offender = offender or node
@@ -1002,6 +1147,14 @@ def test_no_scope_lookup_failure_is_read_as_unrestricted(scanned):
     )
 
 
+def test_no_identifier_is_put_to_the_wrong_key_space(scanned):
+    """SCOPE4. The two key spaces are disjoint; only one confusion fails open."""
+    _, findings = scanned
+    offenders = _enforced(findings, {"SCOPE4"})
+
+    assert not offenders, "\n".join(["scope key space:", *map(str, offenders)])
+
+
 def test_the_pending_exemption_is_still_needed(scanned):
     """Every rule a ``PENDING_FIX`` entry names must still fire, or the entry goes.
 
@@ -1209,6 +1362,47 @@ def lookup(caller_sub):
         return None
 '''
 
+_SUB_POINTER_FAILURE_SWALLOWED = '''
+def lookup(caller_email, caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        pointer = users_table.get_item(Key={"PK": "SUB#" + caller_sub, "SK": "SUB#" + caller_sub})
+    except Exception as e:
+        logger.warning("pointer read failed, falling through: %s", e)
+        pointer = None
+    return pointer
+'''
+
+_SUB_PUT_TO_THE_EMAIL_INDEX = '''
+def lookup(caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.query(
+            IndexName="EmailIndex", KeyConditionExpression=Key("email").eq(caller_sub)
+        )
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
+_EMAIL_KEY_FROM_AN_OR_CHAIN = '''
+def lookup(caller_email, caller_sub):
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        return users_table.query(
+            IndexName="EmailIndex",
+            KeyConditionExpression=Key("email").eq(caller_sub or caller_email),
+        )
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+'''
+
+_SUB_KEY_FROM_A_BODY_FIELD = '''
+def _resolve(event):
+    body = json.loads(event.get("body") or "{}")
+    caller_sub = str(body.get("callerSub") or "").strip()
+    return _get_user_allowed_config_versions("", caller_sub)
+'''
+
 _COMPLIANT = '''
 def _caller_email(claims):
     return str(claims.get("email") or "")
@@ -1280,6 +1474,48 @@ def _stream_error(event):
     return detail.get("message", "")
 '''
 
+# The shape the two key spaces are MEANT to take. Without this counterpart the rules
+# above could be satisfied by forbidding the `sub` outright, which is what the
+# previous version of this gate did — and which is why the durable fix could not be
+# written without changing it.
+_COMPLIANT_TWO_KEY_SPACES = '''
+def _caller_email(claims):
+    return str(claims.get("email") or "").strip()
+
+
+def _caller_sub(claims):
+    return str(claims.get("sub") or "").strip()
+
+
+def lookup(caller_email, caller_sub):
+    if not caller_email and not caller_sub:
+        raise ScopeLookupError("no email or sub on the verified identity")
+    users_table = _dynamodb.Table(USERS_TABLE_NAME)
+    try:
+        row = None
+        if caller_sub:
+            pointer = users_table.get_item(
+                Key={"PK": "SUB#" + caller_sub, "SK": "SUB#" + caller_sub}
+            ).get("Item")
+            if pointer:
+                row = users_table.get_item(
+                    Key={"PK": "USER#" + pointer["userId"], "SK": "USER#" + pointer["userId"]}
+                ).get("Item")
+        if row is None and caller_email:
+            resp = users_table.query(
+                IndexName="EmailIndex",
+                KeyConditionExpression=Key("email").eq(caller_email),
+                Limit=1,
+            )
+            items = resp.get("Items") or []
+            row = items[0] if items else None
+    except Exception as e:
+        raise ScopeLookupError(str(e)) from e
+    if row is None and not caller_email:
+        raise ScopeLookupError("no email, and no row records this caller's sub")
+    return row.get("allowedConfigVersions") if row else None
+'''
+
 
 def _findings_for(source: str) -> list[Finding]:
     tree = ast.parse(source)
@@ -1309,6 +1545,10 @@ def _findings_for(source: str) -> list[Finding]:
         (_EXCEPT_STAR, "SCOPE3"),
         (_TABLE_FROM_A_FACTORY, "SCOPE3"),
         (_LOW_LEVEL_CLIENT_QUERY, "SCOPE3"),
+        (_SUB_POINTER_FAILURE_SWALLOWED, "SCOPE3"),
+        (_SUB_PUT_TO_THE_EMAIL_INDEX, "SCOPE4"),
+        (_EMAIL_KEY_FROM_AN_OR_CHAIN, "SCOPE4"),
+        (_SUB_KEY_FROM_A_BODY_FIELD, "SCOPE2"),
     ],
     ids=[
         "or-chain-key",
@@ -1327,6 +1567,10 @@ def _findings_for(source: str) -> list[Finding]:
         "except-star",
         "table-from-a-factory",
         "low-level-client-query",
+        "sub-pointer-failure-swallowed",
+        "sub-put-to-the-email-index",
+        "email-key-from-an-or-chain",
+        "sub-key-from-a-body-field",
     ],
 )
 def test_the_rule_catches_the_shape_it_is_for(source, rule):
@@ -1360,6 +1604,7 @@ def test_discovery_does_not_depend_on_a_spelling(source):
         _COMPLIANT_EMAIL_ONLY_ASSIGNMENT,
         _COMPLIANT_CONSTANT_DEFAULT,
         _COMPLIANT_NON_IDENTITY_NESTED_GET,
+        _COMPLIANT_TWO_KEY_SPACES,
     ],
     ids=[
         "raises",
@@ -1368,6 +1613,7 @@ def test_discovery_does_not_depend_on_a_spelling(source):
         "email-only-assignment-beside-a-username-chain",
         "constant-default",
         "non-identity-nested-get",
+        "two-key-spaces",
     ],
 )
 def test_the_compliant_shapes_are_accepted(source):

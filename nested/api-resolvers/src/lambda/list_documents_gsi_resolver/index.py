@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_scope import (  # noqa: E402
     ScopeLookupError,
     caller_email_from_claims,
+    caller_sub_from_claims,
     resolve_allowed_config_versions,
     scope_allows,
 )
@@ -109,6 +110,10 @@ def _get_caller_identity(event):
     groups = claims.get("cognito:groups", [])
     username = claims.get("cognito:username", "") or claims.get("sub", "")
     email = caller_email_from_claims(claims)
+    # The immutable Cognito sub, the config-version scope lookup's PREFERRED key.
+    # It is not a fallback for the email: the two go to disjoint key spaces on the
+    # UsersTable. See caller_sub_from_claims.
+    caller_sub = caller_sub_from_claims(claims)
 
     # Groups may be a string if user is in one group
     if isinstance(groups, str):
@@ -118,6 +123,7 @@ def _get_caller_identity(event):
         "groups": groups,
         "username": username,
         "email": email,
+        "sub": caller_sub,
         "is_admin": "Admin" in groups,
         "is_author": "Author" in groups,
         "is_reviewer": "Reviewer" in groups,
@@ -130,7 +136,7 @@ def _is_reviewer_only(caller):
     return caller["is_reviewer"] and not caller["is_admin"] and not caller["is_author"] and not caller["is_viewer"]
 
 
-def _get_user_allowed_config_versions(caller_email):
+def _get_user_allowed_config_versions(caller_email, caller_sub=""):
     """The caller's allowedConfigVersions, or None if unrestricted.
 
     Thin wrapper over the shared fail-closed lookup in ``config_scope`` so every
@@ -139,6 +145,7 @@ def _get_user_allowed_config_versions(caller_email):
     """
     return resolve_allowed_config_versions(
         caller_email,
+        caller_sub=caller_sub,
         users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
         dynamodb=dynamodb,
         cache=_user_scope_cache,
@@ -158,7 +165,9 @@ def _caller_scope_or_deny(caller, operation):
     if caller.get("is_admin"):
         return None
     try:
-        allowed_versions = _get_user_allowed_config_versions(caller.get("email", ""))
+        allowed_versions = _get_user_allowed_config_versions(
+            caller.get("email", ""), caller.get("sub", "")
+        )
     except ScopeLookupError as e:
         logger.error(f"Denying {operation}: config-version scope unresolved: {e}")
         raise PermissionError(

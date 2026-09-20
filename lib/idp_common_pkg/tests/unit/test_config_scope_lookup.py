@@ -20,6 +20,15 @@ and both asserted below:
 An empty page **is** still unrestricted, deliberately: scoping is opt-in per user
 and denying there would lock every ordinary user out of the UI. The distinction
 these tests pin is between an *answer* from the table and a *failure to get one*.
+
+The lookup reads **two** key spaces, and ``TestTheSubJoin`` and
+``TestTheTransition`` below are what hold the second one honest: the immutable
+Cognito ``sub``, via a ``SUB#<sub>`` pointer item, and the ``email`` claim, via
+``EmailIndex``. Preferring the ``sub`` is what keeps a restriction working when an
+address has diverged from the row it should match — the divergence otherwise reads
+as "no row", which means unrestricted. Neither identifier is ever substituted for
+the other, and the transition (some rows carry a ``sub``, some do not) must resolve
+every row shape without locking anyone out.
 """
 
 from unittest.mock import MagicMock
@@ -29,16 +38,34 @@ import pytest
 from idp_common.config_scope import (
     USERS_TABLE_SCOPE_INDEX,
     USERS_TABLE_SCOPE_KEY,
+    USERS_TABLE_SUB_ATTRIBUTE,
     ScopeLookupError,
     caller_email_from_claims,
+    caller_sub_from_claims,
     resolve_allowed_config_versions,
+    sub_pointer_key,
+    user_row_key,
 )
 
+_SUB = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
 
-def _table_returning(items):
-    """A DynamoDB Table double that answers one Query with ``items``."""
+
+def _table_returning(items, store=None):
+    """A UsersTable double covering BOTH key spaces the lookup reads.
+
+    ``items`` is the ``EmailIndex`` query page. ``store`` maps a raw ``PK`` string
+    to the item held under it, which is how the ``sub`` join is modelled: a
+    ``SUB#<sub>`` pointer carrying a ``userId``, and the ``USER#<userId>`` row it
+    names. Modelling ``get_item`` matters — left to a bare MagicMock it answers
+    with a truthy Mock, so a test can pass while the code reads a row that does
+    not exist.
+    """
     table = MagicMock()
     table.query.return_value = {"Items": items}
+    _store = dict(store or {})
+    table.get_item.side_effect = lambda Key: (
+        {"Item": _store[Key["PK"]]} if Key["PK"] in _store else {}
+    )
     return table
 
 
@@ -46,6 +73,14 @@ def _resource_for(table):
     resource = MagicMock()
     resource.Table.return_value = table
     return resource
+
+
+def _pointing_at(user_id, row, sub=_SUB):
+    """A ``store`` in which ``sub``'s pointer names ``user_id``, holding ``row``."""
+    return {
+        sub_pointer_key(sub)["PK"]: {"userId": user_id, USERS_TABLE_SUB_ATTRIBUTE: sub},
+        user_row_key(user_id)["PK"]: row,
+    }
 
 
 @pytest.mark.unit
@@ -126,7 +161,7 @@ class TestResolveAllowedConfigVersions:
 
         assert scope is None
 
-    def test_no_caller_email_denies_and_issues_no_query(self):
+    def test_neither_identifier_denies_and_issues_no_read(self):
         """An unresolvable caller must not be promoted to an unrestricted one."""
         table = _table_returning([])
 
@@ -138,6 +173,7 @@ class TestResolveAllowedConfigVersions:
             )
 
         table.query.assert_not_called()
+        table.get_item.assert_not_called()
 
     def test_no_table_wired_denies(self):
         """The parent template wires this unconditionally; empty means drift."""
@@ -213,13 +249,29 @@ class TestResolveAllowedConfigVersions:
         assert table.query.call_count == 1
 
     def test_an_expired_cache_entry_is_re_read(self):
-        cache = {"a@example.com": {"scope": ["stale"], "timestamp": 0.0}}
-        table = _table_returning([{"allowedConfigVersions": ["fresh"]}])
+        """Populated by a real call, so the test cannot miss by guessing the key.
+
+        A hand-built entry under the wrong key would make this pass by *missing*
+        the cache rather than by expiring it, which proves nothing about the TTL.
+        """
+        cache = {}
+        table = _table_returning([{"allowedConfigVersions": ["stale"]}])
+        resource = _resource_for(table)
+        assert resolve_allowed_config_versions(
+            "a@example.com",
+            users_table_name="UsersTable",
+            dynamodb=resource,
+            cache=cache,
+        ) == ["stale"]
+        assert len(cache) == 1
+        for entry in cache.values():
+            entry["timestamp"] = 0.0
+        table.query.return_value = {"Items": [{"allowedConfigVersions": ["fresh"]}]}
 
         scope = resolve_allowed_config_versions(
             "a@example.com",
             users_table_name="UsersTable",
-            dynamodb=_resource_for(table),
+            dynamodb=resource,
             cache=cache,
             cache_ttl=1.0,
         )
@@ -251,3 +303,289 @@ class TestResolveAllowedConfigVersions:
 
         assert a == ["lending"]
         assert b == ["claims"]
+
+    def test_the_cache_is_not_keyed_across_the_two_identifiers(self):
+        """One address, two Cognito accounts: one entry must not serve both.
+
+        A cache keyed on the email alone would hand a caller resolved by ``sub``
+        the scope of a different caller who happened to share an address, and a
+        cache keyed on the ``sub`` alone would do the reverse for a caller carrying
+        no ``sub``.
+        """
+        cache = {}
+        table = _table_returning(
+            [{"allowedConfigVersions": ["by-email"]}],
+            store=_pointing_at("u-1", {"allowedConfigVersions": ["by-sub"]}),
+        )
+        resource = _resource_for(table)
+
+        by_sub = resolve_allowed_config_versions(
+            "shared@example.com",
+            users_table_name="UsersTable",
+            dynamodb=resource,
+            caller_sub=_SUB,
+            cache=cache,
+        )
+        by_email = resolve_allowed_config_versions(
+            "shared@example.com",
+            users_table_name="UsersTable",
+            dynamodb=resource,
+            cache=cache,
+        )
+
+        assert by_sub == ["by-sub"]
+        assert by_email == ["by-email"]
+
+
+@pytest.mark.unit
+class TestCallerSubFromClaims:
+    def test_reads_the_sub_claim(self):
+        assert caller_sub_from_claims({"sub": _SUB}) == _SUB
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        assert caller_sub_from_claims({"sub": f" {_SUB} "}) == _SUB
+
+    @pytest.mark.parametrize(
+        "claims",
+        [
+            {},
+            None,
+            "not-a-mapping",
+            {"sub": ""},
+            {"sub": None},
+            # A body-supplied `callerSub` is not a verified claim and must not be
+            # picked up as one: the caller it would restrict chooses the value.
+            {"callerSub": _SUB, "cognito:username": "someone"},
+        ],
+    )
+    def test_anything_but_the_sub_claim_yields_nothing(self, claims):
+        assert caller_sub_from_claims(claims) == ""
+
+
+@pytest.mark.unit
+class TestTheSubJoin:
+    """The immutable key space, which is why email divergence stops mattering."""
+
+    def test_the_sub_resolves_the_scope_without_touching_the_email_index(self):
+        table = _table_returning(
+            [], store=_pointing_at("u-1", {"allowedConfigVersions": ["tenant-a"]})
+        )
+
+        scope = resolve_allowed_config_versions(
+            "",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(table),
+            caller_sub=_SUB,
+        )
+
+        assert scope == ["tenant-a"]
+        table.query.assert_not_called()
+
+    def test_a_diverged_email_still_resolves_through_the_sub(self):
+        """The residual this join closes.
+
+        The caller's address no longer matches the one on their row — remapped by
+        an IdP, changed by the user, or differing only in case. The email query
+        therefore finds nothing, which on its own means *unrestricted*. The pointer
+        finds the row anyway, so the restriction still applies.
+        """
+        table = _table_returning(
+            [],  # the email query matches nothing, as in production
+            store=_pointing_at("u-1", {"allowedConfigVersions": ["tenant-a"]}),
+        )
+
+        scope = resolve_allowed_config_versions(
+            "Renamed.User@example.com",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(table),
+            caller_sub=_SUB,
+        )
+
+        assert scope == ["tenant-a"]
+
+    def test_the_sub_key_space_is_read_with_the_declared_key_shape(self):
+        """A pointer the writer and the reader spell differently is a silent miss."""
+        table = _table_returning([], store={})
+
+        with pytest.raises(ScopeLookupError):
+            resolve_allowed_config_versions(
+                "",
+                users_table_name="UsersTable",
+                dynamodb=_resource_for(table),
+                caller_sub=_SUB,
+            )
+
+        assert table.get_item.call_args_list[0].kwargs["Key"] == sub_pointer_key(_SUB)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            Exception("AccessDeniedException: not authorized: dynamodb:GetItem"),
+            Exception("ProvisionedThroughputExceededException"),
+            RuntimeError("something nobody anticipated"),
+        ],
+    )
+    def test_a_pointer_read_failure_denies(self, error):
+        """A failure on the new key space must not fall through to the old one.
+
+        Falling through would make an unreadable pointer indistinguishable from an
+        absent one — and for a caller whose email has diverged, that lands on an
+        empty page, which means unrestricted.
+        """
+        table = _table_returning([{"allowedConfigVersions": ["tenant-a"]}])
+        table.get_item.side_effect = error
+
+        with pytest.raises(ScopeLookupError):
+            resolve_allowed_config_versions(
+                "a@example.com",
+                users_table_name="UsersTable",
+                dynamodb=_resource_for(table),
+                caller_sub=_SUB,
+            )
+
+    def test_a_sub_only_caller_with_no_pointer_denies(self):
+        """Not an answer about this caller, so not "unrestricted".
+
+        Their row may exist and simply predate the pointer writer, and with no
+        ``email`` claim there is no second key to try. An empty *email* page is an
+        answer — this is a failure to get one.
+        """
+        with pytest.raises(ScopeLookupError):
+            resolve_allowed_config_versions(
+                "",
+                users_table_name="UsersTable",
+                dynamodb=_resource_for(_table_returning([], store={})),
+                caller_sub=_SUB,
+            )
+
+    def test_a_pointer_naming_a_row_that_does_not_exist_falls_back_to_email(self):
+        """A user deleted without their pointer cleaned up, then re-created."""
+        table = _table_returning(
+            [{"allowedConfigVersions": ["tenant-b"]}],
+            store={sub_pointer_key(_SUB)["PK"]: {"userId": "u-gone"}},
+        )
+
+        scope = resolve_allowed_config_versions(
+            "a@example.com",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(table),
+            caller_sub=_SUB,
+        )
+
+        assert scope == ["tenant-b"]
+
+    def test_a_pointer_with_no_user_id_falls_back_to_email(self):
+        table = _table_returning(
+            [{"allowedConfigVersions": ["tenant-b"]}],
+            store={sub_pointer_key(_SUB)["PK"]: {"updatedAt": "2026-01-01T00:00:00Z"}},
+        )
+
+        scope = resolve_allowed_config_versions(
+            "a@example.com",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(table),
+            caller_sub=_SUB,
+        )
+
+        assert scope == ["tenant-b"]
+
+
+@pytest.mark.unit
+class TestTheTransition:
+    """Every row shape a deployment can hold while the back-fill is outstanding.
+
+    An upgrade starts with no pointer items at all, so the email join has to keep
+    resolving every existing row unchanged. A row that silently stops being found
+    is the same defect in a new costume; a caller newly locked out is worse.
+    """
+
+    def test_a_row_with_no_sub_recorded_is_still_found_by_email(self):
+        table = _table_returning(
+            [{"allowedConfigVersions": ["tenant-a"]}],
+            store={},  # no pointers exist yet, as on every upgraded deployment
+        )
+
+        scope = resolve_allowed_config_versions(
+            "a@example.com",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(table),
+            caller_sub=_SUB,
+        )
+
+        assert scope == ["tenant-a"]
+        table.query.assert_called_once()
+
+    def test_a_row_with_a_sub_recorded_is_found_by_the_sub(self):
+        table = _table_returning(
+            [{"allowedConfigVersions": ["stale-by-email"]}],
+            store=_pointing_at("u-1", {"allowedConfigVersions": ["tenant-a"]}),
+        )
+
+        scope = resolve_allowed_config_versions(
+            "a@example.com",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(table),
+            caller_sub=_SUB,
+        )
+
+        assert scope == ["tenant-a"]
+
+    def test_a_row_whose_recorded_sub_contradicts_the_caller_still_applies(
+        self, caplog
+    ):
+        """The address's row is used, and the mismatch is reported.
+
+        A row found by email that records a *different* ``sub`` means one of two
+        accounts has a stale row — an address reassigned, or a Cognito account
+        recreated under the same one. Its scope is applied anyway, because a scope
+        is a restriction and applying it is the conservative direction; ignoring it
+        would land on "no row", which means unrestricted. The warning is how an
+        operator learns the row needs reconciling.
+        """
+        table = _table_returning(
+            [
+                {
+                    "allowedConfigVersions": ["tenant-a"],
+                    USERS_TABLE_SUB_ATTRIBUTE: "a-different-account",
+                }
+            ],
+            store={},
+        )
+
+        with caplog.at_level("WARNING"):
+            scope = resolve_allowed_config_versions(
+                "a@example.com",
+                users_table_name="UsersTable",
+                dynamodb=_resource_for(table),
+                caller_sub=_SUB,
+            )
+
+        assert scope == ["tenant-a"]
+        assert any(
+            USERS_TABLE_SUB_ATTRIBUTE in record.getMessage()
+            for record in caplog.records
+        ), caplog.text
+
+    def test_a_caller_with_no_sub_claim_behaves_exactly_as_before(self):
+        """The transport may verify no ``sub``; the email join then carries it all."""
+        table = _table_returning([{"allowedConfigVersions": ["tenant-a"]}], store={})
+
+        scope = resolve_allowed_config_versions(
+            "a@example.com",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(table),
+        )
+
+        assert scope == ["tenant-a"]
+        table.get_item.assert_not_called()
+
+    def test_a_caller_with_neither_key_matching_anything_is_unrestricted(self):
+        """The opt-in default, unchanged: no row for this user means no restriction."""
+        scope = resolve_allowed_config_versions(
+            "a@example.com",
+            users_table_name="UsersTable",
+            dynamodb=_resource_for(_table_returning([], store={})),
+            caller_sub=_SUB,
+        )
+
+        assert scope is None

@@ -291,8 +291,11 @@ Resources:
             - Effect: Allow
               Action: dynamodb:GetItem
               Resource: !GetAtt RedactionMappingTable.Arn
-            # RBAC scope lookup: query UsersTable.EmailIndex for the caller's
-            # allowedConfigVersions.
+            # RBAC scope lookup for the caller's allowedConfigVersions. Both key
+            # spaces on the host UsersTable are read: GetItem for the SUB#<sub>
+            # pointer (the immutable join, preferred) and Query on EmailIndex (the
+            # compatibility join). A failed read on either DENIES the request, so a
+            # missing grant here blocks the Redaction Report rather than widening it.
             - Effect: Allow
               Action:
                 - dynamodb:GetItem

@@ -239,7 +239,11 @@ class ScopeLookupError(Exception):
     """UsersTable scope lookup failed — callers must fail CLOSED (deny)."""
 
 
-# The UsersTable GSI the scope lookup reads, and the attribute it is keyed on.
+# The two key spaces a caller's scope row is found on, and the claims each is read
+# from. Restated from ``idp_common.config_scope`` — this processor ships without an
+# ``idp_common`` layer and is itself vendored into the chat-streaming bundle — and
+# held to that module by ``scripts/tests/test_scope_lookup_fail_closed.py``.
+#
 # Named once so the test that asserts this index is one `template.yaml` actually
 # declares has a single symbol to read. That test exists because the query named
 # a `SubIndex` that no template ever declared, and nothing detected it: an index
@@ -247,37 +251,71 @@ class ScopeLookupError(Exception):
 # the DynamoDB layer.
 USERS_TABLE_SCOPE_INDEX = "EmailIndex"
 USERS_TABLE_SCOPE_KEY = "email"
+USERS_TABLE_SUB_POINTER_PREFIX = "SUB#"
+USERS_TABLE_USER_KEY_PREFIX = "USER#"
+SCOPE_KEY_CLAIM = "email"
+SCOPE_SUB_CLAIM = "sub"
 
 
 def _caller_email(identity: dict) -> str:
     """The caller's email address, taken from claims a transport verified.
 
-    Email is the only identifier that joins a Cognito principal to a UsersTable
-    row. The row's key is ``PK``/``SK`` = ``USER#<userId>`` where ``userId`` is a
-    ``uuid4`` minted by ``user_management`` and unrelated to the Cognito ``sub``;
-    the Cognito account's username *is* the email; and no ``sub`` attribute is
-    stored on the table at all. So there is no key a ``GetItem`` could be built
-    from, and ``EmailIndex`` is the join — which is also how every other consumer
-    of the same ``allowedConfigVersions`` data resolves it.
+    This value is the hash key of an ``EmailIndex`` query, so it has to be an email
+    address or it matches nothing.
 
     ⚠️ **Only the ``email`` claim is read — there is deliberately no fallback to
     another field.** Every alternative identifier a claims set might carry (a
-    ``sub``, a ``cognito:username``, a username the adapter substituted for a
-    missing email) is not an email address for every caller, and querying
-    ``EmailIndex`` with one matches no row. An empty page is indistinguishable
-    from "this user has no restriction", so a fallback would convert an
-    unresolvable caller into an *unrestricted* one — silently, and precisely for
-    the callers whose claims are least like the ones this was tested against.
-    Returning the empty string instead makes the lookup raise, and the turn is
-    denied. Fail-closed is the whole contract here; a substituted identifier is
-    not a cheaper way to satisfy it.
+    ``cognito:username``, a username the adapter substituted for a missing email)
+    is not an email address for every caller, and querying ``EmailIndex`` with one
+    matches no row. An empty page is indistinguishable from "this user has no
+    restriction", so a fallback would convert an unresolvable caller into an
+    *unrestricted* one — silently, and precisely for the callers whose claims are
+    least like the ones this was tested against. Fail-closed is the whole contract
+    here; a substituted identifier is not a cheaper way to satisfy it.
+
+    The Cognito ``sub`` is **not** a fallback for this value. It is a key into a
+    different key space and is read separately by :func:`_caller_sub`.
     """
     claims = identity.get("claims") or {}
-    return str(claims.get("email") or "")
+    return str(claims.get(SCOPE_KEY_CLAIM) or "").strip()
 
 
-def _get_user_allowed_config_versions(caller_email: str) -> list[str] | None:
+def _caller_sub(identity: dict) -> str:
+    """The caller's immutable Cognito ``sub``, from the ``sub`` claim and no other.
+
+    Used only to build a ``SUB#<sub>`` pointer key, never as the hash key of
+    ``EmailIndex``. A body-supplied ``callerSub`` is not a source for it: the caller
+    it would restrict is the caller choosing the value.
+    """
+    claims = identity.get("claims") or {}
+    return str(claims.get(SCOPE_SUB_CLAIM) or "").strip()
+
+
+def _sub_pointer_key(caller_sub: str) -> dict:
+    """The UsersTable key of the pointer item for one Cognito ``sub``."""
+    key = f"{USERS_TABLE_SUB_POINTER_PREFIX}{caller_sub}"
+    return {"PK": key, "SK": key}
+
+
+def _user_row_key(user_id: str) -> dict:
+    """The UsersTable key of the row holding one user's scope."""
+    key = f"{USERS_TABLE_USER_KEY_PREFIX}{user_id}"
+    return {"PK": key, "SK": key}
+
+
+def _get_user_allowed_config_versions(
+    caller_email: str, caller_sub: str = ""
+) -> list[str] | None:
     """Fetch caller's ``allowedConfigVersions`` for scope enforcement.
+
+    The row is looked for on the immutable Cognito ``sub`` first — via a
+    ``SUB#<sub>`` pointer item carrying the ``userId`` — and on the ``email`` claim
+    second, via ``EmailIndex``. The two are not a fallback chain over one key: each
+    identifier is put only to the key space that indexes it, and neither is ever
+    substituted for the other. Preferring the ``sub`` is what keeps the restriction
+    working for a caller whose address has diverged from their row (a self-service
+    email change, an external IdP re-applying its attribute mapping, a case
+    difference), for every row that records one.
 
     Returns:
       - ``None`` when the user is genuinely unrestricted — no scope row in the
@@ -287,19 +325,13 @@ def _get_user_allowed_config_versions(caller_email: str) -> list[str] | None:
 
     Raises:
       ScopeLookupError: whenever the scope cannot be *evaluated* — no
-        ``USERS_TABLE_NAME`` wired, no caller email to resolve, or a DynamoDB
-        query that fails. "Cannot evaluate" is NOT "unrestricted": returning
-        ``None`` there silently disables RBAC for every caller whenever the
-        stack wiring, the IAM grant or the index name drifts (AUTH.T07,
+        ``USERS_TABLE_NAME`` wired, neither identifier on the verified claims, a
+        DynamoDB read that fails, or a caller presenting only a ``sub`` that no row
+        records (there is then no second key to try, so the absence of a row is not
+        an answer about this caller). "Cannot evaluate" is NOT "unrestricted":
+        returning ``None`` there silently disables RBAC for every caller whenever
+        the stack wiring, the IAM grant or the index name drifts (AUTH.T07,
         fail-open scope lookup). Callers MUST deny the turn.
-
-        The pii-anonymizer feature API's ``_caller_allowed_versions`` is the
-        closest sibling: it raises on a DynamoDB error the same way. Its
-        caller-email helper does still substitute another identifier when the
-        claims carry no ``email``, which this function deliberately does not — so
-        copy the exception handling from there, not the identity resolution. See
-        ``_caller_email`` for why a substitution is the same fail-open wearing a
-        different hat.
 
     Every exit from this function is either a scope decision or a raise. There
     is deliberately no path that converts a lookup failure into "unrestricted";
@@ -310,29 +342,43 @@ def _get_user_allowed_config_versions(caller_email: str) -> list[str] | None:
     users_table_name = os.environ.get("USERS_TABLE_NAME") or ""
     if not users_table_name:
         raise ScopeLookupError("USERS_TABLE_NAME not configured")
-    if not caller_email:
-        raise ScopeLookupError("no caller email in the verified claims")
+    caller_sub = str(caller_sub or "").strip()
+    if not caller_email and not caller_sub:
+        raise ScopeLookupError("no caller email or sub in the verified claims")
     try:
         table = _dynamodb.Table(users_table_name)
-        resp = table.query(
-            IndexName=USERS_TABLE_SCOPE_INDEX,
-            KeyConditionExpression=Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
-            Limit=1,
-        )
+        row = None
+        if caller_sub:
+            pointer = table.get_item(Key=_sub_pointer_key(caller_sub)).get("Item")
+            user_id = str((pointer or {}).get("userId") or "").strip()
+            if user_id:
+                row = table.get_item(Key=_user_row_key(user_id)).get("Item") or None
+        if row is None and caller_email:
+            resp = table.query(
+                IndexName=USERS_TABLE_SCOPE_INDEX,
+                KeyConditionExpression=Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
+                Limit=1,
+            )
+            items = resp.get("Items") or []
+            row = items[0] if items else None
     except Exception as e:  # noqa: BLE001
         logger.error(
-            "User scope lookup failed, denying chat turn (%s on %s): %s",
+            "User scope lookup failed, denying chat turn (%s / %s on %s): %s",
+            USERS_TABLE_SUB_POINTER_PREFIX,
             USERS_TABLE_SCOPE_INDEX,
             users_table_name,
             e,
         )
         raise ScopeLookupError(
-            f"UsersTable {USERS_TABLE_SCOPE_INDEX} query failed: {e}"
+            f"UsersTable scope read failed ({USERS_TABLE_SCOPE_INDEX}): {e}"
         ) from e
-    items = resp.get("Items") or []
-    if not items:
+    if row is None and not caller_email:
+        raise ScopeLookupError(
+            "no caller email, and no UsersTable row records this caller's sub"
+        )
+    if row is None:
         return None  # no scope row for this user → unrestricted
-    scope = items[0].get("allowedConfigVersions")
+    scope = row.get("allowedConfigVersions")
     return list(scope) if scope else None
 
 
@@ -367,7 +413,7 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
       Closing it means the browser presenting its Cognito ID token to that
       endpoint and the endpoint verifying it — at which point returning real
       claims from ``_caller_identity`` turns this check on with no change here,
-      provided those claims include ``email``.
+      provided those claims include an ``email`` or a ``sub``.
     * ``identity`` **is a dict** — verified claims. The scope is resolved from
       them and every failure denies.
     """
@@ -385,7 +431,9 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
         return None
     if not isinstance(identity, dict):
         raise ScopeLookupError(f"unusable identity of type {type(identity).__name__}")
-    return _get_user_allowed_config_versions(_caller_email(identity))
+    return _get_user_allowed_config_versions(
+        _caller_email(identity), _caller_sub(identity)
+    )
 
 
 def _get_full_text(bucket: str, object_key: str, document: dict) -> str:
