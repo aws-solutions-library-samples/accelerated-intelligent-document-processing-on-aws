@@ -3216,7 +3216,7 @@ Resources:
         # groups, which carry NO retention policy, so their logs accumulated
         # and were billed indefinitely (issue #826).
         LogRetentionDays: !Ref LogRetentionDays
-        # Tracing for this stack's nine Lambdas. Without this they hardcoded
+        # Tracing for the nested stack's Lambdas. Without this they hardcoded
         # `Tracing: Active`, so EnableXRayTracing=false left them tracing —
         # the #983 defect surviving in the one extension template that IS part
         # of the main deployment. The six catalog extensions are separate

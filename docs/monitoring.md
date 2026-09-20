@@ -392,22 +392,23 @@ records nothing of their own and continues a trace only if a caller already samp
 the request, and the state machines stop tracing. X-Ray is billed per trace
 recorded, so `false` is how you take that line of the bill to zero.
 
-It covers **31 Lambda functions plus both state machines**, across three templates:
-7 in the main stack (`template.yaml`), 15 in the unified pattern
-(`patterns/unified/template.yaml`), and 9 in the nested feature-platform stack
-(`feature-platform/main-stack-extensions/template.yaml`), which receives the
+It covers both state machines and every traced Lambda in the three templates the
+main stack deploys: `template.yaml`, `patterns/unified/template.yaml`, and the
+nested `feature-platform/main-stack-extensions/template.yaml`, which receives the
 parameter from the main stack the same way it receives `LogLevel` and
-`LogRetentionDays`.
+`LogRetentionDays`. `scripts/tests/test_xray_tracing.py` is what keeps that true —
+it fails if any function in those templates hardcodes a mode, and if any function in
+the nested one omits it.
 
-⚠️ **Those nine are new to the traced set, and on the default `true` they add
-X-Ray charges an existing deployment did not have.** They are the feature
-platform's UI-facing resolvers and install hooks. They declared `Tracing: Active`
-before, but they share one execution role that carried no `xray:PutTraceSegments`,
-so no segment was ever written and nothing was billed — tracing was on and inert.
-The role now carries the grant, so with `EnableXRayTracing=true` they emit
-segments like every other traced function in the deployment, and with `false` they
-emit nothing. If you upgrade and want the previous X-Ray spend, set the parameter
-to `false`.
+⚠️ **The feature-platform resolvers are new to the traced set, and on the default
+`true` they add X-Ray charges an existing deployment did not have.** Those are the
+UI-facing resolvers and install hooks in the nested stack. They declared
+`Tracing: Active` before, but they share one execution role that carried no
+`xray:PutTraceSegments`, so no segment was ever written and nothing was billed —
+tracing was on and inert. The role now carries the grant, so with
+`EnableXRayTracing=true` they emit segments like every other traced function in the
+deployment, and with `false` they emit nothing. If you upgrade and want the previous
+X-Ray spend, set the parameter to `false`.
 
 ### Installed extensions trace unconditionally
 
@@ -426,8 +427,13 @@ X-Ray write policy only to a role it *generates*:
 
 | Functions in the six extension templates | Traces recorded |
 |---|---|
-| 13 with a SAM-generated role | Yes — SAM attaches its X-Ray managed policy because `Tracing` is declared, so these emit segments and are billed |
-| 8 with an explicit `Role:` (each `UiDeployerFunction`, plus `idp-data-generator`'s `DockerBuildRunFunction` and `AgentCoreRuntimeManagerFunction`) | No — their roles carry no `xray:PutTraceSegments`, so tracing is declared and produces nothing |
+| Those with a SAM-generated execution role — the majority, and every one that serves requests | Yes — SAM attaches its X-Ray managed policy because `Tracing` is declared, so these emit segments and are billed |
+| Those with an explicit `Role:` — each `UiDeployerFunction`, plus `idp-data-generator`'s `DockerBuildRunFunction` and `AgentCoreRuntimeManagerFunction` | No — their roles carry no `xray:PutTraceSegments`, so tracing is declared and produces nothing |
+
+To see the split for the version you are running, rather than trusting a number
+written down here, `scripts/tests/test_xray_tracing.py`'s `_traced_without_a_grant`
+is the predicate: a function it reports has an explicit role that cannot write a
+segment, and every other function in those templates emits.
 
 The policy SAM picks depends on the partition: `AWSXrayWriteOnlyAccess` in `aws`,
 and `AWSXRayDaemonWriteAccess` in China and GovCloud. Both grant

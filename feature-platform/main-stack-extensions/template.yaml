@@ -309,7 +309,7 @@ Parameters:
     Default: 'true'
     AllowedValues: ['true', 'false']
     Description: >-
-      Enable X-Ray tracing for this stack's nine resolver and install-hook
+      Enable X-Ray tracing for this stack's resolver and install-hook
       Lambdas. Forwarded from the main stack's EnableXRayTracing, so one
       setting covers the whole deployment. This is the only feature-platform
       template the main stack's parameter can reach: the rest are installed
@@ -399,7 +399,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-        # X-Ray write. All nine functions in this template share this explicit
+        # X-Ray write. Every function in this template shares this explicit
         # role, and SAM attaches an X-Ray policy only to roles it GENERATES — so
         # before this line every one of them declared `Tracing: Active` and
         # could not write a segment: tracing was on, cost nothing, and produced

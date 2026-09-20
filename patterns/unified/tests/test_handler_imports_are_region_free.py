@@ -41,11 +41,12 @@ scrubbed from every source botocore consults, including ``AWS_CONFIG_FILE`` and
 does.
 
 The list of modules is **derived**, not written down: it is every file under
-``patterns/unified/src/`` that some ``test_*.py`` in the repository names. A
-handler nobody imports keeps the module-scope convention and is not checked
-here; one that gains a test is covered the moment the test lands.
+``patterns/unified/src/`` that some ``test_*.py`` in the repository names **as a
+single slash-joined literal**. A handler nobody imports keeps the module-scope
+convention and is not checked here; one that gains a test is covered the moment
+the test lands.
 
-Two spellings count as "names", and both have to, because the repository uses
+Two spellings of that literal count, and both have to, because the repository uses
 both. A test may name the file (``.../bda_processresults_function/index.py``,
 loaded with ``spec_from_file_location``) or the **package directory**
 (``.../pipeline_hooks_function``, put on ``sys.path`` and then imported by module
@@ -58,6 +59,21 @@ result against a second extraction that looks only for the marker string and
 knows nothing about suffixes — a non-empty assertion cannot tell partial
 discovery from complete discovery, and that is the failure this whole file exists
 to make impossible elsewhere.
+
+**"As a single slash-joined literal" is the real limit, and both passes share it**,
+so no disagreement between them can surface a reference assembled another way.
+Two tests build the path by joining components
+(``PATTERN_ROOT / "src" / "pipeline_hooks_function" / "hook_errors.py"``, and a
+``src_dir`` joined with ``"extraction_function/index.py"``), and
+``extraction_function/index.py`` is consequently named by a test and is not in the
+set below. Collecting ``Path`` join chains with an AST pass would close that, and
+is deliberately not done: all twelve modules the sweep does not reach were imported
+through this file's own child program, six of them fail a region-free import
+(``bda_completion_function``, ``bda_invoke_function``, ``classification_function``,
+``evaluation_function/index.py``, ``ocr_function``, ``rule-validation-function``),
+and **none of those six is referenced by any test in any spelling** — so coverage
+is complete with respect to the defects that exist, and the AST pass would buy
+machinery rather than findings. Narrow the claim, not the ambition.
 """
 
 from __future__ import annotations
@@ -91,8 +107,22 @@ _AWS_ENV_VARS = (
     "AWS_CONTAINER_CREDENTIALS_FULL_URI",
     "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
     "AWS_SHARED_CREDENTIALS_FILE",
-    "AWS_EC2_METADATA_DISABLED",
 )
+
+#: Variables the child is given a value for rather than having it removed.
+#: ``AWS_EC2_METADATA_DISABLED`` *disables* a region source, so deleting it moves
+#: permissively against the variable's purpose — it would let the child fall back
+#: to IMDS on a host that has it. Setting it to ``"true"`` scrubs that source
+#: instead of unscrubbing it. (Not live today: the base tree raised
+#: ``NoRegionError`` for all three handlers on an IMDS-reachable host, so IMDS was
+#: not answering with a region anyway. Strictly safer is still safer.)
+_AWS_ENV_OVERRIDES = {
+    "AWS_EC2_METADATA_DISABLED": "true",
+    # A profile in ~/.aws/config supplies a region just as an env var does, so
+    # point botocore at a path that does not exist rather than at the real file.
+    "AWS_CONFIG_FILE": "/nonexistent/aws/config",
+    "AWS_SHARED_CREDENTIALS_FILE": "/nonexistent/aws/credentials",
+}
 
 #: Any path-like token naming something under ``patterns/unified/src`` — a file
 #: **or** a package directory. Deliberately does NOT require a ``.py`` suffix:
@@ -106,7 +136,16 @@ _SRC_REF = re.compile(r"patterns/unified/src/([A-Za-z0-9_./-]+)")
 #: about suffixes or directories, so it cannot share a bug with ``_SRC_REF``, and
 #: ``test_discovery_matches_a_deliberately_crude_second_pass`` fails if the two
 #: disagree about which paths exist in the tree.
-_SRC_MARKER = re.compile(r"patterns/unified/src/([^\"'\s]*)")
+#:
+#: ``+``, not ``*``. Zero-or-more matches the marker followed immediately by a
+#: quote or whitespace — a line that wraps right after the trailing slash, which
+#: the tree already contains outside ``test_*.py``, or a ``SRC = "…/src/"``
+#: constant — and yields an empty group. That composes the bare directory, which
+#: ``_resolvable`` accepts because it really is one, while ``_SRC_REF``'s ``+``
+#: does not match it at all. The two passes would then disagree on an input that
+#: names no module, and the failure text would advise widening ``_SRC_REF``, which
+#: is the wrong advice for that input.
+_SRC_MARKER = re.compile(r"patterns/unified/src/([^\"'\s]+)")
 
 #: How many third-party wheels the child may stub before giving up. A Lambda
 #: handler declares its runtime dependencies in its own ``requirements.txt``
@@ -255,10 +294,7 @@ IMPORTED_HANDLER_MODULES = _imported_handler_modules()
 
 def _scrubbed_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _AWS_ENV_VARS}
-    # A profile in ~/.aws/config supplies a region just as an env var does, so
-    # point botocore at a path that does not exist rather than at the real file.
-    env["AWS_CONFIG_FILE"] = "/nonexistent/aws/config"
-    env["AWS_SHARED_CREDENTIALS_FILE"] = "/nonexistent/aws/credentials"
+    env.update(_AWS_ENV_OVERRIDES)
     # The library under test is imported from this checkout, not from whatever an
     # editable install happens to point at.
     lib = str(REPO_ROOT / "lib" / "idp_common_pkg")
@@ -360,9 +396,12 @@ def test_handler_module_imports_without_an_aws_region(rel_path: str) -> None:
     )
     assert result.returncode == 0, (
         f"{rel_path} cannot be imported without an AWS region, and a test suite in "
-        f"this repository imports it — so that suite depends on a region being "
-        f"configured, and an import-time AWS call in this handler is invisible to "
-        f"the hermetic-collection gate. Move the client construction into the "
-        f"function that uses it, or delete it if nothing uses it.\n"
+        f"this repository names it or the package it sits in — so that suite "
+        f"depends on a region being configured, and an import-time AWS call in this "
+        f"handler is invisible to the hermetic-collection gate. (A package "
+        f"reference expands to every module in it, so the suite may import a "
+        f"sibling of this file rather than this file; discovery deliberately errs "
+        f"that way.) Move the client construction into the function that uses it, "
+        f"or delete it if nothing uses it.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr[-3000:]}"
     )
