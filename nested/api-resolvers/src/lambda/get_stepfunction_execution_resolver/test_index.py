@@ -2,12 +2,26 @@
 # SPDX-License-Identifier: MIT-0
 
 import json
+import os
 from datetime import datetime
 from unittest.mock import MagicMock
 
-import index
-import pytest
-from index import find_step_name_for_failure_event, parse_execution_history
+# Set BEFORE `import index`. That import reaches
+# idp_common.utils.log_sanitizer, whose package __init__ pulls settings_helper,
+# which builds an SSM client at module scope — and botocore raises NoRegionError at
+# COLLECTION with no region configured. The Lambda runtime always sets AWS_REGION, so
+# this is a test-harness assumption rather than a defect in the handler, but it means
+# the suite passes on a developer machine (which has an ambient region) and aborts on
+# a CI runner. No credentials are needed or used. Same trap as #988, and the reason
+# `make test-packages-cicd` pins AWS_DEFAULT_REGION for three src/lambda suites.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
+import index  # noqa: E402
+import pytest  # noqa: E402
+from index import (  # noqa: E402
+    find_step_name_for_failure_event,
+    parse_execution_history,
+)
 
 
 @pytest.mark.unit
@@ -369,17 +383,19 @@ class TestExecutionBelongsToThisStack:
         with pytest.raises(PermissionError):
             index.lambda_handler(_event("not-an-arn"), None)
 
-    def test_accepts_an_execution_of_this_state_machine(self, sfn, monkeypatch):
-        monkeypatch.delenv("USERS_TABLE_NAME", raising=False)
+    def test_accepts_an_execution_of_this_state_machine(self, sfn, scoped_caller):
+        # An unrestricted caller (no scope row), not an unwired UsersTable: this
+        # test is about the ARN check, and an unwired table now denies.
+        scoped_caller([])
 
         result = index.lambda_handler(_event(_execution_arn()), None)
 
         assert result["status"] == "SUCCEEDED"
         sfn.describe_execution.assert_called_once()
 
-    def test_accepts_a_distributed_map_child_execution(self, sfn, monkeypatch):
+    def test_accepts_a_distributed_map_child_execution(self, sfn, scoped_caller):
         """`NAME/mapRunLabel` in the ARN still names this state machine."""
-        monkeypatch.delenv("USERS_TABLE_NAME", raising=False)
+        scoped_caller([])
         arn = _execution_arn(state_machine=f"{THIS_SM}/mapRunLabel")
         sfn.describe_execution.return_value = _describe_response(execution_arn=arn)
 
@@ -432,14 +448,79 @@ class TestConfigVersionScope:
         assert result["status"] == "SUCCEEDED"
         table.query.assert_not_called()
 
-    def test_no_users_table_configured_is_unrestricted(self, sfn, monkeypatch):
-        """Pre-RBAC / single-user deployments keep working (fail-open, AUTH.T07)."""
+    def test_no_users_table_configured_denies(self, sfn, monkeypatch):
+        """An unwired UsersTable means the scope cannot be evaluated — deny.
+
+        The parent template passes `UsersTableName` unconditionally to this nested
+        stack, so an empty value is a wiring regression rather than a deployment
+        that opted out of RBAC. Treating it as "unrestricted" made the control
+        switch itself off on exactly the drift it exists to survive (AUTH.T07).
+        """
         monkeypatch.delenv("USERS_TABLE_NAME", raising=False)
         sfn.describe_execution.return_value = _describe_response(config_version="tenant-b")
 
-        result = index.lambda_handler(_event(_execution_arn()), None)
+        with pytest.raises(PermissionError):
+            index.lambda_handler(_event(_execution_arn()), None)
 
-        assert result["status"] == "SUCCEEDED"
+    def test_dynamodb_failure_denies(self, sfn, monkeypatch):
+        """A failed scope Query denies rather than reading as "unrestricted"."""
+        table = MagicMock()
+        table.query.side_effect = Exception("AccessDeniedException: dynamodb:Query")
+        resource = MagicMock()
+        resource.Table.return_value = table
+        monkeypatch.setattr(index, "_dynamodb", resource)
+        monkeypatch.setenv("USERS_TABLE_NAME", "IDP-UsersTable")
+        index._user_scope_cache.clear()
+        sfn.describe_execution.return_value = _describe_response(config_version="tenant-b")
+
+        with pytest.raises(PermissionError):
+            index.lambda_handler(_event(_execution_arn()), None)
+
+    def test_a_pattern_scope_admits_the_executions_it_covers(
+        self, sfn, scoped_caller
+    ):
+        """Scope entries may be globs; a membership test would deny all of them."""
+        scoped_caller(["tenant-a_*"])
+        sfn.describe_execution.return_value = _describe_response(
+            config_version="tenant-a_v3"
+        )
+
+        assert index.lambda_handler(_event(_execution_arn()), None)["status"] == (
+            "SUCCEEDED"
+        )
+
+    def test_a_pattern_scope_still_denies_what_it_does_not_cover(
+        self, sfn, scoped_caller
+    ):
+        scoped_caller(["tenant-a_*"])
+        sfn.describe_execution.return_value = _describe_response(
+            config_version="tenant-b_v1"
+        )
+
+        with pytest.raises(PermissionError):
+            index.lambda_handler(_event(_execution_arn()), None)
+
+    def test_identity_without_an_email_claim_denies_without_querying(
+        self, sfn, scoped_caller
+    ):
+        """No email claim means no lookup key — deny, and issue no query.
+
+        An access token carries no `email` and no `cognito:username`. The old
+        fallback chain resolved such a caller to their bare `sub`, which matches
+        no UsersTable row; the empty page then read as "no restriction".
+        """
+        table = scoped_caller(["tenant-a"])
+        event = _event(_execution_arn())
+        event["identity"]["claims"] = {
+            "sub": "11111111-2222-3333-4444-555555555555",
+            "cognito:groups": ["Viewer"],
+        }
+        sfn.describe_execution.return_value = _describe_response(config_version="tenant-b")
+
+        with pytest.raises(PermissionError):
+            index.lambda_handler(event, None)
+
+        table.query.assert_not_called()
 
     def test_scope_lookup_is_cached_per_caller(self, sfn, scoped_caller):
         """A flow-viewer poll loop must not re-Query UsersTable on every call."""

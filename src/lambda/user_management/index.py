@@ -51,13 +51,31 @@ VALID_PERSONAS = {
 
 
 def _get_caller_identity(event):
-    """Extract caller's Cognito groups and email from AppSync event identity."""
+    """Extract caller's Cognito groups and email from the resolver event identity.
+
+    ``email`` is the key ``get_my_profile`` looks the caller's own row up by, on the
+    UsersTable ``EmailIndex``, and it comes from the ``email`` claim alone.
+
+    ⚠️ **No fallback to another claim.** Email is the only identifier that joins a
+    Cognito principal to a row on that table — the row's key is a ``uuid4`` minted
+    in ``create_user`` and unrelated to the Cognito ``sub``, and no ``sub``
+    attribute is stored. Substituting a ``cognito:username``, a ``sub`` or the
+    adapter's ``identity.username`` therefore does not find the row by another
+    route: it either matches nothing, or — where the substituted value happens to
+    be some *other* account's address — matches the wrong row. ``username`` keeps
+    its own fallback chain because it is not a lookup key; it is the display id.
+
+    The same rule is stated canonically as ``caller_email_from_claims`` in
+    ``idp_common.config_scope``. It is restated here because this function has no
+    ``idp_common`` layer (it vendors ``log_sanitizer`` for the same reason), and
+    ``scripts/tests/test_scope_lookup_fail_closed.py`` covers this file so the two
+    cannot drift.
+    """
     identity = event.get("identity", {})
     claims = identity.get("claims", {})
     groups = claims.get("cognito:groups", [])
     username = claims.get("cognito:username", "") or claims.get("sub", "")
-    # Email: try claims.email first, then identity.username (AppSync sets this to Cognito username = email)
-    email = claims.get("email", "") or identity.get("username", "") or username
+    email = str(claims.get("email") or "").strip()
 
     if isinstance(groups, str):
         groups = [groups]
@@ -289,10 +307,35 @@ def delete_user(args):
     return True
 
 
+def _basic_profile_from_claims(caller):
+    """The profile of a caller with no stored row: Cognito groups, and no scope.
+
+    Carries neither ``allowedConfigVersions`` nor ``allowedTestSets``, which is the
+    conservative answer in both directions — it grants nothing, and it does not
+    claim the caller is unrestricted on any axis.
+    """
+    return {
+        "userId": caller["username"],
+        "email": caller["email"],
+        "persona": _determine_persona_from_cognito_groups(caller["groups"]),
+        "status": "active",
+    }
+
+
 def get_my_profile(event):
     """Get the calling user's own profile including allowedConfigVersions."""
     caller = _get_caller_identity(event)
     caller_email = caller["email"]
+
+    if not caller_email:
+        # No `email` claim, so no key to find this caller's row by. Answer from the
+        # verified Cognito groups instead of putting a substituted identifier to an
+        # email-keyed index, where it matches nothing at best and another account's
+        # row at worst. See _get_caller_identity.
+        logger.warning(
+            "No email claim on the caller identity; returning a claims-only profile"
+        )
+        return _basic_profile_from_claims(caller)
 
     logger.info(f"Getting profile for caller: {caller_email}")
 
@@ -308,12 +351,7 @@ def get_my_profile(event):
     if not items:
         # User not in DynamoDB yet - return basic profile from Cognito claims
         logger.info(f"No DynamoDB record for {caller_email}, returning basic profile")
-        return {
-            "userId": caller["username"],
-            "email": caller_email,
-            "persona": _determine_persona_from_cognito_groups(caller["groups"]),
-            "status": "active",
-        }
+        return _basic_profile_from_claims(caller)
 
     return user_response_from_item(items[0])
 

@@ -528,7 +528,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# own directory to prevent the sys.path collision that fails a
 	@# combined pytest invocation.
 	cd src/lambda/queue_sender && $(PYTEST_HERMETIC) test_index.py -q -p no:cacheprovider
-	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTEST_HERMETIC) test_delete_output_data.py -q -p no:cacheprovider
+	@# reprocess_document_resolver's suite is run below with the other five
+	@# config-version-scope resolvers, as a whole directory rather than one named
+	@# file — a named file covers only itself, which is how a second test module
+	@# added beside it would silently reach no CI.
 	@echo "Running the remaining src/lambda Lambda suites (157 tests that reached NEITHER CI)..."
 	@# Every src/lambda dir holding a test_*.py must appear in this recipe —
 	@# asserted by scripts/tests/test_src_lambda_tests_in_ci.py, which derives
@@ -558,6 +561,20 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd src/lambda/version_check_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Test Studio runner tests (revision pinning + run-id collision #879)..."
 	cd nested/api-resolvers/src/lambda/test_runner && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@echo "Running the config-version scope suites for the six API resolvers that enforce it..."
+	@# The fail-closed UsersTable scope lookup: an absent `email` claim or a failed
+	@# Query must DENY, an empty page must stay unrestricted. Each resolver gets its
+	@# own invocation because they all define a module named ``index``, so a combined
+	@# pytest run fails collection on the basename collision (same reason as
+	@# queue_sender above). Four of these directories reached NEITHER CI before —
+	@# issue #980 tracks generalising scripts/tests/test_src_lambda_tests_in_ci.py
+	@# beyond src/lambda so that omission is detected rather than found by hand.
+	cd nested/api-resolvers/src/lambda/configuration_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/list_documents_gsi_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/list_documents_range_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/reprocess_document_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/sync_bda_idp_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \

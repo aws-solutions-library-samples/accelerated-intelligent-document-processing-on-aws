@@ -234,11 +234,18 @@ Test users get a **random per-run password** (printed when NO_TEARDOWN or
    never declared, so the floor denies everyone. Declare them and regenerate the
    manifest (see the checklist below); do not widen the manifest to make the
    symptom go away.
-5. **Real leak / fail-open?** If a scoped/lower-privilege caller is ALLOWED,
-   check the resolver's IAM grants (a caught `AccessDeniedException` on the
-   UsersTable scope query fails OPEN to unrestricted) and the actual group gate.
-   Confirm via the resolver's CloudWatch logs (look for
-   "Config scope for ...: unrestricted" right after an AccessDenied WARNING).
+5. **Real leak / fail-open?** If a scoped/lower-privilege caller is ALLOWED, check
+   the actual group gate. On every REST operation the scope **lookup** fails closed —
+   `resolve_allowed_config_versions` in `idp_common.config_scope` raises
+   `ScopeLookupError` for a missing UsersTable, an absent `email` claim or any
+   failed `dynamodb:Query`, and each REST consumer turns that into a refusal — so a
+   missing IAM grant presents as a **denial**, not as an unrestricted caller. In
+   the resolver's CloudWatch logs, look for "config-version scope lookup failed on
+   EmailIndex" at ERROR. ⚠️ The **chat-streaming** transport is the exception and is
+   not a REST operation: see GAP-07 and AUTH.T07's residuals. An *empty page* is
+   still deliberately unrestricted
+   (scoping is opt-in), so a caller with no UsersTable row legitimately sees
+   everything: check the row exists before reading a broad result as a leak.
 
 ## Adding a new API operation — checklist
 
