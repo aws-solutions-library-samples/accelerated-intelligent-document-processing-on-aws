@@ -941,8 +941,11 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
 
     # The only reason that matches anything in a template this repository
     # builds: the agent-chat function's secretsmanager:GetSecretValue on
-    # ExternalMCPAgentsSecret, which the transform removes.
-    _MCP_SECRET_REASON = "grant on ExternalMCPAgentsSecret, a removed resource"
+    # ExternalMCPAgentsSecret, which the transform removes. Named "..._GRANT_..."
+    # rather than "..._SECRET_...": Bandit's B105 hardcoded-password check keys on
+    # the assigned name, so a constant called *_SECRET_* is reported as a
+    # credential however plainly its value is a log message.
+    _MCP_GRANT_REASON = "grant on ExternalMCPAgentsSecret, a removed resource"
     # A GraphQL data-plane grant. No template this repository builds contains
     # one — the GraphQL API was retired in 0.6.0 and no `appsync:` action string
     # appears in template.yaml — so this arm matches nothing in normal use.
@@ -974,7 +977,7 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             return self._GRAPHQL_GRANT_REASON
 
         if self._references_removed_resource(resource, "ExternalMCPAgentsSecret"):
-            return self._MCP_SECRET_REASON
+            return self._MCP_GRANT_REASON
 
         return None
 
