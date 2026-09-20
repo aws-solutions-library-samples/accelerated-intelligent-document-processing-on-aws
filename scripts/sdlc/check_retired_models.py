@@ -214,7 +214,9 @@ def main() -> int:
 
     try:
         session = (
-            boto3.Session(profile_name=args.profile) if args.profile else boto3.Session()
+            boto3.Session(profile_name=args.profile)
+            if args.profile
+            else boto3.Session()
         )
         client = session.client("bedrock", region_name=args.region)
     except Exception as exc:  # noqa: BLE001 — any setup failure is "cannot answer"

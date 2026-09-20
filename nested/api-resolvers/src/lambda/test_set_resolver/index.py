@@ -1208,7 +1208,9 @@ def publish_test_set_version(args, event=None):
             "createdBy": created_by,
         }
         # Versions are immutable, even if the counter were rewound by hand.
-        db_client.put_item(version_item, condition_expression="attribute_not_exists(SK)")
+        db_client.put_item(
+            version_item, condition_expression="attribute_not_exists(SK)"
+        )
     except Exception:
         if client_token and my_claimed_at:
             _release_publish_claim(test_set_id, client_token, my_claimed_at)
@@ -1222,7 +1224,6 @@ def publish_test_set_version(args, event=None):
             update_expression="SET versionNumber = :v",
             expression_attribute_values={":v": next_version},
         )
-
 
     # Pointers are advanced only after the version item exists, so a failed version
     # write leaves a numbering gap rather than a pointer to a missing version, and

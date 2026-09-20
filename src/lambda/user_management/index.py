@@ -141,7 +141,9 @@ def _is_scoped(row):
     return any(str(entry).strip() for entry in raw)
 
 
-def _record_cognito_sub(table, user_id, caller_sub, *, scoped, delete_stale_pointer=True):
+def _record_cognito_sub(
+    table, user_id, caller_sub, *, scoped, delete_stale_pointer=True
+):
     """Record a user's Cognito ``sub`` on their row, and maintain its pointer.
 
     ⚠️ **A pointer exists only for a row that carries a restriction**, which is what

@@ -159,9 +159,7 @@ def handler(event, context):
                     f"Rejecting getChatMessages: user={user_id} does not own "
                     f"session={session_id}"
                 )
-                raise PermissionError(
-                    "Unauthorized: session not found for this user."
-                )
+                raise PermissionError("Unauthorized: session not found for this user.")
         else:
             logger.warning(
                 "ENFORCE_CHAT_SESSION_OWNERSHIP is disabled. Skipping "

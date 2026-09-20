@@ -266,7 +266,9 @@ def test_no_retired_model_is_a_mapping_target(model_id: str):
             isinstance(t, ast.Name) and t.id == "MODEL_MAPPINGS" for t in node.targets
         ):
             continue
-        assert isinstance(node.value, ast.Dict), "MODEL_MAPPINGS is no longer a literal dict"
+        assert isinstance(node.value, ast.Dict), (
+            "MODEL_MAPPINGS is no longer a literal dict"
+        )
         found_table = True
         for value in node.value.values:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):

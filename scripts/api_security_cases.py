@@ -465,9 +465,7 @@ def run_deleted_resource_suite(ctx, call, record, results, tokens, call_body=Non
     # "not listed after" read out of a response that never arrived would report the
     # resource correctly deleted.
     why = (
-        why_before
-        or _inconclusive_response(st, del_body, treat_5xx=False)
-        or why_after
+        why_before or _inconclusive_response(st, del_body, treat_5xx=False) or why_after
     )
     gone = (not why) and present_before and absent_after
     record(
@@ -943,7 +941,10 @@ def _tls_probe(host, port, version):
         # How a load balancer commonly declines an obsolete protocol.
         return REFUSED, f"connection reset during handshake ({e})"
     except OSError as e:
-        return INCONCLUSIVE, f"connection lost during handshake ({type(e).__name__}: {e})"
+        return (
+            INCONCLUSIVE,
+            f"connection lost during handshake ({type(e).__name__}: {e})",
+        )
 
 
 # Connection outcomes that are a POSITIVE observation that nothing serves the port:

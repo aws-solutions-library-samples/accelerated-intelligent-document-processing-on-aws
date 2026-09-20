@@ -70,7 +70,11 @@ def _consumers():
         # A layer-carrying function imports by module path — the convention
         # `config_scope` follows, and the one the package's lazy `__getattr__` does
         # not cover. A layerless one imports the committed sibling copy.
-        if re.search(r"^(import idp_common\.s3_targets|from idp_common\.s3_targets|from idp_common import .*\bs3_targets\b)", text, re.M):
+        if re.search(
+            r"^(import idp_common\.s3_targets|from idp_common\.s3_targets|from idp_common import .*\bs3_targets\b)",
+            text,
+            re.M,
+        ):
             imported.add(index.parent.name)
         elif re.search(r"^(import s3_targets\b|from s3_targets import )", text, re.M):
             # Both spellings, because the layer side already tolerates three and a
@@ -136,11 +140,13 @@ def test_the_split_matches_which_functions_carry_the_layer():
         matches = [
             r
             for r in resources.values()
-            if str(r.get("Properties", {}).get("CodeUri", "")).rstrip("/").endswith(
-                f"src/lambda/{directory}"
-            )
+            if str(r.get("Properties", {}).get("CodeUri", ""))
+            .rstrip("/")
+            .endswith(f"src/lambda/{directory}")
         ]
-        assert matches, f"no resource in the template has CodeUri src/lambda/{directory}"
+        assert matches, (
+            f"no resource in the template has CodeUri src/lambda/{directory}"
+        )
         layers = matches[0].get("Properties", {}).get("Layers") or []
         return any("IDPCommon" in str(layer) for layer in layers)
 

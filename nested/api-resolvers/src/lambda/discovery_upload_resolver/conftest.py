@@ -36,7 +36,9 @@ if str(_PKG) not in sys.path:
 
 # Drop any already-imported idp_common resolved from elsewhere, so the insert above
 # is what takes effect rather than a cached module from another tree.
-for _name in [n for n in sys.modules if n == "idp_common" or n.startswith("idp_common.")]:
+for _name in [
+    n for n in sys.modules if n == "idp_common" or n.startswith("idp_common.")
+]:
     _resolved = getattr(sys.modules[_name], "__file__", "") or ""
     if str(_PKG) not in _resolved:
         del sys.modules[_name]

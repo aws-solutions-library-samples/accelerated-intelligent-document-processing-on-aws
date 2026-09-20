@@ -193,9 +193,7 @@ class TestResolverUIPath:
                 }
             }
         )
-        assert forwarded == {
-            "claims": {"email": _CALLER_EMAIL, "sub": "caller-sub"}
-        }
+        assert forwarded == {"claims": {"email": _CALLER_EMAIL, "sub": "caller-sub"}}
 
     @pytest.mark.unit
     def test_forwarded_identity_substitutes_nothing_for_a_missing_email_claim(self):

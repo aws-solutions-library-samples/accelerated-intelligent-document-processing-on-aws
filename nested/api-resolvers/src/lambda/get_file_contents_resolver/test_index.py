@@ -441,8 +441,9 @@ def _resolver_env(logical_id):
     which names are present and whether their values are non-empty — so they are
     loaded as opaque nodes.
     """
-    import yaml
     from pathlib import Path
+
+    import yaml
 
     class _Loader(yaml.SafeLoader):
         pass

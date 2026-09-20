@@ -24,9 +24,7 @@ pytestmark = pytest.mark.unit
 
 
 def _load():
-    path = (
-        Path(__file__).resolve().parents[1] / "security" / "curate_results.py"
-    )
+    path = Path(__file__).resolve().parents[1] / "security" / "curate_results.py"
     spec = importlib.util.spec_from_file_location("curate_results", path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["curate_results"] = mod

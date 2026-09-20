@@ -88,6 +88,7 @@ def _supplies_a_region(node: ast.Call) -> bool:
             return not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
     return False
 
+
 # Directories whose code is deployed as a Lambda, where the runtime always sets
 # AWS_REGION and `region=None` is the correct value. Structural on purpose: a new
 # handler under one of these is covered without anyone editing this file.
@@ -158,9 +159,7 @@ def _construction_sites() -> list[tuple[str, int, str, bool]]:
             if name in aliases and name not in CONFIG_CTORS:
                 name = "ConfigurationManager"  # normalise an alias for reporting
             if name in CONFIG_CTORS:
-                sites.append(
-                    (rel, node.lineno, name, _supplies_a_region(node))
-                )
+                sites.append((rel, node.lineno, name, _supplies_a_region(node)))
     return sites
 
 
@@ -175,15 +174,15 @@ def test_site_discovery_is_not_vacuous():
     """If the AST walk stops finding sites, every assertion below passes for free."""
     sites = _construction_sites()
     assert len(sites) >= 30, f"only {len(sites)} construction sites found"
-    assert any(
-        rel.startswith("lib/idp_sdk/") for rel, _, _, _ in sites
-    ), "the SDK's configuration operations are no longer discovered"
-    assert any(
-        _is_lambda_path(rel) for rel, _, _, _ in sites
-    ), "no Lambda-deployed site found, so the structural exemption is untested"
-    assert any(
-        not _is_lambda_path(rel) for rel, _, _, _ in sites
-    ), "no out-of-Lambda site found, so the requirement is untested"
+    assert any(rel.startswith("lib/idp_sdk/") for rel, _, _, _ in sites), (
+        "the SDK's configuration operations are no longer discovered"
+    )
+    assert any(_is_lambda_path(rel) for rel, _, _, _ in sites), (
+        "no Lambda-deployed site found, so the structural exemption is untested"
+    )
+    assert any(not _is_lambda_path(rel) for rel, _, _, _ in sites), (
+        "no out-of-Lambda site found, so the requirement is untested"
+    )
 
 
 @pytest.mark.unit
@@ -234,7 +233,9 @@ def test_lambda_sites_are_genuinely_under_a_lambda_directory():
         if passes or not _is_lambda_path(rel):
             continue
         handler_dir = (REPO_ROOT / rel).parent
-        siblings = {p.name for p in handler_dir.iterdir()} if handler_dir.is_dir() else set()
+        siblings = (
+            {p.name for p in handler_dir.iterdir()} if handler_dir.is_dir() else set()
+        )
         assert "index.py" in siblings or rel.endswith("_handler.py"), (
             f"{rel}:{lineno} is excused from passing a region because it is under a "
             f"Lambda directory, but its folder has no Lambda handler entry point "
@@ -304,9 +305,9 @@ def test_model_utils_allowance_premise_holds():
         "instead of degrading to the on-disk limits — the premise behind its "
         "REGIONLESS_ALLOWED entry"
     )
-    bridge = (
-        REPO_ROOT / "lib/idp_sdk/idp_sdk/operations/config.py"
-    ).read_text(encoding="utf-8")
+    bridge = (REPO_ROOT / "lib/idp_sdk/idp_sdk/operations/config.py").read_text(
+        encoding="utf-8"
+    )
     assert 'os.environ["AWS_DEFAULT_REGION"] = region' in bridge, (
         "the SDK no longer bridges the resolved region into the environment, which "
         f"is the other half of why {rel} may stay region-free"
@@ -361,8 +362,7 @@ def test_an_aliased_import_is_still_seen():
     is a one-line change away for anyone shortening an import.
     """
     tree = ast.parse(
-        "from idp_common.config import ConfigurationManager as CM\n"
-        "CM(table_name=t)\n"
+        "from idp_common.config import ConfigurationManager as CM\nCM(table_name=t)\n"
     )
     aliases = _local_aliases(tree)
     assert "CM" in aliases and "ConfigurationManager" in aliases
@@ -383,9 +383,9 @@ def test_lambda_prefixes_cover_where_the_lambdas_actually_live():
         )
     assert (root / "patterns/unified/src").is_dir()
     tracked = set(_tracked_python())
-    assert any(
-        f.startswith("patterns/unified/src/") for f in tracked
-    ), "no tracked Python under patterns/unified/src/, so this prefix is untested"
+    assert any(f.startswith("patterns/unified/src/") for f in tracked), (
+        "no tracked Python under patterns/unified/src/, so this prefix is untested"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -428,9 +428,7 @@ def _direct_config_table_clients() -> list[tuple[str, int, bool]]:
             ):
                 continue
             first = node.args[0] if node.args else None
-            if not (
-                isinstance(first, ast.Constant) and first.value == "dynamodb"
-            ):
+            if not (isinstance(first, ast.Constant) and first.value == "dynamodb"):
                 continue
             has_region = any(kw.arg == "region_name" for kw in node.keywords)
             out.append((rel, node.lineno, has_region))

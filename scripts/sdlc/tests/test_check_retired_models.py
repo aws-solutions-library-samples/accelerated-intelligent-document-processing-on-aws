@@ -44,7 +44,9 @@ def test_base_strips_region_prefix_and_tier_suffix(mod):
     assert mod._base("global.amazon.nova-2-lite-v1:0:priority") == (
         "amazon.nova-2-lite-v1:0"
     )
-    assert mod._base("us.anthropic.claude-sonnet-4-6:1m") == "anthropic.claude-sonnet-4-6"
+    assert (
+        mod._base("us.anthropic.claude-sonnet-4-6:1m") == "anthropic.claude-sonnet-4-6"
+    )
     # `v1:0` is part of a real id and must survive.
     assert mod._base("eu.anthropic.claude-sonnet-4-5-20250929-v1:0") == (
         "anthropic.claude-sonnet-4-5-20250929-v1:0"

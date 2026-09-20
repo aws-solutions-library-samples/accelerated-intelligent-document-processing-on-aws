@@ -199,9 +199,7 @@ class TestClassifyNeverPassesAnInconclusiveCell:
         "status,et",
         [(0, None), (500, None), (504, None), (200, "__unreadable_body__")],
     )
-    def test_no_cell_passes_on_an_inconclusive_result(
-        self, role, allowed, status, et
-    ):
+    def test_no_cell_passes_on_an_inconclusive_result(self, role, allowed, status, et):
         verdict = h.classify(role, allowed, status, et, None)
 
         assert verdict.passed is False
@@ -408,9 +406,9 @@ def test_a_mixed_run_writes_the_counts_it_blocks_on(tmp_path):
 
     h.write_report(str(tmp_path), ctx, results, {}, "20260101T000000Z", "1")
 
-    meta = json.loads(
-        (tmp_path / "S-20260101T000000Z" / "meta.json").read_text()
-    )["totals"]
+    meta = json.loads((tmp_path / "S-20260101T000000Z" / "meta.json").read_text())[
+        "totals"
+    ]
 
     assert meta["passed"] == 1
     assert meta["errored"] == 1

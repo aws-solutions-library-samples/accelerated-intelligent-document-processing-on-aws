@@ -8,9 +8,9 @@ import mimetypes
 import os
 
 import boto3
+import s3_targets
 from botocore.config import Config
 from botocore.exceptions import ClientError
-import s3_targets
 from log_sanitizer import sanitize_event_for_logging
 
 # Set up logging

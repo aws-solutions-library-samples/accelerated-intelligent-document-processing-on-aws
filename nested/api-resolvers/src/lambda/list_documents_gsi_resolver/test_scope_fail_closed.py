@@ -79,7 +79,9 @@ def tables(monkeypatch):
     on table name, which is how the Lambda sees it too.
     """
 
-    def _configure(*, documents=(), scope_items=None, scope_error=None, scope_store=None):
+    def _configure(
+        *, documents=(), scope_items=None, scope_error=None, scope_store=None
+    ):
         tracking = MagicMock()
         tracking.query.return_value = {
             "Items": list(documents),

@@ -304,9 +304,7 @@ class TestThePageCapIsDerivedAndTheTokenIsFaithful:
         to matter."""
         from pathlib import Path
 
-        template = (
-            Path(__file__).resolve().parents[5] / "template.yaml"
-        ).read_text()
+        template = (Path(__file__).resolve().parents[5] / "template.yaml").read_text()
         block = template.split("  FinetuningJobsResolverFunction:", 1)[1].split(
             "\n  Fine", 1
         )[0][:3000]

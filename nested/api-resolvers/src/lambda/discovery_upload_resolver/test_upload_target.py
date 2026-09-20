@@ -78,8 +78,7 @@ class TestTheUploadTargetIsConstrained:
 
         assert str(excinfo.value).startswith("Unauthorized")
 
-    def test_no_presigned_url_is_minted_for_a_refused_target(self, index,
-                                                             monkeypatch):
+    def test_no_presigned_url_is_minted_for_a_refused_target(self, index, monkeypatch):
         """The refusal must precede the mint, or the capability already exists."""
         minted = []
         monkeypatch.setattr(

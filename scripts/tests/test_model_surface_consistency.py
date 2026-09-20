@@ -115,8 +115,8 @@ KB_EMBED_TEMPLATE = "nested/bedrockkb/template.yaml"
 # `top_p` default) was picked up as a model id the moment the region prefix became
 # optional, and `v1.0`-style version strings would be too.
 MODEL_ID = re.compile(
-    r"^(?:(?:us|eu|apac|global|us-gov)\.)?"       # optional region / geo prefix
-    r"[a-z][a-z0-9-]+\."                          # provider, e.g. amazon / openai
+    r"^(?:(?:us|eu|apac|global|us-gov)\.)?"  # optional region / geo prefix
+    r"[a-z][a-z0-9-]+\."  # provider, e.g. amazon / openai
     r"(?=[a-z0-9.:_-]*[a-z])[a-z0-9][a-z0-9.:_-]*$"  # model, must contain a letter
 )
 
@@ -607,9 +607,7 @@ def test_limits_exemptions_are_still_selectable_and_still_unmatched(
             f"{model} is exempted from limits coverage but is no longer "
             "selectable — remove it from LIMITS_EXEMPT"
         )
-        assert not any(
-            re.search(p, model, re.IGNORECASE) for p in limit_patterns
-        ), (
+        assert not any(re.search(p, model, re.IGNORECASE) for p in limit_patterns), (
             f"{model} now matches a limits pattern, so the exemption is stale — "
             "remove it from LIMITS_EXEMPT"
         )
@@ -789,9 +787,7 @@ def test_ui_dropdown_is_a_subset_of_the_template_enums(ui_dropdown, selectable):
 
 
 @pytest.mark.unit
-def test_every_code_default_is_selectable_or_premise_checked(
-    code_defaults, selectable
-):
+def test_every_code_default_is_selectable_or_premise_checked(code_defaults, selectable):
     unexplained = sorted(
         m
         for m in code_defaults
@@ -807,9 +803,7 @@ def test_every_code_default_is_selectable_or_premise_checked(
 
 
 @pytest.mark.unit
-def test_non_selectable_default_exemptions_are_still_needed(
-    code_defaults, selectable
-):
+def test_non_selectable_default_exemptions_are_still_needed(code_defaults, selectable):
     """The exemption's own premise: still a default, and still not selectable."""
     for model, why in NON_SELECTABLE_DEFAULTS.items():
         assert model in code_defaults, (

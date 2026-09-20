@@ -97,8 +97,9 @@ class TestTheCapsPremise:
 
     def test_the_worst_case_is_really_the_worst_case(self):
         """The bound above has to hold for the least convenient start time."""
-        worst_start = _START.replace(hour=index.HOURS_PER_SHARD - 1, minute=59,
-                                     second=59)
+        worst_start = _START.replace(
+            hour=index.HOURS_PER_SHARD - 1, minute=59, second=59
+        )
         end = worst_start + timedelta(days=index.MAX_RANGE_DAYS)
 
         projected = index._projected_shard_queries(worst_start, end)
@@ -112,9 +113,7 @@ class TestTheCapsPremise:
         bring back the unlabelled failure it exists to prevent; one far above it
         buys orphaned work after the dispatcher has stopped listening.
         """
-        template = (
-            Path(__file__).resolve().parents[3] / "template.yaml"
-        ).read_text()
+        template = (Path(__file__).resolve().parents[3] / "template.yaml").read_text()
         block = template.split("ListDocumentsByDateRangeResolverFunction:", 1)[1]
         block = block.split("LogGroup:\n    Type: AWS::Logs::LogGroup", 1)[0]
         timeout = int(
@@ -149,9 +148,7 @@ class TestAnOverlongRangeIsRefused:
 
         assert "maximum is 365 days" in str(excinfo.value)
 
-    def test_the_refusal_names_the_maximum_and_what_was_asked_for(
-        self, instrumented
-    ):
+    def test_the_refusal_names_the_maximum_and_what_was_asked_for(self, instrumented):
         with pytest.raises(ValueError) as excinfo:
             index.handler(_event(days=3650), None)
 
@@ -263,8 +260,9 @@ class TestTheWorkBudgetStopsAnInvocationThatIsStillInsideTheCap:
         assert instrumented == []
         assert result["nextToken"]
 
-    def test_the_resume_token_names_the_first_unread_shard(self, instrumented,
-                                                           monkeypatch):
+    def test_the_resume_token_names_the_first_unread_shard(
+        self, instrumented, monkeypatch
+    ):
         monkeypatch.setattr(index, "MAX_SHARD_QUERIES_PER_REQUEST", 7)
 
         result = index.handler(_event(days=200), None)
@@ -306,9 +304,7 @@ class TestPaginationDoesNotDropTheRestOfTheRange:
 @pytest.mark.unit
 class TestTheLimitArgumentIsClamped:
     def test_an_oversized_limit_cannot_raise_the_page_size(self, monkeypatch):
-        entries = [
-            {"PK": "p", "SK": "s", "ObjectKey": f"{i}.pdf"} for i in range(500)
-        ]
+        entries = [{"PK": "p", "SK": "s", "ObjectKey": f"{i}.pdf"} for i in range(500)]
         monkeypatch.setattr(
             index, "_query_shard", lambda *a, **k: entries if a[2] == 0 else []
         )
