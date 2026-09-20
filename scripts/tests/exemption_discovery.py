@@ -37,6 +37,20 @@ walks the filesystem finds sibling worktrees and build output; that mistake prod
 157 false failures in one release validation, and it is the one this module must not
 repeat. ``git ls-files`` resolves relative to the checkout it runs in, so a checkout
 that itself sits under a pruned directory still finds its own files.
+
+Untracked-but-not-ignored files are **included**, the same choice
+``scripts/discover_templates.sh`` makes, and for a sharper reason than convenience:
+with them excluded, a newly written gate is invisible to this scan until it is
+committed, so the verdict changes at ``git add`` time. This module found that out on
+itself — the constants below were untracked when it was first run, and it discovered
+five of its own the moment they were committed, passing locally and failing in CI. A
+gate whose answer depends on whether you have committed yet is not a gate.
+
+**This module's own vocabulary constants are registered rather than excluded.** Making
+the scanner skip itself would be the one hole nothing could see, and narrowing
+:data:`NAME_VOCABULARY` or :data:`_CONTAINER` really is a coverage decision — the
+latter was a live bug here, since ``frozenset({...})`` is a ``Call`` and a
+literal-only check found none of the repo's four ``frozenset`` prune sets.
 """
 
 from __future__ import annotations
@@ -211,11 +225,21 @@ def _matches_name(name: str) -> bool:
     return any(fragment in upper for fragment in NAME_VOCABULARY)
 
 
-def discover_python() -> list[Discovered]:
-    """Module-level container constants that look like an exemption."""
+def discover_python(root: Path | None = None) -> list[Discovered]:
+    """Container constants that look like an exemption.
+
+    ``root`` is taken as an argument so the self-tests can drive the REAL collector
+    against a synthetic checkout, rather than asserting that discovery works by
+    reading the code that implements it. That distinction is not academic here: the
+    first version of the uncommitted-file case called the tracked-file helper directly
+    and passed even with this function's own ``include_untracked`` removed.
+    """
+    root = root or REPO_ROOT
     found: list[Discovered] = []
-    for rel in gate_premises.tracked_files(*PYTHON_PATHSPECS):
-        path = REPO_ROOT / rel
+    for rel in gate_premises.tracked_files(
+        *PYTHON_PATHSPECS, root=root, include_untracked=True
+    ):
+        path = root / rel
         try:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=rel)
@@ -266,14 +290,17 @@ def discover_python() -> list[Discovered]:
     return found
 
 
-def discover_text() -> list[Discovered]:
+def discover_text(root: Path | None = None) -> list[Discovered]:
     """Exemptions declared outside Python: Make, shell, linter configuration."""
+    root = root or REPO_ROOT
     found: list[Discovered] = []
     for pathspec, pattern in TEXT_SOURCES:
         compiled = re.compile(pattern, re.M)
-        for rel in gate_premises.tracked_files(pathspec):
+        for rel in gate_premises.tracked_files(
+            pathspec, root=root, include_untracked=True
+        ):
             try:
-                source = (REPO_ROOT / rel).read_text(encoding="utf-8")
+                source = (root / rel).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
             for match in compiled.finditer(source):
@@ -283,19 +310,19 @@ def discover_text() -> list[Discovered]:
     return found
 
 
-def discover_json() -> list[Discovered]:
+def discover_json(root: Path | None = None) -> list[Discovered]:
     """Data-file registries whose contents are the exemption list."""
     return [
         Discovered(rel, Path(rel).name, 1, "json")
         for rel in JSON_REGISTRIES
-        if gate_premises.is_tracked(rel)
+        if gate_premises.is_tracked(rel, root=root)
     ]
 
 
-def discover_all() -> dict[str, Discovered]:
+def discover_all(root: Path | None = None) -> dict[str, Discovered]:
     """Every exemption surface in the tree, keyed by ``<path>::<name>``."""
     found: dict[str, Discovered] = {}
-    for item in discover_python() + discover_text() + discover_json():
+    for item in discover_python(root) + discover_text(root) + discover_json(root):
         found.setdefault(item.key, item)
     return found
 

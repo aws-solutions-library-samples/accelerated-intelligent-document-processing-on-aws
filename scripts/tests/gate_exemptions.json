@@ -766,6 +766,46 @@
       "crossReferences": [
         "scripts/security/dep_audit_allowlist.json::dep_audit_allowlist.json"
       ]
+    },
+    "scripts/tests/exemption_discovery.py::NAME_VOCABULARY": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it IS the name fragments that mark a constant as an exemption candidate",
+      "premise": "JUDGEMENT",
+      "reason": "This module's own discovery aperture. Registered rather than excluded: a scanner that skips itself is the one hole nothing can see, and narrowing any of these five silently shrinks what the registry covers. Both surveys of this defect class failed at exactly this layer -- one swept Python names only and missed a Makefile variable while quoting the comment pointing at it. Widening the aperture is what converts an aperture miss into an impossible one, so narrowing it has to be a visible decision.",
+      "ratchet": "universe-closure",
+      "crossReferences": []
+    },
+    "scripts/tests/exemption_discovery.py::EXEMPTION_PROSE": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it IS the comment phrases that mark a constant as an exclusion regardless of its name",
+      "premise": "JUDGEMENT",
+      "reason": "This module's own discovery aperture. Registered rather than excluded: a scanner that skips itself is the one hole nothing can see, and narrowing any of these five silently shrinks what the registry covers. Both surveys of this defect class failed at exactly this layer -- one swept Python names only and missed a Makefile variable while quoting the comment pointing at it. Widening the aperture is what converts an aperture miss into an impossible one, so narrowing it has to be a visible decision.",
+      "ratchet": "universe-closure",
+      "crossReferences": []
+    },
+    "scripts/tests/exemption_discovery.py::TEXT_SOURCES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it IS the non-Python files scanned, and the pattern used in each",
+      "premise": "JUDGEMENT",
+      "reason": "This module's own discovery aperture. Registered rather than excluded: a scanner that skips itself is the one hole nothing can see, and narrowing any of these five silently shrinks what the registry covers. Both surveys of this defect class failed at exactly this layer -- one swept Python names only and missed a Makefile variable while quoting the comment pointing at it. Widening the aperture is what converts an aperture miss into an impossible one, so narrowing it has to be a visible decision.",
+      "ratchet": "universe-closure",
+      "crossReferences": []
+    },
+    "scripts/tests/exemption_discovery.py::JSON_REGISTRIES": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it IS the data-file registries recorded as exemption surfaces",
+      "premise": "JUDGEMENT",
+      "reason": "This module's own discovery aperture. Registered rather than excluded: a scanner that skips itself is the one hole nothing can see, and narrowing any of these five silently shrinks what the registry covers. Both surveys of this defect class failed at exactly this layer -- one swept Python names only and missed a Makefile variable while quoting the comment pointing at it. Widening the aperture is what converts an aperture miss into an impossible one, so narrowing it has to be a visible decision.",
+      "ratchet": "universe-closure",
+      "crossReferences": []
+    },
+    "scripts/tests/exemption_discovery.py::_CONTAINER": {
+      "kind": "enforced-universe",
+      "turnsOff": "nothing; it IS the value node types treated as holding a set of members",
+      "premise": "JUDGEMENT",
+      "reason": "This module's own discovery aperture. Registered rather than excluded: a scanner that skips itself is the one hole nothing can see, and narrowing any of these five silently shrinks what the registry covers. Both surveys of this defect class failed at exactly this layer -- one swept Python names only and missed a Makefile variable while quoting the comment pointing at it. Widening the aperture is what converts an aperture miss into an impossible one, so narrowing it has to be a visible decision.",
+      "ratchet": "universe-closure",
+      "crossReferences": []
     }
   }
 }

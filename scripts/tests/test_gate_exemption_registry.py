@@ -272,27 +272,67 @@ def test_discovery_works_from_a_checkout_under_a_pruned_directory() -> None:
     every task or passed vacuously. That happened repeatedly, and it is the most
     repeated defect of the batch this module comes from.
 
-    So drive the real discovery against a one-file checkout created under exactly that
+    So drive the REAL collector against a one-file checkout created under exactly that
     path. A test that can only fail on a maintainer's machine is the defect it is
     trying to prevent.
     """
     with tempfile.TemporaryDirectory() as tmp:
         checkout = Path(tmp) / ".claude" / "worktrees" / "agent-probe"
         (checkout / "scripts").mkdir(parents=True)
-        probe = checkout / "scripts" / "probe.py"
-        probe.write_text(
+        (checkout / "scripts" / "probe.py").write_text(
             "# Paths this gate deliberately excludes, each with the reason.\n"
             "PROBE_EXEMPT = {'a': 'because'}\n",
             encoding="utf-8",
         )
-        for args in (
-            ["init", "-q"],
-            ["-c", "user.email=t@example.invalid", "-c", "user.name=t", "add", "-A"],
-        ):
-            subprocess.run(["git", *args], cwd=checkout, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q"], cwd=checkout, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", "-A"], cwd=checkout, check=True, capture_output=True
+        )
 
-        found = gate_premises.tracked_files("scripts/*.py", root=checkout)
-        assert "scripts/probe.py" in found, (
-            "discovery found no files in a checkout under .claude/worktrees/, so from "
-            f"inside an agent worktree this gate sees nothing. Found: {found}"
+        found = exemption_discovery.discover_all(root=checkout)
+        assert "scripts/probe.py::PROBE_EXEMPT" in found, (
+            "discovery found nothing in a checkout under .claude/worktrees/, so from "
+            f"inside an agent worktree this gate sees no exemptions at all: {sorted(found)}"
+        )
+
+
+def test_discovery_sees_a_file_that_is_not_committed_yet() -> None:
+    """The verdict must not change at ``git add`` time.
+
+    This module's own constants were uncommitted when it was first run, so the scan did
+    not see them; the moment they were committed it discovered five of its own, and the
+    gate passed locally while failing in CI. A gate whose answer depends on whether you
+    have committed yet reports a clean tree to the person writing the exemption and an
+    unclean one to everybody else, which is worse than not having it.
+
+    This drives the real collector rather than the tracked-file helper underneath it.
+    The first version of this case called the helper directly and passed even with
+    ``include_untracked`` removed from the collector — a test of the wrong layer, which
+    is the same mistake as a gate whose reach is narrower than the class it describes.
+
+    Gitignored files must still be excluded: that is what the git-based discovery is
+    for, and it is asserted here alongside.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp)
+        (checkout / "scripts").mkdir()
+        (checkout / "scripts" / "uncommitted.py").write_text(
+            "# Deliberately not covered, for a reason.\nNEW_EXEMPT = {'a'}\n",
+            encoding="utf-8",
+        )
+        (checkout / "scripts" / "ignored.py").write_text(
+            "# Deliberately not covered, for a reason.\nIGNORED_EXEMPT = {'b'}\n",
+            encoding="utf-8",
+        )
+        (checkout / ".gitignore").write_text("scripts/ignored.py\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=checkout, check=True, capture_output=True)
+
+        found = exemption_discovery.discover_all(root=checkout)
+        assert "scripts/uncommitted.py::NEW_EXEMPT" in found, (
+            "a file that exists but is not committed is invisible to discovery, so a "
+            f"newly written gate escapes this registry until it is staged: {sorted(found)}"
+        )
+        assert "scripts/ignored.py::IGNORED_EXEMPT" not in found, (
+            "a gitignored file is visible to discovery, which is how a gate comes to "
+            f"report findings against build output: {sorted(found)}"
         )
