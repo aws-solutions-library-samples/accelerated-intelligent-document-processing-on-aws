@@ -255,6 +255,50 @@ def _stamp_feature_owner(profile: str, feature_id: str) -> None:
         logger.warning("Could not stamp _feature_id on Config#%s: %s", profile, exc)
 
 
+def _reject_inert_gating_hooks(resulting: Any, preset: Dict[str, Any]) -> None:
+    """Refuse a preset registering a gating hook its own mode cannot reach (#982).
+
+    `resulting` is the configuration this install will produce — the merged
+    `IDPConfig` on the normal path, or the preset dict itself on the sparse
+    fallback, where there is no readable default to merge with. Either shape is
+    accepted so the check covers both write paths.
+
+    Delegates to `idp_common.config.hook_reachability`, which is the one
+    implementation of this rule (the `updateConfiguration` mutation uses the same
+    function). Kept as a thin wrapper so an environment without the idp_common
+    layer — the same condition that already makes `_merge_over_default` fall back to
+    a sparse write — degrades to "no check" rather than failing the install on an
+    ImportError.
+    """
+    import importlib
+
+    try:
+        module = importlib.import_module("idp_common.config.hook_reachability")
+    except ImportError:  # pragma: no cover - layer-less fallback
+        # error, not warning: this is a security control going unenforced, and the
+        # layer that carries it is asserted statically by
+        # scripts/sdlc/tests/test_resolver_layer_coverage.py — so reaching here in a
+        # deployed stack means the template lost its layer, the same condition
+        # `_manager()` reports at error level.
+        logger.error(
+            "idp_common.config.hook_reachability is unavailable, so this preset is "
+            "being applied WITHOUT the pipeline-hook reachability check. Check that "
+            "this function still has the IDPCommon base layer."
+        )
+        return
+    config = (
+        resulting.model_dump(mode="python")
+        if hasattr(resulting, "model_dump")
+        else dict(resulting)
+    )
+    # Resolved by attribute rather than by `from ... import`, so a RENAME of the
+    # function surfaces as an AttributeError at install time instead of being
+    # swallowed as an ImportError — a silently skipped check is the failure mode
+    # this whole change exists to remove.
+    for finding in module.reject_inert_gating_hooks(config, preset):
+        logger.warning(finding["message"])
+
+
 def _apply(payload: Dict[str, Any]) -> Dict[str, Any]:
     feature_id = payload.get("featureId") or ""
     version = payload.get("version") or ""
@@ -273,6 +317,22 @@ def _apply(payload: Dict[str, Any]) -> Dict[str, Any]:
     manager = _manager()
     merged = _merge_over_default(manager, config) if manager else None
     revision: Optional[int] = None
+
+    # A preset is how both bundled extensions actually install their pipeline hooks
+    # (the hook travels with the classes it belongs to, so activating the version
+    # brings both), which makes this a hook write boundary and not only a classes
+    # one. Refuse a preset that registers an `onError: fail` hook at a point the
+    # resulting configuration's processing mode can never reach: it declares a gate
+    # that cannot gate, and accepting it silently is #982. The preset is the delta
+    # either way, so a preset that says nothing about hooks is unaffected by a hook
+    # already stored in the host default.
+    #
+    # Checked on BOTH write paths. The merged path can judge the preset against the
+    # host's `use_bda`; the sparse fallback (unreadable or non-validating
+    # `Config#default`) cannot, but a preset that sets `use_bda: true` AND registers
+    # such a hook is self-contradictory on its own evidence, and that case must not
+    # be lost just because the default row could not be read.
+    _reject_inert_gating_hooks(merged if merged is not None else config, config)
 
     if manager is not None and merged is not None:
         # save_configuration preserves the existing row's IsActive and CreatedAt,

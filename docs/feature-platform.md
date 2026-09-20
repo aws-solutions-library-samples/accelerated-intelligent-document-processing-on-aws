@@ -477,15 +477,50 @@ including a hook that declares `onError: fail`.
 
 BDA performs OCR, classification and extraction inside a single Bedrock Data
 Automation invocation, so the workflow has no separate OCR, classification or
-extraction step to hook after.
+extraction step to hook after. A hook at one of those three points still **does
+not run** in BDA mode — that part is inherent to the architecture. What the
+system does is tell you, in three places, rather than leave the registration
+looking healthy:
 
-**A registered hook at a point that does not exist in the active mode is
-silently inert — including its `onError: fail` policy.** Nothing warns at
-registration time and nothing appears in the execution history, because the
-dispatcher is never invoked. If you are relying on a hook to **gate** the
-pipeline (PII redaction, a compliance check), register it at `preprocessing`,
-which runs in both modes ahead of the routing decision, or verify that the
-mode you deploy actually reaches your chosen point. Tracked as
+| When | What happens |
+|---|---|
+| A feature stack registers a hook (`registerFeatureHooks`) while the active config has `use_bda: true` | **`onError: fail` is refused** — the registration errors and the feature stack's install fails, naming the point and the remedies. Any other policy is accepted with a warning on the response and in the install log. A hook registered `enabled: false` is not a gate anywhere, so it is not refused. |
+| A feature installs a hook inside its **config preset** (`applyFeatureConfigPreset`) — the path both bundled extensions use, so that the hook travels with the classes it belongs to | Same split, judged against the preset merged over the host default: a `fail` registration at an unreachable point fails the install, an advisory one warns. |
+| A configuration is saved through the Configuration UI / `updateConfiguration`, or validated by `idp-cli config-validate` / `config-upload` | Same split. The save-time check is scoped to **what the write changes** — the hook registration for that point, or `use_bda` itself. Editing an unrelated field does not fail because of a hook that was already stored, and the automated BDA blueprint↔class synchronisation (which sends only `classes`) is unaffected. |
+| Every document, at runtime | The `preprocessing` dispatch — the one invocation ahead of the routing decision, so it happens in both modes — lists every hook the chosen branch will not reach at `$.HookResults.preprocessing.Payload.unreachableHooks`, and logs each one. It reads the mode from the **document**, the same value the routing Choice switches on, so a `use_bda` flip made *after* the hook was registered is caught here. |
+
+Three write paths are deliberately outside the refusal, and the runtime report is
+what covers them. **Resetting a profile to `default`** and **restoring a profile
+revision** both replay a configuration that was already stored as a whole, so
+`use_bda` and the hook travel together and no new combination is created; refusing
+either would also make the escape hatch unusable — there is no way to edit a
+`default` row or a stored revision before replaying it. The **`CustomConfigPath`
+custom resource** at stack create/update is the third, where a refusal would fail
+the deployment. A configuration already stored in this shape also still *loads* —
+the checks are write-time, because failing to deserialize a stored record would
+break every Lambda that reads the configuration.
+
+One write form that is **not** exempt, because it is a hook registration in
+disguise: a delta of `{"ocr": null}` means "restore this section from `default`",
+which copies the default's `postHook` list into the profile. That is judged like any
+other hook write.
+
+`unreachableHooks` in the execution history looks like this — one entry per hook,
+naming the hook, the point, its policy and the branch that skipped it:
+
+```json
+{ "hookPoint": "postOcr", "featureId": "pii-redactor", "onError": "fail",
+  "arn": "arn:aws:lambda:...:function:redact", "processingMode": "bda",
+  "message": "Hook pii-redactor is registered at postOcr with onError=fail, but the bda processing mode has no postOcr state, so this hook is NOT invoked for this document and its onError policy cannot gate it. Register it at `preprocessing` (which runs in both modes) or run the pipeline mode." }
+```
+
+If you are relying on a hook to **gate** the pipeline (PII redaction, a
+compliance check), register it at `preprocessing`, which runs in both modes ahead
+of the routing decision. To keep a hook in the configuration without it gating
+anything in this mode, set `enabled: false` on it — the least drastic of the
+remedies, and editable in the View/Edit Configuration UI. Mapping the three points
+onto BDA's own output boundaries — so that a `postOcr` hook could run against BDA's
+OCR output — needs a semantics decision per point and remains open under
 [#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
 
 **Inert by default** — hooks are stored inline in the active configuration
@@ -575,11 +610,12 @@ forward so a non-gating hook fault cannot discard an otherwise-good document.
 ⚠️ **"Every hook point" means every point that exists in the mode you are
 running.** In BDA mode (`use_bda: true`) the state machine has no `postOcr`,
 `postClassification` or `postExtraction` state, so the dispatcher is never
-invoked for those points and a `fail` policy registered there is **silently
-inert** — the document processes to completion as though the hook had succeeded.
-See [Not every hook point exists in every processing
-mode](#not-every-hook-point-exists-in-every-processing-mode) and
-[#982](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/982).
+invoked for those points and a `fail` policy registered there cannot abort
+anything. Registering one is refused outright, and any hook the running branch
+will not reach is listed at
+`$.HookResults.preprocessing.Payload.unreachableHooks` on every execution — see
+[Not every hook point exists in every processing
+mode](#not-every-hook-point-exists-in-every-processing-mode).
 
 **When a `fail` policy does abort, the document shows only `FAILED`.** The
 tracking row and the UI carry the terminal status and nothing else — the hook's

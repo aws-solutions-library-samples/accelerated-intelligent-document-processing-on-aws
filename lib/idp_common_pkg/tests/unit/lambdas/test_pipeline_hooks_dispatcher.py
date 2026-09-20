@@ -50,6 +50,7 @@ def _path_setup():
     sys.path.remove(LAMBDA_DIR)
     sys.modules.pop("index", None)
     sys.modules.pop("hook_errors", None)
+    sys.modules.pop("hook_point_reachability", None)
 
 
 def _reload():
@@ -1850,3 +1851,206 @@ def test_postprocessing_hook_sees_hitl_status(monkeypatch):
     assert seen["document"]["hitl_status"] == "PendingReview"
     assert seen["document"]["hitl_triggered"] is True
     assert seen["hookPoint"] == "postprocessing"
+
+
+# --------------------------------------------------------------------------
+# Hooks registered at a point the chosen processing branch never reaches (#982).
+#
+# `postOcr`, `postClassification` and `postExtraction` are states on the Pipeline
+# branch only, so in BDA mode the dispatcher is never invoked for them: the hook
+# does not run, its `onError: fail` policy does not gate, and NOTHING appears in
+# the execution history, because the component that would report it was never
+# called. The `preprocessing` invocation runs ahead of the routing Choice in both
+# modes, so it audits the whole registered hook set and records what the branch
+# will not reach under `unreachableHooks` — which the state machine stores at
+# $.HookResults.preprocessing.
+# --------------------------------------------------------------------------
+
+
+_GATING_OCR_HOOK_CONFIG = {
+    "ocr": {
+        "postHook": [
+            {
+                "featureId": "pii-redactor",
+                "arn": "arn:aws:lambda:us-east-1:1:function:redact",
+                "onError": "fail",
+                "enabled": True,
+            }
+        ]
+    },
+    # Reachable in BOTH modes — must never be reported.
+    "rule_validation": {
+        "postHook": [
+            {
+                "featureId": "claims",
+                "arn": "arn:aws:lambda:us-east-1:1:function:claims",
+                "onError": "fail",
+                "enabled": True,
+            }
+        ]
+    },
+}
+
+
+def _audit_env(monkeypatch, mod, config_payload):
+    """Serve one config payload to every config read in the dispatcher."""
+    monkeypatch.setattr(mod, "_resolve_active_version", lambda *a, **k: "v1")
+    monkeypatch.setattr(mod, "_load_config_payload", lambda *a, **k: config_payload)
+    monkeypatch.setattr(mod._dynamodb, "Table", lambda name: object())
+
+
+def test_unreachable_gating_hook_is_recorded_in_hook_results_in_bda_mode(monkeypatch):
+    """The signal the operator lacked: an inert gate, named, in the history."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    _audit_env(monkeypatch, mod, _GATING_OCR_HOOK_CONFIG)
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1", "use_bda": True}},
+        None,
+    )
+
+    # No preprocessing hook is registered, so this is the no-op result — and the
+    # audit still has to ride on it: the operator's hook is at postOcr, and this
+    # invocation is the only one that happens at all.
+    assert out["invoked"] == 0
+    assert len(out["unreachableHooks"]) == 1
+    entry = out["unreachableHooks"][0]
+    assert entry["hookPoint"] == "postOcr"
+    assert entry["featureId"] == "pii-redactor"
+    assert entry["onError"] == "fail"
+    assert entry["processingMode"] == "bda"
+    assert "NOT invoked" in entry["message"]
+
+
+def test_reachable_hooks_are_never_reported_in_pipeline_mode(monkeypatch):
+    """Pipeline mode reaches every point, so there is nothing to report."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    _audit_env(monkeypatch, mod, _GATING_OCR_HOOK_CONFIG)
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1", "use_bda": False}},
+        None,
+    )
+    assert "unreachableHooks" not in out
+
+
+def test_the_mode_is_read_from_the_document_and_never_from_the_config(monkeypatch):
+    """A config saying `use_bda: true` must NOT make the audit speak.
+
+    `RouteByProcessingMode` switches on `$.document.use_bda`. With that key absent
+    the Choice cannot select the BDA branch, so every hook point is in fact about to
+    be reached, and consulting the config row — which a hand-started execution or a
+    redrive can easily disagree with — could only produce a report naming hooks that
+    will run. Silence is the only correct answer here.
+    """
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    _audit_env(monkeypatch, mod, {**_GATING_OCR_HOOK_CONFIG, "use_bda": "true"})
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1"}}, None
+    )
+    assert "unreachableHooks" not in out
+
+
+def test_audit_is_silent_when_the_document_carries_no_mode(monkeypatch):
+    """Same rule with nothing in the config either — no basis, no report."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    _audit_env(monkeypatch, mod, _GATING_OCR_HOOK_CONFIG)
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1"}}, None
+    )
+    assert "unreachableHooks" not in out
+
+
+def test_a_stringified_document_flag_is_understood(monkeypatch):
+    """The queue processor injects a real bool, but a redrive or a hand-built
+    input can carry the string form; the branch it selects is the same."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    _audit_env(monkeypatch, mod, _GATING_OCR_HOOK_CONFIG)
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1", "use_bda": "true"}},
+        None,
+    )
+    assert [e["hookPoint"] for e in out["unreachableHooks"]] == ["postOcr"]
+
+
+def test_audit_runs_only_at_preprocessing(monkeypatch):
+    """A point that exists in BOTH modes does not repeat the audit.
+
+    `preprocessing` is ahead of the routing Choice, so it is the one invocation
+    guaranteed to happen whichever branch runs; repeating the audit at every later
+    point would add a config read per hook point and duplicate the same entry in
+    the execution history.
+    """
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    _audit_env(monkeypatch, mod, _GATING_OCR_HOOK_CONFIG)
+    monkeypatch.setattr(mod, "_invoke_hook", lambda h, p: _ok({}, h["featureId"]))
+
+    out = mod.lambda_handler(
+        {
+            "hookPoint": "postRuleValidation",
+            "document": {"id": "d1", "use_bda": True},
+        },
+        None,
+    )
+    assert out["invoked"] == 1
+    assert "unreachableHooks" not in out
+
+
+def test_audit_rides_on_the_result_when_a_preprocessing_hook_also_runs(monkeypatch):
+    """The two are independent: a registered preprocessing hook still dispatches."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    config = {
+        **_GATING_OCR_HOOK_CONFIG,
+        "preprocessing": {
+            "enabled": True,
+            "featureId": "pii-anonymizer",
+            "arn": "arn:aws:lambda:us-east-1:1:function:pii",
+            "onError": "fail",
+        },
+    }
+    _audit_env(monkeypatch, mod, config)
+    monkeypatch.setattr(mod, "_invoke_hook", lambda h, p: _ok({}, h["featureId"]))
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1", "use_bda": True}},
+        None,
+    )
+    assert out["invoked"] == 1
+    assert out["results"][0]["featureId"] == "pii-anonymizer"
+    assert [e["featureId"] for e in out["unreachableHooks"]] == ["pii-redactor"]
+
+
+def test_disabled_and_arnless_unreachable_hooks_are_not_reported(monkeypatch):
+    """The dispatcher skips both anyway, so neither is an inert gate."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "ConfigTable")
+    mod = _reload()
+    config = {
+        "ocr": {
+            "postHook": [
+                {
+                    "featureId": "off",
+                    "arn": "arn:x",
+                    "onError": "fail",
+                    "enabled": False,
+                },
+                {"featureId": "no-arn", "onError": "fail", "enabled": True},
+            ]
+        }
+    }
+    _audit_env(monkeypatch, mod, config)
+
+    out = mod.lambda_handler(
+        {"hookPoint": "preprocessing", "document": {"id": "d1", "use_bda": True}},
+        None,
+    )
+    assert "unreachableHooks" not in out
