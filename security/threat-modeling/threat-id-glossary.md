@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threat IDs** | 98 |
+| **Total Threat IDs** | 99 |
 
 ## 1. Threat ID Naming Convention
 
@@ -98,7 +98,7 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | KB.T03 | OpenSearch Serverless data exposure | ID | 2 (Low) |
 | KB.T04 | Excessive RAG retrieval | ID, DoS | 2 (Low) |
 
-### AUTH — Authentication & RBAC (15 threats)
+### AUTH — Authentication & RBAC (16 threats)
 
 | ID | Short Name | STRIDE | Risk |
 |----|-----------|--------|------|
@@ -115,23 +115,20 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 | AUTH.T11 | Weak transport security (TLS downgrade / cleartext) | ID, Tampering | 3 (Medium) |
 | AUTH.T12 | Missing input-shape validation (type confusion via lost schema validation) | Tampering, DoS | 3 (Medium) |
 | AUTH.T13 | Group assignment from a user-writable attribute (external IdP mapping) | Spoofing, EoP | 4 (Medium) |
+| AUTH.T14 | Alternate entry path bypassing an operation's group check (streaming Function URL) | EoP, Spoofing | 3 (Medium) |
 | AUTH.T15 | Authentication material in resolver logs (divergent redaction denylists) | ID | 4 (Medium) |
 | AUTH.T16 | Authorization is opt-in per resolver — no default deny at the dispatcher | EoP | 6 (High) |
 
-> **`AUTH.T14` is reserved and deliberately absent from this table.** It is
-> assigned, in a change under review at the time of writing, to "alternate entry
-> path bypassing an operation's group check (streaming Function URL)", and that
-> identifier is already referenced from that change's CHANGELOG entry, from
-> `.claude/skills/api-rbac-test.md` and from a comment in
-> `scripts/api_rbac_expectations.yaml`, in each case next to the corresponding
-> coverage-gap id `GAP-07`. (Measured on that branch: those are the only three
-> occurrences outside this directory. Its *code* comments name `GAP-07` rather
-> than the threat id, so do not expect to find the threat id there.) The threat
-> that this document
-> originally numbered `AUTH.T14` — authorization being opt-in per resolver — was
-> renumbered to `AUTH.T16` here so the two do not collide. A threat identifier is
-> this model's primary key; two threats sharing one is worse than a gap in the
-> sequence.
+> **`AUTH.T14` and `AUTH.T16` are not in sequence with the rest, on purpose.**
+> `AUTH.T14` is the alternate-entry-path threat on the streaming Function URL;
+> its code-level residual is named `GAP-07` in
+> `scripts/api_rbac_expectations.yaml` and in `.claude/skills/api-rbac-test.md`,
+> and the *code* comments cite `GAP-07` rather than the threat id, so do not
+> expect to find `AUTH.T14` there. `AUTH.T16` — authorization being opt-in per
+> resolver, with no default deny at the dispatcher — was drafted as `AUTH.T14` and
+> renumbered, because a concurrent change had already assigned that identifier to
+> the threat above. A threat identifier is this model's primary key; two threats
+> sharing one is worse than a renumbering.
 
 ### SDK — SDK/CLI (5 threats)
 

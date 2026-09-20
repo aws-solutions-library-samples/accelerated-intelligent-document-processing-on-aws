@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-09-19 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threats Identified** | 98 |
+| **Total Threats Identified** | 99 |
 
 ## 1. Risk Scoring Methodology
 
@@ -71,7 +71,7 @@
 | AGT.T05 | Cross-User Data Leakage via Athena | **6** | Agent Analysis | Mitigated |
 | AUTH.T02 | JWT Token Theft/Replay | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T03 | Insufficient Authorization Granularity | **6** | Authentication/RBAC | Mitigated |
-| AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | **6** | Authentication/RBAC | Mitigated |
+| AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | **6** | Authentication/RBAC | Partially Mitigated |
 | AUTH.T08 | Silently-Ignored Schema Authorization Directives | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T09 | Insecure Direct Object Reference (IDOR / BOLA) | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | **6** | Authentication/RBAC | Partially Mitigated (fix pending, #928) |
@@ -129,6 +129,7 @@
 | AUTH.T10 | Token Lifecycle — Post-Logout Token Reuse (Stateless JWT) | **3** | Authentication/RBAC | Accepted |
 | AUTH.T11 | Weak Transport Security (TLS downgrade / cleartext) | **3** | Authentication/RBAC | Mitigated |
 | AUTH.T12 | Missing Input-Shape Validation (Type Confusion via Lost Schema Validation) | **3** | Authentication/RBAC | Mitigated |
+| AUTH.T14 | Alternate Entry Path Bypassing an Operation's Group Check (Streaming Function URL) | **3** | Authentication/RBAC | Partially Mitigated |
 | BDA.T03 | BDA Project Configuration Tampering | **3** | BDA Mode | Mitigated |
 | CHAT.T02 | Conversation Session Hijacking | **3** | Companion Chat | Mitigated |
 | CHAT.T04 | Conversation History Data Exposure | **3** | Companion Chat | Mitigated |
@@ -170,10 +171,10 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (98 Threats)
+pie title Risk Distribution (99 Threats)
     "Critical (8-9)" : 9
     "High (6-7)" : 31
-    "Medium (3-5)" : 43
+    "Medium (3-5)" : 44
     "Low (1-2)" : 15
 ```
 
@@ -182,7 +183,7 @@ pie title Risk Distribution (98 Threats)
 | Component | Critical | High | Medium | Low | Total |
 |-----------|----------|------|--------|-----|-------|
 | Agent Analysis | 0 | 2 | 2 | 1 | 5 |
-| Authentication/RBAC | 0 | 6 | 8 | 1 | 15 |
+| Authentication/RBAC | 0 | 6 | 9 | 1 | 16 |
 | BDA Mode | 0 | 0 | 3 | 2 | 5 |
 | Companion Chat | 1 | 1 | 4 | 0 | 6 |
 | Feature Platform | 1 | 1 | 1 | 1 | 4 |
@@ -196,7 +197,7 @@ pie title Risk Distribution (98 Threats)
 | SDK/CLI | 1 | 2 | 2 | 0 | 5 |
 | Seller Entitlement Service | 2 | 3 | 4 | 1 | 10 |
 | Web UI | 0 | 3 | 1 | 3 | 7 |
-| **Total** | **9** | **31** | **43** | **15** | **98** |
+| **Total** | **9** | **31** | **44** | **15** | **99** |
 
 ### By STRIDE Category
 
@@ -205,19 +206,19 @@ than the threat total.
 
 | STRIDE Category | Threats | Highest Risk |
 |----------------|---------|--------------|
-| **Spoofing** | 15 | Critical |
+| **Spoofing** | 16 | Critical |
 | **Tampering** | 39 | Critical |
 | **Repudiation** | 4 | High |
 | **Information Disclosure** | 38 | Critical |
 | **Denial of Service** | 17 | High |
-| **Elevation of Privilege** | 31 | Critical |
+| **Elevation of Privilege** | 32 | Critical |
 
 ### Mitigation Status
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 63 | Controls implemented and verified |
-| **Partially Mitigated** | 25 | Some controls in place, additional measures recommended |
+| **Mitigated** | 62 | Controls implemented and verified |
+| **Partially Mitigated** | 27 | Some controls in place, additional measures recommended |
 | **Open** | 6 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 
@@ -253,8 +254,9 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** (fix pending, #920) |
 | 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Open** (fix pending, #919) |
 | 12 | UI.T06 | Presigned Read URLs Are Bucket-Scoped, Not Key-Scoped | 6 | **Open** |
-| 13 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
-| 14 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
+| 13 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | 6 | Partially Mitigated |
+| 14 | AUTH.T16 | Authorization Is Opt-In Per Resolver (No Default Deny at the Dispatcher) | 6 | Partially Mitigated (fix pending, #928) |
+| 15 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
 
 ## 5. Recommendations
 
@@ -320,7 +322,20 @@ effort-to-value:
    denylists so a token-bearing field cannot be logged by one copy of the code
    after being suppressed in another. Tracked in **issue #921** — pending, so the
    weaker denylist is what applies today
-9. **External-IdP group mapping (AUTH.T13)**: keep group assignment sourced from
+9. **Config-version scope fail-open (AUTH.T07)**: converge the **five**
+   scope-aware resolvers (`configuration_resolver`,
+   `get_stepfunction_execution_resolver`, `reprocess_document_resolver`,
+   `sync_bda_idp_resolver`, `list_documents_*_resolver`) on the fail-closed
+   contract the pii-anonymizer feature API and `chat_with_document_processor`
+   already use, so a lookup that cannot be evaluated denies instead of reading as
+   "unrestricted". Apply the same rule at `idp_common.api_adapter`, which decides
+   which identifier the scope is resolved *by*. Key the scope on the immutable
+   Cognito `sub` rather than the email it can diverge from (see
+   [`docs/external-idp.md`](../../../docs/external-idp.md)). Separately,
+   Chat-with-Document is unrestricted on the streaming transport because a Lambda
+   Function URL forwards no verified per-user caller — that half closes with
+   GAP-07 / **issue #920**, the same ID-token verification CHAT.T03 needs
+10. **External-IdP group mapping (AUTH.T13)**: keep group assignment sourced from
    provider claims the user cannot edit. All five roles are now mappable
    (**issue #968**); what remains is to set `ExternalIdPAnnotatorGroupName` on any
    federated deployment that uses annotators, since at its empty default
