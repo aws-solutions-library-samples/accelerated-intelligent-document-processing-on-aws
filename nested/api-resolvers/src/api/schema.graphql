@@ -924,6 +924,12 @@ type TestSetDocumentsPage @aws_cognito_user_pools @aws_iam {
   # while something polls: without this a browser refresh mid-run dropped the
   # poll and the set showed "Labeling" indefinitely.
   activeLabelJobId: String
+  # The set's own status (COMPLETED, UPDATING, COPYING, GENERATING, FAILED, …).
+  # Carried here because the set's page has no other source for it: there is no
+  # per-set query, and getTestSets is Admin-or-Author (this page is reachable by an
+  # Annotator) and repairs stale state as a side effect, so it cannot go on a page
+  # load. A control that must not act on a set still being written reads this.
+  status: String
 }
 
 type TestSetVersion @aws_cognito_user_pools @aws_iam {

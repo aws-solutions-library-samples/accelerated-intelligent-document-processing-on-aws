@@ -637,8 +637,9 @@ as it exists in the bucket; everything after it is matched regardless of case.
 directly into the TestSetBucket under `<set-name>/input/…` are auto-detected.
 
 Once a set exists, select it and use **Actions** to browse its documents, annotate
-its ground truth, add more documents, publish a version, edit its details, or
-delete it.
+its ground truth, add more documents, edit its details, or delete it. Opening the
+set — by clicking its name, or **Actions** → **Browse documents** — is where you
+generate draft labels, annotate, prune documents and publish a version.
 
 ### Browsing Test Set Documents and Ground Truth
 
@@ -651,6 +652,11 @@ browser as rows scroll into view (for PDFs only the byte ranges needed for
 page 1 are fetched, so large packets stay cheap). Each document name links
 to a per-document detail page (`/test-studio/sets/<id>/doc/<file>`) —
 mirroring the app's Document List → Document Details structure.
+
+This page is where a set is worked on end to end: **Publish version** at the top
+acts on the set as a whole, while **Add documents**, **Generate draft labels**,
+**Annotate**, **Clear draft labels** and **Remove** sit above the document list and
+act on its documents. See [Publishing a version](#publishing-a-version).
 
 The document detail page offers two views:
 
@@ -770,10 +776,11 @@ Each test set records where its documents came from, shown as a **Source** colum
 ## Versioning test sets
 
 A test set is a **versioned benchmark object**, not just a folder of files. It
-has one mutable working draft plus zero or more immutable published versions —
-the same model as a version-control system: the draft is the working tree,
-publishing is a commit, and the *active reference* is the tag that scoring
-follows.
+has one mutable working draft plus zero or more published versions — the same
+model as a version-control system: the draft is the working tree, publishing is
+a commit, and the *active reference* is a tag naming one of those commits. Which
+version a test run is scored against is chosen per run, not taken from the tag —
+see the note under [Publishing a version](#publishing-a-version).
 
 ### Publishing a version
 
@@ -783,15 +790,34 @@ follows.
 > different things. See the
 > [terminology table](configuration-profiles.md#terminology-which-word-means-what).
 
-Select a COMPLETED test set and click **Publish version**. This freezes the
-current document and label state into a numbered version (`v1`, `v2`, …) and, by
-default, marks it the **active reference** — the version that test runs record
-themselves as having scored against. Publishing does not require every document
-to be reviewed; unreviewed fields keep their machine labels and remain flagged
-as such, which supports time-boxed "first pass" golden sets.
+Open the test set and click **Publish version** at the top of its page — beside the
+label-generation and annotation controls, since publishing is what completes the pass
+those two begin. The dialog names the version number it will create and how many
+documents it covers, and takes an optional **Label** and **Notes** that appear
+wherever versions are listed.
 
-The **Version** column shows the active reference, and notes when the latest
-published version is ahead of it.
+Publishing records the current document and label state as a numbered version
+(`v1`, `v2`, …) so a test run can name the state of the labels it was scored against,
+and by default also marks it the **active reference** — the version the **Test Sets**
+table reports as that set's reference point. Clear **Make this the active reference**
+to publish without moving that pointer. Publishing does not require every document to
+be reviewed; unreviewed fields keep their machine labels and remain flagged as such,
+which supports time-boxed "first pass" golden sets.
+
+⚠️ **The active reference does not decide what a test run is scored against.** A run
+is scored against whichever version you pick in the runner, and that control defaults
+to **Current labels** — the set as it stands, including annotation in progress —
+rather than to the last published version, so that the ordinary review-then-rerun loop
+scores the corrections just made. Pin a run to a published version explicitly if that
+is what you want.
+
+The button is available to Admins and Authors, the two groups
+`publishTestSetVersion` is restricted to. It is disabled, with the reason on hover,
+while a draft-labelling run is still writing labels, while the set is still being
+written to, and when it has no documents.
+
+On the **Test Sets** table the **Version** column shows each set's active reference,
+and notes when the latest published version is ahead of it.
 
 Concurrency: version numbers are allocated atomically, so two people publishing
 at the same moment get distinct versions rather than one silently overwriting

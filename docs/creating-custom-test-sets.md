@@ -302,13 +302,17 @@ https://github.com/user-attachments/assets/bcd18e62-4795-44ea-9554-637062fd21d7
 ## Publishing a Version
 
 Once the ground truth is in the shape you want, **publish a version** of the
-test set. This freezes the current documents and labels as a numbered version
-and makes it the *active reference*, so every subsequent test run records which
-ground truth it scored against — which is what lets you tell later whether a
-metric moved because your configuration changed or because the labels did.
+test set. This records the current documents and labels as a numbered version
+that a test run can name as the ground truth it was scored against — which is
+what lets you tell later whether a metric moved because your configuration
+changed or because the labels did. By default it also becomes the set's
+*active reference*, the version the Test Sets table reports as its reference
+point; which version a run is scored against is chosen in the runner.
 
-1. Go to **Test Studio** → **Test Sets** tab
-2. Select the test set and click **Publish version**
+1. Go to **Test Studio** → **Test Sets** tab and click the test set's name to open it
+2. Click **Publish version** at the top of the page
+3. Optionally give the version a label and notes, and choose whether it becomes the
+   active reference; then click **Publish version** in the dialog
 
 You don't need every document reviewed first: unreviewed fields keep their
 machine labels and stay flagged as such, so a time-boxed "first pass" benchmark
