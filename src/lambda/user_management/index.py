@@ -522,13 +522,17 @@ def _row_for_caller(table, caller):
     verified Cognito claims instead.
 
     ⚠️ The ``sub`` leg cannot return an unrestricted row — a pointer resolving one is
-    treated as stale and the email join is tried instead. This is the same invariant
-    every other reader of the pointer enforces (``_row_by_sub`` in
-    ``idp_common.config_scope``, and the pii-anonymizer feature API), and it is what
-    makes resolving through a pointer only ever *tighten*. It matters less here than
-    there — this decides what the UI displays, not what the server permits — but a
-    reader that disagreed with the others would make the invariant untrue of the
-    deployment rather than of one module.
+    treated as stale and the email join is tried instead. Every other reader of the
+    pointer enforces the same invariant: ``_row_by_sub`` in ``idp_common.config_scope``
+    (which both vendored ``config_scope`` copies inherit byte-for-byte), the
+    Chat-with-Document processor and its vendored twin, and the pii-anonymizer feature
+    API. That is what makes resolving through a pointer only ever *tighten*, and it is
+    a property of the **deployment**, so one reader that disagreed would make it untrue
+    everywhere rather than in one module. It matters less here than there — this decides
+    what the UI displays, not what the server permits — and it is held as a class by
+    rule SCOPE6 in ``scripts/tests/test_scope_lookup_fail_closed.py``, not only by the
+    per-reader tests, because four per-instance tests are what let one reader spell it
+    differently and one omit it entirely.
     """
     caller_sub = caller.get("sub") or ""
     if caller_sub:
@@ -820,6 +824,15 @@ def sync_cognito_users_to_dynamodb():
                     # nor the (absent) pointer would move. The first `listUsers` after
                     # an upgrade would otherwise cost two writes per row.
                     if recorded != caller_sub or scoped:
+                        # Update the snapshot, not just the table. `existing` came from
+                        # a scan taken before this loop and is shared by every account
+                        # that matches this row — two live accounts sharing one address
+                        # is exactly the case above — so leaving it stale makes the
+                        # outcome depend on the order Cognito listed them in: a later
+                        # pass would read the pre-loop `cognitoSub`, believe it was
+                        # superseded, and re-create the pointer it had just deleted.
+                        existing[USERS_TABLE_SUB_ATTRIBUTE] = caller_sub
+                        rows_by_sub[caller_sub] = existing
                         _record_cognito_sub(
                             table,
                             existing.get("userId"),

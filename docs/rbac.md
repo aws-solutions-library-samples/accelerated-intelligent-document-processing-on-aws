@@ -263,9 +263,14 @@ pointer can only ever *tighten*. **Every** reader enforces the same invariant fr
 side — a pointer that resolves an unscoped row is treated as stale, logged, and the email
 join is tried instead — and *every* is load-bearing: the claim is about the deployment,
 not about one module, so a single reader that believed such a pointer would make it
-untrue. That is five implementations: `resolve_allowed_config_versions` (which both
-vendored copies inherit byte-for-byte), the Chat-with-Document processor and its vendored
-twin, the PII-anonymizer feature API, and `getMyProfile`.
+untrue. That is **seven** implementations across five spellings:
+`resolve_allowed_config_versions` and the two vendored `config_scope` copies that
+inherit it byte-for-byte; the Chat-with-Document processor and its vendored twin; the
+PII-anonymizer feature API; and `getMyProfile`. Rule **SCOPE6** in
+`scripts/tests/test_scope_lookup_fail_closed.py` holds it as a class — any module that
+reads the pointer key space and does not normalise the row it finds fails the gate —
+because per-reader tests alone are what allowed one of them to spell the check with raw
+truthiness, which a scope of `[""]` defeats.
 
 `src/lambda/user_management` is the writer:
 

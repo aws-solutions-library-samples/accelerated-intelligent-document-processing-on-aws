@@ -718,6 +718,41 @@ class TestProcessorScopeFailsClosed:
         users_table.query.assert_called_once()
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "unscoped",
+        [
+            {"userId": "u-1"},
+            {"userId": "u-1", "allowedConfigVersions": []},
+            # The shapes only `normalize_scope` calls unscoped. Testing raw truthiness
+            # instead keeps these rows and returns them — and `scope_allows` then
+            # normalizes the result to empty and reads it as *unrestricted*, which is
+            # the same fail-open direction as believing the pointer outright. All five
+            # readers of the pointer must agree on what "unscoped" means, not only on
+            # the existence of a guard.
+            {"userId": "u-1", "allowedConfigVersions": [""]},
+            {"userId": "u-1", "allowedConfigVersions": ["  "]},
+            {"userId": "u-1", "allowedConfigVersions": ""},
+        ],
+        ids=["absent", "empty-list", "blank-entry", "whitespace-entry", "empty-string"],
+    )
+    def test_the_stale_pointer_guard_agrees_with_normalize_scope(self, unscoped):
+        import index
+
+        sub = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
+        result, _publishes, bedrock, _users = _run_scope_turn(
+            index,
+            {"identity": {"claims": {"email": "alice.new@example.com", "sub": sub}}},
+            users_items=[{"allowedConfigVersions": ["tenant-a"]}],
+            users_store={
+                f"SUB#{sub}": {"userId": "u-1", "cognitoSub": sub},
+                "USER#u-1": unscoped,
+            },
+        )
+
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+
+    @pytest.mark.unit
     def test_a_row_with_no_pointer_is_still_found_by_email(self):
         """The transition case: every row predates the pointer writer.
 

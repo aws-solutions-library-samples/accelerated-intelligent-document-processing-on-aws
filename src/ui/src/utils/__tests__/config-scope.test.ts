@@ -11,11 +11,17 @@
  * profile the server would serve (which is the bug this matcher fixed), and a
  * client looser than the server offers one the server will refuse.
  *
- * The one exception is the last `describe` block, which pins the single input
- * class where the two do **not** agree — a character-class range with an endpoint
- * outside the Basic Multilingual Plane — and states the server's answer for each
- * case in a comment rather than in the assertion. Its purpose is the opposite of
- * the rest: to make a change in that behaviour visible instead of silent.
+ * The one exception is the last `describe` block, which pins the single shape of
+ * input where the two do **not** agree — a character class whose body holds a
+ * range hyphen and a code point outside the Basic Multilingual Plane — and states
+ * the server's answer for each case in a comment rather than in the assertion.
+ * Its purpose is the opposite of the rest: to make a change in that behaviour
+ * visible instead of silent. That shape disagrees in **both** directions, so the
+ * block carries a case of each.
+ *
+ * Code points that are invisible or ambiguous on the page are written as `\u{...}`
+ * escapes rather than as literal characters, because which one a case is about is
+ * the whole content of the case.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -64,6 +70,80 @@ describe('scopeAllows — exact entries', () => {
   it('admits a name matched by any one of several entries', () => {
     expect(scopeAllows(['lending', 'tenant-a_*'], 'tenant-a_1')).toBe(true);
     expect(scopeAllows(['lending', 'tenant-a_*'], 'tenant-b_1')).toBe(false);
+  });
+});
+
+describe('scopeAllows — entries are stripped as Python strip() strips', () => {
+  // `String.prototype.trim` and Python's `str.strip()` are different functions
+  // over different sets: swept over the whole code-point range, strip() removes 29
+  // code points and trim() removes 25, and they share 24. Stripping decides which
+  // entries survive as well as what each survivor matches, so each expectation
+  // below is the server's answer for that pair.
+  const BOM = '\u{FEFF}'; // trim() removes this one; strip() keeps it
+  const FS = '\u{001C}'; // strip() removes these five; trim() keeps them
+  const GS = '\u{001D}';
+  const RS = '\u{001E}';
+  const US = '\u{001F}';
+  const NEL = '\u{0085}';
+
+  it('keeps a byte-order mark, which trim() would remove', () => {
+    // The server compares the mark-prefixed entry, so `lending` is out of scope.
+    expect(scopeAllows([`${BOM}lending`], 'lending')).toBe(false);
+    expect(scopeAllows([`lending${BOM}`], 'lending')).toBe(false);
+    expect(scopeAllows([`${BOM}lending${BOM}`], 'lending')).toBe(false);
+    expect(scopeAllows([`${BOM}lending`], `${BOM}lending`)).toBe(true);
+    expect(scopeAllows([`${BOM}tenant-a_*`], 'tenant-a_prod')).toBe(false);
+  });
+
+  it('counts an entry of nothing but a byte-order mark as a real entry', () => {
+    // Dropping it as blank would leave the scope empty, and an empty scope is
+    // unrestricted — so the caller would be offered every profile, not none.
+    expect(scopeAllows([BOM], 'lending')).toBe(false);
+    expect(scopeAllows([BOM], 'anything')).toBe(false);
+    expect(scopeAllows([BOM], BOM)).toBe(true);
+    expect(scopeAllows([BOM, 'lending'], 'lending')).toBe(true);
+  });
+
+  it('strips the separators and NEL that trim() would keep', () => {
+    expect(scopeAllows([`${FS}lending`], 'lending')).toBe(true);
+    expect(scopeAllows([`${GS}lending`], 'lending')).toBe(true);
+    expect(scopeAllows([`${RS}lending`], 'lending')).toBe(true);
+    expect(scopeAllows([`${US}lending`], 'lending')).toBe(true);
+    expect(scopeAllows([`${NEL}lending`], 'lending')).toBe(true);
+    expect(scopeAllows([`lending${NEL}`], 'lending')).toBe(true);
+    expect(scopeAllows([`${NEL}lending${NEL}`], 'lending')).toBe(true);
+    expect(scopeAllows([`${FS}tenant-a_*`], 'tenant-a_prod')).toBe(true);
+  });
+
+  it('treats an entry of only those separators as blank, so unrestricted', () => {
+    expect(scopeAllows([FS], 'anything')).toBe(true);
+    expect(scopeAllows([NEL], 'anything')).toBe(true);
+    expect(scopeAllows([`${FS}${GS}${RS}${US}${NEL}`], 'anything')).toBe(true);
+  });
+
+  it('strips the whitespace the two sets share', () => {
+    expect(scopeAllows(['\u{00A0}lending'], 'lending')).toBe(true); // no-break space
+    expect(scopeAllows(['\u{2028}lending'], 'lending')).toBe(true); // line separator
+    expect(scopeAllows(['\u{3000}lending'], 'lending')).toBe(true); // ideographic space
+  });
+
+  it('keeps the code points neither set removes', () => {
+    // U+200B is a zero-width space and U+180E a Mongolian vowel separator; neither
+    // is whitespace to either implementation, so both stay part of the entry.
+    expect(scopeAllows(['\u{200B}lending'], 'lending')).toBe(false);
+    expect(scopeAllows(['\u{200B}lending'], '\u{200B}lending')).toBe(true);
+    expect(scopeAllows(['\u{180E}lending'], 'lending')).toBe(false);
+    expect(scopeAllows(['\u{180E}lending'], '\u{180E}lending')).toBe(true);
+  });
+
+  it('never strips the profile name, because scope_allows does not', () => {
+    expect(scopeAllows(['lending'], ' lending')).toBe(false);
+    expect(scopeAllows(['lending'], 'lending ')).toBe(false);
+    expect(scopeAllows(['lending'], `${BOM}lending`)).toBe(false);
+    expect(scopeAllows(['lending'], `${FS}lending`)).toBe(false);
+    // A name of nothing but whitespace is still a name, so `*` admits it.
+    expect(scopeAllows(['*'], ' ')).toBe(true);
+    expect(scopeAllows(['*'], BOM)).toBe(true);
   });
 });
 
@@ -240,9 +320,9 @@ describe('scopeAllows — characters outside the Basic Multilingual Plane', () =
   // UTF-16 code units in a JavaScript string but one character to Python's
   // fnmatch. The `u` flag on the compiled RegExp is what reconciles the two; each
   // expectation below is what the server returns for that pair.
-  const GRIN = '\u{1F600}'; // 😀 U+1F600, one code point, two code units
-  const SMILE = '\u{1F603}'; // 😃 U+1F603
-  const LONE_HIGH = '\uD83D'; // the high half of 😀, on its own
+  const GRIN = '\u{1F600}'; // U+1F600, one code point, two code units
+  const SMILE = '\u{1F603}'; // U+1F603
+  const LONE_HIGH = '\uD83D'; // the high half of U+1F600, on its own
 
   it('counts an astral character as one ? and not two', () => {
     expect(scopeAllows(['tenant-?_x'], `tenant-${GRIN}_x`)).toBe(true);
@@ -287,41 +367,80 @@ describe('scopeAllows — characters outside the Basic Multilingual Plane', () =
   });
 });
 
-describe('scopeAllows — where an astral range endpoint diverges from the server', () => {
-  // The only input class the two implementations answer differently. The range
-  // ordering test in `translateClass` compares UTF-16 code units while Python
-  // compares code points, so a range with an endpoint outside the BMP can be read
-  // as out of order on one side and well-ordered on the other. Every divergence
-  // below runs **stricter** than the server, never looser, so the client offers
-  // fewer profiles than the server would serve rather than more. Some assertions
-  // here do agree with the server; each comment says which.
+describe('scopeAllows — where an astral code point in a class range diverges from the server', () => {
+  // The only shape of input the two implementations answer differently: a class
+  // body holding a range hyphen and a code point outside the BMP. Two pieces of
+  // `translateClass` index by UTF-16 code unit where CPython's `fnmatch._translate`
+  // indexes by code point — the endpoint ordering test, and the arithmetic that
+  // splits the class body into runs around range hyphens — and each can be reached
+  // on its own. The divergence runs **stricter** than the server in most cases and
+  // **looser** in some; both directions appear below, and each comment says what
+  // the server returns.
 
   it('keeps only the last code point of a well-ordered astral range', () => {
-    // The server reads `[😀-😃]` as the four code points U+1F600..U+1F603 and
-    // returns true for each. Here the range collapses to its last member.
+    // The server reads `[U+1F600-U+1F603]` as those four code points and returns
+    // true for each. Here the range collapses to its last member.
     expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '\u{1F603}')).toBe(true);
     expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '\u{1F600}')).toBe(false);
     expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '\u{1F601}')).toBe(false);
   });
 
   it('matches nothing when a u-flag RegExp rejects an astral range', () => {
-    // `[😀-\uFFFF]` looks well-ordered compared by code unit, so it survives to
-    // `RegExp`, which rejects it; the entry is then unable to match. The server
+    // `[U+1F600-U+FFFF]` looks well-ordered compared by code unit, so it survives
+    // to `RegExp`, which rejects it; the entry is then unable to match. The server
     // discards the range instead, which for a positive class is the same answer…
-    expect(scopeAllows(['[\u{1F600}-\uFFFF]'], 'a')).toBe(false);
-    expect(scopeAllows(['[\u{1F600}-\uFFFF]'], '\uFFFF')).toBe(false);
+    expect(scopeAllows(['[\u{1F600}-\u{FFFF}]'], 'a')).toBe(false);
+    expect(scopeAllows(['[\u{1F600}-\u{FFFF}]'], '\u{FFFF}')).toBe(false);
     // …and for a negated one is not: an emptied negated class matches any single
     // character on the server, so it returns true for both of these.
-    expect(scopeAllows(['[!\u{1F600}-\uFFFF]'], 'a')).toBe(false);
-    expect(scopeAllows(['[!\u{1F600}-\uFFFF]'], '\u{1F600}')).toBe(false);
+    expect(scopeAllows(['[!\u{1F600}-\u{FFFF}]'], 'a')).toBe(false);
+    expect(scopeAllows(['[!\u{1F600}-\u{FFFF}]'], '\u{1F600}')).toBe(false);
+  });
+
+  it('splits the class body at a hyphen the server keeps as a literal member', () => {
+    // The run-split arithmetic, not the ordering test. The server partitions
+    // `[a-U+1F600-U+1F603]` into `a` | `U+1F600-U+1F603` and emits the range
+    // `a`–`U+1F600` plus the literal members `-` and `U+1F603`; here the body
+    // partitions three ways and the class becomes the single range
+    // `a`–`U+1F603`. That is stricter in one place and looser in another.
+    const both = '[a-\u{1F600}-\u{1F603}]';
+    // Agrees: inside `a`–`U+1F600` on the server, inside `a`–`U+1F603` here.
+    expect(scopeAllows([both], 'b')).toBe(true);
+    expect(scopeAllows([both], '\u{1F600}')).toBe(true);
+    // Agrees: the last member either way.
+    expect(scopeAllows([both], '\u{1F603}')).toBe(true);
+    // Agrees: below `a`, so outside the range on both sides.
+    expect(scopeAllows([both], 'Z')).toBe(false);
+    // Stricter: the server keeps the second hyphen as a literal member and
+    // returns true.
+    expect(scopeAllows([both], '-')).toBe(false);
+    // Looser: U+1F601 and U+1F602 are inside `a`–`U+1F603` here but above the
+    // server's `a`–`U+1F600`, so the server returns false for both.
+    expect(scopeAllows([both], '\u{1F601}')).toBe(true);
+    expect(scopeAllows([both], '\u{1F602}')).toBe(true);
+  });
+
+  it('collapses a split-off astral member against a BMP neighbour', () => {
+    // Same arithmetic, this time leaving a lone high surrogate as the range end.
+    // The server emits `a`–`U+1F600`, `-`, `c` and returns true for all four of
+    // these; here the class is `a`–`\uD83D`.
+    expect(scopeAllows(['[a-\u{1F600}-c]'], 'b')).toBe(true);
+    expect(scopeAllows(['[a-\u{1F600}-c]'], 'c')).toBe(true);
+    expect(scopeAllows(['[a-\u{1F600}-c]'], '\u{1F600}')).toBe(false);
+    expect(scopeAllows(['[a-\u{1F600}-c]'], '-')).toBe(false);
+    // `[0-U+1F600-c]` is the same shape with a digit as the left endpoint: the
+    // server returns true for `-`, this side does not.
+    expect(scopeAllows(['[0-\u{1F600}-c]'], '5')).toBe(true);
+    expect(scopeAllows(['[0-\u{1F600}-c]'], '-')).toBe(false);
   });
 
   it('still admits a profile whose name is such an entry verbatim', () => {
     // The equality branch runs before any of this, so a profile really called
-    // `[😀-😃]` is in scope — the same guarantee the discarded-range cases above
-    // rely on.
+    // `[U+1F600-U+1F603]` is in scope — the same guarantee the discarded-range
+    // cases above rely on.
     expect(scopeAllows(['[\u{1F600}-\u{1F603}]'], '[\u{1F600}-\u{1F603}]')).toBe(true);
-    expect(scopeAllows(['[!\u{1F600}-\uFFFF]'], '[!\u{1F600}-\uFFFF]')).toBe(true);
+    expect(scopeAllows(['[!\u{1F600}-\u{FFFF}]'], '[!\u{1F600}-\u{FFFF}]')).toBe(true);
+    expect(scopeAllows(['[a-\u{1F600}-\u{1F603}]'], '[a-\u{1F600}-\u{1F603}]')).toBe(true);
   });
 });
 

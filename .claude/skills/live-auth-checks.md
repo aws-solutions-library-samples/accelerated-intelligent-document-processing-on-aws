@@ -63,8 +63,11 @@ refusal that follows is demonstrably the code's and not IAM's.
 zipping `index.py` alone, and the resolver now imports
 `idp_common.utils.log_sanitizer` and `idp_common.config_scope` — neither bundled, no
 Layer attached — so every invoke returns `ImportModuleError`. `denied()` requires
-`errorType == "PermissionError"`, so eight of its nine checks fail on the import and it
-exits 1 reporting `1/9`. It fails loudly and there is no SKIP state, so it cannot pass
+`errorType == "PermissionError"`, so **nine of its ten** checks fail on the import —
+only check 0 passes, because it probes Step Functions directly and never invokes the
+Lambda — and it exits 1 reporting `1/10`. The first of the two missing imports arrived
+on 2026-09-17 (`aa593cd95`, merged as #945). It fails loudly and there is no SKIP
+state, so it cannot pass
 vacuously; do not read the red as a finding about the resolver. Fixing it needs the
 packaging step to become a real `pip install -t` — `idp_common/utils/__init__.py`
 eagerly imports pydantic models, so copying the two modules is not enough. Until then,

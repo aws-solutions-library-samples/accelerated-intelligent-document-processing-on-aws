@@ -50,7 +50,7 @@ from idp_common.bedrock.client import (
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
-from idp_common.config_scope import scope_allows
+from idp_common.config_scope import normalize_scope, scope_allows
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -363,7 +363,9 @@ def _get_user_allowed_config_versions(
             # `idp_common.config_scope` and `_caller_allowed_versions` in the
             # pii-anonymizer feature API; all four readers must agree, or "resolving
             # through a pointer can only tighten" is not true of the deployment.
-            if row is not None and not row.get("allowedConfigVersions"):
+            if row is not None and not normalize_scope(
+                row.get("allowedConfigVersions")
+            ):
                 logger.warning(
                     "A UsersTable %s pointer names a row carrying no "
                     "allowedConfigVersions; treating it as stale",

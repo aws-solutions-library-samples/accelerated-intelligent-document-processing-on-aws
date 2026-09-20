@@ -36,42 +36,68 @@
  *   cannot be proven in scope, and on the server "cannot prove" must not mean
  *   "allow"; this side agrees so that the UI never offers something the server
  *   will then refuse.
- * - Entries are trimmed and blank entries dropped, so a stray empty string does
- *   not become a rule that matches nothing.
+ * - Entries are stripped — by Python's `str.strip()` set of code points, not
+ *   `String.prototype.trim`'s, which is a different set; see
+ *   `PYTHON_WHITESPACE` — and blank entries dropped, so a stray empty string does
+ *   not become a rule that matches nothing. The profile *name* is not stripped,
+ *   because `scope_allows` does not strip it either.
  * - An entry matches when it **equals** the name, or when it contains `*`, `?`
  *   or `[` and matches the name as a glob with Python
  *   `fnmatch.fnmatchcase` semantics: case-**sensitive**, anchored at both ends.
  *
  * **What is identical and what is not.** The *value* returned agrees with the
- * Python for every input the two have been compared on except one class of
- * pattern, named at the end of this paragraph. Two differential harnesses have
- * been run. The first is 351,540 pattern/name pairs over the characters that are
- * structural to a class or to a regex (`] ! - ^ \ [ ? * & | ~`): every character
- * class up to three members, bare and embedded in a longer pattern, `*` runs and
- * interleavings, and names holding backslashes, brackets and embedded newlines.
- * It contains **no character outside the Basic Multilingual Plane**, so it says
- * nothing about those. The second, 4,837,316 pairs, adds them — astral literals
- * in both pattern and name, `?` and `*` against them, and them as class members
- * and as class *range endpoints* — together with lone surrogates and BMP
- * characters above the surrogate range. 1,113 of those pairs disagree (474 where
- * this side admits a name the Python refuses, 639 the other way), and every one
- * of them is **a character class with a range endpoint outside the BMP**; see the
- * note in `translateClass` for why and for what each direction costs. Nothing
- * else in the second harness diverges, which is what the `u` flag on the compiled
- * RegExp buys: without it the pattern and the name are matched by UTF-16 code
- * unit, so `.` matches half a surrogate pair and `?` admits a name the Python
- * refuses. Neither harness is committed — each is a throwaway run against the
- * Python of the day. What runs on every change is
- * `__tests__/config-scope.test.ts`, which carries a sample of each harness's
- * cases, including the divergence above. The **worst-case running time** does not
- * agree, and cannot: CPython 3.12 and later wrap each interior `*` in an atomic
- * group (`(?>.*?…)`), a construct JavaScript has no equivalent of, so a pattern
- * built to force backtracking (`a*` repeated a dozen times before a letter the
- * name lacks) answers here in seconds where the server answers in a fraction of
- * a millisecond. Runs of consecutive `*` are collapsed to one, which removes the
- * cheapest way to trigger that — a 24-`*` run against a name it cannot match
- * goes from about a minute to under a millisecond — but `*` interleaved with
- * literals remains exposed.
+ * Python except on one named shape of pattern, and within that shape it can
+ * disagree in either direction. The shape is **a character class whose body holds
+ * a range hyphen and at least one code point outside the Basic Multilingual
+ * Plane**; the note in `translateClass` names the two pieces of arithmetic that
+ * cause it and what each direction costs. The shape is a sufficient condition for
+ * a disagreement to be possible, not for one to occur: plenty of patterns fit it
+ * and agree.
+ *
+ * **State this as a shape, not as a count.** An absolute number of disagreeing
+ * pairs measures how much of a harness's corpus carries the shape — a parameter of
+ * the harness, not a property of this code — so enumerating more astral range
+ * endpoints raises it with no code change. What holds for any corpus is that
+ * **every** disagreement fits the shape above, **none** fits anything else, and
+ * over patterns free of the shape there are **zero** disagreements. Checking that
+ * means a differential run against the Python of the day; the one behind this
+ * paragraph compared 43,398,144 pattern/name pairs — 18,836 patterns × 2,304
+ * names — in three parts:
+ *
+ * - 15,921 patterns over the characters that are structural to a class or to a
+ *   regex (`] ! - ^ \ [ ? * & | ~`): every character class up to three members,
+ *   bare and embedded in a longer pattern, `*` runs and interleavings, against
+ *   names holding backslashes, brackets and embedded newlines. This part contains
+ *   **no character outside the BMP**, so on its own it says nothing about those.
+ * - 2,439 patterns that add them: astral literals in both pattern and name, `?`
+ *   and `*` against them, and them as class members and as class *range
+ *   endpoints*, together with lone surrogates and BMP characters above the
+ *   surrogate range.
+ * - 476 patterns carrying every code point that either `str.strip()` or
+ *   `String.prototype.trim` removes — and several that neither removes — in
+ *   leading, trailing and sole position, which is the `normalizeScope` half of the
+ *   mirror rather than the matcher half.
+ *
+ * 519 of the 18,836 patterns disagree on at least one name, and all 519 fit the
+ * shape; the 17,936 that do not fit it contribute 41,324,544 pairs and **0**
+ * disagreements. That the astral part diverges *only* in the shape is what the `u`
+ * flag on the compiled RegExp buys: without it the pattern and the name are
+ * matched by UTF-16 code unit, so `.` matches half a surrogate pair and `?` admits
+ * a name the Python refuses.
+ *
+ * The harness is not committed — it is a throwaway run against the Python of the
+ * day, and re-running it is how a change to either side is checked. What runs on
+ * every change is `__tests__/config-scope.test.ts`, which carries a sample of each
+ * part's cases, including the divergence above and both of its directions.
+ *
+ * The **worst-case running time** does not agree, and cannot: CPython 3.12 and
+ * later wrap each interior `*` in an atomic group (`(?>.*?…)`), a construct
+ * JavaScript has no equivalent of, so a pattern built to force backtracking (`a*`
+ * repeated a dozen times before a letter the name lacks) answers here in seconds
+ * where the server answers in a fraction of a millisecond. Runs of consecutive `*`
+ * are collapsed to one, which removes the cheapest way to trigger that — a 24-`*`
+ * run against a name it cannot match goes from about a minute to under a
+ * millisecond — but `*` interleaved with literals remains exposed.
  *
  * That residual is bounded by who can reach it. A scope entry is written only by
  * `createUser` / `updateUser`, both **Admin-only** in the API RBAC manifest, and
@@ -83,6 +109,55 @@
 
 /** Characters that make a scope entry a glob rather than a literal name. */
 const GLOB_CHARS = ['*', '?', '['];
+
+/**
+ * The code points Python's `str.strip()` removes, as a RegExp class body.
+ *
+ * `String.prototype.trim` is a different function over a different set, so it
+ * cannot stand in for `strip()` here. Swept over the whole code-point range
+ * against this deployment's interpreter, `strip()` removes 29 code points and
+ * `trim()` removes 25; they share 24 and differ on six:
+ *
+ * | Code point | `strip()` | `trim()` |
+ * |---|---|---|
+ * | U+001C, U+001D, U+001E, U+001F (the file/group/record/unit separators) | removes | keeps |
+ * | U+0085 (NEL) | removes | keeps |
+ * | U+FEFF (zero-width no-break space, the byte-order mark) | keeps | removes |
+ *
+ * Both directions are reachable, and neither is benign, because `normalizeScope`
+ * decides which entries *survive* as well as what each surviving one matches — so
+ * a `trim()` here would break the mirror twice over:
+ *
+ * - U+FEFF makes the client **looser**. `trim()` reduces an entry written
+ *   `U+FEFF` + `lending` to a bare `lending`, which then admits the profile
+ *   `lending`; the server compares the mark-prefixed entry and refuses. Worse, an
+ *   entry of nothing but the mark
+ *   trims to the empty string and is dropped as blank, which empties the scope —
+ *   and an empty scope is *unrestricted*, so a caller the server confines to one
+ *   unmatchable entry would be offered every profile in the deployment.
+ * - The five Python-only separators make it **stricter**, which hides a profile
+ *   the server serves. The server strips `\x1clending` to `lending` and admits
+ *   that profile, and drops an entry of separators alone as blank, leaving the
+ *   caller unrestricted; a `trim()` client keeps both and matches neither.
+ *
+ * Python's set is Unicode-version dependent — U+180E was whitespace before
+ * Unicode 6.3 and is in neither set now — so this is the measured set for the
+ * interpreter the Lambdas run, not a set derived from a specification.
+ */
+const PYTHON_WHITESPACE = '\\t\\n\\v\\f\\r\\u001c-\\u001f \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+
+const LEADING_PYTHON_WHITESPACE = new RegExp(`^[${PYTHON_WHITESPACE}]+`);
+
+const TRAILING_PYTHON_WHITESPACE = new RegExp(`[${PYTHON_WHITESPACE}]+$`);
+
+/**
+ * Strip a scope entry the way Python's `str.strip()` does.
+ *
+ * Applied to scope **entries** only. `scope_allows` does not strip the profile
+ * name — it compares `str(profile_name)` as given — so neither does this module,
+ * and adding it here would deny a profile whose name really does carry a space.
+ */
+const pythonStrip = (text: string): string => text.replace(LEADING_PYTHON_WHITESPACE, '').replace(TRAILING_PYTHON_WHITESPACE, '');
 
 /**
  * A caller's `allowedConfigVersions` as the UI may hold it.
@@ -103,7 +178,7 @@ export type ConfigVersionScope = string | readonly (string | null | undefined)[]
 const normalizeScope = (scope: ConfigVersionScope): string[] | null => {
   if (!scope) return null;
   const raw: readonly (string | null | undefined)[] = typeof scope === 'string' ? [scope] : scope;
-  const entries = raw.map((entry) => (entry ?? '').trim()).filter((entry) => entry.length > 0);
+  const entries = raw.map((entry) => pythonStrip(entry ?? '')).filter((entry) => entry.length > 0);
   return entries.length > 0 ? entries : null;
 };
 
@@ -172,11 +247,22 @@ const findClassEnd = (pattern: string, start: number): number => {
  * - Nothing remains and the class **was** negated (`[!z-a]`) — "none of nothing"
  *   is every character, so emit `.`.
  *
- * This ordering test is the one thing that still differs from the Python. It
- * compares UTF-16 code units here and code points there, so for a range with an
- * endpoint outside the Basic Multilingual Plane the two sides can disagree about
- * whether the range is out of order — and the collapse then takes a code *unit*
- * off each side where the Python takes a code point. It breaks two ways:
+ * **Two pieces of the code below index by UTF-16 code unit where CPython's
+ * `fnmatch._translate` indexes by code point, and together they are the whole of
+ * the residual disagreement with the Python.** Neither shows up unless a class
+ * body holds both a range hyphen and a code point outside the Basic Multilingual
+ * Plane, and both are needed to describe the residual: fixing either alone leaves
+ * the other. Over the differential run described in the module header (18,836
+ * patterns, 43,398,144 pairs), 519 patterns disagree on at least one name — 387
+ * would be settled by making the ordering test code-point-correct, 81 by making
+ * the run-split arithmetic code-point-correct, and 51 need both. Counted instead
+ * by which dependency they involve at all, 438 involve the ordering test and 132
+ * the run-split arithmetic.
+ *
+ * **The ordering test and collapse.** `left.slice(-1)` and `right.slice(0, 1)`
+ * each take one code *unit*, so the two sides can disagree about whether a range
+ * is out of order — and the collapse then takes a unit off each side where the
+ * Python takes a code point. It breaks two ways:
  *
  * - `[😀-😃]` is a well-ordered range of four code points to the Python. Here its
  *   endpoints compare as the low surrogate `\uDE00` against the high surrogate
@@ -191,8 +277,29 @@ const findClassEnd = (pattern: string, start: number): number => {
  *   nothing — but stricter for a negated one (`[!😀-\uFFFF]`), where the Python's
  *   emptied negated class matches any single character.
  *
- * Reaching either needs an admin to write a glob whose range endpoint is an
- * astral character, which the Admin UI's fixed profile list cannot produce.
+ * **The run-split scan.** The `start + 1` / `start + 2` skip past a leading `!`,
+ * the `indexOf('-', cursor)` search position and the `cursor = hyphen + 3` advance
+ * past a completed range are all code-unit offsets. An astral member therefore
+ * shifts where the `+ 3` lands relative to CPython's own `k = k+3`, and a hyphen
+ * CPython keeps as a literal member after a completed range is read here as the
+ * start of another range. The member partition itself then differs, before any
+ * ordering question arises — and one pattern shows both directions at once:
+ *
+ * - `[a-😀-😃]` partitions to `a` | `😀-😃` in CPython, which emits the range
+ *   `a`–`😀` plus the literal members `-` and `😃`. Here the `+ 3` lands one unit
+ *   early, the body partitions to `a` | `😀` | `😃`, the last pair collapses as out
+ *   of order, and the class becomes the single range `a`–`😃`. So `-` matches on
+ *   the server and not here (**stricter**), while `😁` — inside `a`–`😃` but above
+ *   `😀` — matches here and not on the server (**looser**: the client offers a
+ *   profile the server refuses).
+ * - `[a-😀-c]` partitions the same way in CPython and emits `a`–`😀`, `-`, `c`.
+ *   Here it becomes `a` | `😀` | `c`, `😀`–`c` collapses to a lone high surrogate,
+ *   and the class is `a`–`\uD83D` — so both `😀` and `-` match on the server and
+ *   not here.
+ *
+ * Reaching any of this needs an admin to write a glob whose character class holds
+ * an astral code point around a range hyphen, which the Admin UI's fixed profile
+ * list cannot produce.
  */
 const translateClass = (pattern: string, start: number, end: number): string => {
   const body = pattern.slice(start, end);
@@ -270,8 +377,9 @@ const STAR = Symbol('star');
  * escapes** than the default: outside a class it accepts an escape only of a
  * syntax character (`^ $ \ . * + ? ( ) [ ] { } |`) or `/`, and inside a class
  * those plus `\-` and `\b`. Everything `escapeLiteral` and `escapeClassMember`
- * emit is within that set, so neither needed loosening — measured over the
- * 4,837,316-pair harness, no pattern's escaping fails to compile.
+ * emit is within that set, so neither needs loosening: over the differential run
+ * described in the module header, no pattern fails to compile for an escaping
+ * reason.
  */
 const globToRegExp = (pattern: string): RegExp => {
   const fragments: (string | typeof STAR)[] = [];
@@ -304,10 +412,11 @@ const globToRegExp = (pattern: string): RegExp => {
     // a class range whose left endpoint is an astral code point and whose right
     // endpoint is a BMP one at or above U+DC00, which looks well-ordered to a
     // code-unit comparison and is rejected by a `u`-flag `RegExp` (see
-    // `translateClass`). Over the 4,837,316-pair harness that shape is the only
-    // thing that reaches this arm: 20 of 9,812 patterns, and never an escaping
-    // fault. Whatever lands here must leave its own entry unable to match rather
-    // than throw out of the render that called this.
+    // `translateClass`). Over the differential run described in the module header
+    // that shape is the only thing that reaches this arm — 108 of the run's 18,416
+    // glob patterns reach it, every one of them fitting it, and no pattern reaches
+    // it for an escaping fault. Whatever lands here must leave its own entry unable
+    // to match rather than throw out of the render that called this.
     return NEVER_MATCHES;
   }
 };

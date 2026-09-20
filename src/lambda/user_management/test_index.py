@@ -626,7 +626,7 @@ class TestTheBackFill:
     def _pointer(users_table, sub=_SUB):
         return users_table.get_item(Key={"PK": f"SUB#{sub}", "SK": f"SUB#{sub}"})
 
-    def _run(self, index, users_table, email, sub=_SUB):
+    def _run(self, index, email, sub=_SUB):
         pages = self._page(email, sub)
         with patch.object(index, "cognito", _cognito_double(list_users_pages=pages)):
             index.sync_cognito_users_to_dynamodb()
@@ -637,7 +637,7 @@ class TestTheBackFill:
             Item=dict(ANNOTATOR_ITEM, allowedConfigVersions=["tenant-a"])
         )
 
-        self._run(index, users_table, ANNOTATOR_ITEM["email"])
+        self._run(index, ANNOTATOR_ITEM["email"])
 
         row = users_table.get_item(Key={"PK": "USER#u-1", "SK": "USER#u-1"})["Item"]
         assert row["cognitoSub"] == _SUB
@@ -648,7 +648,7 @@ class TestTheBackFill:
         index = _load_index()
         users_table.put_item(Item=dict(ANNOTATOR_ITEM))
 
-        self._run(index, users_table, ANNOTATOR_ITEM["email"])
+        self._run(index, ANNOTATOR_ITEM["email"])
 
         row = users_table.get_item(Key={"PK": "USER#u-1", "SK": "USER#u-1"})["Item"]
         assert row["cognitoSub"] == _SUB
@@ -675,7 +675,7 @@ class TestTheBackFill:
             )
         )
 
-        self._run(index, users_table, "alice@corp.com")
+        self._run(index, "alice@corp.com")
 
         rows = self._rows(users_table)
         assert len(rows) == 1, f"a duplicate row was created: {rows}"
@@ -700,7 +700,7 @@ class TestTheBackFill:
             )
         )
 
-        self._run(index, users_table, "new.name@corp.com")
+        self._run(index, "new.name@corp.com")
 
         assert len(self._rows(users_table)) == 2
         assert "Item" not in self._pointer(users_table), (
@@ -716,6 +716,80 @@ class TestTheBackFill:
         )["Items"]
         assert page[0]["allowedConfigVersions"] == ["tenant-a_prod"]
 
+    @pytest.mark.parametrize("first_sub_listed", ["native", "federated"])
+    def test_two_live_accounts_on_one_address_settle_the_same_way_either_order(
+        self, users_table, first_sub_listed
+    ):
+        """A native and a federated Cognito account can share one address, both live.
+
+        Both match the same row, so one pass writes a pointer for each sub. The row can
+        record only one, so exactly one pointer must survive — and **which** one must
+        not depend on the order Cognito happened to list them in. The row snapshot is
+        taken before the loop and shared by both, so leaving it stale made a later pass
+        read the pre-loop value, believe its own write was superseded, and re-create the
+        pointer it had just deleted.
+        """
+        index = _load_index()
+        native, federated = "11111111-aaaa-bbbb-cccc-000000000001", _SUB
+        order = (
+            [native, federated] if first_sub_listed == "native" else [federated, native]
+        )
+        users_table.put_item(
+            Item=dict(ANNOTATOR_ITEM, allowedConfigVersions=["tenant-a"])
+        )
+        pages = [
+            {
+                "Users": [
+                    {
+                        "Username": ANNOTATOR_ITEM["email"],
+                        "Attributes": [
+                            {"Name": "sub", "Value": sub},
+                            {"Name": "email", "Value": ANNOTATOR_ITEM["email"]},
+                        ],
+                    }
+                    for sub in order
+                ]
+            }
+        ]
+        with patch.object(index, "cognito", _cognito_double(list_users_pages=pages)):
+            index.sync_cognito_users_to_dynamodb()
+
+        row = users_table.get_item(Key={"PK": "USER#u-1", "SK": "USER#u-1"})["Item"]
+        surviving = [
+            s for s in (native, federated) if "Item" in self._pointer(users_table, s)
+        ]
+        assert surviving == [row["cognitoSub"]], (
+            "exactly one pointer must survive, and it must be the one the row records"
+        )
+
+    def test_two_rows_differing_only_in_case_are_reported(self, users_table, caplog):
+        """The collision the case-insensitive match resolves by scan order.
+
+        Which row wins then decides which one gets an immutable ``sub`` and its
+        pointer, and nothing about that is visible in the result. The pool is created
+        with ``CaseSensitive: false``, so this needs rows written outside user
+        management — but "it needs an unusual precondition" is not a reason for it to
+        be silent.
+        """
+        index = _load_index()
+        users_table.put_item(Item=dict(ANNOTATOR_ITEM, email="Alice@corp.com"))
+        users_table.put_item(
+            Item=dict(
+                ANNOTATOR_ITEM,
+                PK="USER#u-2",
+                SK="USER#u-2",
+                userId="u-2",
+                email="alice@corp.com",
+            )
+        )
+
+        with caplog.at_level("WARNING"):
+            self._run(index, "ALICE@corp.com")
+
+        assert any(
+            "differing only in case" in r.getMessage() for r in caplog.records
+        ), caplog.text
+
     def test_a_row_is_matched_by_its_recorded_sub_whatever_the_address_says(
         self, users_table
     ):
@@ -730,7 +804,7 @@ class TestTheBackFill:
             )
         )
 
-        self._run(index, users_table, "brand.new@corp.com")
+        self._run(index, "brand.new@corp.com")
 
         rows = self._rows(users_table)
         assert len(rows) == 1, f"a duplicate row was created: {rows}"
@@ -759,7 +833,7 @@ class TestTheBackFill:
         index._record_cognito_sub(users_table, "u-1", old_sub, scoped=True)
         assert "Item" in self._pointer(users_table, old_sub)
 
-        self._run(index, users_table, ANNOTATOR_ITEM["email"])
+        self._run(index, ANNOTATOR_ITEM["email"])
 
         assert "Item" not in self._pointer(users_table, old_sub)
         assert self._pointer(users_table)["Item"]["userId"] == "u-1"
@@ -820,7 +894,7 @@ class TestTheBackFill:
     def test_a_newly_synced_user_records_the_sub_and_gets_no_pointer(self, users_table):
         index = _load_index()
 
-        self._run(index, users_table, "fresh@example.com")
+        self._run(index, "fresh@example.com")
 
         rows = self._rows(users_table)
         assert len(rows) == 1

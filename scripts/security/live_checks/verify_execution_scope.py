@@ -3,29 +3,13 @@
 
 ⚠️ **THIS CHECK CANNOT PASS TODAY, for a reason unrelated to what it asserts.** It
 packages the throwaway Lambda by zipping ``index.py`` alone, but the resolver has
-imported ``idp_common.utils.log_sanitizer`` since 2026-09-17 and
-``idp_common.config_scope`` since two days later. Neither is bundled and no Layer is
-attached, so every invoke returns ``ImportModuleError``; ``denied()`` requires
-``errorType == "PermissionError"`` and a message prefix, so eight of the nine checks
-fail regardless of the control's behaviour and the script exits 1 reporting ``1/9``.
-It fails loudly and cannot pass vacuously — there is no SKIP state — which is why this
-is recorded rather than silently tolerated.
-
-Fixing it is not a one-line change: ``idp_common/__init__.py`` is lazy and would bundle
-safely, but ``idp_common/utils/__init__.py`` eagerly imports ``idp_common.config.models``
-(pydantic), so the packaging step has to become a real ``pip install -t`` against the
-function's requirements. Until then, the ``SUB#``/``EmailIndex`` seeding below is
-**unexercised**, and so is everything else here.
-
-⚠️ **THIS CHECK CANNOT PASS TODAY, for a reason unrelated to what it asserts.** It
-packages the throwaway Lambda by zipping ``index.py`` alone, but the resolver has
-imported ``idp_common.utils.log_sanitizer`` since 2026-09-17 and
-``idp_common.config_scope`` since two days later. Neither is bundled and no Layer is
-attached, so every invoke returns ``ImportModuleError``; ``denied()`` requires
-``errorType == "PermissionError"`` and a message prefix, so eight of the nine checks
-fail regardless of the control's behaviour and the script exits 1 reporting ``1/9``.
-It fails loudly and cannot pass vacuously — there is no SKIP state — which is why this
-is recorded rather than silently tolerated.
+imported ``idp_common.utils.log_sanitizer`` since 2026-09-17 (``aa593cd95``, merged as
+#945) and ``idp_common.config_scope`` since two days later. Neither is bundled and no
+Layer is attached, so every invoke returns ``ImportModuleError``; ``denied()`` requires
+``errorType == "PermissionError"`` and a message prefix, so **nine of the ten** checks
+fail regardless of the control's behaviour — only check 0 passes, because it probes
+Step Functions directly and never invokes the Lambda — and the script exits 1 reporting
+``1/10``. It fails loudly and cannot pass vacuously: there is no SKIP state.
 
 Fixing it is not a one-line change: ``idp_common/__init__.py`` is lazy and would bundle
 safely, but ``idp_common/utils/__init__.py`` eagerly imports ``idp_common.config.models``
