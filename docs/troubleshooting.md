@@ -173,12 +173,19 @@ where the remedy is.
 
 **`extraction_class_not_configured` on a section.** The section's class does not
 exist in the configuration the document was processed under, so there was no schema
-to extract against and the section holds no data. A class renamed or deleted while
-documents were in flight produces it, as does reprocessing an old document under a
-configuration that no longer defines its class. Add the class back, or reclassify
-the document under the current configuration. The same section also carries
+to extract against and the section holds no data. Three causes: a class renamed or
+deleted while documents were in flight; an old document reprocessed under a
+configuration that no longer defines its class; or the classifier returned a class
+outside the configured vocabulary on a path that does not enforce one —
+`textbasedHolisticClassification`, which has no enforcement loop, or
+`multimodalPageLevelClassification` with `enforceValidClasses: false`. Add the class
+to the configuration, reclassify the document under the current one, or turn
+enforcement on. The same section also carries
 `assessment_skipped_confidence_unavailable`, because it has no confidence scores
-either.
+either — so on those two non-enforcing paths these arrive at a rate set by model
+output rather than by configuration edits, and
+[`ConfidenceUnavailableThreshold`](./monitoring.md#confidence-assessment-degraded)
+is what you tune if the alarm is too sensitive for your corpus.
 
 **`assessment_pages_missing` on a section (warning).** Some of the section's pages
 are absent from the document, so confidence for values appearing on them was
@@ -193,11 +200,19 @@ outright and reported as unscored instead.
 produce a usable class for one or more of the section's pages, so those pages have
 no extraction schema and nothing was extracted from them. The codes and their
 remedies are tabulated in
-[Classification](./classification.md#pages-classification-could-not-classify);
-briefly, the first is an error worth investigating (check the ClassificationFunction
-log group, and model access and quota), and the other two are warnings — a blank
-separator page, and a model prediction outside the configured vocabulary that was
-coerced to `invalidClassFallback`.
+[Classification](./classification.md#pages-classification-could-not-classify).
+Briefly: `classification_failed` is an error worth investigating (check the
+ClassificationFunction log group, and endpoint health, model access and quota) and
+is reached on the SageMaker/UDOP backend — on Bedrock the equivalent failure
+propagates and fails the document instead. `classification_page_no_content` is a
+warning meaning the page had **neither** usable OCR text **nor** a loadable page
+image; a blank page normally still has an image, so this points at missing page
+artifacts rather than at an empty page, and the OCR step is the place to look.
+`classification_invalid_class_fallback` is a warning meaning the model's prediction
+was outside the configured vocabulary and was coerced to `invalidClassFallback` —
+that is where a page the classifier cannot place ends up, so it is the one of the
+three you are most likely to see. These are recorded on the
+`multimodalPageLevelClassification` path only.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit

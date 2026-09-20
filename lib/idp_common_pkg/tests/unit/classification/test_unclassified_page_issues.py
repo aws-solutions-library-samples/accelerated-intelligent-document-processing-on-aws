@@ -239,3 +239,78 @@ class TestAPageThatCouldNotBeClassifiedIsReported:
             for issue in (section.processing_issues or [])
         }
         assert codes == {"classification_page_no_content", "classification_failed"}
+
+
+@pytest.mark.unit
+class TestTheRootCauseIsBoundedAndCorrectlyAttributed:
+    """Two pages failing the same way for different reasons, and a huge detail.
+
+    The `root_cause` is the operator's only pointer, and it names the affected page
+    ids — so attributing one page's reason to another is worse than saying nothing.
+    Its text also comes from model output or a service error and rides to DynamoDB
+    inside the section map, which has a 400 KB item ceiling that
+    `serialize_processing_issues` does not guard.
+    """
+
+    @patch("idp_common.classification.service.ClassificationService.classify_page")
+    def test_distinct_reasons_are_not_attributed_to_each_other(
+        self, mock_classify_page, service
+    ):
+        mock_classify_page.side_effect = [
+            _page(
+                "1",
+                "unclassified",
+                error="AccessDeniedException: no model grant",
+                unclassified_reason="failed",
+            ),
+            _page(
+                "2",
+                "unclassified",
+                error="ThrottlingException: slow down",
+                unclassified_reason="failed",
+            ),
+        ]
+
+        result = service.classify_document(_document())
+
+        issues = _issues(result, "classification_failed")
+        assert len(issues) == 1
+        root_cause = issues[0].root_cause
+        assert "AccessDeniedException" in root_cause
+        assert "ThrottlingException" in root_cause
+
+    @patch("idp_common.classification.service.ClassificationService.classify_page")
+    def test_one_reason_shared_by_both_pages_is_not_repeated(
+        self, mock_classify_page, service
+    ):
+        """Distinct reasons, so the same message twice collapses to once."""
+        mock_classify_page.side_effect = [
+            _page(
+                str(i),
+                "unclassified",
+                error="ThrottlingException: slow down",
+                unclassified_reason="failed",
+            )
+            for i in (1, 2)
+        ]
+
+        result = service.classify_document(_document())
+
+        root_cause = _issues(result, "classification_failed")[0].root_cause
+        assert root_cause.count("ThrottlingException") == 1
+
+    @patch("idp_common.classification.service.ClassificationService.classify_page")
+    def test_a_huge_model_output_is_truncated(self, mock_classify_page, service):
+        """A `validation_error` embeds the rejected model output, which on a parse
+        failure is a whole line of raw generation."""
+        mock_classify_page.side_effect = [
+            _page("1", "unclassified", validation_error="x" * 20000),
+            _page("2", "invoice"),
+        ]
+
+        result = service.classify_document(_document())
+
+        root_cause = _issues(result, "classification_invalid_class_fallback")[
+            0
+        ].root_cause
+        assert len(root_cause) < 1000

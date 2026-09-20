@@ -271,12 +271,27 @@ and two of the three causes report nothing here:
   place. An error indicator and an alarm data point per blank page would make both
   this page's alarm and that indicator useless;
 - **the section's named class is absent from the configuration in force** — renamed
-  or deleted while documents were in flight, or an old document reprocessed under a
-  newer configuration. That is a fault: the section's fields were never extracted.
-  It **is** reported here, alongside an error-severity
-  `extraction_class_not_configured` issue from the Extraction step. The volume is
-  bounded by configuration changes rather than by document content, so it cannot
-  trip the alarm on ordinary throughput.
+  or deleted while documents were in flight, an old document reprocessed under a
+  newer configuration, or a classifier prediction outside the configured vocabulary
+  on a path that does not enforce one. That is a fault: the section's fields were
+  never extracted. It **is** reported here, alongside an error-severity
+  `extraction_class_not_configured` issue from the Extraction step.
+
+⚠️ **That last case is not always rare, and which configuration you run decides
+it.** On the default `multimodalPageLevelClassification` with
+`enforceValidClasses` on, an out-of-vocabulary prediction is retried and then
+coerced to `invalidClassFallback`, so it becomes the silent `unclassified` case
+above and the count really is bounded by configuration edits. Two other supported
+configurations store the model's invented class name verbatim —
+`textbasedHolisticClassification`, which has no enforcement loop at all, and
+`multimodalPageLevelClassification` with `enforceValidClasses: false` — and there
+the rate follows model output rather than operator action. Small, cheap
+classification models are the most prone to those predictions. On either of those
+paths expect data points proportional to throughput, and use
+`ConfidenceUnavailableThreshold` to set the volume at which it is worth paging;
+better still, define the classes the model keeps reaching for, or turn enforcement
+on. The report itself is correct either way — the section holds no data — so the
+parameter, not a carve-out, is the right lever.
 
 The first two report nothing at all, exactly as an
 [excluded class](./classification.md) does.
@@ -310,7 +325,10 @@ One metric in the stack's own namespace (`<StackName>`):
   documents — a single blank page or cover sheet produces one — so counting
   them would breach the alarm's threshold on ordinary throughput. A section whose
   **named class is missing from the configuration** is not in that set and does
-  publish, because it is a fault rather than an outcome. **No data
+  publish, because the section was expected to hold data and holds none — on the
+  default classification configuration that needs a configuration edit to happen at
+  all, but on the two non-enforcing ones described above it follows model output, so
+  tune `ConfidenceUnavailableThreshold` to your corpus there. **No data
   therefore means every section that should have been scored was scored** — give
   or take a confidence pass that failed transiently and succeeded on retry.
 
@@ -346,7 +364,7 @@ was missing. The six causes worth checking first:
 | `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
 | `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
 | No exception at all, and the code is `assessment_skipped_confidence_unavailable` | The section reached assessment with nothing to assess: no extraction result, no pages, or an empty `inference_result` | Look at the stage that produced the section — Extraction for a missing or empty result, Classification for a section with no pages — not at the confidence model |
-| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, or the document was reprocessed under a configuration that no longer defines its class. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class back to the configuration, or reclassify the document under the current one. Not a confidence problem |
+| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, the document was reprocessed under a configuration that no longer defines its class, or the classifier predicted a class outside the vocabulary on a path that does not enforce one. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class to the configuration, reclassify the document under the current one, or turn `enforceValidClasses` on. Not a confidence problem. If these arrive steadily, check which classification method and enforcement setting you are running before raising `ConfidenceUnavailableThreshold` |
 | The same code, with a `root_cause` saying none of the section's pages are present in the document | The section lists page IDs the document does not contain, so there was no page text or image to assess against. Before this was detected the pass ran anyway and returned scores derived from nothing | Check the Classification step's section boundaries and the OCR step's page list. A warning-severity `assessment_pages_missing` (no metric) marks the partial case, where only some pages were absent |
 
 **What is lost while it is firing:** the affected sections have no confidence

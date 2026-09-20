@@ -607,3 +607,60 @@ class TestClassAbsentFromConfigurationIsReported:
         root_cause = _skip_issues(result)[0].root_cause
         assert "reclassify" in root_cause
         assert "extraction_class_not_configured" in root_cause
+
+
+@pytest.mark.unit
+class TestIntegerPageIdsDoNotRaise:
+    """A page id only has to be int-CASTABLE to reach the skip.
+
+    `sorted(section.page_ids, key=int)` accepts integers, and `str.join` raises
+    `TypeError` on them — which would turn the reported skip this code exists to
+    produce into an unhandled exception, on exactly the malformed input it reports.
+    """
+
+    @patch("idp_common.assessment.batching.assess_results_batched")
+    @patch("idp_common.s3.write_content")
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_every_page_missing_with_integer_page_ids(
+        self, mock_put_metric, mock_get_json, mock_write, mock_batched, service
+    ):
+        mock_get_json.return_value = _extraction_data()
+        mock_batched.return_value = dict(_BATCHED)
+        document = _document()
+        document.sections[0].page_ids = [7, 8]  # type: ignore[list-item]
+
+        result = service.process_document_section(document, "1")
+
+        _assert_signalled(result, mock_put_metric, root_cause="None of the section")
+        assert not mock_batched.called
+
+    @patch("idp_common.assessment.batching.assess_results_batched")
+    @patch("idp_common.s3.write_content")
+    @patch("idp_common.image.prepare_image")
+    @patch("idp_common.s3.get_text_content")
+    @patch("idp_common.s3.get_json_content")
+    @patch("idp_common.metrics.put_metric")
+    def test_some_pages_missing_with_integer_page_ids(
+        self,
+        mock_put_metric,
+        mock_get_json,
+        mock_get_text,
+        mock_prepare_image,
+        mock_write,
+        mock_batched,
+        service,
+    ):
+        mock_get_json.return_value = _extraction_data()
+        mock_get_text.return_value = "INVOICE 1"
+        mock_prepare_image.return_value = b"image-bytes"
+        mock_batched.return_value = dict(_BATCHED)
+        document = _document()
+        document.pages[1] = document.pages["1"]  # type: ignore[index]
+        document.sections[0].page_ids = [1, 9]  # type: ignore[list-item]
+
+        result = service.process_document_section(document, "1")
+
+        warnings = _page_issues(result)
+        assert len(warnings) == 1
+        assert warnings[0].details["missing_page_ids"] == ["9"]

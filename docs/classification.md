@@ -683,9 +683,16 @@ processing issue on the section that holds the page, which is where the Sections
 panel renders it and where `ProcessingIssueCount` on the document counts it. The
 severity says how much attention the case deserves:
 
+> **Scope: `multimodalPageLevelClassification` only.** These issues are recorded
+> from the page-level classification path. `textbasedHolisticClassification` makes
+> one decision per segment rather than per page and records none of them; on that
+> method a page the model places in no segment is appended to no section at all, so
+> it produces neither data nor a record. Extending this to holistic classification
+> is tracked as follow-up work.
+
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | The classification attempt errored, exhausted its retries, or the page's required OCR artifacts were absent. The page has no class, so nothing was extracted from it | Check the ClassificationFunction log group for the page, and model access and quota for the classification model |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or the page's required OCR artifacts were absent, so the page has no class and nothing was extracted from it. **Reached on the SageMaker/UDOP backend.** On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page, and endpoint health, model access and quota |
 | `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `invalidClassFallback` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 
@@ -699,14 +706,16 @@ is one nobody reads — the same reasoning that keeps the confidence alarm usabl
 where a page the model cannot place ends up, so it is the one you are most likely to
 see; a class was assigned, it is just not the model's.
 
-⚠️ The document list's **Processing Issues** badge and the `HasProcessingIssues`
-flag are severity-blind, so a deployment whose documents routinely contain pages the
-classifier cannot place will show the badge on them. That is the intended reading —
-those pages produced no extracted data — but if it is unwanted, the lever is to
-define a catch-all class the model can legitimately choose (see **Catch-all class**
-under [Enforcing a Valid Class
+⚠️ The document list's **Processing Issues** badge is severity-blind — it renders
+`ProcessingIssueCount`, which counts warnings and errors alike — so a deployment
+whose documents routinely contain pages the classifier cannot place will show the
+badge on them. That is the intended reading, since those pages produced no extracted
+data, but if it is unwanted the lever is to define a catch-all class the model can
+legitimately choose (see **Catch-all class** under [Enforcing a Valid Class
 Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry)), which removes
-the condition rather than hiding it.
+the condition rather than hiding it. The badge clears when a later run of the
+document records no issues; a "has processing issues" **filter** is stickier, because
+the index attribute behind it is only ever set and never cleared.
 
 **Why no CloudWatch metric.** Every fleet-level alarm in this solution is paired
 with a threshold parameter a deployer tunes, and none of these three has an

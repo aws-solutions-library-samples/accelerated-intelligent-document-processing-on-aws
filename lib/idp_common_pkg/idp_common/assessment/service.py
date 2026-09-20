@@ -85,8 +85,17 @@ def _extraction_declared_no_fields(extraction_data: Dict[str, Any]) -> bool:
     fleet: a dozen documents each with one blank page clears the default threshold
     of ten in fifteen minutes on its own. An alarm that fires on healthy
     throughput is one operators turn off, which would cost the signal #996 exists
-    to provide. The third case is bounded by operator configuration changes rather
-    than by document content, so it cannot reach that volume on throughput alone.
+    to provide.
+
+    The third case is bounded by operator configuration changes rather than by
+    document content **only where the classification path guarantees a configured
+    class** — ``multimodalPageLevelClassification`` with ``enforceValidClasses``
+    on, which is the default. On ``textbasedHolisticClassification`` (no
+    enforcement loop) and with ``enforceValidClasses: false``, an out-of-vocabulary
+    prediction is stored verbatim, so the rate follows model output and can reach
+    ``ConfidenceUnavailableThreshold`` — that parameter is the lever there. It is
+    still reported: unlike the two silent cases, the section was expected to hold
+    data and holds none.
 
     The distinction is made by the producer and read here:
     ``metadata.empty_schema_reason`` (see ``idp_common.empty_schema``). A stub
@@ -1649,10 +1658,15 @@ class AssessmentService:
                 skip_section_no_confidence(
                     document,
                     section_id,
+                    # map(str) because a page id only has to be int-CASTABLE to get
+                    # this far: the sort above uses key=int and accepts integers,
+                    # on which str.join raises TypeError. That would turn the
+                    # reported skip this code exists to produce into an unhandled
+                    # exception, on exactly the malformed input it is reporting.
                     "None of the section's pages "
-                    f"({', '.join(sorted_page_ids)}) are present in the document, "
-                    "so there was no page text and no page image to assess its "
-                    "extracted values against.",
+                    f"({', '.join(map(str, sorted_page_ids))}) are present in the "
+                    "document, so there was no page text and no page image to "
+                    "assess its extracted values against.",
                     remedy=(
                         "Check the Classification step's section boundaries and the "
                         "OCR step's page list for this document — a section listing "
@@ -1839,12 +1853,14 @@ class AssessmentService:
                         ),
                         root_cause=(
                             "Pages missing from the document: "
-                            f"{', '.join(missing_page_ids)}. Check the "
+                            f"{', '.join(map(str, missing_page_ids))}. Check the "
                             "Classification step's section boundaries and the OCR "
                             "step's page list."
                         ),
                         section_id=section_id,
-                        details={"missing_page_ids": list(missing_page_ids)},
+                        details={
+                            "missing_page_ids": [str(p) for p in missing_page_ids]
+                        },
                     )
                 ] + processing_issues
             # MERGE, do not replace. Extraction already wrote its own issues here

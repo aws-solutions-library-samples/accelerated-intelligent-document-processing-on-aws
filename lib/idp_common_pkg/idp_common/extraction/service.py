@@ -1857,6 +1857,20 @@ class ExtractionService:
         A fallback set to one of the deployment's real classes lands in the first
         case, correctly: that class has a schema, so this method is not reached
         for it at all.
+
+        ⚠️ ``EMPTY_SCHEMA_CLASS_NOT_CONFIGURED`` is NOT reached only by a
+        configuration edit. Two supported classification configurations store a
+        model-invented class name verbatim, so its rate follows model output rather
+        than operator action: ``textbasedHolisticClassification``, which has no
+        vocabulary-enforcement loop at all (the loop lives in
+        ``classify_page_bedrock``), and ``multimodalPageLevelClassification`` with
+        ``enforceValidClasses: false``, which logs "using anyway" and stores the
+        prediction. Both are documented configurations, and small classification
+        models are the ones most prone to out-of-vocabulary predictions — so on
+        those two paths the reported section count can reach
+        ``ConfidenceUnavailableThreshold``, and that parameter is the lever. The
+        signal is still correct (the section really does hold no data); it is the
+        volume bound that does not hold there.
         """
         if self._get_class_schema(class_label):
             return EMPTY_SCHEMA_NO_ATTRIBUTES
@@ -1950,10 +1964,16 @@ class ExtractionService:
                         if getattr(document, "config_version", None)
                         else ""
                     )
-                    + ". A class renamed or deleted while documents were in flight, "
-                    "or a document reprocessed under a configuration that no longer "
-                    "defines its class, produces this. Add the class back, or "
-                    "reclassify the document under the current configuration."
+                    + ". Three causes: a class renamed or deleted while documents "
+                    "were in flight; a document reprocessed under a configuration "
+                    "that no longer defines its class; or the classifier returned a "
+                    "class outside the configured vocabulary and the "
+                    "classification path in use does not enforce one "
+                    "(textbasedHolisticClassification, or "
+                    "multimodalPageLevelClassification with "
+                    "enforceValidClasses: false). Add the class to the "
+                    "configuration, reclassify the document under the current one, "
+                    "or turn vocabulary enforcement on."
                 ),
                 section_id=section_id,
             )

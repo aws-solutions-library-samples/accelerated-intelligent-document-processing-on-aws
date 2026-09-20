@@ -78,6 +78,13 @@ logger = logging.getLogger(__name__)
 UNCLASSIFIED_FAILED = "failed"
 UNCLASSIFIED_NO_CONTENT = "no_content"
 
+# Bounds on what a classification ProcessingIssue's ``root_cause`` may carry. The
+# text comes from model output or a service error message, and the issue rides to
+# DynamoDB inside the section map, whose 400 KB item ceiling the assessment path
+# guards explicitly while ``serialize_processing_issues`` truncates nothing.
+_MAX_ISSUE_DETAIL_CHARS = 500
+_MAX_ISSUE_DETAILS = 3
+
 
 @dataclass
 class PageContextData:
@@ -2340,19 +2347,33 @@ class ClassificationService:
         Sections panel, ``ProcessingIssueCount`` and the ``HasProcessingIssues``
         index, which is what an operator queries.
 
-        ⚠️ ``HasProcessingIssues`` and the document list's badge are
-        **severity-blind**, so a deployment whose documents routinely contain pages
-        the classifier cannot place will see "Processing Issues" on them. That is
-        the intended reading — those pages produced no extracted data — but it is
-        the cost of the signal, and the lever if it is unwanted is to define a class
-        the model can legitimately choose for them (a catch-all "other" class),
-        which removes the condition rather than hiding it.
+        ⚠️ The document list's badge is **severity-blind** — it renders
+        ``ProcessingIssueCount``, which counts warnings and errors alike — so a
+        deployment whose documents routinely contain pages the classifier cannot
+        place will see "Processing Issues" on them. That is the intended reading,
+        since those pages produced no extracted data, but it is the cost of the
+        signal; the lever is to define a class the model can legitimately choose for
+        them (a catch-all "other"), which removes the condition rather than hiding
+        it.
+
+        The badge itself clears on reprocessing: ``ProcessingIssueCount`` is written
+        on **every** document write, including as ``0``. What does not clear is the
+        sparse ``HasProcessingIssues`` GSI attribute, which is only ever ``SET`` and
+        deliberately never ``REMOVE``d — so a document that once carried an issue
+        keeps matching a "has processing issues" index query after a later run
+        cleared it. That is pre-existing and applies to every issue code; what
+        changes here is how many documents reach it.
         """
         if not document.sections:
             return
 
         # reason code -> (page ids, one representative message)
-        by_reason: Dict[str, Dict[str, Any]] = {}
+        # code -> {page_id: detail}. Per PAGE, not per code: two pages can fail the
+        # same way for different reasons (page 3 AccessDenied, page 40 Throttling),
+        # and keeping only the first detail made every section's root_cause blame
+        # one of them for all of them — which listing the page ids beside it turns
+        # from a vague message into an actively wrong one.
+        by_reason: Dict[str, Dict[str, str]] = {}
         for result in all_page_results:
             metadata = result.classification.metadata or {}
             error_message = metadata.get("error")
@@ -2372,8 +2393,14 @@ class ClassificationService:
                 detail = str(validation_error)
             else:
                 continue
-            entry = by_reason.setdefault(code, {"page_ids": [], "detail": detail})
-            entry["page_ids"].append(str(result.page_id))
+            # Bounded before it is stored. A validation_error embeds the model's
+            # rejected output, which on a parse failure is a whole line of raw
+            # generation; these issues ride to DynamoDB inside the section map,
+            # which has a 400 KB item ceiling that the assessment path guards
+            # explicitly and ``serialize_processing_issues`` does not truncate.
+            by_reason.setdefault(code, {})[str(result.page_id)] = detail[
+                :_MAX_ISSUE_DETAIL_CHARS
+            ]
 
         if not by_reason:
             return
@@ -2404,15 +2431,29 @@ class ClassificationService:
             ),
         }
 
-        for code, entry in by_reason.items():
-            page_ids = entry["page_ids"]
-            affected = set(page_ids)
+        for code, detail_by_page in by_reason.items():
             for section in document.sections:
                 section_pages = sorted(
-                    (pid for pid in section.page_ids if pid in affected), key=str
+                    (
+                        str(pid)
+                        for pid in section.page_ids
+                        if str(pid) in detail_by_page
+                    ),
+                    key=str,
                 )
                 if not section_pages:
                     continue
+                # Only the distinct reasons THIS section's pages actually met, so
+                # the root_cause cannot attribute one page's failure to another.
+                seen_details: List[str] = []
+                for pid in section_pages:
+                    detail = detail_by_page[pid]
+                    if detail not in seen_details:
+                        seen_details.append(detail)
+                shown = seen_details[:_MAX_ISSUE_DETAILS]
+                root_cause = "; ".join(shown)
+                if len(seen_details) > len(shown):
+                    root_cause += f"; and {len(seen_details) - len(shown)} more"
                 issue = ProcessingIssue(
                     stage="classification",
                     severity=severities[code],
@@ -2422,7 +2463,7 @@ class ClassificationService:
                         pages=", ".join(section_pages),
                         unclassified=UNCLASSIFIED_CLASS,
                     ),
-                    root_cause=f"{entry['detail']} (pages {', '.join(section_pages)})",
+                    root_cause=f"{root_cause} (pages {', '.join(section_pages)})",
                     section_id=section.section_id,
                     details={"page_ids": section_pages},
                 )
