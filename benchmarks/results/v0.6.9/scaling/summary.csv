@@ -1,0 +1,15 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+core-tt-simple-sep,scale_25.pdf,,0,COMPLETED,True,1.0,1.0,25,0.5,,1.0,1.0,,,,,,1.0,0,,,0.998,0.0,,,,,73.651876,0.0439
+core-tt-simple-sep,scale_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9999,0.0,,,,,58.554605,0.1448
+core-tt-simple-sep,scale_400.pdf,,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.999,0.0,,,,,219.320256,0.5311
+core-tt-simple-sep,scale_800.pdf,,0,COMPLETED,True,17.0,1.0,800,0.5,,1.0,1.0,,,,,,1.0,0,,,0.9991,0.0,,,,,528.237431,1.6256
+core-tt-simple-sep,scale_1200.pdf,,0,FAILED,False,25.0,1.0,1200,0.5,,1.0,1.0,,,,,,1.0,0,,,,,,,,,2099.588763,0.4001
+core-tt-simple-sep,scale_1600.pdf,,0,FAILED,False,33.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,1827.421508,0.528
+core-tt-simple-sep,scale_3200.pdf,,0,FAILED,False,66.0,0.0,0,0.0,,,0.0,,,,,,,,,,,,,,,,55.046079,1.0565
+core-tt-adv-sep,scale_25.pdf,,0,COMPLETED,True,1.0,1.0,25,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9657,0.0,,,,,45.093561,0.1433
+core-tt-adv-sep,scale_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.981,0.0,,,,,60.637725,0.2061
+core-tt-adv-sep,scale_400.pdf,,0,COMPLETED,True,9.0,1.0,400,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9873,0.0,,,,,130.532247,0.8435
+core-tt-adv-sep,scale_800.pdf,,0,COMPLETED,True,17.0,1.0,800,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9935,0.0,,,,,129.538676,1.3707
+core-tt-adv-sep,scale_1200.pdf,,0,COMPLETED,True,25.0,1.0,1200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9875,0.0,,,,,166.191823,1.9013
+core-tt-adv-sep,scale_1600.pdf,,0,COMPLETED,True,33.0,1.0,1600,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9823,0.0,,,,,331.075884,2.5575
+core-tt-adv-sep,scale_3200.pdf,,0,COMPLETED,True,66.0,1.0,3200,1.0,,1.0,1.0,,,,,,1.0,0,,,0.991,0.0,,,,,408.34205,5.0038

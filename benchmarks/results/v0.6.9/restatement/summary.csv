@@ -1,0 +1,13 @@
+cell,doc,sub_doc,repeat,status,success,page_count,completeness_recall,truncation_prefix,scalar_accuracy,typed_accuracy,cell_accuracy,sections_correct,weighted_accuracy,parse_failures,forced_tool_attempted,forced_tool_honored,forced_tool_honored_rate,validation_valid_rate,validation_errors,coercions,coercion_refusals,mean_confidence,pct_conf_below_0.9,calibration_separation,class_accuracy,class_mean_confidence,class_calibration_separation,wall_s,cost
+restate-on,valuenoise_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9706,0.0,,,,,89.673706,0.2782
+restate-on,valuenoise_100.pdf,,1,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9706,0.0,,,,,92.139276,0.3105
+restate-on,valuenoise_100.pdf,,2,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9682,0.0,,,,,92.796306,0.3109
+restate-on,longdesc_100.pdf,,0,COMPLETED,True,4.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9838,0.0,,,,,138.514977,0.2949
+restate-on,longdesc_100.pdf,,1,COMPLETED,True,4.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9849,0.0,,,,,106.311188,0.2503
+restate-on,longdesc_100.pdf,,2,COMPLETED,True,4.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9837,0.0,,,,,107.633543,0.2517
+restate-off,valuenoise_100.pdf,,0,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.976,0.0,,,,,94.93502,0.3658
+restate-off,valuenoise_100.pdf,,1,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9682,0.0,,,,,93.312133,0.3073
+restate-off,valuenoise_100.pdf,,2,COMPLETED,True,3.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9749,0.0,,,,,90.896527,0.3087
+restate-off,longdesc_100.pdf,,0,COMPLETED,True,4.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9862,0.0,,,,,134.944938,0.3774
+restate-off,longdesc_100.pdf,,1,COMPLETED,True,4.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9855,0.0,,,,,113.040275,0.2532
+restate-off,longdesc_100.pdf,,2,COMPLETED,True,4.0,1.0,100,1.0,,1.0,1.0,,,,,,1.0,0,,,0.9855,0.0,,,,,103.306707,0.2501
