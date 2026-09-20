@@ -244,3 +244,218 @@ describe('useSchemaDesigner inline-object extraction', () => {
     expect(extracted!.attributes.required).toEqual(['street']);
   });
 });
+
+/**
+ * A `$defs` entry declares its own type, and it does not have to be `object`.
+ * `{"type": "string", "enum": [...]}` is a legal definition, one the backend reads
+ * correctly by following the pointer, and one a configuration can be authored with by
+ * hand or by CLI. Building every entry as `{type: 'object', properties}` and writing
+ * every one back the same way destroyed such a definition the first time its class was
+ * opened in the Schema Builder and saved: its type, its enum and any constraint keywords
+ * were gone and it was rewritten as an empty object.
+ */
+describe('useSchemaDesigner $defs definitions that are not objects', () => {
+  const STATE_CODE = { type: 'string', enum: ['CA', 'NY'], pattern: '^[A-Z]{2}$' };
+
+  const schemaWithScalarDef = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    $id: 'Invoice',
+    'x-aws-idp-document-type': 'Invoice',
+    type: 'object',
+    properties: { state: { $ref: '#/$defs/StateCode' } },
+    $defs: { StateCode: STATE_CODE },
+  };
+
+  it('round-trips a scalar enum definition through a load and a save', () => {
+    const { result } = renderHook(() => useSchemaDesigner(schemaWithScalarDef));
+
+    const exported = result.current.exportSchema();
+
+    expect(exported).toHaveLength(1);
+    expect(exported![0].$defs!.StateCode).toEqual(STATE_CODE);
+  });
+
+  it('holds the definition on the class, so editing the class does not flatten it', () => {
+    const { result } = renderHook(() => useSchemaDesigner(schemaWithScalarDef));
+
+    const stateCode = result.current.classes.find((c) => c.name === 'StateCode');
+    expect(stateCode).toBeDefined();
+    expect(stateCode!.attributes.type).toBe('string');
+    expect(stateCode!.attributes.enum).toEqual(['CA', 'NY']);
+
+    // An unrelated edit to the class still exports the definition intact.
+    act(() => {
+      result.current.updateClass(stateCode!.id, { description: 'Two-letter state code' });
+    });
+
+    expect(result.current.exportSchema()![0].$defs!.StateCode).toEqual({
+      ...STATE_CODE,
+      description: 'Two-letter state code',
+    });
+  });
+
+  /**
+   * A definition that declares no type but does describe its own shape gets no type
+   * invented for it. `{"enum": ["A","B"]}` is such a definition, and `{type: 'object',
+   * enum: [...], properties: {}}` matches nothing: the enum's members are strings.
+   *
+   * The body is a schema node like any other, so it is sanitized: a designer key that a
+   * saved schema or a hand edit left on it does not reach `$defs`.
+   */
+  it('invents no type for a typeless enum definition, and strips designer keys from it', () => {
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: { grade: { $ref: '#/$defs/Grade' } },
+        $defs: { Grade: { enum: ['A', 'B'], schemaId: 99, id: 'zz' } },
+      }),
+    );
+
+    expect(result.current.exportSchema()![0].$defs!.Grade).toEqual({ enum: ['A', 'B'] });
+  });
+
+  /**
+   * An alias — a definition that is only a pointer at another one — keeps the bare `$ref`
+   * that every other reference in the schema uses, and the class it points at is emitted
+   * into `$defs`. A `$ref` published beside a `type` is the contradiction
+   * `refAttributeUpdates` exists to prevent; a `$ref` published with its target missing is
+   * a pointer that resolves to nothing, which `config/schema_utils.py` logs as dangling
+   * and then hands to the model as an untyped leaf.
+   */
+  it('keeps an alias definition bare and emits what it points at', () => {
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: { holder: { $ref: '#/$defs/HolderAlias' } },
+        $defs: {
+          HolderAlias: { $ref: '#/$defs/Holder' },
+          Holder: { type: 'object', properties: { name: { type: 'string' } } },
+        },
+      }),
+    );
+
+    const defs = result.current.exportSchema()![0].$defs!;
+    expect(defs.HolderAlias).toEqual({ $ref: '#/$defs/Holder' });
+    expect(defs.Holder).toEqual({ type: 'object', properties: { name: { type: 'string' } } });
+  });
+
+  it('emits the item target of an array definition', () => {
+    // The reference sits on the definition body's own `items`, not on a property, so a
+    // walk seeded only from `properties` never reaches it.
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: { rows: { $ref: '#/$defs/LineItems' } },
+        $defs: {
+          LineItems: { type: 'array', items: { $ref: '#/$defs/LineItem' } },
+          LineItem: { type: 'object', properties: { sku: { type: 'string' } } },
+        },
+      }),
+    );
+
+    const defs = result.current.exportSchema()![0].$defs!;
+    expect(defs.LineItems).toEqual({ type: 'array', items: { $ref: '#/$defs/LineItem' } });
+    expect(Object.keys(defs)).toContain('LineItem');
+  });
+
+  it('converts a scalar definition to an object rather than contradicting itself', () => {
+    // The designer renders a scalar class as "0 attribute(s)" with a live Add-first-attribute
+    // button, so this is reachable from the UI: adding a property to a definition that says
+    // `type: 'string'` would otherwise re-create the contradiction from the editor side.
+    const { result } = renderHook(() => useSchemaDesigner(schemaWithScalarDef));
+
+    const stateCode = result.current.classes.find((c) => c.name === 'StateCode')!;
+    act(() => {
+      result.current.addAttribute(stateCode.id, 'line1', 'string');
+    });
+
+    expect(result.current.exportSchema()![0].$defs!.StateCode).toEqual({
+      type: 'object',
+      properties: { line1: { type: 'string', description: '' } },
+    });
+  });
+
+  it('still writes an object definition as an object, with its properties', () => {
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: { shipsTo: { $ref: '#/$defs/Address' } },
+        $defs: { Address: { type: 'object', properties: { street: { type: 'string' } }, required: ['street'] } },
+      }),
+    );
+
+    expect(result.current.exportSchema()![0].$defs!.Address).toEqual({
+      type: 'object',
+      properties: { street: { type: 'string' } },
+      required: ['street'],
+    });
+  });
+});
+
+/**
+ * A subschema branch is part of the schema, so the export path has to treat it as one.
+ *
+ * Sanitization and reference discovery both walked `items` and `properties` and nothing
+ * else, so a class a branch pointed at was never emitted into `$defs` and the pointer
+ * resolved to nothing, and a designer-internal key written into a branch went out as
+ * written. The reachable route is the `contains` builder, covered below;
+ * `SchemaCompositionEditor` has no importers, so its `schemaId` cannot be in anyone's
+ * configuration — the `oneOf` case is here because the walk should not depend on which
+ * editors are wired up.
+ */
+describe('useSchemaDesigner composition branches', () => {
+  const schemaWithComposition = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    $id: 'Invoice',
+    'x-aws-idp-document-type': 'Invoice',
+    type: 'object',
+    properties: {
+      payer: {
+        oneOf: [
+          { type: 'string', schemaId: 0 },
+          { $ref: '#/$defs/Address', schemaId: 1 },
+        ],
+      },
+    },
+    $defs: { Address: { type: 'object', properties: { street: { type: 'string' } } } },
+  };
+
+  it('exports the branches without the designer-internal list key', () => {
+    const { result } = renderHook(() => useSchemaDesigner(schemaWithComposition));
+
+    const exported = result.current.exportSchema();
+
+    expect(exported![0].properties!.payer).toEqual({
+      oneOf: [{ type: 'string' }, { $ref: '#/$defs/Address' }],
+    });
+  });
+
+  it('emits a class a branch references into $defs', () => {
+    const { result } = renderHook(() => useSchemaDesigner(schemaWithComposition));
+
+    const exported = result.current.exportSchema();
+
+    expect(Object.keys(exported![0].$defs || {})).toContain('Address');
+  });
+
+  it('emits a class the contains builder references into $defs', () => {
+    // The reachable case: `ArrayConstraints` → `ContainsSchemaBuilder` points `contains` at
+    // a shared class, and nothing walked `contains`, so the pointer was published with its
+    // target missing.
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        $id: 'Invoice',
+        'x-aws-idp-document-type': 'Invoice',
+        type: 'object',
+        properties: { rows: { type: 'array', contains: { $ref: '#/$defs/Paid' } } },
+        $defs: { Paid: { type: 'object', properties: { status: { const: 'PAID' } } } },
+      }),
+    );
+
+    const exported = result.current.exportSchema();
+
+    expect(exported![0].properties!.rows).toEqual({ type: 'array', contains: { $ref: '#/$defs/Paid' } });
+    expect(Object.keys(exported![0].$defs || {})).toContain('Paid');
+  });
+});

@@ -16,7 +16,14 @@ import {
   X_AWS_IDP_MULTI_INSTANCE,
   X_AWS_IDP_ALLOW_INTEGRATED_LISTS,
   X_AWS_IDP_EVALUATION_MATCH_THRESHOLD,
+  SUBSCHEMA_KEYWORDS,
+  SUBSCHEMA_MAP_KEYWORDS,
+  DESIGNER_ONLY_KEYS,
+  SELF_DESCRIBING_KEYWORDS,
+  INLINE_OBJECT_KEYWORDS,
+  TYPE_OBJECT,
 } from '../constants/schemaConstants';
+import { refNode } from '../components/json-schema-builder/utils/schemaHelpers';
 
 interface JsonSchemaProperty {
   type?: string;
@@ -38,9 +45,15 @@ interface SchemaClass {
   name: string;
   description?: string;
   attributes: {
-    type: string;
+    // Optional: a definition that describes its own shape — an alias or an enumeration —
+    // declares no type, and inventing one for it publishes a contradiction.
+    type?: string;
     properties: Record<string, JsonSchemaProperty>;
     required: string[];
+    // A `$defs` entry does not have to be an object, and the keywords that describe a
+    // scalar or enumerated one — `enum`, `pattern`, `format`, `minimum`, … — have no
+    // dedicated slot. They ride here so the definition survives a load-and-save.
+    [key: string]: unknown;
   };
   [key: string]: unknown;
 }
@@ -97,6 +110,31 @@ const extractNameFromId = (id: string | undefined): string | undefined => {
   return id;
 };
 
+/**
+ * The class body for a `$defs` entry, preserving what the entry says about itself.
+ *
+ * A definition does not have to be an object: `{"type": "string", "enum": [...]}` is a
+ * legal `$defs` entry, and one the backend reads correctly — both `deref_schema` and
+ * `bedrock/tool_schema.py` follow a `$ref` and take the target's own `type`. Building
+ * every entry as `{type: 'object', properties}` therefore destroyed such a definition
+ * the first time its class was opened in the Schema Builder and saved: its `type`, its
+ * `enum` and any constraint keywords were gone, and it was rewritten as an empty object.
+ */
+const defClassBody = (defSchema: JsonSchemaProperty, properties: Record<string, JsonSchemaProperty>): SchemaClass['attributes'] => {
+  const { type, properties: _properties, required, description: _description, ...constraints } = defSchema;
+  // No type is invented for a definition that already describes its own shape — an alias
+  // or an enumeration. Defaulting here rather than at export time is still a default: the
+  // body would reach `exportSchema` already carrying `type: 'object'`, and the pointer or
+  // the enum would be published beside a type contradicting it.
+  const describesItself = SELF_DESCRIBING_KEYWORDS.some((keyword) => constraints[keyword] !== undefined);
+  return {
+    ...(type ? { type } : describesItself ? {} : { type: TYPE_OBJECT }),
+    ...constraints,
+    properties,
+    required: required || [],
+  };
+};
+
 const extractInlineObjectsToClasses = (
   properties: Record<string, JsonSchemaProperty>,
   extractedClasses: Map<string, SchemaClass>,
@@ -133,7 +171,7 @@ const extractInlineObjectsToClasses = (
       const { type: _type, properties: _props, required: _required, ...otherProps } = propSchema;
       updatedProperties[propName] = {
         ...otherProps,
-        $ref: `#/$defs/${className}`,
+        ...refNode(className),
       };
     } else if (propSchema.type === 'array' && propSchema.items) {
       // Check if array items are inline objects
@@ -165,9 +203,7 @@ const extractInlineObjectsToClasses = (
         // Replace inline object with $ref
         updatedProperties[propName] = {
           ...propSchema,
-          items: {
-            $ref: `#/$defs/${className}`,
-          },
+          items: refNode(className),
         };
       } else {
         updatedProperties[propName] = propSchema;
@@ -287,11 +323,7 @@ const convertJsonSchemaToClasses = (jsonSchema: JsonSchemaProperty | JsonSchemaP
               name: defName,
               description: defSchema.description,
               [X_AWS_IDP_DOCUMENT_TYPE]: false,
-              attributes: {
-                type: 'object',
-                properties: extractedDefProperties,
-                required: defSchema.required || [],
-              },
+              attributes: defClassBody(defSchema, extractedDefProperties),
             };
             processedDefs.set(defName, defClass);
           }
@@ -376,11 +408,7 @@ const convertJsonSchemaToClasses = (jsonSchema: JsonSchemaProperty | JsonSchemaP
         name: defName,
         description: defSchema.description,
         [X_AWS_IDP_DOCUMENT_TYPE]: false, // Shared class, not a document type
-        attributes: {
-          type: 'object',
-          properties: extractedDefProperties,
-          required: defSchema.required || [],
-        },
+        attributes: defClassBody(defSchema, extractedDefProperties),
       });
     });
   }
@@ -506,6 +534,17 @@ export const useSchemaDesigner = (
       produce(prev, (draft) => {
         const cls = draft.find((c) => c.id === classId);
         if (cls) {
+          // Giving a scalar or enumerated definition a property converts it to an object.
+          // The alternative is a body that says `type: 'string'` and carries `properties`,
+          // or an `enum` beside them — which is the corruption the round-trip fix exists to
+          // prevent, arrived at from the editor instead of the importer. The keywords that
+          // described the old scalar go with the type that declared them.
+          if (cls.attributes.type && cls.attributes.type !== TYPE_OBJECT) {
+            SELF_DESCRIBING_KEYWORDS.forEach((keyword) => delete cls.attributes[keyword]);
+            delete cls.attributes.pattern;
+            delete cls.attributes.format;
+            cls.attributes.type = TYPE_OBJECT;
+          }
           cls.attributes.properties[attributeName] = newAttribute;
         }
       }),
@@ -620,36 +659,49 @@ export const useSchemaDesigner = (
   }, []);
 
   const sanitizeAttributeSchema = useCallback((attribute: unknown): JsonSchemaProperty => {
+    // `oneOf` and friends hold a list of subschemas, so the walk has to descend into
+    // arrays as well as objects.
+    if (Array.isArray(attribute)) {
+      return attribute.map((entry) => sanitizeAttributeSchema(entry)) as unknown as JsonSchemaProperty;
+    }
+
     if (!attribute || typeof attribute !== 'object') {
       return attribute as JsonSchemaProperty;
     }
 
     const attrObj = attribute as JsonSchemaProperty;
-    const { id: _id, name: _name, ...rest } = attrObj;
-    const sanitized: JsonSchemaProperty = { ...rest };
+    const sanitized: JsonSchemaProperty = { ...attrObj };
+    DESIGNER_ONLY_KEYS.forEach((key) => delete sanitized[key]);
 
-    // CRITICAL FIX: Remove 'type' when '$ref' is present (invalid JSON Schema)
-    // When a $ref is used, no other schema keywords (type, properties, etc.) should be present
+    // A `$ref` delegates the whole type designation to the referenced `$defs` entry, so
+    // every keyword describing an inline object goes with it. The same list
+    // `refAttributeUpdates` clears when it writes a reference, so a node normalizes to
+    // the shape that helper would have produced however it acquired its siblings.
     if (sanitized.$ref) {
-      delete sanitized.type;
-      delete sanitized.properties;
-      delete sanitized.required;
+      INLINE_OBJECT_KEYWORDS.forEach((keyword) => delete sanitized[keyword]);
     }
 
-    if (sanitized.items) {
-      sanitized.items = sanitizeAttributeSchema(sanitized.items);
-    }
+    // Recursing into `items` and `properties` alone left every composition, conditional
+    // and `contains` branch unsanitized, so a `$ref`-beside-`type` one level down went out
+    // as written — and a designer key in a `$defs` body went out with it.
+    SUBSCHEMA_KEYWORDS.forEach((keyword) => {
+      const value = sanitized[keyword];
+      if (value && typeof value === 'object') {
+        sanitized[keyword] = sanitizeAttributeSchema(value);
+      }
+    });
 
-    if (sanitized.properties) {
-      const sanitizedProperties = Object.entries(sanitized.properties).reduce(
+    SUBSCHEMA_MAP_KEYWORDS.forEach((keyword) => {
+      const map = sanitized[keyword];
+      if (!map || typeof map !== 'object') return;
+      sanitized[keyword] = Object.entries(map as Record<string, JsonSchemaProperty>).reduce(
         (acc: Record<string, JsonSchemaProperty>, [propName, propValue]) => {
           acc[propName] = sanitizeAttributeSchema(propValue);
           return acc;
         },
         {},
       );
-      sanitized.properties = sanitizedProperties;
-    }
+    });
 
     return sanitized;
   }, []);
@@ -660,67 +712,57 @@ export const useSchemaDesigner = (
       console.log(`  findReferencedClasses for: ${rootClass.name}`);
       const referenced: SchemaClass[] = [];
 
-      const processProperties = (properties: Record<string, JsonSchemaProperty>) => {
-        Object.entries(properties || {}).forEach(([attrName, attr]) => {
-          // Check direct $ref
-          if (attr.$ref) {
-            const refName = attr.$ref.replace('#/$defs/', '');
-            console.log(`    Found $ref in "${attrName}": ${attr.$ref} -> looking for class: "${refName}"`);
+      const addRef = (ref: unknown) => {
+        if (typeof ref !== 'string' || !ref) return;
+        const refName = ref.replace('#/$defs/', '');
+        if (visited.has(refName)) return;
 
-            if (!visited.has(refName)) {
-              const refClass = classes.find((c) => c.name === refName);
-              console.log(`      Class found? ${!!refClass}, isDocType? ${refClass?.[X_AWS_IDP_DOCUMENT_TYPE]}`);
+        const refClass = classes.find((c) => c.name === refName);
+        if (!refClass) {
+          console.log(
+            `      ❌ No class found with name "${refName}". Available classes:`, // nosemgrep: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring - Controlled input from schema validation, not user input
+            classes.map((c) => c.name),
+          );
+          return;
+        }
 
-              if (!refClass) {
-                console.log(
-                  `      ❌ No class found with name "${refName}". Available classes:`, // nosemgrep: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring - Controlled input from schema validation, not user input
-                  classes.map((c) => c.name),
-                );
-              } else {
-                console.log(`      ✅ Adding "${refName}" to referenced classes (isDocType: ${refClass[X_AWS_IDP_DOCUMENT_TYPE]})`);
-                visited.add(refName);
-                referenced.push(refClass);
-                // Recursively find references in this class
-                referenced.push(...findReferencedClasses(refClass, visited));
-              }
-            } else {
-              console.log(`      Already visited "${refName}"`);
-            }
-          }
+        visited.add(refName);
+        referenced.push(refClass);
+        // Recursively find references in this class
+        referenced.push(...findReferencedClasses(refClass, visited));
+      };
 
-          // Check array items $ref
-          if (attr.items?.$ref) {
-            const refName = attr.items.$ref.replace('#/$defs/', '');
-            console.log(`    Found items.$ref in "${attrName}": ${attr.items.$ref} -> looking for class: "${refName}"`);
+      /**
+       * Every `$ref` reachable from one node, wherever it sits: on the node itself, on
+       * an array's `items`, inside a composition or conditional branch, or on a nested
+       * inline object's properties.
+       *
+       * The branches matter because the `contains` builder, and the composition and
+       * conditional editors, can each point one at a shared class. A class reached only
+       * that way was left out of `$defs`, which publishes a schema whose own pointer
+       * resolves to nothing.
+       */
+      const collectRefs = (node: unknown) => {
+        if (Array.isArray(node)) {
+          node.forEach(collectRefs);
+          return;
+        }
+        if (!node || typeof node !== 'object') return;
 
-            if (!visited.has(refName)) {
-              const refClass = classes.find((c) => c.name === refName);
-              console.log(`      Class found? ${!!refClass}, isDocType? ${refClass?.[X_AWS_IDP_DOCUMENT_TYPE]}`);
-
-              if (!refClass) {
-                console.log(
-                  `      ❌ No class found with name "${refName}". Available classes:`, // nosemgrep: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring - Controlled input from schema validation, not user input
-                  classes.map((c) => c.name),
-                );
-              } else {
-                console.log(`      ✅ Adding "${refName}" to referenced classes (isDocType: ${refClass[X_AWS_IDP_DOCUMENT_TYPE]})`);
-                visited.add(refName);
-                referenced.push(refClass);
-                referenced.push(...findReferencedClasses(refClass, visited));
-              }
-            } else {
-              console.log(`      Already visited "${refName}"`);
-            }
-          }
-
-          // Check nested object properties
-          if (attr.type === 'object' && attr.properties) {
-            processProperties(attr.properties);
-          }
+        const obj = node as JsonSchemaProperty;
+        addRef(obj.$ref);
+        SUBSCHEMA_KEYWORDS.forEach((keyword) => collectRefs(obj[keyword]));
+        SUBSCHEMA_MAP_KEYWORDS.forEach((keyword) => {
+          const map = obj[keyword];
+          if (map && typeof map === 'object') Object.values(map).forEach(collectRefs);
         });
       };
 
-      processProperties(rootClass.attributes.properties);
+      // The whole class body, not only its properties. A `$defs` entry may be an alias
+      // (`{"$ref": …}`) or an array of a shared class (`{"type": "array", "items":
+      // {"$ref": …}}`), and a reference sitting there is as much part of the schema as
+      // one on a property. Walking only `properties` left the target out of `$defs`.
+      collectRefs(rootClass.attributes);
       console.log(`  Total referenced classes found: ${referenced.length}`);
       return referenced;
     },
@@ -768,12 +810,30 @@ export const useSchemaDesigner = (
             {},
           );
 
-          defs[cls.name] = {
-            type: 'object',
+          // What the definition says about itself, not an assumption that it is an
+          // object. A scalar or enumerated `$defs` entry keeps its own `type` and
+          // constraint keywords, and is written back without an empty `properties` map it
+          // never had.
+          //
+          // Two things this must not do. It must not invent `type: 'object'` for a body
+          // that already describes its own shape — an alias would get a `$ref` beside a
+          // contradictory `type`, and a typeless `{"enum": [...]}` would get one matching
+          // nothing. And it must not hand the body's own keywords through unexamined: they
+          // are subschemas like any other, so they go through the sanitizer, which is what
+          // keeps a designer key or a nested `$ref`-beside-`type` out of `$defs`.
+          const { type: bodyType, properties: _bodyProps, required: bodyRequired, ...bodyConstraints } = cls.attributes;
+          const declaredType = typeof bodyType === 'string' && bodyType ? bodyType : null;
+          const describesItself = SELF_DESCRIBING_KEYWORDS.some((keyword) => bodyConstraints[keyword] !== undefined);
+          const definitionType = declaredType ?? (describesItself ? null : TYPE_OBJECT);
+          const carriesProperties = definitionType === TYPE_OBJECT || Object.keys(sanitizedProps).length > 0;
+
+          defs[cls.name] = sanitizeAttributeSchema({
+            ...(definitionType ? { type: definitionType } : {}),
             ...(cls.description ? { description: cls.description } : {}),
-            properties: sanitizedProps,
-            ...(cls.attributes.required?.length > 0 ? { required: cls.attributes.required } : {}),
-          };
+            ...(bodyConstraints as Record<string, unknown>),
+            ...(carriesProperties ? { properties: sanitizedProps } : {}),
+            ...(Array.isArray(bodyRequired) && bodyRequired.length > 0 ? { required: bodyRequired } : {}),
+          });
         });
 
         // Build main schema properties

@@ -24,7 +24,7 @@ import SchemaInspector from './SchemaInspector';
 import SchemaPreviewTabs from './SchemaPreviewTabs';
 import StandardClassCatalog from './StandardClassCatalog';
 import { formatTypeBadge, DocumentTypeBadge } from './utils/badgeHelpers';
-import { refAttributeUpdates } from './utils/schemaHelpers';
+import { refAttributeUpdates, refNode } from './utils/schemaHelpers';
 
 interface SchemaClass {
   id: string;
@@ -249,7 +249,7 @@ const SchemaBuilder = ({
           // the two routes to a reference cannot drift apart again (#957).
           Object.assign(updates, refAttributeUpdates(`#/$defs/${newAttributeReferenceClass.value}`));
         } else if (newAttributeType.value === 'array') {
-          updates.items = { $ref: `#/$defs/${newAttributeReferenceClass.value}` };
+          updates.items = refNode(newAttributeReferenceClass.value);
         }
       }
 

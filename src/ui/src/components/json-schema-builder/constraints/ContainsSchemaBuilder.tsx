@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FormField, Select, Input, RadioGroup, SpaceBetween, Textarea, ExpandableSection } from '@cloudscape-design/components';
+import { refNode } from '../utils/schemaHelpers';
 
 interface ContainsSchema {
   $ref?: string;
@@ -143,8 +144,11 @@ const ContainsSchemaBuilder = ({
   };
 
   const handleClassSelect = ({ detail }: { detail: { selectedOption: { value?: string | null } } }): void => {
-    setSelectedClass(detail.selectedOption.value || '');
-    onChange({ $ref: `#/$defs/${detail.selectedOption.value}` });
+    const className = detail.selectedOption.value || '';
+    setSelectedClass(className);
+    // Guarded rather than interpolated: an empty selection produced a pointer to
+    // `#/$defs/undefined`, which resolves to nothing.
+    onChange(className ? refNode(className) : null);
   };
 
   const handlePropertyUpdate = (): void => {

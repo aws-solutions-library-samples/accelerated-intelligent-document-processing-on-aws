@@ -58,7 +58,7 @@ import {
 } from '../../constants/schemaConstants';
 import { designationProblem } from '../../utils/idpSchemaExtensions';
 import { availableEvaluationMethods, isStructuredArrayAttribute } from './utils/evaluationMethods';
-import { refAttributeUpdates } from './utils/schemaHelpers';
+import { refAttributeUpdates, refNode } from './utils/schemaHelpers';
 
 interface SchemaAttribute {
   type?: string;
@@ -938,7 +938,7 @@ const SchemaInspector = ({
                     if (detail.selectedOption.value === 'simple') {
                       onUpdate({ items: { type: 'string' } });
                     } else {
-                      onUpdate({ items: { $ref: detail.selectedOption.value } });
+                      onUpdate({ items: refNode(detail.selectedOption.value as string) });
                     }
                   }}
                   options={[

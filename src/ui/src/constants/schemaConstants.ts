@@ -25,6 +25,83 @@ export const SCHEMA_REQUIRED = 'required';
 export const SCHEMA_DESCRIPTION = 'description';
 export const SCHEMA_EXAMPLES = 'examples';
 
+/**
+ * Every keyword whose value is itself a subschema, or a list of subschemas.
+ *
+ * Anything that walks a property node has to descend through these, not just through
+ * `items` and `properties`. A class referenced from any of them is as much part of the
+ * schema's `$defs` as one referenced from a property, and a `$ref` that reaches `$defs`
+ * without its target publishes a pointer resolving to nothing.
+ *
+ * The reachable writer today is the `contains` builder, via `ArrayConstraints`, which
+ * points `contains` at a shared class. `SchemaCompositionEditor` and
+ * `SchemaConditionalEditor` write into `oneOf`/`anyOf`/`allOf`/`not` and
+ * `if`/`then`/`else`, but neither component is imported anywhere, so nothing they write can
+ * be in a user's configuration; they are covered because the walk should not depend on
+ * which editors happen to be wired up.
+ */
+export const SUBSCHEMA_KEYWORDS = [
+  'items',
+  'oneOf',
+  'anyOf',
+  'allOf',
+  'not',
+  'contains',
+  'if',
+  'then',
+  'else',
+  'prefixItems',
+  'propertyNames',
+  'additionalItems',
+  'additionalProperties',
+  'unevaluatedItems',
+  'unevaluatedProperties',
+] as const;
+
+/**
+ * Keywords whose value is a **map** of subschemas keyed by a name the author chose.
+ *
+ * They are listed apart from `SUBSCHEMA_KEYWORDS` because the walk must descend into the
+ * map's *values*: treating the map itself as a subschema would read an author's property
+ * name as a JSON Schema keyword, and would let `DESIGNER_ONLY_KEYS` delete a property
+ * legitimately called `id` or `name`.
+ */
+export const SUBSCHEMA_MAP_KEYWORDS = ['properties', 'patternProperties', 'dependentSchemas'] as const;
+
+/**
+ * The designer's own bookkeeping fields. None is a JSON Schema keyword, so none belongs in
+ * an exported schema.
+ *
+ * `id` and `name` are how the designer labels a node it holds in memory, and a `$defs`
+ * body loaded from a saved schema can carry either — that one is reachable and tested.
+ * `schemaId` is a React list key `SchemaCompositionEditor` allocates from a render-scoped
+ * counter; that component has no importers, so no user's configuration can contain one.
+ * It is stripped because the boundary should not depend on which editors are wired up.
+ */
+export const DESIGNER_ONLY_KEYS = ['id', 'name', 'schemaId'] as const;
+
+/**
+ * Keywords that make a definition describe its own shape, so no `type` should be invented
+ * for it. `{"$ref": …}` is an alias; `{"enum": [...]}` and `{"const": …}` constrain a
+ * value whose type is implied. Stamping `type: "object"` onto any of them publishes a
+ * contradiction: a `$ref` beside a `type` is the pair `refAttributeUpdates` exists to
+ * prevent, and an `enum` of strings beside `type: "object"` matches nothing.
+ */
+export const SELF_DESCRIBING_KEYWORDS = ['$ref', 'enum', 'const', 'oneOf', 'anyOf', 'allOf', 'not', 'if'] as const;
+
+/**
+ * Keywords that describe an object defined *inline* and so must not sit beside a `$ref`,
+ * which delegates the whole type designation to the referenced `$defs` entry.
+ *
+ * `type` is in this list. A `$ref` with a sibling `type` is legal draft 2020-12 — both
+ * keywords apply — but it is the referenced entry that declares the type, and a `$defs`
+ * entry may declare any type, not only `object`. So a sibling is at best redundant and at
+ * worst contradictory, and either way it makes the node read back differently from one
+ * without it: `resolveAttributeType` prefers a sibling `type` over following the pointer,
+ * so the same attribute answers differently depending on which route created it.
+ */
+export const INLINE_OBJECT_KEYWORDS = ['type', 'properties', 'required', 'minProperties', 'maxProperties', 'additionalProperties'] as const;
+
 // ============================================================================
 // JSON Schema Type Values
 // ============================================================================
