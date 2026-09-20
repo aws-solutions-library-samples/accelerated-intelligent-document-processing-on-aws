@@ -83,16 +83,23 @@ export function extractGraphQLErrorMessage(err: unknown): string {
  * `errorType`. Keep the arm for the resolver that raises a bare message and relies on
  * the dispatcher's prefix mapping; do not claim anything currently depends on it.
  *
- * ⚠️ The same substring also matches a **server-side** IAM failure.
- * `get_file_contents_resolver` wraps any unexpected `ClientError` as
- * `Error accessing S3: <message>`, and S3's message for a denial by the *Lambda's*
- * role, the bucket policy or the KMS key is literally "Access Denied". That
- * resolver has no `@api_resolver` wrapper, so it surfaces as HTTP 500 with
- * `errorType: "InternalError"` and the message intact — and telling the user to
- * ask an administrator for a role would be confidently wrong about a server defect
- * no role can fix. So the message arm is skipped when the envelope names an error
- * type that is not an authorization one: an explicit type is better evidence than
- * a substring of prose.
+ * ⚠️ The same substring also matches a **server-side** IAM failure. A denial of
+ * `get_file_contents_resolver`'s *own* execution role, the bucket policy or the KMS
+ * key is a server defect no role of the user's can fix, and S3's own wording for it
+ * is literally "Access Denied" — so telling the user to ask an administrator for a
+ * role would be confidently wrong. Two things keep the two apart. That resolver no
+ * longer returns S3's message (it answers "This deployment could not read the
+ * requested file", with the S3 detail in its log), and the message arm here is
+ * skipped whenever the envelope names an error type that is not an authorization
+ * one: an explicit type is better evidence than a substring of prose. A server-side
+ * S3 failure carries `errorType: "InternalError"`, so it takes the type arm.
+ *
+ * What the resolver DOES send as an authorization refusal is its bucket allow-list
+ * check — `PermissionError` -> HTTP 403 `errorType: "Unauthorized"`, so it reaches
+ * FILE_ACCESS_DENIED_MESSAGE below. That copy names a role because the reachable
+ * case is a caller whose groups do not cover the operation; the allow-list case
+ * needs an `s3Uri` naming a bucket outside the deployment, which this UI never
+ * builds.
  */
 const AUTH_ERROR_TYPES = new Set(['Unauthorized', 'Forbidden']);
 

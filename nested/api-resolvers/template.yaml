@@ -2593,8 +2593,19 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # These five name the buckets an upload may target, and they must match the
+          # S3WritePolicy grants below one-for-one: the grants are the statement of
+          # which buckets are intended write targets, and the resolver's allow-list is
+          # derived from these variables. A bucket that is granted but not named here
+          # is refused with a 403 even though the deployment intends it — which is how
+          # the document, page, section, evaluation-baseline and ground-truth save
+          # paths in the UI would break. `upload_resolver/test_index.py` drives those
+          # call sites directly so the two lists cannot drift apart again.
           INPUT_BUCKET: !Ref InputBucketName
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
+          OUTPUT_BUCKET: !Ref OutputBucketName
+          EVALUATION_BASELINE_BUCKET: !Ref EvaluationBaselineBucketName
+          TEST_SET_BUCKET: !Ref TestSetBucketName
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
       LoggingConfig:
         LogGroup: !Ref UploadResolverFunctionLogGroup
@@ -2664,7 +2675,15 @@ Resources:
       CodeUri: ./src/lambda/list_documents_range_resolver
       Description: Lambda function to list documents by date range via GraphQL API
       MemorySize: 512
-      Timeout: 120
+      # 30s, matching ListDocumentsGSIResolverFunction. The dispatcher stops
+      # waiting at 20s (_RESOLVER_READ_TIMEOUT_SECONDS) and does not cancel the
+      # invocation, so a Timeout far above that window only buys orphaned work: the
+      # old 120s let a request keep querying partitions and spending read capacity
+      # for 100s after the caller had already been answered with a 504. The resolver
+      # now stops its own shard walk at 15s and returns a nextToken, so this is the
+      # backstop rather than the bound. See _SHARD_LOOP_BUDGET_SECONDS in
+      # src/lambda/list_documents_range_resolver/index.py.
+      Timeout: 30
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel

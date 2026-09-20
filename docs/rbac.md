@@ -633,7 +633,7 @@ enforcement itself is Layer 2.
 |-------|---------------|
 | `getDocument`, `listDocuments`, `listDocumentsByDateRange` | Any assigned group (`ANY_GROUP`); server-side row filtering in resolvers on top |
 | `getDocumentVersion`, `compareDocumentVersions` | Any assigned group (`ANY_GROUP`) |
-| `getFileContents`, `getFilePresignedUrl` | Any assigned group (`ANY_GROUP`); bucket allow-list, **not** key-level scoping |
+| `getFileContents`, `getFilePresignedUrl` | Any assigned group (`ANY_GROUP`); bucket allow-list, **not** key-level scoping. A bucket outside the allow-list is **403** `Unauthorized`; the message names the reason and neither the bucket, the allow-list nor whether the bucket exists |
 | `getDocumentCount`, `listDocumentVersions`, `listDocumentsDateHour`, `listDocumentsDateShard`, `getStepFunctionExecution` | All authenticated — counts, run ids and index partitions, not content |
 | `getConfigVersions`, `getConfigVersion`, `getPricing`, `getModelConfigLimits`, `calculateCapacity` | Admin, Author, Viewer |
 | `listConfigProfileRevisions`, `getConfigProfileRevision` | Admin, Author, Viewer |
@@ -650,6 +650,46 @@ enforcement itself is Layer 2.
 | `getMyProfile` | All authenticated |
 
 **Note**: The `updateConfiguration` mutation is schema-level restricted to Admin+Author, but the resolver additionally enforces that `saveAsVersion` and `saveAsDefault` operations within that mutation are **Admin-only**.
+
+#### The status a refusal arrives with, and why it matters operationally
+
+The dispatcher runs each resolver in a separate Lambda, so only two things survive
+the invoke: the exception's **class name** and its message. It picks a status from
+those — `PermissionError`/`AuthorizationError`, or a message beginning
+`Unauthorized`/`Forbidden`, becomes **403 `Unauthorized`**; `ValueError`/`KeyError`
+becomes **400 `BadRequest`**; anything else becomes **500 `InternalError`**.
+
+That makes the status sensitive to how a resolver re-raises. A resolver that catches
+its own exceptions and re-raises them wrapped loses both signals at once — the class
+name becomes `Exception`, and prefixing the message moves the `Unauthorized` token
+off the front, where the anchored prefix match can no longer see it. The refusal then
+arrives as a 500.
+
+Two things go wrong when that happens, and the second is the one that matters. An
+operator debugging a legitimate 403 chases a server fault that is not there. And a
+monitored 5xx rate starts counting deliberate policy denials, so a genuine spike in
+server faults is masked by them, and a caller probing for reachable resources
+inflates the fault signal instead of the authorization-denial signal. Refusals and
+faults have to be separable to be alarmable.
+
+So, for any refusal you add: raise `PermissionError` for an authorization refusal
+and `ValueError` for a bad argument, and do not let a catch-all re-wrap either.
+Log a denial at **WARNING** with a "Denied"/"Forbidden"/"Rejecting" verb and no
+stack trace, and reserve `logger.error(..., exc_info=True)` for a real fault — a
+denial logged as `Unexpected error` with a traceback is indistinguishable from a
+crash in CloudWatch and in anything alarming on ERROR.
+
+**S3 errors need care in both directions.** S3 answers a missing key with **403
+AccessDenied** rather than 404 when the reader lacks `s3:ListBucket`, so "403 means
+forbidden" reports an absent object as a permissions problem. In these resolvers the
+caller's own credentials never reach S3 — the function's execution role does — so an
+`AccessDenied` from S3 is this deployment's IAM, bucket policy or KMS grant, and is
+correctly a 500, never the caller's 403. Where the two are genuinely
+indistinguishable, say so in the log rather than guessing in the response, and do
+not return S3's own message: its text separates `NoSuchBucket` from `AccessDenied`
+from `Forbidden`, which is an existence oracle, and its wording for a denial is
+literally "Access Denied", which client-side heuristics read as the caller's
+problem.
 
 ### Layer 2: Server-Side Resolver Group Checks & Filtering
 

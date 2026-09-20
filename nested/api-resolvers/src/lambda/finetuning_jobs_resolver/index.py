@@ -40,6 +40,43 @@ bedrock_client = boto3.client("bedrock", region_name=REGION)
 FINETUNING_JOB_PREFIX = "finetuning#"
 FINETUNING_JOBS_GSI_PK = "finetuning#jobs"
 
+# Page size: a default AND a ceiling the caller cannot raise.
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 200
+
+# Bounds on the filtered scan that finds the jobs.
+#
+# ⚠️ This operation SCANS. `listFinetuningJobs` filters on a sparse `PK` prefix against
+# a table that holds a row per document in the deployment, so an unbounded walk costs
+# the whole document history for a handful of jobs. The items are written with
+# `GSI1PK`/`GSI1SK` "for future GSI support" but **no such index is declared**, so the
+# query that would make this cheap, complete and correctly ordered is not available
+# yet; adding it means a new global secondary index on a live table (a backfill, and
+# CloudFormation permits one index change per update), which is a larger change than
+# belongs here. Until then this is a bounded scan, and the bound is honest about what
+# it costs rather than about how many pages it took.
+#
+# The budget is READ CAPACITY, not pages and not time: a filtered Scan is charged on
+# bytes EXAMINED, not on rows matched, so capacity is the quantity the caller actually
+# spends. It is measured directly with `ReturnConsumedCapacity`, which makes the
+# budget literal instead of inferred from a page count times an assumed page size —
+# a page can be anywhere from a few KB to 1 MB.
+#
+# 1,000 RCU is set for parity with the group-gated date-range operation, whose cap
+# allows 2,191 eventually-consistent Queries at 0.5 RCU each. `listFinetuningJobs` is
+# an `ANY` operation — reachable by any authenticated caller, including one in no
+# group — so it must not be able to buy more capacity than the operation that IS
+# group-gated. `test_scan_bounded.py` recomputes that figure from the sibling's own
+# constants rather than restating it.
+#
+# For scale: measured against a real tracking table from in-region compute, a filtered
+# Scan page cost 113 RCU mean / 142 max, so this is roughly 7-9 pages of a large
+# table. On a deployment with a long document history that is a slice, not the whole
+# table — which is why truncation is reported IN THE RESPONSE (`complete: false`) and
+# not only in an operator log, and why the UI follows the token.
+MAX_SCAN_CAPACITY_UNITS = 1_000
+SCAN_TIME_RESERVE_MS = 5_000
+
 # Supported base models for fine-tuning (Nova 2.x recommended)
 SUPPORTED_BASE_MODELS = [
     {"id": "us.amazon.nova-2-lite-v1:0", "name": "Nova 2 Lite", "provider": "Amazon"},
@@ -91,7 +128,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Any:
 
     try:
         if field_name == "listFinetuningJobs":
-            return list_finetuning_jobs(arguments)
+            return list_finetuning_jobs(arguments, context)
         elif field_name == "getFinetuningJob":
             return get_finetuning_job(arguments.get("jobId"))
         elif field_name == "validateTestSetForFinetuning":
@@ -115,7 +152,48 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Any:
         raise
 
 
-def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
+def _clamped_limit(requested: Any) -> int:
+    """A caller-supplied page size bounded to ``[1, MAX_PAGE_SIZE]``.
+
+    `arguments.get("limit", 50)` was a default, not a ceiling: nothing between the
+    caller and this value bounds it (the dispatcher's validation spec carries type
+    shapes only).
+    """
+    try:
+        value = int(requested)
+    except (TypeError, ValueError):
+        return DEFAULT_PAGE_SIZE
+    return max(1, min(value, MAX_PAGE_SIZE))
+
+
+def _scan_budget_exhausted(consumed: float, context: Any) -> Optional[str]:
+    """Whether the scan walk must stop now, and why.
+
+    ``consumed`` is the read capacity DynamoDB reports having spent so far, so the
+    budget is the quantity the caller is charged rather than a proxy for it. The
+    remaining-invocation reserve is kept for the case where the pages are slow rather
+    than expensive, mirroring ``_count_budget_exhausted`` in
+    list_documents_gsi_resolver.
+    """
+    if consumed >= MAX_SCAN_CAPACITY_UNITS:
+        return (
+            f"read-capacity budget of {MAX_SCAN_CAPACITY_UNITS} units reached "
+            f"({consumed:.0f} consumed)"
+        )
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(remaining):
+        try:
+            left = int(remaining())
+        except (TypeError, ValueError, AttributeError):
+            return None
+        if left < SCAN_TIME_RESERVE_MS:
+            return f"only {left}ms of the invocation left"
+    return None
+
+
+def list_finetuning_jobs(
+    arguments: Dict[str, Any], context: Any = None
+) -> Dict[str, Any]:
     """List all fine-tuning jobs with pagination.
 
     Uses scan with filter since fine-tuning jobs are relatively few
@@ -127,7 +205,7 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
     DynamoDB's ``Limit`` caps items *evaluated* (before filtering),
     not items *returned*.
     """
-    limit = arguments.get("limit", 50)
+    limit = _clamped_limit(arguments.get("limit"))
     next_token = arguments.get("nextToken")
 
     table = dynamodb.Table(TRACKING_TABLE_NAME)
@@ -138,7 +216,7 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
         "metadata"
     )
 
-    # Collect all matching items by paginating through the scan.
+    # Collect matching items by paginating through the scan.
     # Fine-tuning jobs are few relative to the rest of the table,
     # so a single scan page may not contain any matches.
     items: List[Dict[str, Any]] = []
@@ -147,8 +225,19 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
     if next_token:
         scan_kwargs["ExclusiveStartKey"] = json.loads(next_token)
 
+    # TOTAL makes DynamoDB report what each page actually cost, which is what the
+    # budget below is denominated in.
+    scan_kwargs["ReturnConsumedCapacity"] = "TOTAL"
+
+    pages = 0
+    consumed = 0.0
+    result_next_token = None
     while True:
         response = table.scan(**scan_kwargs)
+        pages += 1
+        consumed += float(
+            (response.get("ConsumedCapacity") or {}).get("CapacityUnits") or 0.0
+        )
 
         for item in response.get("Items", []):
             items.append(_format_job_for_graphql(item))
@@ -157,16 +246,62 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
         if "LastEvaluatedKey" not in response:
             break
 
+        # Enough for the page the caller asked for. Checked here rather than by
+        # truncating afterwards: `nextToken` resumes after the last SCANNED page, so
+        # anything collected and then truncated away is returned by no page at all.
+        if len(items) >= limit:
+            result_next_token = json.dumps(
+                response["LastEvaluatedKey"], cls=DecimalEncoder
+            )
+            break
+
+        # BOUND the walk. Fine-tuning jobs are sparse in the TrackingTable, which
+        # holds a row per document in the deployment, so "scan until the whole
+        # table is exhausted" is proportional to the deployment's entire document
+        # history — and `listFinetuningJobs` is an `ANY` operation, reachable by
+        # any authenticated caller including one in no group. `ExclusiveStartKey`
+        # was already accepted as `nextToken` but never returned, so there was no
+        # way to ask for less than everything.
+        stop = _scan_budget_exhausted(consumed, context)
+        if stop:
+            result_next_token = json.dumps(
+                response["LastEvaluatedKey"], cls=DecimalEncoder
+            )
+            logger.warning(
+                "listFinetuningJobs stopped after %d scan page(s) / %.0f read units "
+                "(%s); returning a nextToken so the caller can resume",
+                pages,
+                consumed,
+                stop,
+            )
+            break
+
         # Continue scanning from where we left off
         scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
-    # Sort by createdAt descending (most recent first)
+    # Sort by createdAt descending (most recent first). Note the ordering is over
+    # what THIS call scanned, not over all jobs: a scan cursor cannot be resumed in
+    # createdAt order. A caller following nextToken gets every job, page by page, but
+    # the pages are not globally sorted between them.
     items.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
 
-    # Apply limit after sorting
-    items = items[:limit]
+    # Truncate ONLY when the scan completed. With a nextToken outstanding the token
+    # resumes after the last scanned page, so truncating here would drop rows that no
+    # subsequent page ever returns — a token that looks like faithful pagination and
+    # is not. Returning slightly more than `limit` is the honest alternative.
+    if result_next_token is None:
+        items = items[:limit]
 
-    return {"items": items}
+    # `complete` says whether this response is the whole answer, IN THE RESPONSE
+    # rather than only in an operator log. A truncated list of fine-tuning jobs is
+    # indistinguishable from a short one, so without this the Custom Models page shows
+    # a partial list with no error and no indication — and the operator log is not
+    # somewhere a user looks.
+    return {
+        "items": items,
+        "nextToken": result_next_token,
+        "complete": result_next_token is None,
+    }
 
 
 def get_finetuning_job(job_id: str) -> Optional[Dict[str, Any]]:

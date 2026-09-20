@@ -318,3 +318,44 @@ def test_handles_known_and_unknown():
     assert mod.handles("listDiscoveryJobs")
     assert mod.handles("getAgentJobStatus")
     assert not mod.handles("listDocuments")
+
+
+def test_a_caller_supplied_limit_is_clamped_not_passed_through(ddb_env):
+    """`Limit` went straight to DynamoDB with no ceiling.
+
+    The dispatcher's central validation spec carries type shapes only — there is no
+    `maximum` vocabulary in it — so a numeric argument is bounded in the handler or
+    not at all.
+    """
+    mod, ddb = ddb_env
+    table = ddb.Table("AgentTable")
+    for i in range(5):
+        table.put_item(
+            Item={"PK": "agent#eve@x.com", "SK": f"j{i}", "status": "COMPLETED"}
+        )
+
+    assert mod._clamped_limit(10_000) == mod._MAX_PAGE_SIZE
+    assert mod._clamped_limit(3) == 3
+
+    # An oversized request still answers, bounded.
+    out = mod.dispatch("listAgentJobs", _ev({"limit": 10_000}, username="eve@x.com"))
+    assert len(out["items"]) == 5
+
+
+def test_a_non_positive_limit_is_a_client_error_not_a_server_fault(ddb_env):
+    """DynamoDB rejects `Limit <= 0` with a ValidationException, which the
+    dispatcher reports as 500. It is a caller input error."""
+    mod, ddb = ddb_env
+    ddb.Table("AgentTable").put_item(
+        Item={"PK": "agent#zed@x.com", "SK": "j0", "status": "COMPLETED"}
+    )
+
+    out = mod.dispatch("listAgentJobs", _ev({"limit": -1}, username="zed@x.com"))
+
+    assert len(out["items"]) == 1
+
+
+def test_a_non_numeric_limit_is_a_valueerror_so_the_dispatcher_reports_400():
+    mod = _load_ddb_direct()
+    with pytest.raises(ValueError, match="limit must be an integer"):
+        mod._clamped_limit("not-a-number")

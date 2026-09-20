@@ -93,7 +93,7 @@ def test_get_file_presigned_url_returns_url_and_metadata(resolver):
 @pytest.mark.unit
 def test_get_file_presigned_url_missing_object_raises(resolver):
     index, _ = resolver
-    with pytest.raises(Exception, match="File not found"):
+    with pytest.raises(ValueError, match="File not found"):
         index.handler(
             _event("getFilePresignedUrl", f"s3://{OUTPUT_BUCKET}/doc/does-not-exist.json"),
             None,
@@ -103,7 +103,11 @@ def test_get_file_presigned_url_missing_object_raises(resolver):
 @pytest.mark.unit
 def test_bucket_allow_list_enforced_for_presigned_url(resolver):
     index, _ = resolver
-    with pytest.raises(Exception, match="Error fetching file|Unauthorized"):
+    # `PermissionError`, not a bare Exception matching "Error fetching
+    # field|Unauthorized". The previous alternation passed whether or not the
+    # refusal survived as an authorization signal, which is how it went unnoticed
+    # that the handler's catch-all rewrapped it into a 500 `InternalError`.
+    with pytest.raises(PermissionError, match="^Unauthorized:"):
         index.handler(
             _event("getFilePresignedUrl", f"s3://{OTHER_BUCKET}/secret.json"),
             None,
@@ -113,14 +117,14 @@ def test_bucket_allow_list_enforced_for_presigned_url(resolver):
 @pytest.mark.unit
 def test_invalid_uri_raises(resolver):
     index, _ = resolver
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="Invalid S3 URI"):
         index.handler(_event("getFilePresignedUrl", "not-an-s3-uri"), None)
 
 
 @pytest.mark.unit
 def test_uri_missing_key_raises(resolver):
     index, _ = resolver
-    with pytest.raises(Exception, match="Invalid S3 URI"):
+    with pytest.raises(ValueError, match="Invalid S3 URI"):
         index.handler(_event("getFilePresignedUrl", f"s3://{OUTPUT_BUCKET}"), None)
 
 
@@ -282,3 +286,260 @@ def test_executable_type_classification(resolver):
     assert index._is_inline_renderable("text/plain")
     assert index._is_inline_renderable("image/png")
     assert not index._is_executable_type("image/png")
+
+
+# ---------------------------------------------------------------------------
+# What status the caller actually receives
+#
+# Every refusal in this file used to arrive as HTTP 500 `InternalError`, because
+# the handler's catch-all rewrapped each one as `Exception(f"Error fetching file:
+# {e}")` — destroying the exception class name AND pushing the "Unauthorized"
+# token off the front of the message, which are the only two things
+# `http_api_dispatcher` uses to choose a status. The consequences were an operator
+# chasing a phantom server fault for a legitimate 403, and a 5xx rate that counted
+# deliberate policy denials, so a real spike in faults was masked by them and an
+# attacker probing bucket names inflated the fault signal rather than the
+# denial one.
+#
+# These tests assert the class the dispatcher keys on rather than the status,
+# because the mapping itself is pinned in
+# lib/idp_common_pkg/tests/unit/test_http_api_dispatcher_*.py.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestRefusalsAreDistinguishableFromFaults:
+    @pytest.mark.parametrize("field", ["getFileContents", "getFilePresignedUrl"])
+    def test_the_bucket_refusal_is_an_authorization_refusal(self, resolver, field):
+        """Both fields share this resolver, so both must refuse the same way."""
+        index, _ = resolver
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(_event(field, f"s3://{OTHER_BUCKET}/secret.json"), None)
+
+        # The dispatcher matches on the class name, and falls back to a message
+        # starting "Unauthorized"/"Forbidden". Both must hold.
+        assert type(excinfo.value).__name__ == "PermissionError"
+        assert str(excinfo.value).startswith("Unauthorized")
+
+    def test_the_refusal_does_not_disclose_the_bucket_or_the_allow_list(
+        self, resolver
+    ):
+        """Fixing a status code must not build an enumeration oracle."""
+        index, _ = resolver
+
+        with pytest.raises(PermissionError) as excinfo:
+            index.handler(
+                _event("getFileContents", f"s3://{OTHER_BUCKET}/secret.json"), None
+            )
+
+        message = str(excinfo.value)
+        assert OTHER_BUCKET not in message
+        assert OUTPUT_BUCKET not in message
+        assert "secret.json" not in message
+
+    def test_a_refused_bucket_is_never_read(self, resolver, monkeypatch):
+        index, _ = resolver
+        monkeypatch.setattr(
+            index.s3_client,
+            "head_object",
+            lambda **kw: pytest.fail("read an out-of-allow-list bucket"),
+        )
+        monkeypatch.setattr(
+            index.s3_client,
+            "get_object",
+            lambda **kw: pytest.fail("read an out-of-allow-list bucket"),
+        )
+
+        with pytest.raises(PermissionError):
+            index.handler(
+                _event("getFileContents", f"s3://{OTHER_BUCKET}/secret.json"), None
+            )
+
+    def test_an_absent_object_is_a_client_error_not_a_fault(self, resolver):
+        index, _ = resolver
+
+        with pytest.raises(ValueError, match="File not found"):
+            index.handler(
+                _event("getFileContents", f"s3://{OUTPUT_BUCKET}/nope.json"), None
+            )
+
+    def test_an_absent_object_version_is_a_client_error(self, resolver):
+        index, _ = resolver
+
+        with pytest.raises(ValueError, match="File not found"):
+            index.handler(
+                _event(
+                    "getFileContents",
+                    f"s3://{OUTPUT_BUCKET}/doc/sections/1/result.json",
+                    version_id="does-not-exist",
+                ),
+                None,
+            )
+
+    def test_an_accessdenied_stays_a_fault_and_leaks_no_s3_detail(
+        self, resolver, monkeypatch
+    ):
+        """The caller's credentials never touch S3 here, so an AccessDenied is this
+        function's own role, the bucket policy or the KMS key — a real fault.
+
+        The raw S3 message is not returned: it distinguished NoSuchBucket from
+        AccessDenied from Forbidden (an existence oracle over the allow-listed
+        buckets) and S3's text for a denial is literally "Access Denied", which the
+        UI's `isAuthorizationError` heuristic reads as the caller's problem.
+        """
+        index, _ = resolver
+        from botocore.exceptions import ClientError
+
+        def _denied(**kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}},
+                "GetObject",
+            )
+
+        monkeypatch.setattr(index.s3_client, "get_object", _denied)
+
+        with pytest.raises(Exception) as excinfo:
+            index.handler(
+                _event("getFileContents", f"s3://{OUTPUT_BUCKET}/x.json"), None
+            )
+
+        assert not isinstance(excinfo.value, (PermissionError, ValueError)), (
+            "a fault in this deployment's own IAM must not be reported to the "
+            "caller as their authorization problem"
+        )
+        assert "Access Denied" not in str(excinfo.value)
+        assert "AccessDenied" not in str(excinfo.value)
+
+    def test_a_403_from_head_object_stays_a_fault(self, resolver, monkeypatch):
+        """S3 answers a MISSING key with 403 when the reader lacks ListBucket, so
+        this code path is reachable both ways and must not guess."""
+        index, _ = resolver
+        from botocore.exceptions import ClientError
+
+        def _forbidden(**kwargs):
+            raise ClientError(
+                {"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject"
+            )
+
+        monkeypatch.setattr(index.s3_client, "head_object", _forbidden)
+
+        with pytest.raises(Exception) as excinfo:
+            index.handler(
+                _event("getFilePresignedUrl", f"s3://{OUTPUT_BUCKET}/x.json"), None
+            )
+
+        assert not isinstance(excinfo.value, (PermissionError, ValueError))
+        assert "Forbidden" not in str(excinfo.value)
+
+
+def _resolver_env(logical_id):
+    """The `Environment.Variables` map for one function, parsed from the template.
+
+    The template is SAM/CFN, so it carries short-form intrinsics (`!Ref`, `!Sub`,
+    `!If`) that a plain safe_load rejects. Resolving them is not the point here — only
+    which names are present and whether their values are non-empty — so they are
+    loaded as opaque nodes.
+    """
+    import yaml
+    from pathlib import Path
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    def _passthrough(loader, tag_suffix, node):
+        if isinstance(node, yaml.ScalarNode):
+            return f"!{tag_suffix} {node.value}"
+        if isinstance(node, yaml.SequenceNode):
+            return [f"!{tag_suffix}"] + loader.construct_sequence(node, deep=True)
+        return {f"!{tag_suffix}": loader.construct_mapping(node, deep=True)}
+
+    _Loader.add_multi_constructor("", _passthrough)
+
+    template = Path(__file__).resolve().parents[3] / "template.yaml"
+    doc = yaml.load(template.read_text(), Loader=_Loader)  # nosec B506 - custom SafeLoader subclass
+    resource = doc["Resources"][logical_id]
+    return resource["Properties"]["Environment"]["Variables"]
+
+
+@pytest.mark.unit
+class TestTheAllowListFailsClosed:
+    def test_an_unconfigured_allow_list_refuses_every_request(self, monkeypatch):
+        """It used to fail OPEN, on the stated premise that an older deployment
+        might run this code without the env vars.
+
+        That premise is false: the function's code and its environment variables are
+        one CloudFormation resource, updated together. An empty set means a template
+        that stopped setting them — a build fault — and reading a build fault as
+        "allow every bucket this role can reach" recreates exactly the generic
+        S3-read gadget the list exists to prevent.
+        """
+        for name in (
+            "INPUT_BUCKET",
+            "OUTPUT_BUCKET",
+            "CONFIGURATION_BUCKET",
+            "EVALUATION_BASELINE_BUCKET",
+            "REPORTING_BUCKET",
+            "TEST_SET_BUCKET",
+            "DISCOVERY_BUCKET",
+            "WORKING_BUCKET",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        with mock_aws():
+            import index
+
+            importlib.reload(index)
+            assert index.ALLOWED_BUCKETS == set()
+
+            with pytest.raises(PermissionError, match="not configured"):
+                index.handler(
+                    _event("getFileContents", f"s3://{OUTPUT_BUCKET}/x.json"), None
+                )
+
+    def test_the_template_wires_the_allow_list(self):
+        """The premise of the closed case: it must be unreachable in a deployment.
+
+        Fixing a fail-open by making it deny is only safe if nothing real lands in
+        the deny branch, and that is a property of the template, not of this file. If
+        it ever does, every `getFileContents` call returns 403 and the document
+        viewers stop working with copy implying the *caller* is at fault.
+
+        Parsed as YAML rather than sliced between two hardcoded logical ids. A text
+        slice that loses its trailing anchor silently widens to the rest of the
+        template — where `INPUT_BUCKET:` and `OUTPUT_BUCKET:` both appear on other
+        functions — so removing the variables from THIS function and renaming the
+        anchor would still have passed. The values are checked non-empty too, because
+        `ALLOWED_BUCKETS` filters falsy entries: `INPUT_BUCKET: ""` is wired and still
+        fails closed.
+        """
+        env = _resolver_env("GetFileContentsResolverFunction")
+
+        for required in ("INPUT_BUCKET", "OUTPUT_BUCKET"):
+            assert required in env, (
+                f"{required} is not set on GetFileContentsResolverFunction, so the "
+                "bucket allow-list would be empty and every read refused"
+            )
+            assert env[required], (
+                f"{required} is set to an empty value, which ALLOWED_BUCKETS "
+                "filters out — so the allow-list is still empty and every read is "
+                "refused"
+            )
+
+    def test_every_name_the_code_reads_is_either_wired_or_knowingly_unwired(self):
+        """`_ALLOWED_BUCKETS_ENV` names eight variables; the template sets six.
+
+        Not a defect — an unset name simply contributes nothing to the allow-list —
+        but it is the kind of drift that makes the set above look bigger than the
+        protection actually is, so it is pinned rather than left to be discovered.
+        """
+        import index
+
+        env = _resolver_env("GetFileContentsResolverFunction")
+        wired = {n for n in index._ALLOWED_BUCKETS_ENV if n in env}
+        unwired = set(index._ALLOWED_BUCKETS_ENV) - wired
+
+        assert unwired == {"DISCOVERY_BUCKET", "WORKING_BUCKET"}, (
+            "the set of bucket env vars the template does not wire has changed: "
+            f"{sorted(unwired)}. An object in an unwired bucket is unreachable "
+            "through this resolver."
+        )

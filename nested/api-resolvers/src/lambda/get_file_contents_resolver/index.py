@@ -10,6 +10,7 @@ import os
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+import s3_targets
 from log_sanitizer import sanitize_event_for_logging
 
 # Set up logging
@@ -32,67 +33,28 @@ s3_client = boto3.client(
 
 # Bucket allow-list for get_file_contents.
 # --------------------------------------------
-# The AppSync schema for getFileContents accepts an arbitrary `s3Uri`
-# argument from any authenticated Cognito user. In the default
-# single-tenant deployment, all authenticated users are trusted to read
-# any document processed by this stack — that is by design. However,
-# the Lambda's execution role has S3Read permission on several IDP
-# buckets (input, output, baseline, configuration, reporting), and if
-# a user passed in a completely unrelated S3 URI (for example an
-# object from another stack or a third-party bucket the execution
-# role happens to be able to read via a cross-account policy), the
-# resolver would happily proxy its contents.
+# The schema for getFileContents accepts an arbitrary `s3Uri` from any
+# authenticated caller holding a group, and this function's execution role can read
+# several IDP buckets. The allow-list is what stops the operation being a generic
+# S3-read gadget for whatever that role reaches.
 #
-# To prevent use of this resolver as a generic S3-read gadget, we
-# restrict the accepted buckets to those explicitly passed in via
-# environment variables (set by `nested/api-resolvers/template.yaml` from
-# the main stack's bucket refs). If the env vars are unset
-# (unusual — older deployments that haven't been redeployed), we
-# fail open with a warning to preserve functionality, and operators
-# are expected to redeploy to pick up the new template.
-_ALLOWED_BUCKETS_ENV = {
-    "INPUT_BUCKET",
-    "OUTPUT_BUCKET",
-    "CONFIGURATION_BUCKET",
-    "EVALUATION_BASELINE_BUCKET",
-    "REPORTING_BUCKET",
-    "TEST_SET_BUCKET",
-    "DISCOVERY_BUCKET",
-    "WORKING_BUCKET",
-}
-ALLOWED_BUCKETS = {
-    os.environ[name]
-    for name in _ALLOWED_BUCKETS_ENV
-    if os.environ.get(name)
-}
+# The rule itself lives in `s3_targets`, shared byte-for-byte with the write paths in
+# upload_resolver and discovery_upload_resolver — one allow-list, not three that
+# drift. `test_s3_targets_vendored.py` fails if a copy diverges. This path checks the
+# BUCKET only: the write-once key rule in that module is for writes, and reading a
+# revision body or a run manifest is legitimate.
+_ALLOWED_BUCKETS_ENV = s3_targets.BUCKET_ENV_NAMES
+ALLOWED_BUCKETS = s3_targets.resolve_allowed_buckets()
 
 
 def _validate_bucket(bucket: str) -> None:
-    """Reject the request if `bucket` is not in the allow-list.
+    """Reject the request if `bucket` is not one this deployment owns.
 
-    No-op (with a warning log) when ALLOWED_BUCKETS is empty, which
-    happens if none of the bucket env vars are set (legacy deployment
-    path). Production template always sets at least INPUT_BUCKET and
-    OUTPUT_BUCKET.
+    Raises `PermissionError` -> HTTP 403 `Unauthorized`. See `s3_targets` for why the
+    exception type and the message prefix both matter, and why an empty allow-list
+    fails closed.
     """
-    if not ALLOWED_BUCKETS:
-        logger.warning(
-            "get_file_contents_resolver: no bucket allow-list configured "
-            "(all of %s are unset). Skipping bucket validation. Redeploy "
-            "the stack to pick up the tightened template.",
-            sorted(_ALLOWED_BUCKETS_ENV),
-        )
-        return
-    if bucket not in ALLOWED_BUCKETS:
-        # Avoid echoing the bucket name back to the client (minor
-        # information-disclosure hardening).
-        logger.warning(
-            "get_file_contents_resolver: rejecting request for bucket "
-            "%r (not in allow-list %s).",
-            bucket,
-            sorted(ALLOWED_BUCKETS),
-        )
-        raise Exception("Unauthorized: requested bucket is not accessible from this deployment.")
+    s3_targets.assert_bucket_allowed(bucket, ALLOWED_BUCKETS, logger=logger)
 
 
 # Presigned GET URLs expire after this many seconds. Short-lived: the UI
@@ -120,15 +82,20 @@ def _parse_and_validate_uri(event):
     # object keys may contain '#' (e.g. "Borrowing_Notice_#2.pdf/pages/1/
     # result.json"), which urlparse treats as a URL fragment delimiter and
     # silently truncates, producing a wrong key and a NoSuchKey error.
+    #
+    # `ValueError`, not a bare `Exception`: the dispatcher maps `ValueError` to
+    # **400 BadRequest** and everything it does not recognise to 500
+    # `InternalError`. A malformed argument is the caller's, and reporting it as a
+    # server fault both misleads whoever is debugging it and pollutes the 5xx rate.
     if not s3_uri.startswith("s3://"):
-        raise Exception("Invalid S3 URI: expected s3://<bucket>/<key>")
+        raise ValueError("Invalid S3 URI: expected s3://<bucket>/<key>")
     # Strip scheme, then split once into bucket and key.
     parts = s3_uri[len("s3://"):].split("/", 1)
     if len(parts) < 2 or not parts[0]:
-        raise Exception("Invalid S3 URI: expected s3://<bucket>/<key>")
+        raise ValueError("Invalid S3 URI: expected s3://<bucket>/<key>")
     bucket, key = parts
     if not key:
-        raise Exception("Invalid S3 URI: key is required")
+        raise ValueError("Invalid S3 URI: key is required")
 
     # Enforce that the requested bucket belongs to this IDP stack's
     # known bucket set — prevents use of this resolver as a generic
@@ -304,7 +271,12 @@ def handler(event, context):
         dict: Field-shaped response (see the two handlers above).
 
     Raises:
-        Exception: Various exceptions related to S3 operations or invalid input
+        PermissionError: the requested bucket is outside this deployment's
+            allow-list. The dispatcher reports this as **403 Unauthorized**.
+        ValueError: the `s3Uri` is malformed, or names an object that is not there.
+            The dispatcher reports these as **400 BadRequest**.
+        Exception: a genuine server-side fault (the resolver's own role, the bucket
+            policy or the KMS key refused it, or S3 failed). **500 InternalError**.
     """
     try:
         logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
@@ -317,16 +289,57 @@ def handler(event, context):
     except ClientError as e:
         error_code = e.response['Error']['Code']
         error_message = e.response['Error']['Message']
-        logger.error(f"S3 ClientError: {error_code} - {error_message}")
 
-        # NoSuchKey (get_object) and 404 (head_object) both mean "missing object".
-        if error_code in ('NoSuchKey', '404'):
-            raise Exception("File not found")
-        elif error_code in ('NoSuchBucket', 'NoSuchVersion'):
-            raise Exception(f"Error accessing S3: {error_message}")
-        else:
-            raise Exception(f"Error accessing S3: {error_message}")
+        # NoSuchKey (get_object) and 404 (head_object) both mean "missing object",
+        # which is the caller naming a key that is not there — a 400, not a 500.
+        if error_code in ('NoSuchKey', '404', 'NoSuchVersion'):
+            logger.info("Requested object is absent: %s", error_code)
+            raise ValueError("File not found") from e
+
+        # Everything else is the DEPLOYMENT failing to read an object the caller was
+        # allowed to ask for: the caller's own credentials never touch S3 here, so an
+        # AccessDenied is this function's role, the bucket policy or the KMS key —
+        # a server fault, and correctly a 500.
+        #
+        # ⚠️ S3 answers a missing key with 403 AccessDenied rather than 404 when the
+        # reader lacks s3:ListBucket on the bucket, so an absent object can land here
+        # and be reported as a fault. That is not hypothetical in this deployment:
+        # REPORTING_BUCKET is in the allow-list above but the function's Policies
+        # block grants it no S3ReadPolicy, and s3:GetObjectVersion is granted only on
+        # the output bucket — so every read there fails this way whether or not the
+        # object exists. The log line below is what distinguishes it; the message to
+        # the caller deliberately cannot, because guessing would be worse.
+        #
+        # The raw S3 message is NOT returned. It distinguished NoSuchBucket from
+        # AccessDenied from Forbidden, which made this a working existence oracle
+        # over the allow-listed buckets, and it read as an authorization problem to
+        # the UI (S3's text for a denial is literally "Access Denied").
+        logger.error(
+            "S3 refused or failed a read this deployment is expected to be able to "
+            "do: %s - %s. Check this function's S3 read policy, the bucket policy "
+            "and the KMS key grant. NOTE: S3 also reports a MISSING key as "
+            "AccessDenied/403 when s3:ListBucket is absent, so this may be an "
+            "absent object rather than a permissions fault.",
+            error_code,
+            error_message,
+        )
+        raise Exception(
+            "This deployment could not read the requested file. "
+            "Contact an administrator."
+        ) from e
+
+    except (PermissionError, ValueError):
+        # Re-raised unchanged, deliberately. The catch-all below used to wrap every
+        # exception as `Exception(f"Error fetching file: {e}")`, which destroyed the
+        # class name AND moved the "Unauthorized" prefix off the front of the
+        # message — the two things the dispatcher uses to choose a status. So the
+        # bucket allow-list refusal, every malformed-URI rejection and every
+        # missing-object report all arrived as 500 `InternalError`. The refusals are
+        # already logged at their raise site; re-logging them here as "Unexpected
+        # error" is what made a deliberate denial indistinguishable from a crash in
+        # CloudWatch and in any alarm watching ERROR.
+        raise
 
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise Exception(f"Error fetching file: {str(e)}")
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        raise Exception(f"Error fetching file: {str(e)}") from e

@@ -637,6 +637,7 @@ export type FinetuningJob = {
 };
 
 export type FinetuningJobConnection = {
+  complete?: Maybe<Scalars['Boolean']['output']>;
   items?: Maybe<Array<Maybe<FinetuningJob>>>;
   nextToken?: Maybe<Scalars['String']['output']>;
 };
