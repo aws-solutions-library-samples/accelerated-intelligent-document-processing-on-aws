@@ -32,11 +32,20 @@ logger = logging.getLogger(__name__)
 
 
 class BdaBlueprintService:
-    def __init__(self, dataAutomationProjectArn: Optional[str] = None):
+    def __init__(
+        self,
+        dataAutomationProjectArn: Optional[str] = None,
+        region: Optional[str] = None,
+    ):
         self.dataAutomationProjectArn = dataAutomationProjectArn
-        self.blueprint_creator = BDABlueprintCreator()
+        self.region = region
+        self.blueprint_creator = BDABlueprintCreator(region=region)
         self.blueprint_name_prefix = os.environ.get("STACK_NAME", "")
-        self.config_manager = ConfigurationManager()
+        # This service WRITES the BDA-derived document classes back to the
+        # configuration table, so the region matters as much here as on the read:
+        # `idp-cli config-sync-bda --region eu-west-1` resolved the table name in
+        # eu-west-1 and used to write the classes to the ambient region.
+        self.config_manager = ConfigurationManager(region=region)
         self.max_workers = int(os.environ.get("BDA_SYNC_MAX_WORKERS", "5"))
         # Track skipped properties during schema transformation for reporting
         self._skipped_properties = []

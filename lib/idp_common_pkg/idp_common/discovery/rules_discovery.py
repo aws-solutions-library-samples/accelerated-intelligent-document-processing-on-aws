@@ -203,8 +203,11 @@ class RulesDiscovery:
             self.config_manager = None
         else:
             try:
-                self.config_reader = ConfigurationReader()
-                self.config_manager = ConfigurationManager()
+                # self.region must reach these: this class SAVES the extracted
+                # rules back to the configuration table. Same defect and same fix
+                # as ClassesDiscovery.
+                self.config_reader = ConfigurationReader(region=self.region)
+                self.config_manager = ConfigurationManager(region=self.region)
                 self.config = cast(
                     IDPConfig,
                     self.config_reader.get_merged_configuration(as_model=True),

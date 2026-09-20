@@ -223,7 +223,19 @@ def upload_config(stack, version, path, res=None, native=False):
         f'--stack-name {stack} --config-file "{path}" --config-profile {version} '
         f'--version-description "benchmark {version}" --region {lib.REGION}'
     )
-    return "uploaded successfully" in (r.stdout + r.stderr)
+    # The EXIT CODE, not a substring of the console output. `idp-cli config-upload`
+    # sets it authoritatively (`sys.exit(1)` on every failure path), whereas the
+    # success line is Rich-rendered — `✓ Configuration uploaded successfully` is
+    # 37 characters and `rich.Console` hard-wraps at `COLUMNS`, so a narrow or
+    # non-tty terminal splits it mid-string and the substring test reports a
+    # false FAIL. That used to cost a misleading console line; now that a FAIL
+    # skips the cell, it would drop a paid-for arm and fail the whole grid.
+    if r.returncode != 0:
+        print(
+            f"    config-upload exited {r.returncode}: {(r.stderr or '').strip()[:300]}"
+        )
+        return False
+    return True
 
 
 def upload_all_configs(stack, cells, res=None, native=False):
@@ -246,6 +258,85 @@ def upload_all_configs(stack, cells, res=None, native=False):
         if not ok:
             failed.append(c["version"])
     return failed
+
+
+def plan_after_upload_failures(pairs, ref_pairs, cells, failed_versions):
+    """Drop the (cell, doc, repeat) work whose configuration never landed.
+
+    Returns ``(pairs, ref_pairs, skipped_cells)``. Deliberately does NOT exit when
+    the failures leave nothing launchable: main() has to write the manifest first,
+    or a grid that launched nothing leaves no artifact at all and the only record
+    of why is a console scrollback. See ``assert_something_launchable``.
+
+    Extracted from ``main()`` and tested against its own behaviour. The previous
+    version of this filter lived inline, and the tests asserted a
+    *re-implementation* of it in the test body plus an ``inspect.getsource``
+    substring — so deleting the real filter left the suite green, which is the
+    same "a control exists but nothing consults it" shape as the defect itself.
+
+    The skip is per VERSION, so a sibling cell on a version that did upload still
+    runs: an overnight 40-cell grid must not lose 39 good arms to one bad upload.
+    """
+    failed_versions = set(failed_versions)
+    skipped_cells = sorted(
+        {c["cell"] for c in cells if c["version"] in failed_versions}
+    )
+    if not failed_versions:
+        return pairs, ref_pairs, skipped_cells
+
+    pairs = [p for p in pairs if p[0]["version"] not in failed_versions]
+    ref_pairs = [p for p in ref_pairs if p[0]["version"] not in failed_versions]
+    print(
+        f"  ⚠ config upload FAILED for {sorted(failed_versions)}; skipping "
+        f"{len(skipped_cells)} cell(s): {skipped_cells}"
+    )
+    return pairs, ref_pairs, skipped_cells
+
+
+def assert_something_launchable(pairs, ref_pairs, failed_versions):
+    """Stop before the launch loops if the upload failures left no work.
+
+    Split from the filter above so it can be called AFTER the manifest is written:
+    the total-failure case is precisely the one where an artifact matters most, and
+    exiting inside the filter left the results directory empty.
+    """
+    if not pairs and not ref_pairs:
+        sys.exit(
+            f"no launchable runs: config upload failed for every version "
+            f"({sorted(failed_versions)}). Nothing was launched; the runmap "
+            f"records which versions failed."
+        )
+
+
+def exit_status_for_grid(failed_versions, skipped_cells, runmap):
+    """Raise ``SystemExit`` if the grid is incomplete or measured nothing.
+
+    Called after the drain, so the arms that did land are finished and scoreable,
+    while an unattended invocation or a wrapper script still sees a non-zero
+    status instead of reading a partial grid as a whole suite.
+
+    Two independent conditions:
+
+    * a configuration upload failed, so some cells were never launched;
+    * every launch was rejected by the runner (all ``run_id`` are ``None``), which
+      is what a stale ``--stack`` or a missing TestRunner Lambda produces. That
+      used to print ``done.`` and exit 0 — a grid that measured nothing, reported
+      as success. ``run_classification_bench.py`` already exits on the same
+      condition.
+    """
+    if failed_versions:
+        sys.exit(
+            f"incomplete grid: config upload failed for {sorted(failed_versions)}, "
+            f"so {len(skipped_cells)} cell(s) were never launched: {skipped_cells}. "
+            f"The runs that did launch are valid and scoreable; do NOT report this "
+            f"grid as covering the whole suite."
+        )
+    if runmap and not any(r.get("run_id") for r in runmap):
+        sys.exit(
+            f"no run launched: all {len(runmap)} run(s) were rejected by the "
+            f"TestRunner (every run_id is null). This grid measured nothing. "
+            f"Check --stack names a live stack with a TestRunner Lambda."
+        )
 
 
 _LAMBDA_FNS = None
@@ -795,21 +886,9 @@ def main():
     # overnight 40-cell suite should not lose 39 good arms to one bad upload.
     # (run_classification_bench.py aborts outright; it uploads one version, so
     # there is no sibling to preserve.)
-    skipped_cells = sorted(
-        {c["cell"] for c in cells + ref_cells if c["version"] in failed_versions}
+    pairs, ref_pairs, skipped_cells = plan_after_upload_failures(
+        pairs, ref_pairs, cells + ref_cells, failed_versions
     )
-    if failed_versions:
-        pairs = [p for p in pairs if p[0]["version"] not in failed_versions]
-        ref_pairs = [p for p in ref_pairs if p[0]["version"] not in failed_versions]
-        print(
-            f"  ⚠ config upload FAILED for {sorted(failed_versions)}; skipping "
-            f"{len(skipped_cells)} cell(s): {skipped_cells}"
-        )
-    if not pairs and not ref_pairs:
-        sys.exit(
-            f"no launchable runs: config upload failed for every version "
-            f"({sorted(failed_versions)}). Nothing was launched."
-        )
 
     # Synthetic docs are scored against exact local ground truth; without the
     # .truth.json beside the PDF, aggregate.py silently falls back to the stack's
@@ -911,8 +990,10 @@ def main():
 
     # Write the manifest once BEFORE launching anything, so the setup outcomes
     # above survive even a run that dies in the launch loop or is interrupted.
-    # Previously runmap.json first appeared after the first successful launch.
+    # Previously runmap.json first appeared after the first successful launch, so a
+    # grid that launched nothing left no artifact at all.
     _write_runmap()
+    assert_something_launchable(pairs, ref_pairs, failed_versions)
 
     # Reference corpora first: they are the longest runs (n documents each), so
     # starting them early keeps the in-flight cap busy while the one-page
@@ -998,13 +1079,7 @@ def main():
     # Non-zero exit AFTER the drain, so the arms that did land are completed and
     # scoreable, but an unattended invocation (or a wrapper script) still sees
     # that this grid is incomplete rather than reading exit 0 as a full matrix.
-    if failed_versions:
-        sys.exit(
-            f"incomplete grid: config upload failed for {sorted(failed_versions)}, "
-            f"so {len(skipped_cells)} cell(s) were never launched: {skipped_cells}. "
-            f"The runs that did launch are valid and scoreable; do NOT report this "
-            f"grid as covering the whole suite."
-        )
+    exit_status_for_grid(failed_versions, skipped_cells, runmap)
 
 
 if __name__ == "__main__":

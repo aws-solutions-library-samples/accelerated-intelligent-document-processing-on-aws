@@ -12,9 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 class BDABlueprintCreator:
-    def __init__(self):
-        """Initialize Bedrock client."""
-        self.bedrock_client = boto3.client(service_name="bedrock-data-automation")
+    def __init__(self, region=None):
+        """Initialize Bedrock client.
+
+        Args:
+            region: Optional AWS region. ``None`` defers to boto3's own
+                resolution, which is correct in Lambda. An out-of-region caller
+                (``idp-cli config-sync-bda --region …``) must pass it, or the
+                blueprints are created against the wrong region's BDA project.
+        """
+        self.region = region
+        self.bedrock_client = boto3.client(
+            service_name="bedrock-data-automation", region_name=region
+        )
 
     def update_data_automation_project(self, projectArn: str, blueprint):
         """

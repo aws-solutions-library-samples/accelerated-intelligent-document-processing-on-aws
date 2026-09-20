@@ -46,6 +46,7 @@ reproduce.
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import subprocess
@@ -62,11 +63,32 @@ PRICING = "config_library/pricing.yaml"
 LIMITS = "config_library/model_config_limits.yaml"
 UI_CONSTANTS = "src/ui/src/constants/schemaConstants.ts"
 CONFIG_MODELS = "lib/idp_common_pkg/idp_common/config/models.py"
+PRESET_GLOB = "config_library/"
+KB_EMBED_TEMPLATE = "nested/bedrockkb/template.yaml"
 
-# A Bedrock inference-profile / model id as this repo writes them: a region or
-# geo prefix, then the provider and model. Anchored, so prose and ARNs are not
+# A Bedrock model or inference-profile id as this repo writes them: an OPTIONAL
+# region/geo prefix, then `provider.model`. Anchored, so prose and ARNs are not
 # mistaken for ids.
-MODEL_ID = re.compile(r"^(?:us|eu|apac|global|us-gov)\.[a-z0-9][a-z0-9.:_-]*$")
+#
+# The region prefix must stay optional. A bare `provider.model` id is not exotic —
+# it is the ONLY form that works in GovCloud (see the comment block above
+# `KnowledgeBaseModelId` in template.yaml), and the tree ships several
+# deliberately: `amazon.nova-pro-v1:0` and `amazon.nova-lite-v1:0` as GovCloud
+# ids, five `openai.gpt-5.x`, `qwen.qwen3-vl-235b-a22b`,
+# `nvidia.nemotron-nano-12b-v2`, `google.gemma-3-27b-it`, and three embedding
+# models. Requiring the prefix made 13 of 88 selectable ids invisible to every
+# invariant in this file, including the entire GovCloud surface — so a bare
+# end-of-life id appended to any enum passed green. A sibling gate
+# (`test_pricing_lookup.py`) already handles the bare form.
+# The provider segment must START WITH A LETTER and the model segment must CONTAIN
+# one. Without both, `provider.model` also matches a bare decimal: `0.7` (a
+# `top_p` default) was picked up as a model id the moment the region prefix became
+# optional, and `v1.0`-style version strings would be too.
+MODEL_ID = re.compile(
+    r"^(?:(?:us|eu|apac|global|us-gov)\.)?"       # optional region / geo prefix
+    r"[a-z][a-z0-9-]+\."                          # provider, e.g. amazon / openai
+    r"(?=[a-z0-9.:_-]*[a-z])[a-z0-9][a-z0-9.:_-]*$"  # model, must contain a letter
+)
 
 # Values that appear in a `model` enum but are not Bedrock model ids. `LambdaHook`
 # selects a customer Lambda instead of a model, so it has no price and no limits.
@@ -74,49 +96,137 @@ NON_MODEL_CHOICES = {"LambdaHook"}
 
 # ---------------------------------------------------------------------------
 # End-of-life models. NOT derivable from this tree and CI has no network, so this
-# is the one hand-maintained list here. Each entry names the evidence; re-run the
-# command to re-verify. An EOL model is completely inaccessible in every region
-# (AWS's model-lifecycle policy), which is why it must not be selectable at all —
-# unlike a LEGACY model, which existing users can still invoke and which this
-# gate deliberately does NOT flag.
+# is the one hand-maintained list here. Each entry carries the EOL date and the
+# command that establishes it; re-run it to re-verify. An EOL model is completely
+# inaccessible in every region (AWS's model-lifecycle policy), which is why it
+# must not be selectable at all — unlike a LEGACY model, which existing users can
+# still invoke and which this gate deliberately does NOT flag.
+#
+# `eol` is a real date so a future check can act on it; `verify` is the exact
+# command. All three were confirmed on 2026-09-20 against the live API.
 # ---------------------------------------------------------------------------
 EOL_MODELS = {
-    "us.amazon.nova-premier-v1:0": (
-        "EOL 2026-09-14 per the Bedrock model card for Nova Premier. Verify: "
-        "aws bedrock get-foundation-model --region us-east-1 "
-        "--model-identifier amazon.nova-premier-v1:0  -> ResourceNotFoundException "
-        "'This model version has reached the end of its life'"
-    ),
-    "us.anthropic.claude-3-5-sonnet-20240620-v1:0": (
-        "EOL as of 2026-09-20; past its EOL date, so AWS no longer publishes a "
-        "model card. Verify: aws bedrock get-foundation-model --region us-east-1 "
-        "--model-identifier anthropic.claude-3-5-sonnet-20240620-v1:0  -> "
-        "ResourceNotFoundException 'This model version has reached the end of its life'"
-    ),
+    "us.amazon.nova-premier-v1:0": {
+        "was_offered": True,
+        "eol": "2026-09-14",
+        "verify": (
+            "aws bedrock get-foundation-model --region us-east-1 "
+            "--model-identifier amazon.nova-premier-v1:0"
+        ),
+        "note": "date from the Bedrock model card for Nova Premier",
+    },
+    "us.anthropic.claude-3-5-sonnet-20240620-v1:0": {
+        "was_offered": True,
+        "eol": "2026-09-20",
+        "verify": (
+            "aws bedrock get-foundation-model --region us-east-1 "
+            "--model-identifier anthropic.claude-3-5-sonnet-20240620-v1:0"
+        ),
+        "note": (
+            "past EOL, so AWS no longer publishes a model card; the date recorded "
+            "is when this was confirmed, not necessarily the EOL date itself"
+        ),
+    },
+    # Never selectable here, and recorded so it cannot be re-added. `docs/
+    # configuration.md` cites it as an end-of-life example, which this keeps honest.
+    "us.anthropic.claude-3-5-haiku-20241022-v1:0": {
+        "was_offered": False,
+        "eol": "2026-09-20",
+        "verify": (
+            "aws bedrock get-foundation-model --region us-east-1 "
+            "--model-identifier anthropic.claude-3-5-haiku-20241022-v1:0"
+        ),
+        "note": "past EOL; confirmation date, not the EOL date",
+    },
+}
+
+# Models this repo offers that AWS has moved to LEGACY: deprecated with a known
+# EOL date, but still invocable by existing users, so they correctly stay
+# selectable. Recorded because `docs/configuration.md` uses one as its worked
+# example of that state, and an example that silently becomes end-of-life teaches
+# the wrong thing. `review_by` is the EOL date read from
+# `list-foundation-models`' `modelLifecycle.endOfLifeTime`; the test below fails
+# once it is reached, which is the prompt to move the model to EOL_MODELS, pull it
+# from the selectable surfaces and pick a new example.
+LEGACY_EXAMPLES = {
+    "us.anthropic.claude-sonnet-4-20250514-v1:0": {
+        "review_by": "2026-10-14",
+        "note": "endOfLifeTime 2026-10-14T08:00:00Z; cited in docs/configuration.md",
+    },
+    "us.anthropic.claude-opus-4-1-20250805-v1:0": {
+        "review_by": "2027-01-08",
+        "note": (
+            "endOfLifeTime 2027-01-08T08:00:00Z; still carries quota codes in "
+            "template.yaml, which is correct while it remains invocable"
+        ),
+    },
 }
 
 # ---------------------------------------------------------------------------
 # Limits-coverage exemptions. Each one's PREMISE is asserted by a test below, so
 # an exemption cannot quietly rest on a reason that has stopped being true.
 # ---------------------------------------------------------------------------
-# Premise: an id matching no limits pattern is not broken — idp_common.bedrock
-# .sizing falls back to a documented conservative window. These two are selectable
-# and Active, and their AWS model cards give 1M (Maverick) and 10M (Scout) token
-# context windows while the Bedrock launch announcement gives 1M and 3.5M. Adding
-# a pattern means choosing between two AWS-published numbers, and overstating the
-# input window makes auto-sizing shard too little and fail at the API, so the
-# conservative fallback is deliberately kept until the number is settled.
+# Premise: an id matching no limits pattern is degraded, not broken —
+# `idp_common.bedrock.sizing` falls back to a documented conservative window.
+# Every model here is selectable and Active; what is missing is a decided
+# context-window number, and overstating one makes auto-sizing shard too little
+# and fail at the Bedrock API, which is worse than the conservative fallback.
+#
+# Llama 4: AWS's own sources disagree — the model cards give 1M (Maverick) and 10M
+# (Scout) while the Bedrock launch announcement gives 1M and 3.5M.
+#
+# Qwen3-VL, Nemotron Nano and Gemma 3 are `agents.chat_companion.model_id`
+# choices carried over from earlier releases with no limits entry ever added. They
+# were invisible to this gate until the bare-id fix above, which is the reason
+# they are listed rather than fixed here: each needs its own looked-up number.
 LIMITS_EXEMPT = {
     "us.meta.llama4-maverick-17b-instruct-v1:0",
     "us.meta.llama4-scout-17b-instruct-v1:0",
+    "qwen.qwen3-vl-235b-a22b",
+    "nvidia.nemotron-nano-12b-v2",
+    "google.gemma-3-27b-it",
 }
 
-# Premise (asserted below): these are not text-generation models, so they appear
-# in no `model` picklist and need no limits entry. An embeddings model has no
-# max-output-tokens in the sense the limits file means.
-NON_SELECTABLE_DEFAULTS = {
-    "us.cohere.embed-v4:0": "Titan/Cohere-style embeddings model, not a chat model",
+# Embedding models, selectable ONLY as the Bedrock Knowledge Base's embedding
+# model (`pEmbedModel` in nested/bedrockkb/template.yaml). They are exempt from
+# both the pricing and the limits invariants, and the premise for each is asserted
+# below: an embedding model is not a text-generation model, so it has no
+# max-output-tokens in the sense the limits file means, and it is not a pipeline
+# stage this solution meters, so it has no `bedrock/<id>` pricing row. Asserted
+# structurally — if one of these ever appears in a ConfigSchema `model` field, it
+# IS a pipeline stage and the exemption fails.
+EMBEDDING_MODELS = {
+    "amazon.titan-embed-text-v2:0",
+    "cohere.embed-english-v3",
+    "cohere.embed-multilingual-v3",
 }
+
+# Premise (asserted below): not a text-generation model, so it appears in no
+# `model` picklist. `us.cohere.embed-v4:0` is the Knowledge Base embedding model
+# named as a code default rather than a template enum value.
+NON_SELECTABLE_DEFAULTS = {
+    "us.cohere.embed-v4:0": "Cohere embeddings model, not a chat model",
+}
+
+
+_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|global|us-gov)\.")
+
+
+def _base_model(model_id: str) -> str:
+    """Strip any region/geo prefix, leaving the foundation-model id.
+
+    End-of-life is a property of the FOUNDATION MODEL, not of an inference
+    profile: when `amazon.nova-premier-v1:0` was withdrawn, `us.`, `eu.` and
+    `global.` profiles routing to it all died with it, and the bare id is the form
+    GovCloud uses. Comparing EOL by exact string therefore misses every variant
+    except the one spelled in EOL_MODELS — a bare `amazon.nova-premier-v1:0`
+    appended to an enum was caught only incidentally, by the pricing invariant,
+    and would have passed entirely had someone added a pricing row with it.
+    """
+    return _REGION_PREFIX.sub("", model_id)
+
+
+EOL_BASE_MODELS = {_base_model(m): m for m in EOL_MODELS}
 
 
 # ---------------------------------------------------------------------------
@@ -219,14 +329,69 @@ def ui_dropdown() -> set[str]:
     return {v for v in values if MODEL_ID.match(v)}
 
 
+def _walk_model_values(node: Any, path: str, acc: dict[str, set[str]]) -> None:
+    """Collect every model-shaped string value under a `model`-ish key."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str) and MODEL_ID.match(value):
+                acc.setdefault(value, set()).add(f"{path}.{key}")
+            else:
+                _walk_model_values(value, f"{path}.{key}", acc)
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            _walk_model_values(item, f"{path}[{i}]", acc)
+
+
 @pytest.fixture(scope="module")
-def code_defaults() -> set[str]:
-    text = (REPO_ROOT / CONFIG_MODELS).read_text(encoding="utf-8")
-    return {
-        v
-        for v in re.findall(r'default="([^"]+)"', text)
-        if MODEL_ID.match(v) and v not in NON_MODEL_CHOICES
-    }
+def code_defaults() -> dict[str, set[str]]:
+    """Every model id an EFFECTIVE default resolves to, by instantiating IDPConfig.
+
+    Instantiated, not pattern-matched. A regex over ``default="…"`` sees only the
+    simple case and misses ``default_factory=lambda: X(model="…")`` — and for
+    ``IDPConfig`` the ``default_factory`` is what GOVERNS, overriding the nested
+    class's own ``default=``. So the regex covered the overridden default and
+    missed the effective one: reverting only the ``default_factory`` to an
+    end-of-life model left this file green while
+    ``IDPConfig().summarization.model`` returned it, which is what a stack runs.
+
+    Walking the instantiated tree removes that whole class of blind spot: whatever
+    Pydantic actually resolves is what gets checked, regardless of how it was
+    declared.
+    """
+    models = pytest.importorskip("idp_common.config.models")
+    acc: dict[str, set[str]] = {}
+    _walk_model_values(
+        models.IDPConfig().model_dump(mode="python"), "IDPConfig()", acc
+    )
+    return {k: v for k, v in acc.items() if k not in NON_MODEL_CHOICES}
+
+
+@pytest.fixture(scope="module")
+def preset_models() -> dict[str, set[str]]:
+    """Model ids named by the shipped configuration presets under config_library/.
+
+    A seventh surface, and one a customer reaches directly:
+    ``idp-cli deploy --custom-config config_library/unified/<preset>/config.yaml``
+    installs exactly this configuration. A preset can therefore point a documented
+    feature at a dead model with no enum, no UI list and no code default involved —
+    which is how five `ocr-benchmark` presets came to name an end-of-life model on
+    ``criteria_validation.model``, a field with no ConfigSchema entry at all and so
+    reachable ONLY through a preset.
+    """
+    acc: dict[str, set[str]] = {}
+    for rel in _tracked_files():
+        if not rel.startswith(PRESET_GLOB) or not rel.endswith((".yaml", ".yml")):
+            continue
+        # pricing.yaml and model_config_limits.yaml are the lookup tables, not
+        # presets; they legitimately name retired models and are checked elsewhere.
+        if Path(rel).name in ("pricing.yaml", "model_config_limits.yaml"):
+            continue
+        try:
+            doc = yaml.safe_load((REPO_ROOT / rel).read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            continue
+        _walk_model_values(doc, rel, acc)
+    return {k: v for k, v in acc.items() if k not in NON_MODEL_CHOICES}
 
 
 # ---------------------------------------------------------------------------
@@ -236,14 +401,47 @@ def code_defaults() -> set[str]:
 
 @pytest.mark.unit
 def test_discovery_is_not_vacuous(
-    selectable, priced, limit_patterns, ui_dropdown, code_defaults
+    selectable, priced, limit_patterns, ui_dropdown, code_defaults, preset_models
 ):
     assert len(_tracked_templates()) >= 25, "template discovery collapsed"
-    assert len(selectable) >= 50, f"only {len(selectable)} selectable models found"
+    assert len(selectable) >= 80, f"only {len(selectable)} selectable models found"
     assert len(priced) >= 50, f"only {len(priced)} priced models found"
     assert len(limit_patterns) >= 10
     assert len(ui_dropdown) >= 20
     assert len(code_defaults) >= 5
+    assert len(preset_models) >= 5, f"only {len(preset_models)} preset models found"
+
+
+@pytest.mark.unit
+def test_bare_provider_ids_are_recognised():
+    """The prefix-optional shape of MODEL_ID, pinned by example.
+
+    Requiring a region prefix silently excluded 13 of 88 selectable ids — the whole
+    GovCloud surface among them — so every invariant in this file skipped them and a
+    bare end-of-life id appended to any enum passed green.
+    """
+    for bare in (
+        "amazon.nova-pro-v1:0",
+        "amazon.nova-lite-v1:0",
+        "openai.gpt-5.6-sol",
+        "qwen.qwen3-vl-235b-a22b",
+        "nvidia.nemotron-nano-12b-v2",
+        "google.gemma-3-27b-it",
+        "amazon.titan-embed-text-v2:0",
+        "anthropic.claude-3-5-sonnet-20240620-v1:0",
+    ):
+        assert MODEL_ID.match(bare), f"{bare} is a real id this gate must see"
+    for prefixed in ("us.amazon.nova-pro-v1:0", "us-gov.anthropic.claude-sonnet-4-6"):
+        assert MODEL_ID.match(prefixed), prefixed
+    # Still anchored: prose, ARNs and bare words are not ids.
+    for not_an_id in (
+        "LambdaHook",
+        "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
+        "a model id",
+        "enabled",
+        "us-east-1",
+    ):
+        assert not MODEL_ID.match(not_an_id), f"{not_an_id} must not match"
 
 
 @pytest.mark.unit
@@ -268,7 +466,11 @@ def test_template_discovery_reads_only_tracked_files():
 
 @pytest.mark.unit
 def test_every_selectable_model_has_a_price(selectable, priced):
-    missing = {m: sorted(paths)[:2] for m, paths in selectable.items() if m not in priced}
+    missing = {
+        m: sorted(paths)[:2]
+        for m, paths in selectable.items()
+        if m not in priced and m not in EMBEDDING_MODELS
+    }
     assert not missing, (
         "these models can be selected but have no bedrock/<id> entry in "
         f"{PRICING}, so every cost report that includes them under-reports "
@@ -287,6 +489,7 @@ def test_every_selectable_model_matches_a_limits_pattern(selectable, limit_patte
         m
         for m in selectable
         if m not in LIMITS_EXEMPT
+        and m not in EMBEDDING_MODELS
         and not any(re.search(p, m, re.IGNORECASE) for p in limit_patterns)
     )
     assert not unmatched, (
@@ -376,9 +579,13 @@ def test_every_limits_resolver_caller_handles_the_unknown_model_raise():
             # path and are never executed.
             if "import" in line or stripped.startswith((">>>", "...", "#")):
                 continue
-            # A guarded call sits inside a try: whose except is within a few
-            # lines below; look for the nearest preceding `try:` at a shallower
-            # or equal indent and an `except` after the call.
+            # Guarded == a `try:` within the 6 lines above AND an `except` within
+            # the 12 below. Deliberately a plain text window, not an indentation
+            # analysis: it is a cheap tripwire for "somebody added a bare call",
+            # and it can both miss an unguarded call whose try/except is further
+            # away and pass one whose `try:` guards something else. A real
+            # implementation would walk the AST; the value here is catching the
+            # common shape, so the looseness is accepted rather than hidden.
             window_before = "\n".join(lines[max(0, i - 6) : i])
             window_after = "\n".join(lines[i : i + 12])
             if "try:" in window_before and "except" in window_after:
@@ -400,9 +607,12 @@ def test_every_limits_resolver_caller_handles_the_unknown_model_raise():
 @pytest.mark.unit
 def test_no_eol_model_is_selectable(selectable):
     offenders = {
-        model: {"reason": reason, "paths": sorted(selectable[model])[:3]}
-        for model, reason in EOL_MODELS.items()
-        if model in selectable
+        model: {
+            **EOL_MODELS[EOL_BASE_MODELS[_base_model(model)]],
+            "paths": sorted(paths)[:3],
+        }
+        for model, paths in selectable.items()
+        if _base_model(model) in EOL_BASE_MODELS
     }
     assert not offenders, (
         "these models are end-of-life and completely inaccessible in every "
@@ -414,7 +624,7 @@ def test_no_eol_model_is_selectable(selectable):
 
 @pytest.mark.unit
 def test_no_eol_model_in_the_ui_dropdown(ui_dropdown):
-    offenders = sorted(set(ui_dropdown) & set(EOL_MODELS))
+    offenders = sorted(m for m in ui_dropdown if _base_model(m) in EOL_BASE_MODELS)
     assert not offenders, (
         f"{UI_CONSTANTS} still offers end-of-life model(s) {offenders}. The UI "
         "list is hardcoded, so removing a model from the template enum does not "
@@ -424,11 +634,17 @@ def test_no_eol_model_in_the_ui_dropdown(ui_dropdown):
 
 @pytest.mark.unit
 def test_no_eol_model_is_a_code_default(code_defaults):
-    offenders = sorted(set(code_defaults) & set(EOL_MODELS))
+    offenders = {
+        m: sorted(code_defaults[m])
+        for m in sorted(code_defaults)
+        if _base_model(m) in EOL_BASE_MODELS
+    }
     assert not offenders, (
-        f"{CONFIG_MODELS} defaults a model field to end-of-life model(s) "
-        f"{offenders}. A default is worse than a picklist entry: a stored config "
-        "that omits the field gets it without anyone choosing it."
+        f"{CONFIG_MODELS} resolves a default model field to end-of-life model(s) "
+        f"{json.dumps(offenders, indent=2, sort_keys=True)}. A default is worse "
+        "than a picklist entry: a stored config that omits the field gets it "
+        "without anyone choosing it. The paths are into the instantiated "
+        "IDPConfig(), so they name the field a stack actually reads."
     )
 
 
@@ -441,7 +657,9 @@ def test_eol_models_keep_their_pricing_entry(priced):
     would silently re-price historical runs at zero. This is the one surface where
     an EOL model must stay.
     """
-    missing = sorted(m for m in EOL_MODELS if m not in priced)
+    missing = sorted(
+        m for m, facts in EOL_MODELS.items() if facts["was_offered"] and m not in priced
+    )
     assert not missing, (
         f"end-of-life model(s) {missing} have no entry in {PRICING}, so cost "
         "reports covering documents processed while they were selectable now "
@@ -539,6 +757,159 @@ def test_quota_code_maps_hold_no_eol_model():
     ):
         found_any = True
         keys = {k for k in json.loads(blob) if MODEL_ID.match(k)}
-        dead = sorted(keys & set(EOL_MODELS))
+        dead = sorted(k for k in keys if _base_model(k) in EOL_BASE_MODELS)
         assert not dead, f"{name} has quota codes for end-of-life model(s): {dead}"
     assert found_any, "no BEDROCK_MODEL_*_QUOTA_CODES map found in template.yaml"
+
+
+# ---------------------------------------------------------------------------
+# 7. Shipped configuration presets — a surface a customer installs directly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_no_eol_model_in_a_shipped_preset(preset_models):
+    """`idp-cli deploy --custom-config <preset>` installs these verbatim.
+
+    This surface has no enum and no UI list behind it, so nothing else in this file
+    would ever have looked at it. Five `ocr-benchmark` presets named an end-of-life
+    model on `criteria_validation.model` — a field with no ConfigSchema entry, so
+    reachable only through a preset, backing a documented feature
+    (docs/criteria-validation.md).
+    """
+    offenders = {
+        m: sorted(preset_models[m])
+        for m in sorted(preset_models)
+        if _base_model(m) in EOL_BASE_MODELS
+    }
+    assert not offenders, (
+        "these shipped presets name an end-of-life model, so deploying with "
+        "--custom-config installs a configuration whose stage fails on every "
+        f"call: {json.dumps(offenders, indent=2, sort_keys=True)}"
+    )
+
+
+@pytest.mark.unit
+def test_preset_discovery_reaches_the_nested_config_files():
+    """Not vacuous: the preset walk must reach the deep `criteria_validation.model`
+    key, several levels down in a ~900-line config, or it proves nothing."""
+    rel = "config_library/unified/ocr-benchmark/config.yaml"
+    assert (REPO_ROOT / rel).is_file(), f"{rel} moved; update this test"
+    doc = yaml.safe_load((REPO_ROOT / rel).read_text(encoding="utf-8"))
+    acc: dict[str, set[str]] = {}
+    _walk_model_values(doc, rel, acc)
+    paths = {p for ps in acc.values() for p in ps}
+    assert any(p.endswith("criteria_validation.model") for p in paths), (
+        "the preset walk no longer reaches criteria_validation.model, the key "
+        "whose end-of-life model this surface was added to catch"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. Embedding-model exemptions, premise asserted structurally
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_embedding_models_are_only_selectable_as_the_kb_embed_model(selectable):
+    """The premise behind exempting them from pricing AND limits.
+
+    They are infrastructure parameters of the Bedrock Knowledge Base, not pipeline
+    stages this solution meters or size-plans. If one ever appears in a ConfigSchema
+    `model` / `model_id` field it IS a pipeline stage, and both exemptions become
+    unsound — so this asserts the structural fact rather than restating the reason.
+    """
+    for model in sorted(EMBEDDING_MODELS):
+        assert model in selectable, (
+            f"{model} is exempted as a KB embedding model but is no longer "
+            "selectable anywhere — remove it from EMBEDDING_MODELS"
+        )
+        paths = sorted(selectable[model])
+        offending = [p for p in paths if not p.startswith(KB_EMBED_TEMPLATE)]
+        assert not offending, (
+            f"{model} is exempted from the pricing and limits invariants on the "
+            "premise that it is only the Knowledge Base's embedding model, but it "
+            f"is now offered at {offending}. If that is a pipeline stage it needs "
+            "real pricing and limits entries and must come off EMBEDDING_MODELS."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. The lifecycle facts this file hard-codes carry an expiry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_legacy_examples_have_not_reached_their_eol_date():
+    """A LEGACY model that this repo cites as "deprecated but still usable" stops
+    being that on its EOL date, and nothing in an offline CI can notice.
+
+    So the date AWS published is recorded and asserted to be in the future. When
+    this fails it is not a code defect: it is the prompt to re-verify the model
+    against the live API, move it into EOL_MODELS, pull it from every selectable
+    surface, and pick a new example for docs/configuration.md.
+    """
+    today = datetime.date.today()
+    expired = {
+        model: facts
+        for model, facts in LEGACY_EXAMPLES.items()
+        if datetime.date.fromisoformat(facts["review_by"]) <= today
+    }
+    assert not expired, (
+        "these models were recorded as LEGACY (deprecated but still invocable) and "
+        "have now reached the end-of-life date AWS published for them, so the "
+        "premise has expired. Re-verify with `aws bedrock get-foundation-model`, "
+        "then move each to EOL_MODELS and remove it from the selectable surfaces: "
+        f"{json.dumps(expired, indent=2, sort_keys=True)}"
+    )
+
+
+@pytest.mark.unit
+def test_eol_entries_are_well_formed():
+    """Each EOL fact carries a parseable date and a reproducible command, because
+    a hand-maintained list whose provenance rots is the thing this file exists to
+    prevent elsewhere."""
+    assert EOL_MODELS, "EOL_MODELS is empty; every EOL assertion is vacuous"
+    today = datetime.date.today()
+    for model, facts in EOL_MODELS.items():
+        assert MODEL_ID.match(model), f"{model} is not a model-id shape"
+        recorded = datetime.date.fromisoformat(facts["eol"])
+        assert recorded <= today, (
+            f"{model} is listed as end-of-life on {facts['eol']}, which is in the "
+            "future — a model is not EOL until its date passes, and until then it "
+            "belongs in LEGACY_EXAMPLES instead"
+        )
+        assert isinstance(facts["was_offered"], bool), (
+            f"{model} must record whether this repo ever OFFERED it: only a model "
+            "that was once selectable needs its pricing entry retained"
+        )
+        assert facts["verify"].startswith("aws bedrock get-foundation-model"), (
+            f"{model}'s evidence must be a command a reader can re-run: "
+            f"{facts['verify']!r}"
+        )
+
+
+@pytest.mark.unit
+def test_eol_matching_is_prefix_insensitive():
+    """Every region/geo variant of an end-of-life model is itself end-of-life.
+
+    Pins `_base_model`: EOL is a property of the foundation model, so `us.`, `eu.`,
+    `global.` and the bare GovCloud form must all resolve to the same fact. Keying
+    the EOL checks on the exact string meant only the one spelling listed in
+    EOL_MODELS was caught.
+    """
+    assert _base_model("us.amazon.nova-premier-v1:0") == "amazon.nova-premier-v1:0"
+    assert _base_model("amazon.nova-premier-v1:0") == "amazon.nova-premier-v1:0"
+    assert _base_model("global.amazon.nova-premier-v1:0") == "amazon.nova-premier-v1:0"
+    assert _base_model("us-gov.anthropic.claude-sonnet-4-6") == (
+        "anthropic.claude-sonnet-4-6"
+    )
+    # A provider whose name happens to start like a region prefix is not stripped.
+    assert _base_model("amazon.nova-pro-v1:0") == "amazon.nova-pro-v1:0"
+    for variant in (
+        "us.amazon.nova-premier-v1:0",
+        "amazon.nova-premier-v1:0",
+        "eu.amazon.nova-premier-v1:0",
+        "global.amazon.nova-premier-v1:0",
+    ):
+        assert _base_model(variant) in EOL_BASE_MODELS, variant

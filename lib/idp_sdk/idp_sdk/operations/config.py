@@ -82,9 +82,30 @@ class ConfigOperation:
         left its revision bodies orphaned in S3. The Lambdas always had both set,
         which is why this was invisible until the CLI read a real stack.
 
+        Also bridges the resolved region into the environment, as the backstop for
+        clients built too deep in `idp_common` to be handed one explicitly. The
+        constructors that a CLI command reaches directly take `region=` (see
+        `ConfigurationManager`), but some are several frames down with no region in
+        scope — `bedrock.model_utils._load_model_limits_from_dynamodb`, on
+        `config-upload`'s own validation path, builds a `ConfigurationManager` with
+        no caller able to pass one. Without this bridge that read lands in the
+        ambient region, fails, and is swallowed by a total `except`, so the upload
+        validates against on-disk default limits instead of the stack's and can
+        reject a config that is legitimately above a default cap.
+
+        `AWS_DEFAULT_REGION` (not `AWS_REGION`) because it is the variable boto3
+        consults for a client built with no explicit region, which is exactly the
+        case being covered. `_core/publish.py` uses the same bridge for the same
+        reason. Only set when a region was actually requested — writing it
+        unconditionally would pin the process to `None`.
+
         Returns the configuration table's physical ID.
         """
         import os
+
+        region = self._client._region
+        if region:
+            os.environ["AWS_DEFAULT_REGION"] = region
 
         found = self._lookup_stack_resources(
             stack_name, {"ConfigurationTable", "ConfigurationBucket"}
@@ -740,7 +761,8 @@ class ConfigOperation:
 
                     bda_project_arn = manager.get_bda_project_arn(config_version)
                     bda_service = BdaBlueprintService(
-                        dataAutomationProjectArn=bda_project_arn
+                        dataAutomationProjectArn=bda_project_arn,
+                        region=self._client._region,
                     )
 
                     if not bda_project_arn:
@@ -921,7 +943,10 @@ class ConfigOperation:
 
             # Get or create BDA project ARN
             bda_project_arn = manager.get_bda_project_arn(config_version)
-            bda_service = BdaBlueprintService(dataAutomationProjectArn=bda_project_arn)
+            bda_service = BdaBlueprintService(
+                dataAutomationProjectArn=bda_project_arn,
+                region=self._client._region,
+            )
 
             if not bda_project_arn:
                 bda_project_arn = bda_service.get_or_create_project_for_version(
