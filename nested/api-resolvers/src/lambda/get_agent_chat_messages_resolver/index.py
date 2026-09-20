@@ -153,13 +153,15 @@ def handler(event, context):
                     "Rejecting getChatMessages request with no resolvable user "
                     "identity in event.identity (username/sub both absent)."
                 )
-                raise Exception("Unauthorized: caller identity not available.")
+                raise PermissionError("Unauthorized: caller identity not available.")
             if not _verify_session_ownership(session_id, user_id, caller_sub):
                 logger.warning(
                     f"Rejecting getChatMessages: user={user_id} does not own "
                     f"session={session_id}"
                 )
-                raise Exception("Unauthorized: session not found for this user.")
+                raise PermissionError(
+                    "Unauthorized: session not found for this user."
+                )
         else:
             logger.warning(
                 "ENFORCE_CHAT_SESSION_OWNERSHIP is disabled. Skipping "
@@ -199,11 +201,19 @@ def handler(event, context):
         error_msg = f"DynamoDB error: {str(e)}"
         logger.error(error_msg)
         raise Exception(error_msg)
-    except ValueError as e:
-        # Re-raise validation errors so they become GraphQL errors
-        logger.error(f"Validation error: {str(e)}")
-        raise e
+    except (PermissionError, ValueError):
+        # Re-raised unchanged. The catch-all below wrapped every exception as
+        # `Exception(f"Error getting agent chat messages: {e}")`, which destroyed
+        # both signals http_api_dispatcher chooses a status from: the class name
+        # became `Exception`, and the "Unauthorized" token moved off the front of
+        # the message, where `str.startswith` could no longer see it. So a
+        # cross-user chat-history access attempt — the thing the ownership check
+        # exists to refuse — was reported as a 500 server fault, and landed in the
+        # 5xx rate rather than the denial signal. Both refusals are already logged
+        # at WARNING at their raise site; re-logging them here at ERROR is what made
+        # a deliberate denial indistinguishable from a crash.
+        raise
     except Exception as e:
         error_msg = f"Error getting agent chat messages: {str(e)}"
-        logger.error(error_msg)
-        raise Exception(error_msg)
+        logger.error(error_msg, exc_info=True)
+        raise Exception(error_msg) from e

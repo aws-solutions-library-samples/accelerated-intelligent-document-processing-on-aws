@@ -106,6 +106,14 @@ RUN_ROOTS = [
     # Configuration Profile revision operations: group gate + profile-level scope.
     "nested/api-resolvers/src/lambda/configuration_resolver",
     "nested/api-resolvers/src/lambda/get_file_contents_resolver",
+    # listFinetuningJobs is an ANY operation that runs a sparse filtered scan of
+    # the whole TrackingTable, so its page/time bound is the only thing between an
+    # authenticated caller and a full-history read.
+    "nested/api-resolvers/src/lambda/finetuning_jobs_resolver",
+    # Chat-session ownership: the refusal must reach the caller as an
+    # authorization denial rather than being laundered into a 500 by the
+    # handler's catch-all.
+    "nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
     "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests",

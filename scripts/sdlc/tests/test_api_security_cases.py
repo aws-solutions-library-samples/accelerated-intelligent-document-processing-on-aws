@@ -12,6 +12,8 @@ dispatcher code.
 """
 
 import importlib.util
+import ssl
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,52 +21,51 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _load_sec():
-    # scripts/sdlc/tests/ -> scripts/api_security_cases.py
-    path = Path(__file__).resolve().parents[2] / "api_security_cases.py"
-    spec = importlib.util.spec_from_file_location("api_security_cases", path)
+def _load_harness():
+    """Load the live harness, and take `api_security_cases` from ITS import.
+
+    scripts/test_api_rbac.py imports api_security_cases at module scope, so loading
+    the harness first and then reading the module out of sys.modules gives the SAME
+    module object the harness holds — which is what makes monkeypatching the probe
+    helpers below actually affect the code under test.
+    """
+    path = Path(__file__).resolve().parents[2] / "test_api_rbac.py"
+    spec = importlib.util.spec_from_file_location("test_api_rbac_harness", path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules["test_api_rbac_harness"] = mod
     spec.loader.exec_module(mod)
-    return mod
+    return mod, sys.modules["api_security_cases"]
 
 
-sec = _load_sec()
+harness, sec = _load_harness()
 
 CTX = {"api_base": "https://abc.execute-api.us-west-2.amazonaws.com/api"}
 
 
 class _Recorder:
-    """Captures _record(...) calls the way the harness stores them."""
+    """Captures record(...) calls, using the harness's REAL `_record`.
+
+    Deliberately not a reimplementation. The previous fake restated the record
+    shape, and in doing so it hardcoded `"passed": bool(passed)` — so it pinned
+    SKIP-as-a-pass in the fake regardless of what the real `_record` did, and every
+    "a missing precondition still passes" assertion below was asserting the fake's
+    behaviour. Delegating means the outcome semantics under test are the ones the
+    harness actually ships.
+    """
 
     def __init__(self):
         self.rows = []
 
-    def __call__(
-        self,
-        results,
-        op,
-        principal,
-        status,
-        passed,
-        detail,
-        et=None,
-        in_band=None,
-        request_id="",
-        gap=None,
-    ):
-        row = {
-            "op": op,
-            "principal": principal,
-            "http_status": status,
-            "passed": bool(passed),
-            "detail": detail,
-            "known_gap": gap,
-        }
-        self.rows.append(row)
-        results.append(row)
+    def __call__(self, results, *args, **kwargs):
+        before = len(results)
+        harness._record(results, *args, **kwargs)
+        self.rows.extend(results[before:])
 
     def by_principal(self, needle):
         return [r for r in self.rows if needle in r["principal"]]
+
+    def outcomes(self, needle):
+        return [r["outcome"] for r in self.by_principal(needle)]
 
 
 def _scripted_call(script):
@@ -148,9 +149,18 @@ def test_idor_inconclusive_when_owner_cannot_read_seed():
         call_body=call_body,
     )
     incon = [r for r in rec.rows if "inconclusive" in r["principal"]]
-    assert incon and incon[0]["http_status"] == "SKIP" and incon[0]["passed"] is True
-    # And there is NO hard-fail row (nothing recorded as passed=False).
-    assert all(r["passed"] for r in rec.rows)
+    assert incon and incon[0]["http_status"] == "SKIP"
+    # A SKIP is NOT a pass: an absent precondition is not a satisfied assertion.
+    assert incon[0]["outcome"] == "SKIP"
+    assert incon[0]["passed"] is False
+    # Step 1's row is RETRACTED, not merely accompanied by a note. It used to stay
+    # a PASS beside the SKIP, so a seed-keying mismatch still reported "User B must
+    # not receive A's data" as proven.
+    step1 = rec.by_principal("userB(reads")[0]
+    assert step1["outcome"] == "SKIP", "step 1 was left standing as a pass"
+    assert "retracted" in step1["detail"]
+    # Nothing here is a hard failure: a keying mismatch is not a security finding.
+    assert not [r for r in rec.rows if r["outcome"] in ("FAIL", "ERROR")]
 
 
 def test_idor_leak_when_userb_response_contains_marker():
@@ -190,7 +200,8 @@ def test_idor_skips_without_preconditions():
         seed_fn=lambda j, m: "o",
         call_body=_body_call({}),
     )
-    assert rec.rows[-1]["http_status"] == "SKIP" and rec.rows[-1]["passed"] is True
+    assert rec.rows[-1]["http_status"] == "SKIP"
+    assert rec.rows[-1]["outcome"] == "SKIP" and rec.rows[-1]["passed"] is False
 
 
 def test_idor_skips_when_seed_fails():
@@ -335,7 +346,8 @@ def test_deleted_resource_skips_without_body_call():
     sec.run_deleted_resource_suite(
         CTX, _scripted_call({}), rec, results, {"Admin": "a"}, call_body=None
     )
-    assert rec.rows[-1]["http_status"] == "SKIP" and rec.rows[-1]["passed"] is True
+    assert rec.rows[-1]["http_status"] == "SKIP"
+    assert rec.rows[-1]["outcome"] == "SKIP" and rec.rows[-1]["passed"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -400,31 +412,140 @@ def test_input_validation_clean_400_passes_both_modes():
 # --------------------------------------------------------------------------- #
 # TLS (4) — helper logic (no network; monkeypatch the socket layer)
 # --------------------------------------------------------------------------- #
+def _probe_stub(outcomes):
+    """A `_tls_probe` double keyed by TLS version, so one stub cannot answer both
+    "TLS1.0 must be refused" and "TLS1.2 must be accepted" with the same value."""
+
+    def _probe(host, port, version):
+        return outcomes[version]
+
+    return _probe
+
+
+_WEAK = (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1)
+
+
 def test_tls_suite_records_all_expected_checks(monkeypatch):
-    # Force the low-level probes to deterministic outcomes.
-    monkeypatch.setattr(sec, "_tls_refused", lambda h, p, v: (True, "handshake failed"))
     monkeypatch.setattr(
-        sec, "_tls_accepted", lambda h, p, v: (True, "negotiated TLSv1.2")
+        sec,
+        "_tls_probe",
+        _probe_stub(
+            {
+                ssl.TLSVersion.TLSv1: (sec.REFUSED, "handshake failed"),
+                ssl.TLSVersion.TLSv1_1: (sec.REFUSED, "handshake failed"),
+                ssl.TLSVersion.TLSv1_2: (sec.ACCEPTED, "negotiated TLSv1.2"),
+            }
+        ),
     )
-    monkeypatch.setattr(sec, "_http_refused", lambda h: (True, "no cleartext service"))
+    monkeypatch.setattr(
+        sec, "_http_probe", lambda h: (sec.REFUSED, "no cleartext service")
+    )
     rec = _Recorder()
     results = []
     sec.run_tls_suite(CTX, rec, results)
     labels = {r["principal"] for r in rec.rows}
     assert {"TLS1.0", "TLS1.1", "TLS1.2", "plaintext-http"} <= labels
-    assert all(r["passed"] for r in rec.rows)
+    assert not [r for r in rec.rows if r["outcome"] in ("FAIL", "ERROR")]
     assert all("SEC-4-TLS" in r["detail"] for r in rec.rows)
 
 
 def test_tls_weak_protocol_accepted_fails(monkeypatch):
-    monkeypatch.setattr(sec, "_tls_refused", lambda h, p, v: (False, "ACCEPTED"))
-    monkeypatch.setattr(sec, "_tls_accepted", lambda h, p, v: (True, "ok"))
-    monkeypatch.setattr(sec, "_http_refused", lambda h: (True, "no service"))
+    monkeypatch.setattr(
+        sec,
+        "_tls_probe",
+        _probe_stub(
+            {
+                ssl.TLSVersion.TLSv1: (sec.ACCEPTED, "negotiated TLSv1"),
+                ssl.TLSVersion.TLSv1_1: (sec.ACCEPTED, "negotiated TLSv1.1"),
+                ssl.TLSVersion.TLSv1_2: (sec.ACCEPTED, "negotiated TLSv1.2"),
+            }
+        ),
+    )
+    monkeypatch.setattr(sec, "_http_probe", lambda h: (sec.REFUSED, "no service"))
     rec = _Recorder()
     results = []
     sec.run_tls_suite(CTX, rec, results)
     weak = [r for r in rec.rows if r["principal"] in ("TLS1.0", "TLS1.1")]
-    assert weak and all(not r["passed"] for r in weak)  # weak TLS accepted = fail
+    assert weak and all(r["outcome"] == "FAIL" for r in weak)
+
+
+# --------------------------------------------------------------------------- #
+# A protocol probe that never reached the endpoint is not a refusal
+#
+# `_tls_refused` folded every `OSError` into "the server declined this protocol",
+# and `socket.gaierror` (DNS), `ConnectionRefusedError` and `socket.timeout` are
+# all `OSError` subclasses. So a host that had gone away reported
+# "TLS1.0 refused ✅ / TLS1.1 refused ✅" — two passes from zero observations of the
+# endpoint. `_tls_probe` now TCP-connects separately from the handshake, which is
+# what makes a handshake failure mean anything.
+# --------------------------------------------------------------------------- #
+def test_an_unreachable_host_is_inconclusive_not_a_refusal(monkeypatch):
+    def _no_connect(host, port):
+        return None, f"could not reach {host}:{port} (gaierror: name resolution)"
+
+    monkeypatch.setattr(sec, "_connect", _no_connect)
+
+    outcome, note = sec._tls_probe("gone.example.invalid", 443, ssl.TLSVersion.TLSv1)
+
+    assert outcome == sec.INCONCLUSIVE, (
+        "an unreachable host was read as 'the server refused TLS 1.0'"
+    )
+    assert "could not reach" in note
+
+
+def test_a_handshake_failure_on_a_reachable_port_is_a_refusal(monkeypatch):
+    class _Sock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(sec, "_connect", lambda h, p: (_Sock(), None))
+
+    def _boom(sock, server_hostname=None):
+        raise ssl.SSLError("no protocols available")
+
+    monkeypatch.setattr(
+        sec.ssl.SSLContext, "wrap_socket", lambda self, sock, **kw: _boom(sock)
+    )
+
+    outcome, _ = sec._tls_probe("host.example.invalid", 443, ssl.TLSVersion.TLSv1_2)
+
+    assert outcome == sec.REFUSED
+
+
+def test_an_unreachable_host_makes_the_tls_suite_inconclusive_not_green(monkeypatch):
+    """The whole suite, end to end: a dead endpoint must not report 3 of 4 passes."""
+    monkeypatch.setattr(
+        sec, "_connect", lambda h, p: (None, "could not reach (gaierror)")
+    )
+    monkeypatch.setattr(
+        sec, "_http_probe", lambda h: (sec.INCONCLUSIVE, "host did not resolve")
+    )
+    rec = _Recorder()
+    results = []
+
+    sec.run_tls_suite(CTX, rec, results)
+
+    assert not [r for r in rec.rows if r["outcome"] == "PASS"], (
+        "a dead endpoint produced passing TLS checks"
+    )
+    assert all(r["outcome"] == "ERROR" for r in rec.rows)
+
+
+def test_a_client_that_cannot_offer_the_protocol_is_inconclusive():
+    """The local OpenSSL declining to offer TLS 1.0 says nothing about the server.
+
+    It used to be recorded as "refused" — a pass asserted from the build of OpenSSL
+    the harness happens to run on.
+    """
+    outcome, note = sec._tls_probe("host.example.invalid", 443, ssl.TLSVersion.TLSv1)
+
+    # On a modern OpenSSL this is the client-side path; on an older one the stub-free
+    # call would try to connect. Only assert when we are on the path under test.
+    if "client cannot offer" in note:
+        assert outcome == sec.INCONCLUSIVE
 
 
 # --------------------------------------------------------------------------- #
@@ -471,7 +592,7 @@ def test_caller_ref_all_bounded_passes():
             "scoped": (403, "Unauthorized", None, "r3"),
         }),
     )
-    assert all(r["passed"] for r in rec.rows), rec.rows
+    assert not [r for r in rec.rows if r["outcome"] in ("FAIL", "ERROR")], rec.rows
     principals = {r["principal"] for r in rec.rows}
     assert principals == {"foreign-state-machine", "own-state-machine",
                           "scoped(out-of-scope)"}
@@ -538,7 +659,7 @@ def test_caller_ref_in_band_denial_counts_as_refused():
             "scoped": (200, None, "Unauthorized", "r3"),
         }),
     )
-    assert all(r["passed"] for r in rec.rows), rec.rows
+    assert not [r for r in rec.rows if r["outcome"] in ("FAIL", "ERROR")], rec.rows
 
 
 def test_caller_ref_skips_without_a_live_arn():
@@ -547,7 +668,8 @@ def test_caller_ref_skips_without_a_live_arn():
         CTX, rec, results, _ref_tokens(), live_execution_arn=None, call=_ref_call({})
     )
     assert len(rec.rows) == 1
-    assert rec.rows[0]["http_status"] == "SKIP" and rec.rows[0]["passed"]
+    assert rec.rows[0]["http_status"] == "SKIP"
+    assert rec.rows[0]["outcome"] == "SKIP" and rec.rows[0]["passed"] is False
 
 
 def test_caller_ref_skips_scope_check_without_a_scoped_user():
@@ -563,4 +685,190 @@ def test_caller_ref_skips_scope_check_without_a_scoped_user():
     )
     scoped = rec.by_principal("out-of-scope")
     assert len(scoped) == 1 and scoped[0]["http_status"] == "SKIP"
-    assert all(r["passed"] for r in rec.rows)
+    assert not [r for r in rec.rows if r["outcome"] in ("FAIL", "ERROR")]
+
+
+# --------------------------------------------------------------------------- #
+# Every arm that asks "was this refused?" or "was this NOT refused?"
+#
+# Each of these was satisfied by a request that never completed. The
+# caller-supplied-ref suite's "own execution must still be served" arm is the same
+# shape as the RBAC matrix's positive arm — `not _denied(...)` is true of a 500, an
+# empty body, and a connection error — and it is the arm that exists to prove the
+# control does not OVER-deny, which only a real response can show.
+# --------------------------------------------------------------------------- #
+_DEAD = (0, None, None, "<request error: connection reset>")
+
+
+def test_an_expired_token_check_that_did_not_complete_is_an_error():
+    rec = _Recorder()
+    results = []
+
+    sec.run_token_lifecycle_suite(
+        CTX,
+        lambda *a, **k: _DEAD,
+        rec,
+        results,
+        expired_token="expired",  # nosec B106 - fake token id, not a credential
+        logout_token=None,
+        logout_email=None,
+        sign_out_fn=None,
+    )
+
+    expired = rec.by_principal("token:expired")[0]
+    assert expired["outcome"] == "ERROR"
+    assert expired["passed"] is False
+
+
+def test_a_caller_ref_suite_that_cannot_reach_the_api_records_no_passes():
+    rec = _Recorder()
+    results = []
+
+    sec.run_caller_supplied_ref_suite(
+        CTX,
+        rec,
+        results,
+        {"Admin": "a", "scoped": "s"},
+        live_execution_arn=LIVE_ARN,
+        call=lambda *a, **k: _DEAD,
+    )
+
+    assert rec.rows, "the suite recorded nothing"
+    assert not [r for r in rec.rows if r["outcome"] == "PASS"], (
+        "an unreachable API produced passing caller-supplied-reference checks"
+    )
+    assert all(r["outcome"] == "ERROR" for r in rec.rows)
+
+
+def test_a_500_does_not_prove_the_deployments_own_execution_is_served():
+    """The positive arm. `not _denied(500, "InternalError")` is True."""
+    rec = _Recorder()
+    results = []
+
+    def _call(api_base, field, args, token):
+        if args["executionArn"] == LIVE_ARN and token == "a":  # nosec B105 - fake token id
+            return 500, "InternalError", None, "rid"
+        return 403, "Unauthorized", None, "rid"
+
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, {"Admin": "a", "scoped": "s"}, LIVE_ARN, _call
+    )
+
+    own = rec.by_principal("own-state-machine")[0]
+    assert own["outcome"] == "ERROR"
+    assert own["passed"] is False
+
+
+def test_a_healthy_caller_ref_suite_still_passes():
+    """The control: without it, "never passes" would satisfy the three above."""
+    rec = _Recorder()
+    results = []
+
+    def _call(api_base, field, args, token):
+        if args["executionArn"] == LIVE_ARN and token == "a":  # nosec B105 - fake token id
+            return 200, None, None, "rid"
+        return 403, "Unauthorized", None, "rid"
+
+    sec.run_caller_supplied_ref_suite(
+        CTX, rec, results, {"Admin": "a", "scoped": "s"}, LIVE_ARN, _call
+    )
+
+    assert rec.rows and all(r["outcome"] == "PASS" for r in rec.rows)
+
+
+def test_a_deleted_resource_check_that_could_not_list_is_an_error():
+    """"Not in the list" read out of a response that never arrived would report the
+    resource correctly deleted."""
+    rec = _Recorder()
+    results = []
+
+    def _call(api_base, field, args, token):
+        return 200, None, None, "rid"
+
+    def _call_body(api_base, field, args, token):
+        return 0, "<request error: connection reset>"
+
+    sec.run_deleted_resource_suite(
+        CTX, _call, rec, results, {"Admin": "a"}, call_body=_call_body
+    )
+
+    after = rec.by_principal("after-delete")
+    assert after, "the suite recorded no assertion"
+    assert after[0]["outcome"] == "ERROR"
+    assert after[0]["passed"] is False
+
+
+def test_a_post_logout_check_that_did_not_complete_does_not_borrow_the_logout_gap():
+    """GAP-SEC-LOGOUT documents a token that is STILL ACCEPTED after sign-out.
+
+    A request that never completed is not that observation, so it must not be
+    recorded against the gap and become a warning about revocation.
+    """
+    rec = _Recorder()
+    results = []
+
+    sec.run_token_lifecycle_suite(
+        CTX,
+        lambda *a, **k: _DEAD,
+        rec,
+        results,
+        expired_token=None,
+        logout_token="tok",  # nosec B106 - fake token id, not a credential
+        logout_email="u@example.invalid",
+        sign_out_fn=lambda email: None,
+    )
+
+    row = rec.by_principal("token:post-logout")[0]
+    assert row["outcome"] == "ERROR"
+    assert row["known_gap"] is None
+    assert row["passed"] is False
+
+
+def test_a_still_accepted_post_logout_token_is_still_the_documented_warning():
+    """The control: the gap must still apply to the observation it describes."""
+    rec = _Recorder()
+    results = []
+
+    sec.run_token_lifecycle_suite(
+        CTX,
+        lambda *a, **k: (200, None, None, "rid"),
+        rec,
+        results,
+        expired_token=None,
+        logout_token="tok",  # nosec B106 - fake token id, not a credential
+        logout_email="u@example.invalid",
+        sign_out_fn=lambda email: None,
+    )
+
+    row = rec.by_principal("token:post-logout")[0]
+    assert row["known_gap"] == "GAP-SEC-LOGOUT"
+    assert row["outcome"] == "WARN"
+
+
+def test_a_delete_that_worked_but_a_listing_that_did_not_is_still_an_error():
+    """The narrow case `_version_listed`'s own guard exists for.
+
+    If only the LIST calls fail, the delete status is a clean 200 and the
+    substring test answers "not listed" from a body that never arrived — which reads
+    as the resource correctly gone.
+    """
+    rec = _Recorder()
+    results = []
+
+    def _call(api_base, field, args, token):
+        return 200, None, None, "rid"
+
+    def _call_body(api_base, field, args, token):
+        if field == "getConfigVersions":
+            return 0, "<request error: connection reset>"
+        return 200, "{}"
+
+    sec.run_deleted_resource_suite(
+        CTX, _call, rec, results, {"Admin": "a"}, call_body=_call_body
+    )
+
+    after = rec.by_principal("after-delete")
+    assert after, "the suite recorded no assertion"
+    assert after[0]["outcome"] == "ERROR", (
+        "a listing that never arrived was read as 'the version is gone'"
+    )

@@ -223,6 +223,26 @@ def _to_native(obj: Any) -> Any:
     return obj
 
 
+# Ceiling on a caller-supplied DynamoDB `Limit`. The central validation spec
+# (api_validation_spec.json) carries type shapes only — no `maximum` vocabulary —
+# so a numeric argument is bounded here or not at all.
+_MAX_PAGE_SIZE = 200
+
+
+def _clamped_limit(requested: Any) -> int:
+    """A caller-supplied page size bounded to ``[1, _MAX_PAGE_SIZE]``.
+
+    The lower bound is not cosmetic: DynamoDB rejects ``Limit <= 0`` with a
+    ``ValidationException``, which the dispatcher reports as a 500 — a caller
+    input error presented as a server fault.
+    """
+    try:
+        value = int(requested)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"limit must be an integer, got {requested!r}") from e
+    return max(1, min(value, _MAX_PAGE_SIZE))
+
+
 def _caller_user_id(event: Dict[str, Any]) -> str:
     """Replicate VTL: username -> sub -> 'anonymous'."""
     identity = event.get("identity") or {}
@@ -388,8 +408,11 @@ def _list_agent_jobs(event: Dict[str, Any]) -> Dict[str, Any]:
         "KeyConditionExpression": Key("PK").eq(_agent_pk(user_id)),
         "ScanIndexForward": False,
     }
+    # Clamped, not passed through. `Limit` went straight to DynamoDB with no
+    # ceiling, and a non-positive value was rejected by DynamoDB with a
+    # ValidationException that surfaced to the caller as a 500 rather than a 400.
     if args.get("limit"):
-        kwargs["Limit"] = int(args["limit"])
+        kwargs["Limit"] = _clamped_limit(args["limit"])
     if args.get("nextToken"):
         kwargs["ExclusiveStartKey"] = args["nextToken"]
     resp = _agent_table().query(**kwargs)

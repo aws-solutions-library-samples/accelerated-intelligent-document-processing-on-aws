@@ -40,6 +40,16 @@ bedrock_client = boto3.client("bedrock", region_name=REGION)
 FINETUNING_JOB_PREFIX = "finetuning#"
 FINETUNING_JOBS_GSI_PK = "finetuning#jobs"
 
+# Page size: a default AND a ceiling the caller cannot raise.
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 200
+
+# Bounds on the filtered scan that finds the jobs. The filter is sparse against a
+# table that holds a row per document in the deployment, so the walk's cost is
+# proportional to the whole document history rather than to the number of jobs.
+MAX_SCAN_PAGES = 200
+SCAN_TIME_RESERVE_MS = 5_000
+
 # Supported base models for fine-tuning (Nova 2.x recommended)
 SUPPORTED_BASE_MODELS = [
     {"id": "us.amazon.nova-2-lite-v1:0", "name": "Nova 2 Lite", "provider": "Amazon"},
@@ -91,7 +101,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Any:
 
     try:
         if field_name == "listFinetuningJobs":
-            return list_finetuning_jobs(arguments)
+            return list_finetuning_jobs(arguments, context)
         elif field_name == "getFinetuningJob":
             return get_finetuning_job(arguments.get("jobId"))
         elif field_name == "validateTestSetForFinetuning":
@@ -115,7 +125,43 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Any:
         raise
 
 
-def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
+def _clamped_limit(requested: Any) -> int:
+    """A caller-supplied page size bounded to ``[1, MAX_PAGE_SIZE]``.
+
+    `arguments.get("limit", 50)` was a default, not a ceiling: nothing between the
+    caller and this value bounds it (the dispatcher's validation spec carries type
+    shapes only).
+    """
+    try:
+        value = int(requested)
+    except (TypeError, ValueError):
+        return DEFAULT_PAGE_SIZE
+    return max(1, min(value, MAX_PAGE_SIZE))
+
+
+def _scan_budget_exhausted(pages: int, context: Any) -> Optional[str]:
+    """Whether the scan walk must stop now, and why.
+
+    Mirrors ``_count_budget_exhausted`` in list_documents_gsi_resolver — a page cap
+    for the common case and a remaining-invocation reserve for the case where each
+    page is slow.
+    """
+    if pages >= MAX_SCAN_PAGES:
+        return f"page cap of {MAX_SCAN_PAGES} reached"
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(remaining):
+        try:
+            left = int(remaining())
+        except (TypeError, ValueError, AttributeError):
+            return None
+        if left < SCAN_TIME_RESERVE_MS:
+            return f"only {left}ms of the invocation left"
+    return None
+
+
+def list_finetuning_jobs(
+    arguments: Dict[str, Any], context: Any = None
+) -> Dict[str, Any]:
     """List all fine-tuning jobs with pagination.
 
     Uses scan with filter since fine-tuning jobs are relatively few
@@ -127,7 +173,7 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
     DynamoDB's ``Limit`` caps items *evaluated* (before filtering),
     not items *returned*.
     """
-    limit = arguments.get("limit", 50)
+    limit = _clamped_limit(arguments.get("limit"))
     next_token = arguments.get("nextToken")
 
     table = dynamodb.Table(TRACKING_TABLE_NAME)
@@ -138,7 +184,7 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
         "metadata"
     )
 
-    # Collect all matching items by paginating through the scan.
+    # Collect matching items by paginating through the scan.
     # Fine-tuning jobs are few relative to the rest of the table,
     # so a single scan page may not contain any matches.
     items: List[Dict[str, Any]] = []
@@ -147,14 +193,37 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
     if next_token:
         scan_kwargs["ExclusiveStartKey"] = json.loads(next_token)
 
+    pages = 0
+    result_next_token = None
     while True:
         response = table.scan(**scan_kwargs)
+        pages += 1
 
         for item in response.get("Items", []):
             items.append(_format_job_for_graphql(item))
 
         # Stop if we've scanned the whole table
         if "LastEvaluatedKey" not in response:
+            break
+
+        # BOUND the walk. Fine-tuning jobs are sparse in the TrackingTable, which
+        # holds a row per document in the deployment, so "scan until the whole
+        # table is exhausted" is proportional to the deployment's entire document
+        # history — and `listFinetuningJobs` is an `ANY` operation, reachable by
+        # any authenticated caller including one in no group. `ExclusiveStartKey`
+        # was already accepted as `nextToken` but never returned, so there was no
+        # way to ask for less than everything.
+        stop = _scan_budget_exhausted(pages, context)
+        if stop:
+            result_next_token = json.dumps(
+                response["LastEvaluatedKey"], cls=DecimalEncoder
+            )
+            logger.warning(
+                "listFinetuningJobs stopped after %d scan pages (%s); returning a "
+                "nextToken so the caller can resume",
+                pages,
+                stop,
+            )
             break
 
         # Continue scanning from where we left off
@@ -166,7 +235,7 @@ def list_finetuning_jobs(arguments: Dict[str, Any]) -> Dict[str, Any]:
     # Apply limit after sorting
     items = items[:limit]
 
-    return {"items": items}
+    return {"items": items, "nextToken": result_next_token}
 
 
 def get_finetuning_job(job_id: str) -> Optional[Dict[str, Any]]:

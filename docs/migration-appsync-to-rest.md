@@ -223,6 +223,17 @@ migration preserves parity as follows:
   `PermissionError` becomes **403** with `errorType: "Unauthorized"` (which the
   UI keys on); `ValueError`/`KeyError` become **400 BadRequest**. Unauthenticated
   requests are rejected with **401** by the authorizer before reaching any code.
+  Anything the dispatcher does not recognise becomes **500 `InternalError`**, and
+  that fallback is load-bearing in a way worth knowing: a resolver runs in a
+  separate Lambda, so only the exception's **class name** and message cross the
+  invoke. A resolver that catches its own refusal and re-raises it wrapped loses
+  both signals — the class name becomes `Exception`, and a message prefix pushes
+  the `Unauthorized` token off the front where the anchored prefix match cannot
+  see it — and the refusal arrives as a 500. Beyond confusing whoever is debugging
+  it, that puts deliberate policy denials into the monitored 5xx rate, where they
+  mask real faults. Raise `PermissionError` for an authorization refusal and
+  `ValueError` for a bad argument, and do not re-wrap either. See the refusal-status
+  section of [rbac.md](rbac.md).
 - **IAM-only operations stay backend-only.** Fields that were IAM-authorized in
   AppSync (backend writers such as `updateAgentJobStatus`,
   `updateDiscoveryJobStatus`) are **rejected for all Cognito callers** — and the
@@ -266,6 +277,13 @@ last bullet), not a byte-for-byte re-creation of it:
   yet); input objects are validated shallowly (must be an object). The validator
   **fails open on its own internal errors** (a validator bug never 500s the API)
   and fails closed only on genuine input violations.
+- **It carries no bounds vocabulary.** The spec describes each argument's *type*
+  and nothing else — there is no `maximum`, `maxItems` or `maxLength` in it — so a
+  numeric limit, a list length, a string length or a date span is bounded in the
+  resolver or not at all. That is why `listDocumentsByDateRange` enforces its
+  365-day cap itself (see [web-ui.md](web-ui.md)), and why a `limit` argument must
+  be clamped with a hard `min()` rather than merely given a default the caller can
+  exceed.
 - **Stricter than AppSync on coercion (safe for the UI).** AppSync *coerced* some
   inputs before validating; this validator *rejects* them instead: a scalar
   passed for a list arg (AppSync → one-element list), an integer passed for an

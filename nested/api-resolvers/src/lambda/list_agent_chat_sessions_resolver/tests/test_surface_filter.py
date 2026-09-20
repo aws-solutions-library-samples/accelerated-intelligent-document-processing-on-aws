@@ -50,3 +50,35 @@ def test_chat_surface_includes_legacy_rows():
     q = _run({"surface": "chat"})
     assert q["FilterExpression"] == "attribute_not_exists(surface) OR surface = :surface"
     assert q["ExpressionAttributeValues"][":surface"] == "chat"
+
+
+class TestThePageSizeIsClampedNotDefaulted:
+    """`limit` reached DynamoDB unbounded.
+
+    `arguments.get("limit", 20)` reads as a cap but is a default: the central
+    validation spec checks only that the value is an Int, so the page size was
+    whatever the caller asked for. The siblings that get this right
+    (list_documents_gsi_resolver, test_set_resolver) all use a hard `min()`.
+    """
+
+    def test_an_oversized_limit_cannot_raise_the_page_size(self):
+        q = _run({"limit": 10_000})
+
+        assert q["Limit"] == index.MAX_PAGE_SIZE
+
+    def test_a_non_positive_limit_does_not_reach_dynamodb(self):
+        """DynamoDB rejects `Limit <= 0` with a ValidationException, which the
+        dispatcher reports to the caller as a 500."""
+        q = _run({"limit": 0})
+
+        assert q["Limit"] >= 1
+
+    def test_an_absent_limit_still_gets_the_default(self):
+        q = _run({})
+
+        assert q["Limit"] == index.DEFAULT_PAGE_SIZE
+
+    def test_a_reasonable_limit_is_honoured(self):
+        q = _run({"limit": 7})
+
+        assert q["Limit"] == 7

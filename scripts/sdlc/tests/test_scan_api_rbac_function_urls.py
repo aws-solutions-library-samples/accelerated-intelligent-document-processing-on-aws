@@ -919,3 +919,86 @@ def test_live_scan_has_no_function_url_failures():
         f for f in findings if f.check in ("S6", "S7", "S8", "S9") and f.level == "FAIL"
     ]
     assert not fails, [f"[{f.check}] {f.op}: {f.message}" for f in fails]
+
+
+# --- S7: an unparseable handler is a finding, not a silent skip ---------------
+#
+# `_route_function_nodes` used to answer `{}` for a `SyntaxError`, so
+# `route_nodes.get(route)` was `None`, S7's identity-rebinding check took its
+# "nothing to inspect" branch, and an unparseable handler produced a clean scan.
+# A check that cannot be run is not a check that passed — the sibling
+# `op_scope_source` already turns the same SyntaxError into a finding.
+
+
+def test_an_unparseable_handler_raises_rather_than_returning_no_routes():
+    with pytest.raises(scanner.HandlerUnparseable):
+        scanner._route_function_nodes("def broken(:\n    pass\n")
+
+
+def test_a_parseable_handler_still_yields_its_routes():
+    """The control: without it, "always raises" would satisfy the test above."""
+    nodes = scanner._route_function_nodes(
+        '@app.post("/chat/agent")\n'
+        "async def chat_agent(request):\n"
+        "    return {}\n"
+    )
+
+    assert "POST /chat/agent" in nodes
+
+
+# --- S0: a known_gap the dynamic harness assigns has no operation to name it --
+#
+# The orphan check ("defined but nothing references it") assumes every gap is
+# declared on an operation. That is false for a gap assigned from an observed
+# RESPONSE, so such a gap declares `assigned_by:` — and the orphan check then
+# applies where the reference actually is, rather than being switched off.
+
+
+def _expectations():
+    import yaml
+
+    path = _SDLC_DIR.parents[0] / "api_rbac_expectations.yaml"
+    return yaml.safe_load(path.read_text())
+
+
+def test_a_runtime_assigned_gap_names_a_file_that_mentions_it():
+    """The exemption's own premise. An `assigned_by` pointing at a file that never
+    mentions the gap id would be a gap registered and assigned by nothing."""
+    spec = _expectations()
+    gaps = spec["known_gaps"]
+    runtime_gaps = {
+        gid: g
+        for gid, g in gaps.items()
+        if isinstance(g, dict) and g.get("assigned_by")
+    }
+
+    assert runtime_gaps, (
+        "no runtime-assigned gap is declared, so this test is asserting nothing — "
+        "delete it, or the assigned_by branch in scan_api_rbac's S0 check"
+    )
+    repo = _SDLC_DIR.parents[1]
+    for gid, g in runtime_gaps.items():
+        assigner = repo / g["assigned_by"]
+        assert assigner.is_file(), f"{gid}: assigned_by {g['assigned_by']} missing"
+        assert gid in assigner.read_text(), (
+            f"{gid}: {g['assigned_by']} does not mention it"
+        )
+
+
+def test_every_other_gap_is_still_referenced_by_an_operation():
+    """The exemption must not have widened into "gaps need no reference"."""
+    spec = _expectations()
+    gaps = spec["known_gaps"]
+    referenced = {
+        o["known_gap"] for o in spec["operations"].values() if o.get("known_gap")
+    }
+    for ep in (spec.get("function_url_endpoints") or {}).values():
+        for rc in (ep.get("routes") or {}).values():
+            for key in ("known_gap", "residual_gap"):
+                if rc.get(key):
+                    referenced.add(rc[key])
+
+    for gid, g in gaps.items():
+        if isinstance(g, dict) and g.get("assigned_by"):
+            continue
+        assert gid in referenced, f"{gid} is declared but nothing references it"

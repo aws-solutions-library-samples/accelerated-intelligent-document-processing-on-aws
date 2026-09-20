@@ -624,12 +624,24 @@ VERIFIED_IDENTITY_CALLEES = (
 )
 
 
+class HandlerUnparseable(Exception):
+    """The handler file could not be parsed, so its AST checks cannot run.
+
+    Raised rather than returning an empty map. Returning ``{}`` made S7's
+    identity-rebinding check silently do nothing — ``route_nodes.get(route)``
+    answered ``None`` and the check took its "no node to inspect" branch — so an
+    unparseable handler produced a clean scan instead of a finding. The sibling
+    ``op_scope_source`` already turns the same ``SyntaxError`` INTO a finding; this
+    is that rule applied to the one place it was not.
+    """
+
+
 def _route_function_nodes(handler_text: str) -> dict:
     """Map ``"<METHOD> <path>"`` -> the route's AST function node."""
     try:
         tree = ast.parse(handler_text)
-    except SyntaxError:
-        return {}
+    except SyntaxError as exc:
+        raise HandlerUnparseable(str(exc)) from exc
     routes = {}
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1369,7 +1381,15 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             continue
         handler_text = handler_src.read_text()
         actual_routes = app_routes(handler_text)
-        route_nodes = _route_function_nodes(handler_text)
+        try:
+            route_nodes = _route_function_nodes(handler_text)
+        except HandlerUnparseable as exc:
+            # A check that cannot be run is not a check that passed.
+            findings.append(
+                Finding("S7", "FAIL",
+                        f"could not parse {ep['handler']}, so the route-level "
+                        f"identity checks did not run: {exc}", logical))
+            continue
         # The identity decision may live in a sibling module of the same Lambda
         # package (the app file imports FastAPI, so pure logic is factored out to
         # keep it unit-testable). Scan the package's own modules, not the vendored
@@ -1585,11 +1605,34 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         findings.append(
             Finding("S0", "FAIL",
                     f"operation references undefined known_gap '{gid}'"))
+    # A gap the DYNAMIC harness assigns at runtime has no operation to reference
+    # it — the condition is a property of the response, not of a declared
+    # operation — so the orphan check's premise does not hold for it. Declaring
+    # `assigned_by: runtime` is how such a gap says so, and it must still name
+    # WHERE, so "nothing references this" stays answerable rather than becoming
+    # unanswerable. A runtime gap whose named assigner does not mention its id is
+    # a FAIL: that is the orphan check, applied where the reference actually is.
     for gid in sorted(set(known_gaps) - referenced):
-        findings.append(
-            Finding("S0", "WARN",
-                    f"known_gap '{gid}' is defined but no operation references "
-                    "it (fixed? remove it)"))
+        spec = known_gaps.get(gid) or {}
+        assigner = spec.get("assigned_by") if isinstance(spec, dict) else None
+        if not assigner:
+            findings.append(
+                Finding("S0", "WARN",
+                        f"known_gap '{gid}' is defined but no operation references "
+                        "it (fixed? remove it)"))
+            continue
+        assigner_path = REPO / assigner
+        if not assigner_path.is_file():
+            findings.append(
+                Finding("S0", "FAIL",
+                        f"known_gap '{gid}' declares assigned_by '{assigner}', "
+                        "which is not a file in this repo"))
+        elif gid not in assigner_path.read_text():
+            findings.append(
+                Finding("S0", "FAIL",
+                        f"known_gap '{gid}' declares assigned_by '{assigner}', "
+                        f"but that file does not mention '{gid}' — the gap is "
+                        "registered and assigned by nothing"))
 
     # --- accepted-risk register (always surfaced for auditability) ---------
     # Each declared gap is emitted so the report explicitly lists accepted

@@ -24,6 +24,24 @@ dynamodb = boto3.resource("dynamodb")
 # Get environment variables
 CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
 
+# Page size: default, and the ceiling a caller cannot raise.
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 200
+
+
+def _clamped_limit(requested) -> int:
+    """The requested page size, bounded to [1, MAX_PAGE_SIZE].
+
+    A non-integer is treated as "not asked for" rather than raising, matching the
+    tolerant shape in test_results_resolver: the spec has already established the
+    argument is an Int when it is present at all.
+    """
+    try:
+        value = int(requested)
+    except (TypeError, ValueError):
+        return DEFAULT_PAGE_SIZE
+    return max(1, min(value, MAX_PAGE_SIZE))
+
 
 def handler(event, context):
     """
@@ -44,7 +62,13 @@ def handler(event, context):
     try:
         # Extract arguments from the event
         arguments = event.get("arguments", {})
-        limit = arguments.get("limit", 20)  # Default limit
+        # Clamped, not defaulted. `arguments.get("limit", 20)` was a default the
+        # caller could raise without bound — the central validation spec checks
+        # only that it is an Int — so the page size was whatever was asked for.
+        # Same shape as the enforced clamps in list_documents_gsi_resolver and
+        # test_set_resolver; the lower bound is there because DynamoDB rejects a
+        # non-positive Limit with a ValidationException, which surfaces as a 500.
+        limit = _clamped_limit(arguments.get("limit"))
         next_token = arguments.get("nextToken")
         surface = arguments.get("surface")
         

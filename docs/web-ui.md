@@ -42,6 +42,28 @@ The default page lists processed documents, over a scope chosen with the **Load*
 
 Your choice is remembered, so changing it once sticks for later visits.
 
+**A custom range is capped at 365 days**, in the date picker and again on the
+server. Ask for more and the request is refused with
+`Date range too large: <N> days requested, maximum is 365 days` rather than being
+accepted and then timing out. The cap is on the server because it is the control:
+the picker's bound is a convenience, and the API is reachable without it.
+
+The reason there is a limit at all is how a range is read. The date-range API
+decomposes the window into one query per four-hour partition — six per requested
+day — and issues them one after another, stopping early only once it has collected a
+full page. A window holding fewer documents than a page, which includes every window
+before the deployment existed, is therefore walked in full: ten years of range is
+about 21,900 sequential queries, roughly 80 seconds of work, against a request
+budget of 20. Before the cap that request was accepted, answered with an
+unexplained `Request failed (504)` after 20 seconds, and then went on consuming read
+capacity for another minute with nobody left to receive the answer.
+
+Inside the cap a request is bounded a second way, by elapsed work rather than by
+range: a long window that is still slow — a throttled table, unusually full
+partitions — returns the page it has and a continuation token instead of running to
+the function's timeout. Following the token resumes at the next unread partition, so
+a range that needs more than one round trip still returns everything in it.
+
 ### Production vs Test Studio documents
 
 Test Studio submits its documents through the same pipeline as ordinary uploads — deliberately, so confidence and cost figures match what real runs produce. Because it makes them indistinguishable once processed, they are recorded on a separate index partition and the Document List shows one partition at a time, selected with the **Production / Test Studio** control beside the search box:

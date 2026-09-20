@@ -2664,7 +2664,15 @@ Resources:
       CodeUri: ./src/lambda/list_documents_range_resolver
       Description: Lambda function to list documents by date range via GraphQL API
       MemorySize: 512
-      Timeout: 120
+      # 30s, matching ListDocumentsGSIResolverFunction. The dispatcher stops
+      # waiting at 20s (_RESOLVER_READ_TIMEOUT_SECONDS) and does not cancel the
+      # invocation, so a Timeout far above that window only buys orphaned work: the
+      # old 120s let a request keep querying partitions and spending read capacity
+      # for 100s after the caller had already been answered with a 504. The resolver
+      # now stops its own shard walk at 15s and returns a nextToken, so this is the
+      # backstop rather than the bound. See _SHARD_LOOP_BUDGET_SECONDS in
+      # src/lambda/list_documents_range_resolver/index.py.
+      Timeout: 30
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
