@@ -28,17 +28,18 @@ This is the same guarded-vendoring shape as
 ``src/lambda/chat_stream_processor/vendored/`` and its
 ``test_vendored_in_sync.py``.
 
-Scope: BOTH Lambda trees
-------------------------
+Scope: three Lambda trees
+-------------------------
 
 This file is named for the api-resolver tree because that is the tree it was
 written against, and the name is left alone so that the thirty committed copies of
 the canonical module — whose docstring cites it — do not all have to be rewritten
-to rename a test. It now covers ``src/lambda/`` as well, and that is the point of
-the widening rather than an incidental extra: when the scan below was rooted at the
-resolver tree alone it reported a clean tree while **forty** log calls in
-**thirty-eight** files under ``src/lambda/`` wrote their whole invocation event to
-CloudWatch, including the agent chat processor's — prompt, caller ``sub`` and
+to rename a test. It now covers ``src/lambda/`` and the
+feature-platform control plane under ``feature-platform/main-stack-extensions/``
+as well, and that is the point of the widening rather than an incidental extra:
+when the scan below was rooted at the resolver tree alone it reported a clean tree
+while **forty** log calls in **thirty-eight** files under ``src/lambda/`` wrote
+their whole invocation event to CloudWatch, including the agent chat processor's — prompt, caller ``sub`` and
 caller group list on every turn. The sites it could not see outnumbered the ones it
 could by roughly four to one. A guard whose reach is narrower than the defect class
 it describes reads, from a green test run, exactly like a guard that works.
@@ -86,16 +87,19 @@ from pathlib import Path
 
 import pytest
 
+import gate_premises
+
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL = REPO_ROOT / "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py"
 
-# The two trees of Lambda handler directories. Every immediate subdirectory of
-# each is treated as one function's package, which is how SAM packages them.
+# The trees of Lambda handler directories. Every immediate subdirectory of each is
+# treated as one function's package, which is how SAM packages them.
 RESOLVER_ROOT = REPO_ROOT / "nested/api-resolvers/src/lambda"
 SRC_LAMBDA_ROOT = REPO_ROOT / "src/lambda"
-LAMBDA_ROOTS = (RESOLVER_ROOT, SRC_LAMBDA_ROOT)
+FEATURE_PLATFORM_ROOT = REPO_ROOT / "feature-platform/main-stack-extensions/lambdas"
+LAMBDA_ROOTS = (RESOLVER_ROOT, SRC_LAMBDA_ROOT, FEATURE_PLATFORM_ROOT)
 
 # Templates are discovered by CONTENT, via the same script `make cfn-lint` and
 # `make check-arn-partitions` use, rather than from a list of paths kept here.
@@ -109,55 +113,84 @@ LAMBDA_ROOTS = (RESOLVER_ROOT, SRC_LAMBDA_ROOT)
 DISCOVER_TEMPLATES = REPO_ROOT / "scripts/discover_templates.sh"
 SYNC_SCRIPT = REPO_ROOT / "scripts/sync_resolver_log_sanitizer.sh"
 
-# Lambda source trees this guard does NOT cover, each with the reason. Keyed by
+# Lambda source trees this guard does NOT cover, each with the reason and the
+# number of raw-event log sites the exemption covered when it was written. Keyed by
 # repo-relative path, and compared at test time against the set of directories that
 # actually hold ``AWS::Serverless::Function`` CodeUri packages, so a tree cannot be
 # added to the repository — or renamed — without a decision being made about it.
 #
-# Every entry here is a tree whose handlers are built and deployed independently of
-# the two main ones, or is not deployed by this solution at all. Widening to them is
-# a separate change: several do log their raw invocation event, and the pipeline
-# functions under ``patterns/unified/src`` in particular are the ones whose logs
-# operators read most often when diagnosing a document, so what to keep in them is
-# a judgement worth its own review rather than a mechanical sweep appended to this
-# one. #985 scopes this change to ``src/lambda``.
-UNCOVERED_LAMBDA_TREES = {
+# Read the value as ``(reason, raw-event log sites audited)``. The count is the
+# ratchet: a NEW site added inside an exempt tree fails
+# ``test_uncovered_trees_hide_no_more_sites_than_were_audited``, so the exemption
+# covers the sites someone looked at, not the directory name forever. Writing the
+# number down is the review moment — it is the step at which "this tree is out of
+# scope" stops being a sentence and becomes a measurement.
+#
+# There is deliberately NO blanket premise here. The previous one said every entry
+# was "built and deployed independently of the two main ones, or is not deployed by
+# this solution at all", and that was false for four of them:
+# ``feature-platform/main-stack-extensions/lambdas`` (now covered, see
+# ``FEATURE_PLATFORM_ROOT``), ``patterns/unified/src``, ``nested/bedrockkb/src`` and
+# ``nested/multi-doc-discovery`` are all nested stacks of ``template.yaml`` and are
+# all built by the same publish run. An aggregate reading of that sentence passes;
+# per member it fails four times. ``test_no_uncovered_tree_claims_to_be_built_apart``
+# asserts the structural facts directly instead, so a reason may no longer borrow
+# them.
+UNCOVERED_LAMBDA_TREES: dict[str, tuple[str, int]] = {
     "patterns/unified/src": (
-        "the document-processing pipeline steps; their events are Step Functions "
-        "payloads rather than caller-supplied API events, and several log them in "
-        "full — the largest remaining instance of this defect class"
+        "the document-processing pipeline steps. A nested stack of template.yaml, "
+        "built in the same publish run; the reason is NOT independence but scope: "
+        "their events are Step Functions payloads rather than caller-supplied API "
+        "events, and these are the logs operators read most often when diagnosing a "
+        "document, so what to keep in them is a judgement worth its own review "
+        "rather than a mechanical sweep. The largest remaining instance of this "
+        "defect class",
+        15,
     ),
     "nested/bedrockkb/src": (
-        "the Bedrock Knowledge Base custom resources, deployed only when the "
-        "knowledge base is enabled"
+        "the Bedrock Knowledge Base custom resources. A nested stack of "
+        "template.yaml, built in the same publish run; the reason is that these run "
+        "only during a stack operation and their events are stack metadata",
+        3,
     ),
     "nested/multi-doc-discovery": (
         "a container-image build helper (docker_build_lambda), not a handler that "
-        "receives an API or pipeline event"
+        "receives an API or pipeline event",
+        0,
     ),
-    "feature-platform/main-stack-extensions/lambdas": (
-        "the feature-platform control plane, built and versioned separately from "
-        "the main stack"
+    "feature-platform/confbench-testset": ("an optional feature extension package", 0),
+    "feature-platform/feature-template": (
+        "the scaffold a new feature is copied from",
+        0,
     ),
-    "feature-platform/confbench-testset": "an optional feature extension package",
-    "feature-platform/feature-template": "the scaffold a new feature is copied from",
-    "feature-platform/idp-data-generator": "an optional feature extension package",
+    "feature-platform/idp-data-generator": (
+        "an optional feature extension package",
+        1,
+    ),
     "feature-platform/pii-anonymizer": (
         "an optional feature extension package, and its hook vendors third-party "
-        "code kept byte-for-byte — see its PROVENANCE.md"
+        "code kept byte-for-byte — see its PROVENANCE.md",
+        0,
     ),
-    "feature-platform/sample-feature": "a sample feature, shipped as documentation",
+    "feature-platform/sample-feature": (
+        "a sample feature, shipped as documentation",
+        0,
+    ),
     "feature-platform/sample-health-insurance-review": (
-        "a sample feature, shipped as documentation"
+        "a sample feature, shipped as documentation",
+        0,
     ),
     "feature-platform/seller-entitlement-service/lambdas": (
-        "the marketplace seller-side service, deployed to a separate account"
+        "the marketplace seller-side service, deployed standalone to a seller "
+        "account and not by this solution's own stack",
+        0,
     ),
     "samples/lambda-hook-inference": (
         "sample hook implementations, deployed by the reader rather than by this "
-        "solution"
+        "solution",
+        0,
     ),
-    "notebooks/examples": "a notebook example, not part of any deployed stack",
+    "notebooks/examples": ("a notebook example, not part of any deployed stack", 1),
 }
 
 VENDORED_NAME = "log_sanitizer.py"
@@ -372,6 +405,66 @@ def test_every_lambda_tree_is_either_covered_or_explicitly_out_of_scope():
         "These UNCOVERED_LAMBDA_TREES entries no longer name a tree holding Python "
         "Lambda packages — renamed, removed, or now covered. A stale exemption is "
         f"how a real gap gets waved through later: {stale}"
+    )
+
+
+@pytest.mark.parametrize("tree", sorted(UNCOVERED_LAMBDA_TREES))
+def test_uncovered_trees_hide_no_more_sites_than_were_audited(tree: str):
+    """An exempt tree is exempt for the sites audited, not for its name forever.
+
+    Without this, "out of scope" is an open-ended licence: a handler added to an
+    exempt tree tomorrow inherits an exemption nobody granted it, and the gate stays
+    green. Pinning the count makes the grant finite, and forces the number to be
+    written down — which is the step at which someone has to look.
+
+    The count is what this file's own collector sees, so it is a measurement of the
+    guard's view rather than an independent census. A pin of 0 therefore asserts
+    "this collector finds nothing here", which is the property that matters for a
+    ratchet: if it starts finding something, this fails.
+    """
+    reason, pinned = UNCOVERED_LAMBDA_TREES[tree]
+    root = REPO_ROOT / tree
+    if not root.is_dir():
+        pytest.skip(f"{tree} does not exist; the accounting test above owns that")
+    found = _raw_event_log_offenders(roots=(root,))
+    assert len(found) == pinned, (
+        f"{tree} is out of scope for {pinned} raw-event log site(s) ({reason}), but "
+        f"{len(found)} were found. A new site inside an exempt tree is not covered "
+        "by the exemption: sanitize it, or review the tree and update the pinned "
+        f"count deliberately. Sites: {found}"
+    )
+
+
+@pytest.mark.parametrize("tree", sorted(UNCOVERED_LAMBDA_TREES))
+def test_no_uncovered_tree_claims_to_be_built_apart(tree: str):
+    """A reason may not rest on independence this repository can disprove.
+
+    The removed blanket premise said every uncovered tree was built and deployed
+    independently of the main stack. Four were nested stacks of ``template.yaml``
+    built by the same publish run, and one of those four -- the feature-platform
+    control plane -- was where the exemption did real work. The premise was never
+    evaluated because it was attached to the set rather than to each member.
+
+    So the structural facts are asserted here directly, per member, and a reason is
+    not allowed to assert them in prose. Both predicates are computed from the
+    authorities: the nested-stack graph in ``template.yaml``, and the publisher's own
+    component map. A tree that IS built with the main stack is fine -- four are --
+    but its recorded reason has to be something else, and none of them now claims
+    otherwise.
+    """
+    reason, _ = UNCOVERED_LAMBDA_TREES[tree]
+    nested, nested_why = gate_premises.not_a_nested_stack_of_parent(tree)
+    built_apart, built_why = gate_premises.built_separately_from_main_stack(tree)
+    if nested and built_apart:
+        return  # genuinely independent; the claim would be true if made
+
+    forbidden = ("built and versioned separately", "built separately", "versioned separately")
+    lowered = reason.lower()
+    claimed = [phrase for phrase in forbidden if phrase in lowered]
+    assert not claimed, (
+        f"{tree} is exempt with a reason claiming {claimed}, but that is not true of "
+        f"it: {nested_why}; {built_why}. Record the reason that does hold -- scope, "
+        "event shape, or a judgement -- rather than one this tree contradicts."
     )
 
 
