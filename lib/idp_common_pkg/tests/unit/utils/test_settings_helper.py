@@ -85,8 +85,9 @@ def test_the_client_is_built_once_and_reused():
 
 
 def test_concurrent_first_use_builds_exactly_one_client():
-    """Several callers fan out across a ThreadPoolExecutor, so a cold process can
-    be reached by more than one thread at once."""
+    """``boto3.client()`` is not documented as thread-safe, and this is library code
+    reachable from any caller, so construction is once-only by construction rather
+    than by auditing call sites."""
     start = threading.Barrier(8)
     seen = []
 

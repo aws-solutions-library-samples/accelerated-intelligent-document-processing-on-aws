@@ -582,29 +582,29 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 
 test-cli: ## Run only IDP CLI tests
 	@echo "Running IDP CLI tests..."
-	cd lib/idp_cli_pkg && $(PYTHON) -m pytest -v
+	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) -v
 	@echo -e "$(GREEN)✅ All CLI tests passed!$(NC)"
 
 test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
-	$(PYTHON) -m pytest config_library/test_config_library.py -v
+	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
 test-hooks: ## Run only the Claude PreToolUse hook tests (commit/PR text guard)
 	@echo "Running Claude hook tests..."
-	$(PYTHON) -m pytest scripts/tests/test_check_commit_text.py -v
+	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
-	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest -v
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) -v
 
 test-capacity-coverage: ## Run capacity planning tests with coverage report
 	@echo "Running capacity planning Lambda tests with coverage..."
-	cd src/lambda/calculate_capacity && $(PYTHON) -m pytest --cov=. --cov-report=term --cov-report=html -v
+	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) --cov=. --cov-report=term --cov-report=html -v
 	@echo -e "$(GREEN)✅ Coverage report generated at src/lambda/calculate_capacity/htmlcov/index.html$(NC)"
 
 test-circuit-breaker: ## Run only circuit breaker tests
 	@echo "Running circuit breaker Lambda tests..."
-	$(PYTHON) -m pytest -v \
+	$(PYTEST_HERMETIC) -v \
 	    src/lambda/circuit_breaker_manager \
 	    src/lambda/queue_processor/test_check_circuit_breaker.py \
 	    src/lambda/workflow_tracker/test_notify_circuit_breaker.py

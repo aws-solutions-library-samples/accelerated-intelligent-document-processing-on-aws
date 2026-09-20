@@ -36,11 +36,11 @@ _CACHE_TTL_SECONDS = 300  # 5 minute cache
 # ``get_settings`` call and cached for the life of the process, exactly as before.
 _ssm_client: Optional[Any] = None
 
-# ``boto3.client()`` is not documented as thread-safe, and several callers of this
-# module fan work out across a ThreadPoolExecutor, so two threads can reach a cold
-# process together. The lock makes construction happen exactly once; the read
-# outside it is the usual double-checked pattern and is safe because the only
-# transition is None -> client.
+# ``boto3.client()`` is not documented as thread-safe. This is library code reachable
+# from any caller, so the lock makes construction once-only by construction rather
+# than by auditing every present and future call site; today's two callers are both
+# single-threaded. The read outside the lock is the usual double-checked pattern and
+# is safe because the only transition is None -> client.
 _ssm_client_lock = threading.Lock()
 
 

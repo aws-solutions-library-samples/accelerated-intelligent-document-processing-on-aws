@@ -40,9 +40,16 @@ rather than restated here:
   a probe built from the ambient environment measures nothing on a runner, where
   there was never anything to strip. A stripping wrapper that has silently stopped
   stripping turns the whole gate into a no-op, and that is precisely the "control
-  that exists but is never consulted" failure this repository keeps rediscovering;
-* every pytest invocation in both recipes is checked to go through the wrapper, so a
-  line added later without it fails here rather than in six months on a runner;
+  that exists but is never consulted" failure this repository keeps rediscovering.
+  Measurement cannot cover everything, and the gaps are named rather than assumed
+  away: several sources are invisible to a probe on the very machine that has them,
+  so they are held to a floor list instead — see ``REQUIRED_UNSET_FLOOR``;
+* every *runnable line* in both recipes is checked to go through the wrapper, so a
+  line added later without it fails here rather than in six months on a runner. The
+  check is not a search for the word "pytest": ``$(PYTHON) -m $(PYTEST_MOD)`` runs
+  pytest and contains no such word, so a substring match would skip the line and drop
+  its per-suite probe silently. The parsed invocation count is also required to equal
+  the runnable line count, so a parse that quietly saw one line out of 34 fails;
 * every invocation ``test-packages-cicd`` names is then collected under that
   stripped environment, which is what actually catches the defect class in a new
   suite.
@@ -108,10 +115,26 @@ _SHARED_CONFIG_DIR: str | None = None
 # The floor the wrapper must keep removing. This is deliberately a MINIMUM rather
 # than a copy of the definition: adding a variable to the wrapper needs no change
 # here, and removing one of these is the regression that put five tests on CI-only
-# failure and three suites on a pinned region (#988). The region and credential
-# names are also measured directly by the two probes below; the remaining three
-# cannot be measured safely (a regressed wrapper would try a network credential
-# fetch), so for them this floor is the whole check.
+# failure and three suites on a pinned region (#988).
+#
+# The floor is not redundant with the two measured probes below, because a probe can
+# only see a source the machine running it actually has:
+#
+#  * ``AWS_DEFAULT_REGION`` and the three credential variables are measured.
+#  * ``AWS_REGION`` is NOT. botocore's default-region environment source is
+#    ``AWS_DEFAULT_REGION`` alone, so with only ``AWS_REGION`` set a client still
+#    raises ``NoRegionError`` and the region probe cannot distinguish a wrapper that
+#    removes it from one that does not. It stays in the wrapper because handlers and
+#    conftests read it directly, and it is held here.
+#  * ``AWS_PROFILE``, ``AWS_ROLE_ARN``, ``AWS_WEB_IDENTITY_TOKEN_FILE`` and the two
+#    container credential URIs cannot be probed safely — a regressed wrapper would
+#    send the probe off to fetch credentials over the network, or to read a profile
+#    that may not exist.
+#  * ``AWS_EC2_METADATA_DISABLED`` is measurable only ON EC2. Off it, or with the
+#    metadata endpoint unreachable, deleting that assignment changes nothing the
+#    probe can see — so on a CI runner the probe stays green while every developer
+#    box on EC2 silently resolves its instance-role credentials again. That is the
+#    exact machine class the five-test failure came from, so it is floored too.
 REQUIRED_UNSET_FLOOR = {
     "AWS_REGION",
     "AWS_DEFAULT_REGION",
@@ -124,7 +147,16 @@ REQUIRED_UNSET_FLOOR = {
     "AWS_CONTAINER_CREDENTIALS_FULL_URI",
     "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
 }
-REQUIRED_ASSIGNED_FLOOR = {"AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"}
+REQUIRED_ASSIGNED_FLOOR = {
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_EC2_METADATA_DISABLED",
+}
+# Values the two neutralised file variables may take. Both must name something that
+# cannot supply a region or credentials; `make` expands nothing here, so a value
+# containing `$(...)` reaches botocore as a literal string that happens not to be a
+# path — which silences both probes while the real recipe reads the expanded file.
+NEUTRALISED_FILE_VARS = ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE")
 
 pytestmark = pytest.mark.unit
 
@@ -178,8 +210,7 @@ def _recipe_lines(makefile: Path, target: str) -> list[str]:
         else:
             break
     assert body, (
-        f"parsed an empty recipe body for {target} in "
-        f"{makefile.relative_to(REPO_ROOT)}"
+        f"parsed an empty recipe body for {target} in {makefile.relative_to(REPO_ROOT)}"
     )
     return [ln for ln in _logical_lines("\n".join(body)) if ln.strip()]
 
@@ -254,16 +285,19 @@ def _polluted_env() -> dict[str, str]:
 
     This is what makes the probes below a measurement rather than a coincidence. A
     CI runner sets no ``AWS_*`` variable and has no shared config file, so a wrapper
-    that quietly stopped unsetting ``AWS_REGION`` would still leave no region behind
-    and a probe built from the ambient environment would still pass. Confirmed by
-    mutation: dropping ``-u AWS_REGION`` from the wrapper is undetectable unless the
-    probe supplies a region for it to remove.
+    that quietly stopped unsetting ``AWS_DEFAULT_REGION`` would still leave no region
+    behind and a probe built from the ambient environment would still pass. Confirmed
+    by mutation: dropping that ``-u`` is undetectable unless the probe supplies a
+    region for it to remove.
 
-    Only the region and credential sources are populated. The role, web-identity
-    and container-credential variables are left alone on purpose: pointing them at
-    a sentinel would make a regressed wrapper attempt a network credential fetch
-    and hang rather than fail. Those names are held to a floor instead, by
-    ``test_wrapper_still_removes_the_sources_that_matter``.
+    ``AWS_REGION`` is populated here for completeness but is **not** what the region
+    probe measures: botocore's default-region environment source is
+    ``AWS_DEFAULT_REGION`` alone, so with only ``AWS_REGION`` set a client still
+    raises ``NoRegionError``. It is held by the floor instead, along with the profile,
+    role, web-identity and container-credential variables — those are left out of the
+    pollution on purpose, since pointing them at a sentinel would make a regressed
+    wrapper attempt a network credential fetch and hang rather than fail. See
+    ``REQUIRED_UNSET_FLOOR`` for the full division of labour.
     """
     env = dict(os.environ)
     env["AWS_REGION"] = SENTINEL_REGION
@@ -376,12 +410,11 @@ def test_wrapper_definition_is_parseable_and_not_empty():
 
 
 def test_wrapper_still_removes_the_sources_that_matter():
-    """A floor on the variable list, for the three the probes cannot measure.
+    """A floor on the variable list, for the sources the probes cannot measure.
 
-    ``AWS_ROLE_ARN``, ``AWS_WEB_IDENTITY_TOKEN_FILE`` and the two container
-    credential URIs cannot be probed safely — a wrapper that stopped removing them
-    would send the probe off to fetch credentials over the network — so removing
-    one of them would otherwise be silent.
+    See REQUIRED_UNSET_FLOOR for which ones those are and why each is unmeasurable:
+    a probe can only see a source the machine running it actually has, so several
+    entries would be silent to drop on the very machines that need them removed.
     """
     unset, assigned = _hermetic_spec()
     missing_unset = REQUIRED_UNSET_FLOOR - set(unset)
@@ -393,10 +426,44 @@ def test_wrapper_still_removes_the_sources_that_matter():
     missing_assigned = REQUIRED_ASSIGNED_FLOOR - set(assigned)
     assert not missing_assigned, (
         f"{WRAPPER_VAR} no longer neutralises {sorted(missing_assigned)}. Unsetting "
-        "cannot reach the shared AWS config file; only pointing these at an empty "
-        "path can, and that file is the source that makes a developer machine "
+        "cannot reach the shared AWS config file or the instance metadata service; "
+        "only an assignment can, and those two are what make a developer machine "
         "disagree with a CI runner."
     )
+
+
+def test_wrapper_assignments_are_literal_and_neutral():
+    """The values, not just the keys — and no unexpanded make variables.
+
+    Two ways an assignment can be present and useless. `make` expands `$(HOME)` when
+    it runs the recipe, and this test does not: it reads the makefile as text, so a
+    value like ``AWS_CONFIG_FILE=$(HOME)/.aws/config`` reaches the probes as that
+    literal string, which is not a path, so both probes see an absent file and pass
+    while the real recipe hands the suite the developer's actual config and
+    long-lived credentials. And a value can simply name a file with content in it.
+    So: reject any `$(`, and require each neutralised file variable to name something
+    that is absent or empty.
+    """
+    _, assigned = _hermetic_spec()
+    unexpanded = {name: value for name, value in assigned.items() if "$(" in value}
+    assert not unexpanded, (
+        f"{WRAPPER_VAR} assigns an unexpanded make variable: {unexpanded}. This test "
+        "reads the makefile as text and cannot expand it, so the value it probes "
+        "under is not the value the recipe uses — the probes would pass while the "
+        "suites ran against a real file. Use a literal path."
+    )
+    for name in NEUTRALISED_FILE_VARS:
+        value = assigned.get(name)
+        assert value, f"{WRAPPER_VAR} no longer assigns {name}"
+        path = Path(value)
+        # /dev/null exists and is a character device; `st_size` is 0, which is the
+        # property that matters — botocore reads it and finds no profile.
+        empty = not path.exists() or (path.is_file() and path.stat().st_size == 0)
+        assert empty or value == os.devnull, (
+            f"{WRAPPER_VAR} points {name} at {value!r}, which has content. That file "
+            "can supply a region or credentials, which is exactly what this wrapper "
+            "exists to prevent."
+        )
 
 
 def test_wrapper_really_leaves_no_resolvable_region():
@@ -486,6 +553,17 @@ def test_recipe_parse_is_not_vacuous():
         "Either the recipe stopped using the wrapper or this parse is broken; "
         "either way the per-suite probe below runs against nothing."
     )
+    # Non-emptiness is too weak on its own: a parse that silently dropped 33 of 34
+    # lines would satisfy it, and the parametrized probe would then cover one suite
+    # while reading as if it covered them all. Every runnable line must become
+    # exactly one probed invocation.
+    runnable = _command_lines()
+    assert len(_INVOCATIONS) == len(runnable), (
+        f"{RECIPE_TARGET} has {len(runnable)} runnable lines but only "
+        f"{len(_INVOCATIONS)} were parsed into probes. The per-suite probe below "
+        "would silently skip the difference. Lines the parse cannot see:\n  "
+        + "\n  ".join(ln for ln in runnable if f"$({PYTEST_VAR})" not in ln)
+    )
     missing: list[str] = []
     for workdir, args in _INVOCATIONS:
         base = REPO_ROOT / workdir
@@ -523,14 +601,20 @@ def test_no_recipe_line_supplies_its_own_aws_environment():
     )
 
 
-def test_every_pytest_invocation_goes_through_the_wrapper():
-    unwrapped = [
-        ln
-        for ln in _command_lines()
-        if "pytest" in ln and f"$({PYTEST_VAR})" not in ln
-    ]
+def test_every_recipe_line_goes_through_the_wrapper():
+    """EVERY runnable line, not every line that mentions pytest.
+
+    Matching on the word "pytest" is not enough, because the word need not appear:
+    ``$(PYTHON) -m $(PYTEST_MOD)`` runs pytest and contains no ``pytest``, so a
+    substring search skips the line entirely — and ``_pytest_invocations`` skips it
+    too, quietly dropping one of the parametrized per-suite probes below. Every
+    runnable line in this recipe runs a test suite, so the honest invariant is that
+    all of them go through the wrapper. If a genuinely non-pytest command is ever
+    needed here, add it as an ``@echo``/``@#`` line or update this test deliberately.
+    """
+    unwrapped = [ln for ln in _command_lines() if f"$({PYTEST_VAR})" not in ln]
     assert not unwrapped, (
-        f"these {RECIPE_TARGET} lines run pytest without $({PYTEST_VAR}):\n  "
+        f"these {RECIPE_TARGET} lines do not go through $({PYTEST_VAR}):\n  "
         + "\n  ".join(unwrapped)
         + f"\n\nUse $({PYTEST_VAR}) instead of $(PYTHON) -m pytest. It is the same "
         "interpreter with the ambient AWS region, credentials and profile removed, "
@@ -580,17 +664,25 @@ def test_library_unit_targets_run_hermetically(target: str):
     and passed everywhere else.
     """
     lines = _runnable(_recipe_lines(LIBRARY_MAKEFILE, target))
-    # A wrapped line says `$(PYTEST_HERMETIC)` and never the word "pytest", so both
-    # spellings count as "runs pytest" — otherwise a correctly wrapped recipe would
-    # look like a recipe that runs no tests at all.
-    pytest_lines = [ln for ln in lines if "pytest" in ln or f"$({PYTEST_VAR})" in ln]
-    assert pytest_lines, (
-        f"{target} in {LIBRARY_MAKEFILE.relative_to(REPO_ROOT)} runs no pytest "
+    # Match on "runs the interpreter", not on the word "pytest". A wrapped line says
+    # `$(PYTEST_HERMETIC)` and never says "pytest", and an unwrapped one can avoid
+    # the word too — `$(PYTHON) -m $(PYTEST_MOD)` runs pytest and contains neither —
+    # so a "pytest" substring search would report a recipe that runs no tests at all
+    # and pass. Unlike test-packages-cicd these recipes do have a legitimate
+    # non-interpreter line (the editable install), so the filter cannot simply be
+    # "every runnable line".
+    interpreter_lines = [
+        ln
+        for ln in lines
+        if "pytest" in ln or f"$({PYTEST_VAR})" in ln or "$(PYTHON)" in ln
+    ]
+    assert interpreter_lines, (
+        f"{target} in {LIBRARY_MAKEFILE.relative_to(REPO_ROOT)} runs no interpreter "
         "command, so this check has nothing to assert against"
     )
-    unwrapped = [ln for ln in pytest_lines if f"$({PYTEST_VAR})" not in ln]
+    unwrapped = [ln for ln in interpreter_lines if f"$({PYTEST_VAR})" not in ln]
     assert not unwrapped, (
-        f"these {target} lines run pytest without $({PYTEST_VAR}):\n  "
+        f"these {target} lines run the interpreter without $({PYTEST_VAR}):\n  "
         + "\n  ".join(unwrapped)
         + f"\n\nUse $({PYTEST_VAR}) instead of $(PYTHON) -m pytest, so the suite "
         "runs with the ambient AWS region, credentials and profile removed — the "
@@ -644,7 +736,7 @@ def test_suite_collects_without_an_aws_region(workdir: str, args: list[str]):
             "path builds a boto3 client with no region. The Lambda runtime always "
             "supplies AWS_REGION, so production is unaffected and the handler does "
             "not need changing — add a conftest.py to the suite directory doing "
-            "`os.environ.setdefault(\"AWS_DEFAULT_REGION\", \"us-east-1\")` before "
+            '`os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")` before '
             "collection (see src/lambda/test_file_copier/conftest.py), or, if the "
             "client sits in a library that many callers import, build it lazily "
             "(see idp_common/utils/settings_helper.py)."
