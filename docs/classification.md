@@ -741,7 +741,7 @@ Add two JSON Schema extensions to the class:
 |-------|---------------------------------|
 | **Classification** | Section is classified normally (regex fast path or LLM). The `excluded` and `exclusion_reason` flags are copied from the class config onto the `Section` object. |
 | **Extraction** | `process_document_section` short-circuits and writes a small stub `result.json` with `{"status": "skipped_excluded_class", "excluded": true, ...}`. Zero LLM calls. |
-| **Assessment** (confidence) | Returns without writing anything (no extraction results exist to assess). |
+| **Assessment** (confidence) | Returns without writing anything (no extraction results exist to assess). No processing issue and no `AssessmentConfidenceUnavailable` metric: an excluded section never had extraction run, so it has no confidence to be missing — unlike a section that *should* have been scored and was not, which is [reported](./monitoring.md#confidence-assessment-degraded). |
 | **Summarization** | Writes a small `summary.json` stub. No LLM call. |
 | **Rule Validation** | Skips the section in `validate_document_async`. |
 | **Evaluation** | Filters excluded sections out of precision/recall/F1. They still appear in the markdown report under an **Excluded Sections (Not Evaluated)** table so nothing is silently dropped. |

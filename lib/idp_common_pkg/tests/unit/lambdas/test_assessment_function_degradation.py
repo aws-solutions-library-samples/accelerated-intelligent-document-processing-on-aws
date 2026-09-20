@@ -24,6 +24,11 @@ and pin the boundary:
    by this change — the throttling and ``is_transient_error`` branches are checked
    first and both still re-raise.
 3. A THROTTLING failure still re-raises for the state machine's own retry.
+4. #1006: a section the confidence pass could not run over at all does not
+   complete silently either. That one runs the REAL ``AssessmentService``, because
+   the gap it covers was invisible precisely at this level — the service returned
+   the document, the handler saw no exception, and the Lambda's response was
+   indistinguishable from a fully scored section.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ from unittest.mock import MagicMock, patch
 import botocore.exceptions
 import pytest
 
+from idp_common import metrics
 from idp_common.models import Document, Section, Status
 from idp_common.utils.transient_errors import TransientError
 
@@ -246,7 +252,7 @@ def test_degrading_emits_the_confidence_unavailable_metric(wired, monkeypatch):
     """
     calls = []
     monkeypatch.setattr(
-        assessment_index.metrics,
+        metrics,
         "put_metric",
         lambda name, value, *a, **kw: calls.append((name, value)),
     )
@@ -261,7 +267,7 @@ def test_a_successful_assessment_emits_no_degrade_metric(wired, monkeypatch):
     a count emitted on every section would breach on throughput alone."""
     calls = []
     monkeypatch.setattr(
-        assessment_index.metrics,
+        metrics,
         "put_metric",
         lambda name, value, *a, **kw: calls.append((name, value)),
     )
@@ -285,7 +291,7 @@ def test_a_failed_metric_put_does_not_fail_the_document(wired, monkeypatch):
     path that exists to AVOID failing a document into one that fails it — the whole
     point of #901's guard is that the extraction is kept."""
     monkeypatch.setattr(
-        assessment_index.metrics,
+        metrics,
         "put_metric",
         MagicMock(side_effect=RuntimeError("cloudwatch unreachable")),
     )
@@ -298,3 +304,51 @@ def test_a_failed_metric_put_does_not_fail_the_document(wired, monkeypatch):
     assert [i.code for i in document.sections[0].processing_issues] == [
         "assessment_failed_confidence_unavailable"
     ]
+
+
+def test_a_section_with_nothing_to_assess_does_not_complete_silently(
+    wired, monkeypatch
+):
+    """#1006: the whole invocation, with the REAL AssessmentService.
+
+    This is the level at which the gap was invisible. A section that reaches the
+    Assessment step with no extraction result makes the service return early; the
+    handler sees no exception, so its degrade branch never runs, and the response
+    it hands back to the state machine looks exactly like a section that was
+    scored. ``processresults_function`` then lets the document complete, because a
+    section document's ``errors`` list is read only when its status is
+    ``Status.FAILED``.
+
+    So the assertions below are about what leaves the Lambda: the returned document
+    carries the issue, the section write the UI reads was made, and the count the
+    alarm reads was published.
+    """
+    from idp_common.assessment.degradation import (
+        CONFIDENCE_SKIPPED_CODE,
+        CONFIDENCE_UNAVAILABLE_METRIC,
+    )
+    from idp_common.config.models import IDPConfig
+
+    puts = []
+    monkeypatch.setattr(
+        metrics, "put_metric", lambda name, value, *a, **kw: puts.append((name, value))
+    )
+    # The real service needs a real config; confidence assessment is on by default.
+    monkeypatch.setattr(assessment_index, "get_config", lambda **kw: IDPConfig())
+
+    document = _document()
+    document.sections[0].extraction_result_uri = None
+
+    result = assessment_index.handler(
+        {"document": document.to_dict(), "section_id": "1"}, _Context()
+    )
+
+    returned = Document.from_dict(result["document"])
+    issue_codes = [i.code for i in (returned.sections[0].processing_issues or [])]
+    assert issue_codes == [CONFIDENCE_SKIPPED_CODE]
+    assert (CONFIDENCE_UNAVAILABLE_METRIC, 1) in puts
+
+    # Persisted for the Sections panel by the handler's existing section write.
+    assert wired.update_document_section.called
+    persisted = wired.update_document_section.call_args.kwargs["section"]
+    assert [i.code for i in persisted.processing_issues] == [CONFIDENCE_SKIPPED_CODE]

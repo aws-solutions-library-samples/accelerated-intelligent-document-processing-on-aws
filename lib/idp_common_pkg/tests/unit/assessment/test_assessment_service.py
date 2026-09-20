@@ -839,15 +839,14 @@ class TestAssessmentService:
     def test_process_document_section_missing_section(
         self, mock_put_metric, service, sample_document_with_extraction
     ):
-        """Test processing a document section that doesn't exist."""
-        # Process a non-existent section
-        result = service.process_document_section(
-            sample_document_with_extraction, "999"
-        )
+        """A section_id that is not in the document raises.
 
-        # Verify error was added
-        assert len(result.errors) == 1
-        assert "Section 999 not found in document" in result.errors[0]
+        There is no section on which to record the missing confidence, so
+        returning the document would leave the caller with no signal at all
+        (#1006). See ``test_no_confidence_signal.py`` for the full contract.
+        """
+        with pytest.raises(ValueError, match="Section 999 not found in document"):
+            service.process_document_section(sample_document_with_extraction, "999")
 
     @patch("idp_common.s3.get_json_content")
     @patch("idp_common.metrics.put_metric")

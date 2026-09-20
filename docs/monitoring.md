@@ -234,6 +234,24 @@ The document completes, its extracted data is intact, and the gap is recorded as
 an error-severity `assessment_failed_confidence_unavailable` processing issue on
 the section.
 
+A section can also reach the Assessment step with **nothing to assess** — no
+extraction result written for it, no pages listed on it, or an extraction result
+whose `inference_result` is empty. The confidence model is never called, so this
+is not a confidence failure and the document completes for the same reason, but
+the outcome for that section is identical: no confidence scores, and therefore no
+coverage by confidence-based review. It is recorded as an error-severity
+`assessment_skipped_confidence_unavailable` issue on the section
+([#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
+
+Not every empty result is that, though. A class with **no attributes to extract**
+makes extraction skip the model deliberately and write an empty result flagged as
+such, and that is an everyday occurrence rather than a gap: a page classified
+`unclassified` — a blank page, a page whose classification errored, or any page in
+a deployment with no document types configured — has no class in configuration and
+therefore no attributes. Those sections report nothing at all, exactly as an
+[excluded class](./classification.md) does, because an error indicator and an
+alarm data point per blank page would make both useless.
+
 That is the right trade for one section, and it creates a monitoring gap for the
 fleet ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)):
 a **systemic** confidence failure no longer fails documents, so it no longer
@@ -244,12 +262,25 @@ CloudWatch metric.
 
 One metric in the stack's own namespace (`<StackName>`):
 
-- **`AssessmentConfidenceUnavailable`** — published (value `1`) each time a
-  section is degraded, by the unified pattern's `AssessmentFunction`, with no
-  dimensions. It reaches the **root** stack's namespace because that function's
-  `METRIC_NAMESPACE` is the `StackName` the parent passes down. Published only on
-  a degrade, so no data means every confidence pass either succeeded or failed
-  transiently and was retried.
+- **`AssessmentConfidenceUnavailable`** — published (value `1`) by the unified
+  pattern's `AssessmentFunction`, with no dimensions, each time a section ends up
+  with **no confidence scores**, whichever of the two causes above put it there.
+  It reaches the **root** stack's namespace because that function's
+  `METRIC_NAMESPACE` is the `StackName` the parent passes down. The metric
+  deliberately does not separate a failed confidence pass from a skipped one: the
+  question it exists to answer is "are sections coming back without confidence?",
+  and the answer is yes either way. The section's issue code is what tells the two
+  apart once you open the document, and they point at different remedies — the
+  confidence model for a failure, whatever produced the section for a skip.
+  Nothing is published for a section the confidence pass was never going to score:
+  one whose class is **excluded**, one that extraction deliberately produced no
+  fields for because its class has **no attributes to extract** (which is what a
+  page classified `unclassified` gets), or any section at all when confidence
+  assessment is switched off in configuration. All three are expected on healthy
+  documents — a single blank page or cover sheet produces the second — so counting
+  them would breach the alarm's threshold on ordinary throughput. **No data
+  therefore means every section that should have been scored was scored** — give
+  or take a confidence pass that failed transiently and succeeded on retry.
 
 One alarm publishes to `AlertsTopic`:
 
@@ -266,20 +297,23 @@ One alarm publishes to `AlertsTopic`:
   unified-pattern dashboard draws the configured value as its annotation, so the
   graph and the trigger stay in step when you tune it.
 
-**Diagnosing.** The recorded issue's `root_cause` names the underlying exception,
-and the same failure is logged at ERROR in the AssessmentFunction log group. Note
+**Diagnosing.** Start from the recorded issue's `code`, which says whether the
+confidence pass failed or never ran, and its `root_cause`, which names the
+underlying exception for a failure and what the section was missing for a skip.
+The same line is logged at ERROR in the AssessmentFunction log group. Note
 that group is `/<StackName>-PATTERNSTACK-<id>/lambda/AssessmentFunction`: the name
 comes from `AWS::StackName` **inside the nested pattern template**, which is the
 nested stack's CloudFormation-generated name, not the root stack's — so list on the
-`/<StackName>-PATTERNSTACK` prefix rather than typing the path
-("Deterministic (non-retryable) assessment failure"). The three causes worth
-checking first:
+`/<StackName>-PATTERNSTACK` prefix rather than typing the path. A failure logs
+"Deterministic (non-retryable) assessment failure"; a skip logs what the section
+was missing. The four causes worth checking first:
 
-| Symptom in `root_cause` | Likely cause | Fix |
+| Symptom in the recorded issue | Likely cause | Fix |
 |---|---|---|
 | `ValidationException: Input is too long for requested model.` | The confidence model's input limit is smaller than the sections being assessed | Lower `extraction.confidence.list_batch_size`, or configure a confidence model with a larger context window |
 | `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
 | `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
+| No exception at all, and the code is `assessment_skipped_confidence_unavailable` | The section reached assessment with nothing to assess: no extraction result, no pages, or an empty `inference_result` | Look at the stage that produced the section — Extraction for a missing or empty result, Classification for a section with no pages — not at the confidence model |
 
 **What is lost while it is firing:** the affected sections have no confidence
 values, so they are not covered by confidence-based review — HITL confidence
@@ -413,7 +447,7 @@ documents processed" genuinely means "no failures", and leaving alarms parked in
 | `QueueProcessorErrorsAlarm` | Any `QueueProcessor` invocation error in 5 min — for this function, a timeout or out-of-memory before its SQS batch finished | `AlertsTopic` | — |
 | `WorkflowTrackerDLQAlarm` | Any message in the Workflow Tracker DLQ | `AlertsTopic` | — |
 | `StaleOutputPurgeFailedAlarm` | Any output-purge failure within 5 min | `AlertsTopic` | — |
-| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections degraded to "no confidence scores" within 15 min — a systemic confidence-assessment failure, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
+| `AssessmentConfidenceUnavailableAlarm` | `ConfidenceUnavailableThreshold` or more sections left with "no confidence scores" within 15 min, whether the confidence pass failed or never ran — something systemic, not a few awkward documents | `AlertsTopic` | `ConfidenceUnavailableThreshold` (default `10`) |
 | `DataMartRollupDLQAlarm` | Any message in the reporting-rollup DLQ | `AlertsTopic` | — |
 | `BedrockServiceOutageAlarm` | Combined Bedrock error count exceeds the circuit-breaker threshold | `CircuitBreakerTopic` | `CircuitBreakerFailureThreshold` and the `CircuitBreakerTrigger*` toggles |
 
