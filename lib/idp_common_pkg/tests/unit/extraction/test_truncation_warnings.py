@@ -13,6 +13,10 @@ Bedrock's bare "Input is too long". This pins:
   key/value blocks, a prose "|" or a list of scalars never count against it.
 * the pre-flight estimate (log + remembered figures, NOT a processing issue) and
   ``ExtractionInputTooLarge`` — the mode-aware, remedy-carrying failure.
+* what that shortfall COSTS: ``extraction.row_shortfall_action`` and
+  ``ExtractionOutputIncomplete`` (#1032). Detection and consequence are separate
+  concerns here — the action moves the severity and the outcome, never the floor or
+  the ratio, and ``TestRowShortfallOutcome`` asserts both halves of that.
 """
 
 from __future__ import annotations
@@ -353,8 +357,11 @@ class TestRowShortfallOutcome:
         persisted = written["metadata"]["processing_issues"]
         assert [i for i in persisted if i["code"] == CODE and i["severity"] == "error"]
         assert "COMPLETED WITH ERRORS" in written["processing_report"]
-        # and the document carries the explanation for processresults_function,
-        # which fails a document on a non-empty document.errors
+        # and document.errors carries it, as the sibling overflow/image handlers
+        # do. Ordinarily this exception fails the Step Functions execution before
+        # processresults_function (which fails a document on a non-empty
+        # document.errors) is reached, and the Step Functions cause is what the
+        # reader sees; the append is what carries the text if it is ever caught.
         assert any("materially incomplete" in e for e in doc.errors)
         assert "43 row(s)" in str(exc) and "row_shortfall_action" in str(exc)
 

@@ -89,11 +89,14 @@ Headline results at v0.6.9:
    limit is no longer masked. Textract TABLES + Sonnet 5 completed the 800-row document in
    **8 of 11** draws across three suites at v0.6.8 and **1 of 2** at v0.6.9; the same
    document under BDA OCR, Bedrock-LLM OCR, forced tool use, or Sonnet 5 `:1m` returned
-   **43–92 of 800 rows** with status `COMPLETED`. ⚠️ **Above 800 rows v0.6.9 no longer
-   refuses.** Where v0.6.8 rejected 1,200+ rows outright with `Input is too long`, v0.6.9
-   returns 43–101 of 1,200–1,600 rows as `COMPLETED`; only 3,200 rows still refuses. The row
-   count reached is recorded in `truncation_prefix`, so it remains detectable, but the status
-   no longer tells you (§3).
+   **43–92 of 800 rows** with status `COMPLETED`. ⚠️ **On v0.6.9, above 800 rows nothing
+   refuses.** Where v0.6.8 rejected 1,200+ rows outright, v0.6.9 returns 43–101 of
+   1,200–1,600 rows as `COMPLETED`; only 3,200 rows exceeds the input window. From 0.6.10
+   such a run resolves to `FAILED` again, after writing the rows it did get: the
+   `extraction_rows_below_ocr_estimate` processing issue is what the status now follows
+   (`extraction.row_shortfall_action`, default `fail`). §3 has the arithmetic isolating why
+   v0.6.8 refused — the many-image pixel cap, not the input window — and why an input-size
+   gate could not have fixed this.
 4. **Advanced mode holds recall 1.000 and cell accuracy 1.000 through 3,200 rows / 66
    pages at every model tested** — Sonnet 4.6 ($11.39), Sonnet 5 ($24.93), Opus 5 and GPT-6
    Astra ($22.5–24.0) — so above ~400 rows the choice is only about cost and wall-clock (§3, §5).
@@ -465,17 +468,59 @@ Per-row **cell accuracy is 1.000 in every completed run of both modes** — at n
 either mode return a row with a *wrong* value. Every loss here is a missing row.
 
 > ⚠️ **Behaviour change at v0.6.9, and it is the one number in this section to read carefully.**
-> On v0.6.8 simple mode **refused** documents from 1,200 rows: `ExtractionInputTooLarge`, in
-> 21–55 s, in 12 of 12 draws across both models. On v0.6.9 the same cells **return
-> `COMPLETED`** carrying 43–101 of the requested 1,200–1,600 rows. The truncation is
-> *recorded* — the run carries `truncation_prefix` with the row count it stopped at, which is
-> the detection #843 added — so a dashboard or a downstream rule can still catch it. But the
-> status is success, and a consumer reading status alone now sees a completed document with
-> 3–8% of its rows. **What changed is not established**: the refusal was driven by a
-> pre-flight input-size estimate, and this release altered how requests are assembled and
-> capped, so a request that was previously rejected before it was sent now goes out and
-> truncates. No controlled probe was run to isolate it. Advanced mode is unaffected and
-> returns 1.000 at every size, so the practical guidance below does not change.
+> On v0.6.8 simple mode **refused** documents from 1,200 rows, in 21–55 s, in 12 of 12 draws
+> across both models. On v0.6.9 the same cells **return `COMPLETED`** carrying 43–101 of the
+> requested 1,200–1,600 rows: the status is success, and a consumer reading status alone sees
+> a completed document with 3–8% of its rows. Advanced mode is unaffected and returns 1.000 at
+> every size, so the practical guidance below does not change. From 0.6.10 the outcome is a
+> **failure** again — see *What changed, and what ships now* below.
+>
+> ⚠️ **The v0.6.8 refusal was not an input-size decision, and this is worth knowing before
+> tuning anything.** Simple mode's pre-flight estimate has never refused a request; it logs
+> and sends. What refused these documents was Bedrock, on the **many-image 2,000 px cap**
+> that #994 then fixed: a request carrying more than 20 images has every image capped at
+> 2,000 px, so a 25-page section was rejected as a whole while every page was individually
+> legal. The extraction-phase input tokens in this suite give the arithmetic. Measured at
+> 1/3/9/17 pages the request costs 6,622 tokens per page, and the 17-page figure is
+> **identical** across the two releases (111,083) — at 17 images the cap does not apply. At
+> 25 and 33 pages v0.6.9 measures 146,142 and 193,745 against a projected uncapped 164,060
+> and 217,037, a saving of 717 and 706 tokens per image: the same constant, present where the
+> cap applies and absent where it does not. And 164,060 is **under** Sonnet 5's 200,000-token
+> window, so at 25 pages there was no context overflow to refuse — the v0.6.8 failures also
+> billed no extraction tokens at all (cost ≈ the OCR spend alone), which is a request
+> rejected before inference. At 33 pages both limits bound, and the cap removed both. At 66
+> pages the projection is ~389K even capped, which is why 3,200 rows still fails.
+
+### What changed, and what ships now
+
+The consequence of the above is that **restoring a pre-flight refusal would not have fixed
+this**. At 25 pages the request is ~146K estimated input tokens against a 200K window —
+73% of it — so a gate keyed on "the estimate exceeds the model's window" is silent on
+exactly the cases in this table, and a gate tightened until it were not would refuse
+documents that complete today. The truncation is an **output** event: the model accepts a
+request that fits and stops after ~100 rows, well short of its 128K output cap (5,213
+output tokens at 1,200 rows). It is also not new — 800 rows was already bimodal on v0.6.8.
+What #994 changed is the *range of sizes over which the request is accepted*, which exposed
+a pre-existing truncation at 1,200 and 1,600 rows.
+
+So 0.6.10 makes the observed shortfall the thing that decides the outcome, via
+`extraction.row_shortfall_action` (default `fail`). The `extraction_rows_below_ocr_estimate`
+detection is unchanged — the rows extracted against the rows in the section's OCR tables of
+the same shape, a floor of 30 and a "fewer than half" ratio — and the partial rows and the
+diagnosis are still written before the section fails. A truncated run in this table is
+therefore `FAILED` again, with a message naming the rows extracted, the OCR estimate and the
+remedy, rather than a refusal that named a request size which was not in fact the problem.
+
+Two notes on the threshold, because it is the part most likely to be got wrong. It is **not
+a new number**: the failure fires exactly where the warning already fired, so no second
+threshold was chosen to make these cells come out right. And across the 3,631 recorded
+benchmark runs that reach the check's population, non-zero recall is strongly bimodal — 65
+runs below 0.5, 3,368 at ~1.000, and **one single run** anywhere in [0.3, 0.5). The ratio
+sits in an empirically empty band, so the outcome is insensitive to its exact value. Of those
+65, three are Advanced-mode runs (of 1,231 Advanced runs in the population) and all three are
+genuine truncations. See
+[Extraction and confidence](../extraction-and-confidence.md#a-materially-incomplete-list-fails-the-section--extractionrow_shortfall_action)
+for when to set `warn` — the one shape the check's same-width evidence cannot resolve.
 
 ### Where the cliff is, and why "COMPLETED" is not the signal to trust
 
@@ -486,13 +531,13 @@ extract, and the rows arrived as N per-section lists that a consumer had to reas
 With #726/#817 every document is one section and that scaffolding is gone. Three things
 follow, each measured here:
 
-1. **From 1,200 rows / 25 pages, simple mode returns a fraction of the document and calls
-   it `COMPLETED`.** 43–101 rows of 1,200–1,600, in 4 of 4 draws, for $1.00–1.38. Only
-   3,200 rows / 66 pages still refuses outright. On v0.6.8 every size from 1,200 up refused
-   with `ExtractionInputTooLarge` in 21–55 s, which was the better behaviour for a mode that
-   cannot shard: a refusal names the estimated input and the remedy, and cannot be mistaken
-   for a result. See the warning above the table — the truncation is recorded in
-   `truncation_prefix`, so it is detectable, but the run status no longer tells you.
+1. **From 1,200 rows / 25 pages, simple mode returns a fraction of the document.** 43–101
+   rows of 1,200–1,600, in 4 of 4 draws, for $1.00–1.38. Only 3,200 rows / 66 pages exceeds
+   the model's input window and is refused before inference. On the v0.6.9 measurements in
+   this table these runs reported `COMPLETED`; from 0.6.10 they resolve to `FAILED` with the
+   rows extracted, the OCR row estimate and the remedy in the message, which is the outcome
+   a mode that cannot shard should give. The rows it did extract are still written to the
+   section's `result.json`, so nothing measured here is lost — only the claim of success is.
 2. **800 rows / 17 pages is the boundary, and it is a coin flip.** The TABLES + Sonnet 5
    cell completed 800 rows in this table's 4 draws and §2's grid run, then returned **43 of
    800 in 3 of 5 repeats** of the identical cell inside the §5.2 premium study — **8 of 11
@@ -504,11 +549,13 @@ follow, each measured here:
    reliably long enough; the same request lands on either side of it run to run, and small
    changes to the input text or output format shift the odds."** Treat ~400 rows / ~10
    pages as the safe simple-mode envelope, and use advanced mode above it.
-3. **A truncated run is no longer silent, but it is still `COMPLETED`.** Every 43–92-row
-   result carries `extraction_rows_below_ocr_estimate` (#843) in its processing issues,
-   and the status-tracking record counts it — so a dashboard or a downstream rule *can*
-   catch it. Nothing refuses the document, and the truncated run is cheaper than the
-   complete one, so cost and status alone still will not.
+3. **A truncated run is no longer silent, and from 0.6.10 the status says so.** Every
+   43–92-row result carries `extraction_rows_below_ocr_estimate` (#843) in its processing
+   issues, and the status-tracking record counts it. That was the only signal until 0.6.10,
+   and it required a dashboard or a downstream rule to read it: a processing issue does not
+   change a document's status at any severity, and a truncated run is *cheaper* than a
+   complete one, so neither status nor cost flagged it. `extraction.row_shortfall_action`
+   (default `fail`) is what makes the status trustworthy on its own.
 
 ### Advanced mode: completeness holds; cost and wall-clock are the limits
 

@@ -1237,6 +1237,33 @@ See `notebooks/examples/demo-lambda/` for:
 
 For more details, see [Extraction & Confidence](extraction-and-confidence.md).
 
+### A list that lost most of its rows fails the section (`extraction.row_shortfall_action`)
+
+Extraction compares the rows it returned for a list field with the rows in the section's own
+OCR tables *of the same shape*. When the OCR evidences at least 30 such rows and fewer than
+half of them came back, that is recorded as `extraction_rows_below_ocr_estimate` — and by
+default the section **fails**:
+
+```yaml
+extraction:
+  row_shortfall_action: fail     # fail (default) | warn
+```
+
+The partial rows, the issue and the processing report are written to the section's
+`result.json` first, so the failure costs the claim of success and not the data. The reason
+the default is `fail`: a processing issue does not change a document's status at any
+severity, and a truncated run is *cheaper* than a complete one, so a document carrying 3% of
+a long table used to report `COMPLETED` with nothing in status or cost to flag it.
+
+Set `warn` to restore the advisory-only behaviour. The case that warrants it is a class
+declaring a list whose column count coincides with an unrelated table of 30+ rows in the same
+section: the check's evidence is same-width OCR tables and it cannot tell those apart, so the
+estimate is inflated and a complete extraction can score below the ratio. This setting
+changes only what the shortfall costs, never when it is detected, and it applies to both
+Simple and Advanced extraction. Editable in the Web UI under **Configuration → Extraction →
+Truncated list outcome**. See
+[Extraction & Confidence](extraction-and-confidence.md#a-materially-incomplete-list-fails-the-section--extractionrow_shortfall_action).
+
 ### Tiered Models (Validation + Escalation)
 
 Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model, then automatically re-extract only the fields that fail schema validation with a stronger model. This is configured under `extraction.validation`:

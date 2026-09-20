@@ -2062,7 +2062,8 @@ consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED`
 processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
 make both loud without changing what is extracted:
 
-- `extraction_rows_below_ocr_estimate` (warning, both modes) — rows extracted for the lists of
+- `extraction_rows_below_ocr_estimate` (**error** by default, warning under
+  `extraction.row_shortfall_action: warn`; both modes) — rows extracted for the lists of
   objects of one shape vs the rows in the section's OCR tables **of that shape** (`_ocr_tables`
   counts only Markdown tables: lines that START with a pipe, in a run that holds a `|---|`
   separator row; a separator starts a new table, a non-empty line without a leading pipe
@@ -2082,6 +2083,27 @@ make both loud without changing what is extracted:
   same precondition as the table-parsing tool. The exact-width rule is a trade: an item schema with a
   derived property the table lacks is not compared at all, and a two-property list next to a
   real two-column table (a form rendered as a Textract TABLE) is.
+- `ExtractionOutputIncomplete` — the section's list came back under half the rows its own
+  OCR text evidences, and `extraction.row_shortfall_action` is `fail` (the default).
+  Raised by `_fail_on_row_shortfall`, which is the **last statement of
+  `_save_results`** — so the partial `inference_result`, the error-severity
+  `extraction_rows_below_ocr_estimate` issue and the processing report are already durable
+  in the section's `result.json`, and only the section's *outcome* changes. That ordering
+  is the point: the failure costs visibility, not data. It reads the persisted issue's
+  severity back rather than re-testing the config, so the issue a consumer can see and the
+  decision to fail are one decision and cannot disagree. `_save_results` is the single tail
+  shared by the in-process `process_document_section` path and the Step Functions
+  shard-merge entry point, which is why this lives there and not in either caller: the two
+  modes cannot drift apart on it. The class name is in no `Retry.ErrorEquals` in
+  `workflow.asl.json` and `is_transient_error` returns `False` for it, so a request that
+  would stop early again is not sent again.
+  Distinct from `ExtractionInputTooLarge` in cause and in remedy: that one is Bedrock
+  refusing a request that never ran, this one is the model accepting a request that
+  **fits** the window and then stopping. On the 25-page case in #1032 the request was
+  ~146K estimated input tokens against a 200K window, so no input-size gate could have
+  seen it. `process_document_section` re-raises it before the two Bedrock-error matchers
+  run, so a wording change can never reclassify a row shortfall as an overflow or an image
+  rejection and attach a remedy that does not apply.
 - `ExtractionInputTooLarge` — the "Input is too long" failure re-raised `from` Bedrock's
   `ValidationException` (in the shard path, `from` the agentic `ValueError` whose cause is
   that `ValidationException`; the transient check follows the whole chain) with the section size (from the logged pre-flight estimate,
