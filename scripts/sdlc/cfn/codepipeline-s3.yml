@@ -310,13 +310,13 @@ Resources:
           - Sid: Enable IAM User Permissions
             Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
             Action: 'kms:*'
             Resource: '*'
           - Sid: Allow CodePipeline Service
             Effect: Allow
             Principal:
-              Service: codepipeline.amazonaws.com
+              Service: !Sub 'codepipeline.${AWS::URLSuffix}'
             Action:
               - 'kms:Decrypt'
               - 'kms:GenerateDataKey'
@@ -324,7 +324,7 @@ Resources:
           - Sid: Allow CodeBuild Service
             Effect: Allow
             Principal:
-              Service: codebuild.amazonaws.com
+              Service: !Sub 'codebuild.${AWS::URLSuffix}'
             Action:
               - 'kms:Decrypt'
               - 'kms:GenerateDataKey'
@@ -345,7 +345,7 @@ Resources:
           Statement:
             - Effect: Allow
               Principal:
-                Service: codepipeline.amazonaws.com
+                Service: !Sub 'codepipeline.${AWS::URLSuffix}'
               Action: 'sts:AssumeRole'
         Policies:
           - PolicyName: CodePipelinePolicy
@@ -360,10 +360,10 @@ Resources:
                     - 's3:ListBucket'
                     - 's3:PutObject'
                   Resource:
-                    - !Sub 'arn:aws:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}/*'
-                    - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
-                    - !Sub 'arn:aws:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
-                    - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
+                    - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
                 - Effect: Allow
                   Action:
                     - 'codebuild:BatchGetBuilds'
@@ -396,7 +396,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: codebuild.amazonaws.com
+              Service: !Sub 'codebuild.${AWS::URLSuffix}'
             Action: 'sts:AssumeRole'
       Policies:
         - PolicyName: CloudFormationAccess
@@ -407,8 +407,8 @@ Resources:
                 Action:
                   - cloudformation:*
                 Resource: 
-                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/idp-*'
-                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/idp-*/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/idp-*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/idp-*/*'
               # ValidateTemplate and ListStacks don't support resource-level
               # permissions (list/global ops), so they need Resource '*'.
               # ListStacks is used by the startup reapers
@@ -436,28 +436,28 @@ Resources:
                 Action:
                   - iam:*
                 Resource:
-                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/idp-*'
-                  - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/idp-*'
-                  - !Sub 'arn:aws:iam::${AWS::AccountId}:instance-profile/idp-*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/idp-*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/idp-*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/idp-*'
               # PassRole for CloudFormation service role
               - Effect: Allow
                 Action:
                   - iam:PassRole
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/idp-*'
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/idp-*'
                 Condition:
                   StringEquals:
                     iam:PassedToService: 
-                      - cloudformation.amazonaws.com
-                      - lambda.amazonaws.com
-                      - states.amazonaws.com
-                      - bedrock.amazonaws.com
+                      - !Sub 'cloudformation.${AWS::URLSuffix}'
+                      - !Sub 'lambda.${AWS::URLSuffix}'
+                      - !Sub 'states.${AWS::URLSuffix}'
+                      - !Sub 'bedrock.${AWS::URLSuffix}'
               # Service-linked roles
               - Effect: Allow
                 Action:
                   - iam:CreateServiceLinkedRole
                   - iam:DeleteServiceLinkedRole
                   - iam:GetServiceLinkedRoleDeletionStatus
-                Resource: 'arn:aws:iam::*:role/aws-service-role/*'
+                Resource: !Sub 'arn:${AWS::Partition}:iam::*:role/aws-service-role/*'
         - PolicyName: S3Access
           PolicyDocument:
             Version: '2012-10-17'
@@ -467,15 +467,15 @@ Resources:
                 Action:
                   - s3:*
                 Resource:
-                  - !Sub 'arn:aws:s3:::genaiic-sdlc-sourcecode-${AWS::AccountId}-${AWS::Region}'
-                  - !Sub 'arn:aws:s3:::genaiic-sdlc-sourcecode-${AWS::AccountId}-${AWS::Region}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::genaiic-sdlc-sourcecode-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::genaiic-sdlc-sourcecode-${AWS::AccountId}-${AWS::Region}/*'
               # IDP stack buckets
               - Effect: Allow
                 Action:
                   - s3:*
                 Resource:
-                  - 'arn:aws:s3:::idp-*'
-                  - 'arn:aws:s3:::idp-*/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::idp-*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::idp-*/*'
         - PolicyName: MonitoringAndCleanupAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -484,7 +484,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - lambda:*
-                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:idp-*'
+                Resource: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:idp-*'
               # Lambda ListFunctions - required for Test Studio to discover TestRunnerFunction
               # Note: AWS does not support resource-level permissions for ListFunctions
               - Effect: Allow
@@ -496,15 +496,15 @@ Resources:
                 Action:
                   - dynamodb:*
                 Resource: 
-                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/idp-*'
-                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/idp-*/index/*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/idp-*'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/idp-*/index/*'
               # Step Functions
               - Effect: Allow
                 Action:
                   - states:*
                 Resource:
-                  - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:idp-*'
-                  - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:idp-*:*'
+                  - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:idp-*'
+                  - !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:idp-*:*'
               # AppSync - cleanup of PRE-MIGRATION leftovers only.
               # No current template creates an AppSync API: the UI now calls an
               # API Gateway REST API (the APIRESOLVERSTACK nested stack), and zero
@@ -579,7 +579,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - logs:*
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
         # Read-only, so the deployment summary can follow a nested stack's
         # CodeBuild custom-resource failure down to the REAL cause. A failed
         # Docker-image build reports only "CodeBuild failed with status: FAILED"
@@ -595,7 +595,7 @@ Resources:
                 Action:
                   - codebuild:ListBuildsForProject
                   - codebuild:BatchGetBuilds
-                Resource: !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/*'
+                Resource: !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/*'
         - PolicyName: CloudWatchMetricsAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -960,14 +960,14 @@ Resources:
               - 's3:GetObjectVersion'
               - 's3:PutObject'
             Resource: 
-              - !Sub 'arn:aws:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}/*'
-              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/*'
           - Effect: Allow
             Action:
               - 's3:ListBucket'
             Resource: 
-              - !Sub 'arn:aws:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
-              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketNamePrefix}-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}'
 
   CodeBuildLogsPolicy:
     Type: 'AWS::IAM::Policy'
@@ -1024,8 +1024,8 @@ Resources:
               - 'bedrock:GetDataAutomationProject'
               - 'bedrock:DeleteDataAutomationProject'
             Resource:
-              - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:blueprint/*'
-              - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:data-automation-project/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:blueprint/*'
+              - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:data-automation-project/*'
           - Effect: Allow
             Action:
               - 'bedrock:ListIngestionJobs'
@@ -1075,7 +1075,7 @@ Resources:
               - !Ref FileKey
       State: ENABLED
       Targets:
-        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${PipelineName}'
+        - Arn: !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${PipelineName}'
           Id: PipelineTrigger
           RoleArn: !GetAtt PipelineTriggerRole.Arn
 
@@ -1089,7 +1089,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: events.amazonaws.com
+              Service: !Sub 'events.${AWS::URLSuffix}'
             Action: sts:AssumeRole
       Policies:
         - PolicyName: TriggerPipelinePolicy
@@ -1099,4 +1099,4 @@ Resources:
               - Effect: Allow
                 Action:
                   - codepipeline:StartPipelineExecution
-                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${PipelineName}'
+                Resource: !Sub 'arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${PipelineName}'

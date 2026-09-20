@@ -69,16 +69,18 @@ make cfn-lint-warnings
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added
-without being covered. `make check-arn-partitions` now uses the **same** discovery
-(`scripts/discover_templates.sh cfn`, `Makefile:234`) and both targets fail outright
+without being covered. `make check-arn-partitions` uses the **same** discovery
+(`scripts/discover_templates.sh cfn`) and both targets fail outright
 if it returns nothing, so the two gates see the same set — 30 templates today. The
 hardcoded glob list that once missed `nested/`, `samples/`, `notebooks/`, `scripts/`
 and `iam-roles/` is gone; that directory list survives only as the historical note in
-the Makefile comments. One deliberate carve-out remains: `ARN_PARTITION_EXEMPT`
-(`Makefile:226`) skips any discovered template whose path starts with
-`scripts/sdlc/cfn/` — the four SDLC pipeline templates, which name a commercial-only
-cross-account principal by construction — so the ARN gate's real coverage is
-"every template found by content, less that prefix" — 26 of the 30. `cfn-lint`
+the Makefile comments. **Both gates now scan all 30 templates: no template is skipped
+at path scope by either.** The ARN gate's one carve-out, `ARN_PARTITION_EXEMPT`, is
+per **line**: entries are `<path>:<line-pattern>` (the shape
+`scripts/sdlc/retired_services.json` uses), and the single entry today hides the two
+statements in `scripts/sdlc/cfn/credential-vendor.yml` that trust a named role in the
+commercial CI account — cross-partition IAM trust does not exist, so those two cannot
+be parameterised. Everything else in those templates now is. `cfn-lint`
 exempts nothing at **path** scope: no template is skipped. It does exempt specific
 *rules*, which is a different axis — it runs with `--ignore-checks
 $(CFN_LINT_IGNORE)` (E3043 disabled repo-wide, see below) and E1161/E3031 are
@@ -553,9 +555,9 @@ The codebase maintains GovCloud compatibility:
 - Use `arn:${AWS::Partition}:` instead of hardcoded `arn:aws:`
 - Use `${AWS::URLSuffix}` instead of hardcoded `amazonaws.com`
 - Validation enforced via `make check-arn-partitions`, which runs in `lint`,
-  `fastlint` and `lint-cicd` (so both CIs) over every template discovered by
-  content, except those under `scripts/sdlc/cfn/` — see the `ARN_PARTITION_EXEMPT`
-  note above
+  `fastlint` and `lint-cicd` (so both CIs) over **every** template discovered by
+  content. No template is skipped; two individual lines are, via the per-line
+  `ARN_PARTITION_EXEMPT` — see the note above
 
 ### Nested Stacks
 

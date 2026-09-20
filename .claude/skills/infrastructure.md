@@ -74,12 +74,25 @@ When the gate flags a line that is genuinely fine:
   is already filtered by key. A literal inside a *folded* multi-line
   `Description: >` block is not, because only the key line carries the key —
   reword the example (`vpce.<URLSuffix>`) rather than adding a filter.
-- **Infrastructure that can only exist in one partition** is exempted by
-  directory in `ARN_PARTITION_EXEMPT` in the Makefile, each entry with a
-  written justification. Today that is only `scripts/sdlc/cfn/` (the SDLC
-  pipeline's own commercial-account infrastructure, naming a commercial
-  cross-account principal). Exempt a path, never a rule — a rule switched off
-  for every template loses its future value.
+- **An ARN that can only exist in one partition** is exempted per **line** in
+  `ARN_PARTITION_EXEMPT` in the Makefile, spelled `<path>:<line-pattern>`, each
+  entry with a written justification. Today there is one: the two statements in
+  `scripts/sdlc/cfn/credential-vendor.yml` trusting a named role in the commercial
+  CI account, which cross-partition IAM trust makes unparameterisable.
+  - Exempt a line, never a rule, and never a directory. Three tests in
+    `scripts/tests/test_discover_templates.py` enforce it: the entry must name a
+    real path and be named in the justification comment; it must hide at least one
+    finding (an exemption that shields nothing still pre-exempts the next edit to
+    that path); and it must not hide findings in more than one file, so one reason
+    can only ever answer for one file.
+  - That last one is the important one. The entry used to be the directory
+    `scripts/sdlc/cfn/`, and its reason — "names a commercial cross-account
+    principal" — was true of 2 lines out of the 51 it hid. The other 49 were
+    own-account ARNs and service principals that just needed parameterising.
+    Nothing was wrong with the sentence; what was wrong was that one sentence
+    answered for four templates, and read in aggregate it checks out. If your
+    exemption needs a second file, write a second entry and its own reason — and
+    if you cannot write one, that is the finding.
 
 ## Lambda Resource Pattern
 ```yaml
