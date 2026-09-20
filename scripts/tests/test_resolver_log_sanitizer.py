@@ -87,6 +87,7 @@ from pathlib import Path
 
 import gate_premises
 import pytest
+import repo_files
 
 pytestmark = pytest.mark.unit
 
@@ -312,15 +313,42 @@ def _lambda_dirs() -> list[Path]:
     return sorted(dirs)
 
 
+@lru_cache(maxsize=1)
+def _tracked_python() -> frozenset[Path]:
+    """Every Python file **git tracks**, as resolved absolute paths.
+
+    The authoritative set, read through git rather than walked, because an
+    extension that has been built locally leaves whole vendored copies of
+    ``idp_common`` under ``.aws-sam/build/``, ``build/lib/`` and its own
+    ``idp_common_pkg/``. Those carry the same log lines as the sources they were
+    copied from, so a filesystem walk finds them and a fresh CI checkout does not.
+    A gate that only fails on a machine where someone has run a build is the
+    defect it is trying to catch.
+    """
+    return frozenset(repo_files.tracked_paths(REPO_ROOT, "*.py"))
+
+
 def _python_files(directory: Path) -> list[Path]:
-    """Every Python file in a handler package, including subpackages.
+    """Every Python file git tracks in a handler package, including subpackages.
 
     Not just ``index.py``: ``src/lambda/chat_stream_processor`` puts its handler in
     ``app.py`` and carries two vendored processor modules under ``vendored/``, and
     both of those logged their raw event. An index-only scan is blind to a whole
     function.
+
+    Restricted to tracked files — see ``_tracked_python``. Build output is a copy
+    of a source this gate already reads, so counting it both double-counts and
+    makes the count depend on what the machine happens to have built.
     """
-    return sorted(directory.rglob("*.py"))
+    found = sorted(directory.rglob("*.py"))
+    try:
+        directory.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        # A synthetic tree under tmp_path: the self-checks below build one to prove
+        # this scan reads whole directories, and nothing there is tracked.
+        return found
+    tracked = _tracked_python()
+    return [p for p in found if p.resolve() in tracked]
 
 
 @lru_cache(maxsize=1)

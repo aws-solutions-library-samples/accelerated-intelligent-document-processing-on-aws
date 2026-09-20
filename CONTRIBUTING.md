@@ -368,7 +368,7 @@ now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
 when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 85 files
-holding 196 pre-existing findings, and `[format] exclude` names 186 files that
+holding 196 pre-existing findings, and `[format] exclude` names 184 files that
 `ruff format` has never been run over. Two further entries in the top-level
 `extend-exclude` are scope decisions rather than debt — the vendored
 `pii-anonymizer` tree, and `**/*.ipynb`, because `E402`/`F811`/`I001` describe a
@@ -412,7 +412,7 @@ Two practical consequences:
   `--allow-new-debt "<reason>"`, which records the reason in the baseline;
   `--summary` prints the current per-tree counts.
 
-The formatting debt is deliberately unpaid. Running `ruff format` over those 186
+The formatting debt is deliberately unpaid. Running `ruff format` over those 184
 files is a large, mechanical, conflict-generating diff, so it belongs in its own
 change rather than riding along with the one that narrowed the exclusions
 ([issue #975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975)).
@@ -703,7 +703,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 **Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
 88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
 an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`
-still excludes a named list of 85 files from the linter and 186 from the
+still excludes a named list of 85 files from the linter and 184 from the
 formatter. Both caveats are explained under
 [the local gate set](#before-every-commit), along with how to pay one of those
 files off. Types are checked

@@ -82,7 +82,7 @@ never opened. Issue #975.
 
 The exclusions are now per-file, generated from `scripts/lint_debt.json`, and
 ratcheted: `ruff.toml`'s `[lint] exclude` names 85 files holding 196 pre-existing
-findings, `[format] exclude` names 186 files `ruff format` has never run over, and
+findings, `[format] exclude` names 184 files `ruff format` has never run over, and
 `make check-lint-debt` (in `lint`, `fastlint` **and** `lint-cicd`, so both CIs)
 re-measures every tracked file with the exclusions bypassed. It fails if a listed
 file *gained* a finding, if a listed file is now clean and should be delisted, if a
@@ -112,7 +112,7 @@ current split. Two `extend-exclude` entries are scope decisions rather than debt
 the vendored `pii-anonymizer` tree and `**/*.ipynb` — and each carries a premise
 the gate evaluates against the tree.
 
-The **formatting** debt is deliberately unpaid: `ruff format` over those 186 files
+The **formatting** debt is deliberately unpaid: `ruff format` over those 184 files
 is a mechanical, conflict-generating sweep that belongs in its own change.
 
 `basedpyright` covers all 1230 tracked `.py` files (`pyrightconfig.json`'s `include`

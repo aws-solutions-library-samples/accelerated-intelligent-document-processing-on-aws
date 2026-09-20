@@ -468,8 +468,6 @@
     "scripts/tests/test_metric_namespace_alignment.py",
     "scripts/tests/test_repo_quality_review_skill.py",
     "scripts/tests/test_repo_walk_guards_prune_local_work.py",
-    "scripts/tests/test_resolver_log_sanitizer.py",
-    "scripts/tests/test_run_all_tests_registry.py",
     "scripts/tests/test_scope_lookup_fail_closed.py",
     "scripts/tests/test_secure_transport_deny.py",
     "scripts/tests/test_state_machine_retry_policies.py",
@@ -557,6 +555,6 @@
   "highWaterMark": {
     "lintDebtFiles": 85,
     "lintFindings": 196,
-    "formatDebtFiles": 186
+    "formatDebtFiles": 184
   }
 }
