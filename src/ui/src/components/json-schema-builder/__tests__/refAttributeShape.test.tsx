@@ -18,10 +18,9 @@
  * Why the shape is the bare `$ref`: the referenced `$defs` entry declares the
  * type, and the backend derives it by following the pointer — `tool_schema.py`
  * annotates outgoing `$ref` nodes with the target's real type — so there is
- * nothing for the designer to supply. It also stays correct *if* a `$ref` to a
- * non-object definition ever appears, which the designer cannot currently hold:
- * `convertJsonSchemaToClasses` builds every `$defs` entry as `type: 'object'`
- * and `exportSchema` writes every one back the same way.
+ * nothing for the designer to supply. A `$defs` entry may declare any type, not only
+ * `object`, so a sibling would be contradictory and not merely redundant for a
+ * reference to a scalar or enumerated definition.
  */
 
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -156,16 +155,14 @@ describe("the inspector's Reference Existing Class picker", () => {
   });
 
   /**
-   * A forward guard on a constructed fixture, not a state this product can reach:
-   * `convertJsonSchemaToClasses` flattens every imported `$defs` entry to
-   * `type: 'object'` and `exportSchema` writes them all back that way, so the
-   * designer cannot hold a class standing for a non-object definition today.
+   * A reachable state: a `$defs` entry declaring a scalar or enumerated type survives
+   * import and export, so the designer can hold a class standing for one (see
+   * `useSchemaDesigner.test.ts`, "$defs definitions that are not objects").
    *
-   * It is worth pinning because of what a mismatch costs if that changes, measured
-   * against the backend: stamping `type: 'object'` onto a reference to a scalar
-   * definition makes the Pydantic generator drop the `$ref` and yield an
-   * unconstrained `dict[str, Any]`, and makes the tool schema tell the model the
-   * field is an object. Both fail silently.
+   * What a mismatch costs here, measured against the backend: stamping `type: 'object'`
+   * onto a reference to a scalar definition makes the Pydantic generator drop the `$ref`
+   * and yield an unconstrained `dict[str, Any]`, and makes the tool schema tell the model
+   * the field is an object. Both fail silently.
    */
   it('adds no contradictory type for a reference to a non-object definition', async () => {
     const scalarClass = {

@@ -303,9 +303,10 @@ https://github.com/user-attachments/assets/bcd18e62-4795-44ea-9554-637062fd21d7
 
 Once the ground truth is in the shape you want, **publish a version** of the
 test set. This records the current documents and labels as a numbered version
-that a test run can name as the ground truth it was scored against — which is
-what lets you tell later whether a metric moved because your configuration
-changed or because the labels did. By default it also becomes the set's
+and copies the labels aside, so a test run can name the ground truth it was
+scored against and that ground truth stays fixed however much you annotate
+afterwards — which is what lets you tell later whether a metric moved because
+your configuration changed or because the labels did. By default it also becomes the set's
 *active reference*, the version the Test Sets table reports as its reference
 point; which version a run is scored against is chosen in the runner.
 
@@ -318,7 +319,8 @@ You don't need every document reviewed first: unreviewed fields keep their
 machine labels and stay flagged as such, so a time-boxed "first pass" benchmark
 is a legitimate thing to publish. Publish again whenever the set changes
 materially. See [Versioning test sets](./test-studio.md#versioning-test-sets)
-for the storage caveat on what a version does and does not freeze.
+for what publishing copies, the size ceiling on that copy, and what to expect
+from versions published before 0.6.10.
 
 ## Next Steps
 

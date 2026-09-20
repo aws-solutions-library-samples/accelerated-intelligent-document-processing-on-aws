@@ -73,8 +73,8 @@ describe('resolveAttributeType', () => {
   });
 
   it('treats a present but typeless target as an object', () => {
-    // buildJSONSchema writes every $defs entry as type: 'object', and the designer
-    // does not always carry that type on the in-memory class.
+    // A `$defs` entry with properties and no declared type is an object, and that is how
+    // it is written out; the in-memory class does not always carry the type either.
     expect(resolveAttributeType({ $ref: '#/$defs/Address' }, [designerClass('Address')])).toBe('object');
   });
 

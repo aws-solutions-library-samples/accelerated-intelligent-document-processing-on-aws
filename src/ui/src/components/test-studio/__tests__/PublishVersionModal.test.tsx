@@ -42,17 +42,17 @@ describe('PublishVersionModal', () => {
     expect(screen.getByText(/12 document\(s\)/)).toBeTruthy();
   });
 
-  it('claims only what the backend guarantees', () => {
-    // Publishing writes a DynamoDB row; it copies no baseline bytes, and the
-    // baselines a version stands for are snapshotted later from whatever the set
-    // holds at that moment. So the dialog must not promise the documents are frozen
-    // or that later edits cannot reach the version.
+  it('claims what the backend guarantees, including the copy', () => {
+    // Publishing copies the set's labels to `versions/{n}/baseline/` as part of recording
+    // the version, so the dialog may — and should — say the version's content is settled.
+    // It also warns that a large set takes a moment, because the copy is synchronous.
     renderModal();
     // Cloudscape renders a Modal into a portal, so the render container is empty.
     const text = document.body.textContent ?? '';
-    expect(text).not.toMatch(/never rewritten/);
-    expect(text).not.toMatch(/later edits to the set do not change it/);
     expect(text).toMatch(/Records a numbered version/);
+    expect(text).toMatch(/copies\s+the ground truth/);
+    expect(text).toMatch(/do not change what this version holds/);
+    expect(text).toMatch(/takes a moment/);
   });
 
   it('stays usable when the existing versions could not be read', () => {

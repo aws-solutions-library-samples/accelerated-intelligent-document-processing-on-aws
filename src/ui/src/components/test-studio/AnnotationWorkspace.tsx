@@ -127,9 +127,10 @@ type DocView = 'ground-truth' | 'source';
 /**
  * The version transition an annotation session is working within.
  *
- * `baseVersion` is the state being left, which the server has snapshotted to
- * `{testSetId}/versions/{baseVersion}/baseline/`; `draftVersion` is what this session is
- * producing. Carried in the queue link so a link identifies its own transition.
+ * `baseVersion` is the state being left. Publishing it copied its labels to
+ * `{testSetId}/versions/{baseVersion}/baseline/`, so they are already safe from this
+ * session; `draftVersion` is what this session is producing. Carried in the queue link so a
+ * link identifies its own transition.
  */
 interface AnnotationDraft {
   baseVersion: number;
@@ -263,8 +264,9 @@ const AnnotationWorkspace = (): React.JSX.Element => {
    *
    * Asked for rather than done on arrival, because the commitment is the thing
    * objected to being invisible: annotating a set that already has ground truth produces
-   * a new version of it whether or not anyone said so. The server snapshots the state
-   * being left, so agreeing here is also what makes the previous labels recoverable.
+   * a new version of it whether or not anyone said so. What makes the previous labels
+   * recoverable is that publishing copied them; agreeing here names the transition away
+   * from them, and publishes the arriving labels first for a set never published at all.
    *
    * Idempotent server-side, so a reviewer returning to a set mid-session re-opens the
    * same transition and nothing is copied again.
@@ -541,8 +543,9 @@ const AnnotationWorkspace = (): React.JSX.Element => {
    * The open transition, preferring what the server reported on the queue.
    *
    * Read from `getAnnotationQueue` rather than probed with the mutation: opening a draft
-   * snapshots the baselines, so using it to *find out* whether one exists would open a
-   * transition merely by visiting the page — the silent commitment this exists to remove.
+   * records the transition, and publishes an unpublished set's arriving labels, so using it
+   * to *find out* whether one exists would commit to a transition merely by visiting the
+   * page — the silent commitment this exists to remove.
    * `openedDraft` covers the gap between clicking Start annotating and the next queue
    * refresh returning the same numbers.
    */
