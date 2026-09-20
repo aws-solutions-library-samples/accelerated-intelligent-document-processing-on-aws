@@ -287,6 +287,9 @@ def test_ddb_direct_required_groups_agrees_with_the_manifest(ddb_direct, manifes
     required_groups = ddb_direct._REQUIRED_GROUPS
     assert len(required_groups) >= 10, "_REQUIRED_GROUPS looks empty/broken"
 
+    app_groups = sorted(
+        _load_generator().cognito_group_names((_REPO / "template.yaml").read_text())
+    )
     for field, required in required_groups.items():
         assert field in manifest, f"{field}: enforced in ddb_direct but not declared"
         expected = manifest[field]
@@ -294,6 +297,18 @@ def test_ddb_direct_required_groups_agrees_with_the_manifest(ddb_direct, manifes
             assert expected == "ANY", (
                 f"{field}: ddb_direct allows any authenticated caller but the "
                 f"manifest requires {expected}"
+            )
+        elif required is ddb_direct._ANY_GROUP:
+            # ddb_direct asserts only "the caller holds SOME group" (it has no
+            # copy of the template to read the vocabulary from — see the note on
+            # _ANY_GROUP there). That is only a faithful stand-in while the
+            # manifest's policy really is the whole vocabulary: a narrower list
+            # like ["Admin"] would be satisfied by a Viewer here. Pin it.
+            assert expected == app_groups, (
+                f"{field}: ddb_direct requires 'any assigned group', which stands "
+                f"in for the full vocabulary {app_groups}, but the manifest "
+                f"requires {expected} — name those groups in _REQUIRED_GROUPS "
+                "instead of using _ANY_GROUP"
             )
         elif required is ddb_direct._IAM_ONLY:
             assert expected == "IAM_ONLY", (
@@ -338,6 +353,170 @@ def test_cognito_group_names_come_from_the_root_template():
     # without the whole authorization model changing.
     assert len(names) >= 4, f"UserPoolGroup extraction looks broken: {names}"
     assert {"Admin", "Viewer"} <= names
+
+
+# ============================ the ANY_GROUP policy ========================== #
+# "An assigned group, whichever one" — the product decision recorded in issue
+# #979 for the document-content reads and the three mutations that used to be
+# `ANY`. `ANY` means authenticated, not vetted: with AllowedSignUpEmailDomain set,
+# template.yaml sets AllowAdminCreateUserOnly: false, so a user can self-register
+# and holds a valid token whose cognito:groups claim is EMPTY.
+#
+# This list IS hardcoded, deliberately, unlike every enumeration in the parity
+# section above. Those enumerate the op UNIVERSE, where a hardcoded inventory
+# silently drops an operation out of coverage. This one is the DECISION itself, and
+# pinning it is the point: widening any of these eleven back to `ANY` must fail a
+# test rather than pass quietly as "one fewer group-restricted operation".
+TIGHTENED_TO_ANY_GROUP = (
+    # mutations
+    "deleteAgentJob",
+    "deleteChatSession",
+    "sendChatDocumentMessage",
+    # document content, and the means of obtaining it
+    "getFileContents",
+    "getFilePresignedUrl",
+    "getDocument",
+    "getDocumentVersion",
+    "compareDocumentVersions",
+    "listDocuments",
+    "listDocumentsByDateRange",
+    "queryKnowledgeBase",
+)
+
+
+def _app_groups() -> list[str]:
+    """The groups the stack creates, read from the root template."""
+    gen = _load_generator()
+    return sorted(gen.cognito_group_names((_REPO / "template.yaml").read_text()))
+
+
+@pytest.mark.parametrize("field", TIGHTENED_TO_ANY_GROUP)
+def test_tightened_op_requires_an_assigned_group(field, manifest):
+    """Each of the eleven names the full group vocabulary, not `ANY`."""
+    assert manifest[field] == _app_groups(), (
+        f"{field} is declared '{manifest[field]}' but the #979 decision is "
+        "ANY_GROUP — an assigned group is required. Declaring it ANY again means "
+        "a self-registered user in no group may call it."
+    )
+
+
+@pytest.mark.parametrize("field", TIGHTENED_TO_ANY_GROUP)
+def test_tightened_op_denies_a_groupless_authenticated_caller(field, idx):
+    """403 through the real handler, for a token with an empty groups claim.
+
+    Driven through ``handler`` rather than ``authz.enforce`` so the assertion
+    covers the whole request path a self-registered user's call takes — including
+    that the denial happens before the resolver is invoked (``_lambda`` is never
+    stubbed here, so reaching one would raise rather than quietly succeed).
+    """
+    resp = idx.handler(_http_event(field, groups=None))
+    assert resp["statusCode"] == 403, (
+        f"{field} must refuse a caller in no group; got {resp['statusCode']}"
+    )
+    assert _error(resp)["errorType"] == "Unauthorized"
+
+
+@pytest.mark.parametrize("field", TIGHTENED_TO_ANY_GROUP)
+def test_tightened_op_allows_a_caller_holding_any_single_app_group(field, authz):
+    """Any ONE of the stack's groups is enough — the policy is not a narrowing.
+
+    Every group is exercised separately, so an accidental `[Admin]` (which
+    ``test_tightened_op_requires_an_assigned_group`` would also catch) or a
+    vocabulary that stopped including a real group fails here with the group
+    named.
+    """
+    groups = _app_groups()
+    assert len(groups) >= 4, f"group vocabulary looks broken: {groups}"
+    for group in groups:
+        authz.enforce(field, {"identity": {"claims": {"cognito:groups": [group]}}})
+
+
+def test_any_group_expands_to_the_template_vocabulary_not_a_list_in_the_yaml():
+    """The sentinel is resolved against template.yaml on every build.
+
+    This is the property that makes ANY_GROUP worth a new concept: a sixth
+    ``AWS::Cognito::UserPoolGroup`` joins the set without editing any operation,
+    where five names written out per operation would silently stop covering it.
+    """
+    import yaml
+
+    gen = _load_generator()
+    spec = yaml.safe_load(
+        (_REPO / "scripts" / "api_rbac_expectations.yaml").read_text()
+    )
+    declared = sorted(
+        name
+        for name, entry in spec["operations"].items()
+        if entry.get("groups") == gen.ANY_GROUP
+    )
+    assert declared == sorted(TIGHTENED_TO_ANY_GROUP), (
+        "the operations declared ANY_GROUP have changed; update the #979 decision "
+        "list in this test deliberately, not to make it pass"
+    )
+
+    rendered = json.loads(gen.render())["operations"]
+    for name in declared:
+        assert rendered[name] == _app_groups()
+
+    # And a different vocabulary really does produce a different manifest, so the
+    # equality above is not an accident of the two happening to be the same list.
+    six = gen.build_manifest(
+        {"operations": {"someOp": {"groups": gen.ANY_GROUP}}},
+        valid_groups={"Admin", "Viewer", "Auditor"},
+    )
+    assert six["operations"]["someOp"] == ["Admin", "Auditor", "Viewer"]
+
+
+def test_generator_refuses_any_group_when_the_template_declares_no_groups():
+    """An empty vocabulary would expand to `[]`, which denies everyone silently."""
+    gen = _load_generator()
+    with pytest.raises(gen.GeneratorError, match="cannot be resolved"):
+        gen.build_manifest(
+            {"operations": {"someOp": {"groups": gen.ANY_GROUP}}}, valid_groups=set()
+        )
+
+
+def test_any_group_reaching_the_manifest_is_refused_not_read_as_permissive(
+    idx, authz, tmp_path, monkeypatch
+):
+    """The runtime has no way to resolve the sentinel, so it must not try.
+
+    ``ANY_GROUP`` in ``api_rbac_manifest.json`` means the generator did not run —
+    a build fault. The dispatcher treats it as one: the policy is a bare string
+    that is not one of its two sentinels, so the whole manifest is rejected and
+    every operation is denied. The failure mode that matters is the opposite one,
+    an unknown string being waved through, so assert an ADMIN is refused too.
+    """
+    bad = tmp_path / "api_rbac_manifest.json"
+    bad.write_text(
+        json.dumps({"version": 1, "operations": {"getDocument": "ANY_GROUP"}}, indent=2)
+    )
+    monkeypatch.setattr(authz, "_MANIFEST_PATH", str(bad))
+    loaded = authz._load_manifest()
+    assert loaded == {}, "an unresolved ANY_GROUP must reject the whole manifest"
+
+    monkeypatch.setattr(authz, "REQUIRED_GROUPS", loaded)
+    resp = idx.handler(_http_event("getDocument", {"ObjectKey": "x"}, groups=["Admin"]))
+    assert resp["statusCode"] == 403
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("getDocument", "deleteAgentJob"),  # the ddb_direct-served pair
+)
+def test_ddb_direct_also_refuses_a_groupless_caller(field, ddb_direct):
+    """The in-process handlers keep their own check, and it is not a no-op.
+
+    ``authz.enforce`` is the floor, but ``ddb_direct`` serves these two without a
+    resolver hop and keeps a second check. Assert both directions so the sentinel
+    cannot be mistaken for ``_ANY_AUTHENTICATED``.
+    """
+    assert ddb_direct._REQUIRED_GROUPS[field] is ddb_direct._ANY_GROUP
+    with pytest.raises(PermissionError, match="requires an assigned group"):
+        ddb_direct._enforce_rbac(field, {"identity": {"claims": {}}})
+    ddb_direct._enforce_rbac(
+        field, {"identity": {"claims": {"cognito:groups": ["Viewer"]}}}
+    )
 
 
 # ================================ deny paths ================================ #
@@ -587,9 +766,15 @@ def test_the_two_required_groups_tables_use_distinct_named_sentinels(authz, ddb_
     treats its own sentinel as ALLOW-ANY-AUTHENTICATED. Both are consulted on the
     same request, so each names its own object and neither uses a bare ``None``.
     """
-    assert authz._UNDECLARED is not ddb_direct._ANY_AUTHENTICATED
-    assert authz._UNDECLARED is not ddb_direct._IAM_ONLY
-    assert ddb_direct._ANY_AUTHENTICATED is not ddb_direct._IAM_ONLY
+    sentinels = [
+        authz._UNDECLARED,
+        ddb_direct._ANY_AUTHENTICATED,
+        ddb_direct._ANY_GROUP,
+        ddb_direct._IAM_ONLY,
+    ]
+    for i, a in enumerate(sentinels):
+        for b in sentinels[i + 1 :]:
+            assert a is not b, "two policy sentinels are the same object"
     assert None not in ddb_direct._REQUIRED_GROUPS.values(), (
         "ddb_direct must not use a bare None for 'any authenticated caller'"
     )
@@ -633,9 +818,14 @@ def test_correctly_grouped_caller_reaches_the_resolver(idx, monkeypatch):
 
 
 def test_any_auth_op_is_allowed_without_a_group(authz):
-    """ANY ops stay open to any authenticated caller (the gateway authenticates)."""
-    assert authz.REQUIRED_GROUPS["getDocument"] == "ANY"
-    authz.enforce("getDocument", {"identity": {"claims": {}}})
+    """ANY ops stay open to any authenticated caller (the gateway authenticates).
+
+    ``getMyProfile`` rather than a document read: it returns the caller's own
+    record and is the clearest operation a user in no group must still reach, so
+    it is the one least likely to be retightened and make this test misleading.
+    """
+    assert authz.REQUIRED_GROUPS["getMyProfile"] == "ANY"
+    authz.enforce("getMyProfile", {"identity": {"claims": {}}})
 
 
 def test_one_matching_group_is_enough(authz):

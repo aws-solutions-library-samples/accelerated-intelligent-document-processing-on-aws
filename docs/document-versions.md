@@ -126,10 +126,15 @@ The GraphQL/REST API exposes:
 
 | Field | Type | Access |
 |-------|------|--------|
-| `listDocumentVersions(objectKey)` | query | any authenticated user |
-| `getDocumentVersion(objectKey, runId)` | query | any authenticated user |
-| `compareDocumentVersions(objectKey, runIdA, runIdB)` | query | any authenticated user |
+| `listDocumentVersions(objectKey)` | query | any authenticated user — run ids and timestamps only |
+| `getDocumentVersion(objectKey, runId)` | query | any **assigned group** (a caller in no group is refused) |
+| `compareDocumentVersions(objectKey, runIdA, runIdB)` | query | any **assigned group** |
 | `deleteDocumentVersion(objectKey, runId)` | mutation | **Admin only** |
+
+The split is deliberate: listing the runs for a key the caller already has discloses
+no extracted values, while reading or diffing a run returns the content. See
+[RBAC](./rbac.md) for the full policy, including why a group check is not a
+per-document check.
 
 ## Caveats
 

@@ -618,9 +618,19 @@ def curate_rbac_static(stdout_path: Path | None) -> tuple[str, dict]:
     else:
         gate_key = "unknown"
         gate = "SEE OUTPUT"
-    # The scan runs a fixed battery of checks (S1–S5); enumerate them so the
-    # doc records WHAT was verified, not only the gap warnings.
+    # The scan runs a fixed battery of checks; enumerate them so the doc records
+    # WHAT was verified, not only the gap warnings. S6–S9 (the Lambda Function
+    # URL routes) are summarised in the dynamic report rather than repeated here.
     checks = [
+        (
+            "S0",
+            "Declaration integrity",
+            "every `groups:` value is a list of real "
+            "Cognito group names or one of `ANY` / `ANY_GROUP` / `IAM_ONLY`, and "
+            "every gap id is defined in the register — an unrecognised policy "
+            "sentinel fails rather than being read by the later checks as the "
+            "most permissive branch they have",
+        ),
         (
             "S1",
             "Manifest completeness",
@@ -639,7 +649,9 @@ def curate_rbac_static(stdout_path: Path | None) -> tuple[str, dict]:
             "Resolver enforcement",
             "each op's `enforced_in` source contains "
             "a recognized enforcement pattern (group check, ownership, or IAM-only "
-            "rejection); ANY-auth ops without one must carry a known_gap",
+            "rejection); `ANY`/`ANY_GROUP` ops without one must carry a known_gap "
+            "or declare ownership, their group floor being the dispatcher's "
+            "generated manifest rather than the resolver",
         ),
         (
             "S4",

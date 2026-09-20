@@ -6,6 +6,7 @@ import { Box, Button, Spinner } from '@cloudscape-design/components';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { getFilePresignedUrl, uploadDocument } from '../../graphql/generated';
+import { FILE_ACCESS_DENIED_MESSAGE, isAuthorizationError } from '../../hooks/utils/graphql-error';
 import { useDocumentVersion } from '../../contexts/document-version';
 
 // Lazy load VisualEditorModal for better performance
@@ -125,7 +126,7 @@ const JSONViewer = ({
       }
     } catch (err) {
       logger.error('Error fetching content:', err);
-      setError(`Failed to load content. Please try again.`);
+      setError(isAuthorizationError(err) ? FILE_ACCESS_DENIED_MESSAGE : `Failed to load content. Please try again.`);
     } finally {
       setIsLoading(false);
     }
