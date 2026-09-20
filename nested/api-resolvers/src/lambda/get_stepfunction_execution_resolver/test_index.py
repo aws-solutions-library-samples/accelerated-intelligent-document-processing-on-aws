@@ -462,6 +462,30 @@ class TestConfigVersionScope:
         with pytest.raises(PermissionError):
             index.lambda_handler(_event(_execution_arn()), None)
 
+    def test_a_pattern_scope_admits_the_executions_it_covers(
+        self, sfn, scoped_caller
+    ):
+        """Scope entries may be globs; a membership test would deny all of them."""
+        scoped_caller(["tenant-a_*"])
+        sfn.describe_execution.return_value = _describe_response(
+            config_version="tenant-a_v3"
+        )
+
+        assert index.lambda_handler(_event(_execution_arn()), None)["status"] == (
+            "SUCCEEDED"
+        )
+
+    def test_a_pattern_scope_still_denies_what_it_does_not_cover(
+        self, sfn, scoped_caller
+    ):
+        scoped_caller(["tenant-a_*"])
+        sfn.describe_execution.return_value = _describe_response(
+            config_version="tenant-b_v1"
+        )
+
+        with pytest.raises(PermissionError):
+            index.lambda_handler(_event(_execution_arn()), None)
+
     def test_identity_without_an_email_claim_denies_without_querying(
         self, sfn, scoped_caller
     ):

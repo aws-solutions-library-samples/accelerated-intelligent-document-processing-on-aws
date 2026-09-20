@@ -1,11 +1,15 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""reprocessDocument denies a caller whose config-version scope is unresolvable.
+"""reprocessDocument enforces config-version scope in both directions, fail-closed.
 
-`version` names the Configuration Profile a document will be re-run under, so an
-Author restricted to a subset of profiles must not be able to pass one outside it.
-That check is only as good as the scope it compares against, and three outcomes
-have to be distinguished:
+Two things must be in the caller's scope, and the second is what
+`TestTheDocumentsOwnScopeIsChecked` covers: the `version` argument, which names the
+Configuration Profile the documents will be re-run *under*; and the profile each
+named document was *last processed under*, so the control does not stand down when
+the caller simply omits the argument.
+
+Both are only as good as the scope they compare against, and three outcomes have to
+be distinguished:
 
 * **no `email` claim** — no key to look the caller up by, so deny, and issue **no
   query**. Nothing is substituted for the claim: any other identifier matches no
@@ -65,6 +69,10 @@ def _load_index():
 index = _load_index()
 config_scope = importlib.import_module("idp_common.config_scope")
 
+# Captured before the autouse fixture below stubs it, for the few tests that drive
+# the real tracking-table read rather than a fixed answer.
+_REAL_DOCUMENT_CONFIG_VERSION = index._document_config_version
+
 
 def _event(claims, version="tenant-a"):
     return {
@@ -103,12 +111,42 @@ def users_table(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_side_effects(monkeypatch):
-    """Stub the work reprocessing would do, so only authorization is exercised."""
+    """Stub the work reprocessing would do, so only authorization is exercised.
+
+    The tracking-table read defaults to a document stamped `tenant-a`, so tests
+    about the `version` argument are not also tripped by the document check.
+    """
     monkeypatch.setattr(index, "reprocess_document", lambda *a, **k: None)
     monkeypatch.setattr(
         index, "sanitize_event_for_logging", lambda event: {"redacted": True}
     )
     monkeypatch.setattr(index.json, "dumps", json.dumps)
+    monkeypatch.setattr(index, "_document_config_version", lambda key: "tenant-a")
+
+
+@pytest.fixture
+def document_version(monkeypatch):
+    """Set the ConfigVersion the tracking table reports for every target."""
+
+    def _configure(version):
+        monkeypatch.setattr(index, "_document_config_version", lambda key: version)
+
+    return _configure
+
+
+@pytest.fixture
+def real_document_lookup(monkeypatch):
+    """The real tracking-table read, with the autouse stub lifted.
+
+    Returned rather than only installed, so a test that depends on it says so by
+    calling it. A fixture whose whole effect is a monkeypatch reads as unused, and
+    then nothing distinguishes "this test drives the real function" from "this test
+    forgot to ask for it and is asserting against the stub".
+    """
+    monkeypatch.setattr(
+        index, "_document_config_version", _REAL_DOCUMENT_CONFIG_VERSION
+    )
+    return index._document_config_version
 
 
 @pytest.mark.unit
@@ -158,6 +196,112 @@ class TestScopeFailsClosed:
 
         with pytest.raises(PermissionError):
             index.handler(_event(_author_claims(), version="tenant-b"), None)
+
+
+@pytest.mark.unit
+class TestTheDocumentsOwnScopeIsChecked:
+    """The check must not depend on the caller volunteering a `version`.
+
+    `version` names the profile the documents will be re-run *under*. Gating the
+    whole control on it meant a scoped Author could reprocess any `objectKey` in
+    the deployment by omitting the argument — including the documents the
+    document-list resolvers already hide from them.
+    """
+
+    def test_a_document_outside_scope_is_refused_with_no_version_argument(
+        self, users_table, document_version
+    ):
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version("tenant-b")
+
+        with pytest.raises(PermissionError):
+            index.handler(_event(_author_claims(), version=None), None)
+
+    def test_an_in_scope_document_is_accepted_with_no_version_argument(
+        self, users_table, document_version
+    ):
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version("tenant-a")
+
+        assert index.handler(_event(_author_claims(), version=None), None) is True
+
+    def test_an_unstamped_document_is_refused(self, users_table, document_version):
+        """Fails closed: no profile name means it cannot be proven in scope."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version(None)
+
+        with pytest.raises(PermissionError):
+            index.handler(_event(_author_claims(), version=None), None)
+
+    def test_nothing_is_queued_when_one_document_of_a_batch_is_refused(
+        self, users_table, monkeypatch
+    ):
+        """A batch is refused whole, not part-processed."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        versions = {"ok.pdf": "tenant-a", "nope.pdf": "tenant-b"}
+        monkeypatch.setattr(index, "_document_config_version", versions.get)
+        queued = []
+        monkeypatch.setattr(
+            index, "reprocess_document", lambda key, *a, **k: queued.append(key)
+        )
+        event = _event(_author_claims(), version=None)
+        event["arguments"]["objectKeys"] = ["ok.pdf", "nope.pdf"]
+
+        with pytest.raises(PermissionError):
+            index.handler(event, None)
+
+        assert queued == []
+
+    def test_an_unreadable_tracking_row_refuses(
+        self, users_table, monkeypatch, real_document_lookup
+    ):
+        """A failed GetItem cannot establish the profile, so it denies."""
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        service = MagicMock()
+        service.get_document.side_effect = Exception("ProvisionedThroughputExceeded")
+        monkeypatch.setattr(index, "document_service", service)
+
+        # The read swallows its own error and reports "no version", which is what
+        # the scope check then refuses. Asserted first so this test cannot pass on
+        # the stubbed lookup.
+        assert real_document_lookup("a.pdf") is None
+
+        with pytest.raises(PermissionError):
+            index.handler(_event(_author_claims(), version=None), None)
+
+    def test_an_unrestricted_caller_is_not_document_scoped(
+        self, users_table, document_version
+    ):
+        users_table(items=[])
+        document_version("tenant-b")
+
+        assert index.handler(_event(_author_claims(), version=None), None) is True
+
+    def test_an_admin_is_not_document_scoped(self, users_table, document_version):
+        users_table(items=[{"allowedConfigVersions": ["tenant-a"]}])
+        document_version("tenant-b")
+        claims = {"cognito:groups": ["Admin"], "email": "admin@example.com"}
+
+        assert index.handler(_event(claims, version=None), None) is True
+
+    def test_the_document_version_comes_from_the_tracking_row(
+        self, monkeypatch, real_document_lookup
+    ):
+        service = MagicMock()
+        service.get_document.return_value = MagicMock(config_version="tenant-a")
+        monkeypatch.setattr(index, "document_service", service)
+
+        assert real_document_lookup("a.pdf") == "tenant-a"
+        service.get_document.assert_called_once_with("a.pdf")
+
+    def test_a_missing_tracking_row_yields_no_version(
+        self, monkeypatch, real_document_lookup
+    ):
+        service = MagicMock()
+        service.get_document.return_value = None
+        monkeypatch.setattr(index, "document_service", service)
+
+        assert real_document_lookup("a.pdf") is None
 
 
 @pytest.mark.unit

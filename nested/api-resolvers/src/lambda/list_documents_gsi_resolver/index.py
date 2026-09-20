@@ -56,6 +56,18 @@ _USER_SCOPE_CACHE_TTL = 60  # seconds
 # holds a Cognito username or an email address, so no row can carry this value.
 _UNMATCHABLE_OWNER = "\x00-no-such-reviewer-\x00"
 
+# Bounds on the SCOPED getDocumentCount tally. A scoped caller's count is computed
+# from index rows rather than taken from DynamoDB's `Count`, because the
+# config-version filter cannot be expressed as a FilterExpression. That reads the
+# same index either way, but it transfers and deserialises item data where COUNT
+# transferred a number — so on a very large date range a scoped caller can exhaust
+# this function's 30s timeout (and API Gateway's 29s ceiling) where an unscoped
+# caller would not. Rather than let the request die with a 502, the tally stops at
+# whichever bound is reached first and says so.
+_COUNT_MAX_PAGES = 200
+# Leave enough of the invocation for the response to be written and returned.
+_COUNT_TIME_RESERVE_MS = 5_000
+
 # Limits
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
@@ -240,7 +252,7 @@ def handler(event, context):
     if field_name == "listDocuments":
         return list_documents(event)
     elif field_name == "getDocumentCount":
-        return get_document_count(event)
+        return get_document_count(event, context)
     else:
         raise ValueError(f"Unknown field: {field_name}")
 
@@ -374,7 +386,33 @@ def list_documents(event):
     return result
 
 
-def get_document_count(event):
+def _remaining_invocation_ms(context):
+    """Milliseconds left in this invocation, or None if the runtime does not say.
+
+    Read defensively: `context` is whatever the caller passed — the real Lambda
+    context in production, `None` or a double in tests — so neither the attribute
+    nor an integer answer can be assumed.
+    """
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if not callable(remaining):
+        return None
+    try:
+        return int(remaining())
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _count_budget_exhausted(pages, context):
+    """Whether the scoped tally must stop, and why. See `_COUNT_MAX_PAGES`."""
+    if pages >= _COUNT_MAX_PAGES:
+        return f"page cap of {_COUNT_MAX_PAGES} reached"
+    left = _remaining_invocation_ms(context)
+    if left is not None and left < _COUNT_TIME_RESERVE_MS:
+        return f"only {left}ms of the invocation left"
+    return None
+
+
+def get_document_count(event, context=None):
     """
     Get document count using the TypeDateIndex GSI.
 
@@ -399,12 +437,19 @@ def get_document_count(event):
     work, is told how many documents exist outside it, and the header disagrees
     with the rows underneath.
 
+    The scoped tally is **bounded** — see `_COUNT_MAX_PAGES`. If it stops early the
+    response carries `approximate: true` and the reason is logged at WARNING. That
+    flag is deliberately not added to the `DocumentCount` type in `schema.graphql`:
+    the schema is no longer a runtime contract (the REST dispatcher validates inputs
+    only), and declaring it would require regenerating the UI's typed client for a
+    diagnostic the header does not render. The log is where an operator sees it.
+
     Args (from GraphQL):
         startDateTime: ISO 8601 start time
         endDateTime: ISO 8601 end time
 
     Returns:
-        { count: Int }
+        { count: Int }, plus `approximate: True` when the tally was bounded
     """
     args = event.get("arguments", {})
     start_dt = args.get("startDateTime")
@@ -455,8 +500,11 @@ def get_document_count(event):
 
     # Paginate through all count pages (DynamoDB may split count across pages)
     total_count = 0
+    pages = 0
+    bounded_by = None
     while True:
         response = table.query(**query_kwargs)
+        pages += 1
         if allowed_versions:
             total_count += sum(
                 1
@@ -467,12 +515,27 @@ def get_document_count(event):
             total_count += response.get("Count", 0)
 
         last_key = response.get("LastEvaluatedKey")
-        if last_key:
-            query_kwargs["ExclusiveStartKey"] = last_key
-        else:
+        if not last_key:
             break
+        # Only the scoped path carries the per-page item payload that can run this
+        # invocation out of time; the COUNT path paginates to completion as before.
+        if allowed_versions:
+            bounded_by = _count_budget_exhausted(pages, context)
+            if bounded_by:
+                break
+        query_kwargs["ExclusiveStartKey"] = last_key
 
-    logger.info(f"Total document count: {total_count}")
+    if bounded_by:
+        logger.warning(
+            "getDocumentCount stopped early after %d page(s) (%s); returning an "
+            "approximate count of %d for a scoped caller. Narrow the date range.",
+            pages,
+            bounded_by,
+            total_count,
+        )
+        return {"count": total_count, "approximate": True}
+
+    logger.info(f"Total document count: {total_count} ({pages} page(s))")
     return {"count": total_count}
 
 

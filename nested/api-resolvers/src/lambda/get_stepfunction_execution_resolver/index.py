@@ -14,6 +14,7 @@ from idp_common.config_scope import (
     ScopeLookupError,
     caller_email_from_claims,
     resolve_allowed_config_versions,
+    scope_allows,
 )
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
@@ -168,17 +169,15 @@ def _enforce_config_version_scope(
     if allowed is None:
         return
 
+    # The shared matcher, not a `in allowed` membership test. Scope entries may be
+    # glob patterns (`tenant-a_*`), which are first-class in this axis because
+    # deployments predating revision history encode lineage in the profile name — a
+    # membership test would deny a pattern-scoped caller every execution they are
+    # entitled to. It also subsumes the "names no version" case: `scope_allows`
+    # denies an unnamed target whenever a scope is set, because an execution that
+    # does not say which profile it ran under cannot be proven to be in scope.
     version = _config_version_of_execution(execution_response)
-    if version is None:
-        # Scoped caller, and nothing in the execution says which version it ran
-        # under. There is no version to authorize against, so deny.
-        logger.warning(
-            "Denying scoped caller %s: execution names no config version",
-            caller["email"],
-        )
-        raise _unauthorized("Execution is outside your configuration scope")
-
-    if version not in allowed:
+    if not scope_allows(allowed, version):
         logger.warning(
             "Denying caller %s: execution ran under config version %r, allowed %s",
             caller["email"],
@@ -892,7 +891,12 @@ def find_step_name_for_failure_event(
         # which handed the caller an int where it matches `step_map` keys and
         # names by equality — so this last-resort correlation could never
         # succeed, and a failure went unattributed to any step.
-        for event_id, step_key in event_id_to_step.items():
+        #
+        # Reversed, so this last resort prefers the most recently correlated step,
+        # like every strategy above it. Insertion order is event order, so the
+        # forward walk would return the *first* step of the execution, which is the
+        # least likely to be the one that just failed.
+        for event_id, step_key in reversed(list(event_id_to_step.items())):
             if event_id and step_key:
                 logger.debug(f"Found potential step key {step_key}")
                 return step_key

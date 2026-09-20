@@ -1948,9 +1948,11 @@ Resources:
           # provided or set in TRACKING_TABLE" (surfaced as a 400 to all
           # callers). This was masked under AppSync (VTL, no Python service).
           TRACKING_TABLE: !Ref TrackingTableName
-          # RBAC: resolve caller's allowedConfigVersions from UsersTable to
-          # enforce config-version scope on the `version` argument. Empty
-          # string in single-user / pre-RBAC deployments (fail-open).
+          # RBAC: resolve the caller's allowedConfigVersions from UsersTable to
+          # enforce config-version scope on both the `version` argument and the
+          # profile each named document was last processed under. Always wired by
+          # the parent template; an empty value denies a non-admin caller, because
+          # a scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
           # Namespace for the ``StaleOutputPurgeFailed`` metric emitted
           # on partial-purge failure — parity with queue_sender's #719

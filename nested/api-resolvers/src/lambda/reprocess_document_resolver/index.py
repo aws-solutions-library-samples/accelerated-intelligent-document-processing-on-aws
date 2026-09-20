@@ -37,9 +37,22 @@ _dynamodb = boto3.resource("dynamodb")
 
 # ----- Caller-scope enforcement for multi-user RBAC deployments ----------
 # See docs/rbac.md. When a customer assigns a non-admin user
-# `allowedConfigVersions` in UsersTable (EmailIndex), reprocessDocument
-# MUST NOT accept a `version` argument outside that scope. Mirrors the
-# same check performed in sync_bda_idp_resolver and configuration_resolver.
+# `allowedConfigVersions` in UsersTable (EmailIndex), reprocessDocument must
+# refuse BOTH halves of the request:
+#
+#   * the `version` argument, when one is supplied — the profile the document
+#     will be re-run under. Mirrors sync_bda_idp_resolver and
+#     configuration_resolver.
+#   * the profile each named document was *last processed under*. Checking only
+#     the argument made the whole control depend on the caller volunteering it:
+#     omit `version` and any `objectKey` in the deployment was reprocessable,
+#     which is the same object the document-list resolvers already hide from a
+#     scoped caller.
+#
+# Both fail closed. A document whose `ConfigVersion` cannot be read — no tracking
+# row, an unstamped row, or a failed GetItem — is refused, because a document with
+# no profile name cannot be proven in scope. That is the same rule the list
+# resolvers apply, so a scoped caller cannot see such a document to reprocess it.
 _user_scope_cache: dict = {}
 _USER_SCOPE_CACHE_TTL = 60  # seconds
 
@@ -80,6 +93,74 @@ def _get_user_allowed_config_versions(caller_email):
         cache=_user_scope_cache,
         cache_ttl=_USER_SCOPE_CACHE_TTL,
     )
+
+
+def _caller_scope_or_deny(caller):
+    """The caller's config-version scope for one request, or a denial.
+
+    Admins are unrestricted and never looked up. For everyone else this fails
+    CLOSED: a scope that cannot be *evaluated* (no UsersTable wired, no email
+    claim on the verified identity, a failed DynamoDB query) is not a caller
+    without restrictions (AUTH.T07).
+    """
+    if caller["is_admin"]:
+        return None
+    try:
+        return _get_user_allowed_config_versions(caller["email"])
+    except ScopeLookupError as e:
+        logger.error(
+            "Denying reprocessDocument: config-version scope could not be "
+            "resolved: %s",
+            e,
+        )
+        raise PermissionError(
+            "Unauthorized: your configuration scope could not be verified"
+        ) from e
+
+
+def _document_config_version(object_key):
+    """The Configuration Profile a document was last processed under, or None.
+
+    ``None`` means "cannot be established" — no tracking row, a row carrying no
+    ``ConfigVersion``, or a read that failed. The caller treats all three the same
+    way, because a document with no profile name cannot be proven to be in a
+    scoped caller's scope.
+    """
+    try:
+        document = document_service.get_document(object_key)
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "Could not read the tracking row for a reprocess target, so its "
+            "configuration profile cannot be established: %s",
+            e,
+        )
+        return None
+    return getattr(document, "config_version", None) if document else None
+
+
+def _enforce_document_scope(allowed_versions, object_keys):
+    """Refuse a scoped caller any document outside their scope.
+
+    Applies to the profile each document was **last processed under**, so the
+    check does not depend on the caller supplying a ``version`` argument. Runs
+    before any document is queued, so a batch is refused whole rather than
+    part-processed.
+    """
+    if not allowed_versions:
+        return
+    for object_key in object_keys:
+        current_version = _document_config_version(object_key)
+        if not scope_allows(allowed_versions, current_version):
+            logger.warning(
+                "Rejecting reprocessDocument: a requested document was processed "
+                "under config version %r, and the caller is scoped to %s",
+                current_version,
+                sorted(allowed_versions),
+            )
+            raise PermissionError(
+                "Access denied: one or more of the requested documents is "
+                "outside your allowed configuration scope"
+            )
 
 # Initialize document service (same as queue_sender - defaults to AppSync)
 document_service = create_document_service()
@@ -194,43 +275,30 @@ def handler(event, context):
                 "Unauthorized: reprocessDocument requires Admin or Author group"
             )
 
-        # RBAC: scope-enforce the `version` argument for non-admins. Authors
-        # with `allowedConfigVersions` restricted to a subset of versions
-        # must not be able to reprocess documents against a version outside
-        # their scope. Admins are unrestricted. If no scope is set, all
-        # callers are unrestricted (preserves pre-fix behavior for single-
-        # user / pre-RBAC deployments).
-        if version:
-            if not caller["is_admin"]:
-                # Fails CLOSED: a scope that cannot be *evaluated* is not a
-                # caller without restrictions (AUTH.T07).
-                try:
-                    allowed_versions = _get_user_allowed_config_versions(
-                        caller["email"]
-                    )
-                except ScopeLookupError as e:
-                    logger.error(
-                        "Denying reprocessDocument: config-version scope could "
-                        "not be resolved: %s",
-                        e,
-                    )
-                    raise PermissionError(
-                        "Unauthorized: your configuration scope could not be "
-                        "verified"
-                    ) from e
-                if not scope_allows(allowed_versions, version):
-                    logger.warning(
-                        "Rejecting reprocessDocument: caller %s is scoped to %s "
-                        "but requested version=%r",
-                        caller["email"],
-                        sorted(allowed_versions),
-                        version,
-                    )
-                    # Raise so AppSync propagates a GraphQL error to the client.
-                    raise PermissionError(
-                        f"Access denied: version '{version}' is not in your "
-                        "allowed scope"
-                    )
+        # RBAC: an Author whose `allowedConfigVersions` restricts them to a subset
+        # of profiles must not reprocess outside it, in either direction. Both
+        # checks fail closed; an unset scope is unrestricted, which is the opt-in
+        # default for single-user and pre-RBAC deployments. See the note at the top
+        # of this module for why the document's own profile is checked and not only
+        # the argument.
+        allowed_versions = _caller_scope_or_deny(caller)
+
+        # (a) the profile the documents would be re-run UNDER, when one is named.
+        if version and not scope_allows(allowed_versions, version):
+            logger.warning(
+                "Rejecting reprocessDocument: caller is scoped to %s but "
+                "requested version=%r",
+                sorted(allowed_versions),
+                version,
+            )
+            # Raised so the dispatcher answers 403 rather than a 200 with a body.
+            raise PermissionError(
+                f"Access denied: version '{version}' is not in your allowed scope"
+            )
+
+        # (b) the profile each document was last processed under. Independent of
+        #     (a): omitting `version` must not stand the check down.
+        _enforce_document_scope(allowed_versions, object_keys)
 
         logger.info(
             f"Reprocessing {len(object_keys)} documents"

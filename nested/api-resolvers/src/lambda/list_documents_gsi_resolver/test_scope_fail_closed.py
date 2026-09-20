@@ -279,6 +279,83 @@ def _filter_values(condition):
 
 
 @pytest.mark.unit
+class TestTheScopedTallyIsBounded:
+    """A scoped caller's count reads item data, so it needs a stop.
+
+    The unscoped path takes DynamoDB's `Count` and transfers a number per page. A
+    scoped caller's tally transfers and deserialises the projected rows instead,
+    because the config-version filter cannot be a FilterExpression — so on a very
+    large date range it can exhaust the 30s function timeout (and API Gateway's 29s
+    ceiling) where an unscoped caller would not. Better a flagged approximate count
+    than a 502.
+    """
+
+    def _paging_tracking(self, tables):
+        tracking, _ = tables(
+            documents=[_doc("doc#1", "tenant-a")],
+            scope_items=[{"allowedConfigVersions": ["tenant-a"]}],
+        )
+        # Always hands back another page, so only a cap can end the loop.
+        tracking.query.return_value = {
+            "Items": [_doc("doc#1", "tenant-a")],
+            "Count": 1,
+            "LastEvaluatedKey": {"PK": "doc#1"},
+        }
+        return tracking
+
+    def test_the_page_cap_stops_the_tally_and_flags_it(self, tables, monkeypatch):
+        tracking = self._paging_tracking(tables)
+        monkeypatch.setattr(index, "_COUNT_MAX_PAGES", 3)
+
+        result = index.handler(_event("getDocumentCount", _viewer_claims()), None)
+
+        assert result == {"count": 3, "approximate": True}
+        assert tracking.query.call_count == 3
+
+    def test_a_short_remaining_invocation_stops_the_tally(self, tables, monkeypatch):
+        self._paging_tracking(tables)
+        monkeypatch.setattr(index, "_COUNT_MAX_PAGES", 10_000)
+        context = MagicMock()
+        context.get_remaining_time_in_millis.return_value = 100
+
+        event = _event("getDocumentCount", _viewer_claims())
+        result = index.handler(event, context)
+
+        assert result["approximate"] is True
+        assert result["count"] >= 1
+
+    def test_a_complete_tally_is_not_flagged(self, tables):
+        tables(
+            documents=[_doc("doc#1", "tenant-a")],
+            scope_items=[{"allowedConfigVersions": ["tenant-a"]}],
+        )
+
+        result = index.handler(_event("getDocumentCount", _viewer_claims()), None)
+
+        assert result == {"count": 1}
+
+    def test_the_unscoped_count_path_is_not_bounded(self, tables, monkeypatch):
+        """It transfers a number per page, so it paginates to completion as before."""
+        tracking, _ = tables(documents=[_doc("doc#1", "tenant-a")])
+        pages = {"n": 0}
+
+        def _query(**kwargs):
+            pages["n"] += 1
+            more = pages["n"] < 5
+            out = {"Count": 2}
+            if more:
+                out["LastEvaluatedKey"] = {"PK": "doc#1"}
+            return out
+
+        tracking.query.side_effect = _query
+        monkeypatch.setattr(index, "_COUNT_MAX_PAGES", 2)
+
+        result = index.handler(_event("getDocumentCount", _viewer_claims()), None)
+
+        assert result == {"count": 10}
+
+
+@pytest.mark.unit
 class TestReviewerOwnerMatching:
     def test_both_identifiers_are_matched_when_both_are_present(self):
         """claim_review stores identity.username; the claims carry an email."""

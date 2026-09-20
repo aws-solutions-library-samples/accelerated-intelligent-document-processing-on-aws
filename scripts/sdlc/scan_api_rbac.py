@@ -107,13 +107,15 @@ OWNERSHIP_PATTERNS = ("owner", "user_id", "userId", "sub", "session", "caller")
 SCOPE_PATTERNS = (
     "allowedConfigVersions",
     "allowed_config_versions",
-    # The canonical matcher and the name every consumer binds its result to. Both
-    # are needed because S4 no longer greps the whole FILE (see
-    # `op_scope_source`): an op's own branch typically calls `scope_allows` on an
-    # `allowed_versions` value resolved elsewhere in the module, and the literal
-    # attribute name appears only in the lookup.
+    # The canonical matcher. Needed because S4 no longer greps the whole FILE (see
+    # `op_scope_source`): the configuration resolver resolves the scope once in its
+    # handler and each operation's own branch only *consumes* it, by calling
+    # `scope_allows`, so the DynamoDB attribute name appears nowhere in the branch.
+    #
+    # Deliberately NOT including the bare local name `allowed_versions`: a variable
+    # name is satisfied by a docstring or a parameter list, which is weaker evidence
+    # than a call to the matcher or a reference to the stored attribute.
     "scope_allows",
-    "allowed_versions",
 )
 
 # --- Function URL route checks (S6-S9) ---------------------------------------
@@ -652,11 +654,32 @@ def enforced_group_names(text: str) -> set[str] | None:
 # `scope_filtered: true` declaration passed the check for months on the strength
 # of its neighbour's string.
 #
-# So the check now reads only the code the operation itself can reach: its branch
-# of the module's dispatch, plus the transitive closure of module-level functions
-# that branch calls. A module serving more than one declared operation MUST have a
-# discoverable per-op dispatch (or an explicit `scope_enforced_in:`), because
-# whole-file scope is exactly what let the false declaration through.
+# So the check now reads only the code the operation itself can reach: the BODY of
+# each dispatch branch its name selects, plus the transitive closure of module-level
+# functions those bodies call. A module serving more than one operation in the
+# expectations file MUST have a discoverable per-op dispatch (or an explicit
+# `scope_enforced_in:`), because whole-file scope is what let the false declaration
+# through.
+#
+# Two details that decide whether this is per-operation at all:
+#
+#   * Only the branch **body** is read, never the `ast.If` node. Unparsing an `If`
+#     emits its `orelse` subtree too, which is where every later `elif` lives — so
+#     a whole-node read of `listDocuments`' branch would include
+#     `get_document_count`, and the check would be satisfied by the sibling
+#     reference its own error message says enforces nothing.
+#   * The comparison operator is read, not just the operand. `if f != "op":` names
+#     the operation but selects the branch where it is NOT handled.
+#
+# What this check CANNOT prove, so that nobody reads more into a green S4 than is
+# there: it is a *reference* check, not dataflow. It establishes that the code an
+# operation reaches refers to the caller's config-version scope. It cannot establish
+# that the value being matched was actually resolved from the UsersTable — an
+# operation that kept `scope_allows(allowed_versions, ...)` while `allowed_versions`
+# became a hardcoded `None` still passes. That shape is what the per-site unit
+# suites assert (a DynamoDB error must deny, an out-of-scope document must not be
+# returned), and no static rule over one module substitutes for them. What S4 does
+# catch, and did, is an operation that refers to the scope **nowhere**.
 
 
 class _CallCollector(ast.NodeVisitor):
@@ -687,45 +710,69 @@ def _module_functions(tree: ast.Module) -> dict[str, ast.AST]:
     return functions
 
 
-def _selects_literal(test: ast.AST, literal: str) -> bool:
-    """Whether an `if` test dispatches on this operation name.
-
-    Covers `field == "op"`, `"op" == field` and `field in ("op", ...)`, which are
-    the three shapes the resolvers in this tree use. A string that merely appears
-    somewhere else in the module (a required-groups dict key, a log message) is not
-    an `if` test and so cannot stand in for the dispatch.
-    """
-    for node in ast.walk(test):
-        if isinstance(node, ast.Compare):
-            operands = [node.left, *node.comparators]
-            for operand in operands:
-                if isinstance(operand, ast.Constant) and operand.value == literal:
-                    return True
-                if isinstance(operand, (ast.Tuple, ast.List, ast.Set)):
-                    for element in operand.elts:
-                        if (
-                            isinstance(element, ast.Constant)
-                            and element.value == literal
-                        ):
-                            return True
+def _names_literal(node: ast.AST, literal: str) -> bool:
+    """Whether an operand is this string, or a collection literal containing it."""
+    if isinstance(node, ast.Constant):
+        return node.value == literal
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return any(
+            isinstance(element, ast.Constant) and element.value == literal
+            for element in node.elts
+        )
     return False
 
 
-def _dispatch_branches(tree: ast.Module, op: str) -> list[ast.AST]:
-    """Every `if`/`elif` branch selected by this operation's name.
+def _selects_literal(test: ast.AST, literal: str) -> bool:
+    """Whether an `if` test dispatches TO this operation's branch.
 
-    All of them, not the narrowest: the configuration resolver dispatches the five
-    revision operations twice — an outer `elif operation in (...)` that performs the
-    shared profile-level scope check, then an inner `if operation == "..."` that
-    picks the handler. Taking only the inner branch would miss the check that
-    actually enforces the scope, and taking only the outer one would make five
-    operations indistinguishable. The union is what the operation can reach.
+    Covers `field == "op"`, `"op" == field` and `field in ("op", ...)`, which are the
+    three shapes the resolvers in this tree use. Two things it deliberately does not
+    treat as a dispatch:
+
+    * a **negated** comparison. `if field != "op":` and `if field not in (...)` name
+      the operation while selecting the branch where it is *not* handled, so reading
+      them as its dispatch would attribute a sibling's code to it.
+    * a string that merely appears elsewhere in the module — a required-groups dict
+      key, a log message — which is not an `if` test at all.
     """
-    return [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If) and _selects_literal(node.test, op)
-    ]
+    for node in ast.walk(test):
+        if not isinstance(node, ast.Compare):
+            continue
+        left = node.left
+        for operator, comparator in zip(node.ops, node.comparators):
+            if isinstance(operator, ast.Eq):
+                if _names_literal(left, literal) or _names_literal(
+                    comparator, literal
+                ):
+                    return True
+            elif isinstance(operator, ast.In):
+                if _names_literal(comparator, literal):
+                    return True
+            left = comparator
+    return False
+
+
+def _dispatch_branches(tree: ast.Module, op: str) -> list[ast.stmt]:
+    """The statements in every `if`/`elif` branch selected by this operation's name.
+
+    All matching branches, not the narrowest: the configuration resolver dispatches
+    the five revision operations twice — an outer `elif operation in (...)` that
+    performs the shared profile-level scope check, then an inner `if operation ==
+    "..."` that picks the handler. Taking only the inner branch would miss the check
+    that actually enforces the scope, and taking only the outer one would make five
+    operations indistinguishable. The union is what the operation can reach.
+
+    The branch **body** is returned, never the `ast.If` node itself. An `If` carries
+    its `orelse` — every subsequent `elif` — so returning the node would hand back
+    the whole rest of the dispatch chain and make the check module-wide again. That
+    is not theoretical: it is precisely how `listDocuments` would be credited with
+    `getDocumentCount`'s code, and vice versa.
+    """
+    statements: list[ast.stmt] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and _selects_literal(node.test, op):
+            statements.extend(node.body)
+    return statements
 
 
 def op_scope_source(
@@ -756,16 +803,20 @@ def op_scope_source(
             )
         entries = [declared]
     else:
-        entries = _dispatch_branches(tree, op)
+        entries = list(_dispatch_branches(tree, op))
         if not entries:
             if not sole_op:
                 return (
-                    "no per-operation dispatch on this name could be found, and the "
-                    "file serves more than one declared operation — whole-file "
-                    "scope is what let a false `scope_filtered` declaration pass. "
-                    "Add `scope_enforced_in: <function>` to the expectations entry",
+                    "no per-operation dispatch on this name could be found, and this "
+                    "file is the enforced_in for more than one operation in the "
+                    "expectations file — so the check would fall back to module "
+                    "scope, which is what let a false `scope_filtered` declaration "
+                    "pass. Add `scope_enforced_in: <function>` to the entry",
                     "",
                 )
+            # Sole operation in this file, so there is nothing for the check to
+            # confuse it with. The handler's call closure is still narrower than the
+            # file: unreachable and dead code is excluded.
             entries = [
                 functions.get("handler") or functions.get("lambda_handler") or tree
             ]
@@ -923,11 +974,15 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         for name, cfg in ops.items()
         if cfg.get("scope_checked") or cfg.get("scope_filtered")
     }
+    # Counted over EVERY operation declared against a file, not only the
+    # scope-flagged ones. A file holding one scope-flagged op beside five unflagged
+    # ones is still a file where module scope credits an operation with a sibling's
+    # code, which is the whole reason this check became per-operation.
     ops_per_file: dict[str, int] = {}
-    for name in scope_flagged:
-        ops_per_file[ops[name]["enforced_in"]] = (
-            ops_per_file.get(ops[name]["enforced_in"], 0) + 1
-        )
+    for cfg in ops.values():
+        enforced_in = cfg.get("enforced_in")
+        if enforced_in:
+            ops_per_file[enforced_in] = ops_per_file.get(enforced_in, 0) + 1
 
     for op in sorted(scope_flagged):
         o = ops[op]

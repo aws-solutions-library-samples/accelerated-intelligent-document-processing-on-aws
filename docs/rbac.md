@@ -218,12 +218,30 @@ obeys two rules of its own, in `resolve_allowed_config_versions` in the same mod
 An **empty page still means unrestricted**, which is the first matching rule above
 and must stay that way — most users have no scope row.
 
-Every consumer resolves the scope through that one function rather than its own
-copy, and `scripts/tests/test_scope_lookup_fail_closed.py` fails if a new one
-derives the key from anything but the `email` claim, or reads a caught lookup
-failure as unrestricted. Two artifacts state the rule locally instead of importing
-it, because they ship without an `idp_common` layer: the user-management Lambda and
-the PII-anonymizer feature API. The same gate covers both.
+`scripts/tests/test_scope_lookup_fail_closed.py` fails if any module that queries the
+UsersTable derives the key from something other than the `email` claim, or reads a
+caught lookup failure as unrestricted. It recognises a scope query by the **table**,
+not by the index name, because naming the index wrongly is itself one of the ways
+this has failed.
+
+Most consumers reach that one function by import. **Four** artifacts carry the rule
+in their own code instead, and the gate covers all four so they cannot drift
+unnoticed:
+
+| Artifact | Why it is not an import |
+|---|---|
+| Both document-list resolvers | No `idp_common` layer — they sit on the hottest UI query and are kept dependency-free, so they vendor `config_scope.py` byte-for-byte (a unit test fails if the copies differ) |
+| `src/lambda/user_management` | No `idp_common` layer; it vendors `log_sanitizer` for the same reason. States the key rule for its own-profile lookup |
+| `feature-platform/pii-anonymizer/feature-api` | Ships as its own stack, so it cannot depend on the host's layer. States the key rule, the scope normaliser and the glob matcher |
+| The Chat-with-Document processor | Imports the matcher but implements its own lookup, and is vendored into the chat-streaming bundle |
+
+The two vendored `config_scope.py` copies are byte-identical by construction. The
+**restatements** are not, and are not claimed to be: the PII-anonymizer copy omits
+the canonical lookup's `Limit=1` and its per-container cache, both of which are
+performance rather than policy. What the gate holds constant is the part that decides
+access — the key comes from the `email` claim, an unevaluable scope denies, an empty
+result is unrestricted, and a set scope is matched with glob support and denies an
+unnamed target.
 
 ### Scope Enforcement Points
 
