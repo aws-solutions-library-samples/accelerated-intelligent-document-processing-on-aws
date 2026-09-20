@@ -1085,6 +1085,37 @@ class ExtractionConfig(BaseModel):
         default=None,
         description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",
     )
+    row_shortfall_action: Literal["fail", "warn"] = Field(
+        default="fail",
+        description=(
+            "What a section's outcome MEANS when extraction returned fewer than "
+            "half the table rows the section's own OCR text evidences for a list "
+            "field — the ``extraction_rows_below_ocr_estimate`` check. 'fail' "
+            "(default): the partial result and the issue are still written, then "
+            "the section fails, so the document's status cannot report COMPLETED "
+            "on a list that lost most of its rows. 'warn': record the issue and "
+            "report success, which is the pre-0.6.10 behaviour. This does NOT "
+            "change WHEN the shortfall is detected, only what it costs; the "
+            "detection threshold is the same one the warning has always used. Set "
+            "'warn' if your classes declare a list whose width coincides with an "
+            "unrelated table in the same section, because the check's evidence is "
+            "OCR tables of the SAME column count and it cannot tell those apart "
+            "(see extraction/README.md)."
+        ),
+    )
+
+    @field_validator("row_shortfall_action", mode="before")
+    @classmethod
+    def _coerce_row_shortfall_action(cls, v: Any) -> Any:
+        """An absent/blank/None value resolves to the field default.
+
+        Same hazard as ``validation.fail_action``: the config editor has
+        persisted nulls for scalar fields before, and a null arriving here must
+        not become a ``ValidationError`` that wedges the whole config load.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "fail"
+        return str(v).lower()
 
     @field_validator("prompt_cache", mode="before")
     @classmethod

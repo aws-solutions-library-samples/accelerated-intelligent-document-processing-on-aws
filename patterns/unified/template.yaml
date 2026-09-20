@@ -1323,6 +1323,13 @@ Resources:
                 default: "auto"
                 order: 1.05
                 description: "'auto' (default): every <<CACHEPOINT>> marker in the extraction prompts becomes a Bedrock cache point on models that support it. 'off': send no cache points. A cache write is billed at 1.25x input price and pays back only when a second request with the same prefix arrives inside the 5-minute TTL, so a low-volume deployment that processes one document of a class per TTL pays about +25% on the prefix for nothing — choose 'off' there. Each model also has a minimum cacheable prefix (512 to 4,096 tokens); below it a cache point silently does nothing, which 'idp-cli config validate' warns about per class. Applies to extraction only."
+              row_shortfall_action:
+                type: string
+                title: Truncated list outcome
+                enum: ["fail", "warn"]
+                default: "fail"
+                order: 1.06
+                description: "What the outcome MEANS when extraction returns fewer than half the table rows the section's own OCR text evidences for a list field. 'fail' (default): the rows that were extracted and the diagnosis are saved, then the section is marked failed — so a document carrying a fraction of a long table cannot be reported as COMPLETED, which is the only signal most consumers read. 'warn': record the issue and report success (the behaviour before this setting existed). This does not change WHEN the shortfall is detected, only what it costs. Choose 'warn' if one of your classes declares a list whose column count coincides with an unrelated table in the same section, because the check's evidence is OCR tables of the same column count and cannot tell those apart. Applies to both Simple and Advanced extraction."
               agentic:
                 type: object
                 sectionLabel: Advanced extraction settings

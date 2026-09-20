@@ -111,6 +111,29 @@ class ExtractionImageRejected(Exception):
     """
 
 
+class ExtractionOutputIncomplete(Exception):
+    """Extraction returned far fewer list rows than the section's OCR evidences.
+
+    Raised AFTER the partial result, the processing issue and the processing
+    report have been persisted, so the data and the diagnosis survive and only
+    the section's *outcome* changes. That ordering is the whole point: a
+    consumer reading status alone must not be told a document completed when
+    most of a list is missing (#1032), but the rows that were extracted are
+    still worth keeping and the issue names exactly what was lost.
+
+    Distinct from :class:`ExtractionInputTooLarge`, which is Bedrock refusing a
+    request that never ran. This one is the model *accepting* a request that fits
+    the window and then stopping early — the two need different remedies and,
+    measured on the 25-page case in #1032, an input-size gate cannot see this one
+    at all (~146K estimated input against a 200K window).
+
+    Deterministic: the class name is deliberately in no ``Retry.ErrorEquals``
+    list in ``patterns/unified/statemachine/workflow.asl.json``, and
+    ``is_transient_error`` returns False for it, so the same request is not sent
+    again to stop early again.
+    """
+
+
 # The shipped default of ``extraction.confidence.list_batch_size``. The field is
 # ``gt=0`` so it cannot express "unset", and its default is persisted into
 # ``Config#default`` on every stack update — so it cannot simply be changed to 0
@@ -2154,6 +2177,22 @@ class ExtractionService:
         _flush(cur_rows, cur_cols)
         return tables
 
+    #: The ``ProcessingIssue.code`` whose severity and consequence
+    #: ``extraction.row_shortfall_action`` governs. Named once so the issue
+    #: builder and the ``_save_results`` tail cannot drift apart.
+    ROW_SHORTFALL_CODE = "extraction_rows_below_ocr_estimate"
+
+    def _row_shortfall_action(self) -> str:
+        """``extraction.row_shortfall_action`` — ``"fail"`` or ``"warn"``.
+
+        Read through ``getattr`` with the shipped default so a config object
+        built by an older release (or a test fixture that predates the field)
+        still resolves, rather than raising and taking extraction down with it.
+        """
+        return str(
+            getattr(self.config.extraction, "row_shortfall_action", "fail") or "fail"
+        ).lower()
+
     @classmethod
     def _expected_rows_for_width(
         cls, n_props: int, tables: list[dict[str, int]]
@@ -3558,18 +3597,32 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     else " Set minItems on the list field to make this a hard "
                     "constraint, and check the table-parsing tool was used."
                 )
+                # What the shortfall COSTS follows extraction.row_shortfall_action,
+                # the way extraction_validation_failed's severity follows
+                # validation.fail_action: 'fail' means the section fails once this
+                # result and this issue are persisted, so the document's status
+                # cannot say COMPLETED over a list that lost most of its rows
+                # (#1032); 'warn' leaves the advisory-only behaviour in place.
+                # The DETECTION is identical either way — same floor, same ratio.
+                shortfall_action = self._row_shortfall_action()
+                outcome = (
+                    " The section is therefore marked FAILED (extraction."
+                    "row_shortfall_action is 'fail'); the rows that were extracted "
+                    "and this issue are still saved."
+                    if shortfall_action == "fail"
+                    else " The run still reports success and scalar fields are "
+                    "unaffected, so no other signal flags this."
+                )
                 issues.append(
                     ProcessingIssue(
                         stage="extraction",
-                        severity="warning",
-                        code="extraction_rows_below_ocr_estimate",
+                        severity="error" if shortfall_action == "fail" else "warning",
+                        code=self.ROW_SHORTFALL_CODE,
                         message=(
                             f"Extracted {extracted} row(s) for list field(s) "
                             f"{fields_str}, but the section's OCR text contains about "
                             f"{expected} rows in {n_props}-column table(s) of that "
-                            f"shape — the list is likely truncated. The run still "
-                            f"reports success and scalar fields are unaffected, so no "
-                            f"other signal flags this.{rec}"
+                            f"shape — the list is likely truncated.{outcome}{rec}"
                         ),
                         root_cause=(
                             f"{'agentic' if is_agentic else 'traditional'} extraction "
@@ -3587,6 +3640,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                             "ratio": round(extracted / expected, 3),
                             "ocr_tables": tables,
                             "agentic": is_agentic,
+                            "row_shortfall_action": shortfall_action,
                         },
                     )
                 )
@@ -6878,6 +6932,49 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             f"Total extraction time for section {section_id}: {t3 - t0:.2f} seconds"
         )
 
+        # LAST thing this method does, and deliberately so (#1032). Everything a
+        # reader needs is already durable by this point — the partial
+        # inference_result and the error-severity issue are in the section's S3
+        # output, the section and the document's metering are updated — so the
+        # only thing left to decide is what the section's OUTCOME was, and a
+        # section that lost most of a list did not succeed.
+        #
+        # ONE site for both call sites of _save_results (the in-process
+        # process_document_section path and the Step Functions shard-merge entry
+        # point), which is why it lives here rather than in either caller: the
+        # two modes cannot drift apart on it.
+        self._fail_on_row_shortfall(document, section, section_id)
+
+    def _fail_on_row_shortfall(
+        self, document: Document, section: Any, section_id: str
+    ) -> None:
+        """Raise :class:`ExtractionOutputIncomplete` for a persisted row shortfall.
+
+        Fires only on an ``error``-severity ``ROW_SHORTFALL_CODE`` issue, which
+        ``_build_extraction_issues`` produces only when
+        ``extraction.row_shortfall_action`` is ``fail``. Reading the severity back
+        off the issue rather than re-testing the action keeps ONE decision: if the
+        issue a consumer can see says ``warning``, nothing here fails, and the
+        message the exception carries is the message that was persisted.
+        """
+        blocking = [
+            issue
+            for issue in (section.processing_issues or [])
+            if getattr(issue, "code", None) == self.ROW_SHORTFALL_CODE
+            and str(getattr(issue, "severity", "")).lower() == "error"
+        ]
+        if not blocking:
+            return
+        detail = "; ".join(issue.message for issue in blocking)
+        msg = (
+            f"Section {section_id} extraction is materially incomplete: {detail} "
+            f"Set extraction.row_shortfall_action to 'warn' to accept a partial "
+            f"list as success."
+        )
+        logger.error(msg)
+        document.errors.append(msg)
+        raise ExtractionOutputIncomplete(msg)
+
     def process_document_section(
         self,
         document: Document,
@@ -6969,6 +7066,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # Save results
             self._save_results(document, section, result, section_info, section_id, t0)
 
+        except ExtractionOutputIncomplete:
+            # Already logged, already appended to document.errors, and already
+            # persisted as an error-severity issue by _fail_on_row_shortfall.
+            # Re-raised untouched so the two Bedrock-error matchers below cannot
+            # reclassify a row-shortfall message as an input overflow or an image
+            # rejection on some future wording change, and so the Step Functions
+            # cause stays the sentence a reader can act on.
+            raise
         except Exception as e:
             from idp_common.utils.bedrock_utils import (
                 is_image_request_rejection,

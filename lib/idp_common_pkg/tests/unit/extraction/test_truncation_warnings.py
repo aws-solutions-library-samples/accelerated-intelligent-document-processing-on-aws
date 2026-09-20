@@ -18,7 +18,9 @@ Bedrock's bare "Input is too long". This pins:
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -26,12 +28,17 @@ from idp_common.config.models import IDPConfig
 from idp_common.extraction.service import (
     ExtractionImageRejected,
     ExtractionInputTooLarge,
+    ExtractionOutputIncomplete,
+    ExtractionResult,
     ExtractionService,
+    SectionInfo,
 )
+from idp_common.models import Document, Section, Status
 from idp_common.utils.bedrock_utils import (
     is_image_request_rejection,
     is_input_token_overflow,
 )
+from idp_common.utils.transient_errors import is_transient_error
 
 ROW = {
     "type": "object",
@@ -50,15 +57,19 @@ SCHEMA = {
 }
 
 
-def _svc(*, agentic: bool = False, schema: dict | None = None) -> ExtractionService:
-    cfg = IDPConfig(
-        **{
-            "extraction": {
-                "mode": "advanced" if agentic else "simple",
-                "agentic": {"enabled": agentic},
-            }
-        }
-    )
+def _svc(
+    *,
+    agentic: bool = False,
+    schema: dict | None = None,
+    row_shortfall_action: str | None = None,
+) -> ExtractionService:
+    extraction: dict = {
+        "mode": "advanced" if agentic else "simple",
+        "agentic": {"enabled": agentic},
+    }
+    if row_shortfall_action is not None:
+        extraction["row_shortfall_action"] = row_shortfall_action
+    cfg = IDPConfig(**{"extraction": extraction})
     svc = ExtractionService(config=cfg)
     svc._reset_context()
     svc._class_schema = schema or SCHEMA
@@ -109,7 +120,12 @@ class TestRowShortfall:
         issues = _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
         assert CODE in _codes(issues)
         issue = next(i for i in issues if i.code == CODE)
-        assert issue.severity == "warning"
+        # error, not warning: the shipped row_shortfall_action is 'fail', and the
+        # severity is what says so. The advisory-only reading of this outcome is
+        # the #1032 defect, and it is asserted under the opt-out action instead —
+        # see TestRowShortfallOutcome.test_warn_restores_the_advisory_behaviour.
+        assert issue.severity == "error"
+        assert issue.details["row_shortfall_action"] == "fail"
         assert issue.details["list_fields"] == ["Transactions"]
         assert issue.details["extracted_rows"] == 43
         assert (
@@ -272,6 +288,219 @@ class TestRowShortfall:
                 _issues(svc, {"Account Number": "1", "Transactions": _rows(extracted)})
             )
         ) is fires
+
+
+class TestRowShortfallOutcome:
+    """#1032: a materially incomplete list must not be reported as COMPLETED.
+
+    ``extraction.row_shortfall_action`` decides what the SAME detection COSTS.
+    The detection itself — floor 30, ratio 0.5, same-width OCR evidence — is
+    untouched, and ``test_the_action_never_moves_the_detection_boundary`` is what
+    holds that.
+    """
+
+    def _saved(self, svc, fields, *, rows_in_ocr=800, pages=17):
+        """Drive the real ``_save_results`` tail. Returns the S3 write mock.
+
+        Uses the production path rather than calling ``_fail_on_row_shortfall``
+        directly, because the contract under test is an ORDERING one: the result
+        must already be persisted when the section fails.
+        """
+        svc._document_text = _table(rows_in_ocr, pages=pages)
+        doc = Document(
+            id="d",
+            input_key="d.pdf",
+            input_bucket="in",
+            output_bucket="out",
+            status=Status.EXTRACTING,
+        )
+        section = Section(section_id="1", classification="Statement", page_ids=["1"])
+        doc.sections = [section]
+        info = SectionInfo(
+            class_label="Statement",
+            sorted_page_ids=["1"],
+            page_indices=[0],
+            output_bucket="out",
+            output_key="d.pdf/sections/1/result.json",
+            output_uri="s3://out/d.pdf/sections/1/result.json",
+            start_page=1,
+            end_page=1,
+        )
+        result = ExtractionResult(
+            extracted_fields=fields,
+            metering={},
+            parsing_succeeded=True,
+            total_duration=1.0,
+        )
+        with patch("idp_common.extraction.service.s3.write_content") as write:
+            try:
+                svc._save_results(doc, section, result, info, "1", 0.0)
+            except ExtractionOutputIncomplete as e:
+                return write, doc, section, e
+        return write, doc, section, None
+
+    def test_the_default_action_fails_the_section_after_persisting_the_partial(self):
+        svc = _svc()
+        write, doc, section, exc = self._saved(
+            svc, {"Account Number": "1", "Transactions": _rows(43)}
+        )
+        assert exc is not None, "43 of 800 rows must not resolve to success"
+        # Ordering is the contract: the partial rows and the diagnosis are durable
+        # BEFORE the section fails, so the failure costs visibility, not data.
+        assert write.called, "the partial result must be written before failing"
+        written = write.call_args.args[0]
+        assert len(written["inference_result"]["Transactions"]) == 43
+        persisted = written["metadata"]["processing_issues"]
+        assert [i for i in persisted if i["code"] == CODE and i["severity"] == "error"]
+        assert "COMPLETED WITH ERRORS" in written["processing_report"]
+        # and the document carries the explanation for processresults_function,
+        # which fails a document on a non-empty document.errors
+        assert any("materially incomplete" in e for e in doc.errors)
+        assert "43 row(s)" in str(exc) and "row_shortfall_action" in str(exc)
+
+    def test_warn_restores_the_advisory_behaviour(self):
+        svc = _svc(row_shortfall_action="warn")
+        write, doc, section, exc = self._saved(
+            svc, {"Account Number": "1", "Transactions": _rows(43)}
+        )
+        assert exc is None, "'warn' is the documented opt-out and must not raise"
+        issue = next(i for i in section.processing_issues if i.code == CODE)
+        assert issue.severity == "warning"
+        assert issue.details["row_shortfall_action"] == "warn"
+        assert "The run still reports success" in issue.message
+        assert doc.errors == []
+        assert "COMPLETED WITH WARNINGS" in write.call_args.args[0]["processing_report"]
+
+    def test_a_complete_list_is_unaffected_by_either_action(self):
+        for action in ("fail", "warn"):
+            svc = _svc(row_shortfall_action=action)
+            _w, doc, _s, exc = self._saved(
+                svc,
+                {"Account Number": "1", "Transactions": _rows(400)},
+                rows_in_ocr=400,
+                pages=9,
+            )
+            assert exc is None, action
+            assert doc.errors == [], action
+
+    def test_advanced_mode_is_held_to_the_same_rule(self):
+        """The defect is mode-independent, so the fix is too (#1032).
+
+        Agentic extraction shards and so rarely truncates, but when it does the
+        outcome must not be success either — a fix applied only to Simple mode
+        would leave the same lie reachable through the other mode.
+        """
+        svc = _svc(agentic=True)
+        _w, _d, _s, exc = self._saved(
+            svc, {"Account Number": "1", "Transactions": _rows(43)}
+        )
+        assert exc is not None
+
+    @pytest.mark.parametrize(
+        "ocr_rows,extracted,fires",
+        [(29, 5, False), (30, 14, True), (30, 15, False), (100, 49, True)],
+    )
+    def test_the_action_never_moves_the_detection_boundary(
+        self, ocr_rows, extracted, fires
+    ):
+        """Same floor and same ratio under both actions — no new threshold ships.
+
+        A second, lower threshold for "bad enough to fail" would be a number
+        picked to fit the observed cases. The set of runs that FAIL under 'fail'
+        is exactly the set that WARNED before.
+        """
+        seen = {}
+        for action in ("fail", "warn"):
+            svc = _svc(row_shortfall_action=action)
+            svc._document_text = _table(ocr_rows - 1)
+            issues = _issues(
+                svc, {"Account Number": "1", "Transactions": _rows(extracted)}
+            )
+            seen[action] = CODE in _codes(issues)
+        assert seen == {"fail": fires, "warn": fires}
+
+    def test_a_blank_or_null_action_resolves_to_the_shipped_default(self):
+        """The config editor has persisted nulls for scalar fields before."""
+        for raw in (None, "", "   ", "FAIL"):
+            cfg = IDPConfig(**{"extraction": {"row_shortfall_action": raw}})
+            assert cfg.extraction.row_shortfall_action == "fail", raw
+
+    def test_an_unknown_action_is_rejected_rather_than_silently_accepted(self):
+        with pytest.raises(Exception) as ei:
+            IDPConfig(**{"extraction": {"row_shortfall_action": "escalate"}})
+        assert "row_shortfall_action" in str(ei.value)
+
+    def test_the_failure_is_deterministic_and_in_no_retry_list(self):
+        """Derived from the state machine, not restated.
+
+        A retried row shortfall re-sends a request that will stop early again, so
+        the class name must appear in no ``Retry.ErrorEquals``. The expectation is
+        read out of the ASL itself — a hardcoded list of retriers would go stale
+        the moment one is added.
+        """
+        import json
+        import re
+        import subprocess
+
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        rel = "patterns/unified/statemachine/workflow.asl.json"
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", rel],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        assert tracked.returncode == 0, f"{rel} is not tracked by git"
+        raw = (Path(root) / rel).read_text(encoding="utf-8")
+        # The ASL is a CloudFormation template body: ${Placeholder} appears
+        # unquoted, so neutralise those before parsing rather than hand-rolling
+        # a second parser.
+        asl = json.loads(re.sub(r"\$\{[^}]+\}", "0", raw))
+
+        retried: set[str] = set()
+
+        def walk(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "Retry" and isinstance(value, list):
+                        for rule in value:
+                            retried.update(rule.get("ErrorEquals") or [])
+                    walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(asl)
+        assert retried, "found no retriers at all — the walk is broken, not the ASL"
+        assert ExtractionOutputIncomplete.__name__ not in retried
+        # and the shared classifier agrees, independently of the ASL
+        assert not is_transient_error(ExtractionOutputIncomplete("Section 1 ..."))
+
+    def test_the_message_is_not_mistaken_for_a_bedrock_input_or_image_failure(self):
+        """Run the OLD detectors over the NEW failure's text.
+
+        ``ExtractionInputTooLarge`` and ``ExtractionImageRejected`` are chosen by
+        substring matchers over the error text, and ``process_document_section``
+        consults both. If a row-shortfall message happened to match one, the
+        section would fail with a remedy — shrink the images, switch to Advanced —
+        that has nothing to do with why it failed.
+        """
+        svc = _svc()
+        svc._document_text = _table(800, pages=17)
+        issue = next(
+            i
+            for i in _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+            if i.code == CODE
+        )
+        for text in (issue.message, issue.root_cause):
+            err = ExtractionOutputIncomplete(text)
+            assert not is_input_token_overflow(err), text
+            assert not is_image_request_rejection(err), text
 
 
 class TestSiblingsRefsAndWrappers:
