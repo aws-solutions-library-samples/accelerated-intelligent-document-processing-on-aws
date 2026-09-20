@@ -98,9 +98,10 @@ from urllib.parse import quote
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
-logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+logger.setLevel(os.environ.get("LOG_LEVEL", "WARN"))
 
 # Region used to build the bare OSS template URL against the artifacts bucket
 # (the bucket the main template is published to, which is same-region as this
@@ -463,7 +464,7 @@ def _parameters_for_feature(
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    logger.info("getFeatureLaunchUrl event: %s", event)
+    logger.info("getFeatureLaunchUrl event: %s", sanitize_event_for_logging(event))
     if not _MAIN_STACK_NAME:
         raise RuntimeError("MAIN_STACK_NAME env var is not configured")
 

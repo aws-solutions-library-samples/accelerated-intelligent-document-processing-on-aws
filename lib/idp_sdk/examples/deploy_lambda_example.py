@@ -55,6 +55,22 @@ def run_command(cmd: list, capture: bool = False, cwd: str = None) -> tuple:
         return False, None, str(e)
 
 
+def aws_partition() -> str:
+    """The partition this account is in, from the caller identity's own ARN.
+
+    Hardcoding ``aws`` makes the managed-policy ARNs below wrong in GovCloud, where
+    the same policy is ``arn:aws-us-gov:iam::aws:policy/...``, and the resulting
+    failure reads as a permissions problem rather than a partition one.
+    """
+    ok, stdout, _ = run_command(
+        ["aws", "sts", "get-caller-identity", "--query", "Arn", "--output", "text"],
+        capture=True,
+    )
+    if ok and stdout.strip().startswith("arn:"):
+        return stdout.strip().split(":")[1]
+    return "aws"
+
+
 def create_layer(sdk_dir: Path) -> str:
     """Create Lambda layer with IDP SDK and return layer ARN."""
     print("\n📦 Creating Lambda layer with IDP SDK...")
@@ -283,7 +299,7 @@ def create_iam_role() -> str:
             "--role-name",
             role_name,
             "--policy-arn",
-            "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            f"arn:{aws_partition()}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
         ],
         capture=True,
     )
@@ -679,7 +695,7 @@ def cleanup() -> bool:
             "--role-name",
             role_name,
             "--policy-arn",
-            "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            f"arn:{aws_partition()}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
         ],
         capture=True,
     )

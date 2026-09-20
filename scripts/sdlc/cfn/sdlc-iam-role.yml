@@ -106,14 +106,14 @@ Resources:
           - Effect: Allow
             Principal:
               Service: 
-                - ec2.amazonaws.com
-                - codebuild.amazonaws.com
-                - cloudformation.amazonaws.com
+                - !Sub 'ec2.${AWS::URLSuffix}'
+                - !Sub 'codebuild.${AWS::URLSuffix}'
+                - !Sub 'cloudformation.${AWS::URLSuffix}'
             Action:
               - 'sts:AssumeRole'
       ManagedPolicyArns:
         - !Ref LimitedIAMAccessPolicy
-        - 'arn:aws:iam::aws:policy/PowerUserAccess'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/PowerUserAccess'
       Tags:
         - Key: Purpose
           Value: ApplicationBuilder

@@ -261,18 +261,33 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files
 		(echo -e "$(RED)ERROR: Buildspec validation failed!$(NC)" && exit 1)
 	@echo -e "$(GREEN)✅ All buildspec files are valid!$(NC)"
 
-# Templates the ARN-partition gate does NOT scan, each with its reason. This is
-# a per-PATH exemption, never a per-rule one: every rule still runs on everything
-# else. Keep it short, and justify each entry here.
+# Lines the ARN-partition gate does NOT flag, each with its reason. Entries are
+# `<path>:<line-pattern>`, the same shape scripts/sdlc/retired_services.json uses,
+# so a file can be PARTLY exempt. A bare `<path>` (or `<path>/` prefix) still works
+# and skips the whole file, but prefer the per-line form: this is never a per-RULE
+# exemption, and it should not be a per-DIRECTORY one either.
 #
-#   scripts/sdlc/cfn/ — the SDLC pipeline's own infrastructure (CodePipeline,
-#     the GitLab-runner credential vendor, the builder IAM role). It deploys only
-#     in the commercial CI account by construction: it names a commercial
-#     cross-account principal (arn:aws:iam::<account>:role/gitlab-runners-prod)
-#     that has no counterpart in another partition. Mirrors the /scripts/sdlc/
-#     exclusion in scripts/check_python_arn_partitions.py. If the harness ever
-#     grows a GovCloud probe, drop this and fix the templates.
-ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/
+# Why per line. This used to read `scripts/sdlc/cfn/` — one directory entry, one
+# reason, four templates — justified on the ground that the SDLC pipeline templates
+# "name a commercial cross-account principal that has no counterpart in another
+# partition". Measured with this gate's own greps, that was true of 2 lines out of
+# the 51 the entry hid: one template contained no ARN at all, and the other 49 were
+# own-account or AWS-managed ARNs and service principals that simply needed
+# parameterising, which they now have. The premise was a property of two lines and
+# was attached to a directory, so reading it in aggregate ("do these deploy only in
+# the commercial account?" — yes) confirmed it while it shielded 49 fixable
+# findings. Naming the lines makes the mismatch impossible to write down.
+#
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
+#     trust a named role in the commercial CI account that owns this pipeline.
+#     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
+#     would render an ARN naming a GovCloud account that is not the one meant. This
+#     is the only line in these templates that cannot be parameterised.
+#
+# scripts/tests/test_discover_templates.py checks the shape, requires a reason, and
+# fails if an entry hides nothing — a dead exemption is a standing licence for
+# whatever next occupies the path.
+ARN_PARTITION_EXEMPT := scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod
 
 check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partitions
 	@echo "Checking CloudFormation templates for hardcoded ARN partitions and service principals..."
@@ -286,22 +301,31 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 		exit 1; \
 	fi; \
 	for template in $$TEMPLATES; do \
-		SKIP=0; \
+		SKIP=0; LINEFILTER=cat; \
 		for exempt in $(ARN_PARTITION_EXEMPT); do \
-			case "$$template" in $$exempt*) SKIP=1;; esac; \
+			case "$$exempt" in \
+				*:*) epath=$${exempt%%:*}; epat=$${exempt#*:};; \
+				*)   epath=$$exempt; epat='';; \
+			esac; \
+			if [ -n "$$epat" ]; then \
+				if [ "$$template" = "$$epath" ]; then LINEFILTER="grep -v $$epat"; fi; \
+			else \
+				case "$$template" in $$epath*) SKIP=1;; esac; \
+			fi; \
 		done; \
 		if [ $$SKIP -eq 1 ]; then \
 			echo "Skipping $$template (ARN_PARTITION_EXEMPT — see Makefile for the reason)"; \
 		elif [ -f "$$template" ]; then \
-			echo "Checking $$template..."; \
-			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" || true); \
+			if [ "$$LINEFILTER" = cat ]; then echo "Checking $$template..."; \
+			else echo "Checking $$template (ARN_PARTITION_EXEMPT hides lines matching '$${LINEFILTER#grep -v }' — see Makefile)"; fi; \
+			ARN_MATCHES=$$(grep -n "arn:aws:" "$$template" | grep -v "arn:\$${AWS::Partition}:" | grep -v "^[0-9]*:[[:space:]]*#" | $$LINEFILTER || true); \
 			if [ -n "$$ARN_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded 'arn:aws:' references in $$template:$(NC)"; \
 				echo "$$ARN_MATCHES" | sed 's/^/  /'; \
 				echo -e "$(YELLOW)  These should use 'arn:\$${AWS::Partition}:' instead for GovCloud compatibility$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" || true); \
+			SERVICE_MATCHES=$$(grep -n "\.amazonaws\.com" "$$template" | grep -v "\$${AWS::URLSuffix}" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Description:" | grep -v "Comment:" | grep -v "reason:" | grep -v "cognito" | grep -v "ContentSecurityPolicy" | $$LINEFILTER || true); \
 			if [ -n "$$SERVICE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded service principal references in $$template:$(NC)"; \
 				echo "$$SERVICE_MATCHES" | sed 's/^/  /'; \
@@ -309,7 +333,7 @@ check-arn-partitions: ## Check CloudFormation templates for hardcoded ARN partit
 				echo -e "$(YELLOW)  Example: 'lambda.amazonaws.com' should be 'lambda.\$${AWS::URLSuffix}'$(NC)"; \
 				FOUND_ISSUES=1; \
 			fi; \
-			CONSOLE_MATCHES=$$(grep -n "console\.aws\.amazon\.com\|s3\.console\.aws\.amazon\.com" "$$template" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Domain:" | grep -v "Description:" | grep -v "Comment:" || true); \
+			CONSOLE_MATCHES=$$(grep -n "console\.aws\.amazon\.com\|s3\.console\.aws\.amazon\.com" "$$template" | grep -v "^[0-9]*:[[:space:]]*#" | grep -v "Domain:" | grep -v "Description:" | grep -v "Comment:" | $$LINEFILTER || true); \
 			if [ -n "$$CONSOLE_MATCHES" ]; then \
 				echo -e "$(RED)ERROR: Found hardcoded AWS console domain references in $$template:$(NC)"; \
 				echo "$$CONSOLE_MATCHES" | sed 's/^/  /'; \
