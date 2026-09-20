@@ -587,6 +587,28 @@ def test_the_measurement_is_the_guards_own_computation():
         >= _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
     )
 
+    # The case that separates the shipping rule from the most plausible lookalike.
+    # `_row_confidence_missing` requires EVERY leaf in a row to be scored; a
+    # reimplementation asking whether ANY leaf is scored passes every all-or-nothing
+    # fixture above and disagrees only on a PARTIALLY scored row. Both rows below are
+    # partial, so the two rules differ by the whole list: 0 scored under the rule that
+    # ships, 2 under the lookalike.
+    partial_assessment = {
+        "rows": [
+            {"a": _leaf(0.9), "b": _leaf(None)},
+            {"a": _leaf(None), "b": _leaf(0.8)},
+        ]
+    }
+    partial_data = {"rows": [{"a": "1", "b": "2"}, {"a": "3", "b": "4"}]}
+    partial = confidence_coverage(partial_assessment, partial_data)
+    assert partial["expected_rows"] == 2
+    assert partial["scored_rows"] == 0, (
+        "a row with any None confidence leaf is unscored — this is the rule the "
+        "guard fires on, and a measurement that scored these rows would be "
+        "measuring a different predicate"
+    )
+    assert partial["unscored_rows_by_field"] == {"rows": 2}
+
 
 def test_coverage_is_undefined_rather_than_perfect_without_a_list_attribute():
     """A section with no list attribute has no coverage to report.
