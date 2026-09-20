@@ -280,10 +280,42 @@ last bullet), not a byte-for-byte re-creation of it:
 - **It carries no bounds vocabulary.** The spec describes each argument's *type*
   and nothing else — there is no `maximum`, `maxItems` or `maxLength` in it — so a
   numeric limit, a list length, a string length or a date span is bounded in the
-  resolver or not at all. That is why `listDocumentsByDateRange` enforces its
-  365-day cap itself (see [web-ui.md](web-ui.md)), and why a `limit` argument must
-  be clamped with a hard `min()` rather than merely given a default the caller can
-  exceed.
+  resolver or not at all. A `limit` argument therefore has to be clamped with a hard
+  `min()`; a default the caller can exceed is not a bound. The date-span case is
+  below.
+
+### `listDocumentsByDateRange` is capped at 365 days
+
+⚠️ This cap is on **`listDocumentsByDateRange`**, an API operation the web UI does
+not call. The Document List's **Custom range…** control is served by
+`listDocuments`, which reads the same two arguments but resolves them with a single
+indexed query, so its cost tracks the number of documents returned rather than the
+length of the window and it needs no span limit. The date picker's own 365-day bound
+is a client-side convenience on that path, not this control.
+
+A caller of `listDocumentsByDateRange` who asks for more than 365 days receives
+**HTTP 400** with:
+
+```
+Date range too large: <N> days requested, maximum is 365 days. Narrow the range,
+or page through it in shorter windows.
+```
+
+The limit exists because of how that operation reads a range: it decomposes the
+window into one DynamoDB query per four-hour partition — six per requested day — and
+issues them one after another, stopping early only once it has collected a full page.
+A window holding fewer documents than a page, which includes every window before the
+deployment existed, is therefore walked in full. Ten years of range is about 21,900
+sequential queries, roughly 80 seconds of work, against the 20-second budget the
+dispatcher gives a resolver. Without the cap that request was accepted, answered with
+an unexplained `Request failed (504)` after 20 seconds, and then went on consuming
+read capacity for another minute with nobody left to receive the answer.
+
+Inside the cap a request is bounded a second way, by elapsed work rather than by
+range: a window that is still slow — a throttled table, unusually full partitions —
+returns the page it has plus a `nextToken` instead of running to the function's
+timeout. Following the token resumes at the next unread partition, so a range that
+needs more than one round trip still returns everything in it.
 - **Stricter than AppSync on coercion (safe for the UI).** AppSync *coerced* some
   inputs before validating; this validator *rejects* them instead: a scalar
   passed for a list arg (AppSync → one-element list), an integer passed for an

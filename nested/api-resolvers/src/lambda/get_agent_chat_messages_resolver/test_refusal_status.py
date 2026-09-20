@@ -98,3 +98,43 @@ class TestTheOwnershipRefusalIsAnAuthorizationRefusal:
             index.handler(_event(), None)
 
         _tables.query.assert_not_called()
+
+
+class TestAFaultDoesNotRelayBotocoresMessage:
+    """The same disclosure the S3 path closes, four lines away in this file.
+
+    `raise Exception(f"DynamoDB error: {e}")` has class name `Exception`, so the
+    dispatcher relays the message verbatim into the 500 body — and a botocore
+    authorization message names the assumed-role ARN and the table ARN.
+    """
+
+    def test_a_dynamodb_error_is_not_echoed_to_the_caller(self, monkeypatch, _tables):
+        from botocore.exceptions import ClientError
+
+        monkeypatch.setattr(index, "_verify_session_ownership", lambda *a: True)
+        _tables.query.side_effect = ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User: arn:aws:sts::123456789012:assumed-role/"
+                        "SomeStack-Role/abc is not authorized to perform: "
+                        "dynamodb:Query on resource: arn:aws:dynamodb:us-west-2:"
+                        "123456789012:table/SomeStack-ChatMessagesTable"
+                    ),
+                }
+            },
+            "Query",
+        )
+
+        with pytest.raises(Exception) as excinfo:
+            index.handler(_event(), None)
+
+        message = str(excinfo.value)
+        assert "assumed-role" not in message
+        assert "arn:aws" not in message
+        assert "dynamodb:Query" not in message
+        assert not isinstance(excinfo.value, (PermissionError, ValueError)), (
+            "this deployment's own IAM failing is a server fault, not the caller's "
+            "authorization problem"
+        )

@@ -198,9 +198,15 @@ def handler(event, context):
         return messages
 
     except ClientError as e:
-        error_msg = f"DynamoDB error: {str(e)}"
-        logger.error(error_msg)
-        raise Exception(error_msg)
+        # Logged in full, returned generically. The class name is `Exception`, so the
+        # dispatcher relays this message verbatim into the 500 body — and a botocore
+        # authorization message names the assumed-role ARN and the table ARN. Same
+        # disclosure the S3 path in get_file_contents_resolver closes, and the same
+        # remedy: detail to the operator, not to the caller.
+        logger.error("DynamoDB error: %s", e, exc_info=True)
+        raise Exception(
+            "This deployment could not read the chat data. Contact an administrator."
+        ) from e
     except (PermissionError, ValueError):
         # Re-raised unchanged. The catch-all below wrapped every exception as
         # `Exception(f"Error getting agent chat messages: {e}")`, which destroyed

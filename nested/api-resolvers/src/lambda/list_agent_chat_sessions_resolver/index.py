@@ -74,7 +74,10 @@ def handler(event, context):
         
         # Get user identity from context
         identity = event.get("identity", {})
-        logger.info(f"DEBUG - Full identity context: {json.dumps(identity)}")
+        # NOT the whole identity object: `sanitize_event_for_logging` two lines up
+        # redacts `identity` and `claims` precisely because they carry the caller's
+        # token claims, and dumping it here put back what that call took out.
+        logger.debug("Resolving caller from identity keys: %s", sorted(identity))
         user_id = identity.get("username") or identity.get("sub") or "anonymous"
         
         logger.info(f"Listing chat sessions for user: {user_id}")
@@ -148,9 +151,15 @@ def handler(event, context):
         return result
         
     except ClientError as e:
-        error_msg = f"DynamoDB error: {str(e)}"
-        logger.error(error_msg)
-        raise Exception(error_msg)
+        # Logged in full, returned generically. The class name is `Exception`, so the
+        # dispatcher relays this message verbatim into the 500 body — and a botocore
+        # authorization message names the assumed-role ARN and the table ARN. Same
+        # disclosure the S3 path in get_file_contents_resolver closes, and the same
+        # remedy: detail to the operator, not to the caller.
+        logger.error("DynamoDB error: %s", e, exc_info=True)
+        raise Exception(
+            "This deployment could not read the chat data. Contact an administrator."
+        ) from e
     except Exception as e:
         error_msg = f"Error listing chat sessions: {str(e)}"
         logger.error(error_msg)

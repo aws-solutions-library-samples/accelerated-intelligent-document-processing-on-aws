@@ -406,6 +406,31 @@ def curate_srt(issues_path: Path) -> tuple[str, dict]:
 # ---------------------------------------------------------------------------
 
 
+# Statuses that mean the check established nothing. This MUST agree with
+# `inconclusive()` in scripts/test_api_rbac.py, which is the definition; the
+# agreement is asserted by scripts/tests/test_curate_rbac_inconclusive.py rather
+# than trusted, because the two cannot share an import (the harness's module-scope
+# imports are not loadable from here).
+#
+# The status test is what makes an ARCHIVED report readable. A report written before
+# the harness distinguished outcomes has no `outcome` key, no `inconclusive` flag and
+# no "INCONCLUSIVE" prose — `classify()` returned `(True, f"{status}")`, so the row is
+# literally `{"passed": True, "detail": "500", "http_status": 500}`. Recognising only
+# the new fields would re-publish such a run as an unqualified pass, i.e. regenerate
+# exactly the page this distinction exists to correct.
+def _row_is_inconclusive(row: dict) -> bool:
+    """Whether this result row established nothing about the API's behaviour."""
+    if row.get("inconclusive") or row.get("outcome") == "ERROR":
+        return True
+    if str(row.get("detail", "")).startswith("INCONCLUSIVE"):
+        return True
+    status = row.get("http_status")
+    # `http_status` carries "SKIP"/"ERR"/"n/a" as well as integers.
+    if isinstance(status, bool) or not isinstance(status, int):
+        return status == "ERR"
+    return status == 0 or status >= 500
+
+
 def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
     hint = "`./scratch/api-test-results/<stack>-<ts>/` (from `make api-test`)"
     if report_dir is None:
@@ -427,13 +452,7 @@ def curate_rbac_dynamic(report_dir: Path | None) -> tuple[str, dict]:
     # nothing. Older report.json files carry no `outcome` field, so fall back to
     # the detail text the harness writes for an inconclusive cell — a snapshot
     # curated from a pre-fix report should still say what it could not conclude.
-    inconclusive = [
-        r
-        for r in results
-        if r.get("inconclusive")
-        or r.get("outcome") == "ERROR"
-        or str(r.get("detail", "")).startswith("INCONCLUSIVE")
-    ]
+    inconclusive = [r for r in results if _row_is_inconclusive(r)]
     skipped = [
         r
         for r in results

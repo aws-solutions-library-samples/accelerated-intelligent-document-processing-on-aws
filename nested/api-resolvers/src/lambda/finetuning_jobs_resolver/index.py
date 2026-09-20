@@ -47,7 +47,20 @@ MAX_PAGE_SIZE = 200
 # Bounds on the filtered scan that finds the jobs. The filter is sparse against a
 # table that holds a row per document in the deployment, so the walk's cost is
 # proportional to the whole document history rather than to the number of jobs.
-MAX_SCAN_PAGES = 200
+#
+# The binding constraint here is READ CAPACITY, not time: a filtered Scan is charged
+# on bytes EXAMINED, not on rows matched. Measured against a real 4.6 MB tracking
+# table from in-region compute: 113 RCU mean per page (142 max), 34 ms mean latency —
+# so the cost of a page is ~3,000x its latency in significance, and a time-derived cap
+# would be meaningless.
+#
+# 10 pages ~= 1,130 RCU, which is the same per-request read budget the date-range cap
+# allows (2,191 queries x 0.5 RCU ~= 1,100). That parity is the derivation: this
+# operation's policy is `ANY`, so it is reachable by any authenticated caller
+# including one in no group, and it should not be able to buy an order of magnitude
+# more capacity than the operation that IS group-gated. A caller who needs more
+# follows `nextToken`.
+MAX_SCAN_PAGES = 10
 SCAN_TIME_RESERVE_MS = 5_000
 
 # Supported base models for fine-tuning (Nova 2.x recommended)
@@ -206,6 +219,15 @@ def list_finetuning_jobs(
         if "LastEvaluatedKey" not in response:
             break
 
+        # Enough for the page the caller asked for. Checked here rather than by
+        # truncating afterwards: `nextToken` resumes after the last SCANNED page, so
+        # anything collected and then truncated away is returned by no page at all.
+        if len(items) >= limit:
+            result_next_token = json.dumps(
+                response["LastEvaluatedKey"], cls=DecimalEncoder
+            )
+            break
+
         # BOUND the walk. Fine-tuning jobs are sparse in the TrackingTable, which
         # holds a row per document in the deployment, so "scan until the whole
         # table is exhausted" is proportional to the deployment's entire document
@@ -229,11 +251,18 @@ def list_finetuning_jobs(
         # Continue scanning from where we left off
         scan_kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
-    # Sort by createdAt descending (most recent first)
+    # Sort by createdAt descending (most recent first). Note the ordering is over
+    # what THIS call scanned, not over all jobs: a scan cursor cannot be resumed in
+    # createdAt order. A caller following nextToken gets every job, page by page, but
+    # the pages are not globally sorted between them.
     items.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
 
-    # Apply limit after sorting
-    items = items[:limit]
+    # Truncate ONLY when the scan completed. With a nextToken outstanding the token
+    # resumes after the last scanned page, so truncating here would drop rows that no
+    # subsequent page ever returns — a token that looks like faithful pagination and
+    # is not. Returning slightly more than `limit` is the honest alternative.
+    if result_next_token is None:
+        items = items[:limit]
 
     return {"items": items, "nextToken": result_next_token}
 

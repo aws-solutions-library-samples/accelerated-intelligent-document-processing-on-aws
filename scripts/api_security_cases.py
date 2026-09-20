@@ -946,13 +946,26 @@ def _tls_probe(host, port, version):
         return INCONCLUSIVE, f"connection lost during handshake ({type(e).__name__}: {e})"
 
 
+# Connection outcomes that are a POSITIVE observation that nothing serves the port:
+# the host answered, and its answer was "no". A TCP reset is the shape
+# "execute-api does not listen on :80" actually takes.
+_PORT_CLOSED_ERRORS = (ConnectionRefusedError, ConnectionResetError)
+
+
 def _http_probe(host):
     """Whether plaintext HTTP serves the API. (REFUSED|ACCEPTED|INCONCLUSIVE, note).
 
-    API Gateway execute-api does not listen on :80, so "nothing answered on port
-    80" is the expected pass. A DNS failure is NOT that: it means the name did not
-    resolve, so port 80 was never asked, and treating it as a pass asserted the
-    endpoint's TLS posture from a resolver failure.
+    API Gateway execute-api does not listen on :80, so "the port answered with a
+    reset" is the expected pass. Three failures are NOT that, and each has to be
+    separated from it rather than folded in:
+
+    * **DNS** — the name did not resolve, so port 80 was never asked.
+    * **A connect timeout** — the packet went nowhere and nothing came back. Common
+      on a restricted network with blackholed egress, and indistinguishable from a
+      healthy endpoint if counted as a refusal: the probe would report "plaintext
+      HTTP refused" having observed nothing at all.
+    * **Anything else** — an OSError this function does not recognise is not evidence
+      either way, so it says so instead of guessing in the reassuring direction.
     """
     url = f"http://{host}/"
     try:
@@ -967,10 +980,14 @@ def _http_probe(host):
         # A 4xx/5xx over cleartext still means :80 answered; only a redirect is
         # acceptable, handled above. Treat other HTTP responses as weak.
         return ACCEPTED, f"HTTP {e.code} over cleartext"
-    except socket.gaierror as e:
-        return INCONCLUSIVE, f"host did not resolve ({e})"
     except (urllib.error.URLError, OSError) as e:
+        # URLError wraps the real cause in `.reason`; a bare OSError is its own.
         reason = getattr(e, "reason", e)
         if isinstance(reason, socket.gaierror):
             return INCONCLUSIVE, f"host did not resolve ({reason})"
-        return REFUSED, f"no cleartext service ({type(reason).__name__})"
+        if isinstance(reason, _PORT_CLOSED_ERRORS):
+            return REFUSED, f"no cleartext service ({type(reason).__name__})"
+        # socket.timeout is TimeoutError on 3.10+; named explicitly for clarity.
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return INCONCLUSIVE, f"connect to :80 timed out ({reason})"
+        return INCONCLUSIVE, f"could not probe :80 ({type(reason).__name__}: {reason})"

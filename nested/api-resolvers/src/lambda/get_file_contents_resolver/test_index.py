@@ -433,6 +433,35 @@ class TestRefusalsAreDistinguishableFromFaults:
         assert "Forbidden" not in str(excinfo.value)
 
 
+def _resolver_env(logical_id):
+    """The `Environment.Variables` map for one function, parsed from the template.
+
+    The template is SAM/CFN, so it carries short-form intrinsics (`!Ref`, `!Sub`,
+    `!If`) that a plain safe_load rejects. Resolving them is not the point here — only
+    which names are present and whether their values are non-empty — so they are
+    loaded as opaque nodes.
+    """
+    import yaml
+    from pathlib import Path
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    def _passthrough(loader, tag_suffix, node):
+        if isinstance(node, yaml.ScalarNode):
+            return f"!{tag_suffix} {node.value}"
+        if isinstance(node, yaml.SequenceNode):
+            return [f"!{tag_suffix}"] + loader.construct_sequence(node, deep=True)
+        return {f"!{tag_suffix}": loader.construct_mapping(node, deep=True)}
+
+    _Loader.add_multi_constructor("", _passthrough)
+
+    template = Path(__file__).resolve().parents[3] / "template.yaml"
+    doc = yaml.load(template.read_text(), Loader=_Loader)  # nosec B506 - custom SafeLoader subclass
+    resource = doc["Resources"][logical_id]
+    return resource["Properties"]["Environment"]["Variables"]
+
+
 @pytest.mark.unit
 class TestTheAllowListFailsClosed:
     def test_an_unconfigured_allow_list_refuses_every_request(self, monkeypatch):
@@ -471,18 +500,46 @@ class TestTheAllowListFailsClosed:
         """The premise of the closed case: it must be unreachable in a deployment.
 
         Fixing a fail-open by making it deny is only safe if nothing real lands in
-        the deny branch, and that is a property of the template, not of this file.
+        the deny branch, and that is a property of the template, not of this file. If
+        it ever does, every `getFileContents` call returns 403 and the document
+        viewers stop working with copy implying the *caller* is at fault.
+
+        Parsed as YAML rather than sliced between two hardcoded logical ids. A text
+        slice that loses its trailing anchor silently widens to the rest of the
+        template — where `INPUT_BUCKET:` and `OUTPUT_BUCKET:` both appear on other
+        functions — so removing the variables from THIS function and renaming the
+        anchor would still have passed. The values are checked non-empty too, because
+        `ALLOWED_BUCKETS` filters falsy entries: `INPUT_BUCKET: ""` is wired and still
+        fails closed.
         """
-        from pathlib import Path
+        env = _resolver_env("GetFileContentsResolverFunction")
 
-        template = (
-            Path(__file__).resolve().parents[3] / "template.yaml"
-        ).read_text()
-        block = template.split("GetFileContentsResolverFunction:", 1)[1]
-        block = block.split("GetSampleDocumentResolverFunctionLogGroup:", 1)[0]
-
-        for required in ("INPUT_BUCKET:", "OUTPUT_BUCKET:"):
-            assert required in block, (
+        for required in ("INPUT_BUCKET", "OUTPUT_BUCKET"):
+            assert required in env, (
                 f"{required} is not set on GetFileContentsResolverFunction, so the "
                 "bucket allow-list would be empty and every read refused"
             )
+            assert env[required], (
+                f"{required} is set to an empty value, which ALLOWED_BUCKETS "
+                "filters out — so the allow-list is still empty and every read is "
+                "refused"
+            )
+
+    def test_every_name_the_code_reads_is_either_wired_or_knowingly_unwired(self):
+        """`_ALLOWED_BUCKETS_ENV` names eight variables; the template sets six.
+
+        Not a defect — an unset name simply contributes nothing to the allow-list —
+        but it is the kind of drift that makes the set above look bigger than the
+        protection actually is, so it is pinned rather than left to be discovered.
+        """
+        import index
+
+        env = _resolver_env("GetFileContentsResolverFunction")
+        wired = {n for n in index._ALLOWED_BUCKETS_ENV if n in env}
+        unwired = set(index._ALLOWED_BUCKETS_ENV) - wired
+
+        assert unwired == {"DISCOVERY_BUCKET", "WORKING_BUCKET"}, (
+            "the set of bucket env vars the template does not wire has changed: "
+            f"{sorted(unwired)}. An object in an unwired bucket is unreachable "
+            "through this resolver."
+        )

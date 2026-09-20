@@ -113,6 +113,9 @@ RUN_ROOTS = [
     # Chat-session ownership: the refusal must reach the caller as an
     # authorization denial rather than being laundered into a 500 by the
     # handler's catch-all.
+    # The discovery upload path's bucket/key constraint: `bucket` and `prefix` are
+    # request arguments and this function's role holds write on the discovery bucket.
+    "nested/api-resolvers/src/lambda/discovery_upload_resolver",
     "nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver",
     "nested/api-resolvers/src/lambda/get_sample_document_resolver",
     "nested/api-resolvers/src/lambda/get_stepfunction_execution_resolver",

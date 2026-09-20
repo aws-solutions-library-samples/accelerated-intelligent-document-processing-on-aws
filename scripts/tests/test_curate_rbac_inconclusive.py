@@ -123,14 +123,43 @@ class TestTheGateIsQualified:
 
 
 class TestAnArchivedPreFixReportIsStillReadCorrectly:
-    def test_an_inconclusive_detail_is_honoured_without_an_outcome_field(
-        self, tmp_path
-    ):
-        """A report written by the old harness has no `outcome`/`inconclusive` key.
+    """The exact row shape the pre-fix harness wrote.
 
-        Curation must still not publish it as a pass — otherwise re-curating an
-        archived run would reproduce the very page this fix exists to correct.
-        """
+    Before outcomes existed, `classify()` returned `(True, f"{status}")`, so a 5xx
+    cell was recorded as `{"passed": True, "detail": "500", "http_status": 500}` —
+    no `outcome` key, no `inconclusive` flag, and the string "INCONCLUSIVE" nowhere
+    in the harness. Recognising only the new fields would re-publish such a run as
+    an unqualified pass, which is to say regenerate the page this corrects.
+    """
+
+    def _archived_500_row(self):
+        return {
+            "op": "addDocumentsToTestSet",
+            "principal": "Admin",
+            "http_status": 500,
+            "passed": True,
+            "detail": "500",
+            "known_gap": None,
+        }
+
+    def test_the_real_pre_fix_row_shape_is_not_published_as_a_pass(self, tmp_path):
+        d = _report(
+            tmp_path,
+            [self._archived_500_row()],
+            totals={"checks": 1, "passed": 1, "hard_fail": 0, "gap_warn": 0},
+        )
+
+        body, meta = curate.curate_rbac_dynamic(d)
+
+        assert meta["gate"] == "pass-with-reservations", (
+            "an archived pre-fix report was re-published as an unqualified pass"
+        )
+        assert meta["inconclusive"] == 1
+        assert "could not be run" in body
+        assert "500 ✅" not in body, "regenerated the cell the fix exists to correct"
+
+    def test_an_inconclusive_detail_is_also_honoured(self, tmp_path):
+        """The newer shape, for a report from a harness mid-transition."""
         d = _report(
             tmp_path,
             [
@@ -148,6 +177,56 @@ class TestAnArchivedPreFixReportIsStillReadCorrectly:
 
         assert meta["gate"] == "pass-with-reservations"
         assert "could not be run" in body
+
+    def test_a_status_zero_row_is_inconclusive(self, tmp_path):
+        """`call_body` returned 0 for a dead connection even before this change."""
+        d = _report(
+            tmp_path,
+            [
+                {
+                    "op": "getAgentJobStatus",
+                    "principal": "userB(reads A's job)",
+                    "http_status": 0,
+                    "passed": True,
+                    "detail": "0",
+                    "known_gap": None,
+                }
+            ],
+            totals={"checks": 1, "passed": 1, "hard_fail": 0, "gap_warn": 0},
+        )
+
+        _, meta = curate.curate_rbac_dynamic(d)
+
+        assert meta["inconclusive"] == 1
+
+    def test_the_curators_rule_agrees_with_the_harnesss_definition(self):
+        """One definition, two implementations that cannot share an import.
+
+        `inconclusive()` in the harness is authoritative; this asserts the curator's
+        row-level test agrees with it rather than restating it and drifting.
+        """
+        import importlib.util
+        import sys as _sys
+
+        path = Path(__file__).resolve().parents[1] / "test_api_rbac.py"
+        spec = importlib.util.spec_from_file_location("_harness_for_curate", path)
+        harness = importlib.util.module_from_spec(spec)
+        _sys.modules["_harness_for_curate"] = harness
+        spec.loader.exec_module(harness)
+
+        for status in (0, 200, 400, 401, 403, 404, 409, 499, 500, 502, 503, 504, 599):
+            expected = harness.inconclusive(status) is not None
+            actual = curate._row_is_inconclusive({"http_status": status})
+            assert actual is expected, (
+                f"status {status}: harness says inconclusive={expected}, curator "
+                f"says {actual} — the two definitions have drifted"
+            )
+
+    def test_a_non_numeric_status_is_not_mistaken_for_a_server_error(self):
+        """`http_status` also carries "SKIP"/"ERR"/"n/a"."""
+        assert curate._row_is_inconclusive({"http_status": "SKIP"}) is False
+        assert curate._row_is_inconclusive({"http_status": "n/a"}) is False
+        assert curate._row_is_inconclusive({"http_status": "ERR"}) is True
 
 
 class TestTheMatrixCellsSayWhichIsWhich:

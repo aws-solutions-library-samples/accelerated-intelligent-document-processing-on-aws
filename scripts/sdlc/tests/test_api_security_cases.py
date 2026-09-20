@@ -12,8 +12,10 @@ dispatcher code.
 """
 
 import importlib.util
+import socket
 import ssl
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -872,3 +874,269 @@ def test_a_delete_that_worked_but_a_listing_that_did_not_is_still_an_error():
     assert after[0]["outcome"] == "ERROR", (
         "a listing that never arrived was read as 'the version is gone'"
     )
+
+
+# --------------------------------------------------------------------------- #
+# The `outcome=` argument is the load-bearing part at every site
+#
+# `_record` computes `"passed": resolved == "PASS"` and ignores its `passed`
+# argument whenever `outcome=` is supplied, so a `(not why) and ...` prefix on the
+# boolean is belt-and-braces: removing it changes nothing. Asserting only
+# `passed is False` therefore proves nothing about the CLASSIFICATION, and these
+# tests exist to cover the `outcome=` argument at the three sites in this file that
+# build one by hand.
+#
+# The deleted-resource SETUP site is the one that actually weakens the gate if its
+# classification is lost. It reads `outcome="ERROR" if why else "SKIP"` with `passed`
+# hardcoded False, so there is no boolean fallback at all: collapse it to `"SKIP"`
+# and a setup call that TIMED OUT becomes a non-blocking skip, the run exits 0, and
+# nothing anywhere records that the check could not be run.
+# --------------------------------------------------------------------------- #
+def test_a_setup_call_that_timed_out_blocks_the_gate_rather_than_skipping():
+    """The distinction this site has to make, and the reason it is a hard case.
+
+    A clean 4xx from the setup call means the precondition is genuinely absent here
+    (SKIP, exit 0). A timeout means the harness could not find out (ERROR, exit
+    non-zero). Collapsing the two hands an unreachable stack a green run.
+    """
+    rec = _Recorder()
+    results = []
+
+    sec.run_deleted_resource_suite(
+        CTX,
+        lambda *a, **k: (0, None, None, "<request error: connection reset>"),
+        rec,
+        results,
+        {"Admin": "a"},
+        call_body=lambda *a, **k: (0, "<request error>"),
+    )
+
+    setup = rec.by_principal("deleted-resource-setup")
+    assert setup, "the setup outcome was not recorded at all"
+    assert setup[0]["outcome"] == "ERROR", (
+        "a setup call that never completed was recorded as a skip, so the run "
+        "exits 0 with nothing saying the check could not be run"
+    )
+    assert setup[0]["inconclusive"] is True
+    assert "INCONCLUSIVE" in setup[0]["detail"]
+
+
+def test_a_setup_call_refused_with_a_clean_4xx_is_still_a_skip():
+    """The other half of the same distinction — and the control for the test above,
+    which "always ERROR" would otherwise satisfy."""
+    rec = _Recorder()
+    results = []
+
+    sec.run_deleted_resource_suite(
+        CTX,
+        lambda *a, **k: (400, "BadRequest", None, "rid"),
+        rec,
+        results,
+        {"Admin": "a"},
+        call_body=lambda *a, **k: (200, "{}"),
+    )
+
+    setup = rec.by_principal("deleted-resource-setup")
+    assert setup and setup[0]["outcome"] == "SKIP"
+    assert setup[0]["inconclusive"] is False
+    assert "precondition absent" in setup[0]["detail"]
+
+
+def test_the_idor_probe_row_is_classified_inconclusive_not_merely_not_passed():
+    rec = _Recorder()
+    results = []
+
+    sec.run_idor_suite(
+        CTX,
+        rec,
+        results,
+        {"Admin": "a", "userB": "b"},
+        seed_fn=lambda job_id, marker: "admin@example.invalid",
+        call_body=lambda *a, **k: (0, "<request error: connection reset>"),
+    )
+
+    row = rec.by_principal("userB(reads")[0]
+    assert row["outcome"] == "ERROR"
+    assert row["inconclusive"] is True
+    assert len(rec.rows) == 1, (
+        "the suite must abandon after an incomplete probe rather than go on to "
+        "assert things about the owner's read"
+    )
+
+
+def test_an_input_validation_probe_that_did_not_complete_is_classified_an_error():
+    rec = _Recorder()
+    results = []
+
+    sec.run_input_validation_suite(
+        CTX,
+        lambda *a, **k: (0, None, None, "<request error>"),
+        rec,
+        results,
+        {"Admin": "a"},
+    )
+
+    rows = [r for r in rec.rows if r["op"] != "input-validation"]
+    assert rows, "no malformed-input cases were driven"
+    for r in rows:
+        assert r["outcome"] == "ERROR"
+        assert r["inconclusive"] is True
+        # It must NOT borrow GAP-SEC-INPUT: that gap documents a resolver that
+        # mishandled a bad shape, which an unreachable endpoint does not show.
+        assert r["known_gap"] is None
+
+
+def test_an_input_validation_probe_that_answered_is_still_judged_on_its_status():
+    """The control. A 5xx here IS a real observation — the resolver blew up on the
+    bad shape, which is the documented weakness the suite surfaces — so it stays a
+    GAP-SEC-INPUT warning rather than becoming inconclusive."""
+    rec = _Recorder()
+    results = []
+
+    sec.run_input_validation_suite(
+        CTX,
+        lambda *a, **k: (500, "InternalError", None, "rid"),
+        rec,
+        results,
+        {"Admin": "a"},
+    )
+
+    rows = [r for r in rec.rows if r["op"] != "input-validation"]
+    assert rows
+    for r in rows:
+        assert r["known_gap"] == "GAP-SEC-INPUT"
+        assert r["outcome"] == "WARN"
+        assert r["inconclusive"] is False
+
+
+# --------------------------------------------------------------------------- #
+# The probe tails, in both directions
+#
+# `_tls_probe`'s OSError arm and `_http_probe`'s tail are the two places left where
+# a single `except` decides between "the endpoint refused this" and "nothing came
+# back". Each is tested here for BOTH answers, because a test that only covers the
+# refusal side leaves the arm free to be flipped back to REFUSED silently.
+# --------------------------------------------------------------------------- #
+class _Sock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _reachable(monkeypatch):
+    monkeypatch.setattr(sec, "_connect", lambda h, p: (_Sock(), None))
+
+
+def _handshake_raises(monkeypatch, exc):
+    def _boom(self, sock, **kw):
+        raise exc
+
+    monkeypatch.setattr(sec.ssl.SSLContext, "wrap_socket", _boom)
+
+
+@pytest.mark.parametrize(
+    "exc,expected",
+    [
+        (ssl.SSLError("no protocols available"), "refused"),
+        (ConnectionResetError("reset by peer"), "refused"),
+        # Reached the port, then lost it. Not a statement about the protocol.
+        (TimeoutError("timed out"), "inconclusive"),
+        (BrokenPipeError("broken pipe"), "inconclusive"),
+    ],
+)
+def test_the_tls_handshake_arms_separate_a_refusal_from_a_lost_connection(
+    monkeypatch, exc, expected
+):
+    _reachable(monkeypatch)
+    _handshake_raises(monkeypatch, exc)
+
+    outcome, note = sec._tls_probe("host.example.invalid", 443, ssl.TLSVersion.TLSv1_2)
+
+    assert outcome == expected, note
+
+
+def test_a_handshake_that_times_out_does_not_pass_the_weak_protocol_check(monkeypatch):
+    """End to end: the suite must not report TLS 1.0/1.1 refused on that evidence."""
+    _reachable(monkeypatch)
+    _handshake_raises(monkeypatch, TimeoutError("timed out"))
+    monkeypatch.setattr(
+        sec, "_http_probe", lambda h: (sec.REFUSED, "no cleartext service")
+    )
+    rec = _Recorder()
+    results = []
+
+    sec.run_tls_suite(CTX, rec, results)
+
+    weak = [r for r in rec.rows if r["principal"] in ("TLS1.0", "TLS1.1")]
+    assert weak and all(r["outcome"] == "ERROR" for r in weak)
+
+
+def _http_raises(monkeypatch, exc):
+    def _open(req, timeout=None):
+        raise exc
+
+    monkeypatch.setattr(sec.urllib.request, "urlopen", _open)
+
+
+@pytest.mark.parametrize(
+    "exc,expected",
+    [
+        # A reset IS the observation "nothing serves this port" — execute-api's
+        # actual behaviour on :80.
+        (ConnectionRefusedError("refused"), "refused"),
+        (urllib.error.URLError(ConnectionRefusedError("refused")), "refused"),
+        # A blackholed egress, common on a restricted network: the packet went
+        # nowhere and nothing came back, so the port's state is unknown.
+        (urllib.error.URLError(TimeoutError("timed out")), "inconclusive"),
+        (TimeoutError("timed out"), "inconclusive"),
+        (urllib.error.URLError(socket.gaierror("name resolution")), "inconclusive"),
+        (socket.gaierror("name resolution"), "inconclusive"),
+        # Unrecognised: not evidence either way, so do not guess reassuringly.
+        (OSError("network is unreachable"), "inconclusive"),
+    ],
+)
+def test_the_http_probe_tail_separates_a_closed_port_from_no_answer(
+    monkeypatch, exc, expected
+):
+    _http_raises(monkeypatch, exc)
+
+    outcome, note = sec._http_probe("host.example.invalid")
+
+    assert outcome == expected, note
+
+
+def test_a_blackholed_port_80_does_not_pass_the_cleartext_check(monkeypatch):
+    """The finding, end to end: `plaintext HTTP refused ✅` off a connect timeout."""
+    _http_raises(monkeypatch, urllib.error.URLError(TimeoutError("timed out")))
+    monkeypatch.setattr(
+        sec,
+        "_tls_probe",
+        _probe_stub(
+            {
+                ssl.TLSVersion.TLSv1: (sec.REFUSED, "handshake failed"),
+                ssl.TLSVersion.TLSv1_1: (sec.REFUSED, "handshake failed"),
+                ssl.TLSVersion.TLSv1_2: (sec.ACCEPTED, "negotiated TLSv1.2"),
+            }
+        ),
+    )
+    rec = _Recorder()
+    results = []
+
+    sec.run_tls_suite(CTX, rec, results)
+
+    http = rec.by_principal("plaintext-http")[0]
+    assert http["outcome"] == "ERROR", (
+        "a connect timeout on :80 was recorded as 'plaintext HTTP not served'"
+    )
+    assert http["inconclusive"] is True
+
+
+def test_a_genuinely_closed_port_80_still_passes(monkeypatch):
+    """The control for the test above."""
+    _http_raises(monkeypatch, ConnectionRefusedError("refused"))
+
+    outcome, _ = sec._http_probe("host.example.invalid")
+
+    assert outcome == sec.REFUSED

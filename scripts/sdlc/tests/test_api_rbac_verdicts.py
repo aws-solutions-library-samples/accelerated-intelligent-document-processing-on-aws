@@ -18,6 +18,7 @@ No AWS and no network: `call`'s transport is stubbed at `urllib.request.urlopen`
 and the matrix is driven with a fake `call`.
 """
 
+import base64
 import importlib.util
 import json
 import sys
@@ -415,3 +416,145 @@ def test_a_mixed_run_writes_the_counts_it_blocks_on(tmp_path):
     assert meta["errored"] == 1
     assert meta["skipped"] == 1
     assert meta["hard_fail"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Every site that classifies an outcome, not just the ones behind classify()
+#
+# `_record` computes `"passed": resolved == "PASS"` and ignores its `passed`
+# argument whenever `outcome=` is supplied. So at each site the `(not why) and ...`
+# prefix on the boolean is belt-and-braces and the **`outcome=` argument is the
+# load-bearing part** — which means a test that only asserts `passed is False`
+# proves nothing about the classification. These assert the outcome and the
+# `inconclusive` flag at each of the four sites in this file that build one by hand.
+#
+# The scope-suite arms are the ones where losing `outcome=` does real damage rather
+# than merely mislabelling: `gap=_inconclusive_gap(st)` still fires for a 5xx, so the
+# row becomes a WARN with `inconclusive=False` — it drops out of the report's "Could
+# not be run" section and reads as an ordinary accepted gap. That is a muted form of
+# the defect this whole change exists to fix.
+# ---------------------------------------------------------------------------
+SCOPE_TOKENS = {"Admin": "tok-Admin", "scoped": "tok-scoped"}
+
+
+@pytest.mark.parametrize(
+    "status,et",
+    [(0, None), (500, None), (504, None), (200, "__unreadable_body__")],
+)
+class TestTheScopeSuiteArmsClassifyInconclusiveResults:
+    """Three arms: scoped(out-of-scope), admin(unrestricted), scoped(filtered)."""
+
+    def _run(self, monkeypatch, capsys, status, et):
+        monkeypatch.setattr(
+            h, "call", lambda api_base, field, args, token: (status, et, None, "rid")
+        )
+        results = []
+        h.run_scope_suite(CTX, SCOPE_TOKENS, results)
+        capsys.readouterr()
+        return results
+
+    def test_no_arm_passes(self, monkeypatch, capsys, status, et):
+        results = self._run(monkeypatch, capsys, status, et)
+
+        assert len(results) == 3, "expected all three scope arms to be recorded"
+        assert not [r for r in results if r["outcome"] == "PASS"]
+
+    def test_every_arm_is_flagged_inconclusive(self, monkeypatch, capsys, status, et):
+        results = self._run(monkeypatch, capsys, status, et)
+
+        for r in results:
+            assert r["inconclusive"] is True, (
+                f"{r['principal']}: classified {r['outcome']} without the "
+                "inconclusive flag, so it drops out of the report's "
+                "'Could not be run' section"
+            )
+            assert "INCONCLUSIVE" in r["detail"]
+
+    def test_a_5xx_is_a_warning_that_still_says_it_established_nothing(
+        self, monkeypatch, capsys, status, et
+    ):
+        """A 5xx carries the registered gap, so it is a WARN — but a WARN that is
+        still marked inconclusive, not one indistinguishable from an ordinary gap."""
+        results = self._run(monkeypatch, capsys, status, et)
+
+        for r in results:
+            if status >= 500:
+                assert r["known_gap"] == h.GAP_INCONCLUSIVE_5XX
+                assert r["outcome"] == "WARN"
+            else:
+                assert r["known_gap"] is None
+                assert r["outcome"] == "ERROR"
+            assert r["inconclusive"] is True
+
+
+def test_a_healthy_scope_suite_still_passes(monkeypatch, capsys):
+    """The control for the three above."""
+
+    def _call(api_base, field, args, token):
+        if token == "tok-scoped" and field == "getConfigVersion":
+            return 200, None, "Unauthorized", "rid"
+        return 200, None, None, "rid"
+
+    monkeypatch.setattr(h, "call", _call)
+    results = []
+
+    h.run_scope_suite(CTX, SCOPE_TOKENS, results)
+    capsys.readouterr()
+
+    assert len(results) == 3
+    assert all(r["outcome"] == "PASS" for r in results)
+    assert not [r for r in results if r["inconclusive"]]
+
+
+# A structurally valid JWT shape: the token-negatives suite base64url-decodes the
+# signature segment to flip a byte in it, so a placeholder has to be decodable.
+_FAKE_JWT = "hdr.pay." + base64.urlsafe_b64encode(b"\x00" * 256).decode().rstrip("=")
+
+
+class TestTheTokenNegativeArmClassifiesInconclusiveResults:
+    def test_a_dead_gateway_is_not_evidence_the_token_was_rejected(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            h, "call", lambda api_base, field, args, token: (0, None, None, "rid")
+        )
+        results = []
+
+        h.run_token_negatives(CTX, {"Admin": _FAKE_JWT}, results)
+        capsys.readouterr()
+
+        assert results
+        assert not [r for r in results if r["outcome"] == "PASS"]
+        for r in results:
+            assert r["outcome"] == "ERROR"
+            assert r["inconclusive"] is True
+
+    def test_a_real_401_is_still_a_pass(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            h, "call", lambda api_base, field, args, token: (401, None, None, "rid")
+        )
+        results = []
+
+        h.run_token_negatives(CTX, {"Admin": _FAKE_JWT}, results)
+        capsys.readouterr()
+
+        assert results and all(r["outcome"] == "PASS" for r in results)
+
+
+class TestTheUnauthCellClassifiesInconclusiveResults:
+    def test_a_dead_gateway_is_not_a_failed_authorizer_assertion(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            h, "call", lambda api_base, field, args, token: (0, None, None, "rid")
+        )
+        results = []
+
+        h.run_group_matrix(
+            {"listDocuments": {"groups": ["Admin"], "args": {}}}, CTX, TOKENS, results
+        )
+        capsys.readouterr()
+
+        unauth = [r for r in results if r["principal"] == "unauth"]
+        assert unauth and unauth[0]["outcome"] == "ERROR"
+        assert unauth[0]["inconclusive"] is True

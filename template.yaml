@@ -14145,7 +14145,14 @@ Resources:
       Handler: index.lambda_handler
       Runtime: python3.12
       CodeUri: nested/api-resolvers/src/lambda/finetuning_jobs_resolver/
-      Timeout: 60
+      # 30s, matching the list resolvers in nested/api-resolvers. The dispatcher
+      # stops waiting at 20s (_RESOLVER_READ_TIMEOUT_SECONDS in
+      # http_api_dispatcher/index.py) and does not cancel the invocation, so a
+      # Timeout far above that window only buys orphaned work: at 60s this
+      # function's bounded scan could keep examining the tracking table for 35s
+      # after the caller had already been answered with a labelled 504. See
+      # MAX_SCAN_PAGES / SCAN_TIME_RESERVE_MS in the handler.
+      Timeout: 30
       MemorySize: 512
       Layers:
         - !Ref IDPCommonBaseLayer

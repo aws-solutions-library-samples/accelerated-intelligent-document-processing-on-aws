@@ -10,6 +10,7 @@ import os
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+import s3_targets
 from log_sanitizer import sanitize_event_for_logging
 
 # Set up logging
@@ -32,89 +33,28 @@ s3_client = boto3.client(
 
 # Bucket allow-list for get_file_contents.
 # --------------------------------------------
-# The AppSync schema for getFileContents accepts an arbitrary `s3Uri`
-# argument from any authenticated Cognito user. In the default
-# single-tenant deployment, all authenticated users are trusted to read
-# any document processed by this stack — that is by design. However,
-# the Lambda's execution role has S3Read permission on several IDP
-# buckets (input, output, baseline, configuration, reporting), and if
-# a user passed in a completely unrelated S3 URI (for example an
-# object from another stack or a third-party bucket the execution
-# role happens to be able to read via a cross-account policy), the
-# resolver would happily proxy its contents.
+# The schema for getFileContents accepts an arbitrary `s3Uri` from any
+# authenticated caller holding a group, and this function's execution role can read
+# several IDP buckets. The allow-list is what stops the operation being a generic
+# S3-read gadget for whatever that role reaches.
 #
-# To prevent use of this resolver as a generic S3-read gadget, we
-# restrict the accepted buckets to those explicitly passed in via
-# environment variables (set by `nested/api-resolvers/template.yaml` from
-# the main stack's bucket refs).
-#
-# An empty allow-list fails CLOSED. It used to fail open "to preserve
-# functionality for older deployments that haven't been redeployed", and that
-# premise does not hold: this file's code and the env vars that configure it are
-# the same CloudFormation resource, deployed in the same update, so a running
-# deployment cannot have the code without the variables. What an empty set does
-# mean is a template that stopped setting them — a build fault — and reading a
-# build fault as "allow every bucket this role can reach" is the one interpretation
-# that turns the fault into the gadget the list exists to prevent. The template
-# wiring is asserted by test_index.py so the closed case stays unreachable rather
-# than merely safe.
-_ALLOWED_BUCKETS_ENV = {
-    "INPUT_BUCKET",
-    "OUTPUT_BUCKET",
-    "CONFIGURATION_BUCKET",
-    "EVALUATION_BASELINE_BUCKET",
-    "REPORTING_BUCKET",
-    "TEST_SET_BUCKET",
-    "DISCOVERY_BUCKET",
-    "WORKING_BUCKET",
-}
-ALLOWED_BUCKETS = {
-    os.environ[name]
-    for name in _ALLOWED_BUCKETS_ENV
-    if os.environ.get(name)
-}
+# The rule itself lives in `s3_targets`, shared byte-for-byte with the write paths in
+# upload_resolver and discovery_upload_resolver — one allow-list, not three that
+# drift. `test_s3_targets_vendored.py` fails if a copy diverges. This path checks the
+# BUCKET only: the write-once key rule in that module is for writes, and reading a
+# revision body or a run manifest is legitimate.
+_ALLOWED_BUCKETS_ENV = s3_targets.BUCKET_ENV_NAMES
+ALLOWED_BUCKETS = s3_targets.resolve_allowed_buckets()
 
 
 def _validate_bucket(bucket: str) -> None:
-    """Reject the request if `bucket` is not in the allow-list.
+    """Reject the request if `bucket` is not one this deployment owns.
 
-    Raises `PermissionError`, which `http_api_dispatcher` maps to **HTTP 403** with
-    `errorType: "Unauthorized"` — the marker the UI's `isAuthorizationError` keys
-    on. It must not be a bare `Exception`: the dispatcher recognises an
-    authorization refusal by the exception's class NAME, falling back to a
-    `"Unauthorized"`/`"Forbidden"` message prefix, and this handler's catch-all used
-    to prepend `"Error fetching file: "` to the message, so both arms missed and the
-    refusal arrived as 500 `InternalError`. That put deliberate policy denials into
-    the deployment's server-fault rate, where they hid real 5xx and could be
-    inflated at will by anyone probing bucket names.
+    Raises `PermissionError` -> HTTP 403 `Unauthorized`. See `s3_targets` for why the
+    exception type and the message prefix both matter, and why an empty allow-list
+    fails closed.
     """
-    if not ALLOWED_BUCKETS:
-        # Fails closed — see the note on _ALLOWED_BUCKETS_ENV. Logged at ERROR
-        # because an empty list is a build fault, not a policy decision: the same
-        # reasoning as authz.py's DENY_ALL_MARKER.
-        logger.error(
-            "get_file_contents_resolver: no bucket allow-list configured (all of "
-            "%s are unset); refusing every request. This is a deployment fault — "
-            "the template must set the bucket environment variables.",
-            sorted(_ALLOWED_BUCKETS_ENV),
-        )
-        raise PermissionError(
-            "Unauthorized: file access is not configured for this deployment."
-        )
-    if bucket not in ALLOWED_BUCKETS:
-        # The message names the reason but not the bucket, not the allow-list, and
-        # not whether the bucket exists — so it cannot be used to enumerate either
-        # this deployment's buckets or anyone else's. The allow-list goes to the log,
-        # where an operator triaging the 403 can see it.
-        logger.warning(
-            "get_file_contents_resolver: rejecting request for bucket "
-            "%r (not in allow-list %s).",
-            bucket,
-            sorted(ALLOWED_BUCKETS),
-        )
-        raise PermissionError(
-            "Unauthorized: requested bucket is not accessible from this deployment."
-        )
+    s3_targets.assert_bucket_allowed(bucket, ALLOWED_BUCKETS, logger=logger)
 
 
 # Presigned GET URLs expire after this many seconds. Short-lived: the UI

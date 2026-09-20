@@ -82,3 +82,90 @@ class TestThePageSizeIsClampedNotDefaulted:
         q = _run({"limit": 7})
 
         assert q["Limit"] == 7
+
+
+class TestAFaultDoesNotRelayBotocoresMessage:
+    def test_a_dynamodb_error_is_not_echoed_to_the_caller(self):
+        from unittest.mock import patch
+
+        from botocore.exceptions import ClientError
+
+        table = MagicMock()
+        table.query.side_effect = ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User: arn:aws:sts::123456789012:assumed-role/"
+                        "SomeStack-Role/abc is not authorized to perform: "
+                        "dynamodb:Query on resource: arn:aws:dynamodb:us-west-2:"
+                        "123456789012:table/SomeStack-ChatSessionsTable"
+                    ),
+                }
+            },
+            "Query",
+        )
+        with patch.object(index.dynamodb, "Table", return_value=table):
+            with pytest.raises(Exception) as excinfo:
+                index.handler(
+                    {"arguments": {}, "identity": {"username": "u@example.com"}}, None
+                )
+
+        message = str(excinfo.value)
+        assert "assumed-role" not in message
+        assert "arn:aws" not in message
+
+
+class TestTheClaimsObjectIsNotLogged:
+    """`sanitize_event_for_logging` redacts `identity` and `claims` at the top of the
+    handler; dumping the identity object two lines later put back exactly what that
+    call took out.
+
+    Scoped to the CLAIMS BLOB, not to the principal. Logging which user a request was
+    resolved to is ordinary operational logging and is left alone — the finding is the
+    token's claim set reaching the log, not the identifier.
+    """
+
+    def test_the_claim_set_does_not_reach_the_log(self, caplog):
+        import logging
+        from unittest.mock import patch
+
+        table = MagicMock()
+        table.query.return_value = {"Items": []}
+        claims = {
+            "email": "u@example.com",
+            "cognito:groups": ["Admin"],
+            "sub": "11111111-2222-3333-4444-555555555555",
+        }
+        with caplog.at_level(logging.DEBUG):
+            with patch.object(index.dynamodb, "Table", return_value=table):
+                index.handler(
+                    {
+                        "arguments": {},
+                        "identity": {"username": "u@example.com", "claims": claims},
+                    },
+                    None,
+                )
+
+        logged = caplog.text
+        for leaked in ("cognito:groups", "11111111-2222-3333-4444-555555555555"):
+            assert leaked not in logged, f"{leaked} reached the log"
+
+    def test_the_event_itself_is_still_redacted(self, caplog):
+        """The control: the sanitiser that makes the above true must still run."""
+        import logging
+        from unittest.mock import patch
+
+        table = MagicMock()
+        table.query.return_value = {"Items": []}
+        with caplog.at_level(logging.INFO):
+            with patch.object(index.dynamodb, "Table", return_value=table):
+                index.handler(
+                    {
+                        "arguments": {},
+                        "identity": {"claims": {"cognito:groups": ["Admin"]}},
+                    },
+                    None,
+                )
+
+        assert "REDACTED" in caplog.text
