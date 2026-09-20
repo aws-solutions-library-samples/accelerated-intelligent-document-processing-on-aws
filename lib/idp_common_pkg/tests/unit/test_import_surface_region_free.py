@@ -3,15 +3,16 @@
 
 """Importing config, bedrock, or the shard primitives must not need an AWS region.
 
-``idp_common.utils.settings_helper`` builds an SSM client at **module scope**
-(``ssm_client = boto3.client("ssm")``), so importing anything from
-``idp_common.utils`` needs a resolvable AWS region before any handler code runs.
-That is survivable where it happens today — a Lambda always has a region — but it
-is transitive, and that is what makes it a trap: one new module-scope import
-anywhere on a chain propagates the requirement to everything that imports it.
+A boto3 client built at **module scope** needs a resolvable AWS region before any
+handler code runs. That is survivable where it happens — a Lambda always has a
+region — but it is transitive, and that is what makes it a trap: one such import
+anywhere on a chain propagates the requirement to everything that imports it, and
+the failure surfaces far from the cause.
 
 Both directions of that trap have been sprung in this area, which is why the
-property is asserted rather than assumed:
+property is asserted rather than assumed. At the time, ``idp_common.utils``
+carried the client (``settings_helper``); it is lazy now, so these chains are
+region-free end to end and this module keeps them that way:
 
 * Importing the shard time budget from ``idp_common.utils`` inside
   ``bedrock/client.py`` made ``import idp_common.config`` require a region, because
@@ -56,11 +57,6 @@ REGION_FREE_IMPORTS = ("idp_common.config", "idp_common.bedrock")
 #: the module documents about itself — is that executing ``runtime.py`` alone does
 #: not. It is loaded by path, which bypasses the package ``__init__``.
 REGION_FREE_MODULE_FILES = ("idp_common/extraction/runtime.py",)
-
-#: The known landmine, asserted so it stays a known one: ``idp_common.utils`` builds
-#: an SSM client as it imports, and that is why the entries above must not import it
-#: at module scope.
-REGION_REQUIRING_IMPORT = "idp_common.utils"
 
 _LOAD_BY_PATH = (
     "import importlib.util, sys;"
@@ -125,21 +121,4 @@ def test_the_module_itself_does_not_need_a_region(rel_path: str):
     assert result.returncode == 0, (
         f"executing {rel_path} on its own fails with no AWS region configured:\n"
         f"{result.stderr.strip()[-2000:]}\n\n{_ADVICE}"
-    )
-
-
-@pytest.mark.unit
-def test_the_known_region_requiring_import_is_still_the_only_one():
-    """Pins the landmine, so the checks above keep their meaning.
-
-    If ``idp_common.utils`` ever becomes region-free this fails — at which point the
-    reasoning above is obsolete and the constraint can be relaxed rather than
-    carried forever as an unexplained rule.
-    """
-    result = _run_region_free(f"import {REGION_REQUIRING_IMPORT}")
-    assert result.returncode != 0 and "NoRegionError" in result.stderr, (
-        f"`import {REGION_REQUIRING_IMPORT}` no longer requires a region. That is an "
-        "improvement: settings_helper presumably stopped building its SSM client at "
-        "module scope. Update this module's docstring and delete this test rather "
-        "than leaving a stale explanation in place."
     )
