@@ -375,7 +375,20 @@ def test_error_severity_needs_an_absolute_row_floor_not_just_a_fraction():
     the shortfall is still reported, as a warning.
     """
     # Fraction well past 25%, absolute count tiny → warning, never error.
-    for total, scored in ((2, 1), (3, 2), (4, 3), (5, 4), (20, 19)):
+    #
+    # The last case is the LARGEST total on which a single unscored row still fires,
+    # derived from the warning fraction rather than written as 20: a literal there
+    # pins one value of a constant into a test about a different rung, and moving
+    # the fraction then fails this test for a reason that has nothing to do with
+    # the absolute floor it is about.
+    largest_single_row_total = int(1 / _COVERAGE_SHORTFALL_WARNING_FRACTION)
+    for total, scored in (
+        (2, 1),
+        (3, 2),
+        (4, 3),
+        (5, 4),
+        (largest_single_row_total, largest_single_row_total - 1),
+    ):
         issue = _coverage_issue(total, scored)
         assert issue is not None, (total, scored)
         assert issue.severity == "warning", (total, scored)
