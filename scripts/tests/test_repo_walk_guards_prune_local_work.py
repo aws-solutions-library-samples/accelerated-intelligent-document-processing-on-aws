@@ -73,6 +73,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import repo_files
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -153,6 +154,63 @@ def test_shared_prune_list_covers_local_work(local_dir: str) -> None:
         f"run_all_tests.{SHARED_PRUNE_CONST} does not prune {local_dir!r}, so every "
         f"gate that delegates to it — and `make test`'s own root discovery — walks "
         f"gitignored local work. Markers: {markers}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("local_dir", LOCAL_WORK_DIRS)
+def test_the_tracked_helpers_fallback_walk_prunes_local_work(
+    local_dir: str, tmp_path: Path
+) -> None:
+    """The other shared mechanism must carry both names too, and apply them.
+
+    ``repo_files.tracked_paths`` is the route this file recommends, and a gate that
+    takes it is excused above from naming the two directories itself. That excuse is
+    only sound if the helper covers them on BOTH of its paths. Asking git covers them
+    because both are gitignored; the fallback walk — taken when the root is not the
+    top of a checkout, which is how every gate's own synthetic-tree test drives its
+    discovery — has nothing but ``repo_files.FALLBACK_PRUNE_DIRS``. That set stands in
+    for five per-gate prune sets and was the only one with no assertion behind it.
+
+    Driven against a real tree rather than read out of the module, because membership
+    is not the property that failed five times: the set has to be matched against the
+    REPO-RELATIVE path, and matching it against the absolute path is what discarded
+    whole checkouts. Both halves are asserted here for the same reason they are below —
+    "prunes everything" would satisfy the exclusion half on its own.
+    """
+    root = tmp_path.resolve()
+    assert local_dir in repo_files.FALLBACK_PRUNE_DIRS, (
+        f"repo_files.FALLBACK_PRUNE_DIRS does not name {local_dir!r}, so every gate "
+        f"that discovers through repo_files.{TRACKED_HELPER} walks gitignored local "
+        f"work whenever its root is not a checkout. Set: "
+        f"{sorted(repo_files.FALLBACK_PRUNE_DIRS)}"
+    )
+
+    (root / "svc").mkdir()
+    (root / "svc" / "handler.py").write_text("x = 1\n", encoding="utf-8")
+    buried = root / local_dir / "worktrees" / "agent-probe" / "svc"
+    buried.mkdir(parents=True)
+    (buried / "handler.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert repo_files._git_toplevel(root) != root, (
+        "this probe tree is itself a checkout, so tracked_paths would ask git and the "
+        "fallback walk — the thing under test — would not run at all"
+    )
+    found = {
+        p.relative_to(root).as_posix()
+        for p in repo_files.tracked_paths(root, "*.py")
+    }
+
+    assert "svc/handler.py" in found, (
+        f"the fallback walk found {sorted(found) or 'nothing'} and not the probe at "
+        f"the root of the tree, so its prune set is being matched against something "
+        f"other than the repo-relative path"
+    )
+    leaked = sorted(rel for rel in found if rel.startswith(f"{local_dir}/"))
+    assert not leaked, (
+        f"the fallback walk returned {leaked} from {local_dir}/, which holds whole "
+        f"copies of this tree: a stale one fails the gate while describing nothing "
+        f"that ships"
     )
 
 

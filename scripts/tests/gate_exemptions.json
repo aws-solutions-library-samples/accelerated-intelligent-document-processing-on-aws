@@ -219,21 +219,24 @@
     },
     "ruff.toml::extend-exclude": {
       "kind": "exemption",
-      "turnsOff": "ruff lint AND format for the listed paths, repo-wide",
+      "turnsOff": "ruff lint AND format for the listed paths, at DISCOVERY level, repo-wide",
       "premise": [
         "JUDGEMENT"
       ],
-      "ratchet": "none",
-      "reason": "Pre-existing debt, declared as such in the file: the comment says 'do not add to the list' and records the finding count. Note it excludes all of scripts/, so every gate in scripts/tests is unformatted and unlinted by the repo's own linter.",
-      "ratchetGap": "Nothing checks that an entry still corresponds to real debt, so an entry whose file was since fixed keeps a whole tree unlinted. Being narrowed by issue #975 / PR #1042, which reduces this key to two entries and moves the rest into generated per-section lists -- so expect this entry's shape to change rather than its gap to be closed in place. The per-file spelling used for idp_common/config shows the intended direction.",
+      "ratchet": "non-vacuity",
+      "reason": "The generated `scope` block: two entries that are not debt to be paid down but decisions that ruff's rules do not describe the files at all -- every .ipynb, and the vendored copy of awslabs/pii-anonymizer. Each names a premise that scripts/check_lint_debt.py evaluates against this tree, per member: the notebook pattern must match nothing but .ipynb and notebooks/_validate_notebooks.py must still be present to check them instead, and the vendored tree must still carry the PROVENANCE.md pinning the upstream commit the re-sync skill diffs against. The per-file lint and format debt this array used to carry now sits in [lint] exclude and [format] exclude, generated from the same baseline. What is NOT pinned is the finding COUNT inside either scope tree, deliberately: a new notebook may add findings without failing anything, and pinning that would red-line every notebook edit.",
       "memberKind": "path",
       "crossReferences": [
         "ruff.toml::exclude",
-        "ruff.toml::lint.per-file-ignores"
+        "ruff.toml::lint.per-file-ignores",
+        "scripts/lint_debt.json::lint_debt.json"
       ],
       "issues": [
         "975",
         "1042"
+      ],
+      "ratchetEvidence": [
+        "scripts/check_lint_debt.py"
       ]
     },
     "scripts/check_data_plane_tags.py::DATA_PLANE_ALLOWLIST": {
@@ -318,6 +321,7 @@
       "reason": "The canonical shared prune list; scripts/tests/test_repo_walk_guards_prune_local_work.py pins that it carries scratch/ and .claude/ and lets other gates delegate to it.",
       "crossReferences": [
         "lib/idp_sdk/tests/unit/test_cloudwatch_alarms.py::_EXCLUDED_PARTS",
+        "scripts/tests/repo_files.py::FALLBACK_PRUNE_DIRS",
         "scripts/tests/test_api_adapter_identity_provenance.py::_SKIP_DIR_PARTS",
         "scripts/tests/test_cfn_export_ownership.py::_SKIP_PARTS",
         "scripts/tests/test_scope_lookup_fail_closed.py::_SKIP_DIR_PARTS",
@@ -1549,19 +1553,21 @@
     "ruff.toml::exclude": {
       "kind": "exemption",
       "memberKind": "path",
-      "turnsOff": "ruff lint and format for the listed paths, in addition to extend-exclude",
+      "turnsOff": "ruff's discovery walk, repo-wide, for everything under a named build-output, cache or local-work directory",
       "premise": [
         "JUDGEMENT"
       ],
-      "reason": "ruff's built-in default exclusions plus any added here. Distinct from extend-exclude, which ADDS to the defaults rather than replacing them -- and distinct as a registry key because the same key name appears under [lint] and [format] with different contents. Discovered by the section-aware TOML scan; a key-only regex collapsed the two into one surface.",
-      "ratchet": "none",
-      "ratchetGap": "Nothing checks an entry still corresponds to real debt, and nothing checks that a path excluded here is not silently excluded twice. Issue #975 and PR #1042 are narrowing this surface; see the extend-exclude entry.",
+      "reason": "Bare directory names, and the one array here where that is the correct spelling: a `build/`, `.venv/` or `node_modules/` at any depth is build output wherever it sits, and `scratch/` and `.claude/worktrees/` routinely hold whole copies of this repository. It restates ruff's own defaults and adds those four. Because the names ARE bare, check_lint_debt.py's bare-name check does not read this array and asserts a property of the walk instead, in both directions: the walk must reach nothing git ignores, and it must reach every tracked .py or .ipynb that no `scope` entry accounts for. That is what closes issue #975 here rather than a list of forbidden names -- the array was otherwise re-openable with every per-file check green, since putting `scripts` back in it drops the walk by 135 files while `ruff check` still prints 'All checks passed!'.",
+      "ratchet": "universe-closure",
       "crossReferences": [
         "ruff.toml::extend-exclude"
       ],
       "issues": [
         "975",
         "1042"
+      ],
+      "ratchetEvidence": [
+        "scripts/check_lint_debt.py"
       ]
     },
     "ruff.toml::lint.per-file-ignores": {
@@ -1592,6 +1598,182 @@
       "reason": "The TOML half of the aperture. It replaced a regex whose `per-file-ignores` branch could never match, because in TOML that is a section header rather than an assignment -- so four directory-scoped rule grants were undiscovered while the registry claimed the key was found. Registered so narrowing it is visible.",
       "ratchet": "none",
       "ratchetGap": "No check that each listed key still exists in the file it is listed for, so a renamed key drops a surface silently. Same class as the other three aperture constants."
+    },
+    "ruff.toml::lint.exclude": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "`ruff check` for the 85 named files. This array filters AFTER discovery, so `ruff check --show-files` still lists them and `ruff check --force-exclude <path>` prints 'All checks passed!' for every one -- use `check_lint_debt.py --explain <path>` instead",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Per-file lint debt from issue #975, when five bare directory names (notebooks, options, patterns, src, scripts) excluded 442 of 1230 tracked .py files and a clean `ruff check` on any of them meant the file was never opened. Generated from scripts/lint_debt.json, one line per file rather than per directory, so a NEW file beside a listed one is linted. The judgement recorded per member is only 'these particular findings may be paid down later', never 'this file needs no linting': scripts/check_lint_debt.py re-measures every listed file with the exclusions bypassed, per rule, so a further finding in one still fails the gate.",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/check_lint_debt.py",
+        "scripts/lint_debt.json"
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "It applies to every member and must NOT hold: check 5 of scripts/check_lint_debt.py fails when a listed path is untracked, on the grounds that a dead exclusion hides the next real one. So here the predicate is the inverse of a justification -- were it ever to hold for a member, the gate reddens rather than the exemption growing stronger."
+      },
+      "crossReferences": [
+        "scripts/lint_debt.json::lint_debt.json"
+      ],
+      "issues": [
+        "975",
+        "1042"
+      ]
+    },
+    "ruff.toml::format.exclude": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "`ruff format --check` for the 184 named files, so they are neither reformatted by `make format` nor failed by the format gate",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "The files `ruff format` had never been run over, because the trees holding them were excluded by bare name before issue #975. Paying one down rewrites the whole file, so the sweep was deliberately left out of the change that closed #975: five of the seven branches then open were editing 42 of these files and a repo-wide reformat would have conflicted with all five. Formatting is binary per file, so there is no count to pin and the protection is the delist direction -- scripts/check_lint_debt.py fails when a listed file is already formatted, which is what stops the list outliving the debt. Note the asymmetry with the lint array: `ruff format <path>` spelled out bypasses this list, while bare `ruff format` honours it and skips the very file being paid down.",
+      "ratchet": "staleness",
+      "ratchetEvidence": [
+        "scripts/check_lint_debt.py",
+        "scripts/lint_debt.json"
+      ],
+      "predicateConsidered": {
+        "file_absent_or_untracked": "It applies to every member and must NOT hold: check 5 of scripts/check_lint_debt.py fails when a listed path is untracked, on the grounds that a dead exclusion hides the next real one. So here the predicate is the inverse of a justification -- were it ever to hold for a member, the gate reddens rather than the exemption growing stronger."
+      },
+      "crossReferences": [
+        "scripts/lint_debt.json::lint_debt.json"
+      ],
+      "issues": [
+        "975",
+        "1042"
+      ]
+    },
+    "scripts/lint_debt.json::lint_debt.json": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "nothing on its own; it is the generated source of truth for ruff.toml's three exclusion arrays, so every path in it is a path one of those arrays turns a gate off for",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered as a JSON registry (the `*_debt.json` glob) because a generated findings baseline is an exemption list by another name: every entry is a finding the gate agrees not to fail on. Three sections of different standing -- `scope` (two decisions that ruff's rules do not describe those files at all, each naming a premise the gate evaluates against this tree), `lintDebt` (per-file, per-rule counts) and `formatDebt` (per-file flags). What keeps the file from being a laundering step is that `--write` REFUSES to grow either list without --allow-new-debt '<reason>', which is recorded in the file; without that refusal the gate would redden on a new unlinted file, say 'do not add this to lintDebt', and --write would add it and turn everything green with the file permanently unlinted.",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/check_lint_debt.py"
+      ],
+      "crossReferences": [
+        "ruff.toml::lint.exclude",
+        "ruff.toml::format.exclude",
+        "ruff.toml::extend-exclude"
+      ],
+      "issues": [
+        "975",
+        "1042"
+      ]
+    },
+    "scripts/tests/repo_files.py::FALLBACK_PRUNE_DIRS": {
+      "kind": "prune",
+      "memberKind": "path",
+      "turnsOff": "discovery in the non-git fallback of `tracked_paths`, for build output, caches and gitignored local work",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Not a carve-out from any assertion. It is the prune list for the WALK that `tracked_paths` falls back to when its root is not the top of a checkout, which in the live repository never happens -- on the git path every member is excluded by `--exclude-standard` and this set is not consulted at all. The fallback exists for the gates' own meta-tests, which drive discovery against a synthetic tree in tmp_path. It is matched against the REPO-RELATIVE path, which is the reason the module exists: the per-gate sets it replaces matched a directory name anywhere in the ABSOLUTE path, so from inside an agent worktree at <checkout>/.claude/worktrees/agent-* they discarded the whole checkout and discovery returned nothing -- loudly where the gate had a 'discovery is broken' self-guard, and vacuously where it did not.",
+      "ratchet": "prune-meta-test",
+      "ratchetEvidence": [
+        "scripts/tests/test_repo_walk_guards_prune_local_work.py"
+      ],
+      "crossReferences": [
+        "scripts/run_all_tests.py::PRUNE_DIR_MARKERS"
+      ]
+    },
+    "scripts/sdlc/tests/test_api_rbac_verdicts.py::ALLOWED": {
+      "kind": "fixture",
+      "memberKind": "literal string",
+      "turnsOff": "nothing; the two role names a fake operation permits, passed as `classify`'s `allowed` argument in a parametrised table",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Test data, matched on ALLOW. The cases it feeds assert the opposite of an exemption: that an inconclusive outcome -- a 504, a 500, a dead connection, an unreadable body -- is never scored as a pass even for an allowed role. That is the defect that put 43 cells reading '500 tick' into the 0.6.9 published snapshot beneath a PASS header.",
+      "ratchet": "none",
+      "ratchetGap": "Not an exemption, so there is nothing to keep finite. If the set were wrong the surrounding cases would simply be exercising a different allow-list, and each one asserts its expected verdict explicitly rather than inferring it from this set."
+    },
+    "scripts/security/curate_results.py::skipped": {
+      "kind": "enforced-universe",
+      "memberKind": "result row",
+      "turnsOff": "nothing; it is one column of the published snapshot's classification, and membership is what keeps a skipped check OUT of the pass count",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "A local in `curate_rbac_dynamic`, found by the SKIP fragment, and the inverse of an exemption: a row whose outcome is SKIP gets its own column in the suite table and in the summary line precisely so it cannot be folded into `pass`. Folding is not hypothetical -- the 0.6.9 snapshot published 43 unrunnable cells as passes -- and folding it into `hard_fail` would be wrong in the other direction, because a check that asserted nothing is not a statement that the API misbehaved. Both boundaries of the bucket are asserted: a SKIP row must be counted in `skipped` and must not render with a tick, and a 'SKIP' status must not be read as a server error. What is NOT asserted is that the five columns sum to `total`, so a sixth harness outcome would fall through to `hard_fail` with nothing objecting.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": [
+        "scripts/security/curate_results.py",
+        "scripts/tests/test_curate_rbac_inconclusive.py"
+      ]
+    },
+    "scripts/tests/test_config_region_threading.py::REGIONLESS_ALLOWED": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "the explicit-region requirement on idp_common's ConfigurationManager / ConfigurationReader, for two library-internal construction sites that are not under a Lambda directory",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Two members, each carrying its premise as its value, and each premise asserted by its own test rather than restated. `bedrock/model_utils.py` is excused only while every ConfigurationManager call in it sits inside a broadly-catching `try` -- established by AST containment rather than a text window, which cannot tell a nearby `try` from an enclosing one -- AND the SDK still bridges the resolved region into AWS_DEFAULT_REGION. `agents/quick_start/tools/bootstrap_tools.py` is excused only while no idp_sdk or idp_cli module imports it, because the moment one does, a command that accepted --region can drive a region-free configuration write. The much larger exemption in this gate is structural rather than listed -- a site under src/lambda/, nested/*/src/lambda/ or feature-platform/ is excused by directory, with its own test requiring a real handler entry point beside it -- which is why this list is two entries long instead of dozens.",
+      "ratchet": "staleness",
+      "ratchetEvidence": [
+        "scripts/tests/test_config_region_threading.py"
+      ]
+    },
+    "scripts/tests/test_model_surface_consistency.py::LIMITS_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "Bedrock model id",
+      "turnsOff": "the requirement that every selectable model match a pattern in config_library/model_config_limits.yaml, so auto-sizing has its real context window",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Five selectable, Active models with no decided context-window number. The premise is 'unmatched means degraded, not broken', and it is asserted in three parts because it is not self-evident: the resolver `get_model_max_output_tokens` RAISES for an unmatched id, so the claim rests entirely on callers catching that. One test asserts each exempt id still yields a positive window through `sizing._resolve_limits` while honestly reporting resolved=False; a second sweeps every tracked call site of the resolver for an unguarded call; the third keeps the entries load-bearing. The entries are deliberately not 'fixed' with a guessed number, because overstating a window is worse than the conservative fallback -- sizing would shard too little and fail at the Bedrock API -- and AWS's own sources disagree for Llama 4 (1M/10M on the model cards, 1M/3.5M in the launch announcement) while the three chat_companion ids each need their own looked-up figure.",
+      "ratchet": "staleness",
+      "ratchetEvidence": [
+        "scripts/tests/test_model_surface_consistency.py"
+      ]
+    },
+    "scripts/tests/test_model_surface_consistency.py::EMBEDDING_MODELS": {
+      "kind": "exemption",
+      "memberKind": "Bedrock model id",
+      "turnsOff": "both the pricing-coverage and the limits-coverage invariants, for three embedding models",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Found by its attached comment rather than its name, and a real carve-out despite reading like a vocabulary: the three ids are subtracted from the pricing sweep and from the limits sweep. The premise is that they are selectable ONLY as the Bedrock Knowledge Base's embedding model (`pEmbedModel` in nested/bedrockkb/template.yaml), so they are not a pipeline stage this solution meters and have no max-output-tokens in the sense the limits file means. That premise is asserted structurally, per member, which is the part worth having: if one ever appears in a ConfigSchema `model`/`model_id` field then it IS a pipeline stage, the offering path is named in the failure, and the carve-out fails rather than being re-argued in prose.",
+      "ratchet": "staleness",
+      "ratchetEvidence": [
+        "scripts/tests/test_model_surface_consistency.py"
+      ]
+    },
+    "scripts/tests/test_scope_lookup_fail_closed.py::SCOPE_NORMALIZER_NAMES": {
+      "kind": "enforced-universe",
+      "memberKind": "predicate name",
+      "turnsOff": "nothing; a module that calls one of these names satisfies SCOPE6, so the set is the rule's accepted vocabulary rather than a carve-out from it",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Three spellings of 'does this scope value count as SET': the canonical `normalize_scope` plus the two names the artifacts that ship without an idp_common layer restate it under. Omission fails closed -- a reader using a fourth spelling is reported, not excused -- and raw truthiness is deliberately not a member, because a scope of [''] is truthy and normalises to empty, so a reader testing it raw keeps a row every other reader discards and `scope_allows` then reads the result as unrestricted. Both directions are pinned by fixtures in the same file: a pointer reader with no normalising call must produce SCOPE6, and the same module with the guard must produce nothing.",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": [
+        "scripts/tests/test_scope_lookup_fail_closed.py"
+      ]
+    },
+    "scripts/tests/test_scope_lookup_fail_closed.py::SUBSTITUTE_IDENTIFIER_CLAIMS": {
+      "kind": "enforced-universe",
+      "memberKind": "claim name",
+      "turnsOff": "nothing; membership is what forbids a name from standing in for either identifier that indexes the UsersTable key spaces",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "A denylist, found by its attached comment. `callerSub` is a request-body field chosen by the caller being restricted rather than a verified claim, which is how the original instance of this class was spelled, and it stays forbidden now that `sub` is a legitimate key -- where the value comes from is the whole difference. `sub` itself is deliberately NOT a member: it has a key space of its own, so it is a second route to the row rather than a substitute for the first, and it remains forbidden as a FALLBACK (FALLBACK_FORBIDDEN_CLAIMS is this set plus `sub`) and as the value put to an email-keyed condition (SCOPE4). Omission is the risk here, and what bounds it is that a member must still trip the rule: the body-supplied-key fixture spelling `callerSub` must produce SCOPE2, or the rule has gone inert.",
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": [
+        "scripts/tests/test_scope_lookup_fail_closed.py"
+      ]
     }
   }
 }
