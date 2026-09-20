@@ -36,15 +36,15 @@ from pydantic import BaseModel
 
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.runtime import extract_one_shard
-from idp_common.utils.bedrock_utils import (
+from idp_common.timeout_budget import (
     AGENT_MAX_BACKOFF_SECONDS,
     AGENT_MAX_TOTAL_BACKOFF_SECONDS,
     AGENT_READ_TIMEOUT_SECONDS,
     BOTOCORE_TOTAL_MAX_ATTEMPTS,
     CONFIDENCE_READ_TIMEOUT_SECONDS,
     LAMBDA_MAX_TIMEOUT_SECONDS,
-    set_lambda_deadline_epoch,
 )
+from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
 from idp_common.utils.transient_errors import TransientError, is_transient_error
 
 REPO = Path(__file__).resolve().parents[5]
@@ -142,8 +142,11 @@ def test_both_bedrock_clients_take_their_timeout_and_attempts_from_the_budget():
     from idp_common.bedrock.client import BedrockClient
     from idp_common.extraction.agentic_idp import _build_model_config
 
-    # The non-streamed client, which serves separate-mode in-shard confidence.
-    runtime_config = BedrockClient().client.meta.config
+    # The non-streamed client, which serves separate-mode in-shard confidence. The
+    # region is explicit: this asserts on client CONFIGURATION, and inheriting a
+    # region from the environment would make it fail where none is set rather than
+    # where the configuration is wrong.
+    runtime_config = BedrockClient(region="us-east-1").client.meta.config
     assert runtime_config.read_timeout == CONFIDENCE_READ_TIMEOUT_SECONDS, (
         f"the Bedrock runtime client reads for {runtime_config.read_timeout}s, not "
         f"the {CONFIDENCE_READ_TIMEOUT_SECONDS}s the budget is computed for"

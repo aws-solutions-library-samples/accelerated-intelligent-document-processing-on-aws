@@ -668,7 +668,7 @@ is far below the ceiling in any case: a 3,200-row document completes in about 40
 spread over many calls. The confidence call is **not** streamed, which is exactly why
 its timeout is larger and why it has to be counted separately.
 
-The numbers live together in `idp_common.utils.bedrock_utils`, and
+The numbers live together in `idp_common.timeout_budget`, and
 `lib/idp_common_pkg/tests/unit/extraction/test_shard_timeout_budget.py` asserts the
 whole inequality — reading the resolved client configurations, not the source, so
 botocore's own attempt count is inside the bound — along with the Map's `Retry`,

@@ -84,10 +84,12 @@ except Exception as e:
     raise  # hard errors keep their own name and are not retried
 ```
 
-### The shard invocation's time budget (`bedrock_utils`)
+### The shard invocation's time budget (`idp_common.timeout_budget`)
 
-These module constants in `bedrock_utils` are only correct **relative to each other**,
-so they are defined together rather than at the call sites that use them:
+The retry ladder in `bedrock_utils` spends part of a budget it does not own. The whole
+of it lives in **`idp_common/timeout_budget.py`** — a leaf module that imports nothing,
+for a reason given below — and its constants are only correct **relative to each
+other**, so they are defined together rather than at the call sites that use them:
 
 | Constant | Value | Bounds |
 |---|---|---|
@@ -136,11 +138,20 @@ treats a read timeout as transient (`ReadTimeoutError` subclasses `HTTPClientErr
 which its `TransientRetryableChecker` lists) and retries it *inside the call*, where
 neither the application ladder nor the deadline check can observe it.
 
-The constants live here, not in `extraction.agentic_idp`, because `extraction.runtime`
-and `bedrock.client` need them too and both are deliberately importable without the
-strands-backed agentic stack. `AGENT_READ_TIMEOUT_SECONDS` is the default of every
-`read_timeout` parameter in the extraction modules — a constant the callers do not read
-would satisfy the arithmetic and change nothing.
+**Why the constants are a leaf module and not part of this package.**
+`settings_helper` builds an SSM client at *module scope*, so importing anything from
+`idp_common.utils` requires a resolvable AWS region before any handler code runs. That
+requirement is transitive: putting the budget here made `import idp_common.config`
+need a region (via `merge_utils` → `idp_common.bedrock` → `bedrock.client`), and it
+also broke `extraction/runtime.py`'s documented import-lightness — where the import
+cannot be deferred, because it supplies a default argument, which is evaluated at
+import time. `idp_common/timeout_budget.py` imports nothing, so it is free to be
+imported from anywhere. `tests/unit/test_import_surface_region_free.py` holds that
+property, in both directions.
+
+`AGENT_READ_TIMEOUT_SECONDS` is the default of every `read_timeout` parameter in the
+extraction modules — a constant the callers do not read would satisfy the arithmetic
+and change nothing.
 
 `tests/unit/extraction/test_shard_timeout_budget.py` asserts the whole inequality; that
 both extraction modules take their default from the constant; that **both clients'

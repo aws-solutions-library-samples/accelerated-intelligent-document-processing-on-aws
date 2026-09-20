@@ -54,11 +54,13 @@ from idp_common.bedrock.model_utils import (
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.topk_resolver import resolve_candidates
-from idp_common.utils.bedrock_utils import (
+from idp_common.timeout_budget import (
     AGENT_MAX_BACKOFF_SECONDS,
     AGENT_MAX_TOTAL_BACKOFF_SECONDS,
     AGENT_READ_TIMEOUT_SECONDS,
     BOTOCORE_TOTAL_MAX_ATTEMPTS,
+)
+from idp_common.utils.bedrock_utils import (
     async_exponential_backoff_retry,
 )
 from idp_common.utils.strands_agent_tools.todo_list import (
@@ -1119,11 +1121,11 @@ ROW COUNT VALIDATION:
 # short-remaining invocation it gives up sooner than either constant implies.
 # ``max_retries=50`` is left alone: the real bound is time, not attempts.
 #
-# The third part of the same budget — how long ONE request may stall before
-# botocore gives up and this ladder gets its turn — is
-# ``AGENT_READ_TIMEOUT_SECONDS``. All three are defined together in
-# ``utils.bedrock_utils`` because they are only correct relative to each other and
-# to the function's Lambda timeout; see the comment there, and
+# The rest of the same budget — how long ONE request may stall before botocore
+# gives up and this ladder gets its turn, on each of the two clients a shard uses,
+# and how many times botocore may retry that stall by itself — lives in
+# ``idp_common.timeout_budget``, because those numbers are only correct relative to
+# each other and to the function's Lambda timeout. See that module, and
 # ``tests/unit/extraction/test_shard_timeout_budget.py``, which asserts the
 # inequality so this cannot regress into a comment nobody re-checks (#1014).
 
@@ -2081,7 +2083,7 @@ async def structured_output_async(
                      healthy long generation emits deltas continuously and never
                      approaches it. Raising it eats into the time the retry ladder
                      and the work itself have inside one shard invocation — see the
-                     budget in ``idp_common.utils.bedrock_utils`` before changing it.
+                     budget in ``idp_common.timeout_budget`` before changing it.
 
     Returns:
         Tuple of (extracted data, bedrock response with token usage)

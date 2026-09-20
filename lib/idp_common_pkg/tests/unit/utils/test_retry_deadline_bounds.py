@@ -28,9 +28,11 @@ from unittest.mock import AsyncMock, patch
 import botocore.exceptions
 import pytest
 
-from idp_common.utils.bedrock_utils import (
+from idp_common.timeout_budget import (
     AGENT_MAX_BACKOFF_SECONDS,
     AGENT_MAX_TOTAL_BACKOFF_SECONDS,
+)
+from idp_common.utils.bedrock_utils import (
     async_exponential_backoff_retry,
     clamp_sleep_to_budgets,
     exponential_backoff_retry,

@@ -26,12 +26,14 @@ from botocore.exceptions import (
 )
 from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
 
-# The shard invocation's time budget. Imported rather than restated because this
-# client's read timeout is one of its terms, and a term written in two places is
-# exactly how the budget stopped adding up (#1014). ``utils.bedrock_utils`` pulls in
-# only botocore and an optional strands type, so this does not widen the import
-# surface of a module that lean Lambda extras depend on.
-from idp_common.utils.bedrock_utils import (
+# The shard invocation's time budget. Imported rather than restated, because this
+# client's read timeout is one of its terms and a term written in two places is
+# exactly how the budget stopped adding up (#1014). ``timeout_budget`` is a leaf
+# module that imports nothing, which matters here: importing from
+# ``idp_common.utils`` instead would build an SSM client at module scope and make
+# ``import idp_common.config`` — which reaches this module via ``merge_utils`` —
+# require an AWS region before any handler code runs.
+from idp_common.timeout_budget import (
     BOTOCORE_TOTAL_MAX_ATTEMPTS,
     CONFIDENCE_READ_TIMEOUT_SECONDS,
 )
@@ -680,7 +682,7 @@ class BedrockClient:
         # Spelled ``total_max_attempts``: in client config botocore's
         # ``max_attempts`` is a RETRY count and is normalised to that key plus one,
         # so ``max_attempts=1`` would still permit two attempts and two read
-        # timeouts. See the note in ``utils.bedrock_utils``.
+        # timeouts. See the note in ``idp_common.timeout_budget``.
         config = Config(
             connect_timeout=10,
             read_timeout=CONFIDENCE_READ_TIMEOUT_SECONDS,
