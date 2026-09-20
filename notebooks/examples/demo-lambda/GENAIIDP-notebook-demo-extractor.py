@@ -48,7 +48,7 @@ def lambda_handler(event, context):
         
         # Log extraction config details
         extraction_config = config.get("extraction", {})
-        logger.info(f"=== EXTRACTION CONFIG ===")
+        logger.info("=== EXTRACTION CONFIG ===")
         logger.info(f"Model: {extraction_config.get('model', 'Not specified')}")
         logger.info(f"Temperature: {extraction_config.get('temperature', 'Not specified')}")
         logger.info(f"Max tokens: {extraction_config.get('max_tokens', 'Not specified')}")
@@ -58,21 +58,21 @@ def lambda_handler(event, context):
         default_system_prompt = config.get("extraction", {}).get("system_prompt", "")
         logger.info(f"Default system prompt length: {len(default_system_prompt)} characters")
         
-        logger.info(f"=== BUSINESS LOGIC DECISION TREE ===")
+        logger.info("=== BUSINESS LOGIC DECISION TREE ===")
         
         # Demo Logic: Customize based on document type and content
         if "bank statement" in document_class.lower():
-            logger.info(f"🏦 DECISION: Processing as bank statement")
+            logger.info("🏦 DECISION: Processing as bank statement")
             result = _handle_bank_statement(placeholders, default_system_prompt, document_text)
         elif "invoice" in document_class.lower():
-            logger.info(f"🧾 DECISION: Processing as invoice") 
+            logger.info("🧾 DECISION: Processing as invoice") 
             result = _handle_invoice(placeholders, default_system_prompt, document_text)
         else:
-            logger.info(f"📄 DECISION: Processing as generic document")
+            logger.info("📄 DECISION: Processing as generic document")
             result = _handle_generic_document(placeholders, default_system_prompt, default_content)
         
         # Log complete output structure
-        logger.info(f"=== OUTPUT ANALYSIS ===")
+        logger.info("=== OUTPUT ANALYSIS ===")
         logger.info(f"Output keys: {list(result.keys())}")
         logger.info(f"System prompt length: {len(result.get('system_prompt', ''))}")
         logger.info(f"System prompt (first 200 chars): {result.get('system_prompt', '')[:200]}...")
@@ -94,7 +94,7 @@ def lambda_handler(event, context):
         return result
             
     except Exception as e:
-        logger.error(f"=== DEMO LAMBDA ERROR ===")
+        logger.error("=== DEMO LAMBDA ERROR ===")
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error message: {str(e)}")
         logger.error(f"Input event keys: {list(event.keys()) if 'event' in locals() else 'Unknown'}")

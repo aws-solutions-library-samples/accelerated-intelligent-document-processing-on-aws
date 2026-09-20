@@ -126,7 +126,7 @@ ASSESSED with the reason**, never dropped.
 | 2 | **Security** | IAM wildcard census (measurement E) and whether each `Resource: "*"` carries a `reason:` in cfn-nag/checkov metadata. Authorization decision points: `lib/idp_common_pkg/idp_common/config_scope.py` is the canonical fail-closed contract — find every caller and check each honours it. `scripts/tests/test_iam_privilege_escalation.py` and `scripts/tests/test_config_revision_read_grants.py` are the existing structural gates; read what they *don't* cover. Log redaction (Class 2 worked example). SRT suppressions in `scripts/srt/issues.json` and dep-audit triage in `scripts/security/dep_audit_allowlist.json` — each needs a specific justification, not a bulk waiver |
 | 3 | **Test strategy & coverage** | Registered vs quarantined test roots (measurement C) and what each quarantine reason costs. Which suites CI actually runs vs which only `make test` runs (measurement G) — a suite outside both `test-cicd` and `test-packages-cicd` runs on no PR. Structural gates in `scripts/tests/` are this repo's strongest asset; inventory them and note which enumerate from the source and which carry a hardcoded list (Class 2). `docs/testing.md` is the published per-method map; check it against reality |
 | 4 | **Observability** | Alarm inventory and action wiring (measurement D) — an alarm whose topic has no subscriber is decoration. Lambda-to-LogGroup ratio per template (measurement D2) and whether the gaps are the deliberate custom-resource-only ones `scripts/tests/test_lambda_log_groups.py` enforces. Metric namespace consistency (`scripts/tests/test_metric_namespace_alignment.py`). X-Ray annotation correctness (Class 2 worked example). Whether a failure that matters is *visible*: dead-letter queues with no alarm, `logger.error` on a fail-open path with no metric |
-| 5 | **Code quality** | Lint and typecheck coverage (measurement B) — the *coverage* number matters more than the finding count, because an excluded path reports zero. `ruff.toml` `extend-exclude` currently skips whole trees (`src`, `scripts`, `patterns`, `notebooks`) plus per-file config debt; `pyrightconfig.json` `include` is a three-entry allowlist. Largest files (`find . -name '*.py' | xargs wc -l | sort -rn | head`) — a 6,000-line module that no gate covers is the worst combination. Duplication: identical helper defined in N Lambdas |
+| 5 | **Code quality** | Lint and typecheck coverage (measurement B) — the *coverage* number matters more than the finding count, because an excluded path reports zero. `ruff.toml` skips a named per-file list rather than any directory, and `pyrightconfig.json` `include` covers every tree holding tracked Python, so the coverage question is now "has the debt list grown?" rather than "which trees are dark?" — `python3 scripts/check_lint_debt.py --summary` answers it. Largest files (`find . -name '*.py' | xargs wc -l | sort -rn | head`) — a 6,000-line module that no gate covers is the worst combination. Duplication: identical helper defined in N Lambdas |
 | 6 | **CI/CD & automation** | Gate inventory (measurement G): which `make` targets exist, which run on GitHub, which on GitLab, which are advisory (`allow_failure`, `continue-on-error`), and — the one people skip — which are actually **required** on `develop` (measurement G2). `scripts/tests/test_ci_gate_parity.py` enforces GitHub/GitLab symmetry; it cannot enforce branch protection, so check that separately. Workflow triggers: GitHub is `pull_request`-only, so a direct push to `develop` runs nothing there |
 | 7 | **Documentation** | Doc-to-template drift, both directions (measurement F): a service shipped and documented nowhere, and a service documented that no template declares. `docs/aws-services-and-roles.md` is the one that must match IAM reality. Both doc tiers per `.claude/skills/documentation.md` — `docs/*.md` and `lib/idp_common_pkg/**/README.md`. Frontmatter/licence header conformance. `CHANGELOG.md` `[Unreleased]` shape. Skill-file inventory vs the `CLAUDE.md` table (measurement F2) |
 | 8 | **Frontend / UI** | `src/ui/src` test-file-to-source ratio (measurement H). Cloudscape-only component use; no stray `console.log`; `DOMPurify` on every `dangerouslySetInnerHTML`. Generated GraphQL types in sync (`src/ui/src/graphql/generated/`). Accessibility on new surfaces. Bundle/dependency posture: `src/ui/.npmrc` supply-chain keys and whether the pinned npm honours them (Class 1 worked example) |
@@ -217,21 +217,24 @@ for k in ('include', 'exclude'):
 "
 ```
 
-Last measured: **767 of 1114** tracked `.py` files are linted (347, ~31%, are not),
-and `pyrightconfig.json` `include` names **`idp_cli/idp_cli`, which does not exist** —
-the package lives at `lib/idp_cli_pkg/idp_cli`. basedpyright silently type-checks
-nothing there, including `lib/idp_cli_pkg/idp_cli/cli.py` at **6,791 lines** (issue
-**#923**). `exclude` also names a non-existent `options/*/src`; harmless, but the same
-class.
+Last measured: `ruff check` reads **1114 of 1230** tracked `.py` files and
+`ruff format --check` **1013**; `basedpyright` reads all 1230. What each gate skips is
+a named list of individual files, not a tree — 85 files carrying 196 pre-existing lint
+findings, 186 files `ruff format` has never run over, plus two scope entries (the
+vendored `pii-anonymizer` tree and `**/*.ipynb`). `python3
+scripts/check_lint_debt.py --summary` prints the split, and `make check-lint-debt`
+fails if a listed file gains a finding or has become clean.
 
-One thing to know before you report the ruff gap as new: the bare-name `extend-exclude`
-entries that produce it are tracked as issue **#975**, and `scripts/tests/` is inside
-the excluded `scripts` tree — so this skill's own guard,
-`scripts/tests/test_repo_quality_review_skill.py`, is one of the unlinted files
-(`ruff check --force-exclude <that path>` reports "No Python files found", exit 0;
-`basedpyright` does cover it). Cite #975 rather than re-deriving it, and use
-`--force-exclude` when demonstrating an exclusion — it is not ruff's default, and an
-explicitly named path bypasses exclusions without it.
+Two things to know before reporting a coverage gap here. The **formatting** debt is
+deliberately unpaid and is not a new finding: reformatting those 186 files is a
+mechanical sweep deferred to its own change (issue #975 closed the exclusions, not the
+formatting). And when you demonstrate that a file is excluded, use
+`python3 scripts/check_lint_debt.py --explain <path>`. **No ruff invocation answers
+this correctly.** A plain `ruff check <path>` bypasses the exclusions, and
+`--force-exclude` restores only `exclude`/`extend-exclude` — `[lint] exclude` and
+`[format] exclude` filter after discovery, so `ruff check --force-exclude <path>`
+prints `All checks passed!` and exits 0 for every one of the 85 lint-excluded files.
+`ruff check --show-files` does not honour `[lint] exclude` either.
 
 Pair the coverage number with the largest uncovered files:
 

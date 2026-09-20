@@ -26,6 +26,15 @@ spot (`idp_sdk`, `idp_feature_sdk`, `idp_mcp_connector_pkg`: 64 files, 28,958
 lines). All are now in `include`; measured cost was 0 new errors and +18
 warnings, so covering them was free.
 
+Coverage of the *rest* of the tree is derived the same way, from `git ls-files`:
+`test_every_tracked_python_file_is_type_checked` fails if any tracked `.py` file
+falls outside `include` or is cancelled by `exclude`. That is the check the
+six-entry `include` list could not have: it reached 432 of 1230 tracked files,
+and the 798 it missed included every `lib/*/tests` suite and all of `scripts/`,
+`nested/`, `feature-platform/`, `benchmarks/` and `samples/`. A carve-out from it
+goes in `TYPECHECK_SCOPE_EXCLUSIONS` with a reason, and is asserted to still
+shield something.
+
 Deliberately NOT asserted here: `typeCheckingMode` (currently "basic") or the
 13 diagnostic rules pinned to "none". Tightening those is a separate decision
 with a much larger diff; this file only guarantees that whatever strictness is
@@ -35,6 +44,7 @@ configured is actually applied to the files it claims to cover.
 from __future__ import annotations
 
 import json
+import subprocess
 import tomllib
 from fnmatch import fnmatch
 from pathlib import Path
@@ -252,6 +262,163 @@ def test_non_first_party_include_entries_still_exist() -> None:
         "`src/lambda` (parent-stack Lambda handlers) is no longer covered by any "
         "pyrightconfig.json `include` entry. It holds the two "
         "`reportOperatorIssue` errors this gate was repaired to catch."
+    )
+
+
+#: Tracked Python that `include` is allowed not to cover. Each entry is a
+#: pyrightconfig `exclude` pattern, and the reason has to be a property of the
+#: files it matches rather than of the directory it happens to name.
+#:
+#: `notebooks/**/*.ipynb` shields 10 errors, and **6 of them are false positives
+#: of a mechanism specific to notebooks**, which is what makes this a scope
+#: decision rather than deferred work. basedpyright reads a notebook's cells in
+#: document order and resolves names as it goes. Python does not: a global is
+#: looked up when the function runs. So in the five `notebooks/misc/e2e-*`
+#: notebooks, `s3_client` is assigned at column 0 in code-cell 2 and referenced
+#: inside a function *defined* in code-cell 1 — flagged `reportUndefinedVariable`,
+#: and correct at runtime, because cell 2 executes before anything calls that
+#: function. The two `e2e-*` notebooks where the assignment and the first use sit
+#: in the same cell are not flagged, which is the control for that explanation.
+#: The sixth is the same shape one step along: a top-level `from PIL import Image`
+#: in cell 1 plus a re-import in cell 7 leaves the name possibly-unbound on one
+#: branch, so it is `reportUnboundVariable`.
+#:
+#: The other 4 (2 `reportOperatorIssue`, 2 `reportOptionalOperand`) are NOT
+#: explained by that and have not been triaged, which is the honest residual here.
+#: `scripts/lint_debt.json` records the same carve-out for ruff, with its own
+#: premise.
+TYPECHECK_SCOPE_EXCLUSIONS: dict[str, str] = {
+    "notebooks/**/*.ipynb": (
+        "basedpyright resolves a notebook's cells in document order while Python "
+        "resolves globals at call time, so a name assigned in a later cell and "
+        "used inside an earlier cell's function reads as undefined and is not; 6 "
+        "of the 10 errors are that, 4 are untriaged"
+    ),
+}
+
+
+def _tracked_python() -> list[str]:
+    """Every tracked `.py` file, from git rather than a filesystem walk.
+
+    `rglob` from the repo root would also walk `scratch/` and
+    `.claude/worktrees/`, which routinely hold whole copies of this repository —
+    the failure mode `test_repo_walk_guards_prune_local_work.py` exists for.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "*.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return sorted(line for line in result.stdout.splitlines() if line)
+
+
+def _excluded_by(rel: str) -> str | None:
+    for pattern in _config().get("exclude", []):
+        if pattern.startswith("**/"):
+            if pattern[3:] in Path(rel).parts or fnmatch(rel, pattern):
+                return pattern
+        elif fnmatch(rel, pattern) or rel.startswith(pattern.rstrip("/") + "/"):
+            return pattern
+    return None
+
+
+def test_there_is_tracked_python_to_check() -> None:
+    """Anti-vacuity guard: an empty file list would make the check below pass."""
+    assert len(_tracked_python()) > 500, (
+        "git ls-files '*.py' returned "
+        f"{len(_tracked_python())} paths, which is too few to be this repository. "
+        "The coverage check below would be vacuous."
+    )
+
+
+def test_every_tracked_python_file_is_type_checked() -> None:
+    """`include` must cover the whole tree, derived from git rather than listed.
+
+    `include` named six paths and reached 432 of 1230 tracked `.py` files. The
+    other 798 — every `lib/*/tests` suite, all 137 files under `scripts/`, the
+    78 files under `nested/` (67 API resolvers, 9 Bedrock Knowledge Base
+    custom-resource handlers, 2 under `multi-doc-discovery`), `feature-platform/`,
+    `benchmarks/` and `samples/` — were type-checked by nothing except
+    `make typecheck-pr`, and
+    only for the files a given pull request happened to touch. Two
+    `NameError`-class defects reached `develop` through that gap.
+
+    This asserts the property rather than the list: a new top-level tree holding
+    Python fails here instead of being silently uncovered, which is the failure
+    the six-entry list could not detect. Broadening `include` cost 3 errors,
+    all genuine (a `-> (str, str)` annotation, an `int` subscripted as a string,
+    and `"literal" in __doc__` where `__doc__` is `str | None`).
+    """
+    includes = _include_paths()
+    uncovered: list[str] = []
+    for rel in _tracked_python():
+        if not _is_covered(rel, includes):
+            uncovered.append(f"{rel} (no include entry)")
+            continue
+        pattern = _excluded_by(rel)
+        if pattern and pattern not in TYPECHECK_SCOPE_EXCLUSIONS:
+            uncovered.append(f"{rel} (excluded by {pattern!r})")
+
+    assert not uncovered, (
+        f"{len(uncovered)} tracked .py file(s) are outside `make typecheck`:\n  "
+        + "\n  ".join(uncovered[:20])
+        + "\n\nAdd the top-level path to pyrightconfig.json `include` (measure the "
+        "cost first: broadening it to the whole tree cost 3 errors), or, if the "
+        "files genuinely must stay out, add the `exclude` pattern to "
+        "TYPECHECK_SCOPE_EXCLUSIONS in this file with a reason that is a property "
+        "of those files."
+    )
+
+
+@pytest.mark.parametrize("pattern", sorted(TYPECHECK_SCOPE_EXCLUSIONS))
+def test_scope_exclusion_still_shields_something(pattern: str) -> None:
+    """A carve-out that matches nothing is a stale claim, not a decision."""
+    excludes = _config().get("exclude", [])
+    assert pattern in excludes, (
+        f"TYPECHECK_SCOPE_EXCLUSIONS names {pattern!r}, which is no longer a "
+        "pyrightconfig.json `exclude` pattern. Drop the entry — a stale "
+        "exemption hides the next real gap."
+    )
+    root = REPO_ROOT / pattern.split("/", 1)[0]
+    suffix = pattern.rsplit("*", 1)[-1]
+    assert next(root.rglob(f"*{suffix}"), None) is not None, (
+        f"{pattern!r} matches no file under {root.name}/, so it shields nothing."
+    )
+
+
+def test_venv_is_not_pinned_in_the_config() -> None:
+    """`venvPath`/`venv` made the gate's exit code mean nothing.
+
+    They pointed at `./.venv`, so in any checkout without one — a `git worktree`,
+    a fresh clone, a CI job that installed basedpyright from npm and nothing else
+    — basedpyright printed one line about the missing directory and exited **3**
+    regardless of findings. `make typecheck` therefore failed identically whether
+    the tree had type errors or not.
+
+    Dropping them is diagnostic-neutral: with a populated `.venv` present and with
+    no `.venv` at all, the run reports the same 0 errors and 92 warnings — one
+    `tqdm` stub-resolution warning trades places with one `reportReturnType` in the
+    same file — because `reportMissingImports` and the `reportUnknown*` rules are
+    already "none".
+
+    The number 92 belongs to those two environments, not to `.venv` presence in
+    general. An **empty** `.venv` (a bare `python3 -m venv .venv`, no packages) is a
+    third and worse environment: basedpyright then resolves third-party imports to
+    nothing and reports 4 errors / 287 warnings, so `make typecheck` fails there.
+    That is a property of an unpopulated environment rather than of this config, and
+    it is a second reason not to pin a `venvPath` at all — the pin made the gate's
+    answer depend on a directory whose contents nothing here controls.
+    """
+    config = _config()
+    present = sorted(key for key in ("venvPath", "venv") if key in config)
+    assert not present, (
+        f"pyrightconfig.json sets {present}, which makes basedpyright exit 3 in "
+        "any checkout without that virtualenv — the same exit code for a config "
+        "problem as for nothing at all. If a pinned environment is genuinely "
+        "needed, pass --venvpath from the Makefile recipe so a missing one is a "
+        "clear message rather than an opaque exit code."
     )
 
 

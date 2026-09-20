@@ -914,7 +914,7 @@ def process_bda_pages(
         return document
 
 
-def parse_s3_path(s3_uri: str) -> (str, str):
+def parse_s3_path(s3_uri: str) -> tuple[str, str]:
     """Extract bucket and key from s3:// URI.
 
     Delegates to idp_common.utils.parse_s3_uri, which splits on '/' instead of
@@ -1012,12 +1012,18 @@ def process_keyvalue_details(
         """Convert path array to flattened key notation."""
         formatted = []
         for part in path_parts:
-            if isinstance(part, int) or (
-                isinstance(part, str) and part.startswith("_")
-            ):
-                formatted[-1] += f"[{part[1:]}]"
+            # traverse() encodes a list index as the string "_<i>", so the "_"
+            # is sliced off to recover the index. A bare int is accepted
+            # defensively and IS the index already -- subscripting one raises
+            # TypeError, which is what this branch used to do.
+            if isinstance(part, int):
+                index = str(part)
+            elif isinstance(part, str) and part.startswith("_"):
+                index = part[1:]
             else:
                 formatted.append(str(part))
+                continue
+            formatted[-1] += f"[{index}]"
         return ".".join(formatted)
 
     def traverse(data: dict, path: list = None, current_page: int = None):
