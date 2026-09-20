@@ -1129,7 +1129,10 @@ def _git_sha():
         return "unknown"
 
 
-_OUTCOME_MARK = {
+# Report glyphs keyed by outcome name. Bandit's hardcoded-password heuristic (B105)
+# fires on the "PASS" key, which is a verdict label and not a credential — the same
+# false positive the "pass" counter key in scripts/security/curate_results.py carries.
+_OUTCOME_MARK = {  # nosec B105
     "PASS": "✅",
     "FAIL": "❌",
     "ERROR": "🛑",
