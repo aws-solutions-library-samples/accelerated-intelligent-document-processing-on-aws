@@ -72,7 +72,11 @@ def _consumers():
         # not cover. A layerless one imports the committed sibling copy.
         if re.search(r"^(import idp_common\.s3_targets|from idp_common\.s3_targets|from idp_common import .*\bs3_targets\b)", text, re.M):
             imported.add(index.parent.name)
-        elif re.search(r"^import s3_targets\b", text, re.M):
+        elif re.search(r"^(import s3_targets\b|from s3_targets import )", text, re.M):
+            # Both spellings, because the layer side already tolerates three and a
+            # function matching neither set falls out of BOTH assertions below and is
+            # checked by nothing. Changing the import style while drifting the copy
+            # left this test reporting 4 passed.
             vendored.add(index.parent.name)
     return vendored, imported
 
@@ -86,6 +90,20 @@ def test_there_is_at_least_one_consumer_of_each_kind():
     vendored, imported = _consumers()
     assert vendored, "no resolver vendors s3_targets — is this test still needed?"
     assert imported, "no resolver imports s3_targets from the layer"
+
+
+def test_no_consumer_falls_outside_both_sets():
+    """A function that uses the module but matches neither import spelling is checked
+    by nothing, which is how a drifted copy passes."""
+    vendored, imported = _consumers()
+    for index in sorted(RESOLVER_TREE.glob("*/index.py")):
+        text = index.read_text()
+        uses = "s3_targets" in text
+        classified = index.parent.name in vendored or index.parent.name in imported
+        assert uses == classified, (
+            f"{index.parent.name} mentions s3_targets but matches no import pattern "
+            "in _consumers(), so neither assertion below covers it"
+        )
 
 
 def test_every_vendored_copy_is_byte_identical():

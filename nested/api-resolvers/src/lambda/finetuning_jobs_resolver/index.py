@@ -44,23 +44,37 @@ FINETUNING_JOBS_GSI_PK = "finetuning#jobs"
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 
-# Bounds on the filtered scan that finds the jobs. The filter is sparse against a
-# table that holds a row per document in the deployment, so the walk's cost is
-# proportional to the whole document history rather than to the number of jobs.
+# Bounds on the filtered scan that finds the jobs.
 #
-# The binding constraint here is READ CAPACITY, not time: a filtered Scan is charged
-# on bytes EXAMINED, not on rows matched. Measured against a real 4.6 MB tracking
-# table from in-region compute: 113 RCU mean per page (142 max), 34 ms mean latency —
-# so the cost of a page is ~3,000x its latency in significance, and a time-derived cap
-# would be meaningless.
+# ⚠️ This operation SCANS. `listFinetuningJobs` filters on a sparse `PK` prefix against
+# a table that holds a row per document in the deployment, so an unbounded walk costs
+# the whole document history for a handful of jobs. The items are written with
+# `GSI1PK`/`GSI1SK` "for future GSI support" but **no such index is declared**, so the
+# query that would make this cheap, complete and correctly ordered is not available
+# yet; adding it means a new global secondary index on a live table (a backfill, and
+# CloudFormation permits one index change per update), which is a larger change than
+# belongs here. Until then this is a bounded scan, and the bound is honest about what
+# it costs rather than about how many pages it took.
 #
-# 10 pages ~= 1,130 RCU, which is the same per-request read budget the date-range cap
-# allows (2,191 queries x 0.5 RCU ~= 1,100). That parity is the derivation: this
-# operation's policy is `ANY`, so it is reachable by any authenticated caller
-# including one in no group, and it should not be able to buy an order of magnitude
-# more capacity than the operation that IS group-gated. A caller who needs more
-# follows `nextToken`.
-MAX_SCAN_PAGES = 10
+# The budget is READ CAPACITY, not pages and not time: a filtered Scan is charged on
+# bytes EXAMINED, not on rows matched, so capacity is the quantity the caller actually
+# spends. It is measured directly with `ReturnConsumedCapacity`, which makes the
+# budget literal instead of inferred from a page count times an assumed page size —
+# a page can be anywhere from a few KB to 1 MB.
+#
+# 1,000 RCU is set for parity with the group-gated date-range operation, whose cap
+# allows 2,191 eventually-consistent Queries at 0.5 RCU each. `listFinetuningJobs` is
+# an `ANY` operation — reachable by any authenticated caller, including one in no
+# group — so it must not be able to buy more capacity than the operation that IS
+# group-gated. `test_scan_bounded.py` recomputes that figure from the sibling's own
+# constants rather than restating it.
+#
+# For scale: measured against a real tracking table from in-region compute, a filtered
+# Scan page cost 113 RCU mean / 142 max, so this is roughly 7-9 pages of a large
+# table. On a deployment with a long document history that is a slice, not the whole
+# table — which is why truncation is reported IN THE RESPONSE (`complete: false`) and
+# not only in an operator log, and why the UI follows the token.
+MAX_SCAN_CAPACITY_UNITS = 1_000
 SCAN_TIME_RESERVE_MS = 5_000
 
 # Supported base models for fine-tuning (Nova 2.x recommended)
@@ -152,15 +166,20 @@ def _clamped_limit(requested: Any) -> int:
     return max(1, min(value, MAX_PAGE_SIZE))
 
 
-def _scan_budget_exhausted(pages: int, context: Any) -> Optional[str]:
+def _scan_budget_exhausted(consumed: float, context: Any) -> Optional[str]:
     """Whether the scan walk must stop now, and why.
 
-    Mirrors ``_count_budget_exhausted`` in list_documents_gsi_resolver — a page cap
-    for the common case and a remaining-invocation reserve for the case where each
-    page is slow.
+    ``consumed`` is the read capacity DynamoDB reports having spent so far, so the
+    budget is the quantity the caller is charged rather than a proxy for it. The
+    remaining-invocation reserve is kept for the case where the pages are slow rather
+    than expensive, mirroring ``_count_budget_exhausted`` in
+    list_documents_gsi_resolver.
     """
-    if pages >= MAX_SCAN_PAGES:
-        return f"page cap of {MAX_SCAN_PAGES} reached"
+    if consumed >= MAX_SCAN_CAPACITY_UNITS:
+        return (
+            f"read-capacity budget of {MAX_SCAN_CAPACITY_UNITS} units reached "
+            f"({consumed:.0f} consumed)"
+        )
     remaining = getattr(context, "get_remaining_time_in_millis", None)
     if callable(remaining):
         try:
@@ -206,11 +225,19 @@ def list_finetuning_jobs(
     if next_token:
         scan_kwargs["ExclusiveStartKey"] = json.loads(next_token)
 
+    # TOTAL makes DynamoDB report what each page actually cost, which is what the
+    # budget below is denominated in.
+    scan_kwargs["ReturnConsumedCapacity"] = "TOTAL"
+
     pages = 0
+    consumed = 0.0
     result_next_token = None
     while True:
         response = table.scan(**scan_kwargs)
         pages += 1
+        consumed += float(
+            (response.get("ConsumedCapacity") or {}).get("CapacityUnits") or 0.0
+        )
 
         for item in response.get("Items", []):
             items.append(_format_job_for_graphql(item))
@@ -235,15 +262,16 @@ def list_finetuning_jobs(
         # any authenticated caller including one in no group. `ExclusiveStartKey`
         # was already accepted as `nextToken` but never returned, so there was no
         # way to ask for less than everything.
-        stop = _scan_budget_exhausted(pages, context)
+        stop = _scan_budget_exhausted(consumed, context)
         if stop:
             result_next_token = json.dumps(
                 response["LastEvaluatedKey"], cls=DecimalEncoder
             )
             logger.warning(
-                "listFinetuningJobs stopped after %d scan pages (%s); returning a "
-                "nextToken so the caller can resume",
+                "listFinetuningJobs stopped after %d scan page(s) / %.0f read units "
+                "(%s); returning a nextToken so the caller can resume",
                 pages,
+                consumed,
                 stop,
             )
             break
@@ -264,7 +292,16 @@ def list_finetuning_jobs(
     if result_next_token is None:
         items = items[:limit]
 
-    return {"items": items, "nextToken": result_next_token}
+    # `complete` says whether this response is the whole answer, IN THE RESPONSE
+    # rather than only in an operator log. A truncated list of fine-tuning jobs is
+    # indistinguishable from a short one, so without this the Custom Models page shows
+    # a partial list with no error and no indication — and the operator log is not
+    # somewhere a user looks.
+    return {
+        "items": items,
+        "nextToken": result_next_token,
+        "complete": result_next_token is None,
+    }
 
 
 def get_finetuning_job(job_id: str) -> Optional[Dict[str, Any]]:

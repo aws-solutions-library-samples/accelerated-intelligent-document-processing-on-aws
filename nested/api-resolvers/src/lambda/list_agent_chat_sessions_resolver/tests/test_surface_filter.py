@@ -132,10 +132,16 @@ class TestTheClaimsObjectIsNotLogged:
 
         table = MagicMock()
         table.query.return_value = {"Items": []}
+        # The canary is a claim NAME plus a value that is not an identifier of any
+        # kind. Using the `sub` value as the canary would have failed a handler that
+        # logged only `caller sub=<sub>` — the one identifier the narrowing above
+        # deliberately permits — so the test would have forbidden what it set out to
+        # allow.
         claims = {
             "email": "u@example.com",
             "cognito:groups": ["Admin"],
             "sub": "11111111-2222-3333-4444-555555555555",
+            "custom:canary": "CLAIMS-BLOB-CANARY-e3f1a9",
         }
         with caplog.at_level(logging.DEBUG):
             with patch.object(index.dynamodb, "Table", return_value=table):
@@ -148,7 +154,7 @@ class TestTheClaimsObjectIsNotLogged:
                 )
 
         logged = caplog.text
-        for leaked in ("cognito:groups", "11111111-2222-3333-4444-555555555555"):
+        for leaked in ("cognito:groups", "CLAIMS-BLOB-CANARY-e3f1a9"):
             assert leaked not in logged, f"{leaked} reached the log"
 
     def test_the_event_itself_is_still_redacted(self, caplog):

@@ -63,11 +63,14 @@ def resolve_allowed_buckets(
 ) -> Set[str]:
     """The bucket names this deployment wired, as a set.
 
-    Empty values are dropped: a variable set to ``""`` is not a wired bucket, and
-    keeping it would put the empty string in the allow-list.
+    Blank values are dropped, whitespace included: a variable set to ``""`` or to
+    ``"   "`` is not a wired bucket. Without the strip, a whitespace-only value makes
+    the set non-empty, so the fail-closed branch does not fire and the log line claims
+    a configured allow-list — no real bucket would match it, but the operator is told
+    the wrong thing about why.
     """
     source = os.environ if env is None else env
-    return {source[name] for name in names if source.get(name)}
+    return {source[name].strip() for name in names if (source.get(name) or "").strip()}
 
 
 def assert_bucket_allowed(
@@ -124,15 +127,31 @@ def assert_bucket_allowed(
 #       One manifest per completed processing run, pinning the S3 object versions
 #       that run produced; `run_id` is unique per execution
 #       (idp_common/document_versions.py). It is what the version viewer and the
-#       version comparison read to say what a past run produced.
+#       version comparison read to say what a past run produced. The pattern allows
+#       any depth between `runs/` and the manifest because `list_run_ids` does: it
+#       takes everything between the two as the run id, so a rule that insisted on one
+#       segment would leave a deeper key writable AND readable back as a run.
+#
+#   <test_set_id>/versions/<n>/baseline/**
+#       The labels a published test-set version was scored against, snapshotted so
+#       that "the version number now refers to bytes" rather than to a DynamoDB row
+#       (test_set_resolver/index.py). test_file_copier prefers this snapshot over the
+#       live baseline whenever it exists, so a run stamped with that version is scored
+#       against it. Not re-derivable: the live baseline moves on as annotation
+#       continues. Guarded at DIRECTORY scope, because unlike the two above it holds
+#       many objects under arbitrary sub-keys.
 WRITE_ONCE_KEY_RULES = (
     (
         re.compile(r"^config_revisions/"),
         "configuration revision bodies",
     ),
     (
-        re.compile(r"(^|/)runs/[^/]+/manifest\.json$"),
+        re.compile(r"(^|/)runs/.+/manifest\.json$"),
         "document processing-run manifests",
+    ),
+    (
+        re.compile(r"^[^/]+/versions/[0-9]+/baseline/"),
+        "published test-set version baselines",
     ),
 )
 
@@ -142,6 +161,25 @@ WRITE_ONCE_KEY_RULES = (
 # Widening to the directory would refuse those uploads to protect keys that nothing
 # writes — a control whose false positives are the live path it is meant to guard. If
 # a second object is ever written under a run prefix, widen this and say so here.
+
+
+# S3's POST-policy form treats this token specially: a key containing it is signed
+# not as an exact `{"key": ...}` condition but as `["starts-with", "$key", <the text
+# before it>]`, i.e. a grant over a whole prefix rather than one object. So the key as
+# WRITTEN is not the key S3 will accept, and any rule evaluated against the written
+# form is evaluated against the wrong thing.
+_FILENAME_VARIABLE = "${filename}"
+
+
+def effective_key(key: str):
+    """What S3 will actually accept for ``key``: ``("exact", k)`` or ``("prefix", p)``.
+
+    Derived from S3's own substitution rather than pattern-matching the written key,
+    so the check below sees the grant that will really be signed.
+    """
+    if _FILENAME_VARIABLE in key:
+        return "prefix", key.split(_FILENAME_VARIABLE, 1)[0]
+    return "exact", key
 
 
 def write_once_reason(key: str) -> Optional[str]:
@@ -159,11 +197,25 @@ def assert_key_writable(key: str, *, logger=None) -> None:
     reads revision bodies and the version viewer reads run manifests — so the read
     path deliberately does not call this.
     """
-    what = write_once_reason(key)
+    kind, value = effective_key(key)
+    if kind != "exact":
+        # The request asks for a grant over a prefix rather than for one object, so
+        # there is no definite key to evaluate the rules against and every key under
+        # `value` would be permitted. Every caller of these operations names a
+        # concrete object, so this is refused rather than analysed: supporting it would
+        # mean deciding, for each rule, whether the requested prefix can reach it.
+        if logger is not None:
+            logger.warning(
+                "Rejecting a write that would grant a whole prefix rather than one "
+                "object (effective prefix %r)",
+                value,
+            )
+        raise PermissionError("Unauthorized: an upload must name a single object.")
+    what = write_once_reason(value)
     if what is None:
         return
     if logger is not None:
-        logger.warning("Rejecting upload to a write-once key (%s): %r", what, key)
+        logger.warning("Rejecting upload to a write-once key (%s): %r", what, value)
     raise PermissionError(
         "Unauthorized: that location is reserved and cannot be written to."
     )

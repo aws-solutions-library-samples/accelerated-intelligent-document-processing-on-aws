@@ -2175,6 +2175,11 @@ type TestSetValidationResult @aws_cognito_user_pools @aws_iam {
 type FinetuningJobConnection @aws_cognito_user_pools @aws_iam {
   items: [FinetuningJob]
   nextToken: String
+  # False when the resolver stopped on its read-capacity budget, so `items` is a
+  # partial answer and `nextToken` continues it. Declared rather than left to the log:
+  # a truncated list of jobs is indistinguishable from a short one to whoever is
+  # looking at it.
+  complete: Boolean
 }
 
 input CreateFinetuningJobInput {

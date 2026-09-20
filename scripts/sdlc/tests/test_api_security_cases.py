@@ -800,6 +800,36 @@ def test_a_deleted_resource_check_that_could_not_list_is_an_error():
     assert after[0]["passed"] is False
 
 
+def test_a_failed_sign_out_is_classified_an_error_not_a_skip():
+    """The logout suite's own setup step. If `sign_out_fn` raises, the revocation check
+    was never run — and an `outcome="ERROR"` that nothing asserts can be dropped
+    without a single test noticing."""
+    rec = _Recorder()
+    results = []
+
+    def _boom(email):
+        raise RuntimeError("cognito global sign-out failed")
+
+    sec.run_token_lifecycle_suite(
+        CTX,
+        lambda *a, **k: (200, None, None, "rid"),
+        rec,
+        results,
+        expired_token=None,
+        logout_token="tok",  # nosec B106 - fake token id, not a credential
+        logout_email="u@example.invalid",
+        sign_out_fn=_boom,
+    )
+
+    row = rec.by_principal("token:post-logout")[0]
+    assert row["outcome"] == "ERROR", (
+        "a sign-out that failed was recorded as a skip, so the revocation check "
+        "silently did not run"
+    )
+    assert row["passed"] is False
+    assert row["known_gap"] is None
+
+
 def test_a_post_logout_check_that_did_not_complete_does_not_borrow_the_logout_gap():
     """GAP-SEC-LOGOUT documents a token that is STILL ACCEPTED after sign-out.
 

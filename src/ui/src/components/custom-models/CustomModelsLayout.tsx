@@ -126,15 +126,37 @@ const CustomModelsLayout = (): React.JSX.Element => {
     }
   }, []);
 
-  // Fetch fine-tuning jobs
+  /**
+   * How many pages of fine-tuning jobs to follow before giving up and saying so.
+   *
+   * The resolver bounds each call by read capacity, so a deployment with a long document
+   * history needs several round trips. A ceiling here keeps a pathological table from
+   * turning one page load into an unbounded request loop; reaching it surfaces a
+   * "Partial list" notice rather than silently showing a truncated table.
+   */
+  const MAX_JOB_PAGES = 10;
+
+  // Fetch fine-tuning jobs.
+  //
+  // Paged rather than fetched once. `listFinetuningJobs` scans a table that holds a
+  // row per document in the deployment, so the resolver stops on a read-capacity
+  // budget and returns a `nextToken` plus `complete: false`. Asking for the token and
+  // discarding it would show a partial list with no error and no indication — so the
+  // token is followed, and if the pages run out before the answer does the partial
+  // state is surfaced rather than hidden.
   const fetchJobs = useCallback(async () => {
     setLoading(true);
     try {
       const client = generateClient();
-      const response = (await client.graphql({
-        query: `
-          query ListFinetuningJobs($limit: Int) {
-            listFinetuningJobs(limit: $limit) {
+      const collected: FinetuningJob[] = [];
+      let token: string | null = null;
+      let pages = 0;
+      let complete = true;
+      do {
+        const response = (await client.graphql({
+          query: `
+          query ListFinetuningJobs($limit: Int, $nextToken: String) {
+            listFinetuningJobs(limit: $limit, nextToken: $nextToken) {
               items {
                 jobId
                 jobName
@@ -152,15 +174,35 @@ const CustomModelsLayout = (): React.JSX.Element => {
                 trainingMetrics
               }
               nextToken
+              complete
             }
           }
         `,
-        variables: { limit: 100 },
-      })) as { data: { listFinetuningJobs?: { items: FinetuningJob[] } } };
+          variables: { limit: 100, nextToken: token },
+        })) as {
+          data: {
+            listFinetuningJobs?: { items: FinetuningJob[]; nextToken?: string | null; complete?: boolean | null };
+          };
+        };
 
-      const data = response.data;
-      if (data?.listFinetuningJobs?.items) {
-        setJobs(data.listFinetuningJobs.items);
+        const page = response.data?.listFinetuningJobs;
+        if (page?.items) {
+          collected.push(...page.items);
+        }
+        token = page?.nextToken ?? null;
+        complete = page?.complete ?? true;
+        pages += 1;
+      } while (token && pages < MAX_JOB_PAGES);
+
+      setJobs(collected);
+      // Only when the server still had more AND we stopped asking. A server-reported
+      // partial page whose token we followed to the end is a complete answer.
+      if (token && !complete) {
+        addNotification(
+          'warning',
+          `Showing the first ${collected.length} fine-tuning jobs. There are more than this page can load.`,
+          'Partial list',
+        );
       }
     } catch (error) {
       console.error('Error fetching fine-tuning jobs:', error);
