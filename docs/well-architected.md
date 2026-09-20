@@ -131,7 +131,17 @@ Logging verbosity is a single deploy-time parameter. `LogLevel` defaults to `WAR
 applies across the Lambda functions and the API stage;
 `scripts/tests/test_log_level_default.py` pins that default so it cannot silently regress
 to `INFO`, because at `INFO` the accelerator can write presigned URLs, document contents
-and PII into CloudWatch Logs.
+and PII into CloudWatch Logs. That gate covers every template in the tree declaring a
+`LogLevel` parameter, discovered rather than listed, so a new one is covered as soon as
+it exists.
+
+Two exceptions to know about if you install extensions. The five catalog features
+(`pii-anonymizer`, `idp-data-generator`, `confbench-testset`, and the two samples) pin
+`LogLevel: INFO` in their own `feature.yaml`, which the console install flow passes
+explicitly — so an installed extension logs at `INFO` regardless of what the host stack
+is set to, and you should lower it on the extension's own stack for production. And
+`idp-feature-cli deploy` passes the parameter only when `--log-level` is given, so pass
+it there rather than relying on the manifest.
 
 Be aware of what that safe default costs you in observability. The REST API stage's
 structured JSON access log — which carries the authorizer status, WAF response code and

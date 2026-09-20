@@ -17,6 +17,10 @@ should), so nothing else in the build would notice a revert.
 ``patterns/unified/template.yaml`` is included deliberately — it already
 defaulted to ``WARN`` before the root template did, and is the evidence that the
 safer default is operationally acceptable.
+
+The set of templates this enforces is **derived** from the tree rather than
+listed, so a template declaring ``LogLevel`` is covered the moment it exists. See
+``LOG_LEVEL_DEFAULT_EXEMPT`` for why that matters.
 """
 
 from __future__ import annotations
@@ -27,36 +31,70 @@ from pathlib import Path
 import pytest
 import yaml
 
+import gate_premises
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SAFE_DEFAULT = "WARN"
 
-# Templates a customer can deploy directly, so their own default is what a
-# customer actually gets. The nested stacks the root passes ``LogLevel`` to are
-# listed too: the root's value wins when deployed through the root, but each is
-# also deployable standalone (and ``main-stack-extensions`` was the template
-# whose enum rejected the root's new default — see the superset test below).
-#
-# NOT covered, deliberately: the six installable ``feature-platform/*`` feature
-# stacks. Their templates default to ``INFO``, but changing that would be a
-# no-op — each feature's ``feature.yaml`` pins ``defaultParameters.LogLevel:
-# INFO``, which the installer passes explicitly, so the template default is
-# never reached. Fixing those means editing the ``feature.yaml`` values (six
-# features, ``pii-anonymizer`` first), which is a separate change with its own
-# blast radius. Finding #9's residual risk survives there until then; add them
-# to ``TEMPLATES`` when it is fixed. The scaffold (``feature-template/``) IS
-# fixed, so new features start safe.
-TEMPLATES = (
-    "template.yaml",
-    "patterns/unified/template.yaml",
-    "nested/bedrockkb/template.yaml",
-    "nested/multi-doc-discovery/template.yaml",
-    "feature-platform/main-stack-extensions/template.yaml",
-    "feature-platform/feature-template/template.yaml",
-)
-
 ROOT_TEMPLATE = "template.yaml"
 LOG_LEVEL = "LogLevel"
+
+# Every template that declares a ``LogLevel`` parameter is enforced, unless it is
+# named in ``LOG_LEVEL_DEFAULT_EXEMPT`` below. Membership is DERIVED --
+# :func:`_templates_declaring_log_level` reads it out of the tree -- so a new
+# template cannot be added without a decision being made about it.
+#
+# This replaced a hardcoded six-entry tuple whose exclusion lived only in a prose
+# comment. The comment said the excluded ``feature-platform/*`` stacks were covered
+# because "each feature's ``feature.yaml`` pins ``defaultParameters.LogLevel:
+# INFO``", and it named six of them. There are five such manifests. The sixth
+# directory, ``seller-entitlement-service/``, has no ``feature.yaml`` at all, so its
+# template ``Default`` was what a seller actually got -- precisely the regression
+# this module exists to prevent, sitting inside the sentence explaining why it could
+# not happen. A prose exclusion cannot be evaluated per member, and that is the
+# whole defect: one justification attached to a set, where the justification is a
+# property of each member.
+#
+# So the exclusion is now a constant, its members are checked one at a time against
+# :func:`gate_premises.installer_manifest_pins_parameter`, and a directory with no
+# manifest fails.
+#
+# A template that declares ``LogLevel`` with NO ``Default`` is accepted rather than
+# exempted: the absence of a default is not an unsafe default (CloudFormation
+# requires the caller to supply a value). ``nested/api-resolvers`` is the one such
+# template today, and it was outside the old hardcoded tuple as well. Adding
+# ``Default: INFO`` to it later still fails.
+LOG_LEVEL_DEFAULT_EXEMPT: dict[str, str] = {
+    # The five catalog features. Each is installed into a customer account as its
+    # own stack, and the console install path folds the manifest's
+    # ``defaultParameters`` into the launch URL (see
+    # main-stack-extensions/lambdas/get_feature_launch_url), so the value reaching
+    # CloudFormation there is the manifest's, not the template's.
+    #
+    # The premise checked per member is the narrow, verifiable one: a manifest
+    # exists and pins ``LogLevel``. It is deliberately NOT the broader claim that
+    # "the template default is never reached", because that broader claim does not
+    # hold on every install path -- ``idp-feature-cli deploy`` passes ``LogLevel``
+    # only when ``--log-level`` is given, so without it the template default IS what
+    # reaches CloudFormation. That residual is recorded here rather than papered
+    # over; closing it belongs with the installer, not with this gate.
+    "feature-platform/confbench-testset": (
+        "manifest pins LogLevel for the console install path"
+    ),
+    "feature-platform/idp-data-generator": (
+        "manifest pins LogLevel for the console install path"
+    ),
+    "feature-platform/pii-anonymizer": (
+        "manifest pins LogLevel for the console install path"
+    ),
+    "feature-platform/sample-feature": (
+        "manifest pins LogLevel for the console install path"
+    ),
+    "feature-platform/sample-health-insurance-review": (
+        "manifest pins LogLevel for the console install path"
+    ),
+}
 
 
 class _CfnLoader(yaml.SafeLoader):
@@ -80,6 +118,42 @@ def _load(rel_path: str) -> dict:
 
 def _parameters(rel_path: str) -> dict:
     return _load(rel_path).get("Parameters") or {}
+
+
+def _templates_declaring_log_level() -> tuple[str, ...]:
+    """Every template in the tree that declares a ``LogLevel`` parameter.
+
+    Discovered through git (see :func:`gate_premises.tracked_files`) rather than by
+    walking the filesystem, so build output under ``.aws-sam/`` and sibling
+    worktrees under ``.claude/`` cannot contribute findings CI can never reproduce.
+    Untracked-but-not-ignored files are included for the same reason
+    ``scripts/discover_templates.sh`` includes them: a template a contributor has
+    added and not yet committed is exactly the one this gate needs to see.
+    """
+    found = []
+    for rel in gate_premises.tracked_files("*.yaml", "*.yml", include_untracked=True):
+        try:
+            text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not re.search(r"^AWSTemplateFormatVersion", text, re.M):
+            continue
+        if LOG_LEVEL in _parameters(rel):
+            found.append(rel)
+    return tuple(found)
+
+
+def _exempt_template_dirs() -> dict[str, str]:
+    """``{template path: exempting directory}`` for the exempt feature stacks."""
+    return {f"{d}/template.yaml": d for d in LOG_LEVEL_DEFAULT_EXEMPT}
+
+
+def _enforced_templates() -> tuple[str, ...]:
+    exempt = _exempt_template_dirs()
+    return tuple(t for t in _templates_declaring_log_level() if t not in exempt)
+
+
+ENFORCED = _enforced_templates()
 
 
 def _source_template_for(template_url: object) -> str | None:
@@ -121,12 +195,18 @@ def _nested_stacks_receiving_log_level() -> list[tuple[str, str]]:
     return found
 
 
-@pytest.mark.parametrize("rel_path", TEMPLATES)
+@pytest.mark.parametrize("rel_path", ENFORCED)
 def test_log_level_defaults_to_warn(rel_path: str) -> None:
     param = _parameters(rel_path).get("LogLevel")
     assert param is not None, f"{rel_path} declares no LogLevel parameter"
 
-    default = param.get("Default")
+    if "Default" not in param:
+        # No default at all: CloudFormation requires the caller to supply a value,
+        # so there is no unsafe default to regress from. Accepted, not exempted --
+        # adding `Default: INFO` here later still fails this test.
+        return
+
+    default = param["Default"]
     assert default == SAFE_DEFAULT, (
         f"{rel_path}: LogLevel Default is {default!r}, expected {SAFE_DEFAULT!r}. "
         "INFO and DEBUG can emit presigned URLs, document contents and PII to "
@@ -134,7 +214,89 @@ def test_log_level_defaults_to_warn(rel_path: str) -> None:
     )
 
 
-@pytest.mark.parametrize("rel_path", TEMPLATES)
+def test_the_root_template_pins_the_safe_default_explicitly() -> None:
+    """The root's default is a product promise, so absence is not good enough here.
+
+    Everything below the root inherits this value, and a customer who never touches
+    the parameter gets it. The test above tolerates a missing ``Default`` because an
+    absent default cannot be unsafe; for the root, an absent default would also mean
+    every deployment had to name a level, which is not what we publish.
+    """
+    default = _parameters(ROOT_TEMPLATE)[LOG_LEVEL].get("Default")
+    assert default == SAFE_DEFAULT, (
+        f"{ROOT_TEMPLATE}: LogLevel Default is {default!r}, expected {SAFE_DEFAULT!r}"
+    )
+
+
+def test_every_template_declaring_log_level_is_enforced_or_exempt() -> None:
+    """Universe closure: no template may sit outside both sets.
+
+    This is the assertion the previous prose comment could not make. The enforced
+    set was a hardcoded tuple of six and the exclusion was a sentence, so seven
+    templates were in neither -- and the gate looked exactly as green as it does
+    now. Deriving the universe is what makes the exemption list trustworthy: every
+    member of it was put there by someone who had to write down a reason.
+    """
+    universe = set(_templates_declaring_log_level())
+    assert len(universe) >= 12, (
+        f"suspiciously few templates declare {LOG_LEVEL}: {sorted(universe)}. "
+        "Discovery returning a subset would make this whole module vacuous."
+    )
+
+    exempt = _exempt_template_dirs()
+    unaccounted = sorted(universe - set(ENFORCED) - set(exempt))
+    assert not unaccounted, (
+        f"these templates declare {LOG_LEVEL} but are neither enforced nor exempt: "
+        f"{unaccounted}"
+    )
+
+    vanished = sorted(set(exempt) - universe)
+    assert not vanished, (
+        f"LOG_LEVEL_DEFAULT_EXEMPT names {vanished}, which no longer declares "
+        f"{LOG_LEVEL}. A dead exemption is a standing licence for whatever next "
+        "occupies that path -- delete the entry."
+    )
+
+
+@pytest.mark.parametrize("feature_dir", sorted(LOG_LEVEL_DEFAULT_EXEMPT))
+def test_each_exempt_feature_has_a_manifest_that_pins_log_level(
+    feature_dir: str,
+) -> None:
+    """The exemption's premise, evaluated for ONE member at a time.
+
+    Read as an aggregate -- "do the feature stacks pin this in their manifests?" --
+    the old comment was true enough to pass review. Per member it is false for a
+    directory with no manifest, and that was the member whose template default a
+    human actually got. So this asserts per member, and the failure names the
+    member rather than the set.
+    """
+    holds, explanation = gate_premises.installer_manifest_pins_parameter(
+        feature_dir, LOG_LEVEL
+    )
+    assert holds, (
+        f"{feature_dir} is exempt from the {LOG_LEVEL} default check on the stated "
+        f"ground that its installer manifest supplies the value, but {explanation}. "
+        f"Either fix the template's own Default (to {SAFE_DEFAULT!r}) and drop the "
+        "exemption, or correct the manifest."
+    )
+
+
+@pytest.mark.parametrize("feature_dir", sorted(LOG_LEVEL_DEFAULT_EXEMPT))
+def test_no_exempt_feature_is_a_nested_stack_of_the_root(feature_dir: str) -> None:
+    """A nested stack receives the root's value, so the manifest premise cannot apply.
+
+    This is the same structural mistake that put a nested stack into an X-Ray
+    exemption list on the ground that it was independently deployed. Checking it
+    here costs one call and closes that shape for this list too.
+    """
+    holds, explanation = gate_premises.not_a_nested_stack_of_parent(feature_dir)
+    assert holds, (
+        f"{feature_dir} is exempt as an independently installed feature, but "
+        f"{explanation}. An installer manifest does not enter into it."
+    )
+
+
+@pytest.mark.parametrize("rel_path", ENFORCED)
 def test_safe_default_is_an_allowed_value(rel_path: str) -> None:
     """A Default outside AllowedValues fails at deploy time, not at lint time.
 
