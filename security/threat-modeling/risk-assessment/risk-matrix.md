@@ -321,9 +321,10 @@ effort-to-value:
    after being suppressed in another. Tracked in **issue #921** — pending, so the
    weaker denylist is what applies today
 9. **External-IdP group mapping (AUTH.T13)**: keep group assignment sourced from
-   provider claims the user cannot edit, and document `Annotator`'s absence from
-   the federation `GROUP_MAPPING` as a deliberate limitation rather than an
-   oversight
+   provider claims the user cannot edit. All five roles are now mappable
+   (**issue #968**); what remains is to set `ExternalIdPAnnotatorGroupName` on any
+   federated deployment that uses annotators, since at its empty default
+   `Annotator` is managed outside the IdP's joiner/leaver process
 
 ### Ongoing Monitoring
 

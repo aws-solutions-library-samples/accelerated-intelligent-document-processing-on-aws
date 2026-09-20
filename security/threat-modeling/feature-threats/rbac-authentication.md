@@ -31,12 +31,16 @@ User Pools (`template.yaml`, `AWS::Cognito::UserPoolGroup` x5):
 > groups holds the union of both. Reading `Precedence` as a privilege ladder is
 > the most likely way to mis-review a new operation's allow-list.
 
-> **`Annotator` cannot be granted by federation.** The external-IdP group mapping
-> recognises only Admin, Author, Reviewer and Viewer (there is no
-> `ExternalIdPAnnotatorGroupName` parameter), while 12 server-side allow-lists
-> and the UI's `APP_GROUPS` do recognise `Annotator`. In a federated deployment
-> the group must be assigned directly in Cognito, which places it outside the
-> IdP's own joiner/leaver process — an access-review gap rather than a bypass.
+> **`Annotator` is granted by federation only where the deployment opts in.** The
+> external-IdP group mapping covers all five roles, but
+> `ExternalIdPAnnotatorGroupName` defaults to empty; while it is empty `Annotator`
+> sits outside the set the pre-token trigger manages, whereas 12 server-side
+> allow-lists and the UI's `APP_GROUPS` do recognise `Annotator`. On such a
+> deployment the group must be assigned directly in Cognito, which places it
+> outside the IdP's own joiner/leaver process — an access-review gap rather than a
+> bypass. Setting the parameter brings it inside that process (**issue #968**). The
+> `allowedTestSets` scope an Annotator needs is assigned in User Management either
+> way, so federation alone never reaches a test set.
 
 Authorization is enforced at multiple layers:
 - **Cognito Groups**: Users assigned to groups corresponding to roles

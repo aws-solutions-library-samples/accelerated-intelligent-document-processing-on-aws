@@ -299,6 +299,7 @@ class HeadlessTemplateTransformer:
             "ExternalIdPAdminGroupName",
             "ExternalIdPAuthorGroupName",
             "ExternalIdPReviewerGroupName",
+            "ExternalIdPAnnotatorGroupName",
             "ExternalIdPViewerGroupName",
             "ExternalIdPAutoLogin",
             "ExternalIdPEmailMutable",

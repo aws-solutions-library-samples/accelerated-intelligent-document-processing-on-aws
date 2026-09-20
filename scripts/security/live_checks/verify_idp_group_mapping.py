@@ -35,6 +35,7 @@ import zipfile
 
 import boto3
 import yaml
+from cognito_groups import cognito_role_groups_ordered, idp_group_env
 
 REGION = "us-west-2"
 # scripts/security/live_checks/<this file> -> repo root
@@ -44,7 +45,12 @@ TEMPLATE = REPO_ROOT / "template.yaml"
 IDP_NAME = "TestOkta"
 ADMIN_IDP_GROUP = "IdP-Admins"
 VIEWER_IDP_GROUP = "IdP-Viewers"
-COGNITO_GROUPS = ["Admin", "Author", "Reviewer", "Viewer"]
+
+# Both read from template.yaml: the groups to create on the throwaway pool, and
+# the *_GROUP_NAME variables the shipped handler reads. A group the deployment
+# declares but this check never creates cannot be asserted about at all (#968).
+COGNITO_GROUPS = cognito_role_groups_ordered()
+GROUP_ENV = idp_group_env()
 
 NATIVE_USER = "native-user@example.invalid"
 FED_USER = "fed-user@example.invalid"
@@ -306,10 +312,7 @@ def main() -> int:
                     Environment={
                         "Variables": {
                             "LOG_LEVEL": "INFO",
-                            "ADMIN_GROUP_NAME": ADMIN_IDP_GROUP,
-                            "AUTHOR_GROUP_NAME": "IdP-Authors",
-                            "REVIEWER_GROUP_NAME": "IdP-Reviewers",
-                            "VIEWER_GROUP_NAME": VIEWER_IDP_GROUP,
+                            **GROUP_ENV,
                             "EXTERNAL_IDP_NAME": IDP_NAME,
                         }
                     },
@@ -387,10 +390,7 @@ def main() -> int:
             Environment={
                 "Variables": {
                     "LOG_LEVEL": "INFO",
-                    "ADMIN_GROUP_NAME": ADMIN_IDP_GROUP,
-                    "AUTHOR_GROUP_NAME": "IdP-Authors",
-                    "REVIEWER_GROUP_NAME": "IdP-Reviewers",
-                    "VIEWER_GROUP_NAME": VIEWER_IDP_GROUP,
+                    **GROUP_ENV,
                     "EXTERNAL_IDP_NAME": "SomeOtherIdP",
                 }
             },

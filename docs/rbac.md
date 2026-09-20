@@ -68,6 +68,14 @@ argument: a review document carries the `TestSetId` it came from, and an Annotat
 attempting a document with no `TestSetId` (i.e. ordinary production review work) is
 refused outright.
 
+**Where membership and scope come from.** The `Annotator` group itself can be
+assigned in User Management or from an external IdP group claim, by setting
+`ExternalIdPAnnotatorGroupName` — see
+[external-idp.md](external-idp.md#annotators-and-the-allowedtestsets-scope).
+`allowedTestSets` is only ever assigned in User Management, so a federated Annotator
+holds the role with an empty scope — denied everything — until an Admin assigns them
+a test set.
+
 **Scope caching.** Lookups are cached briefly per Lambda container. The TTL is
 asymmetric on purpose: a populated scope is held for 5 minutes (bounding how long a
 revoked annotator keeps access), while an empty scope is held for only 10 seconds,

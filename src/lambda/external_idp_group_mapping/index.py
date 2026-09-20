@@ -46,6 +46,7 @@ for env_key, cognito_group in [
     ("ADMIN_GROUP_NAME", "Admin"),
     ("AUTHOR_GROUP_NAME", "Author"),
     ("REVIEWER_GROUP_NAME", "Reviewer"),
+    ("ANNOTATOR_GROUP_NAME", "Annotator"),
     ("VIEWER_GROUP_NAME", "Viewer"),
 ]:
     idp_group = os.environ.get(env_key, "").strip()
@@ -179,9 +180,24 @@ def handler(event, context):
 
     # Determine target Cognito groups from mapping
     target_groups = set()
+    unmapped_groups = []
     for idp_group in idp_groups:
         if idp_group in GROUP_MAPPING:
             target_groups.add(GROUP_MAPPING[idp_group])
+        else:
+            unmapped_groups.append(idp_group)
+
+    # Name every discarded claim value. Without this a claim carrying one mapped
+    # name plus an unmapped one produced no diagnostic at all: the warning below
+    # is skipped because target_groups is non-empty, so the role the operator
+    # expected went missing with nothing to point at. Group names only — never
+    # the token or the whole claim set.
+    if unmapped_groups:
+        logger.warning(
+            f"Ignoring IdP group(s) with no Cognito mapping for user "
+            f"{username}: {unmapped_groups}. Set the matching "
+            f"ExternalIdP*GroupName stack parameter to map them."
+        )
 
     if not target_groups:
         logger.warning(f"No matching Cognito groups for user {username} with IdP groups {idp_groups}")
