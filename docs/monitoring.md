@@ -764,6 +764,16 @@ same topic, this alarm is reporting the same incident and clears on its own when
 the breaker closes. Only relevant when the circuit breaker is enabled, which is
 not the default.
 
+**A failure to *read* the breaker's state trips it too, and looks nothing like the
+pause above.** With `CircuitBreakerEnabled=true`, a transient fault on the state read
+refuses admission, which holds messages without deleting them — so both conditions hold
+again. The distinguishing signal is that this case emits **no Bedrock error metrics at
+all**, so `BedrockServiceOutageAlarm` stays **clear** and the runbook's "if that alarm is
+also active, it is the same incident" test does not apply. Check the
+`CircuitBreakerCheckFailed` metric with dimension `Classification=TRANSIENT`; the cause is
+the ConcurrencyTable, not the processor and not Bedrock. See
+[Circuit breaker](circuit-breaker.md#when-the-state-cannot-be-read).
+
 **One reporting caveat.** SQS stops publishing queue metrics for a queue that has
 been inactive for about six hours. In the specific case where the consumer is
 fully detached *and* no new documents arrive, `FILL(m1, 0)` then yields `0`, the
