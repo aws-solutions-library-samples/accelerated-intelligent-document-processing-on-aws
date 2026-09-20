@@ -223,8 +223,8 @@ class HeadlessTemplateTransformer:
         # headless mode — and it DependsOn the (removed) APIRESOLVERSTACK. Left in
         # place, its references to those removed resources would fail at deploy
         # time ("Fn::GetAtt references undefined resource"). EnableFeaturePlatform
-        # is forced to 'false' in _remove_parameters so the
-        # IsFeaturePlatformDisabled-gated TrackingTableName export stays active.
+        # defaults to 'false' in _remove_parameters so a headless deploy does not
+        # ask for the stripped nested stack.
         self.feature_platform_resources: Set[str] = {
             "FeaturePlatformStack",
         }
@@ -596,11 +596,14 @@ class HeadlessTemplateTransformer:
             parameters["EnableMCP"]["Default"] = "false"
             logger.info("Modified EnableMCP parameter default to 'false'")
 
-        # Force Feature Platform off — its nested stack (removed above) wires
+        # Default Feature Platform off — its nested stack (removed above) wires
         # in AppSync/Cognito/WebUI/Discovery resources that don't exist in
-        # headless mode. Setting the default to 'false' keeps
-        # IsFeaturePlatformDisabled true so the main stack's
-        # TrackingTableName export (gated on that condition) stays active.
+        # headless mode. This changes the DEFAULT only: the parameter is still
+        # declared, so a deployer who passes 'true' explicitly gets a stack whose
+        # IsFeaturePlatformEnabled condition is true with no FeaturePlatformStack
+        # to create. Nothing imports the `<StackName>-TrackingTableName` export in
+        # headless mode either — only feature stacks do, and those need the
+        # platform.
         if "EnableFeaturePlatform" in parameters:
             parameters["EnableFeaturePlatform"]["Default"] = "false"
             logger.info("Modified EnableFeaturePlatform parameter default to 'false'")

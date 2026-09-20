@@ -1396,11 +1396,6 @@ Conditions:
 
   # Feature Platform
   IsFeaturePlatformEnabled: !Equals [ !Ref EnableFeaturePlatform, 'true' ]
-  # Inverse condition used to gate the main stack's
-  # `${AWS::StackName}-TrackingTableName` Output so that it isn't declared at
-  # the same time as the FeaturePlatformStack's identically-named export
-  # (which would fail with "Export already exported by stack ...").
-  IsFeaturePlatformDisabled: !Equals [ !Ref EnableFeaturePlatform, 'false' ]
   # NB: there is deliberately no "IsAutoSubscribeMode" condition inferring the
   # subscription mode from whether FeaturePlatformSimulatorEndpoint is set.
   # Inferring it coupled two independent choices — WHICH API to call and WHERE
@@ -14426,8 +14421,17 @@ Outputs:
       See scripts/vpc-endpoints.yaml for the endpoint template.
     Value: !GetAtt LambdaVpcSecurityGroup.GroupId
   TrackingTableName:
-    Condition: IsFeaturePlatformDisabled
-    Description: Name of the DynamoDB document tracking table (feature-stack cross-stack ref)
+    Description: >-
+      Name of the DynamoDB document tracking table. A plain Output with no
+      `Export`, deliberately: the cross-stack export `<StackName>-TrackingTableName`
+      that feature stacks import is owned solely by the nested FeaturePlatformStack,
+      which declares it unconditionally. Do not add an `Export` here. An export
+      name has one producing stack, and that stack cannot change in a single
+      update: CloudFormation writes a stack's exports at the END of its update
+      while a nested stack claims its own during the resource phase, so a second
+      declaration here would collide with the nested one on the transition to
+      EnableFeaturePlatform=true ("Export with name ... is already exported by
+      stack ...") — see scripts/tests/test_cfn_export_ownership.py. An Output
+      without an Export cannot collide, and unlike the export it is readable from
+      `describe-stacks` in every configuration.
     Value: !Ref TrackingTable
-    Export:
-      Name: !Sub "${AWS::StackName}-TrackingTableName"
