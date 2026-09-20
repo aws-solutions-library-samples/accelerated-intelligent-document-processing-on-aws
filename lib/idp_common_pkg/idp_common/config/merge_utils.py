@@ -891,7 +891,7 @@ def _validate_agentic_openai(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
             "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
             "Set agentic.enabled=false or choose a Converse model — Claude, Amazon "
-            "Nova Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
+            "Nova Pro (not Nova Lite, which fails mid-stream on this path; "
             "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
             "Astra support agentic extraction."
         )

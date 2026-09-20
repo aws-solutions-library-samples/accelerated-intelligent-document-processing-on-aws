@@ -251,6 +251,10 @@ pricing:
   # costed as $0.00 (no pricing key is a substring of this ID, so even the old
   # fuzzy lookup found nothing). Rates are those of the v2 row below — AWS prices
   # both 3.5 Sonnet versions identically at $3/$15 per million tokens.
+  # This model has also reached end of life and is no longer selectable or
+  # defaulted anywhere. The entry stays for the same reason as Nova Premier's
+  # above: pricing lookup is retrospective, so deleting it would re-price
+  # historical cost reports at zero.
   - name: bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0
     units:
       - name: inputTokens

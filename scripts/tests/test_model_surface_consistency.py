@@ -3,23 +3,27 @@
 
 """The model surfaces agree with each other, and no dead model is reachable.
 
-A "selectable model" is spread over five places that nothing compared:
+Which model a deployment can run is decided across SEVEN places that nothing
+compared:
 
-* the ``AllowedValues`` of a CloudFormation model parameter,
-* the ``enum`` of every ``model`` / ``model_id`` field in the ConfigSchema that
-  drives the configuration UI's picklists,
-* ``config_library/pricing.yaml``, which is how a cost report resolves a rate,
-* ``config_library/model_config_limits.yaml``, which is how auto-sizing learns
-  the model's context window,
-* the UI's own hardcoded per-class override dropdown, whose comment already says
-  "keep in sync with the model enum in patterns/unified/template.yaml" — a
-  written invariant with nothing enforcing it.
-
-and a sixth that is not selectable at all but decides what most deployments
-actually run: the ``default=`` of every model field in ``idp_common``'s config
-models. A config that omits the field gets that default, and no preset under
-``config_library/`` sets ``summarization.model`` or either ``rule_validation``
-model, so those defaults were the live values.
+1. the ``AllowedValues`` of a CloudFormation model parameter;
+2. the ``enum`` of every ``model`` / ``model_id`` field in the ConfigSchema that
+   drives the configuration UI's picklists;
+3. ``config_library/pricing.yaml``, which is how a cost report resolves a rate;
+4. ``config_library/model_config_limits.yaml``, which is how auto-sizing learns
+   the model's context window;
+5. the UI's own hardcoded per-class override dropdown, whose comment already says
+   "keep in sync with the model enum in patterns/unified/template.yaml" — a
+   written invariant with nothing enforcing it;
+6. the resolved model defaults of ``idp_common``'s ``IDPConfig``, which decide
+   what most deployments actually run: no shipped preset sets
+   ``summarization.model`` or either ``rule_validation`` model, so the default IS
+   the live value, and nobody chose it;
+7. the shipped configuration presets under ``config_library/``, which
+   ``idp-cli deploy --custom-config`` installs verbatim. This surface can point a
+   documented feature at a dead model with no enum, no UI entry and no code
+   default involved — ``criteria_validation.model`` has no ConfigSchema entry at
+   all, so a preset is the only way to reach it.
 
 Three failure modes follow, all of which had shipped:
 
@@ -30,14 +34,22 @@ Three failure modes follow, all of which had shipped:
 3. **A dead model still reachable** — Nova Premier (EOL 2026-09-14) was in 17
    enum positions, the UI dropdown, both quota-code maps and the summarization
    default; Claude 3.5 Sonnet 20240620 (also EOL) was the default for both
-   rule-validation models. Either fails at inference with no useful signal.
+   rule-validation models and named by five shipped presets. Either fails at
+   inference with no useful signal.
 
 Everything here is DERIVED from the files. The expected model set is never
-restated: the templates are discovered by content over ``git ls-files``, the enums
-are read out of them, and pricing and limits are read out of their YAML. The one
-irreducibly hand-maintained fact is ``EOL_MODELS`` — whether a model is dead is
-not knowable from this tree, and CI is offline, so it cannot be derived. Each
-entry records the date and the command that establishes it.
+restated: templates are discovered by content over ``git ls-files``, enums are
+read out of them, pricing and limits out of their YAML, presets out of
+``config_library/``, and defaults by **instantiating** ``IDPConfig`` and walking
+the resolved tree rather than pattern-matching declarations — because
+``default_factory`` overrides a nested class's own ``default=``, so a regex over
+``default=`` polices the overridden value and misses the effective one.
+
+The one irreducibly hand-maintained fact is ``EOL_MODELS``: whether a model is
+dead is not knowable from this tree and CI is offline. Each entry carries the date
+and the exact command that establishes it, and ``LEGACY_EXAMPLES`` gives the
+deprecated-but-usable models an expiry date so a hard-coded lifecycle fact cannot
+rot silently.
 
 Reading only ``git ls-files`` matters: walking the filesystem picks up
 ``.aws-sam`` build output and other worktrees, producing findings CI cannot

@@ -169,7 +169,6 @@ The following third-party models are available in US regions only and have no EU
 ### Missing Direct EU Equivalents
 
 The following US models do not have direct EU equivalents:
-- Nova Premier
 - Claude 3.5 Haiku (specific version)
 - Claude Opus 4 variants
 - Meta Llama 4 Maverick/Scout (US cross-region only)

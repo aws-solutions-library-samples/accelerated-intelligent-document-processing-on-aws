@@ -97,6 +97,16 @@ because the numbers get written down.
 - **exits non-zero** after draining, so an unattended invocation or a wrapper
   script does not read a partial grid as a complete one.
 
+Upload success is read from `idp-cli config-upload`'s **exit code**, not by
+looking for a success message in its output: that message is rendered by `rich`,
+which hard-wraps at the terminal width, so a narrow or non-tty terminal splits it
+mid-string. While a FAIL was only a misleading console line that was cosmetic;
+now that a FAIL skips a paid-for arm and fails the grid, it is not.
+
+A grid whose every launch was **rejected** by the TestRunner — a stale `--stack`,
+or a missing TestRunner Lambda — also exits non-zero. It used to print `done.` and
+exit 0 after measuring nothing.
+
 Two other setup steps fail closed for the same reason. A test-set registration
 whose `aws s3 cp` fails is fatal before anything is launched — the metadata row
 asserts `status: READY` and `fileCount: 1`, so writing it for a document that is

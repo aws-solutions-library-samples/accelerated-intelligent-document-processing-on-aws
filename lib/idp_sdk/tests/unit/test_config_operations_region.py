@@ -74,3 +74,46 @@ def test_region_comes_from_the_client_not_a_literal():
         if "region=" in args and "self._client._region" not in args
     ]
     assert not bad, f"region must come from self._client._region, got: {bad}"
+
+
+@pytest.mark.unit
+def test_the_module_under_test_is_the_one_in_this_checkout():
+    """Guard against testing a different tree's code.
+
+    `idp_sdk` and `idp_cli` are editable installs pointing at whichever checkout
+    was pip-installed, so a test run from a git worktree can silently inspect the
+    MAIN tree's module and report green for a fix that is not in it. Under pytest
+    the rootdir insertion makes `idp_sdk` resolve to this checkout, but that is a
+    property of how the suite is invoked, not a guarantee — so assert it, because
+    every assertion in this file reads module source.
+    """
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[4]
+    module_path = pathlib.Path(inspect.getsourcefile(config_ops)).resolve()
+    assert module_path.is_relative_to(repo_root), (
+        f"this test is inspecting {module_path}, which is outside the checkout "
+        f"under test ({repo_root}). Set PYTHONPATH to this checkout's lib/idp_sdk."
+    )
+
+
+@pytest.mark.unit
+def test_configure_config_env_bridges_the_region_for_deep_clients():
+    """The backstop for clients built too deep to be handed a region explicitly.
+
+    `idp_common.bedrock.model_utils._load_model_limits_from_dynamodb` builds a
+    ConfigurationManager with no caller able to pass one, and it sits on
+    `config-upload`'s own validation path. Its failure is swallowed by a total
+    `except`, so an out-of-region read degrades silently to the on-disk default
+    limits and can reject a configuration that is legitimately above a default cap.
+    """
+    src = inspect.getsource(config_ops.ConfigOperation._configure_config_env)
+    assert 'os.environ["AWS_DEFAULT_REGION"] = region' in src, (
+        "_configure_config_env no longer bridges the resolved region into the "
+        "environment, so regionless clients deep in idp_common fall back to the "
+        "ambient region"
+    )
+    assert "if region:" in src, (
+        "the bridge must be conditional — writing AWS_DEFAULT_REGION "
+        "unconditionally would pin the process to an empty region"
+    )

@@ -25,6 +25,7 @@ import pytest
 
 from idp_common.config import ConfigurationReader
 from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.models import IDPConfig
 from idp_common.config.revisions import ConfigRevisionStore
 
 REQUESTED = "eu-west-1"
@@ -78,3 +79,74 @@ def test_requested_region_differs_from_ambient():
     dropped and the suite would be asserting nothing."""
     assert boto3.Session().region_name == AMBIENT
     assert REQUESTED != AMBIENT
+
+
+# ---------------------------------------------------------------------------
+# The other configuration WRITERS, which the shared-class fix did not reach
+# ---------------------------------------------------------------------------
+#
+# Threading `region` into ConfigurationManager fixes every caller that constructs
+# one directly. Three did not: two service classes that build their own, and one
+# resolver several frames below any caller with a region in scope. All three WRITE
+# or validate against the configuration table, so each was a silent cross-region
+# write in its own command.
+
+
+@pytest.mark.unit
+def test_bda_blueprint_service_threads_region_to_its_config_manager(monkeypatch):
+    """`idp-cli config-sync-bda --region eu-west-1` resolved the table name in
+    eu-west-1 and wrote the BDA-derived document classes to the ambient region."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "some-config-table")
+    service = pytest.importorskip("idp_common.bda.bda_blueprint_service")
+    svc = service.BdaBlueprintService(
+        dataAutomationProjectArn="arn:aws:bedrock:eu-west-1:1:project/p",
+        region=REQUESTED,
+    )
+    assert svc.config_manager.dynamodb.meta.client.meta.region_name == REQUESTED
+    # The BDA client too: creating blueprints in the wrong region is as wrong as
+    # writing the classes there.
+    assert svc.blueprint_creator.bedrock_client.meta.region_name == REQUESTED
+
+
+@pytest.mark.unit
+def test_classes_discovery_threads_its_own_region_to_the_config_layer(monkeypatch):
+    """`idp-cli discover --region eu-west-1` wrote the discovered schema to the
+    ambient region, even though the class already held the right one and passed it
+    to BedrockClient one line below."""
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "some-config-table")
+    mod = pytest.importorskip("idp_common.discovery.classes_discovery")
+    # Stub only the DynamoDB READ of the configuration, so construction completes
+    # without AWS. A conditional skip here would protect nothing: the whole point
+    # is to observe the clients this constructor builds.
+    monkeypatch.setattr(
+        ConfigurationReader,
+        "get_merged_configuration",
+        lambda self, **kw: IDPConfig(),
+    )
+    d = mod.ClassesDiscovery(input_bucket="b", input_prefix="k", region=REQUESTED)
+    assert d.config_manager.dynamodb.meta.client.meta.region_name == REQUESTED
+    assert d.config_reader.manager.dynamodb.meta.client.meta.region_name == REQUESTED
+
+
+@pytest.mark.unit
+def test_discovery_classes_pass_region_to_both_config_objects():
+    """Source-level, because both constructors load configuration from a real table
+    and so cannot always be built in a unit test. Asserted for BOTH discovery
+    classes: `rules_discovery` has the identical shape and the identical defect,
+    and was not named in review — a fix applied to one sibling only is the failure
+    this whole change is about.
+    """
+    import inspect
+
+    for module_name in (
+        "idp_common.discovery.classes_discovery",
+        "idp_common.discovery.rules_discovery",
+    ):
+        mod = pytest.importorskip(module_name)
+        src = inspect.getsource(mod)
+        for ctor in ("ConfigurationReader(", "ConfigurationManager("):
+            assert f"{ctor}region=self.region)" in src, (
+                f"{module_name} builds {ctor.rstrip('(')} without its own "
+                "self.region, so the configuration it writes lands in whatever "
+                "region the ambient credentials resolve to"
+            )

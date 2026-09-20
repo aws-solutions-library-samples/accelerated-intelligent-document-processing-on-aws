@@ -418,3 +418,54 @@ def test_main_runs_the_surviving_arm_and_still_exits_nonzero(tmp_path, monkeypat
     assert rm["config_upload_failed_versions"] == ["bench-b"]
     assert rm["cells_skipped_config_upload"] == ["c2"]
     assert [r["cell"] for r in rm["runs"]] == ["c1"]
+
+
+# --------------------------------------------------------------------------
+# upload_config reads the exit code, not the console text
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_upload_config_trusts_the_exit_code_over_a_wrapped_message(monkeypatch):
+    """`rich.Console` wraps at COLUMNS, so the success line is not a reliable token.
+
+    `✓ Configuration uploaded successfully` is 37 characters; in a narrow or
+    non-tty terminal Rich breaks it mid-string, so a substring test reports FAIL
+    for an upload that succeeded. That used to cost a misleading console line —
+    now a FAIL skips the cell and fails the grid, so the false negative is
+    expensive.
+    """
+    wrapped = "✓ Configuration uploaded\nsuccessfully\n"
+    assert "uploaded successfully" not in wrapped, "fixture no longer wraps"
+    monkeypatch.setattr(
+        run_matrix, "sh", lambda cmd: _Proc(returncode=0, stdout=wrapped)
+    )
+    assert run_matrix.upload_config("stk", "bench-a", "/tmp/a.yaml") is True, (
+        "a successful upload whose console output wrapped was reported as FAIL"
+    )
+
+
+@pytest.mark.unit
+def test_upload_config_fails_on_nonzero_exit_despite_a_success_message(monkeypatch):
+    """The converse: the message can appear in output that still exited non-zero
+    (a retry log, a later error), and the exit code is what `cli.py` sets."""
+    monkeypatch.setattr(
+        run_matrix,
+        "sh",
+        lambda cmd: _Proc(
+            returncode=1,
+            stdout="Configuration uploaded successfully\n",
+            stderr="✗ Error: ResourceNotFoundException\n",
+        ),
+    )
+    assert run_matrix.upload_config("stk", "bench-a", "/tmp/a.yaml") is False
+
+
+@pytest.mark.unit
+def test_upload_config_succeeds_on_zero_exit(monkeypatch):
+    monkeypatch.setattr(
+        run_matrix,
+        "sh",
+        lambda cmd: _Proc(returncode=0, stdout="✓ Configuration uploaded successfully"),
+    )
+    assert run_matrix.upload_config("stk", "bench-a", "/tmp/a.yaml") is True

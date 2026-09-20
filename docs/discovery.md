@@ -1813,7 +1813,7 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 **Model Selection Guidelines:**
 - **Nova Lite**: Simple forms with clear structure
 - **Nova Pro**: Most document types (recommended default)
-- **Nova Premier**: Complex layouts, handwritten content
+- **Claude Sonnet 4.5 / 4.6**: Complex layouts, handwritten content
 - **Claude Models**: Alternative for specific use cases
 
 **Parameter Optimization:**
@@ -1907,7 +1907,7 @@ Causes:
 
 Solutions:
 - Use higher resolution documents (minimum 150 DPI)
-- Try different models (Nova Premier for complex documents)
+- Try different models (Claude Sonnet 4.6 for complex documents)
 - Customize prompts with domain-specific terminology
 - Provide ground truth data for better guidance
 ```

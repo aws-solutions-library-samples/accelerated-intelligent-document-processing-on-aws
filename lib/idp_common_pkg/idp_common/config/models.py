@@ -3112,10 +3112,12 @@ class IDPConfig(BaseModel):
         description="Chat-with-Document configuration (used by the interactive "
         "document Q&A feature in the Web UI)",
     )
+    # No `model=` kwarg: RuleValidationConfig declares no `model` field (its models
+    # live on the nested fact_extraction / rule_validation_orchestrator configs), so
+    # Pydantic silently dropped it. It was therefore an inert end-of-life model
+    # literal, which basedpyright already flagged as `No parameter named "model"`.
     rule_validation: RuleValidationConfig = Field(
-        default_factory=lambda: RuleValidationConfig(
-            model="us.anthropic.claude-3-5-sonnet-20240620-v1:0"
-        ),
+        default_factory=RuleValidationConfig,
         description="Rule validation configuration",
     )
     agents: AgentsConfig = Field(

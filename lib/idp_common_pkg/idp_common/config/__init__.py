@@ -205,12 +205,15 @@ def get_config(
     as_model: bool = False,
     version: Optional[str] = None,
     revision: Optional[int] = None,
+    region: Optional[str] = None,
 ) -> Union[IDPConfig, Dict[str, Any]]:
     """
     Get the merged configuration using the environment variable for table name.
 
     Args:
         table_name: Optional override for configuration table name
+        region: Optional AWS region for the underlying clients. None defers to
+            boto3, which is correct in Lambda; an out-of-region caller must pass it.
         as_model: If True, return IDPConfig Pydantic model. If False (default), return dict.
         version: Optional Configuration Profile to load. If None, uses the active one.
         revision: Optional revision of that profile. Pass document.config_revision so a
@@ -228,5 +231,5 @@ def get_config(
         config = get_config(as_model=True)
         config_dict = config.to_dict(sagemaker_endpoint_name=endpoint)
     """
-    reader = ConfigurationReader(table_name)
+    reader = ConfigurationReader(table_name, region=region)
     return reader.get_merged_configuration(as_model=as_model, version=version, revision=revision)

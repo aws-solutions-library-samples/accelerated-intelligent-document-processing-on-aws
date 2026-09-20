@@ -353,10 +353,11 @@ completes instead of wedging — a genuine forward bad-config still fails loudly
 
 ## Region for the underlying clients
 
-`ConfigurationManager(table_name=…, region=…)` and
-`ConfigurationReader(table_name=…, region=…)` take an optional `region`, which is
-passed to the DynamoDB resource they build and, through `ConfigRevisionStore`, to
-the S3 client used for revision history.
+`ConfigurationManager(table_name=…, region=…)`,
+`ConfigurationReader(table_name=…, region=…)` and the `get_config(…, region=…)`
+convenience wrapper take an optional `region`, which is passed to the DynamoDB
+resource they build and, through `ConfigRevisionStore`, to the S3 client used for
+revision history.
 
 `region=None` means "let boto3 resolve it" — `AWS_REGION`, then
 `AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
@@ -369,11 +370,19 @@ from CloudFormation in one region and then builds a manager without that region
 reads and writes *the same name* in whatever region the ambient credentials
 resolve to. On a multi-region account that is a successful write to a different
 stack's configuration table, and the caller is told it succeeded. Every
-`idp-cli config-*` command, `idp-cli bootstrap` and
-`scripts/migrate_multi_instance_baselines.py` are out-of-region callers in this
-sense; the SDK's `idp_sdk.operations.config` passes `region=self._client._region`
-at every construction site, asserted by
-`lib/idp_sdk/tests/unit/test_config_operations_region.py`.
+`idp-cli config-*` command, `idp-cli bootstrap`, `idp-cli discover`,
+`idp-cli config-sync-bda` and `scripts/migrate_multi_instance_baselines.py` are
+out-of-region callers in this sense. Two service classes build their own clients
+and take a `region` for the same reason — `BdaBlueprintService`, which writes
+BDA-derived document classes, and both discovery classes, which write the
+discovered schema and rules.
+
+`scripts/tests/test_config_region_threading.py` enforces this across the whole
+tree: it parses every tracked `.py` and requires each construction of these
+classes to pass a `region` unless it lives in a Lambda-deployed directory, where
+the runtime always sets `AWS_REGION`. That exemption is decided by **directory**
+rather than by a list, so a new handler is covered automatically; the two
+library-internal exceptions are named there with a premise the file asserts.
 
 The precedence, stated once: an explicit `--region` (or `region=`) wins;
 otherwise boto3's own chain applies. No hardcoded region is substituted at any

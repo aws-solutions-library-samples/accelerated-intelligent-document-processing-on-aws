@@ -196,12 +196,25 @@ Nothing substitutes a hardcoded region for the configuration commands, so a
 command run with no `--region` and no region resolvable from the environment fails
 with boto3's `NoRegionError` rather than guessing.
 
-`--region` applies to **every** AWS call a command makes, including the DynamoDB
-read/write of the Configuration Table and the S3 write of revision history — not
-only to the CloudFormation lookup that resolves the table's name. On a
-multi-region account those differ: a stack's `ConfigurationTable` physical id is
-not region-qualified, so a command that looked the name up in one region and wrote
-it in another would write to a different stack's table and report success.
+`--region` applies to every AWS call a command makes, not only to the
+CloudFormation lookup that resolves a resource's name. That distinction is the
+whole point: a stack's `ConfigurationTable` physical id is not region-qualified, so
+a command that looked the name up in one region and then read or wrote it in
+another would hit a *different stack's* table on a multi-region account — and
+report success. It therefore covers
+
+- the DynamoDB read and write of the Configuration Table,
+- the S3 write of configuration revision history,
+- the document classes `config-sync-bda` derives from a BDA project, and the BDA
+  project calls themselves,
+- the schema and rules that `discover` and `discover-multidoc` write back,
+- the model-limits read on `config-upload`'s validation path, which would
+  otherwise fall back silently to the on-disk defaults and could reject a
+  configuration that is legitimately above a default cap.
+
+A whole-tree check (`scripts/tests/test_config_region_threading.py`) asserts that
+no code outside a Lambda builds a configuration client without a region, so a new
+command cannot reintroduce the gap.
 
 Three commands take no `--region` because they make no AWS calls at all:
 `config-create`, `config-validate` and `validate-manifest`.
