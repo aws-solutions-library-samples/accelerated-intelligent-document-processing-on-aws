@@ -447,7 +447,16 @@ def cli():
     "--enable-hitl",
     default="false",
     type=click.Choice(["true", "false"]),
-    help="Enable Human-in-the-Loop (default: false)",
+    # Kept as an accepted-and-refused flag rather than removed: `--enable-hitl
+    # false` is the default and has always been a no-op, so a script passing it
+    # explicitly keeps working, while `true` — which has never deployed, since the
+    # root template dropped EnableHITL in v0.4.11 — now says so instead of failing
+    # at CreateStack with an undeclared-parameter error.
+    help=(
+        "Deprecated and refused if 'true'. HITL is a configuration setting, not a "
+        "stack parameter: enable it in the Web UI under Configuration → "
+        "Assessment & HITL Configuration, or in the config YAML."
+    ),
 )
 @click.option(
     "--custom-config",
@@ -585,6 +594,19 @@ def deploy(
                 "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
                 "--headless removes the UI entirely; --govcloud keeps the UI but "
                 "removes CloudFront and uses API Gateway hosting.[/red]"
+            )
+            sys.exit(1)
+
+        if enable_hitl == "true":
+            # Refused up front rather than after a template build and upload. The
+            # root template stopped declaring EnableHITL in v0.4.11, so this has
+            # only ever ended in "Parameters: [EnableHITL] do not exist in the
+            # template" at CreateStack, with nothing created.
+            console.print(
+                "[red]✗ Error: --enable-hitl is no longer a stack parameter.[/red]\n"
+                "  HITL became a configuration setting in v0.4.11. Enable it in the "
+                "Web UI under Configuration → Assessment & HITL Configuration, or "
+                "in the config YAML passed to --custom-config."
             )
             sys.exit(1)
 

@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Python deployers vs the templates they deploy: required parameters covered.
+"""Python deployers vs the templates they deploy: parameter names must match.
 
 ``test_nested_stack_parameters.py`` asserts this contract for CFN parent →
 nested stack. Nothing asserted it for the other direction the repo deploys
@@ -32,14 +32,40 @@ caller contract, in both directions:
 * a parameter a caller passes that the template does not declare →
   ``Parameters: [X] do not exist in the template``.
 
-It also fails when a **new** script calls ``create_stack``/``update_stack``
-without being registered below, so the next template-deploying script cannot
-quietly reintroduce the gap.
+It also fails when a **new** deployer calls ``create_stack``/``update_stack`` (or
+builds ``sam deploy --parameter-overrides``) without being registered below, so the
+next template-deploying module cannot quietly reintroduce the gap.
+
+Why the completeness walk covers ``lib/`` and not only ``scripts/``
+------------------------------------------------------------------
+It used to walk ``scripts/`` alone, which made every deployer under ``lib/``
+structurally invisible to it — and two real mismatches lived there:
+
+* ``lib/idp_sdk/idp_sdk/_core/stack.py``'s ``build_parameters`` emitted
+  ``EnableHITL``, which the root ``template.yaml`` stopped declaring in v0.4.11 when
+  HITL became a configuration setting. ``idp-cli deploy --enable-hitl true``
+  therefore failed at CreateStack with ``Parameters: [EnableHITL] do not exist in
+  the template``, creating nothing. ``lib/idp_cli_pkg/tests/test_deploy_params.py``
+  asserted ``params["EnableHITL"] == "true"`` — it pinned the name the code
+  produced, never the names the template accepts, so it passed on a deploy that
+  could not run.
+* ``lib/idp_feature_sdk/idp_feature_sdk/seller_service.py`` passed
+  ``MarketplaceAgreementRegion`` to a template declaring ``AgreementRegion``
+  (issue #1043). That path is ``sam deploy``, which is worse: SAM builds its
+  ``CreateChangeSet`` call from the *template's* own ``Parameters`` and emits
+  nothing for a name it does not find there, so the override was discarded in
+  silence — the deploy succeeded with the parameter at its default.
+
+Both failure modes are the same defect: an assertion about the argv or the dict the
+code *built*, with nothing comparing those names to the template they are sent to.
+The detector below therefore looks for the ``sam`` shape as well as the boto3 one,
+since an argv builder would not have been spotted even with the walk widened.
 """
 
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -95,9 +121,77 @@ DEPLOYERS = [
         False,
         id="oidc_provider→oidc-template",
     ),
+    pytest.param(
+        "lib/idp_sdk/idp_sdk/_core/stack.py",
+        "template.yaml",
+        # build_parameters assigns into a plain dict rather than emitting
+        # ParameterKey literals, so _literal_parameter_keys finds nothing here and
+        # the exact-set comparison would be vacuous. The real check for this file is
+        # test_build_parameters_emits_only_declared_parameters below, which calls the
+        # function and reads its output.
+        False,
+        id="idp_sdk.build_parameters→root-template",
+    ),
+    pytest.param(
+        "lib/idp_feature_sdk/idp_feature_sdk/seller_service.py",
+        "feature-platform/seller-entitlement-service/template.yaml",
+        # Overrides are `_sam_override(...)` calls, not ParameterKey dicts. The
+        # function validates them against this template at build time
+        # (validate_parameter_overrides) and its own suite asserts that.
+        False,
+        id="seller_service→seller-template",
+    ),
 ]
 
-REGISTERED_FILES = {p.values[0] for p in DEPLOYERS}
+# Deployers whose target template does not exist in this tree at all: it is
+# published to S3 or generated at deploy time, so there is nothing to diff against.
+# Registering them here is not a free pass — test_runtime_template_deployers_gate_
+# their_submissions asserts what each one actually does instead, and the
+# ``unconditional`` names below are re-checked against every in-tree template the
+# deployer can be pointed at.
+RUNTIME_TEMPLATE_DEPLOYERS = [
+    pytest.param(
+        "lib/idp_feature_sdk/idp_feature_sdk/pack.py",
+        # Target: a pack wrapper template generated at publish time.
+        (),
+        id="pack.deploy_pack→runtime-wrapper",
+    ),
+    pytest.param(
+        "lib/idp_feature_sdk/idp_feature_sdk/cli.py",
+        # Target: a published extension template. Three optional overrides are
+        # gated on validate_template; these two are submitted unconditionally as
+        # "part of every feature template's contract", which is the claim
+        # test_feature_templates_declare_the_unconditional_parameters checks.
+        ("MainStackName", "FeatureBucket"),
+        id="feature_cli.deploy_cmd→published-extension",
+    ),
+]
+
+REGISTERED_FILES = {p.values[0] for p in DEPLOYERS} | {
+    p.values[0] for p in RUNTIME_TEMPLATE_DEPLOYERS
+}
+
+# The call shapes that mean "this module deploys a CloudFormation template".
+#
+# ``sam deploy`` is in here because it is the shape with the WORST failure mode and
+# the one a boto3-only detector misses: CloudFormation rejects an undeclared
+# parameter name outright, but SAM discards the override silently.
+DEPLOY_CALL_MARKERS = (
+    ".create_stack(",
+    ".update_stack(",
+    ".create_change_set(",
+    "--parameter-overrides",
+)
+
+# Directories walked for unregistered deployers. ``lib/`` is here because two live
+# mismatches sat in it while the walk covered ``scripts/`` alone — see the module
+# docstring.
+DEPLOYER_SEARCH_ROOTS = ("scripts", "lib", "feature-platform")
+
+# A feature-platform directory is installable by `idp-feature-cli deploy` exactly
+# when it carries a manifest; that is what makes it a publishable extension, so it
+# is the right way to derive the universe rather than listing directory names.
+FEATURE_MANIFEST = "feature.yaml"
 
 
 def _template_parameters(rel_path: str) -> dict[str, dict]:
@@ -178,26 +272,167 @@ def test_supplied_parameters_exist_in_template(
     )
 
 
+def _tracked_python_files() -> list[str]:
+    """Git-tracked ``*.py`` paths under the search roots.
+
+    ``git ls-files`` rather than ``rglob``: an untracked scratch script, a stale
+    build artifact or a vendored copy in a working tree must not be able to fail
+    this gate, and — more importantly — must not be able to *satisfy* it.
+    """
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--", *DEPLOYER_SEARCH_ROOTS],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"git ls-files failed under {REPO_ROOT}, so this gate cannot enumerate the "
+        f"modules it is supposed to check: {result.stderr.strip()}"
+    )
+    return [p for p in result.stdout.splitlines() if p.endswith(".py")]
+
+
 @pytest.mark.unit
 def test_registry_is_complete():
-    """Every template-deploying script under scripts/ is registered above.
+    """Every template-deploying module under the search roots is registered above.
 
-    Without this, the next script to call create_stack silently escapes the
-    parameter-coverage check — the same way create_iam_resources did.
+    Without this, the next module to deploy a stack silently escapes the
+    parameter-name check — the way create_iam_resources did, and the way
+    build_parameters and seller_service did for longer (see the module docstring).
     """
+    tracked = _tracked_python_files()
+    # Non-vacuity: a broken enumeration would make "nothing unregistered" trivially
+    # true, which is the failure mode this whole module exists to catch.
+    assert len(tracked) > 100, (
+        f"only {len(tracked)} tracked .py files found under "
+        f"{DEPLOYER_SEARCH_ROOTS}; the enumeration is broken, and an empty walk "
+        "would pass this gate while checking nothing"
+    )
+
     unregistered = []
-    for path in sorted((REPO_ROOT / "scripts").rglob("*.py")):
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if "/tests/" in rel or path.name.startswith("test_"):
+    for rel in sorted(tracked):
+        if "/tests/" in rel or Path(rel).name.startswith("test_"):
             continue
         if rel in REGISTERED_FILES:
             continue
-        source = path.read_text()
-        if ".create_stack(" in source or ".update_stack(" in source:
+        source = (REPO_ROOT / rel).read_text()
+        if any(marker in source for marker in DEPLOY_CALL_MARKERS):
             unregistered.append(rel)
 
     assert not unregistered, (
-        "These scripts deploy a CloudFormation stack but are not in DEPLOYERS, so "
-        f"nothing checks that they supply the template's required parameters: "
+        "These modules deploy a CloudFormation stack but are not in DEPLOYERS, so "
+        f"nothing checks their parameter names against the template they target: "
         f"{unregistered}. Add an entry (see the comment on DEPLOYERS)."
+    )
+
+
+@pytest.mark.unit
+def test_build_parameters_emits_only_declared_parameters():
+    """``idp_sdk.build_parameters`` vs the root template's ``Parameters``.
+
+    The check the pre-existing tests for this function did not make. They asserted
+    the keys it produced — including ``EnableHITL``, which the root template stopped
+    declaring in v0.4.11 — so they passed on a parameter set CloudFormation rejects.
+    Calling the function and comparing its output against the template is stronger
+    than scraping the source, and it is the only reason a name removed from the
+    template can no longer sit in this function unnoticed.
+
+    Every optional argument is supplied so no branch is left unexercised, and
+    ``additional_params`` is deliberately NOT passed: those are the operator's own
+    ``--parameters key=value`` pass-through and are their responsibility, whereas
+    everything else here is a name this repository chose.
+    """
+    from idp_sdk._core.stack import build_parameters
+
+    supplied = build_parameters(
+        admin_email="admin@example.com",
+        max_concurrent=100,
+        log_level="INFO",
+        custom_config="s3://example-bucket/config.yaml",
+    )
+    declared = set(_template_parameters("template.yaml"))
+    assert len(declared) > 10, (
+        f"only {len(declared)} parameters parsed from template.yaml; a failed parse "
+        "would make the comparison below vacuous"
+    )
+    assert supplied, "build_parameters emitted nothing, so this check is vacuous"
+
+    unknown = set(supplied) - declared
+    assert not unknown, (
+        f"build_parameters passes {sorted(unknown)} to template.yaml, which does "
+        f'not declare it. CloudFormation rejects the call with "Parameters: '
+        f'{sorted(unknown)} do not exist in the template" and creates nothing.'
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("module", "unconditional"), RUNTIME_TEMPLATE_DEPLOYERS)
+def test_runtime_template_deployers_gate_their_submissions(
+    module: str, unconditional: tuple[str, ...]
+):
+    """A deployer with no in-tree template must gate submissions at runtime.
+
+    ``validate_template`` returns the target's declared ``Parameters``, so gating on
+    it is the runtime form of the static check the other entries get. Asserting the
+    call is present is what stops this category from becoming the place a deployer is
+    parked to escape the gate — the cheapest way to make a mismatch invisible is to
+    claim the template cannot be found.
+    """
+    source = (REPO_ROOT / module).read_text()
+    assert "validate_template(" in source, (
+        f"{module} deploys a template that does not exist in this tree, so the only "
+        "available check on its parameter names is cfn.validate_template() at "
+        "runtime — and it does not call it. Every submitted name would reach "
+        "CloudFormation unchecked."
+    )
+    for name in unconditional:
+        assert f'"{name}"' in source, (
+            f"{module} is registered as submitting {name} unconditionally, but that "
+            "name no longer appears in it. Update RUNTIME_TEMPLATE_DEPLOYERS, or the "
+            "template check below is guarding a parameter nobody sends."
+        )
+
+
+@pytest.mark.unit
+def test_feature_templates_declare_the_unconditional_parameters():
+    """`idp-feature-cli deploy` submits MainStackName + FeatureBucket without asking.
+
+    That is safe only while every template it can be pointed at declares them, which
+    was a claim in a comment and nothing more. The universe is derived from the
+    presence of a feature manifest — the thing that makes a directory publishable and
+    therefore deployable — so a new extension is covered the moment it is publishable,
+    and `main-stack-extensions` / `seller-entitlement-service` are correctly out of
+    scope because `deploy-feature` cannot target them.
+    """
+    unconditional = next(
+        p.values[1]
+        for p in RUNTIME_TEMPLATE_DEPLOYERS
+        if str(p.values[0]).endswith("idp_feature_sdk/cli.py")
+    )
+    assert unconditional, "no unconditional parameters registered; check is vacuous"
+
+    manifests = sorted(
+        path
+        for path in (REPO_ROOT / "feature-platform").glob(f"*/{FEATURE_MANIFEST}")
+        if (path.parent / "template.yaml").is_file()
+    )
+    assert len(manifests) >= 4, (
+        f"only {len(manifests)} publishable feature template(s) discovered under "
+        "feature-platform/; the derivation is broken and an empty universe would "
+        "pass this gate while checking nothing"
+    )
+
+    missing = {}
+    for manifest in manifests:
+        relative = manifest.parent.relative_to(REPO_ROOT).as_posix()
+        declared = set(_template_parameters(f"{relative}/template.yaml"))
+        absent = [name for name in unconditional if name not in declared]
+        if absent:
+            missing[relative] = absent
+
+    assert not missing, (
+        "`idp-feature-cli deploy` submits these parameters unconditionally, but "
+        f"these publishable feature templates do not declare them: {missing}. "
+        'CloudFormation would reject the deploy with "Parameters: [...] do not '
+        'exist in the template".'
     )

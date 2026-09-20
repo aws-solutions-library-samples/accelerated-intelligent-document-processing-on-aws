@@ -275,7 +275,11 @@ idp-cli deploy [OPTIONS]
 - `--custom-config`: Path to local config file or S3 URI
 - `--max-concurrent`: Maximum concurrent workflows (default: 100)
 - `--log-level`: Logging level (`DEBUG`, `INFO`, `WARN`, `ERROR`). No CLI default: omit it to take the template default (`WARN`) on a new stack, or to keep an existing stack's current value on an update. `INFO` and `DEBUG` can write presigned URLs, document contents and PII to CloudWatch — see [Monitoring](./monitoring.md#loglevel--what-warn-turns-off)
-- `--enable-hitl`: Enable Human-in-the-Loop (`true` or `false`)
+- `--enable-hitl`: **Deprecated and refused if `true`.** HITL is a configuration
+  setting rather than a stack parameter (the `EnableHITL` parameter was removed in
+  v0.4.11) — enable it in the Web UI under **Configuration → Assessment & HITL
+  Configuration**, or in the config YAML passed to `--custom-config`. The flag is
+  still accepted as `false` so existing scripts keep working.
 - `--parameters`: Additional parameters as `key=value,key2=value2`
 - `--tags`: Stack tags as `key=value,key2=value2`. CloudFormation applies these to the stack and propagates them to all taggable resources and nested stacks — useful for governance/ownership (e.g. `Owner`, `Team`, `Environment`). See [Resource tagging](#resource-tagging) below.
 - `--wait`: Wait for stack operation to complete

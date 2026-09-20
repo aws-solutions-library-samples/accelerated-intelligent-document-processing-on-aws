@@ -210,9 +210,9 @@ payload = {
 
 Pattern-1 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
 
-**Pattern-1 Specific Configuration:**
-- `EnableHITL`: Boolean parameter to enable/disable the HITL feature
-- `Pattern1 - Existing Private Workforce ARN`: Optional parameter to use existing private workforce
+**Pattern-1 Specific Configuration:** HITL is enabled through the configuration
+(Web UI **Configuration → Assessment & HITL Configuration**, or the config YAML),
+not a CloudFormation parameter — the `EnableHITL` parameter was removed in v0.4.11.
 
 For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md). 
 
