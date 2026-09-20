@@ -88,6 +88,33 @@ describe('publishing a version from the set detail page', () => {
     const [beforeCatch, afterCatch] = handler.split('} catch (err) {');
     expect(beforeCatch).toMatch(/publishAttemptToken\.current = null;/);
     expect(afterCatch).not.toMatch(/publishAttemptToken\.current = null;/);
+    // Dismissing abandons the attempt, so the next publish is a new one rather than a replay.
+    expect(DETAIL).toMatch(/const dismissPublishDialog = \(\) => \{[\s\S]*?publishAttemptToken\.current = null;/);
+    expect(DETAIL).toMatch(/onDismiss=\{dismissPublishDialog\}/);
+  });
+
+  /**
+   * A retry sends the same token, so it must not send *different* input — and must not
+   * report the input rather than the outcome.
+   *
+   * The dialog resets label, notes and the active-reference choice to their defaults every
+   * time it opens. Closing it on failure therefore had two consequences: a retry published
+   * with an empty label and the reference checkbox back on, which is not what the user chose;
+   * and the toast, built from the request, announced "made it this set's active reference"
+   * for a replay of a version published with that box cleared. Neither had happened.
+   */
+  it('keeps the dialog and its entries on failure, and reports the outcome not the request', () => {
+    const handler = DETAIL.slice(DETAIL.indexOf('const handlePublishVersion'), DETAIL.indexOf('const handleResetLabels'));
+    const [, afterCatch] = handler.split('} catch (err) {');
+    // The failure path leaves the dialog open, so the entries survive for the retry.
+    expect(afterCatch).not.toMatch(/setShowPublishModal\(false\)/);
+    expect(afterCatch).toMatch(/setPublishError\(/);
+    // And the error is shown inside the dialog, since a page alert behind a modal reaches
+    // nobody.
+    expect(DETAIL).toMatch(/error=\{publishError\}/);
+    // The message is derived from the response's own activeReference, not from the request.
+    expect(handler).toMatch(/published\.activeReference === published\.version/);
+    expect(handler).not.toMatch(/input\.setAsActiveReference\s*\n?\s*\?/);
   });
 
   it('gives the same account of publishing as the dialog does', () => {

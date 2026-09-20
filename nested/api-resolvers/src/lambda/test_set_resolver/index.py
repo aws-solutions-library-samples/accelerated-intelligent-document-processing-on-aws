@@ -160,21 +160,30 @@ _SNAPSHOT_CONCURRENCY = 16
 # http_api_dispatcher) so that it, rather than API Gateway's 29s clock, loses the race and
 # can return a labelled 504. Past 20s the caller has already been told the request failed
 # while this function keeps working — and publishing, unlike opening a draft, then leaves a
-# version behind that the caller does not know exists.
+# version behind that the caller does not know exists. (``clientToken`` is what stops the
+# retry that follows from creating a second one; the ceiling is what keeps the window rare.)
 #
 # Derived, not measured: at 16-way fan-out and a pessimistic 50ms per server-side copy,
 # N objects take N/16 x 0.05s, so 3000 is ~9.4s. The rest of the 20s absorbs a cold start,
-# the LIST pagination, the reservation, the version write and the pointer writes. If a real
-# set needs more than this, the lever is the fan-out above (with max_pool_connections to
-# match) or the asynchronous snapshot the refusal message names — not a larger ceiling at
-# this concurrency.
+# the LIST pagination, the reservation, the version write and the pointer writes.
+#
+# What that arithmetic omits is the cost most likely to bind, and the reason the figure stays
+# unverified: at MemorySize 256 this function has a fraction of a vCPU, and sixteen Python
+# threads share one GIL, so 3000 SigV4 signings and response parses are **client-side CPU**
+# rather than network latency the fan-out can hide. Measure before raising it. If a real set
+# needs more, the lever is memory — which buys CPU — or the asynchronous snapshot the refusal
+# message names, not a larger ceiling here.
+#
+# Note also that the refusal happens after the version number is reserved, so every attempt
+# on an oversize set spends a number. Harmless — gaps are by design — but visible.
 _SNAPSHOT_MAX_OBJECTS = 3000
 
 s3_config = Config(
     signature_version="s3v4",
     s3={"addressing_style": "path"},
-    # Two 16-worker pools share this client; the default pool of 10 would log
-    # "Connection pool is full" and serialize the rest.
+    # Several 16-worker pools share this client — the snapshot copy, the label harvest, the
+    # per-version snapshot probes — and the default pool of 10 would log "Connection pool is
+    # full" and serialize the rest.
     max_pool_connections=_SNAPSHOT_CONCURRENCY,
     **_S3_DATAPLANE_BOUNDS,
 )
@@ -847,6 +856,64 @@ def get_test_set_versions(args):
     return results
 
 
+def _publish_claim_key(test_set_id, client_token):
+    return {"PK": f"testset#{test_set_id}", "SK": f"publishclaim#{client_token}"}
+
+
+# A claim older than this cannot have a live owner: the resolver's own Timeout is 60s, so
+# anything past double that was killed mid-attempt and its token must not stay locked.
+_PUBLISH_CLAIM_STALE_SECONDS = 120
+
+
+def _claim_publish_attempt(test_set_id, client_token):
+    """Take ownership of one publish attempt, or return the claim that already owns it.
+
+    ``None`` means the caller owns the attempt and should proceed. Anything else is the
+    existing claim: with ``versionNumber`` if that attempt finished, without if it is still
+    running.
+
+    The conditional write is what makes this work while the first attempt is in flight. A
+    check against written version rows cannot: at the moment the dispatcher gives up, the
+    row does not exist yet.
+    """
+    key = _publish_claim_key(test_set_id, client_token)
+    claim = {
+        **key,
+        "ItemType": "testset_publish_claim",
+        "claimedAt": datetime.utcnow().isoformat() + "Z",
+    }
+    try:
+        db_client.put_item(claim, condition_expression="attribute_not_exists(SK)")
+        return None
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+    existing = db_client.get_item(key) or {}
+    if _as_int(existing.get("versionNumber")):
+        return existing
+
+    claimed_at = existing.get("claimedAt")
+    age = None
+    if claimed_at:
+        try:
+            age = (
+                datetime.utcnow()
+                - datetime.fromisoformat(str(claimed_at).rstrip("Z"))
+            ).total_seconds()
+        except ValueError:
+            age = None
+    if age is None or age > _PUBLISH_CLAIM_STALE_SECONDS:
+        logger.warning(
+            f"Taking over a stale publish claim on test set '{test_set_id}' "
+            f"(age {age}s); the attempt that made it cannot still be running"
+        )
+        db_client.put_item(claim)
+        return None
+
+    return existing
+
+
 def publish_test_set_version(args, event=None):
     """Freeze the current test-set state into a new immutable version.
 
@@ -864,13 +931,20 @@ def publish_test_set_version(args, event=None):
     Optionally (default true) set the new version as the active reference. The
     metadata pointer tracks latestVersion / publishedVersion / activeReference.
 
-    ``clientToken`` makes a retry safe. The dispatcher abandons the request at 20s while
-    this function runs on to its own Timeout, so a caller can be told the publish failed
-    after it in fact succeeded; publishing again would then create a second version and a
-    second full copy of the labels. A token already recorded on a version returns that
-    version instead. The lookup is not transactional, so two *concurrent* calls sharing a
-    token could still both proceed — but a retry after an error is sequential, which is the
-    case this exists for.
+    ``clientToken`` makes a retry safe, and has to do so while the first attempt is **still
+    running**. The dispatcher's 20s bound is a read timeout on its own invoke, not a
+    cancellation: at the 504 this function is still executing, up to its 60s Timeout, and
+    will go on to write the version row. So a caller can be told the publish failed and
+    retry while the work that will succeed is in flight, and a token compared against
+    already-written version rows would find nothing and publish a second version and a
+    second full copy of the labels.
+
+    The token is therefore **claimed** before any work, with a conditional write that only
+    one caller can win (``_claim_publish_attempt``). A retry that loses the race is told the
+    attempt is in progress; once the winner records its version number on the claim, a retry
+    gets that version back. A claim is released if the attempt fails, and one older than the
+    function could possibly still be running is taken over, so a killed attempt cannot lock
+    the token out.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -883,91 +957,126 @@ def publish_test_set_version(args, event=None):
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
 
-    if client_token:
-        for existing in _list_version_items(test_set_id):
-            if existing.get("clientToken") == client_token:
-                logger.info(
-                    f"Test set '{test_set_id}' already has a version for this client "
-                    f"token (v{existing.get('versionNumber')}); returning it rather than "
-                    "publishing again"
-                )
-                replay = _version_to_result(
-                    existing,
-                    has_stored_labels=_version_snapshot_exists(
-                        os.environ["TEST_SET_BUCKET"],
-                        test_set_id,
-                        _as_int(existing.get("versionNumber")),
-                    ),
-                )
-                replay["activeReference"] = _as_int(meta.get("activeReference"))
-                return replay
-
     if (_as_int(meta.get("fileCount")) or 0) <= 0:
         raise Exception(
             f"Test set '{test_set_id}' has no documents; add documents before "
             "publishing a version"
         )
 
-    # Reserve the version number with an atomic ADD before writing the version
-    # item. Deriving it from the read above would be a read-modify-write race in
-    # which two concurrent publishes both write version N+1, the second
-    # overwriting the first's "immutable" version. attribute_exists(PK) stops
-    # update_item upserting metadata for a set deleted since the read.
-    tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
+    if client_token:
+        held_by_other = _claim_publish_attempt(test_set_id, client_token)
+        if held_by_other is not None:
+            landed = _as_int(held_by_other.get("versionNumber"))
+            if not landed:
+                # In flight. Publishing now would duplicate the work the other attempt is
+                # about to finish, which is the whole failure this token exists to prevent.
+                raise Exception(
+                    f"A publish of test set '{test_set_id}' for this attempt is already "
+                    "running. It may still succeed — wait for it to finish rather than "
+                    "publishing again."
+                )
+            existing = db_client.get_item(
+                {"PK": f"testset#{test_set_id}", "SK": _version_sk(landed)}
+            )
+            if existing:
+                logger.info(
+                    f"Test set '{test_set_id}' already has version {landed} for this client "
+                    "token; returning it rather than publishing again"
+                )
+                replay = _version_to_result(
+                    existing,
+                    has_stored_labels=_version_snapshot_exists(
+                        os.environ["TEST_SET_BUCKET"], test_set_id, landed
+                    ),
+                )
+                replay["activeReference"] = _as_int(meta.get("activeReference"))
+                return replay
+            # The claim names a version whose row is gone. Nothing to replay, so fall
+            # through and publish rather than refusing forever.
+            logger.warning(
+                f"Test set '{test_set_id}' claim names version {landed}, which no longer "
+                "exists; publishing a new one"
+            )
+
+    # Everything from here to the version row is the work a claim covers. A failure
+    # releases the claim, so a retry can attempt the publish again instead of being told
+    # forever that one is in progress; the reserved number stays spent, which is the same
+    # numbering gap a failed version write already leaves.
     try:
-        reserve = tracking_table.update_item(
-            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-            UpdateExpression="ADD latestVersion :one",
-            ExpressionAttributeValues={":one": 1},
-            ConditionExpression="attribute_exists(PK)",
-            ReturnValues="UPDATED_NEW",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            raise Exception(f"Test set '{test_set_id}' not found")
-        raise
-    next_version = int(reserve["Attributes"]["latestVersion"])
-
-    # Copy the labels this version names, before the row that names them exists. A
-    # failure here leaves the reserved number unused — the same numbering gap a failed
-    # version write leaves — rather than a published version pointing at no bytes.
-    snapshot_count = _snapshot_baselines(
-        os.environ["TEST_SET_BUCKET"], test_set_id, next_version
-    )
-
-    now = datetime.utcnow().isoformat() + "Z"
-    created_by = None
-    if event:
+        # Reserve the version number with an atomic ADD before writing the version
+        # item. Deriving it from the read above would be a read-modify-write race in
+        # which two concurrent publishes both write version N+1, the second
+        # overwriting the first's "immutable" version. attribute_exists(PK) stops
+        # update_item upserting metadata for a set deleted since the read.
+        tracking_table = boto3.resource("dynamodb").Table(os.environ["TRACKING_TABLE"])
         try:
-            created_by = event.get("identity", {}).get("claims", {}).get("email")
-        except Exception:
-            created_by = None
+            reserve = tracking_table.update_item(
+                Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+                UpdateExpression="ADD latestVersion :one",
+                ExpressionAttributeValues={":one": 1},
+                ConditionExpression="attribute_exists(PK)",
+                ReturnValues="UPDATED_NEW",
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise Exception(f"Test set '{test_set_id}' not found")
+            raise
+        next_version = int(reserve["Attributes"]["latestVersion"])
 
-    version_item = {
-        "PK": f"testset#{test_set_id}",
-        "SK": _version_sk(next_version),
-        "ItemType": "testset_version",
-        "testSetId": test_set_id,
-        "versionNumber": next_version,
-        "label": label or f"v{next_version}",
-        "notes": notes or "",
-        "source": meta.get("source"),
-        "fileCount": meta.get("fileCount"),
-        # The configuration the set's labels were produced under (#759): the
-        # bound field was never written, so this used to be always null.
-        "configVersion": _resolve_set_config_version(test_set_id, meta)[0],
-        # What was copied, recorded on the row so "is this version's content actually
-        # frozen?" is answerable without listing S3. A row missing this attribute was
-        # published before publishing copied anything.
-        "snapshotObjectCount": snapshot_count,
-        # Recorded so a retry of this same publish returns this version instead of making
-        # another one. Absent when the caller supplied no token.
-        **({"clientToken": client_token} if client_token else {}),
-        "createdAt": now,
-        "createdBy": created_by,
-    }
-    # Versions are immutable, even if the counter were rewound by hand.
-    db_client.put_item(version_item, condition_expression="attribute_not_exists(SK)")
+        # Copy the labels this version names, before the row that names them exists. A
+        # failure here leaves the reserved number unused — the same numbering gap a failed
+        # version write leaves — rather than a published version pointing at no bytes.
+        snapshot_count = _snapshot_baselines(
+            os.environ["TEST_SET_BUCKET"], test_set_id, next_version
+        )
+
+        now = datetime.utcnow().isoformat() + "Z"
+        created_by = None
+        if event:
+            try:
+                created_by = event.get("identity", {}).get("claims", {}).get("email")
+            except Exception:
+                created_by = None
+
+        version_item = {
+            "PK": f"testset#{test_set_id}",
+            "SK": _version_sk(next_version),
+            "ItemType": "testset_version",
+            "testSetId": test_set_id,
+            "versionNumber": next_version,
+            "label": label or f"v{next_version}",
+            "notes": notes or "",
+            "source": meta.get("source"),
+            "fileCount": meta.get("fileCount"),
+            # The configuration the set's labels were produced under (#759): the
+            # bound field was never written, so this used to be always null.
+            "configVersion": _resolve_set_config_version(test_set_id, meta)[0],
+            # What was copied, recorded on the row so "is this version's content actually
+            # frozen?" is answerable without listing S3. A row missing this attribute was
+            # published before publishing copied anything.
+            "snapshotObjectCount": snapshot_count,
+            # Recorded so a retry of this same publish returns this version instead of making
+            # another one. Absent when the caller supplied no token.
+            **({"clientToken": client_token} if client_token else {}),
+            "createdAt": now,
+            "createdBy": created_by,
+        }
+        # Versions are immutable, even if the counter were rewound by hand.
+        db_client.put_item(version_item, condition_expression="attribute_not_exists(SK)")
+    except Exception:
+        if client_token:
+            db_client.delete_item(_publish_claim_key(test_set_id, client_token))
+        raise
+
+    # The claim now names the version it produced, so a retry replays it rather than being
+    # told an attempt is running.
+    if client_token:
+        db_client.update_item(
+            key=_publish_claim_key(test_set_id, client_token),
+            update_expression="SET versionNumber = :v",
+            expression_attribute_values={":v": next_version},
+        )
+
 
     # Pointers are advanced only after the version item exists, so a failed version
     # write leaves a numbering gap rather than a pointer to a missing version, and

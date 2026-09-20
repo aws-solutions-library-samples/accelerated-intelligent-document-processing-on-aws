@@ -806,15 +806,19 @@ every document to be reviewed; unreviewed fields keep their machine labels and r
 flagged as such, which supports time-boxed "first pass" golden sets.
 
 The copy is what makes publishing take a moment on a large set, and it has a ceiling of
-3000 baseline objects — roughly what fits the request budget the UI's API gateway allows.
-A set above that is **refused**, with that as the reason, rather than recorded as a version
-whose content was never captured. Publishing such a set needs an asynchronous snapshot,
-which is not available yet.
+3000 baseline objects — what fits the 20-second budget the API's request dispatcher allows a
+single resolver call, which is deliberately shorter than the gateway's own timeout so that a
+slow call comes back as a labelled error rather than a bare one. A set above that is
+**refused**, with that as the reason, rather than recorded as a version whose content was
+never captured. Publishing such a set needs an asynchronous snapshot, which is not available
+yet.
 
-Retrying a publish that reported an error is safe. The copy can outlast the request budget,
-so a failure message does not always mean nothing happened; a retry from the same dialog
-returns the version the first attempt created, if it created one, instead of making a second
-version and a second copy.
+Retrying a publish that reported an error is safe, and the dialog stays open holding what you
+entered so that retrying is the obvious thing to do. The copy can outlast that budget, so a
+failure message does not always mean nothing happened: the retry either returns the version
+the first attempt created, or tells you that attempt is still running and to wait for it. It
+will not create a second version or a second copy. Closing the dialog ends the attempt, so
+publishing afterwards starts a new one.
 
 ⚠️ **A version published before 0.6.10 has no such copy.** Its number refers to whatever
 the set's labels were when annotation was next started on it, which is not necessarily the

@@ -55,6 +55,13 @@ interface PublishVersionModalProps {
    */
   latestVersion: number | null;
   submitting: boolean;
+  /**
+   * A failed publish, shown here rather than on the page behind. The dialog stays open on
+   * failure so a retry keeps the label, notes and active-reference choice the user entered —
+   * a retry carries the same client token, so sending different input would publish, or
+   * report, something they did not choose.
+   */
+  error?: string | null;
   onDismiss: () => void;
   onConfirm: (input: PublishVersionInput) => void;
 }
@@ -65,6 +72,7 @@ const PublishVersionModal = ({
   documentCount,
   latestVersion,
   submitting,
+  error = null,
   onDismiss,
   onConfirm,
 }: PublishVersionModalProps): React.JSX.Element => {
@@ -108,6 +116,12 @@ const PublishVersionModal = ({
       }
     >
       <SpaceBetween size="m">
+        {error && (
+          <Alert type="error" header="Could not publish a version">
+            {error} Your entries are kept — publishing again retries the same attempt rather than creating a second version.
+          </Alert>
+        )}
+
         <Box>
           Records a numbered version of {documentCount === null ? 'this test set' : `this test set's ${documentCount} document(s)`} and
           copies the ground truth they currently carry, so a test run can name the state of the labels it was scored against. Later

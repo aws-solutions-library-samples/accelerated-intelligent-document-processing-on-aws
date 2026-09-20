@@ -406,6 +406,11 @@ const TestSetDetail = (): React.JSX.Element => {
   const { isAdmin, canWrite } = useUserRole();
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
+  /**
+   * A publish failure, shown inside the dialog rather than on the page. The dialog stays
+   * open so a retry keeps the user's inputs, and an error behind a modal reaches nobody.
+   */
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [publishedMessage, setPublishedMessage] = useState<string | null>(null);
   /**
    * Highest version this set has published, for the publish dialog. Read when the
@@ -606,11 +611,20 @@ const TestSetDetail = (): React.JSX.Element => {
    *
    * Publishing copies the set's labels, and the dispatcher gives up at 20s while the
    * resolver runs on — so an error here does not mean nothing happened. Retrying under the
-   * same token returns the version the first try created, if it created one, instead of
-   * making a second version and a second full copy. Retired on success, so the next publish
-   * is a new attempt.
+   * same token replays the version the first try created, or is told that try is still
+   * running, instead of making a second version and a second full copy. Retired on success
+   * and on dismissal, so a deliberate second publish is a new attempt.
    */
   const publishAttemptToken = useRef<string | null>(null);
+
+  const dismissPublishDialog = () => {
+    // Closing the dialog abandons the attempt, so the token goes with it. Keeping it would
+    // make the next, deliberate publish replay this one's version instead of creating a new
+    // version.
+    publishAttemptToken.current = null;
+    setPublishError(null);
+    setShowPublishModal(false);
+  };
 
   const handlePublishVersion = async (input: PublishVersionInput) => {
     if (!testSetId) return;
@@ -618,6 +632,7 @@ const TestSetDetail = (): React.JSX.Element => {
       publishAttemptToken.current = globalThis.crypto?.randomUUID?.() ?? `publish-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
     setIsPublishing(true);
+    setPublishError(null);
     setError(null);
     try {
       const response = await client.graphql({
@@ -627,15 +642,23 @@ const TestSetDetail = (): React.JSX.Element => {
       const published = response.data?.publishTestSetVersion;
       publishAttemptToken.current = null;
       setShowPublishModal(false);
+      // Read from the response, not from `input`: a retry replays whatever the first try
+      // published, which may have made a different choice about the active reference — and
+      // the dialog's own inputs reset to their defaults each time it opens. Reporting the
+      // request would announce a pointer move that never happened.
+      const movedReference = published?.version != null && published.activeReference === published.version;
       setPublishedMessage(
-        input.setAsActiveReference
+        movedReference
           ? `Published version ${published?.version ?? ''} and made it this set's active reference.`
           : `Published version ${published?.version ?? ''}. The set's active reference is unchanged.`,
       );
     } catch (err) {
       logger.error('Error publishing test set version:', err);
-      setShowPublishModal(false);
-      setError(`Could not publish a version: ${getErrorMessage(err)}`);
+      // The dialog stays open, holding the label, notes and active-reference choice the user
+      // entered, so a retry sends the same token *and* the same input. Closing it would
+      // reset those to their defaults, and the retry would publish something the user never
+      // chose if the first try had genuinely failed.
+      setPublishError(getErrorMessage(err));
     } finally {
       setIsPublishing(false);
     }
@@ -1135,7 +1158,8 @@ const TestSetDetail = (): React.JSX.Element => {
               documentCount={totalCount}
               latestVersion={latestVersion}
               submitting={isPublishing}
-              onDismiss={() => setShowPublishModal(false)}
+              error={publishError}
+              onDismiss={dismissPublishDialog}
               onConfirm={handlePublishVersion}
             />
 

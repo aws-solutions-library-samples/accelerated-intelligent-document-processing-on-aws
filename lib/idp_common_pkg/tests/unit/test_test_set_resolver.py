@@ -3556,6 +3556,83 @@ class TestTestSetResolver:
             for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
         ] == [1]
 
+    def test_a_retry_while_the_first_attempt_is_still_running_is_refused(
+        self, labeling_env
+    ):
+        """The failure the token exists for, and the one a lookup against written version
+        rows cannot cover.
+
+        The dispatcher's 20s bound is a read timeout on its own invoke, not a cancellation:
+        at the 504 the resolver is still executing, up to its 60s Timeout, and has not
+        written its version row yet. So the retry arrives while the work that will succeed
+        is in flight. Comparing the token against existing versions finds nothing and
+        publishes a second version and a second full copy.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        # The claim the in-flight attempt holds: taken, no version recorded yet.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+
+        with pytest.raises(Exception, match="already\\s+running"):
+            test_set_index.publish_test_set_version(
+                {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+            )
+
+        assert test_set_index.get_test_set_versions({"testSetId": "ts1"}) == []
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
+
+    def test_a_failed_attempt_releases_its_claim_so_a_retry_can_publish(
+        self, labeling_env, monkeypatch
+    ):
+        """Otherwise a token whose first attempt died is locked out forever, and the dialog
+        can only ever report the same refusal."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 0)
+
+        with pytest.raises(Exception, match="more than the 0"):
+            test_set_index.publish_test_set_version(
+                {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+            )
+        assert "Item" not in table.get_item(
+            Key={"PK": "testset#ts1", "SK": "publishclaim#tok-1"}
+        )
+
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 6000)
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["snapshotObjectCount"] == 1
+
+    def test_a_claim_older_than_the_function_can_live_is_taken_over(self, labeling_env):
+        """A killed attempt leaves a claim nothing will ever complete or release. The
+        resolver's Timeout is 60s, so a claim past double that cannot have a live owner."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        stale = datetime.utcnow() - timedelta(seconds=600)
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "publishclaim#tok-1",
+                "ItemType": "testset_publish_claim",
+                "claimedAt": stale.isoformat() + "Z",
+            }
+        )
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert result["version"] == 1
+
     def test_publishing_without_a_token_still_publishes_every_time(self, labeling_env):
         # Two deliberate publishes are two versions; the token is opt-in and its absence
         # must not dedupe anything.
