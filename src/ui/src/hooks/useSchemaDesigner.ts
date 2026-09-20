@@ -126,9 +126,11 @@ const extractInlineObjectsToClasses = (
         },
       });
 
-      // Replace inline object with $ref
-      // Keep type: 'object' for UI purposes, but remove properties and required
-      const { properties: _props, required: _required, ...otherProps } = propSchema;
+      // Replace the inline object with a reference to the class just extracted.
+      // `type`, `properties` and `required` all described the inline object and now
+      // live on the `$defs` entry, so the referencing node keeps none of them — the
+      // same shape both reference-picking routes in the UI write (#957).
+      const { type: _type, properties: _props, required: _required, ...otherProps } = propSchema;
       updatedProperties[propName] = {
         ...otherProps,
         $ref: `#/$defs/${className}`,

@@ -40,7 +40,9 @@ export const resolveAttributeType = (
 ): string | undefined => {
   if (!attribute) return undefined;
   // A sibling `type` wins, as `$ref` composition works in draft 2020-12 and as
-  // the inspector's Type dropdown already assumes.
+  // the inspector's Type dropdown already assumes. The designer itself never
+  // writes that pair — `refAttributeUpdates` below clears `type` — so it only
+  // arrives here from a hand-edited or older saved schema.
   if (typeof attribute.type === 'string' && attribute.type) return attribute.type;
 
   const ref = attribute.$ref;
@@ -57,6 +59,40 @@ export const resolveAttributeType = (
   const nested = (target.attributes as { type?: unknown } | undefined)?.type;
   const declared = typeof nested === 'string' ? nested : target.type;
   return typeof declared === 'string' && declared ? declared : TYPE_OBJECT;
+};
+
+/**
+ * Keywords that describe an object defined *inline* and so must not sit beside a
+ * `$ref`, which delegates the whole type designation to the referenced `$defs`
+ * entry.
+ *
+ * `type` is in this list. A `$ref` with a sibling `type: 'object'` is legal draft
+ * 2020-12 — both keywords apply — and redundant for every target the designer can
+ * hold, since it writes every `$defs` entry as an object. What it costs is that a
+ * node carrying it reads back differently from one without: `resolveAttributeType`
+ * above prefers a sibling `type` over following the pointer, so the same attribute
+ * answers differently depending on which route created it. Were a `$ref` to a
+ * non-object definition ever to appear, the sibling would also be contradictory
+ * rather than merely redundant.
+ */
+const INLINE_OBJECT_KEYWORDS = ['type', 'properties', 'required', 'minProperties', 'maxProperties', 'additionalProperties'] as const;
+
+/**
+ * The partial update that turns a property into a reference to a shared class.
+ *
+ * Every route that lets a user pick a reference class writes this one shape — the
+ * Add Attribute modal and the inspector's "Reference Existing Class" picker — so
+ * the same user-visible action produces the same JSON whichever way it is
+ * reached (GitHub #957). Cleared keys are set to `undefined` rather than omitted
+ * because `updateAttribute` treats an `undefined` value as "delete this key" and
+ * an absent key as "leave it alone".
+ */
+export const refAttributeUpdates = (ref: string): Record<string, unknown> => {
+  const updates: Record<string, unknown> = { $ref: ref };
+  INLINE_OBJECT_KEYWORDS.forEach((keyword) => {
+    updates[keyword] = undefined;
+  });
+  return updates;
 };
 
 const typeColorCache = new Map<string, string>();
@@ -78,6 +114,17 @@ export const sanitizeAttribute = (attr: unknown): unknown => {
   const cleaned: Record<string, unknown> = { ...(attr as Record<string, unknown>) };
   delete cleaned.id;
   delete cleaned.name;
+
+  // A `$ref` delegates the type designation to the referenced `$defs` entry, so
+  // the keywords describing an inline object go with it. Mirrors
+  // `sanitizeAttributeSchema` in `useSchemaDesigner`, which is what the live
+  // export path runs; a node that picked up a stray `type` (an older saved
+  // schema, or a hand edit) is normalized by either.
+  if (cleaned.$ref) {
+    delete cleaned.type;
+    delete cleaned.properties;
+    delete cleaned.required;
+  }
 
   if (cleaned.items) {
     cleaned.items = sanitizeAttribute(cleaned.items);

@@ -14,11 +14,12 @@ import { AttributeLike, ClassLike, resolveAttributeType } from './schemaHelpers'
  * not be given an evaluation method from the UI at all, with nothing on screen
  * saying why (GitHub #906).
  *
- * That shape is not exotic. The builder's own "add attribute referencing an
- * existing class" path (`SchemaBuilder.tsx`) writes `$ref` and clears `type`,
- * while the inspector's "Reference Existing Class" picker keeps `type: 'object'`
- * beside it — so two routes to the same field disagreed, which is what made the
- * bug look intermittent.
+ * That shape is not exotic — it is the only one the designer writes. Every route
+ * that turns a property into a reference emits a bare `$ref` with no sibling
+ * `type`: the Add Attribute modal, the inspector's "Reference Existing Class"
+ * picker, and the importer's inline-object extraction all go through
+ * `refAttributeUpdates` or drop `type` explicitly (GitHub #957). So resolving the
+ * pointer is the only way to know a `$ref` property's type.
  *
  * The backend was never affected: Stickler's `JsonSchemaFieldConverter` resolves
  * `$ref` natively, so a method set by hand-editing the schema JSON is honored at
