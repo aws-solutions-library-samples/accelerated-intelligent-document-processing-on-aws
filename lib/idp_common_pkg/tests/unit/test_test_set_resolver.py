@@ -9,7 +9,10 @@ from unittest.mock import MagicMock, Mock, patch
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
+
+from idp_common.dynamodb.client import DynamoDBError
 
 # Mock environment variables and dependencies before importing.
 #
@@ -136,7 +139,21 @@ def _db_client_on(table):
         kwargs = {"Item": item}
         if condition_expression:
             kwargs["ConditionExpression"] = condition_expression
-        return table.put_item(**kwargs)
+        try:
+            return table.put_item(**kwargs)
+        except ClientError as exc:
+            # Raise what the REAL client raises. `idp_common.dynamodb.DynamoDBClient`
+            # translates botocore's ClientError into DynamoDBError carrying
+            # `.error_code`; a double that lets moto's ClientError through lets the
+            # resolver catch an exception the deployed artifact never produces.
+            #
+            # That is not hypothetical: it hid a live 500 on every retried publish
+            # through four review rounds. The offline suite was green because this
+            # fixture raised the type the code caught.
+            raise DynamoDBError(
+                f"Put item failed: {exc.response['Error']['Message']}",
+                exc.response["Error"]["Code"],
+            ) from exc
 
     def _update_item(
         key,

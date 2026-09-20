@@ -11,6 +11,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from idp_common.dynamodb import DynamoDBClient  # type: ignore
+from idp_common.dynamodb.client import DynamoDBError  # type: ignore
 from idp_common.evaluation.confidence_curve import (  # type: ignore
     DEFAULT_FIELDS_PER_DOC,
     DEFAULT_PAGES_PER_DOC,
@@ -995,7 +996,19 @@ def _claim_publish_attempt(test_set_id, client_token):
     try:
         db_client.put_item(claim, condition_expression="attribute_not_exists(SK)")
         return None, claim["claimedAt"]
+    except DynamoDBError as e:
+        # `db_client` is idp_common's DynamoDBClient, which TRANSLATES botocore's
+        # ClientError into DynamoDBError carrying `.error_code`. Catching ClientError
+        # here therefore caught nothing the deployed artifact raises, so every branch
+        # below — the version replay, the stale-claim takeover, the "already running"
+        # refusal — was unreachable whenever a claim existed, and a retry got a 500.
+        # The offline suite could not see it: the fixture substituted put_item with a
+        # direct moto call, which raises the ClientError this used to catch.
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
     except ClientError as e:
+        # Kept for a caller that passes a raw boto3 table, as the takeover and release
+        # helpers below do.
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
 
