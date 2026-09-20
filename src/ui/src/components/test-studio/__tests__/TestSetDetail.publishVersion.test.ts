@@ -38,20 +38,43 @@ describe('publishing a version from the set detail page', () => {
     expect(DETAIL).toMatch(/query: publishTestSetVersion/);
   });
 
-  it('does not tell the user the active reference decides what runs score against', () => {
-    // It does not: `test_runner` never reads `activeReference`, and the runner's
-    // version picker defaults to the set's current labels. Saying otherwise at the
-    // moment someone decides whether to move the pointer is the worst place to be
-    // wrong, so the claim is pinned out of the dialog and the docs.
+  /**
+   * The dialog and the docs tell the user what moving the active reference does, at
+   * the moment they choose whether to move it, so a wrong description here is more
+   * costly than anywhere else and the wording is pinned.
+   *
+   * The behaviour behind it is guarded where it lives, in
+   * `lib/idp_common_pkg/tests/unit/test_test_runner_rbac.py`:
+   * `test_scores_current_labels_by_default_not_the_active_reference` seeds
+   * `activeReference: 2` and asserts current labels are used anyway. Nothing here
+   * asserts against `TestRunner.tsx` — the default lives in the backend runner,
+   * which that file would never mention, so such a check would keep passing if the
+   * default moved, and would fail on a version dropdown that merely *labelled* the
+   * pinned option "active reference", which would still be true copy.
+   */
+  it('describes the active reference in the dialog and the docs without the scoring claim', () => {
     const MODAL = readFileSync(join(HERE, 'PublishVersionModal.tsx'), 'utf-8');
-    const RUNNER = readFileSync(join(HERE, 'TestRunner.tsx'), 'utf-8');
     const DOC = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'docs', 'test-studio.md'), 'utf-8');
     expect(MODAL).toMatch(/does not decide what a test run is scored against/);
     expect(MODAL).not.toMatch(/active reference is the baseline/);
     expect(DOC).toMatch(/active reference does not decide what a test run is scored against/);
+    // The section's framing metaphor, well above that note, carried the same claim —
+    // so the positive assertion passed while the page contradicted itself.
+    expect(DOC).not.toMatch(/the tag that scoring\s+follows/);
 
-    // The claim's truth condition: the runner does not consult the pointer at all.
-    expect(RUNNER).not.toMatch(/activeReference/);
+    // The second published page carries the same correction and was otherwise
+    // unpinned, so it could drift back on its own.
+    const SETUP_DOC = readFileSync(join(HERE, '..', '..', '..', '..', '..', 'docs', 'creating-custom-test-sets.md'), 'utf-8');
+    expect(SETUP_DOC).toMatch(/which version a run is scored against is chosen in the runner/);
+    expect(SETUP_DOC).not.toMatch(/so every subsequent test run records which/);
+  });
+
+  it('keeps the freeze language out of the control as well as the dialog', () => {
+    // Publishing writes a DynamoDB row and copies no baseline bytes, so the hover
+    // text on the disabled control may not promise what the dialog no longer does.
+    expect(DETAIL).not.toMatch(/freezes the labels/);
+    expect(DETAIL).not.toMatch(/freezing a version/);
+    expect(DETAIL).toMatch(/records the labels as they stand/);
   });
 
   it('will not publish an empty set, one mid-labelling, or one still being written', () => {
@@ -62,11 +85,23 @@ describe('publishing a version from the set detail page', () => {
     expect(reason).toMatch(/labelJob\?\.status === 'RUNNING'/);
     expect(reason).toMatch(/totalCount === 0/);
     expect(reason).toMatch(/setStatus !== 'COMPLETED'/);
-    expect(DETAIL).toMatch(/disabled=\{isLoading \|\| publishBlockedReason !== null\}/);
+    // A set still being copied into has no documents yet, and "still copying" is the
+    // more useful of the two true statements, so the status branch comes first.
+    expect(reason.indexOf('COMPLETED')).toBeLessThan(reason.indexOf('totalCount === 0'));
   });
 
-  it('states the reason rather than only disabling', () => {
-    expect(DETAIL).toMatch(/title=\{publishBlockedReason \?\? undefined\}/);
+  it('gives a reason for every condition that dims the control, including the transient one', () => {
+    // `disabledReason` and not a wrapper's `title`: a disabled button is not
+    // focusable, so an ancestor tooltip is announced to nobody.
+    expect(DETAIL).toMatch(/disabledReason=\{publishBlockedReason \?\? undefined\}/);
+    expect(DETAIL).not.toMatch(/<span title=\{publishBlockedReason/);
+    // Every branch of the reason is a string, so nothing dims without explanation.
+    expect(DETAIL).toMatch(/disabled=\{publishBlockedReason !== null\}/);
+    const reason = DETAIL.slice(DETAIL.indexOf('const publishBlockedReason ='), DETAIL.indexOf('const hasConfidence ='));
+    expect(reason).toMatch(/isLoading\s*\n?\s*\? 'Loading this test set'/);
+    // FAILED is terminal, so it gets its own sentence rather than "wait".
+    expect(reason).toMatch(/setStatus === 'FAILED'/);
+    expect(reason).toMatch(/nothing settled to record/);
   });
 
   it('does not read a failed document load as an empty set', () => {
@@ -80,6 +115,17 @@ describe('publishing a version from the set detail page', () => {
     expect(DETAIL).toMatch(/setSetStatus\(page\?\.status \?\? null\)/);
     const docsQuery = readFileSync(join(HERE, '..', '..', 'graphql', 'operations', 'queries', 'GetTestSetDocuments.graphql'), 'utf-8');
     expect(docsQuery).toMatch(/^\s+status$/m);
+
+    // The client guard permits an absent status — it must, since the field is unknown
+    // until the first read returns — so it fails open, and the resolver returning the
+    // field is what makes it bite. Asserted there, since nothing on this side can:
+    // `test_test_set_resolver.py::test_documents_page_carries_the_sets_own_status`.
+    const RESOLVER_TESTS = readFileSync(
+      join(HERE, '..', '..', '..', '..', '..', 'lib', 'idp_common_pkg', 'tests', 'unit', 'test_test_set_resolver.py'),
+      'utf-8',
+    );
+    expect(RESOLVER_TESTS).toMatch(/def test_documents_page_carries_the_sets_own_status/);
+    expect(RESOLVER_TESTS).toMatch(/assert page\["status"\] == "COPYING"/);
   });
 
   it('reads the existing versions only when the dialog opens', () => {

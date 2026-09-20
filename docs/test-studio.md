@@ -776,10 +776,11 @@ Each test set records where its documents came from, shown as a **Source** colum
 ## Versioning test sets
 
 A test set is a **versioned benchmark object**, not just a folder of files. It
-has one mutable working draft plus zero or more immutable published versions —
-the same model as a version-control system: the draft is the working tree,
-publishing is a commit, and the *active reference* is the tag that scoring
-follows.
+has one mutable working draft plus zero or more published versions — the same
+model as a version-control system: the draft is the working tree, publishing is
+a commit, and the *active reference* is a tag naming one of those commits. Which
+version a test run is scored against is chosen per run, not taken from the tag —
+see the note under [Publishing a version](#publishing-a-version).
 
 ### Publishing a version
 

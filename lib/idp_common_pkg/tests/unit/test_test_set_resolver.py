@@ -4786,6 +4786,37 @@ class TestTestSetResolver:
         page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
         assert page["activeLabelJobId"] == "run9"
 
+    def test_documents_page_carries_the_sets_own_status(self, labeling_env):
+        """The set's page has no other source for its status.
+
+        There is no per-set query, and getTestSets is Admin-or-Author (the page is
+        reachable by an Annotator) and repairs stale state as a side effect, so it
+        cannot go on a page load. The Publish version control reads this field to
+        refuse a set whose contents are still being written, and its client-side
+        check permits an absent status — it has to, since the field is unknown until
+        this call returns. So dropping the field here silently re-enables publishing
+        mid-copy with every UI test still green: this is what stops that.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1, status="COPYING")
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        assert page["status"] == "COPYING"
+
+    def test_documents_page_status_is_present_even_when_the_row_has_none(
+        self, labeling_env
+    ):
+        """A row written before the field existed reports None, not a missing key,
+        so a caller can tell "no status recorded" from "this build dropped it"."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        page = test_set_index.get_test_set_documents({"testSetId": "ts1"})
+        assert "status" in page
+        assert page["status"] is None
+
     def test_the_annotation_queue_carries_the_class_through(self, labeling_env):
         """End to end: the queue is a different resolver from the documents page,
         so the field has to survive that hop too. Pinned because the value is

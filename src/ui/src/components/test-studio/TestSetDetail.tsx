@@ -755,25 +755,36 @@ const TestSetDetail = (): React.JSX.Element => {
   const filteredDocs = filterText ? documents.filter((d) => d.objectKey.toLowerCase().includes(filterText.toLowerCase())) : documents;
 
   /**
-   * Why a version cannot be published right now, or `null` when it can.
+   * Why a version cannot be published right now, or `null` when it can. Passed to the
+   * button as `disabledReason`, so every condition that dims the control also says
+   * why — including the transient one, since a control that is dim for a reason it
+   * does not give is the outcome this is meant to avoid.
    *
-   * Doubles as the control's tooltip: a disabled button with no stated reason is
-   * the worst of both outcomes. Publishing freezes the labels as they stand, so the
-   * conditions are about whether the set is settled — not about permission, which is
-   * a separate check on the control itself.
+   * A version records the labels as they stand, so the conditions are about whether
+   * the set has settled. Permission is a separate check on the control itself.
    *
-   * `totalCount` is also `null` when the document read failed, which is not the same
-   * as an empty set; checking it alone would leave the control live on a page showing
-   * a load error and no documents.
+   * The status branch comes before the empty check because a set still being copied
+   * into has no documents *yet*, and "still copying" is the more useful of the two
+   * true statements. `totalCount` is also `null` when the document read failed, which
+   * is not the same as an empty set: checking it alone would leave the control live on
+   * a page showing a load error and no documents.
+   *
+   * ⚠️ `null` status does not block. It has to be permitted — the field is unknown
+   * until the first documents read returns — so this guard fails open by
+   * construction, and the resolver returning `status` is what makes it bite. That is
+   * asserted in `test_test_set_resolver.py`, not here.
    */
-  const publishBlockedReason =
-    labelJob?.status === 'RUNNING'
-      ? 'Wait for draft labeling to finish: a version freezes the labels as they stand'
-      : totalCount === 0 || (totalCount === null && documents.length === 0)
-        ? 'This test set has no documents to publish'
+  const publishBlockedReason = isLoading
+    ? 'Loading this test set'
+    : labelJob?.status === 'RUNNING'
+      ? 'Wait for draft labeling to finish, so the version records a settled set of labels'
+      : setStatus === 'FAILED'
+        ? 'This test set failed to build, so there is nothing settled to record'
         : setStatus && setStatus !== 'COMPLETED'
-          ? `This test set is ${setStatus.toLowerCase()}. Wait for it to settle before freezing a version.`
-          : null;
+          ? `This test set is ${setStatus.toLowerCase()}. Wait for it to finish before recording a version.`
+          : totalCount === 0 || (totalCount === null && documents.length === 0)
+            ? 'This test set has no documents to publish'
+            : null;
 
   const hasConfidence = documents.some((d) => d.minConfidence !== null && d.minConfidence !== undefined);
   // Sorts the current page only: pagination is server-side and opaque, so a
@@ -814,11 +825,18 @@ const TestSetDetail = (): React.JSX.Element => {
                   // rather than on the table page because publishing completes the
                   // pass that Generate draft labels and Annotate below begin.
                   canWrite ? (
-                    <span title={publishBlockedReason ?? undefined}>
-                      <Button onClick={openPublishDialog} disabled={isLoading || publishBlockedReason !== null} loading={isPublishing}>
-                        Publish version
-                      </Button>
-                    </span>
+                    // `disabledReason` rather than a wrapper's `title`: Cloudscape
+                    // wires it as the button's own accessible description, and a
+                    // disabled button is not focusable, so an ancestor tooltip reaches
+                    // nobody using a keyboard or a screen reader.
+                    <Button
+                      onClick={openPublishDialog}
+                      disabled={publishBlockedReason !== null}
+                      disabledReason={publishBlockedReason ?? undefined}
+                      loading={isPublishing}
+                    >
+                      Publish version
+                    </Button>
                   ) : undefined
                 }
               >
