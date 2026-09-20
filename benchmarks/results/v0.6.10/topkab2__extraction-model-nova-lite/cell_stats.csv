@@ -1,0 +1,3 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+topk-1,8,16,0.09389,0.05464,0.582,0.0588,0.1954,0.985,0.875,559.68118
+topk-off,12,12,0.09288,0.04806,0.5174,0.0591,0.1898,1.0,0.75,382.93169

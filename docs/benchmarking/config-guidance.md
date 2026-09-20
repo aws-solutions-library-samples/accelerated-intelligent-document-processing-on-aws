@@ -21,7 +21,12 @@ pricing may apply)
 > Reproducible via the `benchmarks/` harness (run the `run-benchmarks` skill). Every number
 > here is produced by `benchmarks/harness/aggregate.py` from live runs; none are recalled
 > from memory. The data for every section is in the working tree under
-> `benchmarks/results/v0.6.8/` — see Appendix A for the exact directory per section. Per
+> `benchmarks/results/v0.6.8/` — see Appendix A for the exact directory per section. The
+> one exception is the `restate_schema_in_system_prompt` axis in §7, which was
+> re-measured on its own grid at v0.6.10 (`benchmarks/results/v0.6.10/restate710*/`,
+> Sonnet 4.6, 25 runs per arm) and is written up in
+> [studies/schema-restatement-tokens.md](studies/schema-restatement-tokens.md); its rows
+> carry that date. Per
 > [`benchmarks/results/RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md)
 > only one complete set is retained per release, so the v0.6.7 slices this edition replaces
 > are in git history (`git checkout <sha> -- benchmarks/results/v0.6.7/`).
@@ -1013,12 +1018,41 @@ value and the truncation penalty is gone; pinning 8 is marginally *more* expensi
 calls). The dev2 measurement is retained in [releases/v0.6.8.md](releases/v0.6.8.md) as the
 before picture.
 
-### `extraction.agentic.restate_schema_in_system_prompt` — neutral
+### `extraction.agentic.restate_schema_in_system_prompt` — free on quality, saves input tokens, costs a few percent in dollars
 
 From the §2 grid (advanced, Sonnet 5, 7 documents): `restate-on` $1.523, `restate-off`
-$1.548, recall and cell accuracy 1.000 both. Same conclusion as the v0.6.7 edition; #775 made
-the reclaimed tokens real shard budget, and whether that moves a shard count still depends on
-the document sitting near a boundary. Turn it off for headroom, not for dollars.
+$1.548, recall and cell accuracy 1.000 both.
+
+A dedicated 50-run A/B on Sonnet 4.6 resolves what that $0.025 difference was — it is
+real, and it has a mechanism. Details and the full tables are in
+[studies/schema-restatement-tokens.md](studies/schema-restatement-tokens.md); the
+decision-relevant numbers, measured 2026-09-20 on v0.6.10 with 25 runs per arm across
+three synthetic documents:
+
+| | Result | Significance |
+|---|---|---|
+| Quality | `completeness_recall`, `cell_accuracy` and `scalar_accuracy` **1.000 in all 50 runs**, both arms, zero failures, identical `cells_compared` | both arms at the ceiling; a degradation affecting fewer than ~1 run in 10 is not excluded |
+| Input-side tokens | **−5.2%** on `manylists_400` (175,912 → 166,731) and **−6.7%** on `longdesc_100` | *p* = 1.3 × 10⁻⁸ and *p* = 0.008 (distributions completely separated) |
+| Input-side tokens, third document | **+9.5%** on `valuenoise_100` — the opposite direction | *p* = 0.22, **not significant**; within-arm spread on that document is 20%, so the arm effect is swamped |
+| Extraction **output** tokens | **+17.4%** on `manylists_400` (13,501 → 15,849), **+14.1%** on `valuenoise_100` | *p* = 1.2 × 10⁻⁵ and *p* = 0.016 |
+| Extraction cost | **+7.5%** on `manylists_400`; +8.2% and +2.6% on the others | **not significant** on any document (*p* ≥ 0.13) |
+| Total cost | **+5.3%**, +6.6%, +1.8% | **not significant** |
+
+**Turn it off for shard headroom, not for dollars.** The input saving is genuine but
+cheap: it is almost entirely **cache reads**, so 9,181 fewer input-side tokens is worth
+about **$0.007** — while 2,347 more output tokens cost about **$0.039**. Those two
+figures reconcile the measured extraction-cost difference (+$0.0319/doc) to the cent.
+Since #775 the reclaimed tokens are real shard budget, so headroom is the reason to
+use this knob; whether it moves a shard count still depends on the document sitting
+near a boundary.
+
+⚠️ **The output-token increase is the part to watch, and it is bimodal rather than
+uniform.** On `manylists_400` every `restate-on` run emitted 13,406–13,590 output
+tokens, while five of fifteen `restate-off` runs emitted 20,201–20,368 — a mode the
+`on` arm never entered (Fisher *p* = 0.042). The remaining ten sat only 100–250 tokens
+above the `on` arm. So the risk of turning it off is not a slightly chattier agent
+every time; it is a roughly one-in-three chance of a run that emits half again as much.
+Measured on one model and one document shape.
 
 ### `classification.model` — see §5.3
 

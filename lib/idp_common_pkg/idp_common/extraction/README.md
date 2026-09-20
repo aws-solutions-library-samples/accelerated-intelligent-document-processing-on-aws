@@ -1249,6 +1249,70 @@ token saving that loses list rows is a loss.
 A fourth copy is stored in agent state for the reminder tool, but it is only
 transmitted if that tool is invoked, so it is not a per-request cost.
 
+**Measured effect of turning it off** (50 runs, 25 per arm, Sonnet 4.6, three
+synthetic bank-statement documents; `docs/benchmarking/studies/schema-restatement-tokens.md`):
+quality unchanged — `completeness_recall`, `cell_accuracy` and `scalar_accuracy` were
+1.000 in all 50 runs with identical `cells_compared`. Input-side extraction tokens fell
+5.2% on a 400-row document and 6.7% on a 100-row one, with the arms completely separated
+(*p* = 1.3 × 10⁻⁸ and *p* = 0.008); on a third document the point estimate moved +9.5%
+the other way and was not significant, because that document's agent-loop turn count
+varied and every turn re-reads the prefix. **It is not a cost saving**: extraction
+output tokens rose 17.4% (*p* = 1.2 × 10⁻⁵), so extraction cost's central estimate rose
+7.5% and total cost 5.3% (neither significant). The asymmetry is the cache: −9,181
+input-side tokens are worth ~$0.007 because they are nearly all cache reads, while
++2,347 output tokens are worth ~$0.039. **So the payoff of this knob is shard headroom,
+not dollars** — which is what the bullet above describes.
+
+### Sampling parameters on the agentic path: why there is no `top_k` (#956)
+
+`_get_inference_params` returns only `temperature` **or** `top_p`, and it must stay that
+way. **`topK` cannot be added to it**, for two independent reasons — recorded here so
+the analysis is not repeated:
+
+1. **It is not a Converse `inferenceConfig` field.** botocore rejects
+   `inferenceConfig.topK` client-side for every model, before any request is sent:
+   `Unknown parameter in inferenceConfig: "topK", must be one of: maxTokens,
+   temperature, topP, stopSequences`.
+2. **Strands' `BedrockConfig` has no `top_k` member, and adding one fails silently.**
+   The dict this helper returns is splatted straight into
+   `BedrockModel(**model_config, **inference_params)`, whose signature is
+   `**model_config: Unpack[BedrockConfig]`. `BedrockConfig` is a `TypedDict`, so at
+   runtime an unexpected `top_k` key raises nothing — it lands in `self.config` and is
+   then **dropped** by `format_request`, which builds `inferenceConfig` from only
+   `max_tokens` / `temperature` / `top_p` / `stop_sequences`. The parameter would never
+   reach ConverseStream and nothing would report that it had been discarded, which is
+   the worst of the available failure modes.
+
+**Where it would have to go instead:** `_build_model_config`'s
+`additional_request_fields`, which Strands maps to ConverseStream's
+`additionalModelRequestFields` — the same mechanism already used there for
+`anthropic_beta`, `output_config.effort` and `reasoning.effort`. It could not be a
+single key, because the carrier shape is per-provider (probed on Bedrock in `us-west-2`,
+2026-09-20, each result confirmed against a deliberately bogus control key so that a
+200 from a provider that silently ignores unknown keys is not read as success):
+
+| Family | Carrier | Valid range |
+|---|---|---|
+| Nova Lite / Pro / 2 Lite | `{"inferenceConfig": {"topK": N}}` | 1–128 (`top_k` → `extraneous key [top_k] is not permitted`) |
+| Claude ≤ 4.6 | `{"top_k": N}` | −1 – 100,000,000 (`inferenceConfig` → `Extra inputs are not permitted`) |
+| Claude 4.7+ | none | `` `top_k` is deprecated for this model `` — already covered by `strips_sampling_params` |
+| OpenAI GPT-6 Astra | none | `Unknown parameter: 'top_k'` — already covered by `strips_sampling_params` |
+| xAI Grok 4.6 | unverifiable | accepts any unknown key with 200, including the control |
+
+So it would need a per-family branch, i.e. another entry in the per-model Converse
+capability gates alongside `strips_sampling_params` and
+`tool_config_unsupported_reason`.
+
+**No such option is shipped, because the measured effect is null.** `topK: 1` — and
+AWS's full greedy triple `temperature 0` + `topP 1` + `topK 1`, which its Nova tool-use
+troubleshooting guide recommends for exactly the `ModelInvalidToolUseSequence` failure
+below — did not move Nova Lite's invalid-tool-use rate: 0.787 with no `topK`, 0.812 with
+`topK: 1`, 0.838 with the full triple, over 160 direct Bedrock calls per arm interleaved
+against capacity drift (Fisher exact *p* = 0.68 and 0.39). ⚠️ That null has a floor: at
+n = 160 per arm, 80% power reaches only a failure rate of 0.65 (18% relative), so a
+large improvement is excluded and a small one is not. Full tables, the trigger analysis
+and the power figures: `docs/benchmarking/studies/greedy-decoding-tool-use.md`.
+
 ### Enabling Agentic Extraction
 
 Configure agentic extraction in your configuration file:
@@ -2070,11 +2134,20 @@ make both loud without changing what is extracted:
   `docs/extraction-and-confidence.md` and `config_library/pricing.yaml`), or
   `extraction.mode: simple`, which needs no tool use in its default configuration
   (`extraction.forced_tool` is the exception, and is off by default). The wording stops
-  short of "model capability limit" on purpose: AWS's
+  short of "model capability limit" on purpose, but **not** because the inference
+  parameters are untried. AWS's
   [Nova tool-use troubleshooting guide](https://docs.aws.amazon.com/nova/latest/userguide/tools-troubleshooting.html)
-  attributes this error largely to inference parameters and output budget, and the
-  agentic path sends no `top_k` (see `_get_inference_params`), so the observed failures
-  are consistent with configuration rather than proven incapacity. The class name is in
+  attributes this error largely to inference parameters, and its recommended greedy
+  decoding — `temperature 0` + `topP 1` + `topK 1` — was measured on Nova Lite at 160
+  direct Bedrock calls per arm and did not move the failure rate: 0.787 with no `topK`,
+  0.812 with `topK: 1` (Fisher exact *p* = 0.68), 0.838 with the full triple (*p* = 1.00
+  against the no-topK arm in the same batch). 80% power reaches only an 18% relative
+  improvement, so a small benefit is not excluded. What the same experiment did identify is that the trigger is the
+  request **shape**: a schema holding only a list succeeds where the same list with
+  sibling scalar properties fails, independently of schema size. Since neither the model
+  nor the schema shape is something the error handler can change, the remedies it names
+  stay the actionable ones. See the `top_k` subsection above and
+  `docs/benchmarking/studies/greedy-decoding-tool-use.md`. The class name is in
   no retry list, and `transient_errors` independently classifies the underlying outcome
   as deterministic, so neither the caller nor the state machine retries it. Before #895 a
   Nova Lite grid logged 247 of these in three hours, each one surfaced as
