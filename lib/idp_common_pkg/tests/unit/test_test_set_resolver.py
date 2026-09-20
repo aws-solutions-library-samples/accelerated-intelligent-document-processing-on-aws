@@ -3588,6 +3588,92 @@ class TestTestSetResolver:
         assert test_set_index.get_test_set_versions({"testSetId": "ts1"}) == []
         assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
 
+    def test_a_retry_that_arrives_genuinely_mid_flight_publishes_nothing(
+        self, labeling_env, monkeypatch
+    ):
+        """The window itself, rather than a reconstruction of it.
+
+        Every other test here seeds a claim row to *represent* an attempt in flight. This one
+        creates the state: `_snapshot_baselines` is the bounded copy at the centre of a
+        publish, so re-entering `publish_test_set_version` from inside it puts the second
+        caller exactly where a retry after a 504 lands — version number reserved, copy in
+        progress, version row not yet written, claim taken and carrying no version.
+
+        That is the one state a seeded row can only resemble, because what makes it dangerous
+        is that *nothing durable yet records* the attempt that is going to succeed. A retry
+        must not conclude from that absence that it should publish.
+
+        Asserted on outcomes — version rows, snapshot prefixes, the returned payload, the
+        reserved counter — rather than on calls into the claim helpers, so the test survives a
+        refactor of them.
+
+        Measured mutation-sensitive, which is the reason it earns its place alongside the
+        seeded-row cases rather than duplicating them: reverting the claim check to the
+        row-only comparison it replaced — a token compared against written version rows, which
+        is what the design looked like before this — fails **this test and no other**. All
+        fifteen of the surrounding claim and token cases pass under that revert, because none
+        of them can produce a state in which the row is not yet written.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+
+        real_snapshot = test_set_index._snapshot_baselines
+        copies = []
+        retry = {}
+
+        def snapshot_and_retry_midway(bucket, set_id, version):
+            copies.append(version)
+            # Explicit one-shot. If the retry ever got as far as copying, this stops a third
+            # entry instead of recursing, and `copies` below reports that it did.
+            assert len(copies) <= 2, (
+                f"publish re-entered the copy {len(copies)} times; the recursion guard "
+                "exists so a change to this call graph fails rather than hanging"
+            )
+            if len(copies) == 1:
+                try:
+                    retry["result"] = test_set_index.publish_test_set_version(
+                        {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+                    )
+                except Exception as exc:  # noqa: BLE001 - the refusal is the subject
+                    retry["error"] = exc
+            return real_snapshot(bucket, set_id, version)
+
+        monkeypatch.setattr(
+            test_set_index, "_snapshot_baselines", snapshot_and_retry_midway
+        )
+
+        published = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+
+        # The retry was refused, and refused for the right reason — not by some unrelated
+        # error that would leave this test passing for the wrong cause.
+        assert "result" not in retry, "the retry must not have published"
+        assert "already" in str(retry["error"]) and "running" in str(retry["error"])
+
+        # One version, one snapshot, one reserved number: the retry left no trace anywhere.
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+        assert copies == [1], "only the first attempt may copy"
+        assert self._baseline_keys(s3, "ts1/versions/2/baseline/") == []
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert int(meta["latestVersion"]) == 1, "the retry must not reserve a number"
+
+        # And the attempt that was in flight finished normally, with the labels it froze.
+        assert published["version"] == 1
+        assert published["label"] == "reviewed"
+        assert published["snapshotObjectCount"] == 1
+        assert published["hasStoredLabels"] is True
+        frozen = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/versions/1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert frozen["inference_result"]["total"] == "as-published"
+
     def test_a_failed_attempt_releases_its_claim_so_a_retry_can_publish(
         self, labeling_env, monkeypatch
     ):
