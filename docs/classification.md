@@ -382,9 +382,12 @@ classifications:
    > than a prompt one.
 3. The retry repeats up to `maxValidationRetries` times.
 4. If all retries are exhausted, the page is assigned `invalidClassFallback`
-   (default `unclassified`) and flagged with a `validation_error` entry in its
-   classification metadata. The document continues processing — there is no
-   hard failure.
+   (default `unclassified`) and a warning-severity
+   `classification_invalid_class_fallback` processing issue is recorded on the
+   section that holds the page, naming the class the model returned. The document
+   continues processing — there is no hard failure, but the stored class is not the
+   model's answer and the section says so. See [Pages classification could not
+   classify](#pages-classification-could-not-classify).
 
 ```yaml
 classification:
@@ -664,6 +667,60 @@ All 6 pages → Section 1 (W-2)
 Result: Single section
 Entire document treated as one unit
 ```
+
+## Pages Classification Could Not Classify
+
+A page can come out of classification without a usable class. When that happens
+the page is labelled `unclassified` (or `invalidClassFallback`, which defaults to
+the same), and because no class of that name exists in configuration it has no
+extraction schema — so extraction skips the model for its section and the section
+completes holding no data. A document in that state still completes normally, and
+that is the right behaviour: one unreadable page should not discard the rest of a
+packet.
+
+What it must not do is complete without saying so. Classification records a
+processing issue on the section that holds the page, which is where the Sections
+panel renders it and where `ProcessingIssueCount` on the document counts it. The
+severity says how much attention the case deserves:
+
+| Issue code | Severity | What happened | What to do |
+|---|---|---|---|
+| `classification_failed` | error | The classification attempt errored, exhausted its retries, or the page's required OCR artifacts were absent. The page has no class, so nothing was extracted from it | Check the ClassificationFunction log group for the page, and model access and quota for the classification model |
+| `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
+| `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `invalidClassFallback` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
+
+One issue per section per cause, listing the page IDs, so a long run of
+unclassifiable pages produces one row rather than one per page.
+
+**Why two of them are warnings and not errors.** An error-severity issue puts a red
+indicator on the section in the UI, and an indicator that appears on most documents
+is one nobody reads — the same reasoning that keeps the confidence alarm usable in
+[Monitoring](./monitoring.md#confidence-assessment-degraded). The fallback case is
+where a page the model cannot place ends up, so it is the one you are most likely to
+see; a class was assigned, it is just not the model's.
+
+⚠️ The document list's **Processing Issues** badge and the `HasProcessingIssues`
+flag are severity-blind, so a deployment whose documents routinely contain pages the
+classifier cannot place will show the badge on them. That is the intended reading —
+those pages produced no extracted data — but if it is unwanted, the lever is to
+define a catch-all class the model can legitimately choose (see **Catch-all class**
+under [Enforcing a Valid Class
+Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry)), which removes
+the condition rather than hiding it.
+
+**Why no CloudWatch metric.** Every fleet-level alarm in this solution is paired
+with a threshold parameter a deployer tunes, and none of these three has an
+established base rate to set one from; an unalarmed metric would only add cost.
+The issues reach the Sections panel, the document's `ProcessingIssueCount` and the
+processing-issues index, which is what a document-level query reads.
+
+**Downstream.** The confidence pass does **not** also report an `unclassified`
+section as unscored. It has no confidence to be missing that this page's issues do
+not already explain, and a `root_cause` written from the Assessment step would
+point the operator at Extraction, where nothing is wrong. A section whose class is
+a *named* class missing from configuration is a different case and **is** reported
+from both Extraction and Assessment — see
+[Monitoring](./monitoring.md#confidence-assessment-degraded).
 
 ## Excluding Static Pages (e.g. Instructions, Legal Boilerplate)
 

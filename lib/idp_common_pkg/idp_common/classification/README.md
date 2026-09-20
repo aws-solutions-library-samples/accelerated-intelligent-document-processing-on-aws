@@ -447,7 +447,9 @@ classification:
   (`0` = no retries).
 - `invalidClassFallback` — class assigned when all retries are exhausted; the
   resulting `PageClassification.classification.metadata` then carries a
-  `validation_error` string. The document is **not** failed.
+  `validation_error` string, and a warning-severity
+  `classification_invalid_class_fallback` issue is recorded on the section (see
+  below). The document is **not** failed.
 
 > Holistic (`textbasedHolisticClassification`) does not use this loop yet; it
 > still logs a warning and uses an unknown type as-is.
@@ -455,6 +457,57 @@ classification:
 See `notebooks/misc/classification-valid-class-enforcement.ipynb` for a
 deterministic, mock-driven walkthrough of all three scenarios (retry-then-valid,
 retries-exhausted-fallback, and enforcement-disabled).
+
+## Reporting a Page That Could Not Be Classified
+
+`_record_unclassified_page_issues` runs once per document, immediately after
+section splitting, and turns each page classification that carries an `error` or a
+`validation_error` into a `ProcessingIssue` on the section holding that page.
+
+**Why it exists.** Nothing in this service produced a `ProcessingIssue` before, and
+neither of the two places the reason was written reaches a user:
+
+- `DocumentClassification.metadata` is copied onto the `Page` object with
+  `setattr`, and `Page` has no `metadata` field — so it is absent from
+  `Document.to_dict()` and never survives the Step Functions hop or reaches
+  DynamoDB;
+- the matching `document.errors` line is read only inside
+  `processresults_function`'s `Status.FAILED` branch, which a document that
+  completes never enters.
+
+So a page whose classification failed after retries became `unclassified`, its
+section took extraction's empty-schema route, and the document finished green —
+which is the same defect as `#1006` one stage upstream.
+
+**Why the section and not the document.** `ProcessingIssues` is a field of
+`Section` in the API schema; the document carries only `ProcessingIssueCount`. A
+document-level issue would raise that count and then have no text to show for it.
+
+| `metadata` key | `unclassified_reason` | Issue code | Severity |
+|---|---|---|---|
+| `error` | `no_content` | `classification_page_no_content` | warning |
+| `error` | `failed` (the default) | `classification_failed` | error |
+| `validation_error` | — | `classification_invalid_class_fallback` | warning |
+
+`_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
+a call site added later is loud rather than quiet by omission.
+
+Severity is what keeps the signal usable: an error indicator on most documents is
+one nobody reads. The fallback case is the commonest of the three, because it is
+where a page the model cannot place ends up, and a class *was* assigned — just not
+the model's. `classification_page_no_content` needs **both** the page's OCR text and
+its page image to be unusable (`classify_page_bedrock` checks both), so a blank page
+that still has an image does not land there.
+
+One issue per (section, cause) with the page IDs listed, so a 50-page run of
+unclassifiable pages does not produce 50 identical rows. The write replaces only
+this stage's issues **of the same code**, because the DynamoDB writer replaces the
+whole section map: a failed page and an unclassifiable page in one section are two
+different facts and neither may evict the other.
+
+No CloudWatch metric is published from here — see
+[`docs/classification.md`](../../../../docs/classification.md#pages-classification-could-not-classify)
+for the reasoning and the operator-facing table.
 
 ## Usage Example
 

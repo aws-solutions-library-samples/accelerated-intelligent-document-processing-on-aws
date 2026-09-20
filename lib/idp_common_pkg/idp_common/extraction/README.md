@@ -1017,6 +1017,38 @@ The ExtractionService has built-in error handling:
 3. All errors are logged for debugging
 4. Few-shot example loading errors are handled gracefully with fallback to standard prompts
 
+### An empty effective schema: three causes, one of them a fault
+
+`_get_class_schema` returns `{}` both for a class the configuration contains and
+gave no attributes, and for a label the configuration does not contain at all;
+`_prepare_section_context` returns `None` for either, and `_handle_empty_schema`
+skips the model and writes a stub. That stub's
+`metadata.skipped_due_to_empty_attributes` flag is what the confidence pass keys
+its carve-out on, so while it was the only signal, three different situations were
+indistinguishable downstream — and the one that is an operator fault was the one
+that went unreported.
+
+`_empty_schema_reason` separates them and the stub records the answer as
+`metadata.empty_schema_reason` (constants in `idp_common.empty_schema`):
+
+| Reason | When | Recorded issue |
+|---|---|---|
+| `class_has_no_attributes` | The label resolves to a class in configuration that declares no properties. An authoring choice; nothing was expected from the section | none |
+| `class_unclassified` | The label is the `unclassified` sentinel, or the configured `classification.invalidClassFallback`. Classification determined no class — a blank page, a page whose classification failed, or a deployment with no document types configured | none here. The **classification** stage reports it, at the severity only it can judge |
+| `class_not_configured` | The section carries a **named** class the configuration in force does not contain: renamed or deleted while documents were in flight, or an old document reprocessed under a newer configuration | error-severity `extraction_class_not_configured` on the section and in the stub's `metadata.processing_issues` |
+
+The fault case is reported here, at the stage that discovered it, because the
+remedy is a configuration change: add the class back, or reclassify the document
+under the current configuration. Reporting it only from the confidence pass — the
+next stage to notice the empty result — would have produced a `root_cause` pointing
+at an extraction call that never happened.
+
+`skipped_due_to_empty_attributes` stays set in all three cases: it is what stored
+result files and existing readers use, and it is true for each of them. A stub
+written before `empty_schema_reason` existed has no reason key, and readers treat
+that as `class_has_no_attributes` — so reassessing a backlog of old documents
+cannot manufacture a wave of new reports.
+
 ### Schema-compliance filtering (Simple mode)
 
 Advanced (agentic) extraction validates its output through a generated Pydantic

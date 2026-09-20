@@ -235,22 +235,51 @@ an error-severity `assessment_failed_confidence_unavailable` processing issue on
 the section.
 
 A section can also reach the Assessment step with **nothing to assess** — no
-extraction result written for it, no pages listed on it, or an extraction result
-whose `inference_result` is empty. The confidence model is never called, so this
+extraction result written for it, no pages listed on it, an extraction result
+whose `inference_result` is empty, or none of the pages it lists present in the
+document. The confidence model is never called, so this
 is not a confidence failure and the document completes for the same reason, but
 the outcome for that section is identical: no confidence scores, and therefore no
 coverage by confidence-based review. It is recorded as an error-severity
 `assessment_skipped_confidence_unavailable` issue on the section
 ([#1006](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1006)).
 
-Not every empty result is that, though. A class with **no attributes to extract**
-makes extraction skip the model deliberately and write an empty result flagged as
-such, and that is an everyday occurrence rather than a gap: a page classified
-`unclassified` — a blank page, a page whose classification errored, or any page in
-a deployment with no document types configured — has no class in configuration and
-therefore no attributes. Those sections report nothing at all, exactly as an
-[excluded class](./classification.md) does, because an error indicator and an
-alarm data point per blank page would make both useless.
+**A section none of whose pages the document contains is skipped rather than
+scored.** With no page text and no page image the confidence model has nothing to
+judge the extracted values against, and a score produced in that state is a
+number with no evidence behind it — indistinguishable in the UI, in HITL routing
+and in the reporting lake from one read off the page. So the pass does not run for
+it, and the section is reported as unscored like the other nothing-to-assess
+cases. A section missing only *some* of its pages still gets confidence scores,
+because partial evidence is not no evidence, and carries a warning-severity
+`assessment_pages_missing` issue naming the absent pages; that case publishes no
+metric, since the section is not coming back without confidence. Either way the
+cause is upstream — check the Classification step's section boundaries and the OCR
+step's page list.
+
+Not every empty result is a gap, though. Extraction records **why** its effective
+schema was empty (`metadata.empty_schema_reason` in the section's `result.json`),
+and two of the three causes report nothing here:
+
+- **the class has no attributes to extract** — it is in configuration and declares
+  none. An authoring choice; nothing was expected from the section;
+- **classification determined no class**, so the section is labelled
+  `unclassified` — a blank page, a page whose classification failed, or any page in
+  a deployment with no document types configured. The [classification
+  stage](./classification.md#pages-classification-could-not-classify) reports this
+  one, at the severity it can judge and with a remedy that points at the right
+  place. An error indicator and an alarm data point per blank page would make both
+  this page's alarm and that indicator useless;
+- **the section's named class is absent from the configuration in force** — renamed
+  or deleted while documents were in flight, or an old document reprocessed under a
+  newer configuration. That is a fault: the section's fields were never extracted.
+  It **is** reported here, alongside an error-severity
+  `extraction_class_not_configured` issue from the Extraction step. The volume is
+  bounded by configuration changes rather than by document content, so it cannot
+  trip the alarm on ordinary throughput.
+
+The first two report nothing at all, exactly as an
+[excluded class](./classification.md) does.
 
 That is the right trade for one section, and it creates a monitoring gap for the
 fleet ([#996](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/996)):
@@ -273,12 +302,15 @@ One metric in the stack's own namespace (`<StackName>`):
   apart once you open the document, and they point at different remedies — the
   confidence model for a failure, whatever produced the section for a skip.
   Nothing is published for a section the confidence pass was never going to score:
-  one whose class is **excluded**, one that extraction deliberately produced no
-  fields for because its class has **no attributes to extract** (which is what a
-  page classified `unclassified` gets), or any section at all when confidence
-  assessment is switched off in configuration. All three are expected on healthy
-  documents — a single blank page or cover sheet produces the second — so counting
-  them would breach the alarm's threshold on ordinary throughput. **No data
+  one whose class is **excluded**, one whose class is in configuration with **no
+  attributes to extract**, one that classification **could not classify at all**
+  (which is what a blank page produces — the classification stage reports that
+  instead), or any section at all when confidence assessment is switched off in
+  configuration. All four are expected on healthy
+  documents — a single blank page or cover sheet produces one — so counting
+  them would breach the alarm's threshold on ordinary throughput. A section whose
+  **named class is missing from the configuration** is not in that set and does
+  publish, because it is a fault rather than an outcome. **No data
   therefore means every section that should have been scored was scored** — give
   or take a confidence pass that failed transiently and succeeded on retry.
 
@@ -306,7 +338,7 @@ comes from `AWS::StackName` **inside the nested pattern template**, which is the
 nested stack's CloudFormation-generated name, not the root stack's — so list on the
 `/<StackName>-PATTERNSTACK` prefix rather than typing the path. A failure logs
 "Deterministic (non-retryable) assessment failure"; a skip logs what the section
-was missing. The four causes worth checking first:
+was missing. The six causes worth checking first:
 
 | Symptom in the recorded issue | Likely cause | Fix |
 |---|---|---|
@@ -314,6 +346,8 @@ was missing. The four causes worth checking first:
 | `AccessDeniedException` on `bedrock:InvokeModel` | The configured confidence model is not granted, or model access was revoked | Grant the model in Bedrock console → Model access, and check the Lambda role |
 | `ValidationException` naming the model id | The model id is not available in this region | Choose a model enabled in the deployment region |
 | No exception at all, and the code is `assessment_skipped_confidence_unavailable` | The section reached assessment with nothing to assess: no extraction result, no pages, or an empty `inference_result` | Look at the stage that produced the section — Extraction for a missing or empty result, Classification for a section with no pages — not at the confidence model |
+| The same code, with a `root_cause` naming a class that is "not in the configuration" | The section's class was renamed or deleted while documents were in flight, or the document was reprocessed under a configuration that no longer defines its class. No fields were extracted either — the section carries `extraction_class_not_configured` too | Add the class back to the configuration, or reclassify the document under the current one. Not a confidence problem |
+| The same code, with a `root_cause` saying none of the section's pages are present in the document | The section lists page IDs the document does not contain, so there was no page text or image to assess against. Before this was detected the pass ran anyway and returned scores derived from nothing | Check the Classification step's section boundaries and the OCR step's page list. A warning-severity `assessment_pages_missing` (no metric) marks the partial case, where only some pages were absent |
 
 **What is lost while it is firing:** the affected sections have no confidence
 values, so they are not covered by confidence-based review — HITL confidence

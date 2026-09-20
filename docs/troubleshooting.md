@@ -148,23 +148,56 @@ input so the pass succeeds rather than degrades remains open as part of
 **`assessment_skipped_confidence_unavailable` on a section.** The sibling of the
 issue above, and it means something different: the confidence model was never
 called, because the section carried nothing to assess — no extraction result was
-written for it, it lists no page IDs, or its extraction result has an empty
-`inference_result`. The consequence for the section is the same (no confidence
+written for it, it lists no page IDs, its extraction result has an empty
+`inference_result`, or none of the pages it lists are present in the document. The
+consequence for the section is the same (no confidence
 values, so no HITL confidence routing and no UI threshold signals), but the
 confidence model and its context window are not the place to look. The issue's
 `root_cause` names what was missing and which stage to check: **Extraction** for a
-missing or empty result, **Classification** for a section with no pages. Like the
+missing or empty result, **Classification** for a section with no pages or with
+pages the document does not contain, and **configuration** for a section whose
+class the configuration no longer defines. Like the
 issue above it is written to the section record only, so look in the **Status**
 column of the Sections panel rather than the Processing Report tab.
 
-One case deliberately reports **nothing**: a class with no attributes to extract.
-Extraction skips the model for those and flags its stub
-`skipped_due_to_empty_attributes`, which covers a section classified
-`unclassified` — a blank page, a page whose classification errored, or a
-deployment with no document types configured — as well as a class authored without
-attributes. Those sections are normal — the same situation as an excluded class,
-reached by a different route — so neither an issue nor a metric point is recorded
-for them.
+Two cases deliberately report **nothing**, because they are ordinary outcomes and
+an indicator that appears on most documents is one nobody reads: a class in
+configuration that declares **no attributes to extract**, and a section
+classification could not classify at all. Extraction skips the model for both and
+flags its stub `skipped_due_to_empty_attributes`, recording which in
+`metadata.empty_schema_reason`. The second covers a blank page, a page whose
+classification failed, and a deployment with no document types configured — the
+**classification** stage reports those instead (`classification_failed`,
+`classification_page_no_content`, `classification_invalid_class_fallback`), which is
+where the remedy is.
+
+**`extraction_class_not_configured` on a section.** The section's class does not
+exist in the configuration the document was processed under, so there was no schema
+to extract against and the section holds no data. A class renamed or deleted while
+documents were in flight produces it, as does reprocessing an old document under a
+configuration that no longer defines its class. Add the class back, or reclassify
+the document under the current configuration. The same section also carries
+`assessment_skipped_confidence_unavailable`, because it has no confidence scores
+either.
+
+**`assessment_pages_missing` on a section (warning).** Some of the section's pages
+are absent from the document, so confidence for values appearing on them was
+assessed without their page text or image. The section does have confidence scores
+— they are just less reliable for those values — so this publishes no metric. The
+extracted values are unchanged. Check the Classification step's section boundaries
+and the OCR step's page list; when *every* page is absent the section is skipped
+outright and reported as unscored instead.
+
+**`classification_failed`, `classification_page_no_content` or
+`classification_invalid_class_fallback` on a section.** Classification could not
+produce a usable class for one or more of the section's pages, so those pages have
+no extraction schema and nothing was extracted from them. The codes and their
+remedies are tabulated in
+[Classification](./classification.md#pages-classification-could-not-classify);
+briefly, the first is an error worth investigating (check the ClassificationFunction
+log group, and model access and quota), and the other two are warnings — a blank
+separator page, and a model prediction outside the configured vocabulary that was
+coerced to `invalidClassFallback`.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit

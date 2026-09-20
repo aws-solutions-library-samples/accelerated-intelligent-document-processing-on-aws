@@ -543,7 +543,7 @@ trace, by construction rather than by convention:
 | Cause | Entry point | Issue code |
 |---|---|---|
 | The pass ran and failed **deterministically** — the confidence model rejecting the input outright, most often `ValidationException: Input is too long for requested model.` (#901) | `degrade_section_to_no_confidence`, called from the Assessment Lambda's non-transient branch | `assessment_failed_confidence_unavailable` |
-| The pass **never ran**: the section had no `extraction_result_uri`, no `page_ids`, or an extraction result whose `inference_result` was empty (#1006) | `skip_section_no_confidence`, called from `process_document_section`'s early returns | `assessment_skipped_confidence_unavailable` |
+| The pass **never ran**: the section had no `extraction_result_uri`, no `page_ids`, an extraction result whose `inference_result` was empty, or none of its pages present in the document (#1006) | `skip_section_no_confidence`, called from `process_document_section`'s early returns | `assessment_skipped_confidence_unavailable` |
 
 Neither fails the document. For the first that is #901's deliberate trade — the
 extraction already succeeded and was already paid for, so losing the advisory
@@ -576,26 +576,47 @@ getting that set right is what keeps the alarm's volume threshold meaningful:
 
 - a section whose class is **excluded** — extraction never ran, so no confidence
   is missing;
-- a section whose extraction result is flagged `skipped_due_to_empty_attributes`,
-  i.e. a class with **no attributes to extract**. `ExtractionService` skips the
-  model for those (`_handle_empty_schema`) and still sets
-  `extraction_result_uri`, so the stub arrives here with an empty
-  `inference_result` and is indistinguishable from a real gap without the flag.
-  It is reached routinely rather than only by a hand-authored attribute-less
-  class: classification emits `"unclassified"` for a blank page, for a page whose
-  classification errored after retries, and for everything when no document types
-  are configured, and no class of that name exists in config, so its effective
-  schema is `{}`. One cover sheet in an otherwise normal document lands here, and
-  a dozen such documents in fifteen minutes would clear the default threshold on
-  their own;
+- a section whose extraction result is flagged `skipped_due_to_empty_attributes`
+  *and* whose `metadata.empty_schema_reason` is one of the two deliberate causes
+  below. `ExtractionService` skips the model for an empty effective schema
+  (`_handle_empty_schema`) and still sets `extraction_result_uri`, so the stub
+  arrives here with an empty `inference_result` and is indistinguishable from a
+  real gap without the flag;
 - a configuration with `extraction.confidence.enabled: false`.
 
-An empty `inference_result` **without** that flag is still reported: the class had
+That second bullet covers three situations, which extraction distinguishes at the
+producer (`idp_common.empty_schema`) because only one of them is a fault:
+
+| `empty_schema_reason` | What it is | Reported here? |
+|---|---|---|
+| `class_has_no_attributes` | The class is in configuration and declares no attributes — an authoring choice. Nothing was expected from the section | No |
+| `class_unclassified` | Classification determined no class, so the label is the `unclassified` sentinel: a blank page, a page whose classification failed, or a deployment with no document types configured. Routine — one cover sheet in an otherwise normal document lands here, and a dozen such documents in fifteen minutes would clear the default alarm threshold on their own | No. The **classification** stage records it, with the severity only it can judge, and a `root_cause` written from here would send the operator to an Extraction step where nothing is wrong |
+| `class_not_configured` | The section carries a **named** class the configuration in force does not contain: renamed or deleted while documents were in flight, or an old document reprocessed under a newer configuration | **Yes**, with a `root_cause` naming the configuration rather than the confidence model. Extraction records the extraction-stage half (`extraction_class_not_configured`) at the same time. Bounded by operator configuration changes rather than by document content, so it cannot reach the threshold on throughput |
+
+A stub written before `empty_schema_reason` existed carries no reason at all and
+is read as `class_has_no_attributes`, so stored results keep reading back exactly
+as they did — and reassessing a backlog of old documents cannot manufacture a
+fleet of new alarm points.
+
+An empty `inference_result` **without** the flag is still reported: the class had
 a schema, the model returned nothing, and those values now have no confidence.
 
 A `section_id` that is not in the document, or a document with no sections,
 **raises** instead: there is no section on which to record anything, so a quiet
 return would leave the caller with no signal at all.
+
+**Pages the document does not contain.** The page loop skips a `page_id` absent
+from `document.pages`. When *every* page of the section is absent there is no page
+text and no page image, and the confidence pass used to run anyway and return a
+score per field derived from nothing — a fabricated number, indistinguishable in
+the UI, in HITL routing and in the reporting lake from one the model read off the
+page. The pass is now skipped for that case, through
+`skip_section_no_confidence` like the others. When only *some* pages are absent it
+still runs — partial evidence is not no evidence — and records a warning-severity
+`assessment_pages_missing` issue naming the absent pages. That one publishes **no**
+metric: the section does have confidence scores, so the metric's question is
+answered no.
+
 See [Monitoring](../../../../docs/monitoring.md#confidence-assessment-degraded).
 
 ## Prompt Template Placeholders

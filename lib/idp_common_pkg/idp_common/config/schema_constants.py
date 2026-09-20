@@ -40,6 +40,21 @@ X_AWS_IDP_EXCLUDE_FROM_PROCESSING = "x-aws-idp-exclude-from-processing"
 # evaluation report annotations.
 X_AWS_IDP_EXCLUSION_REASON = "x-aws-idp-exclusion-reason"
 
+# The class label classification assigns when it determined no class: a page with
+# no text and no image, a page whose classification failed, an out-of-vocabulary
+# prediction after ``maxValidationRetries`` (the default
+# ``classification.invalidClassFallback``), or a deployment with no document types
+# configured at all.
+#
+# Deliberately NOT a configurable class: no class of this name exists in a
+# configuration, so its effective extraction schema is empty. Downstream stages
+# need to tell that apart from a class an author deliberately gave no attributes,
+# because the remedies differ and only one of the two is a fault — see
+# ``ExtractionService._empty_schema_reason``. Lives here rather than in
+# ``idp_common.classification`` so the extraction and assessment stages can read
+# it without importing a package their Lambdas do not install.
+UNCLASSIFIED_CLASS = "unclassified"
+
 # ============================================================================
 # AWS IDP Extraction Extensions
 # ============================================================================
