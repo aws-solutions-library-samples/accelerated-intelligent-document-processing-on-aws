@@ -177,7 +177,12 @@ class TestResolverUIPath:
                         "sub": "caller-sub",
                         "email": _CALLER_EMAIL,
                         "cognito:groups": ["Admin"],
-                        "token_use": "id",
+                        # Bandit's B105 matches the KEY name here (it contains
+                        # "token"), not the value, so swapping the value for
+                        # something obviously synthetic does not clear it. Same
+                        # claim and same treatment as the fixture in
+                        # src/lambda/api_handler/test_index.py.
+                        "token_use": "id",  # nosec B105 - JWT claim type, not a secret
                     },
                 }
             }
