@@ -333,11 +333,22 @@ def sfn(monkeypatch):
 @pytest.fixture
 def scoped_caller(monkeypatch):
     """Make UsersTable report a caller restricted to the versions the test names."""
-    def _configure(allowed_versions):
+    def _configure(allowed_versions, store=None):
+        """The UsersTable double, covering both key spaces the lookup reads.
+
+        ``store`` maps a raw ``PK`` to its item, which is how the ``sub`` join is
+        modelled (a ``SUB#<sub>`` pointer, and the ``USER#<userId>`` row it names).
+        Without it ``get_item`` would answer with a truthy Mock and a test could
+        pass against a row that does not exist.
+        """
         table = MagicMock()
         table.query.return_value = {
             "Items": [{"allowedConfigVersions": allowed_versions}] if allowed_versions else []
         }
+        _store = dict(store or {})
+        table.get_item.side_effect = lambda Key: (
+            {"Item": _store[Key["PK"]]} if Key["PK"] in _store else {}
+        )
         resource = MagicMock()
         resource.Table.return_value = table
         monkeypatch.setattr(index, "_dynamodb", resource)

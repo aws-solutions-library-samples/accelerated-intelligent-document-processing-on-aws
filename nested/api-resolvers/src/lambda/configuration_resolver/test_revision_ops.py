@@ -61,7 +61,7 @@ def manager(monkeypatch):
     fake.delete_revision.return_value = True
     monkeypatch.setattr(index, "ConfigurationManager", lambda *a, **k: fake)
     # Default to an unscoped caller unless a test says otherwise.
-    monkeypatch.setattr(index, "_get_user_allowed_config_versions", lambda email: None)
+    monkeypatch.setattr(index, "_get_user_allowed_config_versions", lambda email, sub="": None)
     return fake
 
 
@@ -166,7 +166,7 @@ class TestProfileScope:
     @pytest.fixture
     def scoped(self, manager, monkeypatch):
         monkeypatch.setattr(
-            index, "_get_user_allowed_config_versions", lambda email: ["lending"]
+            index, "_get_user_allowed_config_versions", lambda email, sub="": ["lending"]
         )
         return manager
 
@@ -209,7 +209,7 @@ class TestProfileScope:
 
     def test_a_glob_scope_entry_matches_a_lineage(self, manager, monkeypatch):
         monkeypatch.setattr(
-            index, "_get_user_allowed_config_versions", lambda email: ["usecaseA_*"]
+            index, "_get_user_allowed_config_versions", lambda email, sub="": ["usecaseA_*"]
         )
         allowed = index.handler(
             _event(
@@ -229,7 +229,7 @@ class TestProfileScope:
     def test_admin_scope_is_ignored(self, manager, monkeypatch):
         """Admins are always unrestricted; the scope lookup is skipped for them."""
 
-        def explode(email):
+        def explode(email, sub=""):
             raise AssertionError("admin scope must not be looked up")
 
         monkeypatch.setattr(index, "_get_user_allowed_config_versions", explode)

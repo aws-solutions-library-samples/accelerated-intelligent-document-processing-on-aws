@@ -12,6 +12,7 @@ import {
 } from '../graphql/generated';
 import useConfiguration from './use-configuration';
 import useUserRole from './use-user-role';
+import { scopeAllows } from '../utils/config-scope';
 import type { ConfigVersion } from '../components/test-studio/utils/configVersionUtils';
 
 const client = generateClient();
@@ -49,8 +50,18 @@ const useConfigurationVersions = (): UseConfigurationVersionsReturn => {
   // Get user's configuration profile scope for filtering
   const { allowedConfigVersions } = useUserRole();
 
-  // Filter versions by user's allowed scope (null = unrestricted)
-  const versions = allowedConfigVersions ? allVersions.filter((v) => allowedConfigVersions.includes(v.versionName)) : allVersions;
+  // Filter versions by the user's allowed scope (null/empty = unrestricted).
+  //
+  // A scope entry may be a glob (`tenant-a_*`), so this must not be an exact
+  // `includes` — `scopeAllows` is the mirror of the server's `scope_allows` and
+  // is the only thing that knows which entries are patterns. An exact comparison
+  // leaves a caller scoped to a pattern with an EMPTY picklist and no way to
+  // reprocess a document, even though the server allows every profile the pattern
+  // covers. When the scope is unrestricted the unfiltered array is returned by
+  // identity, so consumers' effects do not see a new array on every render.
+  const versions = allowedConfigVersions?.length
+    ? allVersions.filter((v) => scopeAllows(allowedConfigVersions, v.versionName))
+    : allVersions;
 
   const fetchVersions = async (): Promise<void> => {
     setLoading(true);

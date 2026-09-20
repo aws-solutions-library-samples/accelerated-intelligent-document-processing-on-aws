@@ -76,6 +76,8 @@ def _dynamodb_resource(
     tracking_table,
     users_items: list[dict] | None = None,
     users_query_error: Exception | None = None,
+    users_store: dict | None = None,
+    users_get_item_error: Exception | None = None,
 ):
     """A ``boto3.resource('dynamodb')`` double that dispatches by table name.
 
@@ -89,6 +91,14 @@ def _dynamodb_resource(
     ``IndexName`` the table does not declare, or a key condition on an attribute
     that is not that index's hash key, raises instead of returning an empty page.
     ``users_query_error`` injects a failure for the fail-closed tests.
+
+    It serves **both** key spaces the lookup reads. ``users_items`` is the
+    ``EmailIndex`` query page; ``users_store`` maps a raw ``PK`` to its item, which
+    is how the ``sub`` join is modelled — a ``SUB#<sub>`` pointer carrying a
+    ``userId``, and the ``USER#<userId>`` row it names. Leaving ``get_item``
+    unmodelled would answer with a truthy Mock, so a test could pass against a row
+    that does not exist. ``users_get_item_error`` injects a failure on that leg
+    alone, which is the case the email leg cannot cover.
     """
     users_table = MagicMock()
 
@@ -121,6 +131,18 @@ def _dynamodb_resource(
         return {"Items": list(users_items or [])}
 
     users_table.query.side_effect = _query
+
+    _store = dict(users_store or {})
+
+    def _get_item(Key):
+        if users_get_item_error is not None:
+            raise users_get_item_error
+        assert set(Key) == {"PK", "SK"} and Key["PK"] == Key["SK"], (
+            f"the UsersTable is keyed on PK and SK; got {Key!r}"
+        )
+        return {"Item": _store[Key["PK"]]} if Key["PK"] in _store else {}
+
+    users_table.get_item.side_effect = _get_item
     # Captured eagerly: tests that override USERS_TABLE_NAME to exercise the
     # unset case must not also repoint this dispatch at the tracking table.
     users_table_name = os.environ["USERS_TABLE_NAME"]
@@ -351,12 +373,14 @@ def _run_scope_turn(
     users_query_error: Exception | None = None,
     users_table_name: str | None = None,
     doc_config_version: str | None = "secret-v1",
+    users_store: dict | None = None,
+    users_get_item_error: Exception | None = None,
 ) -> tuple:
     """Run one chat turn against a restricted document and report the outcome.
 
     Returns ``(result, publishes, bedrock, users_table)`` so a test can assert on
     the decision, what the user was told, that Bedrock was never reached, and
-    whether the UsersTable was queried at all.
+    whether the UsersTable was queried at all — on either key space.
     """
     item = {"PK": "doc#uploads/restricted.pdf", "SK": "none", "Pages": []}
     if doc_config_version is not None:
@@ -367,6 +391,8 @@ def _run_scope_turn(
         tracking_table,
         users_items=users_items,
         users_query_error=users_query_error,
+        users_store=users_store,
+        users_get_item_error=users_get_item_error,
     )
 
     bedrock = MagicMock()
@@ -584,11 +610,14 @@ class TestProcessorScopeFailsClosed:
         "identity",
         [
             {"claims": {"cognito:groups": ["Viewer"]}},
-            # Claims carrying every identifier EXCEPT an email. This is the shape
-            # to hold the line on: each of these is a real Cognito identifier, and
-            # substituting one would query EmailIndex with a value no user row
-            # carries — an empty page, which reads as "unrestricted". Denying is
-            # the only safe reading, so no fallback may be added.
+            # Claims carrying every identifier EXCEPT an email, and a ``sub`` that
+            # no pointer item records. This is the shape to hold the line on:
+            # substituting a ``cognito:username`` or a ``username`` would query
+            # EmailIndex with a value no user row carries — an empty page, which
+            # reads as "unrestricted". And an unrecorded ``sub`` is not an answer
+            # about this caller either: their row may simply predate the pointer
+            # writer, and with no email there is no second key to try. Denying is
+            # the only safe reading of both, so no fallback may be added.
             {
                 "claims": {
                     "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
@@ -616,9 +645,167 @@ class TestProcessorScopeFailsClosed:
 
         assert result == {"ok": False, "reason": "scope_unavailable"}
         bedrock.converse_stream.assert_not_called()
-        # And it denies *before* querying, so no substituted identifier is ever
-        # put to the index.
+        # And no substituted identifier is ever put to the email-keyed index. The
+        # ``sub``-carrying case does read the pointer key space — which is the key
+        # space that indexes a ``sub`` — and still denies.
         users_table.query.assert_not_called()
+
+    @pytest.mark.unit
+    def test_a_diverged_email_still_resolves_the_scope_through_the_sub(self):
+        """The residual this join exists to close.
+
+        The caller's ``email`` claim no longer matches the address on their row —
+        an IdP remapped it, they changed it, or it differs only in case. The email
+        query therefore finds nothing, which on its own means "unrestricted" and
+        silently lifts the restriction. The ``sub`` pointer finds the row anyway, so
+        the out-of-scope document is still refused.
+        """
+        import index
+
+        sub = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
+        result, _publishes, bedrock, users_table = _run_scope_turn(
+            index,
+            {"identity": {"claims": {"email": "Renamed.User@example.com", "sub": sub}}},
+            # The email query matches nothing, exactly as it would in production.
+            users_items=[],
+            users_store={
+                f"SUB#{sub}": {"userId": "u-1", "cognitoSub": sub},
+                "USER#u-1": {
+                    "userId": "u-1",
+                    "email": "scoped.user@example.com",
+                    "allowedConfigVersions": ["tenant-a"],
+                },
+            },
+        )
+
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+        # Resolved on the sub alone: the email leg is never reached.
+        users_table.query.assert_not_called()
+
+    @pytest.mark.unit
+    def test_a_stale_pointer_at_an_unscoped_row_does_not_widen_the_scope(self):
+        """The pointer leg is read first, so it must not be able to say 'unrestricted'.
+
+        The writer only creates a pointer for a row carrying a restriction, because
+        this leg decides the answer. One at an unscoped row means the invariant is
+        broken — a pointer whose `delete_item` failed and was only logged, or a
+        superseded one left behind when a row's recorded sub changed — and believing
+        it would pin "unrestricted" ahead of the scoped row the email join finds, on
+        an out-of-scope document. It is treated as stale instead.
+
+        All four readers of the pointer must agree on this, or the claim that
+        resolving through a pointer can only tighten is not true of the deployment
+        even though it is true of `idp_common.config_scope`.
+        """
+        import index
+
+        sub = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
+        result, _publishes, bedrock, users_table = _run_scope_turn(
+            index,
+            {"identity": {"claims": {"email": "alice.new@example.com", "sub": sub}}},
+            # The email join finds a SCOPED row; the pointer finds an unscoped one.
+            users_items=[{"allowedConfigVersions": ["tenant-a"]}],
+            users_store={
+                f"SUB#{sub}": {"userId": "u-1", "cognitoSub": sub},
+                "USER#u-1": {"userId": "u-1", "email": "alice.old@example.com"},
+            },
+        )
+
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+        # And it got there by falling through to the email leg, not by guessing.
+        users_table.query.assert_called_once()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "unscoped",
+        [
+            {"userId": "u-1"},
+            {"userId": "u-1", "allowedConfigVersions": []},
+            # The shapes only `normalize_scope` calls unscoped. Testing raw truthiness
+            # instead keeps these rows and returns them — and `scope_allows` then
+            # normalizes the result to empty and reads it as *unrestricted*, which is
+            # the same fail-open direction as believing the pointer outright. All five
+            # readers of the pointer must agree on what "unscoped" means, not only on
+            # the existence of a guard.
+            {"userId": "u-1", "allowedConfigVersions": [""]},
+            {"userId": "u-1", "allowedConfigVersions": ["  "]},
+            {"userId": "u-1", "allowedConfigVersions": ""},
+        ],
+        ids=["absent", "empty-list", "blank-entry", "whitespace-entry", "empty-string"],
+    )
+    def test_the_stale_pointer_guard_agrees_with_normalize_scope(self, unscoped):
+        import index
+
+        sub = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
+        result, _publishes, bedrock, _users = _run_scope_turn(
+            index,
+            {"identity": {"claims": {"email": "alice.new@example.com", "sub": sub}}},
+            users_items=[{"allowedConfigVersions": ["tenant-a"]}],
+            users_store={
+                f"SUB#{sub}": {"userId": "u-1", "cognitoSub": sub},
+                "USER#u-1": unscoped,
+            },
+        )
+
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+
+    @pytest.mark.unit
+    def test_a_row_with_no_pointer_is_still_found_by_email(self):
+        """The transition case: every row predates the pointer writer.
+
+        A deployment upgrading to this code has no pointer items until its writer
+        or back-fill runs. The email join must keep resolving those rows unchanged,
+        or the upgrade silently lifts every scope it is meant to enforce.
+        """
+        import index
+
+        result, _publishes, bedrock, users_table = _run_scope_turn(
+            index,
+            {
+                "identity": {
+                    "claims": {
+                        "email": "scoped.user@example.com",
+                        "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+                    }
+                }
+            },
+            users_items=[{"allowedConfigVersions": ["tenant-a"]}],
+            users_store={},
+        )
+
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+        users_table.query.assert_called_once()
+
+    @pytest.mark.unit
+    def test_a_pointer_read_failure_denies(self):
+        """A failure on the new key space denies, like one on the old one.
+
+        The ``sub`` leg is a second place the lookup can fail — a throttle, a
+        permissions boundary allowing Query and not GetItem — and "cannot read"
+        must not fall through to the email leg and then to "unrestricted".
+        """
+        import index
+
+        result, _publishes, bedrock, _users = _run_scope_turn(
+            index,
+            {
+                "identity": {
+                    "claims": {
+                        "email": "scoped.user@example.com",
+                        "sub": "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d",
+                    }
+                }
+            },
+            users_items=[],
+            users_get_item_error=Exception("AccessDeniedException: dynamodb:GetItem"),
+        )
+
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
 
     @pytest.mark.unit
     def test_caller_email_reads_only_the_email_claim(self):

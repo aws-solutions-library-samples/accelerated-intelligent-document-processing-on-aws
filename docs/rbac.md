@@ -206,43 +206,123 @@ dependency-free), so they vendor that file verbatim; a unit test fails if the co
 drift, because a scope matcher that differs between call sites is a
 privilege-escalation bug.
 
-### Resolving *whose* Scope — the Lookup Fails Closed
+### Resolving *whose* Scope — Two Keys, and the Lookup Fails Closed
 
 Matching is only half the rule. The other half is finding the caller's row, and it
-obeys two rules of its own, in `resolve_allowed_config_versions` in the same module:
+obeys three rules of its own, in `resolve_allowed_config_versions` in the same module.
 
-- **The lookup key is the `email` claim, and nothing else.** Email is the only
-  identifier that joins a Cognito principal to a UsersTable row: the row's key is a
-  `uuid4` minted by user management and unrelated to the Cognito `sub`, and no `sub`
-  attribute is stored on the table. So a caller whose verified claims carry no
-  `email` cannot be looked up at all, and is **denied** — substituting another
-  identifier would query an email-keyed index with a value that matches no row,
-  which is indistinguishable from "this user has no restriction".
-- **A lookup that cannot answer denies.** No UsersTable wired, no email claim, or a
-  DynamoDB query that fails (a missing IAM grant, a throttle) all refuse the
-  request. "Cannot evaluate" is not "unrestricted": reading it as such would switch
-  the control off precisely on the drift the control exists to survive.
+A user's row is `PK`/`SK` = `USER#<userId>`, where `userId` is a `uuid4` minted by user
+management and named by nothing in a token. Two keys reach it, and they are **disjoint
+key spaces on the same table**:
+
+| Key | How it is read | Role |
+|---|---|---|
+| The immutable Cognito `sub` | `GetItem` on a `SUB#<sub>` *pointer item* holding the row's `userId`, then `GetItem` on the row | The durable join, tried **first** |
+| The `email` claim | `Query` on the `EmailIndex` GSI | The compatibility join, tried second |
+
+- **Each identifier goes only to the key space that indexes it.** Neither is a fallback
+  for the other, and no third identifier stands in for either. Putting a `sub` to the
+  email-keyed index does not find the row by another route: it matches **no** row, and
+  an empty page is indistinguishable from "this user has no restriction". A caller whose
+  verified claims carry **neither** key cannot be looked up at all, and is denied.
+- **The `sub` is preferred because an email address can stop matching its row.** An
+  external IdP re-maps it on every federated sign-in, a pool created with
+  `ExternalIdPEmailMutable=true` lets a user change their own, and matching is
+  case-sensitive while mail systems are not. Each of those reads as "no row", which
+  means unrestricted — so keying on the `sub` is what keeps the restriction applied.
+  See [External IdP integration](./external-idp.md).
+- **A lookup that cannot answer denies.** No UsersTable wired, neither key present, or
+  a DynamoDB read that fails on *either* key space (a missing IAM grant, a throttle)
+  all refuse the request. "Cannot evaluate" is not "unrestricted": reading it as such
+  would switch the control off precisely on the drift the control exists to survive.
+  A caller presenting only a `sub` that no pointer records is denied for the same
+  reason — their row may simply predate the pointer writer, and with no email there is
+  no second key to try, so the absence of a pointer is not an answer about them.
 
 An **empty page still means unrestricted**, which is the first matching rule above
 and must stay that way — most users have no scope row.
 
-`scripts/tests/test_scope_lookup_fail_closed.py` fails if a module that queries the
-UsersTable derives the key from something other than the `email` claim, or handles a
-lookup failure with anything but a refusal. It recognises a scope query by the
-**table**, not by the index name, because naming the index wrongly is itself one of
-the ways this has failed.
+**No table change is required, on any existing deployment.** The pointer reuses the
+table's existing `PK`/`SK` key schema rather than adding a GSI, so there is no
+`AWS::DynamoDB::Table` update and no index-backfill window during which a fail-closed
+lookup would deny every scoped caller. The read is a `GetItem`, which every scope
+consumer's IAM policy already grants alongside `dynamodb:Query`.
+
+⚠️ A pointer item deliberately carries **no** `email` attribute, and must not gain one.
+A DynamoDB GSI indexes only items that have its hash key, so a pointer is absent from
+`EmailIndex` entirely — which is what keeps it out of an email query's result page. A
+pointer that appeared there could be returned by a `Limit=1` email query *instead of*
+the row, and it holds no `allowedConfigVersions`, so the scope would silently lift.
+
+⚠️ A pointer exists **only for a row that carries `allowedConfigVersions`**, and that
+is a property readers depend on rather than a saving. A row with no restriction resolves
+to "unrestricted" through either key, so a pointer for it changes no answer — but the
+pointer is read *first*, so one at an unrestricted row would pin "unrestricted" ahead of
+whatever the email join would have found. Restricted to scoped rows, resolving through a
+pointer can only ever *tighten*. **Every** reader enforces the same invariant from its
+side — a pointer that resolves an unscoped row is treated as stale, logged, and the email
+join is tried instead — and *every* is load-bearing: the claim is about the deployment,
+not about one module, so a single reader that believed such a pointer would make it
+untrue. That is **seven** implementations across five spellings:
+`resolve_allowed_config_versions` and the two vendored `config_scope` copies that
+inherit it byte-for-byte; the Chat-with-Document processor and its vendored twin; the
+PII-anonymizer feature API; and `getMyProfile`. Rule **SCOPE6** in
+`scripts/tests/test_scope_lookup_fail_closed.py` holds it as a class — any module that
+reads the pointer key space and does not normalise the row it finds fails the gate —
+because per-reader tests alone are what allowed one of them to spell the check with raw
+truthiness, which a scope of `[""]` defeats.
+
+`src/lambda/user_management` is the writer:
+
+| Path | What it does |
+|---|---|
+| `createUser` | Records the `sub` Cognito assigns, and writes the pointer if the new user is scoped |
+| `updateUser` | Writes the pointer when a scope is **set**, deletes it when a scope is **removed** |
+| `deleteUser` | Deletes the pointer |
+| The Cognito sync, on every Admin `listUsers` | Records the `sub` on each row it can match, and maintains that row's pointer |
+
+The sync matches a Cognito account to its row on the recorded `sub` first, then the
+exact address, then the **case-folded** address — because matching on the exact address
+alone is what duplicates a row whose address has changed, and a duplicate carries no
+scope. Case-folding closes the commonest cause on its own, since mail systems are
+case-insensitive and DynamoDB is not.
+
+It does **not** reach a row whose address has changed beyond case before the sync ever
+ran, because no key then matches: the sync writes a fresh row for the Cognito account,
+as it always has. What the scoped-rows-only invariant guarantees is that the duplicate
+gets no pointer, so the original row is still reachable by its own address and
+correcting the address restores the scope.
+
+Until a row has a pointer, the email join resolves it exactly as it always did.
+
+**To find the rows that are still email-only**, scan for a missing `cognitoSub`:
+
+```bash
+AWS_PROFILE=default aws dynamodb scan --table-name <stack>-UsersTable-<id> \
+  --filter-expression 'begins_with(PK, :p) AND attribute_not_exists(cognitoSub)' \
+  --expression-attribute-values '{":p":{"S":"USER#"}}' \
+  --projection-expression 'userId, email'
+```
+
+`scripts/tests/test_scope_lookup_fail_closed.py` fails if a module that reads the
+UsersTable derives a key from something other than that key's claim, puts one key
+space's identifier to the other's, or handles a lookup failure with anything but a
+refusal. It recognises a scope read by the **table**, not by the index name, because
+naming the index wrongly is itself one of the ways this has failed — and it counts a
+`get_item` as well as a `query`, because the `sub` key space names no index at all.
 
 Two limits on what that gate asserts, because a green run is easy to over-read:
 
-- It checks **key provenance and failure handling only**. There is no rule about the
-  *matcher* or about the empty-page rule, so a divergent `scope_allows` would not be
-  caught — only the two byte-identical vendored copies are held to the letter, by a
-  separate file-comparison test.
-- One module is **discovered and suppressed** rather than checked: the
-  Chat-with-Document processor, via a `PENDING_FIX` entry naming the specific rules,
-  because a concurrent change owns that file. A test asserts that exemption is still
-  load-bearing, so it cannot outlive its reason. The same gap is recorded on AUTH.T07
-  in `security/threat-modeling/feature-threats/rbac-authentication.md`.
+- It checks **key provenance, key-space confusion and failure handling only**. There is
+  no rule about the *matcher* or about the empty-page rule, so a divergent
+  `scope_allows` would not be caught — only the two byte-identical vendored copies are
+  held to the letter, by a separate file-comparison test.
+- Its rules are **syntactic**. They establish that no code *spells* a fail-open shape;
+  they cannot establish that the value which reached a matcher came from the table. The
+  per-site unit suites are what assert the behaviour, and
+  `lib/idp_common_pkg/tests/unit/test_config_scope_lookup.py` carries the transition
+  matrix — a row with a pointer, a row without one, and a caller whose email and `sub`
+  disagree.
 
 Most consumers reach the shared function by import. Six files across four artifacts
 carry the rule in their own code instead:
@@ -250,8 +330,8 @@ carry the rule in their own code instead:
 | Artifact | Files | Why it is not an import |
 |---|---|---|
 | Both document-list resolvers | 2 | No `idp_common` layer — they sit on the hottest UI query and are kept dependency-free, so they vendor `config_scope.py` byte-for-byte (a unit test fails if the copies differ) |
-| `src/lambda/user_management` | 1 | No `idp_common` layer; it vendors `log_sanitizer` for the same reason. States the key rule for its own-profile lookup |
-| `feature-platform/pii-anonymizer/feature-api` | 1 | Ships as its own stack, so it cannot depend on the host's layer. States the key rule, the scope normaliser and the glob matcher |
+| `src/lambda/user_management` | 1 | No `idp_common` layer; it vendors `log_sanitizer` for the same reason. States both key rules for its own-profile lookup, and is the **writer** for the `sub` pointer |
+| `feature-platform/pii-anonymizer/feature-api` | 1 | Ships as its own stack, so it cannot depend on the host's layer. States both key rules, the scope normaliser and the glob matcher |
 | The Chat-with-Document processor | 2 | Imports the matcher but implements its own lookup, and is vendored into the chat-streaming bundle |
 
 The two vendored `config_scope.py` copies are byte-identical by construction. The
@@ -261,11 +341,18 @@ performance rather than policy. Its matcher is behaviourally identical to
 `scope_allows` today — both delegate to `fnmatchcase` under the same
 normalise-and-deny-unnamed rules — and nothing mechanical holds it there.
 
-⚠️ **Known limitation — the UI cannot express a glob.** `useConfigurationVersions`
-filters with an exact membership test, so a user scoped to `tenant-a_*` sees an empty
-Configuration Profile dropdown and the Reprocess button stays disabled, even though
-the server-side checks now honour the pattern. Scope a user to exact profile names if
-they need those controls.
+The web UI honours patterns too. `useConfigurationVersions` filters the Configuration
+Profile list with `scopeAllows` in `src/ui/src/utils/config-scope.ts`, the client-side
+mirror of `scope_allows` — so a user scoped to `tenant-a_*` sees the profiles that
+pattern covers, and the Reprocess control is usable. The server remains the enforcement
+point; the client copy only decides what the UI offers, and the two must change
+together.
+
+⚠️ **Known limitation — an Admin cannot *enter* a glob from the UI.** The scope pickers
+in User Management are multi-selects over the profile names that already exist, with no
+free-text entry, so a pattern scope has to be set through the API or the CLI
+(`updateUser`'s `allowedConfigVersions`). Once set, it is displayed and honoured
+everywhere.
 
 ⚠️ **Known limitation — a scoped document count can be truncated silently.** A scoped
 caller's `getDocumentCount` is tallied from index rows rather than taken from
@@ -676,7 +763,9 @@ To add a new role:
 ## Known Limitations
 
 - **Document Chat streamed from the Lambda Function URL** is not restricted by `allowedConfigVersions`, and in commercial regions that is the path the UI takes — it streams whenever a stream URL is configured, which every commercial deployment has. The browser signs those requests with Cognito Identity Pool credentials, and that transport forwards no Cognito claims: its SigV4 principal is a session name shared by every user of the pool, so it proves *a* signed-in user is calling but not which one. The processor will not key an authorization decision to the caller-supplied identity in the request body, because the caller it would restrict is the one choosing the value. So the route reports an explicitly unverified caller, and the processor logs, once per turn, that it did not enforce the scope. The check **does** apply to turns arriving through the REST API, which is the path GovCloud deployments take, since Function URLs are unavailable there. Closing this needs the streaming endpoint to verify a Cognito ID token; tracked as `GAP-07` in `scripts/api_rbac_expectations.yaml` and [issue #920](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/920).
-- **Scope is keyed on a user's email address, which can stop matching their record.** `allowedConfigVersions` lives on a UsersTable row found by email (the `EmailIndex` GSI), and a caller with **no** matching row is treated as unrestricted. Three things can separate the two: matching is exact, so a difference in letter case is a miss, and nothing normalises case on either side while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row; and deleting a user removes the table row before the Cognito account, warning rather than failing if the second step does not complete. See [External IdP integration](./external-idp.md) for the detail and the mitigations. The durable fix is to key scope on the immutable Cognito `sub`, which needs that attribute stored on the table.
+- **A row that records no Cognito `sub` is still keyed on an email address, which can stop matching it.** Scope is resolved from the immutable `sub` first and the `email` claim second, so a divergence no longer lifts the restriction for any row that records a `sub` — see [Resolving *whose* Scope](#resolving-whose-scope--two-keys-and-the-lookup-fails-closed). A row that does not yet record one falls back to the email join and keeps the original exposure: matching is exact, so a difference in letter case is a miss, while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row. The `sub` is recorded by `createUser` and back-filled by the Cognito sync that runs on every Admin `listUsers`, so in practice a row reaches an administrator with one — but a deployment whose administrator has never opened User Management since upgrading has none. The back-fill matches a Cognito account to its row on the recorded `sub`, the exact address, or the **case-folded** address, so it does **not** reach a row whose address changed beyond case before it ever ran; that row keeps the email-only exposure indefinitely. The scan above lists exactly which rows are in that state. See [External IdP integration](./external-idp.md) for the detail and the mitigations.
+- **User deletion removes the table row before the Cognito account**, warning rather than failing if the second step does not complete. The orphaned Cognito account then has no row, which means unrestricted.
+- **`allowedTestSets` has no `sub` join.** The Annotator test-set axis (`idp_common/testset_scope.py`) still resolves its row from `EmailIndex` alone, and from a fallback chain of claims rather than the `email` claim by itself. Its polarity is the opposite of `allowedConfigVersions` — `assert_can_access_test_set` requires an *explicit* scope, so an Annotator whose row cannot be found is **denied** rather than granted everything — which makes a diverged address an availability problem (a locked annotation queue) rather than a widening one. `scripts/tests/test_scope_lookup_fail_closed.py` discovers this module and carries it in `PENDING_FIX` with its two rules named, so the suppression is visible and removable; giving that axis the same two-key lookup is the follow-up.
 - **Knowledge Base queries** do not currently enforce config-version scope. KB results may include documents from out-of-scope config versions.
 - **Agent Companion Chat** analytics queries (Athena) do not filter by config-version scope.
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.

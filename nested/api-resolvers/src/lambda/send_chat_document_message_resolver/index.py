@@ -106,16 +106,22 @@ def _forwarded_identity(event: dict) -> dict | None:
     distinct from omitting the key, which the processor treats as a wiring
     regression and denies.
 
-    ⚠️ **The ``email`` claim is forwarded or nothing is.** There is deliberately
-    no fallback to another field when the claim is absent: the alternatives the
-    adapter would offer — ``identity.username``, ``cognito:username``, the
-    ``sub`` — are not email addresses for every caller, and an identifier that is
-    not an email matches no UsersTable row. The lookup would then return an empty
-    page, which means "this user has no restriction". Forwarding an empty string
-    instead makes the processor raise and **deny**, which is what a caller whose
-    scope cannot be resolved is owed. An identity that is present but carries no
-    email is therefore NOT the same as no identity at all, and must not collapse
-    into it.
+    Two claims are forwarded, because the processor looks a row up on either: the
+    immutable Cognito ``sub``, via a pointer item, and the ``email``, via
+    ``EmailIndex``. Neither is a fallback for the other — each goes only to the key
+    space that indexes it — so forwarding both widens nothing, and the ``sub`` is
+    what keeps the restriction working for a caller whose address has diverged from
+    their row.
+
+    ⚠️ **Each claim is forwarded as itself or as an empty string.** There is
+    deliberately no fallback to another field when one is absent: the alternatives
+    the adapter would offer — ``identity.username``, ``cognito:username`` — are not
+    email addresses for every caller, and an identifier that is not an email
+    matches no UsersTable row. The lookup would then return an empty page, which
+    means "this user has no restriction". Forwarding an empty string instead makes
+    the processor raise and **deny**, which is what a caller whose scope cannot be
+    resolved is owed. An identity that is present but carries neither claim is
+    therefore NOT the same as no identity at all, and must not collapse into it.
 
     An identity of an unusable *type* is treated the same way — forwarded as an
     empty email rather than as ``None``. Mapping it to ``None`` would be the
@@ -129,9 +135,14 @@ def _forwarded_identity(event: dict) -> dict | None:
     if identity is None:
         return None
     if not isinstance(identity, dict):
-        return {"claims": {"email": ""}}
+        return {"claims": {"email": "", "sub": ""}}
     claims = identity.get("claims") or {}
-    return {"claims": {"email": str(claims.get("email") or "")}}
+    return {
+        "claims": {
+            "email": str(claims.get("email") or ""),
+            "sub": str(claims.get("sub") or ""),
+        }
+    }
 
 
 def _check_session_ownership(session_id: str, caller_sub: str) -> None:

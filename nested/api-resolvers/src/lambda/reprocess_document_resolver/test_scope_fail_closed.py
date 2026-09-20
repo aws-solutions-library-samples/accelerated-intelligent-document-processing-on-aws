@@ -92,12 +92,26 @@ def _author_claims(**extra):
 def users_table(monkeypatch):
     """Point the scope lookup at a UsersTable double and clear its cache."""
 
-    def _configure(*, items=None, error=None):
+    def _configure(*, items=None, error=None, store=None):
+        """A UsersTable double covering BOTH key spaces the lookup reads.
+
+        ``items`` is the ``EmailIndex`` query page. ``store`` maps a raw ``PK``
+        string to the item stored under it, which is how the ``sub`` join is
+        modelled: a ``SUB#<sub>`` pointer carrying a ``userId``, and the
+        ``USER#<userId>`` row it names. Modelling both matters — a double that
+        answers only ``query`` leaves ``get_item`` returning a truthy Mock, so a
+        test can pass while the code reads a row that does not exist.
+        """
         table = MagicMock()
         if error is not None:
             table.query.side_effect = error
+            table.get_item.side_effect = error
         else:
             table.query.return_value = {"Items": items or []}
+            _store = dict(store or {})
+            table.get_item.side_effect = lambda Key: (
+                {"Item": _store[Key["PK"]]} if Key["PK"] in _store else {}
+            )
         resource = MagicMock()
         resource.Table.return_value = table
         monkeypatch.setattr(index, "_dynamodb", resource)
