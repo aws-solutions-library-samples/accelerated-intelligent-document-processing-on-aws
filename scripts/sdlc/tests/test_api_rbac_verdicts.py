@@ -491,7 +491,11 @@ def test_a_healthy_scope_suite_still_passes(monkeypatch, capsys):
     """The control for the three above."""
 
     def _call(api_base, field, args, token):
-        if token == "tok-scoped" and field == "getConfigVersion":
+        # nosec B105 - "tok-scoped" is a fake token identifier for the stubbed
+        # `call`, not a credential; Bandit's hardcoded-password heuristic fires on the
+        # comparison. Same suppression as the fake token ids in
+        # test_api_security_cases.py.
+        if token == "tok-scoped" and field == "getConfigVersion":  # nosec B105
             return 200, None, "Unauthorized", "rid"
         return 200, None, None, "rid"
 
