@@ -1,0 +1,6 @@
+cell,n_success,n_fail,cost_mean,cost_stdev,cost_cv,cost_min,cost_max,recall_mean,acc_mean,wall_mean
+core-bda-adv-sep,5,0,0.6819,0.09966,0.1461,0.5756,0.8063,1.0,1.0,131.47704
+core-tl-adv-sep,5,0,1.17512,0.20905,0.1779,0.8264,1.3857,1.0,1.0,268.03696
+core-tt-adv-int,0,5,,,,,,,,
+core-tt-adv-sep,5,0,0.65828,0.12322,0.1872,0.5719,0.8485,1.0,1.0,131.23792
+core-tt-simple-sep,5,0,0.52598,0.00022,0.0004,0.5258,0.5263,1.0,1.0,216.08961
