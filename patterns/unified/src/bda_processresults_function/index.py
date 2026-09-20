@@ -25,10 +25,17 @@ logging.getLogger("idp_common.bedrock.client").setLevel(
 )
 # Get LOG_LEVEL from environment variable with INFO as default
 
-# Use the common S3 client
+# Use the common S3 client. Constructed at module scope deliberately: a warm
+# invocation reuses it, and `s3` is the one service botocore resolves without a
+# region, so importing this module needs no AWS configuration. The `ssm` and
+# `bedrock-data-automation` clients that used to sit here were never referenced
+# anywhere in the file, and both are regional-only — so they did nothing except
+# make the module impossible to import without a region. Every other AWS client
+# this handler uses — DynamoDB for the HITL tracking row, the BDA *runtime*
+# client for a blueprint-change job lookup — is built inside the function that
+# uses it. Enforced by
+# patterns/unified/tests/test_handler_imports_are_region_free.py.
 s3_client = get_s3_client()
-ssm_client = boto3.client("ssm")
-bedrock_client = boto3.client("bedrock-data-automation")
 
 
 def is_hitl_enabled(config_version=None, config_revision=None):
