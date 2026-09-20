@@ -254,12 +254,46 @@ A DynamoDB GSI indexes only items that have its hash key, so a pointer is absent
 pointer that appeared there could be returned by a `Limit=1` email query *instead of*
 the row, and it holds no `allowedConfigVersions`, so the scope would silently lift.
 
-`src/lambda/user_management` is the writer. `createUser` records the `sub` Cognito
-assigns and writes its pointer; `deleteUser` removes it; and the Cognito sync that runs
-on every Admin `listUsers` **back-fills** a pointer for any row that has none. That
-back-fill is reached by the only workflow that can apply a scope in the first place, so
-a row written before pointers existed gets one before an administrator can scope it.
+⚠️ A pointer exists **only for a row that carries `allowedConfigVersions`**, and that
+is a property readers depend on rather than a saving. A row with no restriction resolves
+to "unrestricted" through either key, so a pointer for it changes no answer — but the
+pointer is read *first*, so one at an unrestricted row would pin "unrestricted" ahead of
+whatever the email join would have found. Restricted to scoped rows, resolving through a
+pointer can only ever *tighten*. The reader enforces the same invariant from its side: a
+pointer that resolves an unscoped row is treated as stale, logged, and the email join is
+tried instead.
+
+`src/lambda/user_management` is the writer:
+
+| Path | What it does |
+|---|---|
+| `createUser` | Records the `sub` Cognito assigns, and writes the pointer if the new user is scoped |
+| `updateUser` | Writes the pointer when a scope is **set**, deletes it when a scope is **removed** |
+| `deleteUser` | Deletes the pointer |
+| The Cognito sync, on every Admin `listUsers` | Records the `sub` on each row it can match, and maintains that row's pointer |
+
+The sync matches a Cognito account to its row on the recorded `sub` first, then the
+exact address, then the **case-folded** address — because matching on the exact address
+alone is what duplicates a row whose address has changed, and a duplicate carries no
+scope. Case-folding closes the commonest cause on its own, since mail systems are
+case-insensitive and DynamoDB is not.
+
+It does **not** reach a row whose address has changed beyond case before the sync ever
+ran, because no key then matches: the sync writes a fresh row for the Cognito account,
+as it always has. What the scoped-rows-only invariant guarantees is that the duplicate
+gets no pointer, so the original row is still reachable by its own address and
+correcting the address restores the scope.
+
 Until a row has a pointer, the email join resolves it exactly as it always did.
+
+**To find the rows that are still email-only**, scan for a missing `cognitoSub`:
+
+```bash
+AWS_PROFILE=default aws dynamodb scan --table-name <stack>-UsersTable-<id> \
+  --filter-expression 'begins_with(PK, :p) AND attribute_not_exists(cognitoSub)' \
+  --expression-attribute-values '{":p":{"S":"USER#"}}' \
+  --projection-expression 'userId, email'
+```
 
 `scripts/tests/test_scope_lookup_fail_closed.py` fails if a module that reads the
 UsersTable derives a key from something other than that key's claim, puts one key
@@ -720,8 +754,9 @@ To add a new role:
 ## Known Limitations
 
 - **Document Chat streamed from the Lambda Function URL** is not restricted by `allowedConfigVersions`, and in commercial regions that is the path the UI takes — it streams whenever a stream URL is configured, which every commercial deployment has. The browser signs those requests with Cognito Identity Pool credentials, and that transport forwards no Cognito claims: its SigV4 principal is a session name shared by every user of the pool, so it proves *a* signed-in user is calling but not which one. The processor will not key an authorization decision to the caller-supplied identity in the request body, because the caller it would restrict is the one choosing the value. So the route reports an explicitly unverified caller, and the processor logs, once per turn, that it did not enforce the scope. The check **does** apply to turns arriving through the REST API, which is the path GovCloud deployments take, since Function URLs are unavailable there. Closing this needs the streaming endpoint to verify a Cognito ID token; tracked as `GAP-07` in `scripts/api_rbac_expectations.yaml` and [issue #920](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/920).
-- **A row that records no Cognito `sub` is still keyed on an email address, which can stop matching it.** Scope is resolved from the immutable `sub` first and the `email` claim second, so a divergence no longer lifts the restriction for any row that records a `sub` — see [Resolving *whose* Scope](#resolving-whose-scope--two-keys-and-the-lookup-fails-closed). A row that does not yet record one falls back to the email join and keeps the original exposure: matching is exact, so a difference in letter case is a miss, while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row. The `sub` is recorded by `createUser` and back-filled by the Cognito sync that runs on every Admin `listUsers`, so in practice a row reaches an administrator with one — but a deployment whose administrator has never opened User Management since upgrading has none, and nothing in the product reports which rows are in that state. See [External IdP integration](./external-idp.md) for the detail and the mitigations.
+- **A row that records no Cognito `sub` is still keyed on an email address, which can stop matching it.** Scope is resolved from the immutable `sub` first and the `email` claim second, so a divergence no longer lifts the restriction for any row that records a `sub` — see [Resolving *whose* Scope](#resolving-whose-scope--two-keys-and-the-lookup-fails-closed). A row that does not yet record one falls back to the email join and keeps the original exposure: matching is exact, so a difference in letter case is a miss, while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row. The `sub` is recorded by `createUser` and back-filled by the Cognito sync that runs on every Admin `listUsers`, so in practice a row reaches an administrator with one — but a deployment whose administrator has never opened User Management since upgrading has none. The back-fill matches a Cognito account to its row on the recorded `sub`, the exact address, or the **case-folded** address, so it does **not** reach a row whose address changed beyond case before it ever ran; that row keeps the email-only exposure indefinitely. The scan above lists exactly which rows are in that state. See [External IdP integration](./external-idp.md) for the detail and the mitigations.
 - **User deletion removes the table row before the Cognito account**, warning rather than failing if the second step does not complete. The orphaned Cognito account then has no row, which means unrestricted.
+- **`allowedTestSets` has no `sub` join.** The Annotator test-set axis (`idp_common/testset_scope.py`) still resolves its row from `EmailIndex` alone, and from a fallback chain of claims rather than the `email` claim by itself. Its polarity is the opposite of `allowedConfigVersions` — `assert_can_access_test_set` requires an *explicit* scope, so an Annotator whose row cannot be found is **denied** rather than granted everything — which makes a diverged address an availability problem (a locked annotation queue) rather than a widening one. `scripts/tests/test_scope_lookup_fail_closed.py` discovers this module and carries it in `PENDING_FIX` with its two rules named, so the suppression is visible and removable; giving that axis the same two-key lookup is the follow-up.
 - **Knowledge Base queries** do not currently enforce config-version scope. KB results may include documents from out-of-scope config versions.
 - **Agent Companion Chat** analytics queries (Athena) do not filter by config-version scope.
 - **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.

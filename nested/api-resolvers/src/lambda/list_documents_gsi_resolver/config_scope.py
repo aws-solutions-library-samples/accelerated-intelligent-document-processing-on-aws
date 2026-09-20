@@ -267,6 +267,16 @@ def _row_by_sub(table: Any, caller_sub: str) -> Optional[Mapping[str, Any]]:
     A pointer that names a row which no longer exists returns None and logs — a
     user deleted without their pointer being cleaned up. The caller then tries the
     email join, exactly as it would for a caller with no pointer at all.
+
+    ⚠️ **This leg cannot return an unrestricted row, and that is deliberate.** The
+    writer's invariant is that a pointer exists only for a row carrying
+    ``allowedConfigVersions`` (see ``_record_cognito_sub`` in ``user_management``),
+    because this leg is read *first* and therefore decides the answer — a pointer at
+    an unrestricted row would pin "unrestricted" ahead of whatever the email join
+    would have found. A pointer that resolves an unscoped row means the invariant has
+    been broken somewhere, so it is treated as stale rather than believed: the caller
+    falls through to the email join, which can only tighten. The alternative —
+    trusting it — is the one shape that would let this leg *widen* a scope.
     """
     pointer = table.get_item(Key=sub_pointer_key(caller_sub)).get("Item")
     if not pointer:
@@ -287,7 +297,17 @@ def _row_by_sub(table: Any, caller_sub: str) -> Optional[Mapping[str, Any]]:
             USERS_TABLE_SUB_POINTER_PREFIX,
             SCOPE_KEY_CLAIM,
         )
-    return row or None
+        return None
+    if not normalize_scope(row.get("allowedConfigVersions")):
+        logger.warning(
+            "A UsersTable %s pointer names a row carrying no allowedConfigVersions, "
+            "which the writer's invariant forbids. Treating it as stale and falling "
+            "back to the %r join; the pointer needs removing.",
+            USERS_TABLE_SUB_POINTER_PREFIX,
+            SCOPE_KEY_CLAIM,
+        )
+        return None
+    return row
 
 
 def _row_by_email(
@@ -386,10 +406,8 @@ def resolve_allowed_config_versions(
     try:
         table = dynamodb.Table(users_table_name)
         row = _row_by_sub(table, caller_sub) if caller_sub else None
-        matched_on_email = False
         if row is None and caller_email:
             row = _row_by_email(table, caller_email, Key)
-            matched_on_email = row is not None
     except Exception as exc:  # noqa: BLE001
         # Deliberately no caller email, no sub and no table name in the message:
         # this lands in a log group, and the message is re-raised to a consumer
@@ -416,9 +434,15 @@ def resolve_allowed_config_versions(
             f"caller's Cognito {SCOPE_SUB_CLAIM!r}"
         )
 
-    if row is not None and matched_on_email and caller_sub:
+    if row is not None and caller_sub:
         recorded_sub = str(row.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
         if recorded_sub and recorded_sub != caller_sub:
+            # Checked on **whichever** leg matched, not only the email one. On the
+            # email leg this is the interesting case below. On the pointer leg it
+            # means the pointer and the row it names disagree about whose row it is,
+            # which the writer never produces — and since that leg is read first,
+            # leaving it unchecked would be the quieter of the two.
+            #
             # The address resolved to a row belonging to a *different* Cognito
             # account — an address reassigned, or a Cognito account recreated
             # under the same one. The row is still used: it is the row for this

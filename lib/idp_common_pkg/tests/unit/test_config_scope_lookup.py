@@ -50,18 +50,31 @@ from idp_common.config_scope import (
 _SUB = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
 
 
-def _table_returning(items, store=None):
+_DEFAULT_EMAIL = "a@example.com"
+
+
+def _table_returning(items, store=None, email=_DEFAULT_EMAIL):
     """A UsersTable double covering BOTH key spaces the lookup reads.
 
-    ``items`` is the ``EmailIndex`` query page. ``store`` maps a raw ``PK`` string
-    to the item held under it, which is how the ``sub`` join is modelled: a
-    ``SUB#<sub>`` pointer carrying a ``userId``, and the ``USER#<userId>`` row it
-    names. Modelling ``get_item`` matters — left to a bare MagicMock it answers
-    with a truthy Mock, so a test can pass while the code reads a row that does
-    not exist.
+    ``store`` maps a raw ``PK`` string to the item held under it, which is how the
+    ``sub`` join is modelled: a ``SUB#<sub>`` pointer carrying a ``userId``, and the
+    ``USER#<userId>`` row it names.
+
+    **Both legs honour their key**, and that is the point of this double rather than a
+    bare MagicMock. Left to one, ``get_item`` answers any key with a truthy Mock, so a
+    test passes while the code reads a row that does not exist; and ``query`` answers
+    any key condition with the same page, so a test passes while the code puts the
+    *wrong identifier* to ``EmailIndex`` — which is this module's original defect.
+    ``items`` is therefore the page for ``email`` and for no other address.
     """
     table = MagicMock()
-    table.query.return_value = {"Items": items}
+
+    def _query(**kwargs):
+        condition = kwargs["KeyConditionExpression"]
+        queried = condition.get_expression()["values"][1]
+        return {"Items": items if queried == email else []}
+
+    table.query.side_effect = _query
     _store = dict(store or {})
     table.get_item.side_effect = lambda Key: (
         {"Item": _store[Key["PK"]]} if Key["PK"] in _store else {}
@@ -141,6 +154,32 @@ class TestResolveAllowedConfigVersions:
         assert kwargs["IndexName"] == USERS_TABLE_SCOPE_INDEX
         condition = kwargs["KeyConditionExpression"]
         assert condition.get_expression()["values"][0].name == USERS_TABLE_SCOPE_KEY
+
+    def test_the_email_query_is_keyed_on_the_callers_own_address(self):
+        """The *value* put to EmailIndex, not just the index and attribute names.
+
+        A double that answers any key condition with the same page passes while the
+        code puts the wrong identifier to an email-keyed index — which is this
+        module's original defect, and exactly what the two assertions above cannot
+        see: they read the index name and the attribute the condition names, never
+        the value compared against it.
+        """
+        table = _table_returning(
+            [{"allowedConfigVersions": ["lending"]}], email="owner@example.com"
+        )
+        resource = _resource_for(table)
+
+        assert resolve_allowed_config_versions(
+            "owner@example.com", users_table_name="UsersTable", dynamodb=resource
+        ) == ["lending"]
+        assert (
+            resolve_allowed_config_versions(
+                "someone.else@example.com",
+                users_table_name="UsersTable",
+                dynamodb=resource,
+            )
+            is None
+        )
 
     def test_an_empty_page_is_still_unrestricted(self):
         """Scoping is opt-in: most users have no row, and must not be denied."""
@@ -266,7 +305,9 @@ class TestResolveAllowedConfigVersions:
         assert len(cache) == 1
         for entry in cache.values():
             entry["timestamp"] = 0.0
-        table.query.return_value = {"Items": [{"allowedConfigVersions": ["fresh"]}]}
+        table.query.side_effect = lambda **kw: {
+            "Items": [{"allowedConfigVersions": ["fresh"]}]
+        }
 
         scope = resolve_allowed_config_versions(
             "a@example.com",
@@ -316,6 +357,7 @@ class TestResolveAllowedConfigVersions:
         table = _table_returning(
             [{"allowedConfigVersions": ["by-email"]}],
             store=_pointing_at("u-1", {"allowedConfigVersions": ["by-sub"]}),
+            email="shared@example.com",
         )
         resource = _resource_for(table)
 
@@ -473,6 +515,32 @@ class TestTheSubJoin:
         )
 
         assert scope == ["tenant-b"]
+
+    def test_the_sub_leg_cannot_return_an_unrestricted_row(self, caplog):
+        """The property that stops this leg ever *widening* a scope.
+
+        The writer's invariant is that a pointer exists only for a row carrying a
+        restriction, because this leg is read first and therefore decides the answer.
+        A pointer resolving an unscoped row means the invariant is broken, so it is
+        treated as stale and the email join is tried — which can only tighten.
+        Believing it instead is the one shape that would let the preferred leg answer
+        "unrestricted" over a row the email join would have restricted.
+        """
+        table = _table_returning(
+            [{"allowedConfigVersions": ["tenant-b"]}],
+            store=_pointing_at("u-unscoped", {"userId": "u-unscoped"}),
+        )
+
+        with caplog.at_level("WARNING"):
+            scope = resolve_allowed_config_versions(
+                "a@example.com",
+                users_table_name="UsersTable",
+                dynamodb=_resource_for(table),
+                caller_sub=_SUB,
+            )
+
+        assert scope == ["tenant-b"]
+        assert any("stale" in r.getMessage() for r in caplog.records), caplog.text
 
     def test_a_pointer_with_no_user_id_falls_back_to_email(self):
         table = _table_returning(

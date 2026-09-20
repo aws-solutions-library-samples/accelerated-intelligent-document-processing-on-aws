@@ -742,7 +742,15 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
   scope at all. A row the back-fill has not reached still resolves on email alone and
   keeps the original exposure. After upgrading a federated deployment, open **User
   Management** once as an Admin to run the back-fill, and keep managing scoped users
-  through the IdP. Nothing in the product reports which rows are still email-only.
+  through the IdP.
+- ⚠️ **The back-fill cannot reach a row whose address already changed beyond case.** It
+  matches a Cognito account to its row on the recorded `sub`, the exact address, or the
+  case-folded address. A user who was re-mapped or renamed *before* this code ever ran
+  matches none of those, so the sync writes them a fresh, unscoped row — as it has
+  always done — and their original scoped row keeps the email-only exposure
+  indefinitely. Re-applying their scope to the row their current address resolves to is
+  the fix; `docs/rbac.md` has a one-line scan that lists every row still lacking a
+  `cognitoSub`.
   Tracked as a follow-up to
   [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
   This is also why the flag stays opt-in for federated deployments rather than
@@ -752,9 +760,10 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
 new User Pool, which in this solution means a new stack. Pre-existing
 `EXTERNAL_PROVIDER` user records cannot be migrated and users must re-federate; their
 new Cognito `sub` orphans per-user rows in `UsersTable` / `AllowedConfigVersions`,
-which an admin can re-key. (A new pool means new `sub` values, so the `sub` pointers
-from the old one point at nothing; re-running the sync from User Management writes the
-new ones.) As a one-shot bridge an admin can
+which an admin can re-key. (A new pool means new `sub` values. The old pool's pointers
+still name rows that exist, but no account in the new pool can present those `sub`
+values, so nothing reads them; re-running the sync from User Management writes the new
+ones.) As a one-shot bridge an admin can
 `aws cognito-idp admin-delete-user` the affected user, which buys exactly one
 additional login. Tracked in [#835](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/835).
 

@@ -363,7 +363,14 @@ def test_report_detail(mod):
 
 
 def test_report_detail_rbac_denied(mod):
-    """A scoped non-admin cannot read a row for a version outside their scope."""
+    """A scoped non-admin cannot read a row for a version outside their scope.
+
+    Refused as **404**, identical to an id with no record at all. Answering 403 here
+    and 404 there would tell a scoped caller which documentIds the audit table holds,
+    one bit per request — and that table is an inventory of every document the
+    anonymizer touched. A caller whose scope cannot be *evaluated* still gets a 403,
+    because that says something about the caller and nothing about the resource.
+    """
     table = _make_table()
     _make_users_table()
     table.put_item(
@@ -376,7 +383,7 @@ def test_report_detail_rbac_denied(mod):
     )
     _put_user("viewer@x", ["other-v1"])
     resp = _get(mod, "/report/doc.pdf", email="viewer@x", groups="[Viewer]")
-    assert resp["statusCode"] == 403
+    assert resp["statusCode"] == 404
 
 
 def test_report_detail_404(mod):
@@ -426,13 +433,14 @@ def _seed_mapping_doc(audit_table, mapping_table, doc_id, original_version):
 
 
 def test_mapping_denied_for_out_of_scope_user(mod):
+    """Refused as 404 — see test_report_detail_rbac_denied for why not 403."""
     audit = _make_table()
     _make_users_table()
     _seed_mapping_doc(audit, _make_mapping_table(), "doc1.pdf", "secret-v1")
     # user scoped to a DIFFERENT version
     _put_user("viewer@x", ["other-v1"])
     resp = _get(mod, "/report/doc1.pdf/mapping", email="viewer@x", groups="[Viewer]")
-    assert resp["statusCode"] == 403
+    assert resp["statusCode"] == 404
 
 
 def test_mapping_allowed_for_in_scope_user(mod):
@@ -583,6 +591,65 @@ def test_an_unresolvable_caller_cannot_tell_which_ids_exist(mod, path):
     assert present["body"] == absent["body"]
 
 
+@pytest.mark.parametrize("path", ["/report/{}", "/report/{}/mapping"])
+def test_a_scoped_caller_cannot_tell_which_out_of_scope_ids_exist(mod, path):
+    """The realistic population, and the one the *ordering* fix alone did not cover.
+
+    Resolving the scope before the record closes the oracle for a caller whose scope
+    cannot be **evaluated**. A caller whose scope resolves fine but does not cover
+    the document is a different and much commoner case — any scoped Viewer or Author
+    — and distinguishing "out of scope" from "no such record" hands them the same one
+    bit per request over the audit table, which is an inventory of every document the
+    anonymizer has touched. Both answer 404, with the same body.
+    """
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "present.pdf", "secret-v1")
+    _put_user("viewer@x", ["other-v1"])  # scope resolves, and excludes secret-v1
+
+    present = _get(mod, path.format("present.pdf"), email="viewer@x", groups="[Viewer]")
+    absent = _get(mod, path.format("absent.pdf"), email="viewer@x", groups="[Viewer]")
+
+    assert present["statusCode"] == 404
+    assert absent["statusCode"] == 404
+    assert present["body"] == absent["body"]
+    # And the body must not echo the id back either, which would identify the probe
+    # in a log or a proxy even where the status does not.
+    assert "present.pdf" not in present["body"]
+
+    # An Admin still gets the record, so this is not a blanket refusal.
+    assert (
+        _get(mod, path.format("present.pdf"), email="admin@x", groups="[Admin]")[
+            "statusCode"
+        ]
+        == 200
+    )
+
+
+def test_a_stale_pointer_at_an_unscoped_row_does_not_widen_the_scope(mod):
+    """The pointer leg is read first, so it must not be able to answer 'unrestricted'.
+
+    The host's writer only creates a pointer for a row carrying a restriction. One at
+    an unscoped row means that invariant is broken, and believing it would pin
+    "unrestricted" ahead of the row the email join finds — on the route that serves a
+    re-identification key. It is treated as stale instead.
+    """
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc10.pdf", "secret-v1")
+    # An unscoped row with a pointer, plus the scoped row the email join should find.
+    _put_user("viewer@x", None, user_id="u-unscoped", sub=_SUB)
+    _put_user("viewer@x", ["other-v1"], user_id="u-scoped")
+
+    resp = _get_with_claims(
+        mod,
+        "/report/doc10.pdf/mapping",
+        {"email": "viewer@x", "sub": _SUB, "cognito:groups": "[Viewer]"},
+    )
+
+    assert resp["statusCode"] == 404
+
+
 # ---- The sub join: a diverged address must not lift the restriction ----------
 
 
@@ -605,7 +672,7 @@ def test_a_diverged_email_still_applies_the_scope_through_the_sub(mod):
         {"email": "Renamed.User@x", "sub": _SUB, "cognito:groups": "[Viewer]"},
     )
 
-    assert resp["statusCode"] == 403
+    assert resp["statusCode"] == 404
 
 
 def test_the_sub_pointer_is_absent_from_the_email_index(mod):

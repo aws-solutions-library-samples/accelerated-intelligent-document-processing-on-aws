@@ -4,9 +4,10 @@
 
 ``allowedConfigVersions`` is the per-user restriction that decides which
 Configuration Profiles a caller may read or edit and which *documents* they may
-see. Discovery finds ten modules in the scanned subtrees that resolve it — nine
-independent artifacts plus one vendored copy — each having grown its own copy of the
-same three lines, and the copies had drifted into two fail-open shapes:
+see. Discovery finds 14 modules in the scanned subtrees that resolve it: the
+canonical implementation in ``idp_common``, ten independent artifacts, and three
+vendored copies. Each artifact had grown its own copy of the same three lines, and
+the copies had drifted into two fail-open shapes:
 
 1. **The lookup key came from an ``or``-chain of claims.** A ``UsersTable`` row is
    reached by one of exactly two keys, and they are **disjoint key spaces** on the
@@ -50,9 +51,8 @@ copy, written by someone who never read any of those tests.
 
 WHAT IS SCANNED, AND WHAT THAT MISSES
 -------------------------------------
-Discovery is by **content**, not by a list of filenames: any module under
-``nested/api-resolvers/src/lambda``, ``src/lambda`` or ``feature-platform`` that
-performs a UsersTable scope query, or calls the shared
+Discovery is by **content**, not by a list of filenames: any module under one of
+``SCAN_ROOTS`` that performs a UsersTable scope read, or calls the shared
 ``resolve_allowed_config_versions``, is in scope — so a new consumer is covered the
 moment it exists rather than when somebody remembers to add it here.
 
@@ -71,21 +71,22 @@ key, not by an index: a lookup that read the pointer and swallowed the failure w
 otherwise be invisible to every rule here, which is the quietest way for this gate
 to stop covering half of what it polices.
 
-Two limits worth stating rather than discovering:
+Three limits worth stating rather than discovering:
 
-* ``lib/idp_common_pkg`` is **not** scanned. That is where the canonical helper
-  lives, so scanning it would be circular, but it also means a *second* consumer
-  inside the library is unpoliced — ``idp_common/testset_scope.py`` is exactly that:
-  a ninth ``EmailIndex`` consumer, for the independent ``allowedTestSets`` axis,
-  carrying both forbidden shapes. Its polarity is inverted (an absent scope denies
-  rather than admits), so the shapes are not live there — but widening
-  ``SCAN_ROOTS`` to the library is the follow-up that would prove it rather than
-  argue it.
-* The rules are syntactic. They establish that no code *spells* the fail-open
+* The rules are **syntactic**. They establish that no code *spells* the fail-open
   shapes; they cannot establish that the value reaching a matcher was resolved from
-  the table. The per-site unit suites are what assert the behaviour.
+  the table, nor which of two identifiers a given expression is holding. The
+  per-site unit suites are what assert the behaviour.
+* The **low-level client's string** key condition (``KeyConditionExpression="email =
+  :e"``) is outside every key-provenance rule: the value arrives through
+  ``ExpressionAttributeValues`` and the rules read expressions, not strings. Such a
+  query is still *discovered*, so failure handling is covered; the key it puts to
+  ``EmailIndex`` is not.
+* One consumer is carried in ``PENDING_FIX`` rather than enforced:
+  ``idp_common/testset_scope.py``, for the independent ``allowedTestSets`` axis. See
+  that entry for why its shapes are not live and what would remove it.
 
-The scan is bounded to those three subtrees, which is also why it needs no
+The scan is bounded to the ``SCAN_ROOTS`` subtrees, which is also why it needs no
 gitignored-copy exclusion list: unlike the repo-wide walks in
 ``test_iam_privilege_escalation.py`` and its siblings, it cannot wander into
 ``scratch/`` or ``.claude/worktrees/``, so it behaves identically in a normal
@@ -104,11 +105,18 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# Subtrees that can hold a deploy artifact resolving a caller's scope.
+# Subtrees that can hold code resolving a caller's scope. `lib/idp_common_pkg` is in
+# the list because the **canonical** lookup lives there and every other consumer
+# imports it: leaving it out meant the one implementation that matters had no rule
+# applied to it, so a fail-open introduced there passed this gate and every per-site
+# suite at once. It also brings `idp_common/testset_scope.py` into view — a second
+# `EmailIndex` consumer, for the independent `allowedTestSets` axis — which is carried
+# in `PENDING_FIX` below with its rules named.
 SCAN_ROOTS = (
     "nested/api-resolvers/src/lambda",
     "src/lambda",
     "feature-platform",
+    "lib/idp_common_pkg/idp_common",
 )
 
 # A marker file that identifies the repo root, so this test asserts against THIS
@@ -147,6 +155,20 @@ _SCOPE_READ_CALLS = frozenset({"query", "get_item"})
 SCOPE_KEY_CLAIM = "email"
 SCOPE_SUB_CLAIM = "sub"
 SUB_POINTER_PREFIX = "SUB#"
+
+# The names the tree uses for those two claim strings, mapped to the claim each one
+# holds. Four consumers ship without an `idp_common` layer and restate the rule with
+# their own module constants, so a rule that recognised only a literal `"email"` /
+# `"sub"` saw nothing in exactly the files most likely to drift. Kept as literals
+# here on purpose: importing the modules under inspection would move both sides of
+# the comparison together, and a rename would then silence the rule rather than fail
+# it. `USERS_TABLE_SCOPE_KEY` is the *attribute* name, which is the same string.
+CLAIM_CONSTANTS = {
+    "SCOPE_KEY_CLAIM": SCOPE_KEY_CLAIM,
+    "USERS_TABLE_SCOPE_KEY": SCOPE_KEY_CLAIM,
+    "SCOPE_SUB_CLAIM": SCOPE_SUB_CLAIM,
+    "USERS_TABLE_SUB_CLAIM": SCOPE_SUB_CLAIM,
+}
 
 # Claim names that are NOT an identifier either key space indexes, so none of them
 # may stand in for either key. `callerSub` is here because it is how the original
@@ -277,11 +299,24 @@ _TRY_NODES: tuple[type, ...] = (
 # ⚠️ When #1020 lands, that test fails and the only correct response is to delete the
 # entry it names.
 PENDING_FIX: dict[str, frozenset[str]] = {
-    # Empty, and it should stay that way. This mapped a file to the specific rules a
-    # concurrent change was known to be fixing, so the suppression could not outlive its
-    # reason: ``test_the_pending_exemption_is_still_needed`` fails the moment a named rule
-    # stops firing. It did exactly that when the chat processor's fix landed, and the two
-    # entries came out. Add one only with the rules named, never a bare path.
+    # The ``allowedTestSets`` axis, which is not this gate's subject and is not fixed
+    # here. It became visible when ``lib/idp_common_pkg/idp_common`` entered
+    # ``SCAN_ROOTS`` so the canonical config-version lookup beside it could be policed.
+    #
+    # It genuinely carries both shapes — an ``or``-chain lookup key, and a caught query
+    # failure that leaves the answer at ``None``. What makes them **not** live is
+    # the axis's inverted polarity: ``assert_can_access_test_set`` requires an
+    # *explicit* scope for an Annotator, so ``None`` denies rather than admits. Both
+    # shapes therefore cost an Annotator their access rather than widening anyone's —
+    # availability, not escalation — and the fix belongs with the change that gives
+    # that axis the same ``sub`` join, not to this one.
+    #
+    # Named per rule, not per file, so any *other* rule firing here still fails the
+    # gate, and ``test_the_pending_exemption_is_still_needed`` deletes the entry the
+    # moment either of these stops firing. SCOPE2 is deliberately absent: its key comes
+    # from a ``return``, not an assignment to a named key, so that rule does not reach
+    # it — and naming a rule that does not fire is what that test refuses.
+    "lib/idp_common_pkg/idp_common/testset_scope.py": frozenset({"SCOPE1", "SCOPE3"}),
 }
 
 
@@ -342,12 +377,35 @@ def _python_files(root: Path):
             yield path
 
 
+def _claim_named_by(node: ast.AST) -> str | None:
+    """The claim a subscript/`get` key names, whether written literally or as a name.
+
+    The tree spells these keys **both** ways. `claims.get("email")` is the literal
+    form; `claims.get(SCOPE_KEY_CLAIM)` is the house style in the four consumers that
+    ship without an `idp_common` layer and restate the rule with their own constants.
+    A rule that saw only the literal went quiet in exactly those four files — and
+    `claims.get(SCOPE_KEY_CLAIM) or claims.get(SCOPE_SUB_CLAIM)` is then the *natural*
+    way to write the fallback this gate exists to forbid.
+
+    Resolved by **name**, deliberately, rather than by importing the module under
+    inspection: importing it would move both sides of the comparison at once, and a
+    rename would silence the rule instead of failing it.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return CLAIM_CONSTANTS.get(node.id)
+    return None
+
+
 def _is_claim_read(node: ast.AST) -> str | None:
     """The claim name a node reads, or None.
 
     Matches both `claims.get("email", "")` and `claims["email"]`, whatever the
     receiver is called — the receiver name carries no information here, and
-    requiring one would make the rule dodgeable by renaming a variable.
+    requiring one would make the rule dodgeable by renaming a variable. The key may
+    be a literal or one of the constants the tree names it with; see
+    :func:`_claim_named_by`.
     """
     if isinstance(node, ast.Call):
         func = node.func
@@ -355,13 +413,11 @@ def _is_claim_read(node: ast.AST) -> str | None:
             isinstance(func, ast.Attribute)
             and func.attr == "get"
             and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
+            and _claim_named_by(node.args[0]) is not None
         ):
-            return node.args[0].value
-    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
-        if isinstance(node.slice.value, str):
-            return node.slice.value
+            return _claim_named_by(node.args[0])
+    if isinstance(node, ast.Subscript):
+        return _claim_named_by(node.slice)
     return None
 
 
@@ -787,23 +843,32 @@ def _check_key_provenance(path: str, tree: ast.AST) -> list[Finding]:
 def _email_key_condition_value(node: ast.AST) -> ast.expr | None:
     """The value put to an ``email``-keyed DynamoDB key condition, or None.
 
-    Matches ``Key("email").eq(x)`` and ``Key(USERS_TABLE_SCOPE_KEY).eq(x)``, in any
-    of boto3's condition methods, and returns ``x``.
+    Matches ``<factory>("email").eq(x)`` and ``<factory>(USERS_TABLE_SCOPE_KEY).eq(x)``
+    in any of boto3's condition methods, and returns ``x``.
+
+    ⚠️ **The factory's name is deliberately not part of the signal.** The condition
+    class is `boto3.dynamodb.conditions.Key`, but this tree reaches it under three
+    spellings: `Key(...)` in the resolvers, `_Key(...)` where the import is aliased,
+    and a `key_factory` **parameter** in the canonical module — which takes it as an
+    argument precisely so the module needs no boto3 at import time, which is what lets
+    the document-list resolvers vendor it. Requiring the literal `Key` made this rule
+    inert at three of the four sites implementing the leg it polices, including the
+    canonical one every other consumer imports.
+
+    What identifies the condition is its **argument**: a condition built on the
+    ``email`` attribute is an ``EmailIndex`` hash-key condition whoever constructed
+    it. A same-shaped call on some unrelated `"email"`-keyed structure would also
+    match, which is acceptable — this only runs inside modules already discovered as
+    scope consumers, and over-matching is the safe direction for this gate.
     """
     if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
         return None
     if not node.args:
         return None
     key_call = node.func.value
-    if not isinstance(key_call, ast.Call) or _call_name(key_call) != "Key":
+    if not isinstance(key_call, ast.Call) or not key_call.args:
         return None
-    if not key_call.args:
-        return None
-    named = key_call.args[0]
-    names_email = (
-        isinstance(named, ast.Constant) and named.value == SCOPE_KEY_CLAIM
-    ) or (isinstance(named, ast.Name) and named.id == "USERS_TABLE_SCOPE_KEY")
-    return node.args[0] if names_email else None
+    return node.args[0] if _claim_named_by(key_call.args[0]) == SCOPE_KEY_CLAIM else None
 
 
 def _check_key_space_confusion(path: str, tree: ast.AST) -> list[Finding]:
@@ -1102,11 +1167,11 @@ def test_the_scan_finds_the_consumers_it_is_meant_to_police(scanned):
     discovered, _ = scanned
     names = {path.parent.name for path in discovered}
 
-    # A floor close to the real count, not a token one. A generous `>= 8` against 12
-    # discovered means three consumers could drop out of discovery — and a module that
-    # escapes discovery has NO rule applied to it, silently — while the assertion
+    # A floor equal to the real count, not a token one. A generous `>= 8` against 14
+    # discovered would mean six consumers could drop out of discovery — and a module
+    # that escapes discovery has NO rule applied to it, silently — while the assertion
     # still passed. Raise this when a consumer is added; lowering it needs a reason.
-    assert len(discovered) >= 12, (
+    assert len(discovered) >= 14, (
         f"the scope-lookup scan discovered only {len(discovered)} modules. A module "
         "that escapes discovery has no rule applied to it at all, so a drop here is "
         f"a silent loss of coverage, not a cleanup. Found: {sorted(names)}"
@@ -1125,6 +1190,9 @@ def test_the_scan_finds_the_consumers_it_is_meant_to_police(scanned):
         "chat_with_document_processor",
         "vendored",
         "feature-api",
+        # The canonical lookup and the matcher every other consumer imports. Absent
+        # from this list, a fail-open introduced there passed the gate outright.
+        "idp_common",
     ):
         assert expected in names, f"{expected} no longer looks like a scope consumer"
 

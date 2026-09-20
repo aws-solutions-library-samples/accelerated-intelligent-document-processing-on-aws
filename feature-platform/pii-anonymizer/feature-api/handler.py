@@ -176,6 +176,23 @@ def _caller_allowed_versions(email: str, caller_sub: str = "") -> Optional[list]
             user_id = str((pointer or {}).get("userId") or "").strip()
             if user_id:
                 row = table.get_item(Key=_user_row_key(user_id)).get("Item") or None
+            # ⚠️ This leg cannot return an unrestricted row. The host's writer only
+            # creates a pointer for a row that carries a restriction, because the
+            # pointer is read FIRST and so decides the answer — one at an unscoped
+            # row would pin "unrestricted" ahead of whatever the email join would
+            # have found. A pointer resolving an unscoped row means that invariant
+            # is broken, so it is treated as stale and the email join is tried,
+            # which can only tighten. Mirrors ``_row_by_sub`` in the host's
+            # ``idp_common.config_scope``.
+            if row is not None and not _normalize_scope(
+                row.get("allowedConfigVersions")
+            ):
+                logger.warning(
+                    "A host UsersTable %s pointer names a row carrying no "
+                    "allowedConfigVersions; treating it as stale",
+                    USERS_TABLE_SUB_POINTER_PREFIX,
+                )
+                row = None
         if row is None and email:
             resp = table.query(
                 IndexName=USERS_TABLE_SCOPE_INDEX,
@@ -343,6 +360,27 @@ def _visible_to(row: Dict[str, Any], is_admin: bool, allowed: Optional[list]) ->
     return _scope_allows(allowed, row.get("originalConfigVersion"))
 
 
+_NOT_FOUND = {"error": "no redaction record for that document, or it is out of scope."}
+
+
+def _not_found() -> Dict[str, Any]:
+    """The single answer for "no such record" and "not yours" on the doc routes.
+
+    ⚠️ **One body and one status for both, deliberately.** Distinguishing them tells a
+    caller which ``documentId``s exist in the audit table — one bit per request, from
+    a caller who is entitled to read none of them, and a scoped Viewer or Author is
+    exactly the population that can ask. The audit table is an inventory of every
+    document the anonymizer touched, so enumerating it is itself the disclosure.
+
+    A caller whose scope cannot be **evaluated** still gets a distinct 403: that
+    answer is about the caller, not about the resource, so it leaks nothing about
+    which ids exist — and telling an operator "your access could not be verified"
+    rather than "not found" is the difference between a diagnosable failure and a
+    silent one.
+    """
+    return _response(404, dict(_NOT_FOUND))
+
+
 def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     path = event.get("rawPath", "/")
     qs = event.get("queryStringParameters") or {}
@@ -418,7 +456,9 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         # answers 404 for an absent one and 403 for a present one, to a caller whose
         # scope could not be resolved — one bit of the audit table's contents per
         # request, to a caller entitled to none of it. Resolving the scope first
-        # means every such caller gets the same 403 whatever the id names.
+        # means every such caller gets the same 403 whatever the id names, and an
+        # out-of-scope record then answers exactly as an absent one does: see
+        # `_not_found`, which is the other half of the same property.
         try:
             allowed = _caller_allowed_versions(_caller_email(event), _caller_sub(event))
         except ScopeLookupError:
@@ -428,23 +468,14 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             logger.exception("get report row failed")
             return _response(500, {"error": str(exc)})
-        if not row:
-            return _response(404, {"error": f"no redaction record for {doc_id!r}"})
+        if not row or not _visible_to(row, is_admin, allowed):
+            return _not_found()
         if not row.get("mappingStored"):
-            return _response(404, {"error": "no stored mapping for this document"})
-
-        if not _visible_to(row, is_admin, allowed):
-            return _response(
-                403,
-                {
-                    "error": "Access denied: you do not have access to the "
-                    "config version that processed the original document."
-                },
-            )
+            return _not_found()
 
         mapping_doc = _read_mapping(doc_id)
         if mapping_doc is None:
-            return _response(404, {"error": "stored mapping not found"})
+            return _not_found()
         return _response(200, mapping_doc)
 
     m = re.match(r"^/report/(.+)$", path)
@@ -452,10 +483,11 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         doc_id = unquote(m.group(1))
         # RBAC first, before the record is read: a scoped user may only see a row
         # for a config version they are allowed (fail closed on a lookup error →
-        # 403). Reading the record first would distinguish an absent id (404) from a
-        # present one (403) for a caller whose scope cannot be resolved — an
-        # existence oracle over the audit table, one bit per request. Same ordering
-        # rule as the /mapping route above.
+        # 403). Reading the record first would distinguish an absent id from a
+        # present one for a caller whose scope cannot be resolved — an existence
+        # oracle over the audit table, one bit per request. Same ordering rule as
+        # the /mapping route above, and the same `_not_found` for both "no such
+        # record" and "not yours".
         try:
             allowed = _caller_allowed_versions(_caller_email(event), _caller_sub(event))
         except ScopeLookupError:
@@ -465,10 +497,8 @@ def lambda_handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             logger.exception("get report row failed")
             return _response(500, {"error": str(exc)})
-        if not row:
-            return _response(404, {"error": f"no redaction record for {doc_id!r}"})
-        if not _visible_to(row, is_admin, allowed):
-            return _response(403, {"error": "Access denied."})
+        if not row or not _visible_to(row, is_admin, allowed):
+            return _not_found()
         return _response(200, row)
 
     return _response(404, {"error": f"unknown path {path}"})

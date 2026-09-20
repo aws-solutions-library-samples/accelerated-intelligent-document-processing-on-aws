@@ -42,8 +42,9 @@ SAFETY
   random per-run password and removed in teardown. The script temporarily adds
   ALLOW_ADMIN_USER_PASSWORD_AUTH to the UI app client and ALWAYS reverts the
   client to its prior auth flows — even with --no-teardown, which only keeps
-  the test users. The scoped user's seeded UsersTable row is deleted in
-  teardown.
+  the test users. Both UsersTable items the scoped user needs — the USER# row
+  and its SUB#<sub> pointer — are deleted in teardown, and --teardown-only
+  re-derives their keys from the table when it has no record of them.
 * Nothing here is destructive to real stack data.
 
 USAGE
@@ -195,15 +196,63 @@ def setup_users(ctx):
     )
 
 
+def _cognito_sub(ctx, email):
+    """The immutable Cognito ``sub`` of a user we just created, or "".
+
+    ``create_cognito_user`` discards ``admin-create-user``'s response (it tolerates
+    a pre-existing user, whose response would carry nothing), so the sub is read
+    back with ``admin-get-user`` — the authoritative value either way.
+
+    Returns "" rather than raising on any failure. The sub is used only to seed an
+    *additional* route to the same row; without it the seeding degrades to the
+    email-only shape, which is what every deployment predating pointers has, and
+    the scope suite still runs.
+    """
+    try:
+        resp = aws(
+            "cognito-idp",
+            "admin-get-user",
+            "--user-pool-id",
+            ctx["user_pool"],
+            "--username",
+            email,
+            region=ctx["region"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN: could not read the Cognito sub for {email}: {exc}")
+        return ""
+    for attr in (resp or {}).get("UserAttributes") or []:
+        if attr.get("Name") == "sub":
+            return str(attr.get("Value") or "").strip()
+    return ""
+
+
 def _seed_scoped_user(ctx):
-    """Write a UsersTable row giving the scoped user a restrictive
-    allowedConfigVersions. The configuration_resolver looks this up by email
-    (EmailIndex) to enforce config-version scope."""
+    """Seed the scoped user's UsersTable row the way user_management writes one.
+
+    Two items, because a verified caller reaches their row through one of two
+    disjoint key spaces on this table (see idp_common.config_scope):
+
+      * the row itself at PK/SK = ``USER#<userId>``, found by the ``email`` claim
+        through the EmailIndex GSI;
+      * a pointer at PK/SK = ``SUB#<sub>`` carrying that ``userId``, found by the
+        immutable Cognito ``sub``.
+
+    The **pointer is tried first**, and the Cognito user created above has a real
+    sub, so seeding only the row would have every live scope check fall through to
+    the compatibility leg and leave the leg that actually runs untested.
+
+    ⚠️ The pointer must carry no ``email`` attribute: a GSI indexes only items
+    holding its hash key, so an emailless pointer is absent from EmailIndex and
+    cannot be returned by the ``Limit=1`` email query in place of the row. A pointer
+    holds no ``allowedConfigVersions``, so that substitution would lift the scope.
+    """
     if not ctx.get("users_table"):
         print("WARN: UsersTable not found — scope suite will be skipped.")
         return
     uid = f"rbac-test-{uuid.uuid4()}"
     email = test_email(SCOPED)
+    sub = _cognito_sub(ctx, email)
     item = {
         "PK": {"S": f"USER#{uid}"},
         "SK": {"S": f"USER#{uid}"},
@@ -213,42 +262,106 @@ def _seed_scoped_user(ctx):
         "status": {"S": "active"},
         "allowedConfigVersions": {"L": [{"S": SCOPE_VERSION}]},
     }
-    aws(
-        "dynamodb",
-        "put-item",
-        "--table-name",
-        ctx["users_table"],
-        "--item",
-        json.dumps(item),
-        region=ctx["region"],
+    if sub:
+        item["cognitoSub"] = {"S": sub}
+    keys = [{"PK": {"S": f"USER#{uid}"}, "SK": {"S": f"USER#{uid}"}}]
+    items = [item]
+    if sub:
+        items.append(
+            {
+                "PK": {"S": f"SUB#{sub}"},
+                "SK": {"S": f"SUB#{sub}"},
+                "userId": {"S": uid},
+                "cognitoSub": {"S": sub},
+            }
+        )
+        keys.append({"PK": {"S": f"SUB#{sub}"}, "SK": {"S": f"SUB#{sub}"}})
+    # Every key is recorded BEFORE the write, so a put that fails halfway still
+    # leaves teardown something to delete. This is the live stack's own table in a
+    # shared account; an item left behind is a real defect, not untidiness.
+    ctx["_scoped_user_keys"] = keys
+    for entry in items:
+        aws(
+            "dynamodb",
+            "put-item",
+            "--table-name",
+            ctx["users_table"],
+            "--item",
+            json.dumps(entry),
+            region=ctx["region"],
+        )
+    print(
+        f"  scoped row USER#{uid}"
+        + (f" + pointer SUB#{sub}" if sub else " (no Cognito sub — email leg only)")
     )
-    ctx["_scoped_user_key"] = {
-        "PK": {"S": f"USER#{uid}"},
-        "SK": {"S": f"USER#{uid}"},
-    }
+
+
+def _recover_scoped_user_keys(ctx):
+    """Re-derive the scoped user's item keys from the table itself.
+
+    ``--teardown-only`` (and a rerun after a killed process) gets a fresh ctx, so
+    nothing recorded what ``_seed_scoped_user`` wrote. The row is still findable by
+    the one thing that does not change between runs — the scoped user's email — and
+    it records the ``userId`` and the ``cognitoSub`` the two keys are built from.
+
+    Best effort: returns [] on any failure, since this runs in a teardown path.
+    """
+    try:
+        resp = aws(
+            "dynamodb",
+            "query",
+            "--table-name",
+            ctx["users_table"],
+            "--index-name",
+            "EmailIndex",
+            "--key-condition-expression",
+            "email = :e",
+            "--expression-attribute-values",
+            json.dumps({":e": {"S": test_email(SCOPED)}}),
+            region=ctx["region"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN: could not look up the scoped row to delete it: {exc}")
+        return []
+    keys = []
+    for row in (resp or {}).get("Items") or []:
+        uid = (row.get("userId") or {}).get("S")
+        if uid:
+            keys.append({"PK": {"S": f"USER#{uid}"}, "SK": {"S": f"USER#{uid}"}})
+        sub = (row.get("cognitoSub") or {}).get("S")
+        if sub:
+            keys.append({"PK": {"S": f"SUB#{sub}"}, "SK": {"S": f"SUB#{sub}"}})
+    return keys
 
 
 def teardown_users(ctx):
     for role in [*ROLES, SCOPED, USER_B]:
         delete_cognito_user(ctx, test_email(role))
-    key = ctx.get("_scoped_user_key")
-    if key and ctx.get("users_table"):
-        subprocess.run(
-            [
-                AWS_BIN,
-                "dynamodb",
-                "delete-item",
-                "--table-name",
-                ctx["users_table"],
-                "--key",
-                json.dumps(key),
-                "--region",
-                ctx["region"],
-            ],
-            capture_output=True,
-            text=True,
-        )
-    print("Deleted test users and scoped row.")
+    # Both items the seeding wrote: the USER# row and its SUB# pointer. Deleting
+    # only the row would leave a pointer in the live stack's UsersTable naming a row
+    # that no longer exists — harmless to the lookup, which falls through to the
+    # email leg, but still our litter in a shared account.
+    keys = ctx.get("_scoped_user_keys") or []
+    if ctx.get("users_table"):
+        if not keys:
+            keys = _recover_scoped_user_keys(ctx)
+        for key in keys:
+            subprocess.run(
+                [
+                    AWS_BIN,
+                    "dynamodb",
+                    "delete-item",
+                    "--table-name",
+                    ctx["users_table"],
+                    "--key",
+                    json.dumps(key),
+                    "--region",
+                    ctx["region"],
+                ],
+                capture_output=True,
+                text=True,
+            )
+    print(f"Deleted test users and {len(keys)} scoped UsersTable item(s).")
 
 
 def get_token(ctx, role):

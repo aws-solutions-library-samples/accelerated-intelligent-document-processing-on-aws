@@ -130,8 +130,33 @@ def _user_row_key(user_id):
     return {"PK": key, "SK": key}
 
 
-def _record_cognito_sub(table, user_id, caller_sub):
-    """Record a user's Cognito ``sub`` on their row, and write its pointer.
+def _is_scoped(row):
+    """Whether a user row carries a config-version restriction."""
+    raw = (row or {}).get("allowedConfigVersions")
+    if not raw:
+        return False
+    if isinstance(raw, str):
+        return bool(raw.strip())
+    return any(str(entry).strip() for entry in raw)
+
+
+def _record_cognito_sub(table, user_id, caller_sub, *, scoped):
+    """Record a user's Cognito ``sub`` on their row, and maintain its pointer.
+
+    ⚠️ **A pointer exists only for a row that carries a restriction**, which is what
+    ``scoped`` decides. That is the invariant every reader depends on, and it is not
+    an optimisation:
+
+    * A row with no ``allowedConfigVersions`` resolves to "unrestricted" through
+      either key, so a pointer for it changes no authorization answer.
+    * A pointer is read **before** the email join, so it decides the answer. Pointing
+      one at an unrestricted row therefore *pins* "unrestricted" ahead of any row the
+      email join would have found — and this function's own caller can create such a
+      row: the Cognito sync writes a fresh unscoped row whenever a Cognito address
+      matches none it knows, which is what happens to a user whose address diverged
+      from their (scoped) row. Before this rule, that duplicate got the pointer, and
+      correcting the address no longer restored the scope. With it, resolving through
+      a pointer can only ever *tighten*.
 
     ⚠️ The pointer item carries **no** ``email`` attribute, and must not gain one.
     A DynamoDB GSI indexes only items that have its hash key, so an item without
@@ -139,6 +164,10 @@ def _record_cognito_sub(table, user_id, caller_sub):
     pointers out of an email query's result page. Give a pointer an ``email`` and a
     ``Limit=1`` email query could return the pointer instead of the row; the
     pointer holds no ``allowedConfigVersions``, so the scope would silently lift.
+
+    The ``sub`` itself is recorded on the row unconditionally. It is not a lookup key
+    on its own — it is how the next sync recognises this row as this Cognito
+    account's whatever the address now says — so recording it is always safe.
 
     Failures are logged, not raised. The pointer is an *additional* route to a row
     that ``EmailIndex`` still finds, so a user whose pointer could not be written
@@ -149,17 +178,30 @@ def _record_cognito_sub(table, user_id, caller_sub):
         return False
     now = datetime.utcnow().isoformat() + "Z"
     try:
+        # `attribute_exists(PK)` because `update_item` UPSERTS. The user_id can come
+        # from a scan that is seconds old, so a concurrent deleteUser is enough to
+        # make this mint a partial row — no `email`, no `userId` — which then raises
+        # KeyError in both the sync's scan loop and `list_users`, and those are the
+        # only route into User Management *and* the only thing that runs this
+        # back-fill. One such item would brick the page for every Admin.
         table.update_item(
             Key=_user_row_key(user_id),
             UpdateExpression="SET #sub = :sub, updatedAt = :now",
             ExpressionAttributeNames={"#sub": USERS_TABLE_SUB_ATTRIBUTE},
             ExpressionAttributeValues={":sub": caller_sub, ":now": now},
+            ConditionExpression="attribute_exists(PK)",
         )
-        pointer = _sub_pointer_key(caller_sub)
-        pointer["userId"] = user_id
-        pointer[USERS_TABLE_SUB_ATTRIBUTE] = caller_sub
-        pointer["updatedAt"] = now
-        table.put_item(Item=pointer)
+        if scoped:
+            pointer = _sub_pointer_key(caller_sub)
+            pointer["userId"] = user_id
+            pointer[USERS_TABLE_SUB_ATTRIBUTE] = caller_sub
+            pointer["updatedAt"] = now
+            table.put_item(Item=pointer)
+        else:
+            # Unrestricted now, so no pointer may survive: a scope removed through
+            # updateUser must not leave one behind pointing at the row it used to
+            # restrict.
+            table.delete_item(Key=_sub_pointer_key(caller_sub))
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "Could not record the Cognito %s for user %s; their scope stays "
@@ -271,8 +313,7 @@ def create_user(args):
 
     # Create user record in DynamoDB
     user_record = {
-        "PK": f"USER#{user_id}",
-        "SK": f"USER#{user_id}",
+        **_user_row_key(user_id),
         "userId": user_id,
         "email": email,
         "persona": persona,
@@ -302,7 +343,11 @@ def create_user(args):
     # identifier from the first sign-in rather than only on an address that can
     # later diverge from it. Done after the account exists because the sub does not
     # exist until then; a failure here is logged and leaves the email join intact.
-    if caller_sub and _record_cognito_sub(table, user_id, caller_sub):
+    # The pointer follows only if this user is actually restricted — see
+    # _record_cognito_sub for why that is the invariant and not a saving.
+    if caller_sub and _record_cognito_sub(
+        table, user_id, caller_sub, scoped=_is_scoped(user_record)
+    ):
         user_record[USERS_TABLE_SUB_ATTRIBUTE] = caller_sub
 
     logger.info(f"User {email} created successfully")
@@ -331,7 +376,7 @@ def update_user(args):
     table = dynamodb.Table(USERS_TABLE_NAME)
 
     # Get existing user record
-    response = table.get_item(Key={"PK": f"USER#{user_id}", "SK": f"USER#{user_id}"})
+    response = table.get_item(Key=_user_row_key(user_id))
     if not response.get("Item"):
         raise ValueError(f"User {user_id} not found")
 
@@ -366,14 +411,28 @@ def update_user(args):
         update_expr += f" REMOVE {', '.join(remove_parts)}"
 
     table.update_item(
-        Key={"PK": f"USER#{user_id}", "SK": f"USER#{user_id}"},
+        Key=_user_row_key(user_id),
         UpdateExpression=update_expr,
         ExpressionAttributeValues=expr_values,
     )
 
     # Return updated user
-    updated = table.get_item(Key={"PK": f"USER#{user_id}", "SK": f"USER#{user_id}"})
-    return user_response_from_item(updated["Item"])
+    updated = table.get_item(Key=_user_row_key(user_id))
+    updated_item = updated["Item"]
+
+    # Bring the sub pointer into line with what the row now says. Setting a scope on
+    # a row that records a sub gives it a pointer, so the restriction survives the
+    # address changing; removing the scope removes the pointer, because a pointer at
+    # an unrestricted row would pin "unrestricted" ahead of the email join. A row
+    # that records no sub yet gets neither — the Cognito sync records it on the next
+    # Admin `listUsers`, which is how an administrator reached this operation.
+    recorded_sub = str(updated_item.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
+    if recorded_sub:
+        _record_cognito_sub(
+            table, user_id, recorded_sub, scoped=_is_scoped(updated_item)
+        )
+
+    return user_response_from_item(updated_item)
 
 
 def delete_user(args):
@@ -385,7 +444,7 @@ def delete_user(args):
     table = dynamodb.Table(USERS_TABLE_NAME)
 
     # Get user record
-    response = table.get_item(Key={"PK": f"USER#{user_id}", "SK": f"USER#{user_id}"})
+    response = table.get_item(Key=_user_row_key(user_id))
 
     if not response.get("Item"):
         raise ValueError(f"User {user_id} not found")
@@ -619,23 +678,39 @@ def sync_cognito_users_to_dynamodb():
     # below under a fresh uuid4, duplicating the record. (The Cognito paginator
     # further down pages Cognito, not this scan.)
     #
-    # ``userId`` and the recorded sub are projected as well as ``email`` because
-    # the back-fill needs to know which existing rows have no pointer yet, and
-    # which row to attach one to.
+    # ``userId``, the recorded sub and the scope are projected as well as ``email``
+    # because the back-fill needs to know which row a Cognito account belongs to,
+    # which rows have no sub recorded yet, and which of them carry a restriction (the
+    # condition for writing a pointer at all — see ``_record_cognito_sub``).
     existing_scan_kwargs = {
         "FilterExpression": "begins_with(PK, :pk_prefix)",
         "ExpressionAttributeValues": {":pk_prefix": USERS_TABLE_USER_KEY_PREFIX},
-        "ProjectionExpression": "#e, userId, #sub",
+        "ProjectionExpression": "#e, userId, #sub, #acv",
         "ExpressionAttributeNames": {
             "#e": USERS_TABLE_SCOPE_KEY,
             "#sub": USERS_TABLE_SUB_ATTRIBUTE,
+            "#acv": "allowedConfigVersions",
         },
     }
-    existing_rows = {}
+    # Three indexes, because matching a Cognito account to its row on the address
+    # ALONE is what duplicates a row whose address has changed — and a duplicate
+    # carries no scope, so the user silently loses their restriction. In priority
+    # order: the recorded ``sub``, which is definitive and survives any rename; the
+    # exact address; then the case-folded address, which closes the commonest cause
+    # of divergence on its own, since mail systems are case-insensitive and DynamoDB
+    # is not.
+    rows_by_sub = {}
+    rows_by_email = {}
+    rows_by_folded_email = {}
     while True:
         existing_response = table.scan(**existing_scan_kwargs)
         for item in existing_response.get("Items", []):
-            existing_rows[item[USERS_TABLE_SCOPE_KEY]] = item
+            row_email = item[USERS_TABLE_SCOPE_KEY]
+            rows_by_email[row_email] = item
+            rows_by_folded_email.setdefault(row_email.casefold(), item)
+            recorded = str(item.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
+            if recorded:
+                rows_by_sub[recorded] = item
         last_key = existing_response.get("LastEvaluatedKey")
         if not last_key:
             break
@@ -656,18 +731,39 @@ def sync_cognito_users_to_dynamodb():
                     break
             caller_sub = _sub_from_cognito_attributes(user.get("Attributes"))
 
-            # Already in DynamoDB — give the row its sub pointer if it has none, or
-            # re-point it if Cognito now reports a different sub for this address
-            # (an account deleted and recreated under the same one). The superseded
-            # pointer is deliberately left behind: its sub belongs to an account
-            # that no longer exists and so can never authenticate again, and
-            # deleting it would need a read to confirm it is not some *other* live
-            # user's, which this loop does not have.
-            existing = existing_rows.get(email)
+            # Which row is this Cognito account's? The sub is definitive; failing
+            # that the exact address, then the case-folded one.
+            existing = None
+            if caller_sub:
+                existing = rows_by_sub.get(caller_sub)
+            if existing is None:
+                existing = rows_by_email.get(email)
+            if existing is None:
+                existing = rows_by_folded_email.get(email.casefold())
+                if existing is not None:
+                    logger.info(
+                        "Matched a Cognito account to an existing user row on a "
+                        "case-insensitive address; not creating a duplicate"
+                    )
+
             if existing is not None:
+                # Record the sub if it is new or has changed (an account deleted and
+                # recreated under the same address), and bring the pointer into line
+                # with whether this row carries a restriction. The superseded pointer
+                # is deliberately left behind: its sub belongs to an account that no
+                # longer exists and so can never authenticate again, and deleting it
+                # would need a read to confirm it is not some *other* live user's,
+                # which this loop does not have.
                 recorded = str(existing.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
-                if caller_sub and recorded != caller_sub:
-                    _record_cognito_sub(table, existing.get("userId"), caller_sub)
+                if caller_sub and (
+                    recorded != caller_sub or _is_scoped(existing)
+                ):
+                    _record_cognito_sub(
+                        table,
+                        existing.get("userId"),
+                        caller_sub,
+                        scoped=_is_scoped(existing),
+                    )
                 continue
 
             # Get user's groups to determine persona
@@ -703,9 +799,14 @@ def sync_cognito_users_to_dynamodb():
             if caller_sub:
                 user_record[USERS_TABLE_SUB_ATTRIBUTE] = caller_sub
 
+            # No pointer: the sub is recorded on the row above, but a row created
+            # here carries no ``allowedConfigVersions``, and a pointer at an
+            # unrestricted row would pin "unrestricted" ahead of the email join.
+            # That matters because this is also the branch a user whose address
+            # changed beyond recognition lands in — creating a row rather than
+            # updating theirs. `updateUser` writes the pointer when a scope is
+            # actually applied. See `_record_cognito_sub`.
             table.put_item(Item=user_record)
-            if caller_sub:
-                _record_cognito_sub(table, user_id, caller_sub)
             logger.info(f"Synced Cognito user {email} to DynamoDB")
 
 

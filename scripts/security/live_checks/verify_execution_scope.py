@@ -3,8 +3,14 @@
 
 Deploys the shipped resolver source into a real Lambda with the IAM policy the
 template grants it, against two real Step Functions state machines and a real
-DynamoDB table shaped like UsersTable, then invokes it with resolver-shaped
-events.
+DynamoDB table carrying UsersTable's own key schema — ``PK`` HASH + ``SK`` RANGE
+with one ``EmailIndex`` GSI on ``email`` (see the ``UsersTable`` resource in
+``template.yaml``) — then invokes it with resolver-shaped events.
+
+That key schema is not cosmetic. The scope lookup's first leg is a ``GetItem`` on
+``PK``/``SK`` = ``SUB#<sub>``, so a stand-in table keyed on a single attribute
+makes every scoped read raise ``ValidationException``; the lookup fails closed and
+each check reds for a reason that has nothing to do with the control.
 
 The two state machines are named so the IAM grant's prefix wildcard covers both:
 the resolver's policy allows `execution:<stack>-*`, and the "foreign" machine is
@@ -16,8 +22,13 @@ resolver code — which is the point of the fix.
 What this covers that unit tests cannot:
   * the shipped policy is sufficient for the reads the resolver makes, and does
     NOT stop the cross-deployment read on its own;
-  * a real DynamoDB EmailIndex Query returns the scope in the shape the resolver
-    reads;
+  * a real ``SUB#<sub>`` pointer GetItem, followed by the ``USER#<userId>``
+    GetItem it names, returns the scope in the shape the resolver reads — the leg
+    a real caller's token hits FIRST, because every Cognito ID token carries a
+    ``sub``;
+  * a real EmailIndex Query still returns it for a caller presenting no ``sub``,
+    which is the compatibility leg and the only one available for a row written
+    before pointers existed;
   * real describe_execution / get_execution_history payloads parse, including
     the config_version the scope check depends on;
   * PermissionError leaves the Lambda as a FunctionError (what the dispatcher
@@ -63,6 +74,20 @@ OUT_OF_SCOPE_VERSION = "tenant-b"
 SCOPED_USER = "scoped@example.invalid"
 UNSCOPED_USER = "unscoped@example.invalid"
 
+# The uuid4 userId user_management mints for a row, and the immutable Cognito sub
+# a token presents. They are unrelated identifiers in disjoint key spaces on one
+# table: the row lives at USER#<userId> and nothing in a token names it, so the
+# sub reaches it only through the SUB#<sub> pointer item that carries the userId.
+SCOPED_USER_ID = "11111111-1111-4111-8111-111111111111"
+UNSCOPED_USER_ID = "22222222-2222-4222-8222-222222222222"
+SCOPED_USER_SUB = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+UNSCOPED_USER_SUB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+# Which stand-in sub each test identity presents, so the existing call sites of
+# event() get the right one without naming it. A caller absent from this map
+# presents no sub at all, which is how the email-only leg is exercised below.
+_SUBS = {SCOPED_USER: SCOPED_USER_SUB, UNSCOPED_USER: UNSCOPED_USER_SUB}
+
 _results: list[tuple[bool, str]] = []
 
 
@@ -71,18 +96,30 @@ def check(ok: bool, label: str) -> None:
     print(f"  {'PASS' if ok else 'FAIL'}  {label}")
 
 
-def event(execution_arn: str, email: str, groups: list[str]) -> dict:
-    """The AppSync-shaped event http_api_dispatcher hands the resolver."""
+def event(
+    execution_arn: str, email: str, groups: list[str], sub: str | None = None
+) -> dict:
+    """The AppSync-shaped event http_api_dispatcher hands the resolver.
+
+    ``sub`` defaults to the identity's entry in :data:`_SUBS`; pass ``""`` to
+    present no ``sub`` claim and so drive the email-only leg deliberately.
+
+    An unavailable sub is **omitted** rather than sent empty. An empty claim would
+    have the lookup build a ``SUB#`` key with nothing after it, which finds no
+    pointer and tells us nothing; with no ``sub`` at all the lookup degrades to the
+    email join, exactly as it does for a deployment that predates pointers.
+    """
+    claims: dict = {
+        "email": email,
+        "cognito:username": email,
+        "cognito:groups": groups,
+    }
+    caller_sub = _SUBS.get(email, "") if sub is None else sub
+    if caller_sub:
+        claims["sub"] = caller_sub
     return {
         "arguments": {"executionArn": execution_arn},
-        "identity": {
-            "username": email,
-            "claims": {
-                "email": email,
-                "cognito:username": email,
-                "cognito:groups": groups,
-            },
-        },
+        "identity": {"username": email, "claims": claims},
         "info": {"fieldName": "getStepFunctionExecution"},
     }
 
@@ -174,11 +211,17 @@ def main() -> int:
         print("  3 executions started (own in-scope, own out-of-scope, sibling)")
 
         # -------------------------------------------------------- users table
+        # UsersTable's own key schema — see the module docstring for why a
+        # single-attribute stand-in silently tests a path no caller takes.
         ddb.create_table(
             TableName=TABLE_NAME,
-            KeySchema=[{"AttributeName": "userId", "KeyType": "HASH"}],
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
             AttributeDefinitions=[
-                {"AttributeName": "userId", "AttributeType": "S"},
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
                 {"AttributeName": "email", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[{
@@ -191,15 +234,47 @@ def main() -> int:
         made["table"] = True
         ddb.get_waiter("table_exists").wait(TableName=TABLE_NAME)
         table_arn = ddb.describe_table(TableName=TABLE_NAME)["Table"]["TableArn"]
-        ddb.put_item(TableName=TABLE_NAME, Item={
-            "userId": {"S": "u1"},
-            "email": {"S": SCOPED_USER},
-            "allowedConfigVersions": {"L": [{"S": IN_SCOPE_VERSION}]},
-        })
-        ddb.put_item(TableName=TABLE_NAME, Item={
-            "userId": {"S": "u2"}, "email": {"S": UNSCOPED_USER},
-        })
-        print(f"  {TABLE_NAME} with EmailIndex; scoped user -> [{IN_SCOPE_VERSION}]")
+
+        def seed_user(
+            user_id: str, email: str, sub: str, scope: list[str] | None = None
+        ) -> None:
+            """Seed one user the way ``user_management`` writes one.
+
+            The row goes to ``PK``/``SK`` = ``USER#<userId>`` and carries ``userId``
+            as an attribute; the pointer goes to ``PK``/``SK`` = ``SUB#<sub>`` and
+            carries only the ``userId`` it names.
+
+            ⚠️ The pointer deliberately has **no** ``email`` attribute. A GSI indexes
+            only items holding its hash key, so an emailless pointer is absent from
+            EmailIndex entirely — which is what stops a ``Limit=1`` email query
+            returning the pointer in place of the row. A pointer carries no
+            ``allowedConfigVersions``, so that substitution would lift the scope.
+            """
+            item: dict = {
+                "PK": {"S": f"USER#{user_id}"},
+                "SK": {"S": f"USER#{user_id}"},
+                "userId": {"S": user_id},
+                "email": {"S": email},
+            }
+            if sub:
+                item["cognitoSub"] = {"S": sub}
+            if scope:
+                item["allowedConfigVersions"] = {"L": [{"S": v} for v in scope]}
+            ddb.put_item(TableName=TABLE_NAME, Item=item)
+            if sub:
+                ddb.put_item(TableName=TABLE_NAME, Item={
+                    "PK": {"S": f"SUB#{sub}"},
+                    "SK": {"S": f"SUB#{sub}"},
+                    "userId": {"S": user_id},
+                    "cognitoSub": {"S": sub},
+                })
+
+        seed_user(SCOPED_USER_ID, SCOPED_USER, SCOPED_USER_SUB, [IN_SCOPE_VERSION])
+        seed_user(UNSCOPED_USER_ID, UNSCOPED_USER, UNSCOPED_USER_SUB)
+        print(
+            f"  {TABLE_NAME} with UsersTable's PK/SK schema + EmailIndex; scoped "
+            f"user -> [{IN_SCOPE_VERSION}], reachable by SUB# pointer AND by email"
+        )
 
         # ------------------------------------------------------------- resolver
         print("\nDeploying the shipped resolver with the shipped IAM policy...")
@@ -316,6 +391,14 @@ def main() -> int:
 
         print("\n--- 4. scoped user, execution OUTSIDE their scope ---")
         ok, detail = denied(event(own_out_of_scope, SCOPED_USER, ["Viewer"]))
+        check(ok, f"refused via a real SUB# pointer GetItem — {detail}")
+
+        print("\n--- 4b. same, presenting no sub: the email leg still applies it ---")
+        # The compatibility leg on its own. Both legs must deny, or a caller whose
+        # row predates the pointer writer would be unrestricted. The resolver's
+        # per-container cache is keyed on sub AND email, so this is a second real
+        # lookup rather than a replay of check 4.
+        ok, detail = denied(event(own_out_of_scope, SCOPED_USER, ["Viewer"], sub=""))
         check(ok, f"refused via a real EmailIndex Query — {detail}")
 
         print("\n--- 5. Admin is not config-scoped ---")
@@ -382,6 +465,11 @@ def main() -> int:
             except Exception as e:
                 print(f"  WARN sfn role: {e}")
         if made["table"]:
+            # Deletes the seeded rows AND their SUB# pointers with it: this table is
+            # created per run and belongs to nobody else, so there is no item-level
+            # cleanup to do and no pointer that can outlive the run. (Contrast
+            # scripts/test_api_rbac.py, which seeds into the live stack's UsersTable
+            # and therefore has to delete each item it wrote.)
             try:
                 ddb.delete_table(TableName=TABLE_NAME)
                 print(f"  deleted table {TABLE_NAME}")
