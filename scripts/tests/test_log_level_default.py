@@ -28,14 +28,23 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import gate_premises
 import pytest
 import yaml
-
-import gate_premises
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SAFE_DEFAULT = "WARN"
+
+# Values a catalog feature's manifest may pin. Not just SAFE_DEFAULT: all five pin
+# ``INFO`` today and that is a recorded residual rather than something this change
+# fixes, so requiring ``WARN`` here would fail a state we have accepted and written
+# down. ``DEBUG`` is refused, which is the point -- the previous check asked only
+# whether a value was pinned, so a manifest could be moved to ``DEBUG``, the loudest
+# level, with the exemption still reading as justified and nothing failing.
+#
+# So this is a ratchet: the pinned value may improve, and may not regress.
+MANIFEST_TOLERATED = ("WARN", "ERROR", "INFO")
 
 ROOT_TEMPLATE = "template.yaml"
 LOG_LEVEL = "LogLevel"
@@ -271,7 +280,7 @@ def test_each_exempt_feature_has_a_manifest_that_pins_log_level(
     member rather than the set.
     """
     holds, explanation = gate_premises.installer_manifest_pins_parameter(
-        feature_dir, LOG_LEVEL
+        feature_dir, LOG_LEVEL, allowed=MANIFEST_TOLERATED
     )
     assert holds, (
         f"{feature_dir} is exempt from the {LOG_LEVEL} default check on the stated "

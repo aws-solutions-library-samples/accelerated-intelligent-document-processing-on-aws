@@ -47,9 +47,11 @@ of "what does git track" — see the PR that added this module.
 from __future__ import annotations
 
 import functools
+import os
 import re
 import subprocess
 import sys
+from collections.abc import Collection
 from pathlib import Path
 
 import yaml
@@ -222,7 +224,13 @@ def built_components() -> dict[str, tuple[str, ...]]:
     sdk = str(REPO_ROOT / _PUBLISH_PACKAGE)
     if sdk not in sys.path:
         sys.path.insert(0, sdk)
-    from idp_sdk._core.publish import IDPPublisher
+    # noqa justification: the private module IS the source of truth here. The
+    # public IDPClient does not expose the publisher's build sources, and the
+    # whole point of this predicate is to read the authority rather than restate
+    # it -- two exemption lists cited "built separately" and nothing in the tree
+    # read this map. Importing IDPClient instead would mean hand-copying the
+    # component list, which is the defect being fixed.
+    from idp_sdk._core.publish import IDPPublisher  # noqa: TID251
 
     raw = IDPPublisher.get_component_dependencies(None)  # pyright: ignore[reportArgumentType]
     return {
@@ -232,11 +240,73 @@ def built_components() -> dict[str, tuple[str, ...]]:
 
 
 @functools.lru_cache(maxsize=1)
+def bundled_feature_dirs() -> tuple[str, ...]:
+    """The OSS feature directories a publish run builds, from ``extensions-oss.yaml``.
+
+    These are built by ``build_and_upload_sample_features`` -> ``_bundled_feature_dirs``
+    -> ``build_and_package_template(force_rebuild=True)``, and **none of them appears in
+    the component-dependency map**. That map is the publisher's *smart-rebuild checksum*
+    map, authoritative for the components the rebuild loop iterates and not for
+    everything a publish run builds.
+
+    Missing this cost the predicate below its correctness for five of the twelve members
+    of the only list that used it, and the gate turned that into a written permission to
+    claim independence. Reading two sources is not belt-and-braces here: it is what
+    "does one publish run build this" actually means.
+    """
+    sdk = str(REPO_ROOT / _PUBLISH_PACKAGE)
+    if sdk not in sys.path:
+        sys.path.insert(0, sdk)
+    # noqa justification: the private module IS the source of truth here. The
+    # public IDPClient does not expose the publisher's build sources, and the
+    # whole point of this predicate is to read the authority rather than restate
+    # it -- two exemption lists cited "built separately" and nothing in the tree
+    # read this map. Importing IDPClient instead would mean hand-copying the
+    # component list, which is the defect being fixed.
+    from idp_sdk._core.publish import IDPPublisher  # noqa: TID251
+
+    class _Shim:
+        """Only what ``_bundled_feature_dirs`` touches; it reads a file and nothing else."""
+
+        _OSS_EXTENSIONS_FILE = IDPPublisher._OSS_EXTENSIONS_FILE
+        _DEFAULT_BUNDLED_FEATURE_DIRS = IDPPublisher._DEFAULT_BUNDLED_FEATURE_DIRS
+
+        @staticmethod
+        def log_verbose(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def log_error(*_args, **_kwargs):
+            return None
+
+    # The method resolves its path relative to the process CWD.
+    previous = Path.cwd()
+    try:
+        os.chdir(REPO_ROOT)
+        return tuple(IDPPublisher._bundled_feature_dirs(_Shim()))
+    finally:
+        os.chdir(previous)
+
+
+#: Directories the publisher builds by an explicit ``force_rebuild=True`` call rather
+#: than through either the component map or the bundled-feature list. Kept as a literal
+#: because the call site is a literal; the test below pins it against the source so a
+#: new call site cannot be added without this being updated.
+EXPLICIT_BUILD_DIRS = ("feature-platform/main-stack-extensions",)
+
+
+@functools.lru_cache(maxsize=1)
 def build_input_paths() -> frozenset[str]:
-    """Every path the publisher names, as a component root or as a build input."""
+    """Every path a single publish run builds, from all three of its sources.
+
+    The union matters. Any one of these alone gives the wrong answer for members the
+    others cover, and "built separately" is a claim about the whole publish run.
+    """
     paths = set(built_components())
     for deps in built_components().values():
         paths.update(deps)
+    paths.update(bundled_feature_dirs())
+    paths.update(EXPLICIT_BUILD_DIRS)
     return frozenset(paths)
 
 
@@ -318,7 +388,9 @@ def file_absent_or_untracked(member: str) -> Verdict:
     return (True, f"git does not track {member}")
 
 
-def installer_manifest_pins_parameter(member: str, parameter: str) -> Verdict:
+def installer_manifest_pins_parameter(
+    member: str, parameter: str, allowed: Collection[object] | None = None
+) -> Verdict:
     """A feature's ``feature.yaml`` sets ``defaultParameters.<parameter>``.
 
     Named for exactly what it proves and no more: that a manifest value exists for
@@ -344,6 +416,24 @@ def installer_manifest_pins_parameter(member: str, parameter: str) -> Verdict:
             f"{manifest} declares no defaultParameters.{parameter}, so the "
             "template default is what reaches CloudFormation",
         )
+    # Existence is not safety. Without `allowed`, this predicate answered True for
+    # `LogLevel: DEBUG` -- one of the two values the calling gate's own failure message
+    # names as unsafe -- because it only asked whether a value was pinned at all. An
+    # exemption resting on "the installer supplies the value" is only sound if the value
+    # it supplies is one the gate would have accepted.
+    #
+    # `allowed` is a SET rather than a single expected value because the caller's
+    # tolerance is not always the caller's ideal: the LogLevel gate accepts the INFO
+    # these manifests pin today as a recorded residual, while refusing DEBUG. That makes
+    # this a ratchet -- the pinned value may improve and may not regress -- which is the
+    # honest shape when the current state is known and accepted rather than desired.
+    if allowed is not None and pinned not in allowed:
+        return (
+            False,
+            f"{manifest} pins defaultParameters.{parameter}={pinned!r}, which is not "
+            f"one of {sorted(map(str, allowed))}: the installer does supply a value, "
+            "and it is not one the gate would have accepted",
+        )
     return (True, f"{manifest} pins defaultParameters.{parameter}={pinned!r}")
 
 
@@ -356,7 +446,18 @@ def matching_lines(
     expressible reason, and one that hides more lines than were audited has grown
     past its justification.
     """
-    text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+    # A path git reports but that is not on disk (staged deletion, a broken symlink)
+    # must make the gate FAIL rather than raise: an uncaught OSError aborts the whole
+    # suite with a traceback instead of naming the problem, and the two tracked-file
+    # helpers in this tree differ on exactly this point.
+    try:
+        text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AssertionError(
+            f"{rel_path} is reported by git but cannot be read ({exc}). A staged "
+            "deletion or a broken link leaves the gate unable to measure this file; "
+            "commit the deletion or restore the file."
+        ) from exc
     hits = []
     for number, line in enumerate(text.splitlines(), start=1):
         if needle not in line:
@@ -388,7 +489,16 @@ def collects_zero_tests(member: str) -> Verdict:
     if not target.is_dir():
         return (False, f"{member} is not a directory")
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", str(target)],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            str(target),
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,

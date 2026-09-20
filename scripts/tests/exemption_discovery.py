@@ -68,41 +68,28 @@ REPO_ROOT = gate_premises.REPO_ROOT
 #: repo-wide gate, plus the four ``scripts/`` subtrees that hold one. ``scripts/srt``
 #: is included for symmetry rather than because it has a hit today: leaving it out is
 #: exactly the aperture that hid the Makefile half of the ARN carve-out.
+#: Note that a git pathspec's ``*`` crosses ``/``, so ``scripts/*.py`` already covers
+#: every subtree under ``scripts/``. The four subtree entries this list used to spell out
+#: separately were redundant; what it actually MISSED was everything outside ``scripts/``
+#: and ``lib/idp_common_pkg/tests/`` -- seven live exemptions, one of them a repo-walking
+#: gate that discovers ``.claude/worktrees/`` and ``scratch/``, i.e. an unregistered
+#: instance of the very class this registry cites. A stated aperture that is narrower than
+#: the tree is the shape of the original defect, so this now covers every first-party tree
+#: that holds a gate.
 PYTHON_PATHSPECS = (
     "scripts/*.py",
-    "scripts/tests/*.py",
-    "scripts/sdlc/*.py",
-    "scripts/sdlc/tests/*.py",
-    "scripts/security/*.py",
-    "scripts/security/tests/*.py",
-    "scripts/srt/*.py",
-    "scripts/srt/tests/*.py",
-    "scripts/hooks/*.py",
-    "lib/idp_common_pkg/tests/**/*.py",
+    "lib/*/tests/*.py",
+    "patterns/*/tests/*.py",
+    "nested/*/tests/*.py",
+    "notebooks/*.py",
+    "feature-platform/*/shared/*.py",
+    "feature-platform/*/tests/*.py",
+    "security/threat-modeling/scripts/*.py",
+    "benchmarks/tests/*.py",
 )
 
 #: Non-Python files that carry exemptions, and the pattern that finds one in each.
 #: A gate exemption is not a Python idea; it lives wherever the gate does.
-TEXT_SOURCES: tuple[tuple[str, str], ...] = (
-    # Make variables: `NAME := value` / `NAME = value`.
-    ("Makefile", r"^([A-Z][A-Z0-9_]*(?:EXEMPT|IGNORE|SKIP|EXCLUDE|ALLOW)[A-Z0-9_]*)\s*[:?]?="),
-    ("make/*.mk", r"^([A-Z][A-Z0-9_]*(?:EXEMPT|IGNORE|SKIP|EXCLUDE|ALLOW)[A-Z0-9_]*)\s*[:?]?="),
-    # Shell arrays and variables in the gate scripts.
-    ("scripts/*.sh", r"^([a-zA-Z_][a-zA-Z0-9_]*(?:exempt|ignore|skip|exclude|allow)[a-zA-Z0-9_]*)="),
-    # Linter configuration is an exemption surface too: `extend-exclude` decides
-    # which files ruff never sees, which is a path exemption by another name.
-    ("ruff.toml", r"^(extend-exclude|per-file-ignores)\b"),
-    ("pyrightconfig.json", r'^\s*"(exclude|ignore)"\s*:'),
-)
-
-#: JSON registries that are themselves the exemption list. Recorded by file rather
-#: than by constant, because the members live in data, not in code.
-JSON_REGISTRIES = (
-    "scripts/sdlc/retired_services.json",
-    "scripts/security/dep_audit_allowlist.json",
-    "scripts/srt/issues.json",
-)
-
 #: Name fragments that mark a constant as an exemption candidate. The union of two
 #: independent surveys' vocabularies -- neither alone was sufficient.
 NAME_VOCABULARY = (
@@ -122,6 +109,47 @@ NAME_VOCABULARY = (
     "PENDING_",
     "UNCOVERED",
 )
+
+
+#: Built from :data:`NAME_VOCABULARY` rather than a hand-written subset of it. The subset
+#: spelled out here covered five of the fifteen fragments, so a Make variable named
+#: ``SUPPRESSED_TEMPLATES`` or ``QUARANTINE_ROOTS`` or ``PINNED_THINGS`` was invisible while
+#: the identically-named Python constant was found -- one vocabulary in two places, drifting,
+#: which is the shape this whole change is about.
+def _text_pattern(case: str) -> str:
+    alternation = "|".join(v.strip("_") for v in NAME_VOCABULARY)
+    if case == "upper":
+        return rf"^([A-Z][A-Z0-9_]*(?:{alternation})[A-Z0-9_]*)\s*[:?+]?="
+    return rf"^([a-zA-Z_][a-zA-Z0-9_]*(?:{alternation.lower()})[a-zA-Z0-9_]*)="
+
+
+TEXT_SOURCES: tuple[tuple[str, str], ...] = (
+    ("Makefile", _text_pattern("upper")),
+    ("make/*.mk", _text_pattern("upper")),
+    ("scripts/*.sh", _text_pattern("lower")),
+    # Linter and type-checker configuration is an exemption surface too: `extend-exclude`
+    # decides which files ruff never sees, which is a path exemption by another name.
+    ("ruff.toml", r"^(extend-exclude|per-file-ignores)\b"),
+    ("pyrightconfig.json", r'^\s*"(exclude|ignore)"\s*:'),
+    ("pyproject.toml", r"^(exclude|extend-exclude|per-file-ignores|norecursedirs)\b"),
+    ("*/pyproject.toml", r"^(exclude|extend-exclude|per-file-ignores|norecursedirs)\b"),
+    ("pytest.ini", r"^(norecursedirs|ignore)\b"),
+    (".pre-commit-config.yaml", r"^\s*(exclude|exclude_types)\s*:"),
+    (".ash/.ash.yaml", r"^\s*(ignore-findings|suppressions|ignore_findings)\s*:"),
+)
+
+#: JSON registries that are themselves the exemption list. Recorded by file rather
+#: than by constant, because the members live in data, not in code.
+#: Discovered by NAME rather than listed, for the same reason everything else here is:
+#: a hardcoded three-tuple is a list that goes stale, and a fourth triage baseline added
+#: under a new name would be invisible.
+JSON_REGISTRY_GLOBS = (
+    "*allowlist*.json",
+    "*_services.json",
+    "scripts/srt/issues.json",
+    "*suppressions*.json",
+)
+
 
 #: Prose in a constant's attached comment that marks it as an exclusion regardless of
 #: its name. This is the half that closes the aperture: ``DEPLOYMENT_ROLE_TEMPLATES``
@@ -150,7 +178,15 @@ EXEMPTION_PROSE = (
 
 #: Value node types that can hold a set of members. A plain string or a ``Path`` is a
 #: pointer to an exemption rather than one, and is not matched here.
-_CONTAINER = (ast.Set, ast.Dict, ast.Tuple, ast.List, ast.SetComp, ast.DictComp, ast.ListComp)
+_CONTAINER = (
+    ast.Set,
+    ast.Dict,
+    ast.Tuple,
+    ast.List,
+    ast.SetComp,
+    ast.DictComp,
+    ast.ListComp,
+)
 
 #: Callables that WRAP a container, so ``frozenset({...})`` counts. Leaving these out
 #: was a live gap while this module was being written: four of the repo's prune sets
@@ -171,6 +207,10 @@ def _is_container(node: ast.expr | None) -> bool:
         func = node.func
         name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
         return name in _CONTAINER_CALLS
+    if isinstance(node, ast.BinOp):
+        # `A | B`, `A + B`: a set union or list concatenation is still a container, and
+        # `NEW_EXEMPT = OLD | EXTRA` was invisible while `NEW_EXEMPT = {...}` was found.
+        return _is_container(node.left) or _is_container(node.right)
     return False
 
 
@@ -312,11 +352,11 @@ def discover_text(root: Path | None = None) -> list[Discovered]:
 
 def discover_json(root: Path | None = None) -> list[Discovered]:
     """Data-file registries whose contents are the exemption list."""
-    return [
-        Discovered(rel, Path(rel).name, 1, "json")
-        for rel in JSON_REGISTRIES
-        if gate_premises.is_tracked(rel, root=root)
-    ]
+    found = []
+    for glob in JSON_REGISTRY_GLOBS:
+        for rel in gate_premises.tracked_files(glob, root=root, include_untracked=True):
+            found.append(Discovered(rel, Path(rel).name, 1, "json"))
+    return found
 
 
 def discover_all(root: Path | None = None) -> dict[str, Discovered]:

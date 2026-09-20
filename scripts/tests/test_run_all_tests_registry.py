@@ -22,9 +22,8 @@ import importlib.util
 from collections import Counter
 from pathlib import Path
 
-import pytest
-
 import gate_premises
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -52,7 +51,9 @@ def test_run_roots_has_no_duplicates() -> None:
 @pytest.mark.unit
 def test_every_run_root_exists() -> None:
     """A renamed or deleted directory should fail here, not silently run nothing."""
-    missing = [r for r in _run_all_tests_module().RUN_ROOTS if not (REPO_ROOT / r).is_dir()]
+    missing = [
+        r for r in _run_all_tests_module().RUN_ROOTS if not (REPO_ROOT / r).is_dir()
+    ]
     assert not missing, (
         f"registered test roots that no longer exist: {missing}. A root that is gone "
         "collects zero tests, which passes — so the gate silently stops covering it."

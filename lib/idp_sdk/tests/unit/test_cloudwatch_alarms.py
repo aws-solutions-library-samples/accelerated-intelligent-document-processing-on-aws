@@ -134,7 +134,24 @@ def _repo_root() -> Path:
     raise RuntimeError("Could not locate repo root containing template.yaml")
 
 
-_EXCLUDED_PARTS = {".git", "node_modules", ".aws-sam", "build", "dist", ".venv"}
+# Build output, vendored trees, and gitignored LOCAL WORK. `scratch/` and
+# `.claude/worktrees/` routinely hold whole `git worktree` checkouts of this repository,
+# and this gate globs `*.yaml` from the repo root: without them it discovered
+# `.claude/worktrees/*/template.yaml` and `scratch/*/template.yaml` and asserted about
+# alarms in a copy that ships nothing. That is the failure mode that produced 157 false
+# failures across four gates in one release validation. Same names as the sets in
+# scripts/tests/; scripts/tests/test_repo_walk_guards_prune_local_work.py keeps them in
+# step, and this gate is now registered there.
+_EXCLUDED_PARTS = {
+    ".git",
+    "node_modules",
+    ".aws-sam",
+    "build",
+    "dist",
+    ".venv",
+    "scratch",
+    ".claude",
+}
 
 
 def _discover_templates() -> list[str]:

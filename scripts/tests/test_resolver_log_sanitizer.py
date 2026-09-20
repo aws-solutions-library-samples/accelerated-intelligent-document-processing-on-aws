@@ -85,9 +85,8 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
-import pytest
-
 import gate_premises
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -191,6 +190,74 @@ UNCOVERED_LAMBDA_TREES: dict[str, tuple[str, int]] = {
         0,
     ),
     "notebooks/examples": ("a notebook example, not part of any deployed stack", 1),
+}
+
+# Per member, the two structural facts an "out of scope" reason is most tempted to
+# borrow, written down so they can be CHECKED rather than asserted in prose.
+#
+#   notDeployedByParent    template.yaml declares no nested stack for it
+#   notBuiltWithMainStack  no publish-run build source covers it
+#
+# Both are measured against the authorities by
+# ``test_the_recorded_structural_facts_match_the_tree``. Note how many are False: four
+# of these trees ARE part of the main deployment and are still legitimately uncovered,
+# for scope and event shape. Recording the facts rather than forbidding a phrase is what
+# lets both things be true at once -- the previous version of this check forbade three
+# literal strings in the reason, which a rewording walked straight past.
+#
+# The five bundled catalog features are False on the build side for a reason worth
+# knowing: they are absent from the publisher's component-dependency map, and a publish
+# run builds them anyway through extensions-oss.yaml. A predicate reading only that map
+# called all five independent.
+TREE_INDEPENDENCE: dict[str, dict[str, bool]] = {
+    "patterns/unified/src": {
+        "notDeployedByParent": False,
+        "notBuiltWithMainStack": False,
+    },
+    "nested/bedrockkb/src": {
+        "notDeployedByParent": False,
+        "notBuiltWithMainStack": False,
+    },
+    "nested/multi-doc-discovery": {
+        "notDeployedByParent": False,
+        "notBuiltWithMainStack": False,
+    },
+    "feature-platform/confbench-testset": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": False,
+    },
+    "feature-platform/feature-template": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": True,
+    },
+    "feature-platform/idp-data-generator": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": False,
+    },
+    "feature-platform/pii-anonymizer": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": False,
+    },
+    "feature-platform/sample-feature": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": False,
+    },
+    "feature-platform/sample-health-insurance-review": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": False,
+    },
+    "feature-platform/seller-entitlement-service/lambdas": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": True,
+    },
+    "samples/lambda-hook-inference": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": True,
+    },
+    "notebooks/examples": {
+        "notDeployedByParent": True,
+        "notBuiltWithMainStack": True,
+    },
 }
 
 VENDORED_NAME = "log_sanitizer.py"
@@ -398,7 +465,9 @@ def test_every_lambda_tree_is_either_covered_or_explicitly_out_of_scope():
         "LAMBDA_ROOTS (and to the roots list in "
         "scripts/sync_resolver_log_sanitizer.sh) and fix whatever the scan reports, "
         "or record why it is out of scope:\n  "
-        + "\n  ".join(f"{tree} ({trees[tree]} function directories)" for tree in unaccounted)
+        + "\n  ".join(
+            f"{tree} ({trees[tree]} function directories)" for tree in unaccounted
+        )
     )
     stale = sorted(set(UNCOVERED_LAMBDA_TREES) - set(trees) - covered)
     assert not stale, (
@@ -436,35 +505,54 @@ def test_uncovered_trees_hide_no_more_sites_than_were_audited(tree: str):
 
 
 @pytest.mark.parametrize("tree", sorted(UNCOVERED_LAMBDA_TREES))
-def test_no_uncovered_tree_claims_to_be_built_apart(tree: str):
-    """A reason may not rest on independence this repository can disprove.
+def test_the_recorded_structural_facts_match_the_tree(tree: str):
+    """Each uncovered tree's independence is recorded as DATA and checked, not as prose.
 
-    The removed blanket premise said every uncovered tree was built and deployed
-    independently of the main stack. Four were nested stacks of ``template.yaml``
-    built by the same publish run, and one of those four -- the feature-platform
-    control plane -- was where the exemption did real work. The premise was never
-    evaluated because it was attached to the set rather than to each member.
+    The first version of this test forbade three literal phrases in the ``reason``
+    string, and that was a substring denylist wearing a predicate's clothes: rewording
+    "built and versioned separately" to "has its own build and release train, ships on
+    an independent cadence, and the main stack does not deploy it" restored the false
+    exemption with the suite green. The predicates were computed and then discarded
+    unless the prose happened to contain one of three literals.
 
-    So the structural facts are asserted here directly, per member, and a reason is
-    not allowed to assert them in prose. Both predicates are computed from the
-    authorities: the nested-stack graph in ``template.yaml``, and the publisher's own
-    component map. A tree that IS built with the main stack is fine -- four are --
-    but its recorded reason has to be something else, and none of them now claims
-    otherwise.
+    So prose is no longer the carrier. :data:`TREE_INDEPENDENCE` records, per member,
+    whether the parent deploys it and whether one publish run builds it, and those two
+    booleans are asserted against the authorities — the nested-stack graph in
+    ``template.yaml`` and the publisher's own build sources. A reason may now say
+    anything; what it cannot do is disagree with a fact written down beside it, because
+    the fact is checked rather than read.
+
+    Four of the twelve are nested stacks built in the same run and are still
+    legitimately uncovered, for scope and event shape. That is the case the prose
+    version could not express without also permitting the false claim.
     """
-    reason, _ = UNCOVERED_LAMBDA_TREES[tree]
+    assert tree in TREE_INDEPENDENCE, (
+        f"{tree} is in UNCOVERED_LAMBDA_TREES but its structural facts are not recorded "
+        "in TREE_INDEPENDENCE. Record them -- an uncovered tree whose relationship to "
+        "the main deployment is unstated is how a nested stack came to be exempted as "
+        "independently deployed."
+    )
+    recorded = TREE_INDEPENDENCE[tree]
     nested, nested_why = gate_premises.not_a_nested_stack_of_parent(tree)
     built_apart, built_why = gate_premises.built_separately_from_main_stack(tree)
-    if nested and built_apart:
-        return  # genuinely independent; the claim would be true if made
 
-    forbidden = ("built and versioned separately", "built separately", "versioned separately")
-    lowered = reason.lower()
-    claimed = [phrase for phrase in forbidden if phrase in lowered]
-    assert not claimed, (
-        f"{tree} is exempt with a reason claiming {claimed}, but that is not true of "
-        f"it: {nested_why}; {built_why}. Record the reason that does hold -- scope, "
-        "event shape, or a judgement -- rather than one this tree contradicts."
+    assert recorded["notDeployedByParent"] == nested, (
+        f"{tree}: TREE_INDEPENDENCE records notDeployedByParent="
+        f"{recorded['notDeployedByParent']}, measured {nested}. {nested_why}"
+    )
+    assert recorded["notBuiltWithMainStack"] == built_apart, (
+        f"{tree}: TREE_INDEPENDENCE records notBuiltWithMainStack="
+        f"{recorded['notBuiltWithMainStack']}, measured {built_apart}. {built_why}"
+    )
+
+
+def test_every_recorded_tree_is_still_uncovered():
+    """No stale entry in the fact table, and no member of it that is now covered."""
+    stale = sorted(set(TREE_INDEPENDENCE) - set(UNCOVERED_LAMBDA_TREES))
+    assert not stale, (
+        f"TREE_INDEPENDENCE records facts about trees that are no longer uncovered: "
+        f"{stale}. Delete them, so the table cannot drift into describing trees this "
+        "guard now scans."
     )
 
 
@@ -490,7 +578,9 @@ def _imported_modules(path: Path) -> dict[str, set[str]]:
     except SyntaxError:
         found: dict[str, set[str]] = {}
         for module in (CANONICAL_IMPORT, VENDORED_MODULE):
-            pattern = rf"^\s*(?:from {re.escape(module)} import|import {re.escape(module)}\b)"
+            pattern = (
+                rf"^\s*(?:from {re.escape(module)} import|import {re.escape(module)}\b)"
+            )
             if re.search(pattern, source, re.M):
                 found[module] = {"sanitize_event_for_logging"}
         return found
@@ -661,8 +751,7 @@ def _whole_event_reaches(node: ast.AST) -> bool:
         # `event.get(...)` — receiver is narrowed away, but a nested
         # `foo(event).bar()` still has to be followed.
         if isinstance(node.func, ast.Attribute) and not (
-            isinstance(node.func.value, ast.Name)
-            and node.func.value.id == EVENT_PARAM
+            isinstance(node.func.value, ast.Name) and node.func.value.id == EVENT_PARAM
         ):
             children.append(node.func.value)
         return any(_whole_event_reaches(child) for child in children)
@@ -673,10 +762,7 @@ def _whole_event_reaches(node: ast.AST) -> bool:
     if isinstance(node, ast.Subscript):
         if isinstance(node.value, ast.Name) and node.value.id == EVENT_PARAM:
             return False  # `event["arguments"]` — a piece of it
-        return any(
-            _whole_event_reaches(child)
-            for child in (node.value, node.slice)
-        )
+        return any(_whole_event_reaches(child) for child in (node.value, node.slice))
     return any(_whole_event_reaches(child) for child in ast.iter_child_nodes(node))
 
 
@@ -1129,7 +1215,7 @@ _RAW_EVENT_LOGS_THAT_MUST_BE_SEEN = {
     "str.format": 'logger.info("e: {}".format(event))',
     "concatenation": 'logger.info("e: " + str(event))',
     "inside a container": 'logger.info("e: %s", {"event": event})',
-    "json.dumps with kwargs": 'logger.info(json.dumps(event, default=str))',
+    "json.dumps with kwargs": "logger.info(json.dumps(event, default=str))",
     "json.dumps then sliced": 'print(f"{json.dumps(event, default=str)[:1000]}")',
     "pprint.pformat": "logger.info(pprint.pformat(event))",
     "debug level": 'logger.debug(f"{json.dumps(event)}")',
@@ -1148,11 +1234,11 @@ _RAW_EVENT_LOGS_THAT_MUST_BE_SEEN = {
 _RAW_EVENT_LOGS_THAT_MUST_NOT_TRIP = {
     "sanitized, f-string": 'logger.info(f"e: {json.dumps(sanitize_event_for_logging(event))}")',
     "sanitized, lazy arg": 'logger.info("e: %s", sanitize_event_for_logging(event))',
-    "sanitized with kwargs": 'logger.info(json.dumps(sanitize_event_for_logging(event), default=str))',
+    "sanitized with kwargs": "logger.info(json.dumps(sanitize_event_for_logging(event), default=str))",
     "sanitized then sliced": 'print(f"{json.dumps(sanitize_event_for_logging(event), default=str)[:1000]}")',
-    "subscript": 'logger.info(f"{event[\'fieldName\']}")',
-    "get() call": 'logger.info(f"{event.get(\'fieldName\')}")',
-    "chained get()": 'logger.info(f"{event.get(\'arguments\', {}).get(\'id\')}")',
+    "subscript": "logger.info(f\"{event['fieldName']}\")",
+    "get() call": "logger.info(f\"{event.get('fieldName')}\")",
+    "chained get()": "logger.info(f\"{event.get('arguments', {}).get('id')}\")",
     "attribute access": 'logger.info(f"{event.foo}")',
     "no event at all": 'logger.info("resolver invoked")',
     "a different name": 'logger.info(f"{json.dumps(other)}")',
@@ -1189,16 +1275,14 @@ _DENYLIST_SHAPES_THAT_MUST_BE_SEEN = {
     "call argument": '_redact(obj, ["password", "secret", "token"])\n',
     "call keyword argument": '_redact(obj, keys=["password", "secret", "token"])\n',
     "bare expression statement": '("password", "secret", "token")\n',
-    "returned literal": (
-        'def _keys():\n    return ("password", "secret", "token")\n'
-    ),
+    "returned literal": ('def _keys():\n    return ("password", "secret", "token")\n'),
 }
 
 _SHAPES_THAT_MUST_NOT_TRIP = {
     "two keys only": '_K = ("token", "cursor")\n',
     "unrelated strings": '_K = ("alpha", "beta", "gamma", "delta")\n',
     "non-literal": "_K = frozenset(some_other_module.KEYS)\n",
-    "two keys in a default arg": "def f(o, k=(\"token\", \"cursor\")):\n    return o\n",
+    "two keys in a default arg": 'def f(o, k=("token", "cursor")):\n    return o\n',
 }
 
 # Known residual gaps, not asserted either way: a denylist spelled as keyword

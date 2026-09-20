@@ -83,6 +83,11 @@ REPO_WALKING_GATES = (
     "test_log_group_encryption.py",
     "test_testing_doc.py",
     "test_well_architected_doc.py",
+    # Outside this directory: it globs *.yaml from the repo root to check that every
+    # alarm names a real metric. Found by the gate-exemption registry's discovery, not
+    # by this file's own sweep, which only looks at scripts/tests/ -- so the sweep below
+    # is narrower than the class and that is recorded in its docstring.
+    "../../lib/idp_sdk/tests/unit/test_cloudwatch_alarms.py",
 )
 
 

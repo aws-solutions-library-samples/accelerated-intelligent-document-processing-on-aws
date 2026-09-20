@@ -131,9 +131,9 @@ Logging verbosity is a single deploy-time parameter. `LogLevel` defaults to `WAR
 applies across the Lambda functions and the API stage;
 `scripts/tests/test_log_level_default.py` pins that default so it cannot silently regress
 to `INFO`, because at `INFO` the accelerator can write presigned URLs, document contents
-and PII into CloudWatch Logs. That gate covers every template in the tree declaring a
-`LogLevel` parameter, discovered rather than listed, so a new one is covered as soon as
-it exists.
+and PII into CloudWatch Logs. That gate accounts for every template in the tree declaring a `LogLevel` parameter,
+discovered rather than listed: each one is either enforced at `WARN` or named in an
+exemption with a recorded reason, so a new template cannot appear outside both.
 
 Two exceptions to know about if you install extensions. The five catalog features
 (`pii-anonymizer`, `idp-data-generator`, `confbench-testset`, and the two samples) pin
@@ -153,7 +153,7 @@ That is exactly what makes `INFO` and `DEBUG` useful for diagnosis, and what mak
 unsuitable as a steady state.
 
 So treat raising the level as scoped and temporary: raise it for a specific
-investigation, gather what you need, and lower it again. Note that the data written
+investigation, gather what you need, and set it back to `WARN`. Note that the data written
 while it was raised persists for the log group's whole retention period, so lowering the
 level does not undo it. `LogRetentionDays` and the CMK-encrypted log groups described
 above bound that exposure; the level is what creates it.

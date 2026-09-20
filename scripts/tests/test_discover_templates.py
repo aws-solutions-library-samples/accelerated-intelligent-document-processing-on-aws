@@ -22,9 +22,8 @@ import re
 import subprocess
 from pathlib import Path
 
-import pytest
-
 import gate_premises
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "discover_templates.sh"
@@ -135,11 +134,44 @@ def _arn_exempt_entries() -> tuple[str, list[str]]:
     return text[: match.start()].rsplit("\n\n", 1)[-1], entries
 
 
-def _shielded_per_entry() -> dict[str, dict[str, int]]:
-    """``{entry: {file: findings hidden}}``, using the gate's own ARN detector.
+#: The gate's three checks, as (needle, exclusions). Mirrors the three greps in the
+#: `check-arn-partitions` recipe, and ALL THREE must be counted here.
+#:
+#: The first version of this helper measured only the ARN needle, while a bare-path entry
+#: disables all three rules. Two consequences, both reproduced: reverting the 12 service
+#: principals and restoring the directory entry scored twelve hardcoded principals across
+#: two files as covering ONE file, so the per-file ratchet passed; and an entry whose line
+#: pattern was the needle itself (`…codepipeline-s3.yml:arn:aws:`) hid 37 lines while
+#: scoring as one file, which is the original defect relocated from directory scope to
+#: file scope.
+_ARN_GATE_CHECKS = (
+    ("arn:aws:", ("arn:${AWS::Partition}:",)),
+    (
+        ".amazonaws.com",
+        (
+            "${AWS::URLSuffix}",
+            "Description:",
+            "Comment:",
+            "reason:",
+            "cognito",
+            "ContentSecurityPolicy",
+        ),
+    ),
+    ("console.aws.amazon.com", ("Domain:", "Description:", "Comment:")),
+)
 
-    Files shielding zero findings are omitted, so the value is exactly the set of
-    files an entry is doing work for.
+#: The most lines one exemption entry may hide. An entry names a specific unfixable line
+#: or two; anything approaching a fileful of findings is a directory exemption wearing a
+#: filename. Set above the current entry's two with a little room, rather than derived
+#: from the current value -- a limit that tracked the present count would never bind.
+MAX_LINES_PER_EXEMPTION = 4
+
+
+def _shielded_per_entry() -> dict[str, dict[str, int]]:
+    """``{entry: {file: findings hidden}}``, unioning all three of the gate's checks.
+
+    Files shielding zero findings are omitted, so the value is exactly the set of files
+    an entry is doing work for.
     """
     _, entries = _arn_exempt_entries()
     result: dict[str, dict[str, int]] = {}
@@ -156,12 +188,15 @@ def _shielded_per_entry() -> dict[str, dict[str, int]]:
         )
         per_file: dict[str, int] = {}
         for rel in targets:
-            hits = gate_premises.matching_lines(
-                rel, "arn:aws:", exclude=("arn:${AWS::Partition}:",)
-            )
-            count = sum(1 for _, line in hits if not pattern or pattern in line)
-            if count:
-                per_file[rel] = count
+            shielded: set[int] = set()
+            for needle, exclude in _ARN_GATE_CHECKS:
+                for number, line in gate_premises.matching_lines(
+                    rel, needle, exclude=exclude
+                ):
+                    if not pattern or pattern in line:
+                        shielded.add(number)
+            if shielded:
+                per_file[rel] = len(shielded)
         result[entry] = per_file
     return result
 
@@ -243,4 +278,48 @@ def test_no_exemption_covers_more_than_one_file() -> None:
         f"one reason is answering for several: {overbroad}. Split them into one entry "
         "per file (ideally `<path>:<line-pattern>`) and write the reason that holds "
         "for each — if one of them has no reason of its own, that is the finding."
+    )
+
+
+def test_no_exemption_hides_more_lines_than_a_reason_can_cover() -> None:
+    """A per-file entry must not become a per-file blanket.
+
+    Making the exemption per file removed the directory loophole and left a smaller one of
+    the same shape: nothing bounded how many lines one entry could hide, and nothing
+    required the line pattern to be narrower than the rule's own needle. An entry spelled
+    ``<template>:arn:aws:`` matches every line the ARN check would flag -- 37 of them in
+    one of these templates -- while scoring as a single file and passing the per-file
+    ratchet. One sentence answering for 37 lines is the defect this list started with,
+    moved one level down.
+
+    So two bounds: a line pattern may not BE the needle, and an entry may not hide more
+    than a handful of lines. Both are crude on purpose. The point is not to compute the
+    right number, it is that growing an exemption past the reason written beside it has to
+    be a deliberate, visible act.
+    """
+    _, entries = _arn_exempt_entries()
+    needles = [needle for needle, _ in _ARN_GATE_CHECKS]
+    too_broad = [
+        f"{entry}: line pattern {entry.partition(':')[2]!r} is the rule's own needle, so "
+        "it hides every finding in the file"
+        for entry in entries
+        if entry.partition(":")[2]
+        and any(
+            entry.partition(":")[2] in needle or needle in entry.partition(":")[2]
+            for needle in needles
+        )
+    ]
+    assert not too_broad, "\n  ".join(["over-broad exemption pattern(s):", *too_broad])
+
+    oversized = {
+        entry: shielded
+        for entry, shielded in _shielded_per_entry().items()
+        if sum(shielded.values()) > MAX_LINES_PER_EXEMPTION
+    }
+    assert not oversized, (
+        f"these entries hide more than {MAX_LINES_PER_EXEMPTION} line(s) each, so one "
+        f"reason is answering for a fileful of findings: {oversized}. Fix the lines, or "
+        "split the entry and write the reason that holds for each group -- and if the "
+        "count is genuinely justified, raise MAX_LINES_PER_EXEMPTION deliberately and say "
+        "why."
     )

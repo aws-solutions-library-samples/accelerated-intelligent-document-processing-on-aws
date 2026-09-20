@@ -44,15 +44,15 @@ to do it.
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import tempfile
 from pathlib import Path
 
-import pytest
-
 import exemption_discovery
 import gate_premises
+import pytest
 
 pytestmark = pytest.mark.unit
 
@@ -73,12 +73,37 @@ RATCHETS = {
 #: the same shape ``PASS_ROLE_WILDCARD_ALLOWED`` uses. Pinning it is what stops the
 #: honest "declare the gap" escape hatch from becoming the default: declaring a gap is
 #: allowed, and quietly adding a 30th is not.
-MAX_UNRATCHETED = 34
+MAX_UNRATCHETED = 55
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place
 #: to leave things.
 MAX_PENDING_WIRING = 1
+
+
+def _predicates_called_in(path: Path) -> set[str]:
+    """Predicate names this file actually CALLS, by parsing it.
+
+    A substring search was satisfied by a comment: adding
+    ``Premise: not_a_nested_stack_of_parent, per gate_premises.`` to a docstring made an
+    entry naming that predicate pass while nothing evaluated it. A registry that asserts
+    a fact is checked while nothing checks it is a more convincing version of the defect,
+    not a fix for it — so this looks for a call node.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            called.add(func.attr)
+        elif isinstance(func, ast.Name):
+            called.add(func.id)
+    return called
 
 
 def _registry() -> dict[str, dict]:
@@ -104,7 +129,7 @@ def test_every_discovered_exemption_is_registered() -> None:
     unregistered = sorted(set(discovered) - set(registry))
     assert not unregistered, (
         "these look like gate exemptions and are not in "
-        f"scripts/tests/gate_exemptions.json:\n  "
+        "scripts/tests/gate_exemptions.json:\n  "
         + "\n  ".join(
             f"{key}  (line {discovered[key].line}, found via {discovered[key].via})"
             for key in unregistered
@@ -138,23 +163,39 @@ def test_entry_is_well_formed(key: str) -> None:
     """Schema, per entry — including that JUDGEMENT carries a reason."""
     entry = _registry()[key]
 
-    assert entry.get("kind") in KINDS, f"{key}: kind {entry.get('kind')!r} not in {KINDS}"
+    assert entry.get("kind") in KINDS, (
+        f"{key}: kind {entry.get('kind')!r} not in {KINDS}"
+    )
     assert entry.get("turnsOff", "").strip(), (
         f"{key}: 'turnsOff' is empty. What stops being asserted for a member is the "
         "one thing a reviewer needs and the one thing the constant's name never says."
     )
 
     premise = entry.get("premise")
-    known = set(gate_premises.PREDICATES) | {gate_premises.JUDGEMENT}
-    assert premise in known, (
-        f"{key}: premise {premise!r} is neither a predicate in gate_premises.PREDICATES "
-        f"({sorted(gate_premises.PREDICATES)}) nor {gate_premises.JUDGEMENT!r}"
+    assert isinstance(premise, list) and premise, (
+        f"{key}: 'premise' must be a non-empty LIST. A scalar cannot hold the two "
+        "predicates some of these gates compute per member, and the entries whose gates "
+        "did compute two were forced to record JUDGEMENT and understate themselves."
     )
-    if premise == gate_premises.JUDGEMENT:
+    known = set(gate_premises.PREDICATES) | {gate_premises.JUDGEMENT}
+    unknown = sorted(set(premise) - known)
+    assert not unknown, (
+        f"{key}: premise names {unknown}, which are neither predicates in "
+        f"gate_premises.PREDICATES ({sorted(gate_premises.PREDICATES)}) nor "
+        f"{gate_premises.JUDGEMENT!r}"
+    )
+    if gate_premises.JUDGEMENT in premise:
         assert entry.get("reason", "").strip(), (
-            f"{key}: premise is JUDGEMENT, so a reason is required. JUDGEMENT records "
-            "that there is nothing to compute; it does not record that nobody looked."
+            f"{key}: premise includes JUDGEMENT, so a reason is required. JUDGEMENT "
+            "records that there is nothing to compute; it does not record that nobody "
+            "looked."
         )
+
+    assert entry.get("memberKind", "").strip(), (
+        f"{key}: 'memberKind' is required — what does one member NAME? A path, a "
+        "CloudFormation logical id, a model id, a rule id? It decides which predicates "
+        "can possibly apply, so it cannot be left to inference."
+    )
 
     ratchet = entry.get("ratchet")
     assert ratchet in RATCHETS, f"{key}: ratchet {ratchet!r} not in {RATCHETS}"
@@ -180,8 +221,8 @@ def test_a_computable_premise_is_actually_computed(key: str) -> None:
     half lives in the gate, where the per-member parametrisation is.
     """
     entry = _registry()[key]
-    premise = entry["premise"]
-    if premise == gate_premises.JUDGEMENT:
+    named = [p for p in entry["premise"] if p != gate_premises.JUDGEMENT]
+    if not named:
         return
     if entry.get("premiseWiring") == "pending":
         assert entry.get("reason", "").strip(), (
@@ -191,13 +232,14 @@ def test_a_computable_premise_is_actually_computed(key: str) -> None:
         return
 
     gate_path = REPO_ROOT / key.split("::", 1)[0]
-    source = gate_path.read_text(encoding="utf-8")
-    assert premise in source and "gate_premises" in source, (
-        f"{key} names premise {premise!r}, but {gate_path.relative_to(REPO_ROOT)} does "
-        f"not call gate_premises.{premise}. A premise the owning gate never evaluates "
-        "is the original defect with a registry entry on top of it — either wire it up "
-        "per member, record JUDGEMENT with the reason, or mark premiseWiring 'pending' "
-        "and say why."
+    called = _predicates_called_in(gate_path)
+    missing = sorted(set(named) - called)
+    assert not missing, (
+        f"{key} names premise(s) {missing}, but {gate_path.relative_to(REPO_ROOT)} "
+        f"contains no CALL to them (calls found: {sorted(called)}). A premise the owning "
+        "gate never evaluates is the original defect with a registry entry on top of it "
+        "— either wire it up per member, record JUDGEMENT with the reason, or mark "
+        "premiseWiring 'pending' and say why."
     )
 
 
@@ -284,7 +326,9 @@ def test_discovery_works_from_a_checkout_under_a_pruned_directory() -> None:
             "PROBE_EXEMPT = {'a': 'because'}\n",
             encoding="utf-8",
         )
-        subprocess.run(["git", "init", "-q"], cwd=checkout, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=checkout, check=True, capture_output=True
+        )
         subprocess.run(
             ["git", "add", "-A"], cwd=checkout, check=True, capture_output=True
         )
@@ -325,7 +369,9 @@ def test_discovery_sees_a_file_that_is_not_committed_yet() -> None:
             encoding="utf-8",
         )
         (checkout / ".gitignore").write_text("scripts/ignored.py\n", encoding="utf-8")
-        subprocess.run(["git", "init", "-q"], cwd=checkout, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=checkout, check=True, capture_output=True
+        )
 
         found = exemption_discovery.discover_all(root=checkout)
         assert "scripts/uncommitted.py::NEW_EXEMPT" in found, (
@@ -336,6 +382,7 @@ def test_discovery_sees_a_file_that_is_not_committed_yet() -> None:
             "a gitignored file is visible to discovery, which is how a gate comes to "
             f"report findings against build output: {sorted(found)}"
         )
+
 
 #: For each predicate, wording in a reason that means its domain is in play. A reason
 #: that talks about nested stacks while recording JUDGEMENT has to say why the
@@ -348,7 +395,11 @@ def test_discovery_sees_a_file_that_is_not_committed_yet() -> None:
 #: must not be called a check, and this is not standing in for a premise: it is the
 #: thing that stops JUDGEMENT being used INSTEAD of a premise.
 PREDICATE_DOMAIN_WORDING = {
-    "not_a_nested_stack_of_parent": ("nested stack", "nested stacks", "parameters reach"),
+    "not_a_nested_stack_of_parent": (
+        "nested stack",
+        "nested stacks",
+        "parameters reach",
+    ),
     "built_separately_from_main_stack": (
         "built separately",
         "built and versioned separately",
@@ -357,7 +408,11 @@ PREDICATE_DOMAIN_WORDING = {
         "publish run",
     ),
     "installer_manifest_pins_parameter": ("feature.yaml", "defaultparameters"),
-    "file_absent_or_untracked": ("does not exist", "no longer exists", "only after a build"),
+    "file_absent_or_untracked": (
+        "does not exist",
+        "no longer exists",
+        "only after a build",
+    ),
     "collects_zero_tests": ("collects zero", "collects no", "zero pytest tests"),
 }
 
@@ -384,15 +439,16 @@ def test_judgement_does_not_stand_in_for_an_available_predicate(key: str) -> Non
     original defects did.
     """
     entry = _registry()[key]
-    if entry["premise"] != gate_premises.JUDGEMENT:
+    if gate_premises.JUDGEMENT not in entry["premise"]:
         return
 
     text = f"{entry.get('reason', '')} {entry.get('turnsOff', '')}".lower()
     considered = set(entry.get("predicateConsidered", {}))
+    already = considered | set(entry["premise"])
     implicated = sorted(
         predicate
         for predicate, wording in PREDICATE_DOMAIN_WORDING.items()
-        if any(phrase in text for phrase in wording) and predicate not in considered
+        if any(phrase in text for phrase in wording) and predicate not in already
     )
     assert not implicated, (
         f"{key} records JUDGEMENT, but its reason invokes the subject of "
@@ -417,3 +473,153 @@ def test_a_considered_predicate_is_named_and_explained(key: str) -> None:
             f"{key}: predicateConsidered[{predicate!r}] has no explanation. Setting a "
             "predicate aside silently is the same act as never looking for it."
         )
+
+
+#: Evidence that a named ratchet is implemented, not merely labelled. Text a file that
+#: implements that kind of ratchet necessarily contains.
+#:
+#: Same standing as PREDICATE_DOMAIN_WORDING: a lint on this registry, not a claim about
+#: the world. It cannot tell a good staleness check from a bad one. What it stops is the
+#: cheapest possible cheat -- writing "staleness" beside an exemption with no staleness
+#: check anywhere, which kept the unratcheted count down and the suite green, making
+#: mislabelling cheaper than declaring a gap and inverting the incentive MAX_UNRATCHETED
+#: exists to create.
+RATCHET_EVIDENCE_MARKERS = {
+    "non-vacuity": (
+        "hides nothing",
+        "shields 0",
+        "shields nothing",
+        "vacuous",
+        "matched nothing",
+        "no longer match",
+        "stale_allowlist",
+        "still_needed",
+        "still needed",
+    ),
+    "count-pinned": (
+        "pinned",
+        "expected count",
+        "audited when",
+        "no more sites",
+        "expected number",
+    ),
+    "universe-closure": (
+        "unaccounted",
+        "categorised",
+        "is_categorised",
+        "neither",
+        "unregistered",
+        "unclassified",
+        "not in RUN_ROOTS",
+        "missing wildcard",
+        "inverse",
+        "drift",
+        "TREE_INDEPENDENCE",
+        "MANIFEST_TOLERATED",
+        "_ALL_KNOWN",
+    ),
+    "staleness": (
+        "stale",
+        "vanished",
+        "no longer",
+        "still exist",
+        "still_needed",
+        "dead",
+    ),
+    "prune-meta-test": ("scratch", ".claude", "PRUNE"),
+}
+
+
+@pytest.mark.parametrize("key", sorted(_registry()))
+def test_a_named_ratchet_is_implemented_somewhere(key: str) -> None:
+    """``ratchet`` must point at a file that implements it.
+
+    The field was an unverified label. Registering a new exemption with
+    ``"ratchet": "staleness"`` and no staleness test anywhere left the unratcheted count
+    untouched and the suite green -- so the cheapest response to a new exemption was not
+    "declare the gap" but "claim a ratchet you did not build", which is worse than the
+    gap because it reads as protection.
+
+    An equivalent check already existed for ``premise`` and not for ``ratchet``, the
+    field carrying the majority of these entries.
+    """
+    entry = _registry()[key]
+    ratchet = entry["ratchet"]
+    if ratchet == "none":
+        return
+
+    evidence = entry.get("ratchetEvidence")
+    assert evidence, (
+        f"{key} claims ratchet {ratchet!r} but names no 'ratchetEvidence'. Point at the "
+        "tracked file that implements it."
+    )
+    paths = [evidence] if isinstance(evidence, str) else evidence
+    markers = RATCHET_EVIDENCE_MARKERS[ratchet]
+    for rel in paths:
+        assert gate_premises.is_tracked(rel), (
+            f"{key}: ratchetEvidence names {rel!r}, which git does not track"
+        )
+    # At least ONE of the named files must show the implementation. Several ratchets
+    # are split across a script and its test -- run_all_tests.py hard-errors on an
+    # unclassified directory while its test file covers the registry's shape -- so
+    # requiring every named file to carry a marker would force the author to drop the
+    # honest other half from the list.
+    assert any(
+        marker.lower() in (REPO_ROOT / rel).read_text(encoding="utf-8").lower()
+        for rel in paths
+        for marker in markers
+    ), (
+        f"{key} claims ratchet {ratchet!r} implemented in {paths}, but none of those "
+        f"files contains any of {list(markers)}. Either the ratchet is not implemented "
+        "there -- in which case say so and set ratchet to 'none' with a ratchetGap -- "
+        "or point at the file that does implement it."
+    )
+
+
+#: Predicates that can apply to any exemption whose members name repo paths.
+_PATH_PREDICATES = frozenset(
+    {
+        "not_a_nested_stack_of_parent",
+        "built_separately_from_main_stack",
+        "file_absent_or_untracked",
+    }
+)
+
+
+@pytest.mark.parametrize("key", sorted(_registry()))
+def test_a_path_membered_exemption_engages_with_the_path_predicates(key: str) -> None:
+    """An exemption over repo paths may not be pure ``JUDGEMENT``.
+
+    This is the hole the wording check alone does not close, and it is worth being
+    precise about why. ``PREDICATE_DOMAIN_WORDING`` catches a reason that *says* "nested
+    stack"; it does not catch one that says "has its own build and release train, ships
+    on an independent cadence, and the main stack does not deploy it" — the same claim in
+    words the list does not contain. A reviewer demonstrated exactly that against an
+    earlier version of this file, with both predicates returning False for the member.
+
+    Prose cannot be made airtight, so the rule here is structural instead: if a member
+    is a **path**, then whether the parent deploys it and whether one publish run builds
+    it are computable facts about it, and the entry must engage with them — by naming a
+    predicate (which the owning gate must then actually call), by ``premiseWiring:
+    pending``, or by ``predicateConsidered`` with a sentence per predicate. What it may
+    not do is say nothing.
+
+    Exemptions whose members are logical ids, model ids, rule ids or make targets are
+    exempt from this, because no predicate here applies to them — recorded in
+    ``memberKind`` rather than guessed.
+    """
+    entry = _registry()[key]
+    if entry["memberKind"] != "deployable path":
+        return
+    if entry.get("premiseWiring") == "pending":
+        return
+
+    engaged = set(entry["premise"]) | set(entry.get("predicateConsidered") or {})
+    assert engaged & _PATH_PREDICATES, (
+        f"{key} exempts repo PATHS and engages with none of {sorted(_PATH_PREDICATES)}. "
+        "Whether the parent deploys a path, and whether one publish run builds it, are "
+        "facts this tree computes — four exemption lists asserted one of them in prose "
+        "and were wrong. Name the predicate and evaluate it per member in the owning "
+        "gate, or list it in 'predicateConsidered' with a sentence saying why it does "
+        "not settle the question."
+    )
