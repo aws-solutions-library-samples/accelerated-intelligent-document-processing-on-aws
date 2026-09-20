@@ -12,18 +12,19 @@ exclusion patterns matches at *any* path depth, and ``make ruff-lint`` /
 ``make format`` / ``make lint-cicd`` all invoke ruff with no path argument, so
 the exclusions applied: 442 of 1230 tracked ``.py`` files were read by neither
 the lint gate nor the formatter, among them all 138 files under ``scripts/``
-(the repository's own hand-written gate layer) and 76 resolver Lambdas under
-``nested/*/src/`` that nobody had counted, because ``src`` matched there too.
-A clean ``ruff check`` on any of those files meant the file was never opened.
-See issue #975.
+(the repository's own hand-written gate layer -- 137 at its root plus one under
+``security/threat-modeling/scripts/``) and 76 files under ``nested/*/src/``: 67
+API-resolver Lambdas and 9 Bedrock Knowledge Base custom-resource handlers, which
+nobody had counted because ``src`` matched there too. A clean ``ruff check`` on any
+of those files meant the file was never opened. See issue #975.
 
 Two properties are wanted at once, and they pull against each other:
 
 1. a **new** Python file anywhere in the repository must be linted and
    format-checked by default, and
 2. the pre-existing findings in the previously-unlinted trees must not have to
-   be fixed in one commit — 267 lint findings and 189 unformatted files, spread
-   across trees that seven other branches were editing at the time.
+   be fixed in one commit — 267 lint findings and 189 unformatted files, 42 of
+   those files being edited by five of the seven branches then open.
 
 So the exclusions are now **per file**, generated, and ratcheted. ``ruff.toml``
 names individual files, never a directory, so property 1 holds. This gate
@@ -68,9 +69,20 @@ release in the ``lib/idp_common_pkg`` range at the time it was recorded.
 
 USAGE
 -----
-    python3 scripts/check_lint_debt.py            # the gate (make check-lint-debt)
-    python3 scripts/check_lint_debt.py --write     # re-record the baseline
-    python3 scripts/check_lint_debt.py --summary   # counts per tree, no verdict
+    python3 scripts/check_lint_debt.py             # the gate (make check-lint-debt)
+    python3 scripts/check_lint_debt.py --write      # re-record the baseline
+    python3 scripts/check_lint_debt.py --summary    # counts per tree, no verdict
+    python3 scripts/check_lint_debt.py --explain P  # does any gate read P, and why not
+
+Use ``--explain`` rather than asking ruff. Every ruff-native probe is misleading
+for at least one class of file here -- see :func:`explain` -- and a misleading
+probe is the stated reason #975 survived inspection for as long as it did.
+
+``--write`` will not GROW either list. It refuses, naming the paths, unless given
+``--allow-new-debt "<reason>"``, which records the reason in the baseline. Without
+that refusal ``--write`` is a laundering step: the gate reddens on a new file with
+findings and says "do not add the file to lintDebt", and ``--write`` would then add
+it and turn everything green with the file permanently unlinted.
 """
 
 from __future__ import annotations
@@ -242,28 +254,52 @@ def _run_ruff(args: list[str], paths: list[str]) -> str:
 
 
 # Concise output is `path:line:col: RULE message`, except for a notebook, where
-# ruff inserts the cell: `path.ipynb:cell 3:12:1: I001 ...`.
-_FINDING_RE = re.compile(
-    r"^(?P<path>[^\s:]+):(?:cell \d+:)?\d+:\d+: (?P<rule>[A-Z]+\d+)\b"
-)
+# ruff inserts the cell: `path.ipynb:cell 3:12:1: I001 ...`. The path group is
+# non-greedy rather than "anything but whitespace or a colon", because a path
+# containing a space is legal: with the old pattern such a file's findings simply
+# did not match, so they were invisible to the ratchet while still failing a bare
+# `ruff check`. Every parsed path is checked against the set that was asked about,
+# so a path this still cannot parse is a hard error rather than a silent drop.
+_FINDING_RE = re.compile(r"^(?P<path>.+?):(?:cell \d+:)?\d+:\d+: (?P<rule>[A-Z]+\d+)\b")
 
 
 def measure() -> tuple[dict[str, Counter[str]], set[str]]:
     """Per-file lint findings by rule, and the set of unformatted files."""
     paths = tracked_python()
+    wanted = set(paths)
     findings: dict[str, Counter[str]] = defaultdict(Counter)
+    unresolved: list[str] = []
     for line in _run_ruff(
         ["check", "--no-fix", "--quiet", "--output-format", "concise"], paths
     ).splitlines():
         match = _FINDING_RE.match(line)
-        if match:
-            findings[match["path"]][match["rule"]] += 1
+        if not match:
+            continue
+        if match["path"] not in wanted:
+            unresolved.append(line)
+            continue
+        findings[match["path"]][match["rule"]] += 1
+
+    if unresolved:
+        sys.exit(
+            "❌ could not attribute "
+            f"{len(unresolved)} ruff finding(s) to a tracked file, so the ratchet "
+            "would silently under-count. Fix the parser in "
+            f"{Path(__file__).name} rather than ignoring these:\n  "
+            + "\n  ".join(unresolved[:5])
+        )
 
     unformatted = {
         line.removeprefix("Would reformat: ").strip()
         for line in _run_ruff(["format", "--check", "--quiet"], paths).splitlines()
         if line.startswith("Would reformat: ")
     }
+    unknown = sorted(unformatted - wanted)
+    if unknown:
+        sys.exit(
+            f"❌ `ruff format --check` named {len(unknown)} path(s) that are not in "
+            f"the set asked about: {unknown[:5]}"
+        )
     return dict(findings), unformatted
 
 
@@ -305,8 +341,12 @@ def load_baseline() -> dict:
 def _matches_scope(path: str, pattern: str) -> bool:
     """Mirror the subset of ruff's pattern semantics the ``scope`` list uses.
 
-    Two forms only, and the gate asserts no third form appears: a directory
-    prefix, and a suffix glob of the form ``**/*.ext``.
+    Two forms are understood: a directory prefix, and a suffix glob of the form
+    ``**/*.ext``. A third form is not rejected by name — it simply matches
+    nothing here, which check 4's non-vacuity assertion then reports as a scope
+    entry that shields nothing. That is fail-closed but it names a different
+    cause, so if a third form is ever wanted, teach this function about it rather
+    than reading past the non-vacuity failure.
     """
     if pattern.startswith("**/*."):
         return path.endswith(pattern[4:])
@@ -501,7 +541,28 @@ def check(report: Report) -> None:
             f"{path} is not formatted, so `ruff format --check` fails. Run `make format`."
         )
 
-    # 9. ruff's own walk must not reach anything git ignores.
+    # 9. The recorded totals must match the lists, so growth of the LISTS is
+    #    always a visible diff on three numbered lines rather than 200 quiet
+    #    additions. `--write` refuses to grow them at all without
+    #    --allow-new-debt "<reason>"; this is the half a static read can enforce.
+    mark = baseline.get("highWaterMark")
+    totals = _totals(lint_debt, format_debt)
+    if mark is None:
+        report.fail(
+            "scripts/lint_debt.json has no highWaterMark. It records the size the "
+            "exclusion lists are allowed to reach, and without it `--write` cannot "
+            "tell growth from a re-record. Run: "
+            "python3 scripts/check_lint_debt.py --write"
+        )
+    elif mark != totals:
+        report.fail(
+            f"scripts/lint_debt.json's highWaterMark {mark} does not match the "
+            f"lists it describes {totals}. Either the lists were hand-edited (they "
+            f"are generated — do not), or a re-record was left half-done. Run: "
+            f"python3 scripts/check_lint_debt.py --write"
+        )
+
+    # 10. ruff's own walk must not reach anything git ignores.
     walked = ruff_walk()
     leaked = sorted(git_ignored(walked))
     if leaked:
@@ -510,6 +571,30 @@ def check(report: Report) -> None:
             f"`make lint` reads build output or another checkout and CI cannot "
             f"reproduce the result: {leaked[:5]}\n"
             f"    Add the directory to ruff.toml's top-level `exclude`."
+        )
+
+    # 11. ...and it must reach everything git tracks that no scope entry covers.
+    #     Check 2 reads only the three GENERATED blocks, so it cannot see the
+    #     top-level `exclude` array -- which is bare directory names by design, for
+    #     build output. Issue #975 is therefore re-openable through that array with
+    #     every other check here green: adding "scripts" back to it drops the walk
+    #     by 135 files while `ruff check` still prints "All checks passed!". This is
+    #     the assertion that closes it, and it is a property of the walk rather than
+    #     a list of names, so it covers a form nobody has thought of yet.
+    walked_set = set(walked)
+    unreached = sorted(
+        path
+        for path in tracked_python()
+        if path not in walked_set and not in_scope_exclusion(path, scope)
+    )
+    if unreached:
+        report.fail(
+            f"`ruff` does not look at {len(unreached)} tracked file(s), and no "
+            f"scripts/lint_debt.json `scope` entry accounts for them, so a NEW file "
+            f"added beside any of them would be unlinted too: {unreached[:5]}\n"
+            f"    This is the shape of issue #975. The cause is usually an entry in "
+            f"ruff.toml's TOP-LEVEL `exclude` array — which is bare directory names "
+            f"on purpose, for build output, so it must never name a source tree."
         )
 
 
@@ -537,7 +622,92 @@ def summarise() -> None:
         print(f"  {count:5d}  {tree}")
 
 
-def write() -> None:
+def explain(path: str) -> int:
+    """Say which gates read one file, and why not — the probe that cannot lie.
+
+    Every ruff-native way of asking is misleading for at least one class of file,
+    which is the same reason #975 survived inspection in the first place:
+
+    * ``ruff check <path>`` and ``ruff format --check <path>`` bypass the
+      exclusions entirely (an explicitly named path is not force-excluded by
+      default), so they report on a file the gate never reads.
+    * ``--force-exclude`` restores only ``exclude``/``extend-exclude``, which are
+      *discovery* settings. ``lint.exclude`` and ``format.exclude`` filter after
+      discovery, so ``ruff check --force-exclude <path>`` prints
+      ``All checks passed!`` and exits 0 for all 85 lint-excluded files — the
+      reassuring-and-false answer. For a format-excluded file
+      ``ruff format --check --force-exclude`` prints *nothing at all*, not the
+      ``No Python files found`` warning that the discovery-level exclusions give.
+    * ``ruff check --show-files`` does not honour ``lint.exclude`` either, so a
+      file appearing there is not evidence that it is linted.
+
+    This reads the baseline, which is the source of truth for all three arrays.
+    """
+    baseline = load_baseline()
+    scope: dict = baseline["scope"]
+    rel = path
+    if Path(path).is_absolute():
+        try:
+            rel = str(Path(path).resolve().relative_to(REPO_ROOT))
+        except ValueError:
+            print(f"{path} is outside {REPO_ROOT}")
+            return 2
+    tracked = set(tracked_files())
+    if rel not in tracked:
+        print(
+            f"❓ {rel} is not tracked by git, so no gate in this repository reads it."
+        )
+        return 2
+
+    pattern = in_scope_exclusion(rel, scope)
+    lint_debt: dict = baseline["lintDebt"]
+    print(f"{rel}")
+    if pattern:
+        entry = scope[pattern]
+        print(f"  ruff check        : NOT read — scope exclusion {pattern!r}")
+        print(f"  ruff format       : NOT read — scope exclusion {pattern!r}")
+        print(f"  reason            : {entry.get('reason', '(none recorded)')}")
+        print(f"  ratchet           : {entry.get('ratchet', '(none recorded)')}")
+        print(f"  not protected by  : {entry.get('ratchetGap', '(none recorded)')}")
+    else:
+        counts = lint_debt.get(rel)
+        if counts:
+            shown = ", ".join(f"{rule}x{n}" for rule, n in sorted(counts.items()))
+            print(
+                f"  ruff check        : NOT read — in [lint] exclude, shielding {shown}"
+            )
+            print(
+                "  ratchet           : a further finding in this file fails "
+                "`make check-lint-debt`"
+            )
+        else:
+            print("  ruff check        : read")
+        if rel in baseline["formatDebt"]:
+            print(
+                "  ruff format       : NOT read — in [format] exclude (never formatted)"
+            )
+        else:
+            print("  ruff format       : read")
+    print(
+        "  basedpyright      : "
+        + (
+            "read"
+            if rel.endswith(".py")
+            else "NOT read — notebooks are excluded (pyrightconfig.json)"
+        )
+    )
+    return 0
+
+
+def _totals(lint_debt: dict, format_debt: list) -> dict[str, int]:
+    return {
+        "lintDebtFiles": len(lint_debt),
+        "lintFindings": sum(sum(counts.values()) for counts in lint_debt.values()),
+        "formatDebtFiles": len(format_debt),
+    }
+
+
+def write(allow_new_debt: str | None = None) -> None:
     baseline = load_baseline()
     scope: dict = baseline["scope"]
     findings, unformatted = measure()
@@ -550,6 +720,43 @@ def write() -> None:
     format_debt = sorted(
         path for path in unformatted if not in_scope_exclusion(path, scope)
     )
+
+    # The list may only shrink. Without this, `--write` is a laundering step: the
+    # gate correctly reddens on an unlisted file with findings and says "do not add
+    # the file to lintDebt", and then --write adds it anyway and everything goes
+    # green with the file permanently unlinted. The per-file ratchet turns one way;
+    # this is what stops the *list itself* from growing.
+    mark: dict = baseline.setdefault("highWaterMark", {})
+    totals = _totals(lint_debt, format_debt)
+    grown = {
+        key: (mark[key], value)
+        for key, value in totals.items()
+        if key in mark and value > mark[key]
+    }
+    if grown and not allow_new_debt:
+        detail = ", ".join(
+            f"{k}: {was} → {now}" for k, (was, now) in sorted(grown.items())
+        )
+        added_lint = sorted(set(lint_debt) - set(baseline.get("lintDebt", {})))
+        added_format = sorted(set(format_debt) - set(baseline.get("formatDebt", [])))
+        sys.exit(
+            f"❌ refusing to write: this would GROW the exclusion list ({detail}).\n"
+            f"   newly excluded from `ruff check`:  {added_lint[:10] or 'none'}\n"
+            f"   newly excluded from `ruff format`: {added_format[:10] or 'none'}\n\n"
+            "   The lists only shrink. Fix the findings instead of recording them --\n"
+            "   or, for a formatting entry, run `ruff format <that path>` with the\n"
+            "   path spelled out, because bare `ruff format` honours the exclusion\n"
+            "   and will skip the very file you are trying to fix. If the growth is\n"
+            "   genuinely\n"
+            "   unavoidable — a merge bringing in files another branch never\n"
+            "   formatted, say — re-run with:\n\n"
+            '       --write --allow-new-debt "why this could not be fixed here"\n\n'
+            "   which records the reason in scripts/lint_debt.json so it is\n"
+            "   reviewable rather than invisible."
+        )
+    if allow_new_debt:
+        baseline.setdefault("newDebtJustifications", []).append(allow_new_debt)
+    baseline["highWaterMark"] = totals
     for pattern, entry in scope.items():
         matched = [p for p in tracked_python() if _matches_scope(p, pattern)]
         entry["shields"] = {
@@ -586,7 +793,25 @@ def main() -> int:
         help="re-record the baseline from the current tree (tightens the ratchet)",
     )
     parser.add_argument(
+        "--allow-new-debt",
+        metavar="REASON",
+        help=(
+            "with --write: permit the exclusion lists to GROW, recording REASON in "
+            "the baseline. Without it, --write refuses to add a path — otherwise it "
+            "launders a brand-new finding into a permanent exclusion"
+        ),
+    )
+    parser.add_argument(
         "--summary", action="store_true", help="print the measurement, no verdict"
+    )
+    parser.add_argument(
+        "--explain",
+        metavar="PATH",
+        help=(
+            "say which gates read PATH and why not. Use this rather than "
+            "`ruff check <path>` or --force-exclude, both of which answer "
+            "misleadingly for a per-file exclusion"
+        ),
     )
     parser.add_argument(
         "--verbose", action="store_true", help="also print the checks that passed"
@@ -594,8 +819,10 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.write:
-        write()
+        write(args.allow_new_debt)
         return 0
+    if args.explain:
+        return explain(args.explain)
     if args.summary:
         summarise()
         return 0

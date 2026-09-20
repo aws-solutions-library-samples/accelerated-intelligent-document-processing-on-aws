@@ -7,9 +7,10 @@ A ratchet nobody has watched fail is not a ratchet. `ruff.toml` excludes 85 file
 from `ruff check` and 186 from `ruff format --check`, so for those files the two
 lint gates are silent by construction, and everything protecting them lives in
 that script. Each test below drives one failure mode and asserts the message
-names it — including the two directions that a plain "does it still pass?" check
-cannot distinguish: a listed file that *gained* a finding, and a listed file that
-is now clean and must be delisted.
+names it — including the directions that a plain "does it still pass?" check
+cannot distinguish: a listed file that *gained* a finding, a listed file that is
+now clean and must be delisted, and `--write` being asked to *add* a file, which
+would otherwise turn a red gate green in one command.
 
 The failure modes are exercised against a synthetic tree rather than by editing
 the real one, so a test cannot leave the repository dirty. One test at the end
@@ -70,7 +71,7 @@ def _entries(paths) -> str:
     return "".join(f'    "{p}",\n' for p in sorted(paths))
 
 
-def _harness(
+def _setup(
     tmp_path,
     monkeypatch,
     *,
@@ -83,11 +84,11 @@ def _harness(
     toml_scope=None,
     toml_lint=None,
     toml_format=None,
-    walk=(),
+    walk=None,
     ignored=(),
     extra_toml="",
 ):
-    """Run `check()` against a synthetic tree and return the failure list."""
+    """Point the module at a synthetic tree. Returns its baseline path."""
     from collections import Counter
 
     scope = {} if scope is None else scope
@@ -122,9 +123,28 @@ def _harness(
             set(unformatted),
         ),
     )
-    monkeypatch.setattr(MODULE, "ruff_walk", lambda: list(walk))
+    # Default: ruff sees everything git tracks. Only the discovery-closure tests
+    # override this, so the other fixtures are unaffected by that check.
+    discovered = sorted(tracked) if walk is None else list(walk)
+    monkeypatch.setattr(MODULE, "ruff_walk", lambda: discovered)
     monkeypatch.setattr(MODULE, "git_ignored", lambda paths: set(ignored) & set(paths))
+    return baseline
 
+
+def _harness(tmp_path, monkeypatch, **kwargs):
+    """Run `check()` against a synthetic tree and return the failure list."""
+    mark = kwargs.pop("high_water_mark", "auto")
+    baseline_path = _setup(tmp_path, monkeypatch, **kwargs)
+    if mark is not None:
+        data = json.loads(baseline_path.read_text())
+        if mark == "auto":
+            mark = {
+                "lintDebtFiles": len(data["lintDebt"]),
+                "lintFindings": sum(sum(c.values()) for c in data["lintDebt"].values()),
+                "formatDebtFiles": len(data["formatDebt"]),
+            }
+        data["highWaterMark"] = mark
+        baseline_path.write_text(json.dumps(data))
     report = MODULE.Report()
     MODULE.check(report)
     return report.failures
@@ -319,6 +339,186 @@ def test_a_scope_exclusion_covers_its_own_findings(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# The list itself may only shrink. Without this, --write launders new findings
+# into a permanent exclusion: the gate reddens on an unlisted file and says "do
+# not add the file to lintDebt", and --write adds it anyway.
+# --------------------------------------------------------------------------- #
+def _write(tmp_path, monkeypatch, *, allow=None, mark=None, **kwargs):
+    baseline_path = _setup(tmp_path, monkeypatch, **kwargs)
+    data = json.loads(baseline_path.read_text())
+    data["highWaterMark"] = mark or {
+        "lintDebtFiles": 1,
+        "lintFindings": 1,
+        "formatDebtFiles": 0,
+    }
+    baseline_path.write_text(json.dumps(data))
+    MODULE.write(allow)
+    return json.loads(baseline_path.read_text())
+
+
+def test_write_refuses_to_add_a_newly_dirty_file(tmp_path, monkeypatch):
+    """The exact laundering path: one command turning a red gate green."""
+    with pytest.raises(SystemExit) as excinfo:
+        _write(
+            tmp_path,
+            monkeypatch,
+            tracked=("pkg/a.py", "pkg/new.py"),
+            findings={"pkg/a.py": {"I001": 1}, "pkg/new.py": {"F401": 3}},
+            lint_debt={"pkg/a.py": {"I001": 1}},
+        )
+    message = str(excinfo.value)
+    assert "refusing to write" in message
+    assert "pkg/new.py" in message
+    assert "lintDebtFiles: 1 → 2" in message
+
+
+def test_write_refuses_to_add_a_newly_unformatted_file(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit) as excinfo:
+        _write(
+            tmp_path,
+            monkeypatch,
+            tracked=("pkg/a.py", "pkg/new.py"),
+            findings={"pkg/a.py": {"I001": 1}},
+            unformatted=("pkg/new.py",),
+            lint_debt={"pkg/a.py": {"I001": 1}},
+        )
+    assert "formatDebtFiles: 0 → 1" in str(excinfo.value)
+
+
+def test_write_tells_you_to_name_the_path_when_reformatting(tmp_path, monkeypatch):
+    """Bare `ruff format` honours the exclusion, so it skips the file being fixed.
+
+    Discovered the hard way: this script's own file landed in `[format] exclude`
+    and then bare `ruff format` would not touch it.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        _write(
+            tmp_path,
+            monkeypatch,
+            tracked=("pkg/a.py", "pkg/new.py"),
+            findings={"pkg/a.py": {"I001": 1}},
+            unformatted=("pkg/new.py",),
+            lint_debt={"pkg/a.py": {"I001": 1}},
+        )
+    assert "ruff format <that path>" in str(excinfo.value)
+
+
+def test_write_allows_growth_only_with_a_recorded_reason(tmp_path, monkeypatch):
+    data = _write(
+        tmp_path,
+        monkeypatch,
+        allow="a merge brought in files another branch never formatted",
+        tracked=("pkg/a.py", "pkg/new.py"),
+        findings={"pkg/a.py": {"I001": 1}, "pkg/new.py": {"F401": 3}},
+        lint_debt={"pkg/a.py": {"I001": 1}},
+    )
+    assert data["newDebtJustifications"] == [
+        "a merge brought in files another branch never formatted"
+    ]
+    assert data["highWaterMark"]["lintDebtFiles"] == 2
+
+
+def test_write_lowers_the_mark_when_the_debt_shrinks(tmp_path, monkeypatch):
+    """The ratchet turns one way: paying debt down must tighten the limit."""
+    data = _write(
+        tmp_path,
+        monkeypatch,
+        mark={"lintDebtFiles": 5, "lintFindings": 40, "formatDebtFiles": 9},
+        tracked=("pkg/a.py",),
+        findings={"pkg/a.py": {"I001": 1}},
+        lint_debt={"pkg/a.py": {"I001": 1}},
+    )
+    assert data["highWaterMark"] == {
+        "lintDebtFiles": 1,
+        "lintFindings": 1,
+        "formatDebtFiles": 0,
+    }
+
+
+def test_a_hand_grown_list_without_a_matching_mark_fails(tmp_path, monkeypatch):
+    """Growth has to show up as a diff on three numbered lines, not 200 quiet ones."""
+    failures = _harness(
+        tmp_path,
+        monkeypatch,
+        tracked=("pkg/a.py", "pkg/b.py"),
+        findings={"pkg/a.py": {"I001": 1}, "pkg/b.py": {"F401": 1}},
+        lint_debt={"pkg/a.py": {"I001": 1}, "pkg/b.py": {"F401": 1}},
+        high_water_mark={"lintDebtFiles": 1, "lintFindings": 1, "formatDebtFiles": 0},
+    )
+    assert any("highWaterMark" in f for f in failures), failures
+
+
+def test_a_missing_mark_fails(tmp_path, monkeypatch):
+    failures = _harness(
+        tmp_path,
+        monkeypatch,
+        tracked=("pkg/a.py",),
+        findings={"pkg/a.py": {"I001": 1}},
+        lint_debt={"pkg/a.py": {"I001": 1}},
+        high_water_mark=None,
+    )
+    assert any("no highWaterMark" in f for f in failures), failures
+
+
+# --------------------------------------------------------------------------- #
+# --explain: the probe that cannot lie. Every ruff-native probe misreports at
+# least one class of file, which is the reason #975 survived inspection.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (
+            "pkg/lintdebt.py",
+            ["ruff check        : NOT read", "ruff format       : read"],
+        ),
+        (
+            "pkg/fmtdebt.py",
+            ["ruff check        : read", "ruff format       : NOT read"],
+        ),
+        ("pkg/clean.py", ["ruff check        : read", "ruff format       : read"]),
+        ("vendor/pii/x.py", ["scope exclusion", "third-party source"]),
+    ],
+)
+def test_explain_classifies_each_kind_of_exclusion(
+    tmp_path, monkeypatch, capsys, path, expected
+):
+    (tmp_path / "vendor" / "pii").mkdir(parents=True)
+    (tmp_path / "vendor" / "pii" / "PROVENANCE.md").write_text("upstream abc123\n")
+    _setup(
+        tmp_path,
+        monkeypatch,
+        tracked=(
+            "pkg/lintdebt.py",
+            "pkg/fmtdebt.py",
+            "pkg/clean.py",
+            "vendor/pii/PROVENANCE.md",
+            "vendor/pii/x.py",
+        ),
+        findings={"pkg/lintdebt.py": {"I001": 1}},
+        unformatted=("pkg/fmtdebt.py",),
+        lint_debt={"pkg/lintdebt.py": {"I001": 1}},
+        format_debt=("pkg/fmtdebt.py",),
+        scope={
+            "vendor/pii": {
+                "premise": "vendored_with_provenance",
+                "reason": "third-party source",
+            }
+        },
+    )
+    assert MODULE.explain(path) == 0
+    out = capsys.readouterr().out
+    for fragment in expected:
+        assert fragment in out, out
+
+
+def test_explain_refuses_an_untracked_path(tmp_path, monkeypatch, capsys):
+    """An answer about a file no gate can see must not look like a verdict."""
+    _setup(tmp_path, monkeypatch, tracked=("pkg/a.py",))
+    assert MODULE.explain("pkg/nope.py") == 2
+    assert "not tracked by git" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
 # Premises. An exemption's stated reason has to be true of what it covers.
 # --------------------------------------------------------------------------- #
 def test_a_vendored_exclusion_without_provenance_fails(tmp_path, monkeypatch):
@@ -421,6 +621,44 @@ def test_force_exclude_would_blind_the_measurement(tmp_path, monkeypatch):
     assert any("force-exclude" in f for f in failures), failures
 
 
+def test_a_source_tree_missing_from_ruffs_walk_fails(tmp_path, monkeypatch):
+    """#975 is re-openable through the TOP-LEVEL `exclude` array, which the
+    bare-name check cannot see (that array is bare names on purpose, for build
+    output). Measured on the real tree: adding "scripts" back to it drops the walk
+    from 1202 to 1066 files while `ruff check` still prints "All checks passed!".
+    This asserts the property instead of the names, so it covers a form nobody has
+    thought of yet."""
+    failures = _harness(
+        tmp_path,
+        monkeypatch,
+        tracked=("pkg/a.py", "pkg/unseen.py"),
+        walk=("pkg/a.py",),
+    )
+    assert any("does not look at" in f and "pkg/unseen.py" in f for f in failures), (
+        failures
+    )
+
+
+def test_a_scope_covered_file_may_be_absent_from_the_walk(tmp_path, monkeypatch):
+    """The other side of the check above: a scope exclusion legitimately removes
+    files from discovery, so it must not be reported as a coverage hole."""
+    (tmp_path / "vendor" / "pii").mkdir(parents=True)
+    (tmp_path / "vendor" / "pii" / "PROVENANCE.md").write_text("upstream abc123\n")
+    failures = _harness(
+        tmp_path,
+        monkeypatch,
+        tracked=("pkg/a.py", "vendor/pii/PROVENANCE.md", "vendor/pii/x.py"),
+        walk=("pkg/a.py",),
+        scope={
+            "vendor/pii": {
+                "premise": "vendored_with_provenance",
+                "reason": "third-party source",
+            }
+        },
+    )
+    assert failures == [], failures
+
+
 def test_ruff_reaching_a_gitignored_path_fails(tmp_path, monkeypatch):
     """`make lint` lets ruff walk. A stale `.aws-sam/` or a worktree under
     `.claude/` gives findings CI cannot reproduce — 157 of them, once."""
@@ -432,6 +670,53 @@ def test_ruff_reaching_a_gitignored_path_fails(tmp_path, monkeypatch):
         ignored=(".claude/worktrees/x/src/lambda/index.py",),
     )
     assert any("gitignored path" in f for f in failures), failures
+
+
+# --------------------------------------------------------------------------- #
+# The measurement must be able to see every file it is given
+# --------------------------------------------------------------------------- #
+def test_a_finding_in_a_path_containing_a_space_is_attributed(monkeypatch):
+    """A space in a path must not make a file's findings invisible to the ratchet.
+
+    The first version of the parser matched the path as "anything but whitespace
+    or a colon", so such a file's findings simply did not match: bare
+    `ruff check` would fail on it while the ratchet counted zero. No tracked file
+    has a space today, which is exactly why this is a test and not a bug report.
+    """
+    concise = (
+        "pkg/with space.py:3:1: I001 Import block is un-sorted\n"
+        "pkg/plain.py:9:5: F401 `os` imported but unused\n"
+        "pkg/nb.ipynb:cell 3:12:1: E402 Module level import not at top of file\n"
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "tracked_files",
+        lambda: ["pkg/with space.py", "pkg/plain.py", "pkg/nb.ipynb"],
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_run_ruff",
+        lambda args, paths: concise if args[0] == "check" else "",
+    )
+    findings, _ = MODULE.measure()
+    assert findings["pkg/with space.py"] == {"I001": 1}
+    assert findings["pkg/plain.py"] == {"F401": 1}
+    assert findings["pkg/nb.ipynb"] == {"E402": 1}
+
+
+def test_a_finding_it_cannot_attribute_is_a_hard_error(monkeypatch):
+    """Silently dropping an unparseable line is how the ratchet would under-count."""
+    monkeypatch.setattr(MODULE, "tracked_files", lambda: ["pkg/a.py"])
+    monkeypatch.setattr(
+        MODULE,
+        "_run_ruff",
+        lambda args, paths: (
+            "somewhere/else.py:1:1: F401 x\n" if args[0] == "check" else ""
+        ),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        MODULE.measure()
+    assert "could not attribute" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------- #

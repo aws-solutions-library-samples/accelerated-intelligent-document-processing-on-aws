@@ -600,6 +600,77 @@ def test_the_document_does_not_still_describe_a_whole_tree_as_unlinted() -> None
 
 
 @pytest.mark.unit
+def test_the_documented_probe_is_the_one_that_works() -> None:
+    """A misleading probe is the stated reason #975 survived inspection.
+
+    The document used to name `ruff check --force-exclude <file>` as the way to
+    tell whether a file is linted. That was correct while every exclusion was a
+    *discovery* exclusion (`exclude` / `extend-exclude`), and it is not correct for
+    the per-file `[lint] exclude` / `[format] exclude` arrays, which filter after
+    discovery. So the document must point at the baseline instead.
+    """
+    assert "check_lint_debt.py --explain" in DOC, (
+        "CONTRIBUTING.md no longer names `check_lint_debt.py --explain` as the way "
+        "to find out whether a file is linted. Every ruff-native probe misreports "
+        "at least one class of file — see the measurement in the test below."
+    )
+    assert "--explain" in _script_options(), (
+        "scripts/check_lint_debt.py no longer offers --explain, which "
+        "CONTRIBUTING.md tells contributors to use."
+    )
+
+
+def _script_options() -> str:
+    return (REPO_ROOT / "scripts" / "check_lint_debt.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_force_exclude_really_does_misreport_a_per_file_exclusion() -> None:
+    """Measure the trap rather than asserting it from memory.
+
+    If a future `ruff` release makes `--force-exclude` honour `lint.exclude`, this
+    fails and the warning in CONTRIBUTING.md can be simplified — which is the point
+    of measuring it instead of describing it.
+    """
+    if shutil.which("ruff") is None:
+        pytest.skip("ruff is not on PATH (see the venv-activation note in CONTRIBUTING.md)")
+    baseline = json.loads(
+        (REPO_ROOT / "scripts" / "lint_debt.json").read_text(encoding="utf-8")
+    )
+    lint_excluded = sorted(baseline["lintDebt"])
+    assert lint_excluded, "no lint-excluded files, so this measurement is vacuous"
+    probe = lint_excluded[0]
+
+    result = subprocess.run(
+        ["ruff", "check", "--no-fix", "--force-exclude", probe],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0 and "All checks passed" in result.stdout, (
+        f"`ruff check --force-exclude {probe}` now reports something for a file in "
+        "[lint] exclude. If it has started honouring lint.exclude, it is a valid "
+        "probe again — update the warning in CONTRIBUTING.md and the two skill "
+        f"files.\nexit={result.returncode}\n{result.stdout}"
+    )
+
+    # And the same file, asked without the flag: the findings the exclusion hides.
+    unforced = subprocess.run(
+        ["ruff", "check", "--no-fix", probe],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unforced.returncode == 1, (
+        f"{probe} is recorded in lintDebt as carrying findings, but `ruff check "
+        f"{probe}` (which bypasses the exclusions) reports none. The baseline is "
+        "stale: run `python3 scripts/check_lint_debt.py --write`."
+    )
+
+
+@pytest.mark.unit
 def test_no_ruff_exclusion_is_a_bare_directory_name() -> None:
     """The defect of issue #975, asserted on the config rather than the prose.
 

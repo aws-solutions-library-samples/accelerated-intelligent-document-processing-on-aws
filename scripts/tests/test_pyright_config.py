@@ -269,18 +269,30 @@ def test_non_first_party_include_entries_still_exist() -> None:
 #: pyrightconfig `exclude` pattern, and the reason has to be a property of the
 #: files it matches rather than of the directory it happens to name.
 #:
-#: `notebooks/**/*.ipynb` is here because a notebook's cells share one namespace
-#: that basedpyright reads in document order, and several of these notebooks are
-#: written to be run after a prior step's notebook has populated the kernel. The
-#: gap is real and measured rather than assumed: covering them adds 10 errors, 6
-#: of them `reportUndefinedVariable` (`s3_client` in five `notebooks/misc/e2e-*`
-#: notebooks and `Image` in one), which are worth triaging on their own rather
-#: than as part of a config change. `scripts/lint_debt.json` records the same
-#: carve-out for ruff, with its own premise.
+#: `notebooks/**/*.ipynb` shields 10 errors, and **6 of them are false positives
+#: of a mechanism specific to notebooks**, which is what makes this a scope
+#: decision rather than deferred work. basedpyright reads a notebook's cells in
+#: document order and resolves names as it goes. Python does not: a global is
+#: looked up when the function runs. So in the five `notebooks/misc/e2e-*`
+#: notebooks, `s3_client` is assigned at column 0 in code-cell 2 and referenced
+#: inside a function *defined* in code-cell 1 — flagged `reportUndefinedVariable`,
+#: and correct at runtime, because cell 2 executes before anything calls that
+#: function. The two `e2e-*` notebooks where the assignment and the first use sit
+#: in the same cell are not flagged, which is the control for that explanation.
+#: The sixth is the same shape one step along: a top-level `from PIL import Image`
+#: in cell 1 plus a re-import in cell 7 leaves the name possibly-unbound on one
+#: branch, so it is `reportUnboundVariable`.
+#:
+#: The other 4 (2 `reportOperatorIssue`, 2 `reportOptionalOperand`) are NOT
+#: explained by that and have not been triaged, which is the honest residual here.
+#: `scripts/lint_debt.json` records the same carve-out for ruff, with its own
+#: premise.
 TYPECHECK_SCOPE_EXCLUSIONS: dict[str, str] = {
     "notebooks/**/*.ipynb": (
-        "notebook cells share a namespace across files by design; the 10 errors "
-        "this shields are notebook-authoring issues, not application types"
+        "basedpyright resolves a notebook's cells in document order while Python "
+        "resolves globals at call time, so a name assigned in a later cell and "
+        "used inside an earlier cell's function reads as undefined and is not; 6 "
+        "of the 10 errors are that, 4 are untriaged"
     ),
 }
 
@@ -326,8 +338,10 @@ def test_every_tracked_python_file_is_type_checked() -> None:
 
     `include` named six paths and reached 432 of 1230 tracked `.py` files. The
     other 798 — every `lib/*/tests` suite, all 137 files under `scripts/`, the
-    78 resolver Lambdas under `nested/`, `feature-platform/`, `benchmarks/`,
-    `samples/` — were type-checked by nothing except `make typecheck-pr`, and
+    78 files under `nested/` (67 API resolvers, 9 Bedrock Knowledge Base
+    custom-resource handlers, 2 under `multi-doc-discovery`), `feature-platform/`,
+    `benchmarks/` and `samples/` — were type-checked by nothing except
+    `make typecheck-pr`, and
     only for the files a given pull request happened to touch. Two
     `NameError`-class defects reached `develop` through that gap.
 
@@ -383,10 +397,19 @@ def test_venv_is_not_pinned_in_the_config() -> None:
     regardless of findings. `make typecheck` therefore failed identically whether
     the tree had type errors or not.
 
-    Dropping them is diagnostic-neutral here: with and without a `.venv` present
-    the run reports the same 0 errors and 92 warnings (one `tqdm` stub-resolution
-    warning trades places with one `reportReturnType` in the same file), because
-    `reportMissingImports` and the `reportUnknown*` rules are already "none".
+    Dropping them is diagnostic-neutral: with a populated `.venv` present and with
+    no `.venv` at all, the run reports the same 0 errors and 92 warnings — one
+    `tqdm` stub-resolution warning trades places with one `reportReturnType` in the
+    same file — because `reportMissingImports` and the `reportUnknown*` rules are
+    already "none".
+
+    The number 92 belongs to those two environments, not to `.venv` presence in
+    general. An **empty** `.venv` (a bare `python3 -m venv .venv`, no packages) is a
+    third and worse environment: basedpyright then resolves third-party imports to
+    nothing and reports 4 errors / 287 warnings, so `make typecheck` fails there.
+    That is a property of an unpopulated environment rather than of this config, and
+    it is a second reason not to pin a `venvPath` at all — the pin made the gate's
+    answer depend on a directory whose contents nothing here controls.
     """
     config = _config()
     present = sorted(key for key in ("venvPath", "venv") if key in config)

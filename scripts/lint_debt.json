@@ -13,7 +13,8 @@
     "options, patterns, src, scripts -- which match at ANY path depth, so 442 of",
     "1230 tracked .py files were read by neither the linter nor the formatter.",
     "Issue #975. Closing that surfaced 267 lint findings and 189 unformatted files",
-    "at once, in trees that seven other branches were editing, so the exclusions",
+    "at once. 42 of the unformatted files were being edited by five of the seven",
+    "branches then open against develop, so the exclusions",
     "were made per-file and ratcheted instead of being deleted in one commit.",
     "",
     "THE RATCHET. Naming a file keeps NEW files covered but leaves the named file",
@@ -43,7 +44,7 @@
       "premise": "only_notebooks_and_they_have_their_own_gate",
       "reason": "E402 (imports not at the top), F811 (redefinition) and I001 (import order) describe a module; a notebook is a document run cell by cell, so they are not a quality signal there. `ruff format` would additionally rewrite every cell's source array, making notebook diffs unreadable. Notebooks are not unchecked as a result: notebooks/_validate_notebooks.py resolves their imports and symbol references against a real Python environment, which is the failure class that matters for them.",
       "ratchet": "non-vacuity + premise (the pattern must match only .ipynb, and the notebook harness must still exist)",
-      "ratchetGap": "the count is not pinned, so a new notebook may add ruff findings without failing anything. Pinning it would red-line every notebook edit. basedpyright also excludes notebooks (pyrightconfig.json), where the gap is sharper: 10 errors, 6 of them reportUndefinedVariable.",
+      "ratchetGap": "the count is not pinned, so a new notebook may add ruff findings without failing anything. Pinning it would red-line every notebook edit. basedpyright also excludes notebooks (pyrightconfig.json), where the 10 errors it shields are mostly not defects: 5 reportUndefinedVariable and 1 reportUnboundVariable are artefacts of basedpyright resolving cells in document order while Python resolves globals at call time. The remaining 4 are untriaged. See TYPECHECK_SCOPE_EXCLUSIONS in scripts/tests/test_pyright_config.py.",
       "shields": {
         "files": 47,
         "lintFindings": 333,
@@ -552,5 +553,10 @@
     "src/lambda/workflow_tracker/index.py",
     "src/lambda/workflow_tracker/test_decrement_floor_and_idempotency.py",
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
-  ]
+  ],
+  "highWaterMark": {
+    "lintDebtFiles": 85,
+    "lintFindings": 196,
+    "formatDebtFiles": 186
+  }
 }

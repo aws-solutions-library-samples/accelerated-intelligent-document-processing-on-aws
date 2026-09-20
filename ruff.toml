@@ -6,9 +6,11 @@
 # exclusions apply. This file used to exclude `notebooks`, `options`, `patterns`,
 # `src` and `scripts` that way, which meant 442 of 1230 tracked .py files were read
 # by neither the linter nor the formatter -- including all 138 files under
-# `scripts/` (this repository's own gate layer) and 76 resolver Lambdas under
-# `nested/*/src/`, which nobody had counted because `src` matched there too. A clean
-# `ruff check` on any of them meant the file was never opened. Issue #975.
+# `scripts/` (this repository's own gate layer, 137 of them at its root plus one
+# under `security/threat-modeling/scripts/`) and 76 files under `nested/*/src/` --
+# 67 API-resolver Lambdas and 9 Bedrock Knowledge Base custom-resource handlers --
+# which nobody had counted because `src` matched there too. A clean `ruff check` on
+# any of them meant the file was never opened. Issue #975.
 #
 # The three arrays below are GENERATED from scripts/lint_debt.json, which also
 # records, per file, exactly which findings each exclusion shields. `make
@@ -18,6 +20,11 @@
 # repository is linted by default. To change any of them:
 #
 #     python3 scripts/check_lint_debt.py --write
+#
+# which REFUSES to grow either list without --allow-new-debt "<reason>". To ask
+# whether one file is read by either gate, use `--explain <path>`: no ruff
+# invocation answers that correctly, because --force-exclude restores only the
+# discovery-level exclusions and the two arrays below filter after discovery.
 #
 # `scope` is the only array that is a judgement rather than debt: those paths hold
 # code ruff's rules do not describe. Each carries a premise that
@@ -32,8 +39,14 @@ extend-exclude = [
 # Build output, caches and checkouts-inside-the-checkout. These ARE bare names on
 # purpose -- a `build/` or `.venv/` at any depth is build output wherever it sits,
 # which is the opposite of the `src`/`scripts` case above. `scratch/` and
-# `.claude/worktrees/` routinely hold whole copies of this repository, and
-# `check_lint_debt.py` asserts that ruff's walk reaches nothing git ignores.
+# `.claude/worktrees/` routinely hold whole copies of this repository.
+#
+# Because these ARE bare names, `check_lint_debt.py`'s bare-name check deliberately
+# does not read this array — so it asserts the property instead, in both
+# directions: ruff's walk must reach nothing git ignores, and it must reach every
+# tracked source file that no `scope` entry accounts for. Naming a source tree here
+# would therefore fail, which is what stops issue #975 being re-opened through this
+# array with every other check green.
 exclude = [
     ".aws-sam",
     ".bzr",
@@ -211,8 +224,9 @@ known-first-party = ["idp_common", "idp_cli", "idp_sdk", "idp_feature_sdk", "idp
 [format]
 # Files `ruff format` has never been run over, because the tree holding them was
 # excluded. Paying these down rewrites whole files, so it is deliberately NOT part
-# of the change that closed issue #975: seven branches were editing 38 of these
-# files at the time, and a formatting sweep would have conflicted with all of them.
+# of the change that closed issue #975: five of the seven branches then open were
+# editing 42 of these files, so a formatting sweep would have conflicted with all
+# five.
 # Listed per file so a NEW file is format-checked, and ratcheted by
 # `make check-lint-debt`: a file that is already formatted must be delisted.
 exclude = [

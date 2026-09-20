@@ -384,18 +384,33 @@ hear about it there even though `ruff check` itself stays quiet on that file.
 
 Two practical consequences:
 
-- To see whether a specific file is linted, do **not** run `ruff check <file>`.
-  An explicit path argument overrides the exclusions, so it reports on the file
-  either way and tells you nothing. Add `--force-exclude`, which makes `ruff`
-  honour them for a named path: `ruff check --force-exclude <file>` prints
-  `warning: No Python files found under the given path(s)` when the file is
-  excluded.
-- To pay one down, fix its findings (or run `ruff format` on it) and then
+- To see whether a specific file is read by either gate, ask:
+
+  ```bash
+  python3 scripts/check_lint_debt.py --explain <file>
+  ```
+
+  **Do not ask `ruff`.** Every ruff-native probe misreports at least one class of
+  file here, and the misleading probe is the reason the original gap survived
+  inspection for as long as it did. A plain `ruff check <file>` bypasses the
+  exclusions altogether, so it reports on a file the gate never reads.
+  `--force-exclude` restores only `exclude`/`extend-exclude`, which are
+  *discovery* settings, while `[lint] exclude` and `[format] exclude` filter after
+  discovery — so `ruff check --force-exclude <file>` prints `All checks passed!`
+  and exits 0 for all 85 lint-excluded files, and
+  `ruff format --check --force-exclude <file>` prints **nothing at all** for a
+  format-excluded one rather than the `No Python files found` warning that a
+  discovery-level exclusion produces. `ruff check --show-files` does not honour
+  `[lint] exclude` either, so a file appearing there is not evidence it is linted.
+- To pay one down, fix its findings and then
   `python3 scripts/check_lint_debt.py --write`, which re-records
-  `scripts/lint_debt.json` and regenerates the three arrays in `ruff.toml`. Never
-  hand-edit either exclusion array, and never add a file to them: the lists only
-  shrink. `python3 scripts/check_lint_debt.py --summary` prints the current
-  per-tree counts.
+  `scripts/lint_debt.json` and regenerates the three arrays in `ruff.toml`. For a
+  formatting entry, spell the path out — `ruff format <that path>` — because bare
+  `ruff format` honours the exclusion and will skip the very file you are trying
+  to fix. Never hand-edit either exclusion array. `--write` refuses to *grow*
+  either list, naming the paths, unless you pass
+  `--allow-new-debt "<reason>"`, which records the reason in the baseline;
+  `--summary` prints the current per-tree counts.
 
 The formatting debt is deliberately unpaid. Running `ruff format` over those 186
 files is a large, mechanical, conflict-generating diff, so it belongs in its own

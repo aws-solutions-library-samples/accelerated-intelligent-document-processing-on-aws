@@ -76,8 +76,9 @@ named list of files rather than a directory.** `ruff.toml` used to exclude five
 and a bare name in ruff's exclusion patterns matches at **any** path depth, so
 `src` also excluded `nested/*/src` and `patterns/*/src`. 442 of 1230 tracked `.py`
 files were read by neither `ruff check` nor `ruff format`, including all 138 files
-under `scripts/` (this repository's own gate layer). A clean `ruff check` on one of
-them meant the file was never opened. Issue #975.
+under `scripts/` (this repository's own gate layer) and 76 under `nested/*/src/`
+that nobody had counted. A clean `ruff check` on one of them meant the file was
+never opened. Issue #975.
 
 The exclusions are now per-file, generated from `scripts/lint_debt.json`, and
 ratcheted: `ruff.toml`'s `[lint] exclude` names 85 files holding 196 pre-existing
@@ -85,12 +86,31 @@ findings, `[format] exclude` names 186 files `ruff format` has never run over, a
 `make check-lint-debt` (in `lint`, `fastlint` **and** `lint-cicd`, so both CIs)
 re-measures every tracked file with the exclusions bypassed. It fails if a listed
 file *gained* a finding, if a listed file is now clean and should be delisted, if a
-listed path is gone, or if any exclusion array grows a bare directory name again.
-Pay one down by fixing its findings and running `python3
-scripts/check_lint_debt.py --write`; never hand-edit either array and never add to
-them. `--summary` prints the current split. Two `extend-exclude` entries are scope
-decisions rather than debt — the vendored `pii-anonymizer` tree and `**/*.ipynb` —
-and each carries a premise the gate evaluates against the tree.
+listed path is gone, if one of the three **generated** arrays grows a bare
+directory name, or if ruff's walk misses a tracked file no `scope` entry accounts
+for. That last check is what covers the top-level `exclude` array, which is bare
+directory names **on purpose** (a `build/` at any depth is build output) and so is
+deliberately outside the bare-name check — #975 would otherwise be re-openable
+through it with every other check green.
+
+⚠️ **To find out whether a given file is linted, run `python3
+scripts/check_lint_debt.py --explain <path>`. Do not ask ruff.** Every ruff-native
+probe misreports at least one class of file: a plain `ruff check <path>` bypasses
+the exclusions, and `--force-exclude` restores only the *discovery* ones, so
+`ruff check --force-exclude <path>` prints `All checks passed!` and exits 0 for all
+85 lint-excluded files. `ruff check --show-files` does not honour `[lint] exclude`
+either. A misleading probe is the stated reason #975 survived inspection.
+
+Pay a file down by fixing its findings and running `python3
+scripts/check_lint_debt.py --write` — for a formatting entry spell the path out,
+`ruff format <that path>`, because bare `ruff format` honours the exclusion and
+skips the file you are fixing. Never hand-edit either array. `--write` **refuses to
+grow** either list, naming the paths, unless given `--allow-new-debt "<reason>"`,
+which records the reason in the baseline; without that refusal `--write` would
+launder a brand-new finding into a permanent exclusion. `--summary` prints the
+current split. Two `extend-exclude` entries are scope decisions rather than debt —
+the vendored `pii-anonymizer` tree and `**/*.ipynb` — and each carries a premise
+the gate evaluates against the tree.
 
 The **formatting** debt is deliberately unpaid: `ruff format` over those 186 files
 is a mechanical, conflict-generating sweep that belongs in its own change.

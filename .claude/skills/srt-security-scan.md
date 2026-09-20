@@ -388,12 +388,16 @@ next to the code.
 `ruff.toml`'s `[format] exclude` names 186 individual files that `ruff format` has
 never been run over, many of them under `scripts/` and `src/lambda/`. On one of
 those, `ruff format <path>` rewrites the whole file and drags a large cosmetic diff
-into a `# nosec` change; `make lint-cicd` would not have asked for it. Confirm with
-`ruff format --check --force-exclude <path>`, which honours the exclusion for a named
-path and prints `warning: No Python files found under the given path(s)` when the
-file is on the list. If it *is* formatted, run **bare `ruff format`** rather than
-passing the path, because an explicit path argument bypasses the exclusions and would
-reformat trees the repo deliberately leaves alone. Also pin the local ruff to CI's
+into a `# nosec` change; `make lint-cicd` would not have asked for it. Ask
+`python3 scripts/check_lint_debt.py --explain <path>`, which reads the baseline
+directly. Do **not** ask ruff: `--force-exclude` only restores the *discovery*
+exclusions, so `ruff format --check --force-exclude <path>` prints **empty output**
+for a file on the `[format] exclude` list (measured on two of them) rather than the
+`warning: No Python files found under the given path(s)` that a discovery-level
+exclusion gives — and empty output is easy to read as "nothing to do". If the file
+*is* formatted, run **bare `ruff format`** rather than passing the path, because an
+explicit path argument bypasses the exclusions and would reformat trees the repo
+deliberately leaves alone. Also pin the local ruff to CI's
 version before believing a formatting diff (CI: `ruff==0.15.13` in `.gitlab-ci.yml` /
 `developer-tests.yml`).
 (Checkov findings similarly honor `# checkov:skip=CKV_AWS_NNN: "reason"`, and

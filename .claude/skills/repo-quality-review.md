@@ -229,8 +229,12 @@ Two things to know before reporting a coverage gap here. The **formatting** debt
 deliberately unpaid and is not a new finding: reformatting those 186 files is a
 mechanical sweep deferred to its own change (issue #975 closed the exclusions, not the
 formatting). And when you demonstrate that a file is excluded, use
-`ruff check --force-exclude <path>`: an explicitly named path bypasses the exclusions
-without it, so a plain `ruff check <path>` reports on a file the gate never reads.
+`python3 scripts/check_lint_debt.py --explain <path>`. **No ruff invocation answers
+this correctly.** A plain `ruff check <path>` bypasses the exclusions, and
+`--force-exclude` restores only `exclude`/`extend-exclude` — `[lint] exclude` and
+`[format] exclude` filter after discovery, so `ruff check --force-exclude <path>`
+prints `All checks passed!` and exits 0 for every one of the 85 lint-excluded files.
+`ruff check --show-files` does not honour `[lint] exclude` either.
 
 Pair the coverage number with the largest uncovered files:
 
