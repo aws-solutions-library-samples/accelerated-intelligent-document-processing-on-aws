@@ -93,7 +93,11 @@
     "            asserted one of them in prose. The rule stops at deployable paths on",
     "            purpose: demanding the same of a documentation link-check exemption would",
     "            produce boilerplate nobody reads, and a registry that asks for judgement",
-    "            on noise gets rubber-stamped."
+    "            on noise gets rubber-stamped.",
+    "",
+    "  issues    Optional. Issue or PR numbers already addressing this exemption, so a reader",
+    "            can tell a known-and-tracked carve-out from an unexamined one. Absent means",
+    "            'nobody is working on it', which is itself information."
   ],
   "exemptions": {
     "Makefile::ARN_PARTITION_EXEMPT": {
@@ -221,8 +225,16 @@
       ],
       "ratchet": "none",
       "reason": "Pre-existing debt, declared as such in the file: the comment says 'do not add to the list' and records the finding count. Note it excludes all of scripts/, so every gate in scripts/tests is unformatted and unlinted by the repo's own linter.",
-      "ratchetGap": "Nothing asserts an entry still corresponds to real debt, so an entry whose file was since fixed keeps a whole tree unlinted. The per-file spelling for idp_common/config shows the intended direction.",
-      "memberKind": "path"
+      "ratchetGap": "Nothing checks that an entry still corresponds to real debt, so an entry whose file was since fixed keeps a whole tree unlinted. Being narrowed by issue #975 / PR #1042, which reduces this key to two entries and moves the rest into generated per-section lists -- so expect this entry's shape to change rather than its gap to be closed in place. The per-file spelling used for idp_common/config shows the intended direction.",
+      "memberKind": "path",
+      "crossReferences": [
+        "ruff.toml::exclude",
+        "ruff.toml::lint.per-file-ignores"
+      ],
+      "issues": [
+        "975",
+        "1042"
+      ]
     },
     "scripts/check_data_plane_tags.py::DATA_PLANE_ALLOWLIST": {
       "kind": "enforced-universe",
@@ -664,7 +676,10 @@
       "crossReferences": [
         "scripts/sdlc/check_branch_protection.py::allowed"
       ],
-      "memberKind": "CI check context"
+      "memberKind": "CI check context",
+      "issues": [
+        "933"
+      ]
     },
     "scripts/tests/test_classification_prompt_copies_in_sync.py::EXEMPT": {
       "kind": "exemption",
@@ -921,7 +936,10 @@
       "reason": "Scope and event shape, per entry. The structural claims a reason might borrow (nested stack, built together) are asserted separately and per member, so a reason may no longer assert them.",
       "memberKind": "deployable path",
       "ratchetEvidence": "scripts/tests/test_resolver_log_sanitizer.py",
-      "ratchetGap": "The count pin bounds how many sites an exempt tree may hide, but the DETECTOR it counts with has three known bypasses, so a site using one is not counted in a covered tree either: aliasing (`_p = event` then logging `_p`), self-rebinding (`event = dict(event)`, which _rebinds_event treats as ending the scan), and narrowed sub-fields (documented and deliberate). The first has a live instance in a COVERED tree -- src/lambda/calculate_capacity/index.py assigns the event to a local and logs it -- where what is emitted is key names and one scalar, so nothing leaks today, but the mechanism is unguarded. Recorded rather than fixed: widening the dataflow walk is its own change with its own false-positive surface."
+      "ratchetGap": "The count pin bounds how many sites an exempt tree may hide, but the DETECTOR it counts with has three known bypasses, so a site using one is not counted in a covered tree either: aliasing (`_p = event` then logging `_p`), self-rebinding (`event = dict(event)`, which _rebinds_event treats as ending the scan), and narrowed sub-fields (documented and deliberate). The first has a live instance in a COVERED tree -- src/lambda/calculate_capacity/index.py assigns the event to a local and logs it -- where what is emitted is key names and one scalar, so nothing leaks today, but the mechanism is unguarded. Recorded rather than fixed: widening the dataflow walk is its own change with its own false-positive surface.",
+      "issues": [
+        "985"
+      ]
     },
     "scripts/tests/test_scope_lookup_fail_closed.py::PENDING_FIX": {
       "kind": "exemption",
@@ -932,7 +950,10 @@
       "ratchet": "non-vacuity",
       "reason": "Empty. Keyed to specific rules so a finding from any other rule still fails, and test_the_pending_exemption_is_still_needed fails when a named rule stops firing -- the repo's only expiring exemption.",
       "memberKind": "path + rule id",
-      "ratchetEvidence": "scripts/tests/test_scope_lookup_fail_closed.py"
+      "ratchetEvidence": "scripts/tests/test_scope_lookup_fail_closed.py",
+      "issues": [
+        "1020"
+      ]
     },
     "scripts/tests/test_scope_lookup_fail_closed.py::SUPPRESSING_CONTEXT_MANAGERS": {
       "kind": "enforced-universe",
@@ -1007,7 +1028,10 @@
       "crossReferences": [
         "scripts/tests/test_codeowners.py::LINK_CHECK_EXCLUDED"
       ],
-      "memberKind": "path"
+      "memberKind": "path",
+      "issues": [
+        "986"
+      ]
     },
     "scripts/tests/test_well_architected_doc.py::NON_SOLUTION_TREES": {
       "kind": "prune",
@@ -1055,7 +1079,10 @@
       "premiseWiring": "pending",
       "reason": "The premise -- every member is an independently deployed extension stack, not a nested stack of template.yaml -- is exactly not_a_nested_stack_of_parent, and is the premise that was FALSE for one member of this list: main-stack-extensions is a nested stack receiving 26 parameters, so nine Lambdas kept tracing on with the parameter off. That member has been removed and the gate now asserts the set exactly in both directions, but it does so against its own private nested-stack walk rather than through gate_premises, so the predicate is named here and not yet wired. Wiring it is a one-line change to a file an in-flight branch owns; it is left to that branch rather than conflicted with.",
       "memberKind": "deployable path",
-      "ratchetEvidence": "scripts/tests/test_xray_tracing.py"
+      "ratchetEvidence": "scripts/tests/test_xray_tracing.py",
+      "issues": [
+        "983"
+      ]
     },
     "scripts/check_data_plane_tags.py::allowlisted_by_template": {
       "kind": "enforced-universe",
@@ -1259,17 +1286,6 @@
       "crossReferences": [
         "scripts/security/dep_audit_allowlist.json::dep_audit_allowlist.json"
       ]
-    },
-    "lib/idp_common_pkg/pyproject.toml::exclude": {
-      "kind": "exemption",
-      "memberKind": "path",
-      "turnsOff": "packaging: files left out of the built wheel",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "none",
-      "reason": "Build packaging rather than a gate assertion. Registered because scripts/tests/test_package_discovery.py's wheel-contents check reads the built wheel, so an exclusion here narrows what that gate can see.",
-      "ratchetGap": "test_package_discovery.py checks that every source package IS in the wheel, which is the opposite direction; nothing checks an exclusion here still corresponds to something intentionally unshipped."
     },
     "lib/idp_sdk/tests/unit/test_cloudwatch_alarms.py::_EXCLUDED_PARTS": {
       "kind": "prune",
@@ -1518,6 +1534,64 @@
       "reason": "The enforced universe for the prune rule. Its own discovery sweep only looks at scripts/tests/, so a repo-walking gate elsewhere in the tree is not found by it -- lib/idp_sdk/tests/unit/test_cloudwatch_alarms.py was exactly that, and was found by the exemption registry's wider aperture instead. Registered so the narrower sweep is recorded rather than assumed complete.",
       "ratchet": "universe-closure",
       "ratchetEvidence": "scripts/tests/test_repo_walk_guards_prune_local_work.py"
+    },
+    "lib/idp_common_pkg/pyproject.toml::tool.setuptools.packages.find.exclude": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "packaging: files left out of the built wheel",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "none",
+      "reason": "Build packaging rather than a gate assertion. Registered because scripts/tests/test_package_discovery.py's wheel-contents check reads the built wheel, so an exclusion here narrows what that gate can see.",
+      "ratchetGap": "test_package_discovery.py checks that every source package IS in the wheel, which is the opposite direction; nothing checks an exclusion here still corresponds to something intentionally unshipped."
+    },
+    "ruff.toml::exclude": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "ruff lint and format for the listed paths, in addition to extend-exclude",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "ruff's built-in default exclusions plus any added here. Distinct from extend-exclude, which ADDS to the defaults rather than replacing them -- and distinct as a registry key because the same key name appears under [lint] and [format] with different contents. Discovered by the section-aware TOML scan; a key-only regex collapsed the two into one surface.",
+      "ratchet": "none",
+      "ratchetGap": "Nothing checks an entry still corresponds to real debt, and nothing checks that a path excluded here is not silently excluded twice. Issue #975 and PR #1042 are narrowing this surface; see the extend-exclude entry.",
+      "crossReferences": [
+        "ruff.toml::extend-exclude"
+      ],
+      "issues": [
+        "975",
+        "1042"
+      ]
+    },
+    "ruff.toml::lint.per-file-ignores": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "named ruff rules for files matching each glob, including the TID251 banned-import rule",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Per-path rule grants, which is the narrowest exemption shape ruff offers and the right one -- a rule switched off for one directory keeps its value everywhere else. Recorded because the grants include TID251, the banned-import rule this PR's own private-module import had to justify with an inline noqa rather than a directory grant.",
+      "ratchet": "none",
+      "ratchetGap": "No check that a granted rule still fires in the globbed directory, so a grant outlives the code that needed it. Non-vacuity per (glob, rule) is the missing ratchet and is what test_scope_lookup_fail_closed.py's PENDING_FIX does for its own rules.",
+      "crossReferences": [
+        "ruff.toml::extend-exclude"
+      ],
+      "issues": [
+        "975",
+        "1042"
+      ]
+    },
+    "scripts/tests/exemption_discovery.py::TOML_SOURCES": {
+      "kind": "enforced-universe",
+      "memberKind": "path",
+      "turnsOff": "nothing; the TOML files and keys this registry's discovery covers",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "The TOML half of the aperture. It replaced a regex whose `per-file-ignores` branch could never match, because in TOML that is a section header rather than an assignment -- so four directory-scoped rule grants were undiscovered while the registry claimed the key was found. Registered so narrowing it is visible.",
+      "ratchet": "none",
+      "ratchetGap": "No check that each listed key still exists in the file it is listed for, so a renamed key drops a surface silently. Same class as the other three aperture constants."
     }
   }
 }

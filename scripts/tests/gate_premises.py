@@ -288,25 +288,27 @@ def bundled_feature_dirs() -> tuple[str, ...]:
         os.chdir(previous)
 
 
-#: Directories the publisher builds by an explicit ``force_rebuild=True`` call rather
-#: than through either the component map or the bundled-feature list. Kept as a literal
-#: because the call site is a literal; the test below pins it against the source so a
-#: new call site cannot be added without this being updated.
-EXPLICIT_BUILD_DIRS = ("feature-platform/main-stack-extensions",)
-
-
 @functools.lru_cache(maxsize=1)
 def build_input_paths() -> frozenset[str]:
-    """Every path a single publish run builds, from all three of its sources.
+    """Every path a single publish run builds, from both of its sources.
 
-    The union matters. Any one of these alone gives the wrong answer for members the
-    others cover, and "built separately" is a claim about the whole publish run.
+    The union matters. Either source alone gives the wrong answer for members the other
+    covers, and "built separately" is a claim about the whole publish run.
+
+    There was briefly a third source here: a hand-written ``EXPLICIT_BUILD_DIRS`` tuple
+    mirroring the one ``force_rebuild=True`` call site that passes a literal directory,
+    under a comment claiming a test pinned it against the publisher. No such test
+    existed, and writing it showed the tuple was redundant -- its single member is
+    already a key in the component map. So it is gone, and
+    ``scripts/tests/test_gate_premises.py`` asserts the property it was standing in for:
+    every literal directory a forced-rebuild call site names is covered by one of these
+    two derived sources, so a genuinely new one fails instead of narrowing the predicate
+    in silence.
     """
     paths = set(built_components())
     for deps in built_components().values():
         paths.update(deps)
     paths.update(bundled_feature_dirs())
-    paths.update(EXPLICIT_BUILD_DIRS)
     return frozenset(paths)
 
 

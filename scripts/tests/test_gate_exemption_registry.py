@@ -69,11 +69,17 @@ RATCHETS = {
     "none",
 }
 
-#: Entries with no ratchet at all, today. A ratchet that may SHRINK but never grow,
-#: the same shape ``PASS_ROLE_WILDCARD_ALLOWED`` uses. Pinning it is what stops the
-#: honest "declare the gap" escape hatch from becoming the default: declaring a gap is
-#: allowed, and quietly adding a 30th is not.
-MAX_UNRATCHETED = 55
+#: Entries with no ratchet at all, today. A budget that may SHRINK and never grow.
+#:
+#: Pinning it is what stops the honest "declare the gap" escape hatch from becoming the
+#: default answer to a new exemption: declaring a gap is allowed, and quietly adding one
+#: more is not — raising this number is a deliberate edit a reviewer sees.
+#:
+#: Note that this comment names no figure. The budget moves whenever a gap is honestly
+#: declared, so a figure written here would have to be maintained in two places and would
+#: go stale in the one comment that explains the incentive the whole mechanism rests on.
+#: State the rule, let the assignment below carry the number.
+MAX_UNRATCHETED = 58
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place

@@ -129,14 +129,33 @@ TEXT_SOURCES: tuple[tuple[str, str], ...] = (
     ("scripts/*.sh", _text_pattern("lower")),
     # Linter and type-checker configuration is an exemption surface too: `extend-exclude`
     # decides which files ruff never sees, which is a path exemption by another name.
-    ("ruff.toml", r"^(extend-exclude|per-file-ignores)\b"),
     ("pyrightconfig.json", r'^\s*"(exclude|ignore)"\s*:'),
-    ("pyproject.toml", r"^(exclude|extend-exclude|per-file-ignores|norecursedirs)\b"),
-    ("*/pyproject.toml", r"^(exclude|extend-exclude|per-file-ignores|norecursedirs)\b"),
     ("pytest.ini", r"^(norecursedirs|ignore)\b"),
     (".pre-commit-config.yaml", r"^\s*(exclude|exclude_types)\s*:"),
     (".ash/.ash.yaml", r"^\s*(ignore-findings|suppressions|ignore_findings)\s*:"),
 )
+
+#: TOML files whose exemption surfaces are keys, and the keys that are one.
+#:
+#: Regex alone got this wrong twice, in opposite directions. ``per-file-ignores`` never
+#: matched, because in TOML it is a SECTION HEADER (``[lint.per-file-ignores]``) rather
+#: than an assignment -- so the four directory globs holding this repo's banned-import
+#: grants were never discovered, and the registry's claim to discover the key was false.
+#: And a bare ``exclude`` key appears under both ``[lint]`` and ``[format]`` with
+#: different contents, so a pattern capturing the key alone collapses two surfaces into
+#: one. Section-qualifying the name fixes both.
+TOML_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ruff.toml", ("exclude", "extend-exclude", "per-file-ignores")),
+    (
+        "pyproject.toml",
+        ("exclude", "extend-exclude", "per-file-ignores", "norecursedirs"),
+    ),
+    (
+        "*/pyproject.toml",
+        ("exclude", "extend-exclude", "per-file-ignores", "norecursedirs"),
+    ),
+)
+
 
 #: JSON registries that are themselves the exemption list. Recorded by file rather
 #: than by constant, because the members live in data, not in code.
@@ -148,6 +167,10 @@ JSON_REGISTRY_GLOBS = (
     "*_services.json",
     "scripts/srt/issues.json",
     "*suppressions*.json",
+    # A generated lint-debt or findings baseline is an exemption list by another name:
+    # every line in it is a finding the gate agrees not to fail on.
+    "*_debt.json",
+    "*_baseline.json",
 )
 
 
@@ -350,6 +373,40 @@ def discover_text(root: Path | None = None) -> list[Discovered]:
     return found
 
 
+def discover_toml(root: Path | None = None) -> list[Discovered]:
+    """Exemption keys in TOML configuration, qualified by their section.
+
+    Tracks the current ``[section]`` while scanning so that a key is reported as
+    ``section.key``, and so that a section header which IS an exemption surface
+    (``[lint.per-file-ignores]``) is reported at all.
+    """
+    found: list[Discovered] = []
+    for pathspec, keys in TOML_SOURCES:
+        for rel in gate_premises.tracked_files(
+            pathspec, root=root, include_untracked=True
+        ):
+            try:
+                lines = (
+                    ((root or REPO_ROOT) / rel).read_text(encoding="utf-8").splitlines()
+                )
+            except (OSError, UnicodeDecodeError):
+                continue
+            section = ""
+            for number, raw in enumerate(lines, start=1):
+                line = raw.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1].strip().strip('"')
+                    leaf = section.rsplit(".", 1)[-1]
+                    if leaf in keys:
+                        found.append(Discovered(rel, section, number, "text"))
+                    continue
+                key = line.split("=", 1)[0].strip().strip('"') if "=" in line else ""
+                if key in keys:
+                    qualified = f"{section}.{key}" if section else key
+                    found.append(Discovered(rel, qualified, number, "text"))
+    return found
+
+
 def discover_json(root: Path | None = None) -> list[Discovered]:
     """Data-file registries whose contents are the exemption list."""
     found = []
@@ -362,7 +419,12 @@ def discover_json(root: Path | None = None) -> list[Discovered]:
 def discover_all(root: Path | None = None) -> dict[str, Discovered]:
     """Every exemption surface in the tree, keyed by ``<path>::<name>``."""
     found: dict[str, Discovered] = {}
-    for item in discover_python(root) + discover_text(root) + discover_json(root):
+    for item in (
+        discover_python(root)
+        + discover_text(root)
+        + discover_toml(root)
+        + discover_json(root)
+    ):
         found.setdefault(item.key, item)
     return found
 
