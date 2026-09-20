@@ -56,6 +56,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
 | **Amazon CloudWatch** | Provides monitoring, logging, and alerting | ✓ | ✓ |
+| **AWS X-Ray** | Distributed tracing for the Lambda functions and state machines, controlled by `EnableXRayTracing` (default `true`). Traced functions need `xray:PutTraceSegments` / `xray:PutTelemetryRecords`: SAM attaches its X-Ray managed policy to any execution role it generates, and the roles declared explicitly in the templates carry `AWSXrayWriteOnlyAccess`. Billed per trace recorded — see [monitoring.md](./monitoring.md#x-ray-tracing), which also covers what `EnableXRayTracing=false` does not reach | — | ✓ |
 | **AWS SNS** | Delivers operational alerts and notifications | ✓ | ✓ |
 | **AWS KMS** | Manages encryption keys for secure data storage | ✓ | ✓ |
 

@@ -39,8 +39,9 @@ Rules enforced:
    fails rather than joining a silent exemption. "Independently deployed" is that
    exemption's whole justification, so it is itself checked, by
    ``test_exempt_templates_are_not_nested_stacks_of_the_parent``: the list held a
-   template that ``template.yaml`` deploys as a nested stack and already passes 27
-   parameters to, while the written reason said the parameter could not reach it.
+   template that ``template.yaml`` deploys as a nested stack and already passes
+   ``LogLevel`` and ``LogRetentionDays`` to by exactly the route the exemption said
+   did not exist.
 2. **A template that declares tracing wires the parameter.** It defines the
    condition, the condition tests the parameter, and the parameter exists — and a
    nested template that declares the parameter is *passed* it by the parent, in
@@ -512,10 +513,10 @@ def test_no_function_hardcodes_its_tracing_mode(path: Path) -> None:
 #:
 #: ``feature-platform/main-stack-extensions/template.yaml`` was in this list and is
 #: not any more, because for that one the reason was **false**: it is a nested
-#: stack of ``template.yaml`` (``FeaturePlatformStack``), already receives 27
-#: parameters from the parent including ``LogLevel`` and ``LogRetentionDays``, and
-#: now receives ``EnableXRayTracing`` the same way. Its nine Lambdas were the whole
-#: of #983 surviving inside the main deployment.
+#: stack of ``template.yaml`` (``FeaturePlatformStack``), already receives
+#: ``LogLevel`` and ``LogRetentionDays`` from the parent, and now receives
+#: ``EnableXRayTracing`` the same way. Its nine Lambdas were the whole of #983
+#: surviving inside the main deployment.
 #:
 #: What remains here is a real, documented limitation rather than an oversight:
 #: ``EnableXRayTracing=false`` on the main stack does not turn tracing off in an
@@ -699,6 +700,50 @@ def test_a_nested_template_declaring_the_parameter_is_passed_it(
     )
 
 
+#: Templates where tracing was moved OUT of ``Globals.Function`` so it could be
+#: made conditional, and where every function must therefore declare the mode
+#: itself. Removing a ``Globals`` default is silently lossy in one direction rule 1
+#: cannot see: rule 1 judges a mode that is *present*, and treats an absent one as
+#: "not traced by this stack", which is the correct reading everywhere else. Here it
+#: is not — a function added without the line inherits nothing where it used to
+#: inherit ``Active``, and no floor catches it either (``MIN_TRACED_FUNCTIONS`` is
+#: well below the current count by design).
+#:
+#: ``template.yaml`` and ``patterns/unified/template.yaml`` are deliberately absent:
+#: they never had a ``Globals`` tracing default, and plenty of their functions are
+#: legitimately untraced.
+GLOBALS_TRACING_REMOVED = {
+    "feature-platform/main-stack-extensions/template.yaml",
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rel_path", sorted(GLOBALS_TRACING_REMOVED))
+def test_every_function_here_declares_a_tracing_mode(rel_path: str) -> None:
+    """No function in these templates may be silently untraced."""
+    template = _load(REPO_ROOT / rel_path)
+    functions = _functions(template)
+    assert functions, f"{rel_path} declares no functions; drop the entry"
+
+    missing = sorted(
+        name for name, body in functions.items() if _tracing_of(body) is None
+    )
+    assert not missing, (
+        f"{rel_path}: these functions declare no tracing mode: {missing}. This "
+        f"template moved tracing out of `Globals.Function` so the parameter could "
+        f"control it, which means a function no longer inherits a default — write "
+        f"`Tracing: !If [{TRACING_CONDITION}, Active, PassThrough]` on each. Rule 1 "
+        f"does not catch this: an absent mode is legitimate in other templates, so "
+        f"it reads one as 'not traced by this stack' rather than as an omission."
+    )
+    assert _globals_tracing(template) is None, (
+        f"{rel_path} declares Globals.Function.Tracing again. Either remove it and "
+        f"keep the per-function form (no template in this repo uses an intrinsic "
+        f"inside Globals, and `sam build` is only known to accept the per-resource "
+        f"form), or drop this template from GLOBALS_TRACING_REMOVED."
+    )
+
+
 @pytest.mark.unit
 def test_exempt_templates_are_not_nested_stacks_of_the_parent() -> None:
     """The exemption's stated reason, checked instead of believed.
@@ -708,15 +753,32 @@ def test_exempt_templates_are_not_nested_stacks_of_the_parent() -> None:
     main stack's parameter has no route to it. That is a **structural** claim about
     ``template.yaml``, and until this test existed it was only a comment — so the
     list carried ``feature-platform/main-stack-extensions/template.yaml``, which
-    ``template.yaml`` deploys as ``FeaturePlatformStack`` and already hands 27
-    parameters to, including ``LogLevel`` and ``LogRetentionDays``. Nine Lambdas
-    inside the main deployment therefore kept tracing with the parameter set to
-    ``false``, and every rule in this file skipped them, because the one list that
-    mentioned the template said not to look.
+    ``template.yaml`` deploys as ``FeaturePlatformStack`` and already hands
+    ``LogLevel`` and ``LogRetentionDays`` to. Nine Lambdas inside the main
+    deployment kept tracing with the parameter set to ``false``.
 
-    A wrong entry here is worse than a missing one: a missing entry fails
-    ``test_templates_without_the_parameter_are_the_known_set`` loudly, while a wrong
-    one turns the whole gate off for that template and reads as a decision.
+    What the five rules did about those nine is worth stating precisely, because
+    only two of them **skipped** and the other three are the more interesting half:
+
+    * Rule 1 and the nested-stack half of rule 2 skipped, both keyed on the
+      template not declaring the parameter.
+    * The first half of rule 2 reached its bare ``return`` — the template neither
+      defined the condition nor used it — and reported a pass.
+    * Rule 4 examined all nine and dropped every one at
+      ``if _tracing_of(body) is None: continue``, because the mode lived in
+      ``Globals`` and that helper reads only per-resource properties. Nine
+      functions whose role granted no ``xray:PutTraceSegments`` reported green.
+    * Rule 3 did real work: it resolved each ``CodeUri``, read the runtime files
+      for ``aws_xray_sdk``, found none, and passed legitimately.
+
+    So the failure was not that the gate was told to look away — a silent pass with
+    nothing examined is harder to notice than a skip, which at least prints. Nor did
+    ``HARDCODED_WITHOUT_PARAMETER`` cause any of it: no rule consults that list.
+    Every skip above keys on the template's *absence of the parameter*; the list's
+    only job was to convert that absence from a loud failure in
+    ``test_templates_without_the_parameter_are_the_known_set`` into a sanctioned
+    exemption. That is why a wrong entry here is worse than a missing one — a
+    missing entry fails loudly, a wrong one makes the absence read as a decision.
     """
     nested_sources = {source for _, source in NESTED_STACKS}
     reachable = sorted(HARDCODED_WITHOUT_PARAMETER & nested_sources)

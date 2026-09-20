@@ -110,6 +110,7 @@ import gzip
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -252,19 +253,65 @@ _CONFIG_METADATA_FIELDS = {
 # unintentionally is the silent-no-hooks failure mode of issue #599.
 _FALLBACK_VERSION = "default"
 
-_dynamodb = boto3.resource("dynamodb")
+class _LazyClient:
+    """A boto3 client or resource built on first use rather than at import.
+
+    Building them at import is the right default for a Lambda handler — a warm
+    invocation reuses the object, and the runtime always sets ``AWS_REGION``. It
+    stops being harmless once something other than the runtime imports the
+    module: a suite in ``lib/idp_common_pkg/tests`` puts this directory on
+    ``sys.path`` and imports it, so ``boto3.resource("dynamodb")`` ran at import
+    and the only thing standing between that and a hard error with no region was
+    an ``os.environ.setdefault("AWS_DEFAULT_REGION", ...)`` in a ``conftest.py``
+    five directories away. Checked by
+    ``patterns/unified/tests/test_handler_imports_are_region_free.py``.
+
+    Deliberately a proxy rather than an accessor function: every call site stays
+    as it was, and the module attribute stays a *patchable object*, which is how
+    the existing suite drives this code
+    (``monkeypatch.setattr(mod._dynamodb, "Table", ...)``). No ``__slots__``, for
+    the same reason — the patch needs a ``__dict__`` to put the attribute in, and
+    an instance attribute shadows ``__getattr__`` so the patch takes effect.
+
+    The lock costs nothing here (this dispatcher is single-threaded; one Lambda
+    container serves one invocation at a time) and keeps this class identical to
+    the copy in ``test_execution_aggregation_function``, where a
+    ``ThreadPoolExecutor`` means first use really can be concurrent and botocore's
+    caches are not safe for concurrent client creation. Two identical copies
+    rather than one shared helper because this function's ``requirements.txt`` is
+    deliberately ``boto3`` only — it takes no dependency on ``idp_common``.
+    """
+
+    def __init__(self, build: Any) -> None:
+        self._build = build
+        self._lock = threading.Lock()
+        self._obj: Any = None
+
+    def __getattr__(self, name: str) -> Any:
+        obj = self._obj
+        if obj is None:
+            with self._lock:
+                obj = self._obj
+                if obj is None:
+                    obj = self._obj = self._build()
+        return getattr(obj, name)
+
+
+_dynamodb = _LazyClient(lambda: boto3.resource("dynamodb"))
 # Hooks run synchronously through this client, so its read timeout must cover
 # the longest hook (the PII preprocessing hook budgets 900s); botocore's
 # default ~60s read timeout would sever the invoke mid-run. Retries are
 # disabled: hooks are not guaranteed idempotent, and the state machine's own
 # Retry handles the transient Lambda.* errors.
-_lambda = boto3.client(
-    "lambda",
-    config=boto3.session.Config(
-        read_timeout=910, connect_timeout=10, retries={"max_attempts": 0}
-    ),
+_lambda = _LazyClient(
+    lambda: boto3.client(
+        "lambda",
+        config=boto3.session.Config(
+            read_timeout=910, connect_timeout=10, retries={"max_attempts": 0}
+        ),
+    )
 )
-_s3 = boto3.client("s3")
+_s3 = _LazyClient(lambda: boto3.client("s3"))
 
 
 def _decompress_item(item: Dict[str, Any]) -> Dict[str, Any]:

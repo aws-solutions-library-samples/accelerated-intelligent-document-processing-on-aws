@@ -25,8 +25,55 @@ from boto3.dynamodb.conditions import Key
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
-s3_client = boto3.client("s3")
-dynamodb = boto3.resource("dynamodb")
+class _LazyClient:
+    """A boto3 client or resource built on first use rather than at import.
+
+    Building them at import is the right default for a Lambda handler — a warm
+    invocation reuses the object, and the runtime always sets ``AWS_REGION``. It
+    stops being harmless once something other than the runtime imports the
+    module: a suite in ``lib/idp_common_pkg/tests`` loads this file by path, so
+    ``boto3.resource("dynamodb")`` ran during **collection**, and the only thing
+    standing between that and a hard collection error was an
+    ``os.environ.setdefault("AWS_DEFAULT_REGION", ...)`` in a ``conftest.py``
+    four directories away. Deferring to first use removes the import-time
+    dependency without changing how many clients the container builds; it is
+    checked by ``patterns/unified/tests/test_handler_imports_are_region_free.py``.
+
+    Deliberately a proxy rather than an accessor function, for two reasons.
+    Every call site stays as it was, and — more importantly — the module
+    attribute stays a *patchable object*, which is how the existing suite drives
+    this code (``patch.object(index, "dynamodb")`` and
+    ``patch.object(index.dynamodb, "Table", ...)``). There is no ``__slots__``
+    for the same reason: ``patch.object`` sets the attribute on the proxy, which
+    needs a ``__dict__`` to hold it, and an instance attribute shadows
+    ``__getattr__`` so the patch takes effect.
+
+    The lock is not defensive boilerplate. ``_load_s3_json`` runs inside
+    ``_load_comparison_results``' ``ThreadPoolExecutor``, so without it the
+    *first* use of ``s3_client`` could be several workers constructing a client
+    at once — botocore's session and loader caches are not safe for concurrent
+    client creation, which is why the guidance is to create clients before
+    handing work to threads. Eager construction had that property for free;
+    double-checked locking is what buys it back.
+    """
+
+    def __init__(self, build: Any) -> None:
+        self._build = build
+        self._lock = threading.Lock()
+        self._obj: Any = None
+
+    def __getattr__(self, name: str) -> Any:
+        obj = self._obj
+        if obj is None:
+            with self._lock:
+                obj = self._obj
+                if obj is None:
+                    obj = self._obj = self._build()
+        return getattr(obj, name)
+
+
+s3_client = _LazyClient(lambda: boto3.client("s3"))
+dynamodb = _LazyClient(lambda: boto3.resource("dynamodb"))
 
 # R14 graded packet metrics forwarded from each doc's ``doc_split_metrics``.
 # Order matches ``idp_common.evaluation.models.DocSplitMetrics`` so any

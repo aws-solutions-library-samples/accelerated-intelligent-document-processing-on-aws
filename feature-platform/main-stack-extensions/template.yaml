@@ -348,6 +348,12 @@ Globals:
     Timeout: 30
     MemorySize: 256
     # Tracing is deliberately NOT global here — see EnableXRayTracingCondition.
+    # ⚠️ Consequence: a function added to this template inherits NO tracing mode,
+    # where it used to inherit `Active` from this block. Every function must write
+    # `Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]` itself, and
+    # scripts/tests/test_xray_tracing.py's
+    # test_every_function_here_declares_a_tracing_mode fails if one does not —
+    # rule 1 alone would not, because it only judges a mode that is present.
     # Architectures is deliberately NOT global here. SAM COMBINES a Globals list
     # with a function's own rather than overriding it, so a function that needs a
     # different architecture cannot override this — `sam build` fails with
@@ -394,15 +400,24 @@ Resources:
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
         # X-Ray write. All nine functions in this template share this explicit
-        # role, and SAM attaches this policy only to roles it GENERATES — so
+        # role, and SAM attaches an X-Ray policy only to roles it GENERATES — so
         # before this line every one of them declared `Tracing: Active` and
         # could not write a segment: tracing was on, cost nothing, and produced
-        # nothing. Attached unconditionally, exactly as SAM attaches it to a
-        # generated role and exactly as PipelineHooksDispatcherRole in
+        # nothing. Attached unconditionally, matching what SAM does for a
+        # generated role and what PipelineHooksDispatcherFunctionRole in
         # patterns/unified/template.yaml does: the grant is write-only and
         # useless without a segment to write, so a conditional attachment would
         # give this role a different shape for no benefit. Enforced by
         # scripts/tests/test_xray_tracing.py.
+        #
+        # The policy NAME is the one SAM uses in the `aws` partition. SAM's
+        # get_xray_managed_policy_name() switches to AWSXRayDaemonWriteAccess in
+        # aws-cn and aws-us-gov; AWSXrayWriteOnlyAccess exists in all four
+        # partitions per SAM's own managed-policy table, so `${AWS::Partition}`
+        # resolves everywhere, but this role and a SAM-generated one therefore
+        # carry DIFFERENT policies outside commercial. Both grant
+        # xray:PutTraceSegments, so nothing behaves differently — worth
+        # confirming on the --govcloud transform-deploy tier rather than assuming.
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSXrayWriteOnlyAccess"
       Policies:
         - PolicyName: InstalledFeaturesTableAccess

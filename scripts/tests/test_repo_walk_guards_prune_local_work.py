@@ -122,6 +122,14 @@ def test_gate_prunes_local_work(gate: str, local_dir: str) -> None:
     if SHARED_PRUNE_CONST in source:
         # Delegates to the shared list, which is pinned by the test below.
         return
+    if TRACKED_HELPER in source:
+        # Discovers through git, which excludes both directories because both are
+        # gitignored — a stronger guarantee than any name list, and the one route
+        # that also survives the checkout itself living under one of them. Named
+        # here so a gate that takes the better route is not then required to keep
+        # a prune set it no longer needs; the three that do keep one keep it as a
+        # second filter for their non-git fallback, and say so.
+        return
     assert f'"{local_dir}"' in source or f"'{local_dir}'" in source, (
         f"{gate} walks the whole repository but never names {local_dir!r}, so it "
         f"scans gitignored local work. A git worktree or a mutation-test copy under "
@@ -149,14 +157,14 @@ def test_shared_prune_list_covers_local_work(local_dir: str) -> None:
 #:
 #: Hand-kept, like ``REPO_WALKING_GATES`` above, because there is no way to call an
 #: arbitrary gate's discovery without knowing its entry point. The three here are the
-#: three that had the absolute-path defect; the remaining registered gates either
-#: match their prune set against the repo-relative path already
-#: (``test_asl_placeholder_substitution.py``, ``test_well_architected_doc.py``),
-#: prune during an ``os.walk`` descent from the repository root
-#: (``test_iam_privilege_escalation.py``), or ask git
-#: (``test_classification_prompt_copies_in_sync.py``) — none of which can be
-#: defeated by where the checkout sits, and none of which exposes a root parameter
-#: to drive.
+#: three that had the absolute-path defect. Of the five other registered gates, four
+#: cannot be defeated by where the checkout sits — two match their prune set against
+#: the repo-relative path (``test_asl_placeholder_substitution.py``,
+#: ``test_well_architected_doc.py``), one prunes during an ``os.walk`` descent from
+#: the repository root (``test_iam_privilege_escalation.py``), and one asks git
+#: (``test_classification_prompt_copies_in_sync.py``) — and none of the four exposes
+#: a root parameter to drive. The fifth, ``test_testing_doc.py``, relativises before
+#: matching as well.
 _PROBE_TEMPLATE = """AWSTemplateFormatVersion: '2010-09-09'
 Resources:
   ProbeFunction:
@@ -222,12 +230,23 @@ def test_discovery_survives_a_checkout_under_a_local_work_dir(
     ``<main checkout>/.claude/worktrees/agent-*``. A prune set matched against the
     absolute path matches ``.claude`` there and discards every file, so the gate
     proves nothing — loudly if it has a self-guard, silently if it does not.
+
+    Both halves are asserted, because on its own the first half is satisfied by a
+    gate that has stopped pruning altogether: the probe at the checkout root must be
+    **found**, and identical probes under ``<root>/scratch/`` and
+    ``<root>/.claude/worktrees/`` must be **excluded**. That pair is also why the
+    three converted gates keep a prune set at all — git lists an un-ignored
+    ``scratch/`` inside a checkout perfectly happily, so the relative-path filter is
+    still doing work.
     """
     function_name, probe_rel, probe_body = TRACKED_DISCOVERY_GATES[gate]
 
     root = tmp_path / ".claude" / "worktrees" / "agent-probe"
-    (root / Path(probe_rel).parent).mkdir(parents=True)
-    (root / probe_rel).write_text(probe_body, encoding="utf-8")
+    local_work = ["scratch", ".claude/worktrees/agent-nested"]
+    for prefix in ["", *local_work]:
+        target = root / prefix / probe_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(probe_body, encoding="utf-8")
     subprocess.run(
         ["git", "-c", "init.defaultBranch=main", "init", "-q", str(root)],
         check=True,
@@ -255,6 +274,17 @@ def test_discovery_survives_a_checkout_under_a_local_work_dir(
         f"of the local-work directories — which is where every agent worktree lives. "
         f"Prefer discovering through repo_files.{TRACKED_HELPER}, which asks git and "
         f"so cannot be defeated by the checkout's location."
+    )
+
+    leaked = sorted(f"{prefix}/{probe_rel}" for prefix in local_work)
+    leaked = sorted(rel for rel in leaked if rel in found)
+    assert not leaked, (
+        f"{gate}: {function_name}() returned file(s) from a local-work directory "
+        f"INSIDE the checkout: {leaked}. Those directories hold whole copies of this "
+        f"tree, so a stale one fails the gate while describing nothing that ships. "
+        f"Discovering through git is not enough on its own here — an un-ignored "
+        f"`scratch/` in a checkout is listed by `git ls-files --others` — so keep the "
+        f"relative-path prune set as a second filter."
     )
 
 
