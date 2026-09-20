@@ -384,13 +384,18 @@ try/except/pass etc. can remain; only High/Medium reach the gate). This is
 preferred over a JSON suppression for Python because the justification lives
 next to the code.
 
-**Don't run `ruff format` on a file under `scripts/`** to tidy a `# nosec` edit:
-`ruff.toml` `extend-exclude`s `scripts/` (and `src/`, `patterns/`, `notebooks/`),
-so `make lint-cicd` never formats it — reformatting drags in unrelated cosmetic
-hunks that CI doesn't want. Repo-wide `ruff format --check .` passing while a
-single-file check fails is exactly this exclusion, not real drift. Also pin the
-local ruff to CI's version before believing a formatting diff (CI: `ruff==0.15.13`
-in `.gitlab-ci.yml` / `developer-tests.yml`).
+**Check whether the file you edited is one ruff formats before reformatting it.**
+`ruff.toml`'s `[format] exclude` names 186 individual files that `ruff format` has
+never been run over, many of them under `scripts/` and `src/lambda/`. On one of
+those, `ruff format <path>` rewrites the whole file and drags a large cosmetic diff
+into a `# nosec` change; `make lint-cicd` would not have asked for it. Confirm with
+`ruff format --check --force-exclude <path>`, which honours the exclusion for a named
+path and prints `warning: No Python files found under the given path(s)` when the
+file is on the list. If it *is* formatted, run **bare `ruff format`** rather than
+passing the path, because an explicit path argument bypasses the exclusions and would
+reformat trees the repo deliberately leaves alone. Also pin the local ruff to CI's
+version before believing a formatting diff (CI: `ruff==0.15.13` in `.gitlab-ci.yml` /
+`developer-tests.yml`).
 (Checkov findings similarly honor `# checkov:skip=CKV_AWS_NNN: "reason"`, and
 semgrep honors `# nosemgrep: <rule-id> - reason` — both already used in this
 repo, e.g. `scripts/srt/run.py`, the WAF WebACL in `nested/api-resolvers`.)

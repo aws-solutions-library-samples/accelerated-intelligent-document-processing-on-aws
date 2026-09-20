@@ -47,6 +47,9 @@ make ruff-lint
 # Python formatting only
 make format
 
+# Re-measure ruff's per-file exclusion baseline (part of lint, fastlint, lint-cicd)
+make check-lint-debt
+
 # Type checking with basedpyright
 make typecheck
 make typecheck-stats
@@ -66,6 +69,36 @@ make cfn-lint
 # Same, but list every advisory warning in full
 make cfn-lint-warnings
 ```
+
+**The Python lint gates read every tracked `.py` file, and what they skip is a
+named list of files rather than a directory.** `ruff.toml` used to exclude five
+**bare directory names** — `notebooks`, `options`, `patterns`, `src`, `scripts` —
+and a bare name in ruff's exclusion patterns matches at **any** path depth, so
+`src` also excluded `nested/*/src` and `patterns/*/src`. 442 of 1230 tracked `.py`
+files were read by neither `ruff check` nor `ruff format`, including all 138 files
+under `scripts/` (this repository's own gate layer). A clean `ruff check` on one of
+them meant the file was never opened. Issue #975.
+
+The exclusions are now per-file, generated from `scripts/lint_debt.json`, and
+ratcheted: `ruff.toml`'s `[lint] exclude` names 85 files holding 196 pre-existing
+findings, `[format] exclude` names 186 files `ruff format` has never run over, and
+`make check-lint-debt` (in `lint`, `fastlint` **and** `lint-cicd`, so both CIs)
+re-measures every tracked file with the exclusions bypassed. It fails if a listed
+file *gained* a finding, if a listed file is now clean and should be delisted, if a
+listed path is gone, or if any exclusion array grows a bare directory name again.
+Pay one down by fixing its findings and running `python3
+scripts/check_lint_debt.py --write`; never hand-edit either array and never add to
+them. `--summary` prints the current split. Two `extend-exclude` entries are scope
+decisions rather than debt — the vendored `pii-anonymizer` tree and `**/*.ipynb` —
+and each carries a premise the gate evaluates against the tree.
+
+The **formatting** debt is deliberately unpaid: `ruff format` over those 186 files
+is a mechanical, conflict-generating sweep that belongs in its own change.
+
+`basedpyright` covers all 1230 tracked `.py` files (`pyrightconfig.json`'s `include`
+previously named six paths and reached 432).
+`scripts/tests/test_pyright_config.py` derives that closure from `git ls-files`, so
+a new tree holding Python fails there rather than being silently uncovered.
 
 **`make cfn-lint`** discovers templates by **content** (anything declaring
 `AWSTemplateFormatVersion`), not by filename, so a new template cannot be added

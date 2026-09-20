@@ -22,9 +22,12 @@ GitLab-only. See ``scripts/sdlc/docs/CI_TEST_COVERAGE.md``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GITLAB = REPO_ROOT / ".gitlab-ci.yml"
@@ -70,6 +73,7 @@ def test_gate_runs_in_both_cis(gate: str) -> None:
     [
         "cfn-lint",
         "validate-buildspec",
+        "check-lint-debt",
         "check-arn-partitions",
         "check-filtered-scans",
         "check-data-plane-tags",
@@ -114,6 +118,42 @@ def test_cfn_lint_is_pinned_consistently() -> None:
             f"CFN_LINT_VERSION). CI would then run a different linter than "
             f"`make cfn-lint` does locally."
         )
+
+
+@pytest.mark.unit
+def test_ruff_is_pinned_consistently() -> None:
+    """The two CIs must pin the same ``ruff``, and the pin must be installable here.
+
+    ``ruff``'s findings are version-dependent, and ``make check-lint-debt``
+    compares a recorded per-file finding count against a live measurement — so
+    two CI systems on different ``ruff`` releases would disagree about whether
+    the baseline is current, and the disagreement would look like a code defect.
+    ``lib/idp_common_pkg/pyproject.toml`` supplies ``ruff`` locally as a range, so
+    the CI pin has to fall inside it or a contributor's ``make lint`` and CI are
+    running different linters by construction.
+    """
+    pins = {}
+    for path in (GITLAB, GITHUB_TESTS):
+        found = re.findall(r"ruff==([0-9][0-9A-Za-z.\-]*)", path.read_text())
+        assert found, f"{path.name} no longer pins a ruff version"
+        assert len(set(found)) == 1, f"{path.name} pins several ruff versions: {found}"
+        pins[path.name] = found[0]
+
+    assert len(set(pins.values())) == 1, (
+        f"the two CI configs pin different ruff versions: {pins}. `ruff check` and "
+        "`make check-lint-debt` would then reach different verdicts depending on "
+        "which CI a change was merged through."
+    )
+    version = next(iter(pins.values()))
+
+    pyproject = (REPO_ROOT / "lib" / "idp_common_pkg" / "pyproject.toml").read_text()
+    specifier = re.search(r'"ruff([^"]*)"', pyproject)
+    assert specifier, "lib/idp_common_pkg/pyproject.toml no longer declares ruff"
+    assert Version(version) in SpecifierSet(specifier.group(1)), (
+        f"CI pins ruff=={version}, which is outside the range "
+        f"{specifier.group(1)!r} that lib/idp_common_pkg installs locally. A "
+        "developer's `make lint` would then run a different linter than CI."
+    )
 
 
 @pytest.mark.unit

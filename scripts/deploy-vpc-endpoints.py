@@ -28,6 +28,7 @@ Requirements:
 import argparse
 import sys
 import time
+
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
@@ -222,7 +223,7 @@ def main():
     # ── Read subnet IDs ───────────────────────────────────────────────────
     subnet_ids = args.subnet_ids
     if not subnet_ids:
-        print(f"🔍 Reading LambdaSubnetIds from IDP stack parameters...")
+        print("🔍 Reading LambdaSubnetIds from IDP stack parameters...")
         subnet_ids = get_stack_parameter(cf, args.stack_name, "LambdaSubnetIds")
     if not subnet_ids:
         print("❌ Could not determine subnet IDs. Pass --subnet-ids explicitly.")
@@ -285,7 +286,7 @@ def main():
         resp = cf.describe_stacks(StackName=endpoints_stack_name)
         existing_status = resp["Stacks"][0]["StackStatus"]
         if existing_status == "ROLLBACK_COMPLETE":
-            print(f"   Stack is in ROLLBACK_COMPLETE — deleting before re-creating...")
+            print("   Stack is in ROLLBACK_COMPLETE — deleting before re-creating...")
             cf.delete_stack(StackName=endpoints_stack_name)
             if not wait_for_stack(cf, endpoints_stack_name, "DELETE_COMPLETE"):
                 # Stack deleted successfully (won't exist anymore)
@@ -331,7 +332,7 @@ def main():
 
     try:
         if stack_exists:
-            print(f"   Stack exists — updating...")
+            print("   Stack exists — updating...")
             cf.update_stack(
                 StackName=endpoints_stack_name,
                 TemplateBody=template_body,
@@ -340,7 +341,7 @@ def main():
             )
             target_status = "UPDATE_COMPLETE"
         else:
-            print(f"   Creating new stack...")
+            print("   Creating new stack...")
             cf.create_stack(
                 StackName=endpoints_stack_name,
                 TemplateBody=template_body,
@@ -359,12 +360,12 @@ def main():
     success = wait_for_stack(cf, endpoints_stack_name, target_status)
 
     if success:
-        print(f"✅ VPC endpoints deployed successfully!")
-        print(f"\nEndpoints created:")
+        print("✅ VPC endpoints deployed successfully!")
+        print("\nEndpoints created:")
         for svc in create_list:
             print(f"   • com.amazonaws.{region}.{svc}")
         if skip_list:
-            print(f"\nEndpoints skipped (already existed):")
+            print("\nEndpoints skipped (already existed):")
             for svc in skip_list:
                 print(f"   • com.amazonaws.{region}.{svc}")
     else:
@@ -378,7 +379,7 @@ def main():
                     print(f"   {e['LogicalResourceId']}: {e.get('ResourceStatusReason', 'unknown')}")
         except Exception:
             pass
-        print(f"\n❌ Deployment failed. Check the CloudFormation console for details.")
+        print("\n❌ Deployment failed. Check the CloudFormation console for details.")
         sys.exit(1)
 
 

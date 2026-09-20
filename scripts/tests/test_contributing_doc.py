@@ -506,81 +506,133 @@ def test_prerequisite_floors_match_their_sources() -> None:
 
 
 @pytest.mark.unit
-def test_ruff_coverage_figures_match_ruff() -> None:
-    """The lint blind spot the document warns about, measured rather than recalled.
+def test_ruff_exclusion_figures_match_the_baseline() -> None:
+    """The document's two exclusion counts, read from the baseline that sets them.
 
-    The document deliberately states this as a proportion plus two absolute
-    claims rather than as exact file counts. Exact counts were tried first and
-    are wrong for this job: every commit that adds a ``.py`` file anywhere in the
-    repository changes them, so the figures would turn a docs guard into a gate
-    that red-lines unrelated branches. (Adding *this* file changed them.) The
-    proportion and the two "every file under" claims are stable, still derived
-    from ``ruff`` at test time, and still fail if issue #975 is resolved and the
-    paragraph is left behind.
+    These are exact counts on purpose, which an earlier version of this check
+    could not afford: the figures then were "how many tracked .py files does ruff
+    skip", which every commit adding a .py file changed, so pinning them would
+    have red-lined unrelated branches. They are now the sizes of two named lists
+    in ``scripts/lint_debt.json``, and those change only when somebody runs
+    ``check_lint_debt.py --write`` — a deliberate act, by whoever is also in a
+    position to update this sentence.
+    """
+    baseline = json.loads(
+        (REPO_ROOT / "scripts" / "lint_debt.json").read_text(encoding="utf-8")
+    )
+    lint_files = len(baseline["lintDebt"])
+    lint_findings = sum(sum(c.values()) for c in baseline["lintDebt"].values())
+    format_files = len(baseline["formatDebt"])
 
-    Skipped rather than failed when ``ruff`` is absent: this file also runs on a
-    machine where the contributor has not activated the virtualenv, which is the
-    very problem the document now explains.
+    assert lint_files and format_files, (
+        "scripts/lint_debt.json records no debt at all. If that is genuine, the "
+        "paragraph in CONTRIBUTING.md about excluded files should go rather than "
+        "quote zeroes."
+    )
+    for label, value in (
+        ("[lint] exclude file count", lint_files),
+        ("pre-existing lint findings", lint_findings),
+        ("[format] exclude file count", format_files),
+    ):
+        assert str(value) in DOC, (
+            f"CONTRIBUTING.md no longer quotes the {label} ({value}). "
+            "scripts/lint_debt.json is the source of truth; update the paragraph "
+            "under 'Before every commit' to match it."
+        )
+
+
+@pytest.mark.unit
+def test_ruff_reads_every_tracked_python_file_except_the_scope_exclusions() -> None:
+    """The document's central claim, measured: a new file anywhere is linted.
+
+    ``ruff`` discovers files by walking, so the claim is about the walk and not
+    about the per-file debt lists (a file on those is still *discovered*; the
+    ``[lint] exclude`` array is what silences it, and ``make check-lint-debt``
+    re-measures those). What must hold here is that no directory is skipped
+    wholesale any more, apart from the ``scope`` entries — because a directory
+    exclusion is what makes a *newly added* file silently uncovered.
     """
     if shutil.which("ruff") is None:
         pytest.skip("ruff is not on PATH (see the venv-activation note in CONTRIBUTING.md)")
 
+    baseline = json.loads(
+        (REPO_ROOT / "scripts" / "lint_debt.json").read_text(encoding="utf-8")
+    )
+
+    def in_scope(rel: str) -> bool:
+        for pattern in baseline["scope"]:
+            if pattern.startswith("**/*."):
+                if rel.endswith(pattern[4:]):
+                    return True
+            elif rel == pattern or rel.startswith(pattern.rstrip("/") + "/"):
+                return True
+        return False
+
     tracked = _tracked_python_files()
-    examined = _ruff_python_files() & tracked
-    skipped = tracked - examined
     assert tracked, "git ls-files '*.py' returned nothing; the measurement is vacuous"
-
-    # The document's two absolute claims. These are the load-bearing ones: a
-    # contributor who reads a clean `ruff check` on a file here is reading
-    # nothing at all.
-    for prefix in ("src/lambda/", "scripts/"):
-        present = {path for path in tracked if path.startswith(prefix)}
-        assert present, (
-            f"No tracked .py files under {prefix} any more, so the document's "
-            f"claim that all of {prefix} is unlinted is vacuous and should go."
-        )
-        leaked = sorted(present & examined)
-        assert not leaked, (
-            f"CONTRIBUTING.md says every file under {prefix} is skipped by "
-            f"`ruff`, but it now examines {len(leaked)} of them, starting with "
-            f"{leaked[0]}. Either ruff.toml's extend-exclude changed (good news "
-            "— narrow or remove the paragraph and close issue #975) or the "
-            "claim was wrong."
-        )
-
-    # And the proportion the document quotes. The window is wide enough that
-    # ordinary churn cannot trip it and narrow enough that resolving #975 does.
-    fraction = len(skipped) / len(tracked)
-    assert "roughly a third" in DOC, (
-        "CONTRIBUTING.md no longer describes the unlinted share as 'roughly a "
-        f"third'; `ruff` currently skips {fraction:.0%} of the "
-        f"{len(tracked)} tracked .py files ({len(skipped)} of them)."
+    undiscovered = sorted(
+        rel for rel in tracked - _ruff_python_files() if not in_scope(rel)
     )
-    assert 0.25 <= fraction <= 0.40, (
-        f"`ruff` now skips {fraction:.0%} of the {len(tracked)} tracked .py "
-        f"files ({len(skipped)} skipped, {len(examined)} examined), which is no "
-        "longer 'roughly a third' as CONTRIBUTING.md says. If the exclusions "
-        "were narrowed, update or delete that paragraph and close issue #975."
+    assert not undiscovered, (
+        f"`ruff` does not even look at {len(undiscovered)} tracked .py file(s), and "
+        f"they are not covered by a scripts/lint_debt.json `scope` entry, so a new "
+        f"file added beside them would be silently unlinted too: "
+        f"{undiscovered[:10]}\n\nThis is the shape of issue #975. Check ruff.toml's "
+        "top-level `exclude` for a directory name that should not be there."
     )
 
-    # The five bare names the document blames for matching at any depth must
-    # still be the ones in the config.
-    exclude_block = re.search(
-        r"extend-exclude\s*=\s*\[(.*?)\]", RUFF_TOML.read_text(encoding="utf-8"), re.DOTALL
-    )
-    assert exclude_block, "ruff.toml no longer has an extend-exclude list"
-    # Match complete quoted entries first and filter afterwards. A
-    # slash-excluding character class matches across a quote boundary here,
-    # because most entries in this list *are* paths and the separator between two
-    # of them (`",\n    "`) contains no slash.
-    excluded_entries = re.findall(r'"([^"]*)"', exclude_block.group(1))
-    excluded_bare_names = {entry for entry in excluded_entries if "/" not in entry}
-    for name in ("src", "scripts", "patterns", "options", "notebooks"):
-        assert name in excluded_bare_names, (
-            f"CONTRIBUTING.md names {name!r} as one of the bare directory names "
-            "in ruff.toml's extend-exclude that match at any depth, but it is "
-            f"no longer there. Current bare names: {sorted(excluded_bare_names)}"
+
+@pytest.mark.unit
+def test_the_document_does_not_still_describe_a_whole_tree_as_unlinted() -> None:
+    """The claim that used to be here, kept out rather than simply deleted.
+
+    The document told a reader that a clean ``ruff check`` on anything under
+    ``src/`` or ``scripts/`` meant the file had not been examined. That is now
+    false — ``ruff`` reads both trees — and a false reassurance in the other
+    direction is worse than the original gap, because it tells a contributor to
+    ignore a real result.
+    """
+    for claim in ("roughly a third", "every file under `scripts/`"):
+        assert claim not in DOC, (
+            f"CONTRIBUTING.md still contains {claim!r}, which described the "
+            "directory-wide exclusions removed in issue #975."
         )
+
+
+@pytest.mark.unit
+def test_no_ruff_exclusion_is_a_bare_directory_name() -> None:
+    """The defect of issue #975, asserted on the config rather than the prose.
+
+    ``ruff.toml`` excluded ``notebooks``, ``options``, ``patterns``, ``src`` and
+    ``scripts``. A pattern with no ``/`` matches at ANY path depth, so ``src``
+    also excluded ``nested/*/src`` and ``patterns/*/src`` — 442 of 1230 tracked
+    ``.py`` files in total, and nobody had counted the second-order ones.
+
+    ``make check-lint-debt`` asserts the same thing over the generated blocks.
+    This is here as well because it needs no tooling and covers every exclusion
+    array in the file, generated or not, including ``per-file-ignores``.
+    """
+    ruff_toml = RUFF_TOML.read_text(encoding="utf-8")
+    offenders: list[str] = []
+    for key in ("extend-exclude", "exclude"):
+        for match in re.finditer(
+            rf"^{re.escape(key)}\s*=\s*\[(.*?)^\]", ruff_toml, re.DOTALL | re.MULTILINE
+        ):
+            block = match.group(1)
+            # The top-level `exclude` array is deliberately bare names: a
+            # `build/` or `.venv/` at any depth IS build output. It is
+            # identified by containing `.git`, which no source path would.
+            if '".git"' in block:
+                continue
+            offenders += [e for e in re.findall(r'"([^"]*)"', block) if "/" not in e]
+
+    assert not offenders, (
+        f"ruff.toml excludes bare directory name(s) {offenders}, which ruff "
+        "matches at any path depth rather than at the repository root. Name the "
+        "path from the root (see issue #975), or, if an any-depth match is "
+        "genuinely wanted, put it in the top-level `exclude` array with the "
+        "build-output entries."
+    )
 
 
 @pytest.mark.unit

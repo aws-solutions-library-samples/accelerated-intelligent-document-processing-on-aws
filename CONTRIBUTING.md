@@ -361,19 +361,46 @@ Two things about that configuration are worth knowing before you rely on it.
 `ruff.toml`'s `line-length = 88` is a **formatter** setting, not an enforced
 check: `E501` is not in the `[lint] select` list, so `ruff check` passes over
 thousands of lines longer than 88 columns that the formatter chose not to split
-(the longest currently in the linted set is 585 characters). And `ruff.toml`'s
-`extend-exclude` list leaves a substantial part of the tree unlinted — the bare
-directory names `src`, `scripts`, `patterns`, `options` and `notebooks` match at
-any depth, so roughly a third of the repository's tracked `.py` files are never
-examined at all, among them every file under `src/lambda/` and every file under
-`scripts/`. Comparing `git ls-files '*.py'` against `ruff check --show-files .`
-gives the exact split for the tree you have in front of you. That is tracked as
-[issue #975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975);
-until it is resolved, a clean `ruff check` on a file under one of those paths
-means the file was not examined. To confirm whether a given file is linted, pass
-`--force-exclude`, which makes `ruff` honour the exclusions for an explicitly
-named path: `ruff check --force-exclude <file>` prints `warning: No Python files
-found under the given path(s)` when the file is excluded.
+(the longest currently in the linted set is 585 characters).
+
+The second is that `ruff` still does not read everything, and what it skips is
+now a **named list of individual files** rather than a directory. Any file you
+add, anywhere in the repository, is linted and format-checked from the moment it
+exists. The files that are skipped are the ones that already carried findings
+when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 85 files
+holding 196 pre-existing findings, and `[format] exclude` names 186 files that
+`ruff format` has never been run over. Two further entries in the top-level
+`extend-exclude` are scope decisions rather than debt — the vendored
+`pii-anonymizer` tree, and `**/*.ipynb`, because `E402`/`F811`/`I001` describe a
+module and a notebook is a document. Both arrays and both scope entries are
+generated from `scripts/lint_debt.json`.
+
+**A listed file is not unexamined forever.** `make check-lint-debt` (part of
+`make lint`, `make fastlint` and `make lint-cicd`, so both CIs run it) re-measures
+every tracked `.py` file with the exclusions bypassed and fails if a listed file
+has *gained* a finding, if it is now clean and should be delisted, or if the path
+has gone. So if you touch one of those files and introduce a new `F401`, you will
+hear about it there even though `ruff check` itself stays quiet on that file.
+
+Two practical consequences:
+
+- To see whether a specific file is linted, do **not** run `ruff check <file>`.
+  An explicit path argument overrides the exclusions, so it reports on the file
+  either way and tells you nothing. Add `--force-exclude`, which makes `ruff`
+  honour them for a named path: `ruff check --force-exclude <file>` prints
+  `warning: No Python files found under the given path(s)` when the file is
+  excluded.
+- To pay one down, fix its findings (or run `ruff format` on it) and then
+  `python3 scripts/check_lint_debt.py --write`, which re-records
+  `scripts/lint_debt.json` and regenerates the three arrays in `ruff.toml`. Never
+  hand-edit either exclusion array, and never add a file to them: the lists only
+  shrink. `python3 scripts/check_lint_debt.py --summary` prints the current
+  per-tree counts.
+
+The formatting debt is deliberately unpaid. Running `ruff format` over those 186
+files is a large, mechanical, conflict-generating diff, so it belongs in its own
+change rather than riding along with the one that narrowed the exclusions
+([issue #975](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/975)).
 
 Note that `make ruff-lint`, `make format` and `make ui-lint` all **modify your
 files** — they auto-fix rather than only report. `make lint-cicd`, which is what
@@ -614,6 +641,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make all` | `lint` + `test` (the default target) |
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
+| `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
 | `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python, but it auto-fixes UI lint and rewrites `src/ui/.checksum` |
 | `make ruff-lint` | Ruff lint with auto-fix |
 | `make format` | Ruff formatter |
@@ -659,9 +687,11 @@ documented in [docs/deployment.md](docs/deployment.md) and
 
 **Python.** PEP 8, checked by `ruff` (`ruff.toml`), target Python 3.12. Write to
 88 columns, but be aware that 88 is the *formatter's* wrapping preference and not
-an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`'s
-`extend-exclude` list means part of the tree is not linted at all. Both caveats
-are explained under [the local gate set](#before-every-commit). Types are checked
+an enforced rule — `E501` is not among the selected lint rules, and `ruff.toml`
+still excludes a named list of 85 files from the linter and 186 from the
+formatter. Both caveats are explained under
+[the local gate set](#before-every-commit), along with how to pay one of those
+files off. Types are checked
 with `basedpyright` (`pyrightconfig.json`), which is installed separately with
 `npm install -g basedpyright`. Prefer adding to the narrowest `idp_common` extra
 rather than to `core`.

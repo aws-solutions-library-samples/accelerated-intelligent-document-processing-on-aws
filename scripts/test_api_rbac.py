@@ -58,9 +58,9 @@ Requires: awscli v2 on PATH; credentials with Cognito admin + CloudFormation rea
 
 import argparse
 import base64
+import importlib.util
 import json
 import os
-import importlib.util
 import secrets
 import subprocess
 import sys

@@ -143,8 +143,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, filtered scans, retired-service docs, threat-model currency, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-arn-partitions check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency validate-buildspec ## Quick lint without UI checks
 
 ruff-lint: ## Run ruff linting with auto-fix
 	ruff check --fix
@@ -165,6 +165,14 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi; \
 	echo "All checks passed!"
+	@# The two ruff invocations above are only as strong as what they are
+	@# allowed to read. This asserts the exclusion baseline they honour is still
+	@# the one that was measured -- see issue #975.
+	@if ! make check-lint-debt; then \
+		echo -e "$(RED)ERROR: ruff exclusion baseline is out of date$(NC)"; \
+		echo -e "$(YELLOW)Run 'python3 scripts/check_lint_debt.py --write' after fixing the findings.$(NC)"; \
+		exit 1; \
+	fi
 	@echo "Frontend checks"
 	@if ! make ui-lint; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
@@ -224,6 +232,15 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	fi
 
 	@echo -e "$(GREEN)All code quality checks passed!$(NC)"
+
+check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file gains a finding, or is now clean (issue #975)
+	@# ruff.toml used to exclude five BARE directory names, which match at any
+	@# path depth, so 442 of 1230 tracked .py files were read by neither the
+	@# linter nor the formatter. The exclusions are now per-file and generated;
+	@# this re-measures them with the exclusions bypassed so a listed file cannot
+	@# quietly accumulate more. Regenerate with --write after fixing findings.
+	@$(PYTHON) scripts/check_lint_debt.py || \
+		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
 
 check-filtered-scans: ## Check for DynamoDB filtered Scans that can't see all matches (issue #599)
 	@$(PYTHON) scripts/check_filtered_scans.py || \
