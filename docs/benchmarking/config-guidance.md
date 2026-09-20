@@ -8,38 +8,58 @@ title: "Configuration Guidance"
 
 # GenAIIDP Configuration Guidance — Empirical Guidance for Document Extraction at Scale
 
-**Release:** v0.6.8 · **Region:** us-west-2 · **Stack:** `IDPUpg067to068` (a stack created
-from the published v0.6.7 template and upgraded in place to the published v0.6.8 template —
-the customer upgrade path; see the [release-validation record](../release-validation/v0.6.8.md))
+**Release:** v0.6.9 · **Region:** us-west-2 · **Stack:** `IDP1` (a long-lived stack at v0.6.9;
+see the [release-validation record](../release-validation/v0.6.9.md))
 **Models:** extraction Claude Sonnet 5 (the shipped default) in §2–§4 and §7; the extraction,
 classification and confidence models are *varied* in §5 · classification Nova 2 Lite (the
 shipped default) · confidence Nova Lite (the shipped default) · summarization disabled (unscored)
-**Pricing:** `config_library/pricing.yaml` (sha256 `4884220e…`; rates as of 2026-09; intro
+**Pricing:** `config_library/pricing.yaml` (sha256 `a8897364…`; rates as of 2026-09; intro
 pricing may apply)
-**Measured:** 2026-09-12, in one session, on one stack, from the published build.
+**Measured:** 2026-09-19, in one session, on one stack — 1,900 scored runs.
+
+### What this edition re-measured, and what it did not
+
+Every number below is either re-measured on v0.6.9 or explicitly marked as carried over. Read
+this table before citing a figure.
+
+| Section | On v0.6.9? | Data |
+|---|---|---|
+| §2 configuration matrix (19 cells × 7 synthetic docs) | ✅ re-measured | `coresynth__extraction-model-sonnet5` (133 runs) |
+| §2c real-corpus accuracy | ⚠️ **control model only** | `core` reference corpora, 760 documents, at Sonnet 4.6. The Sonnet 5 corpus tables are carried over from v0.6.8 |
+| §2.1 integrated + simple hazard | ✅ re-measured | `intconf` (8 runs) |
+| §3 scaling | ✅ re-measured | `scaling__extraction-model-sonnet5`, `scalingsimple__extraction-model-sonnet5`, `scaling` (control) |
+| §4 cost level and variance | ✅ re-measured | `cost__extraction-model-sonnet5`, `cost` (control), n=5 each |
+| §5.1 extraction-model sweep | ⚠️ **3 of 7 models** | Sonnet 4.6, Sonnet 5, GPT-6 Astra re-measured. `nova_lite`, `nova_pro`, `sonnet5_1m` and `opus5` are **not measured on this release** — see §5.1 |
+| §5.2 premium head-to-head | ✅ re-measured | `astravalue` (100 runs), `astracap` (12) |
+| §5.3 classification model | ⚠️ **2 of 3** | Nova 2 Lite (default) and Sonnet 5. `haiku45` not measured |
+| §5.4 confidence model | ⚠️ **2 of 3** | Nova Lite (default) and Nova 2 Lite. Sonnet 5 not measured |
+| §6 standing hazards | ✅ re-measured | `intconf`, `advverify__extraction-model-sonnet5` |
+| §7 knob A/Bs | ✅ mostly | `enforcement`, `forcing`, `restatement`, `splitcost`, `advsplitcost`, `boundaryab`, `multiinstance`. **`sizerab` ran its committed-default arm only**, so §7's confidence-batch-sizing figures are carried over from v0.6.8 |
+
+Appendix A lists the exact directory behind every section.
 
 > Reproducible via the `benchmarks/` harness (run the `run-benchmarks` skill). Every number
 > here is produced by `benchmarks/harness/aggregate.py` from live runs; none are recalled
 > from memory. The data for every section is in the working tree under
-> `benchmarks/results/v0.6.8/` — see Appendix A for the exact directory per section. The
+> `benchmarks/results/v0.6.9/` — see Appendix A for the exact directory per section. The
 > one exception is the `restate_schema_in_system_prompt` axis in §7, which was
 > re-measured on its own grid at v0.6.10 (`benchmarks/results/v0.6.10/restate710*/`,
 > Sonnet 4.6, 25 runs per arm) and is written up in
 > [studies/schema-restatement-tokens.md](studies/schema-restatement-tokens.md); its rows
 > carry that date. Per
 > [`benchmarks/results/RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md)
-> only one complete set is retained per release, so the v0.6.7 slices this edition replaces
-> are in git history (`git checkout <sha> -- benchmarks/results/v0.6.7/`).
+> only one complete set is retained per release, so the v0.6.8 slices this edition replaces
+> are in git history (`git checkout <sha> -- benchmarks/results/v0.6.8/`).
 >
-> **What changed in the measurement itself since the v0.6.7 edition.** Three things, all of
-> which move numbers without any product change and are called out where they matter:
-> (1) every document in the grid is now **one section** — the #726 over-splitting is fixed by
-> the shipped classification prompt — so the per-section costs and the "N lists, not one"
-> caveat of the v0.6.7 edition no longer apply; (2) the TestRunner bug that stopped the OCR
-> benchmark reference corpus from launching ([#892](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/892))
-> was hot-patched on the stack for this run, so **real-corpus accuracy is measured for the
-> first time since v0.6.0**; (3) this edition adds a **model axis** — Nova Lite, Nova Pro,
-> Sonnet 5, Sonnet 5 `:1m`, Opus 5 and OpenAI GPT-6 Astra — which no prior edition had.
+>
+> **What changed in the measurement itself since the v0.6.8 edition.** One thing, and it
+> matters for accuracy comparisons across editions: `stickler-eval` moved 0.5.0 → 1.0.0 and now
+> infers evaluation comparators **per field**, by name as well as type, so an un-annotated
+> schema no longer scores every string `FUZZY@0.85`. Accuracy figures in this edition are not
+> like-for-like with the v0.6.8 edition's, even where the underlying behaviour is identical.
+> Cost is unaffected: the harness prices the raw metering map itself with exact key matching
+> from the `pricing.yaml` named above, so the two cost-reporting fixes in this release do not
+> reach these numbers.
 
 ## Abstract
 
@@ -50,7 +70,7 @@ types and sizes** (synthetic documents with exact ground truth, plus two real la
 corpora). We quantify seven dimensions per configuration: success/failure, list
 completeness, per-row field accuracy, confidence calibration, latency, token use, and cost.
 
-Headline results at v0.6.8:
+Headline results at v0.6.9:
 
 1. **The over-splitting that shaped the v0.6.7 edition is gone, and with it most of the
    agentic cost premium's *variance*.** Every one of the 133 grid runs produced exactly one
@@ -67,12 +87,13 @@ Headline results at v0.6.8:
 3. **🚨 Simple mode's true ceiling is now visible: ~800 rows / 17 pages is a coin flip, and
    it depends on the OCR backend.** With one section per document the single-response
    limit is no longer masked. Textract TABLES + Sonnet 5 completed the 800-row document in
-   **8 of 11** draws across three suites (and 43 of 800 rows in the other three); the same
+   **8 of 11** draws across three suites at v0.6.8 and **1 of 2** at v0.6.9; the same
    document under BDA OCR, Bedrock-LLM OCR, forced tool use, or Sonnet 5 `:1m` returned
-   **43–92 of 800 rows** with status `COMPLETED`. Above 800 rows
-   simple mode **fails fast and honestly** (`Input is too long`, ~$0.40–1.06 of OCR spend,
-   under a minute), and the truncated runs now carry an `extraction_rows_below_ocr_estimate`
-   warning (#843) — they are no longer silent, but they are still `COMPLETED` (§3).
+   **43–92 of 800 rows** with status `COMPLETED`. ⚠️ **Above 800 rows v0.6.9 no longer
+   refuses.** Where v0.6.8 rejected 1,200+ rows outright with `Input is too long`, v0.6.9
+   returns 43–101 of 1,200–1,600 rows as `COMPLETED`; only 3,200 rows still refuses. The row
+   count reached is recorded in `truncation_prefix`, so it remains detectable, but the status
+   no longer tells you (§3).
 4. **Advanced mode holds recall 1.000 and cell accuracy 1.000 through 3,200 rows / 66
    pages at every model tested** — Sonnet 4.6 ($11.39), Sonnet 5 ($24.93), Opus 5 and GPT-6
    Astra ($22.5–24.0) — so above ~400 rows the choice is only about cost and wall-clock (§3, §5).
@@ -427,24 +448,36 @@ Simple vs advanced, Textract TABLES + separate confidence, one transaction list 
 control-model series is below it. `n` is the number of draws behind each simple-mode cell
 (the `scaling` suite plus three repeats of `scalingsimple`).
 
-| rows | pages | SIMPLE recall (n) | simple $ | wall | ADVANCED recall | adv $ | wall |
+| rows | pages | SIMPLE recall (n=2) | simple $ | wall | ADVANCED recall | adv $ | wall |
 |-----:|------:|------------------:|---------:|-----:|----------------:|------:|-----:|
-| 25 | 1 | 1.000 (4) | $0.060–0.067 | 30–35 s | 1.000 | $0.106 | 35 s |
-| 100 | 3 | 1.000 (4) | $0.197–0.213 | 63–144 s | 1.000 | $0.378 | 117 s |
-| 400 | 9 | 1.000 (4) | $0.716–0.727 | 280–336 s | 1.000 | $1.296 | 257 s |
-| 800 | 17 | **1.000 (4 of 4)** — but see below | $1.967–1.977 | 557–577 s | 1.000 | $2.564 | 254 s |
-| 1,200 | 25 | **FAILED** `Input is too long` (4) | $0.40 (OCR only) | 21–27 s | 1.000 | $5.224 | 312 s |
-| 1,600 | 33 | **FAILED** (4) | $0.53 | 26–30 s | 1.000 | $6.857 | 482 s |
-| 3,200 | 66 | **FAILED** (4) | $1.06 | 44–55 s | 1.000 | **$24.93** | 1,136 s |
+| 25 | 1 | 1.000, 1.000 | $0.060 | 29 s | 1.000 | $0.130 | 35 s |
+| 100 | 3 | 1.000, 1.000 | $0.197–0.198 | 62 s | 1.000 | $0.235 | 69 s |
+| 400 | 9 | 1.000, 1.000 | $0.704–0.712 | 268 s | 1.000 | $0.812 | 157 s |
+| 800 | 17 | **0.126, 1.000** — bimodal | $0.827, $1.972 | 192 s | 1.000 | $1.493 | 151 s |
+| 1,200 | 25 | **0.084, 0.036** (101 and 43 of 1,200 rows) | $1.005–1.120 | 233 s | 1.000 | $2.176 | 151 s |
+| 1,600 | 33 | **0.027, 0.058** (43 and 92 of 1,600) | $1.341–1.378 | 290 s | 1.000 | $2.925 | 257 s |
+| 3,200 | 66 | **FAILED**, FAILED | $1.056 | 51 s | 1.000 | **$5.696** | 417 s |
 
-Control model (Sonnet 4.6), one draw per size: simple 1.000 through 800 rows ($1.63 at
-800), FAILED from 1,200; advanced 1.000 throughout at $0.227 → $11.39, 59 → 807 s.
+Control model (Sonnet 4.6), one draw per size: simple 1.000 through 800 rows ($1.63 at 800),
+failing from 1,200; advanced 1.000 throughout at $0.143 → $5.004, 45 → 408 s.
 
-Per-row **cell accuracy is 1.000 in every completed run of both modes and both models** —
-at no size does either mode return a row with a wrong value. Every loss here is a *missing*
-row, and every failure is a refused request.
+Per-row **cell accuracy is 1.000 in every completed run of both modes** — at no size does
+either mode return a row with a *wrong* value. Every loss here is a missing row.
 
-### The cliff is back where the single-response limit puts it — and it is honest now
+> ⚠️ **Behaviour change at v0.6.9, and it is the one number in this section to read carefully.**
+> On v0.6.8 simple mode **refused** documents from 1,200 rows: `ExtractionInputTooLarge`, in
+> 21–55 s, in 12 of 12 draws across both models. On v0.6.9 the same cells **return
+> `COMPLETED`** carrying 43–101 of the requested 1,200–1,600 rows. The truncation is
+> *recorded* — the run carries `truncation_prefix` with the row count it stopped at, which is
+> the detection #843 added — so a dashboard or a downstream rule can still catch it. But the
+> status is success, and a consumer reading status alone now sees a completed document with
+> 3–8% of its rows. **What changed is not established**: the refusal was driven by a
+> pre-flight input-size estimate, and this release altered how requests are assembled and
+> capped, so a request that was previously rejected before it was sent now goes out and
+> truncates. No controlled probe was run to isolate it. Advanced mode is unaffected and
+> returns 1.000 at every size, so the practical guidance below does not change.
+
+### Where the cliff is, and why "COMPLETED" is not the signal to trust
 
 At v0.6.7 this table showed simple mode "complete" at 1,200 rows and recovering 0.72–0.79 at
 3,200, and the edition spent a section explaining that the completeness was an artefact:
@@ -453,12 +486,13 @@ extract, and the rows arrived as N per-section lists that a consumer had to reas
 With #726/#817 every document is one section and that scaffolding is gone. Three things
 follow, each measured here:
 
-1. **From 1,200 rows / 25 pages, simple mode fails outright, fast and cheaply** —
-   `ExtractionInputTooLarge` in 21–55 s for $0.40–1.06 of OCR spend, in 12 of 12 draws
-   across both models. The message names the estimated input (e.g. ~794,000 tokens for 66
-   pages against a 200,000 window) and the remedy. This replaces the v0.6.5 behaviour
-   (silent 0.6–3.6% recall) and the v0.6.7 behaviour (fragmentation) with a refusal, which
-   is the right outcome for a mode that cannot shard.
+1. **From 1,200 rows / 25 pages, simple mode returns a fraction of the document and calls
+   it `COMPLETED`.** 43–101 rows of 1,200–1,600, in 4 of 4 draws, for $1.00–1.38. Only
+   3,200 rows / 66 pages still refuses outright. On v0.6.8 every size from 1,200 up refused
+   with `ExtractionInputTooLarge` in 21–55 s, which was the better behaviour for a mode that
+   cannot shard: a refusal names the estimated input and the remedy, and cannot be mistaken
+   for a result. See the warning above the table — the truncation is recorded in
+   `truncation_prefix`, so it is detectable, but the run status no longer tells you.
 2. **800 rows / 17 pages is the boundary, and it is a coin flip.** The TABLES + Sonnet 5
    cell completed 800 rows in this table's 4 draws and §2's grid run, then returned **43 of
    800 in 3 of 5 repeats** of the identical cell inside the §5.2 premium study — **8 of 11
@@ -576,6 +610,42 @@ Nova 2 Lite classification and Nova Lite confidence are held at their defaults e
 they are the axis.
 
 ### 5.1 Extraction model — the full grid
+
+**Three of the seven selectable models were re-measured on v0.6.9**, on the same 19-cell ×
+7-document grid. Note the grid's documents run to **400 rows**; the 800-row and larger sizes
+where models diverge most are §3's territory, not this table's:
+
+| extraction model | runs | fails | recall | scalar acc | cell acc | cost/doc | wall/doc | % conf below 0.9 |
+|---|---|---|---|---|---|---|---|---|
+| Sonnet 4.6 (control) | 133 | **4** | 0.968 | 0.906 | 1.000 | **$0.537** | 224 s | 0.008 |
+| **Sonnet 5 (default)** | 133 | **0** | 0.961 | 0.917 | 0.999 | $0.676 | 195 s | 0.000 |
+| **GPT-6 Astra** | 133 | **0** | **1.000** | **1.000** | 0.977 | $1.786 | 197 s | 0.005 |
+
+Three things this edition's grid says that the carried-over table below does not.
+
+**Astra is the only model at ceiling on both completeness and scalar accuracy on this grid**
+— 19 of 19 cells at recall 1.000 and scalar accuracy 1.000, where Sonnet 5 is below 1.000 on
+five cells for recall and nine for scalar accuracy. This holds for documents up to 400 rows;
+at 800 rows in simple mode Astra returned an empty response in the v0.6.8 study, which this
+edition did not re-measure. It pays for that with **2.6× the cost per document**
+($1.786 vs $0.676) and is very slightly *behind* on per-row `cell_accuracy` (0.977 vs 0.999):
+it returns every row and every scalar field, and differs from ground truth on a small number
+of individual cells within rows. Which of those two accuracy measures matters is a function of
+the document — a missing row is usually worse than a wrong cell in a row you can see.
+
+**Sonnet 5 earns its position as the default on reliability rather than accuracy.** It had
+**zero failures** against the control model's four, at 13% lower wall-clock, and no confidence
+leaf below 0.9 anywhere in the grid. Its raw accuracy is within noise of Sonnet 4.6.
+
+**The control model is the cheapest way to be nearly right**, at $0.537/doc — 21% below
+Sonnet 5 — but it is the only one of the three that failed runs outright.
+
+> ⚠️ **`nova_lite`, `nova_pro`, `sonnet5_1m` and `opus5` were not measured on v0.6.9.** The
+> seven-model table below is from **v0.6.8** and is retained because it is the only measured
+> comparison of those four. Its Sonnet 4.6 / Sonnet 5 / Astra columns are superseded by the
+> table above; do not mix rows across the two.
+
+#### Carried over from v0.6.8 — the full seven-model grid
 
 | extraction model | runs | fails | recall (a failure counts 0) | cell acc (completed runs) | cost/doc | wall/doc | mean conf |
 |---|---|---|---|---|---|---|---|
@@ -1041,7 +1111,11 @@ three synthetic documents:
 **Turn it off for shard headroom, not for dollars.** The input saving is genuine but
 cheap: it is almost entirely **cache reads**, so 9,181 fewer input-side tokens is worth
 about **$0.007** — while 2,347 more output tokens cost about **$0.039**. Those two
-figures reconcile the measured extraction-cost difference (+$0.0319/doc) to the cent.
+figures reconcile the measured extraction-cost difference (+$0.0319/doc) to the cent. The
+release grid in §2b reaches the same conclusion independently, on a different corpus and a
+different edition: `restate-off` $1.548 against `restate-on` $1.523, the same direction and a
+comparable per-document size. Two grids agreeing on the sign is the reason to trust it, given
+neither reaches significance on cost alone.
 Since #775 the reclaimed tokens are real shard budget, so headroom is the reason to
 use this knob; whether it moves a shard count still depends on the document sitting
 near a boundary.
@@ -1072,29 +1146,34 @@ lowered its score on them — at 11× the assessment cost.
 
 ## Appendix A — Data & reproduction
 
-Every number in this edition is in the working tree under `benchmarks/results/v0.6.8/`:
+Every number re-measured in this edition is in the working tree under
+`benchmarks/results/v0.6.9/`. Sections marked *carried over* in the scope table at the top of
+this page cite the v0.6.8 directory instead, which is in git history.
 
-| Section | Directory | Suite / overrides |
+| Section | Directory (under `benchmarks/results/v0.6.9/`) | Suite / overrides |
 |---|---|---|
 | §2, §2b | `coresynth__extraction-model-sonnet5/` | `coresynth --set extraction_model=sonnet5` (133 runs) |
-| §2c | `core__extraction-model-sonnet5/`, `core/` | `core` at Sonnet 5 and at the control, incl. both reference corpora |
-| §2.1 | `intconf__extraction-model-sonnet5/`, `intconf/`, `advverify__extraction-model-sonnet5/` | 4 repeats each |
-| §3 | `scaling__extraction-model-sonnet5/`, `scaling/`, `scalingsimple__extraction-model-sonnet5/` | size series at both models; 3 extra simple-mode repeats |
+| §2c | `core/` | `core` at the control model, including both reference corpora (760 documents). **Sonnet 5 corpora not re-measured** |
+| §2.1, §6 | `intconf/`, `advverify__extraction-model-sonnet5/` | 4 repeats each |
+| §3 | `scaling__extraction-model-sonnet5/`, `scalingsimple__extraction-model-sonnet5/`, `scaling/` | size series at the default and the control |
 | §4 | `cost__extraction-model-sonnet5/`, `cost/` | 5 repeats × 5 cells at both models |
-| §5 | `coresynth__extraction-model-{nova-lite,nova-pro,sonnet5,sonnet5-1m,opus5,astra}/`, `astravalue/`, `astracap/`, `coresynth__classification-model-{sonnet5,haiku45}/`, `coresynth__confidence-model-{nova-2-lite,sonnet5}/` | model sweeps |
-| §7 | `enforcement-{bankstmt,kvform}/`, `forcing-{bankstmt,kvform}/`, `boundaryab/`, `multiinstance/`, `midetect/`, `sizerab/`, `sizerab__conf-batch-b8/`, `sizerab__conf-batch-b13/` | feature A/Bs |
+| §5.1 | `coresynth__extraction-model-sonnet5/`, `coresynth__extraction-model-astra/`, `core/` | the three models measured on this release. The other four are **v0.6.8 data**, in git history |
+| §5.2 | `astravalue/`, `astracap/` | 100 + 12 runs |
+| §5.3 | `coresynth__classification-model-sonnet5/` vs the default in `coresynth__extraction-model-sonnet5/` | `haiku45` **not measured** |
+| §5.4 | `coresynth__confidence-model-nova-2-lite/` vs the default | Sonnet 5 confidence **not measured** |
+| §7 | `enforcement/`, `forcing/`, `restatement/`, `splitcost/`, `advsplitcost/`, `boundaryab/`, `multiinstance/`, `sizerab/` | feature A/Bs. `sizerab` is the **committed-default arm only** — its A/B figures are v0.6.8 data |
 
-- The v0.6.7 slices this edition replaces are pruned per
+- The v0.6.8 slices this edition replaces are pruned per
   [`RETENTION.md`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/benchmarks/results/RETENTION.md);
-  restore them with `git checkout <pre-v0.6.8-audit sha> -- benchmarks/results/v0.6.7/`.
-- The `__<slug>` suffix is the `--set` override the grid ran with; `-bankstmt` / `-kvform`
-  is the document class.
+  restore them with `git checkout <pre-v0.6.9-audit sha> -- benchmarks/results/v0.6.8/`.
+- The `__<slug>` suffix is the `--set` override the grid ran with.
 - Corpus manifest + generators: `benchmarks/corpus/` (regenerable; PDFs/configs gitignored).
   Matrices + methodology: `benchmarks/matrices/`.
-- **Measured spend for this edition:** **$2,113.70 over 3,455 document runs** (33 result sets; the two `core` runs with their 760 reference documents each are $560 of it, the six premium/model grids $1,010), priced from `pricing.yaml`.
-- One stack, one day, one build: `IDPUpg067to068`, 2026-09-12 18:12–07:49 (2026-09-13) UTC,
-  published `idp-main_0.6.8.yaml`, with the TestRunner Lambda hot-patched for #892 (the
-  patch changes only how a stored configuration is inflated; no extraction path is affected).
+- **Scale of this edition:** **1,900 scored runs across 23 result sets**, of which `core`'s two
+  reference corpora are 760. Four extraction models, one classification model and one
+  confidence model in the sweep axes were **not** run — see the scope table.
+- One stack, one session: `IDP1` at v0.6.9, 2026-09-19 13:09–21:00 UTC, running the release
+  commit's build.
 
 ```bash
 source .venv/bin/activate && export PYTHONPATH=$PWD/lib/idp_common_pkg
