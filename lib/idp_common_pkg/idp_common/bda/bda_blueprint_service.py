@@ -107,7 +107,12 @@ class BdaBlueprintService:
             )
             return self.dataAutomationProjectArn
 
-        dynamodb = boto3.resource("dynamodb")
+        # self.region, not boto3's default. This reads the ConfigurationTable
+        # DIRECTLY rather than through ConfigurationManager, so it needs the region
+        # threaded for the same reason: the table name is not region-qualified, and
+        # `idp-cli config-sync-bda --region` resolved that name in the requested
+        # region.
+        dynamodb = boto3.resource("dynamodb", region_name=self.region)
         table = dynamodb.Table(table_name)
 
         # Look up stored project ARN for this version
@@ -2198,7 +2203,10 @@ class BdaBlueprintService:
             configuration_table_name = os.environ.get("CONFIGURATION_TABLE_NAME")
             if configuration_table_name:
                 try:
-                    dynamodb = boto3.resource("dynamodb")
+                    # See get_or_create_project_for_version: a direct read of the
+                    # ConfigurationTable needs the region as much as one through
+                    # ConfigurationManager does.
+                    dynamodb = boto3.resource("dynamodb", region_name=self.region)
                     table = dynamodb.Table(configuration_table_name)
                     # Find and delete BdaProject# entries that reference this ARN.
                     # Must paginate: DynamoDB bounds the 1MB page by items

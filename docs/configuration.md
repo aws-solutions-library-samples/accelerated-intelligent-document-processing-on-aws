@@ -251,6 +251,15 @@ A model removed from the picklists keeps its `pricing.yaml` entry, so cost
 reports covering documents processed while it was selectable still resolve the
 right rate.
 
+**`config-validate` catches it before you deploy.** `idp-cli config-validate` and
+`idp-cli config-upload` (unless you pass `--no-validate`) reject a configuration
+that pins an end-of-life model, naming the date and the command that confirms it,
+rather than letting the failure appear part-way through a document. Loading a
+stored configuration that still names one is unaffected — the model fields are
+plain strings and nothing revalidates a stored config — so an existing deployment
+does not break on upgrade; it keeps failing at inference exactly as it already
+was, until you repoint the stage.
+
 **Upgrading a stack that selected a removed model.** `KnowledgeBaseModelId` is a
 CloudFormation parameter, so if your stack's current value is a model that this
 release removed from `AllowedValues`, the stack update is rejected with

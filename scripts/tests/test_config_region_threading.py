@@ -52,11 +52,48 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # The two region-bearing entry points into idp_common's configuration layer.
 CONFIG_CTORS = {"ConfigurationManager", "ConfigurationReader"}
 
+
+def _local_aliases(tree: ast.AST) -> set[str]:
+    """Names in this module that refer to one of CONFIG_CTORS.
+
+    ``from idp_common.config import ConfigurationManager as CM`` then ``CM(...)``
+    is a construction this gate must see; matching only the canonical names made it
+    invisible.
+    """
+    aliases = set(CONFIG_CTORS)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name.split(".")[-1] in CONFIG_CTORS and alias.asname:
+                    aliases.add(alias.asname)
+    return aliases
+
+
+def _supplies_a_region(node: ast.Call) -> bool:
+    """True if this call really hands over a region.
+
+    ``region=None`` spelled as a literal is rejected: it is syntactically a region
+    argument and behaviourally the exact defect this gate exists to prevent — the
+    ambient region is used. It is also the most plausible way in, someone copying
+    a Lambda-side call where ``None`` is correct. ``region=<variable>`` cannot be
+    judged statically and is accepted; the literal can be, so it is.
+
+    ``**kwargs`` forwarding is accepted too (``kw.arg is None``), because the region
+    may be inside it and refusing would flag correct code.
+    """
+    for kw in node.keywords:
+        if kw.arg is None:  # **kwargs — may carry the region
+            return True
+        if kw.arg == "region":
+            return not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+    return False
+
 # Directories whose code is deployed as a Lambda, where the runtime always sets
 # AWS_REGION and `region=None` is the correct value. Structural on purpose: a new
 # handler under one of these is covered without anyone editing this file.
 LAMBDA_PREFIXES = (
     "src/lambda/",
+    "patterns/unified/src/",
     "feature-platform/",
 )
 # `nested/<stack>/src/lambda/...` — matched by substring because the stack name
@@ -108,6 +145,7 @@ def _construction_sites() -> list[tuple[str, int, str, bool]]:
             tree = ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
+        aliases = _local_aliases(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -117,9 +155,12 @@ def _construction_sites() -> list[tuple[str, int, str, bool]]:
                 if isinstance(func, ast.Name)
                 else (func.attr if isinstance(func, ast.Attribute) else None)
             )
+            if name in aliases and name not in CONFIG_CTORS:
+                name = "ConfigurationManager"  # normalise an alias for reporting
             if name in CONFIG_CTORS:
-                passes_region = any(kw.arg == "region" for kw in node.keywords)
-                sites.append((rel, node.lineno, name, passes_region))
+                sites.append(
+                    (rel, node.lineno, name, _supplies_a_region(node))
+                )
     return sites
 
 
@@ -291,4 +332,130 @@ def test_bootstrap_tools_allowance_premise_holds():
         "these CLI/SDK modules reference the Quick Start agent tools, so those tools "
         "are now reachable from a command that took --region and must thread it: "
         f"{importers}"
+    )
+
+
+@pytest.mark.unit
+def test_region_none_spelled_literally_does_not_satisfy_the_gate():
+    """`region=None` is syntactically a region and behaviourally the defect.
+
+    It is the most plausible evasion: copying a Lambda-side construction, where
+    `None` is correct, into a CLI path where it is not. A `region=<variable>` cannot
+    be judged statically and is accepted; the literal can be.
+    """
+    tree = ast.parse(
+        "ConfigurationManager(table_name=t, region=None)\n"
+        "ConfigurationManager(table_name=t, region=r)\n"
+        "ConfigurationManager(table_name=t)\n"
+        "ConfigurationManager(table_name=t, **kw)\n"
+    )
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    assert [_supplies_a_region(c) for c in calls] == [False, True, False, True]
+
+
+@pytest.mark.unit
+def test_an_aliased_import_is_still_seen():
+    """`from idp_common.config import ConfigurationManager as CM` then `CM(...)`.
+
+    Matching only the canonical names made an aliased construction invisible, which
+    is a one-line change away for anyone shortening an import.
+    """
+    tree = ast.parse(
+        "from idp_common.config import ConfigurationManager as CM\n"
+        "CM(table_name=t)\n"
+    )
+    aliases = _local_aliases(tree)
+    assert "CM" in aliases and "ConfigurationManager" in aliases
+    assert "Unrelated" not in _local_aliases(ast.parse("import os as Unrelated\n"))
+
+
+@pytest.mark.unit
+def test_lambda_prefixes_cover_where_the_lambdas_actually_live():
+    """The docstring claims the exemption is structural, "so a new handler is
+    covered the moment it is added". That is only true if the prefixes name every
+    directory Lambdas are deployed from — `patterns/unified/src/` holds most of
+    this solution's, and was omitted."""
+    root = REPO_ROOT
+    for prefix in LAMBDA_PREFIXES:
+        assert (root / prefix).is_dir(), (
+            f"{prefix} is claimed as a Lambda directory but does not exist — a "
+            "stale prefix silently exempts nothing"
+        )
+    assert (root / "patterns/unified/src").is_dir()
+    tracked = set(_tracked_python())
+    assert any(
+        f.startswith("patterns/unified/src/") for f in tracked
+    ), "no tracked Python under patterns/unified/src/, so this prefix is untested"
+
+
+# ---------------------------------------------------------------------------
+# The other shape: a direct boto3 client onto the configuration table
+# ---------------------------------------------------------------------------
+
+
+def _direct_config_table_clients() -> list[tuple[str, int, bool]]:
+    """Regionless DynamoDB clients in files that read CONFIGURATION_TABLE_NAME.
+
+    `ConfigurationManager` is not the only way to reach the configuration table.
+    `BdaBlueprintService` builds `boto3.resource("dynamodb")` directly in two
+    places to read and clean up its `BdaProject#` rows, which the constructor-based
+    check above cannot see — and both were region-free on the
+    `idp-cli config-sync-bda --region` path.
+
+    The rule is narrow on purpose: a DynamoDB client, in a file that also names
+    `CONFIGURATION_TABLE_NAME`. That pairing is what makes it a configuration-table
+    access rather than any other table, and it is derived from the file rather than
+    from a list of known offenders.
+    """
+    out: list[tuple[str, int, bool]] = []
+    for rel in _tracked_python():
+        text = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="ignore")
+        if "CONFIGURATION_TABLE_NAME" not in text:
+            continue
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr in ("resource", "client")
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "boto3"
+            ):
+                continue
+            first = node.args[0] if node.args else None
+            if not (
+                isinstance(first, ast.Constant) and first.value == "dynamodb"
+            ):
+                continue
+            has_region = any(kw.arg == "region_name" for kw in node.keywords)
+            out.append((rel, node.lineno, has_region))
+    return out
+
+
+@pytest.mark.unit
+def test_direct_config_table_client_discovery_is_not_vacuous():
+    sites = _direct_config_table_clients()
+    assert sites, (
+        "no direct boto3 DynamoDB client found in any file naming "
+        "CONFIGURATION_TABLE_NAME — the check below proves nothing"
+    )
+
+
+@pytest.mark.unit
+def test_direct_config_table_clients_outside_lambda_pass_a_region():
+    offenders = [
+        f"{rel}:{lineno}"
+        for rel, lineno, has_region in _direct_config_table_clients()
+        if not has_region and not _is_lambda_path(rel)
+    ]
+    assert not offenders, (
+        "these build a DynamoDB client with no region in a file that reads the "
+        "configuration table, while running outside Lambda — so the table name was "
+        "resolved in the requested region and is then read in whatever region the "
+        f"ambient credentials pick: {offenders}"
     )

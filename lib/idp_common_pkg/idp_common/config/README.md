@@ -73,6 +73,7 @@ if not result["valid"]:
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
+| `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
 | `class_names.py` | Canonical rules for document class ids — `is_valid_class_name()` / `sanitize_class_name()`. See [Class ids](#class-ids). |
 | `class_settings.py` | `carry_forward_authored_settings()` — preserve a class's hand-authored class-level `x-aws-idp-*` keys when a generator (Discovery, BDA blueprint optimization) regenerates that class. See [Regenerating a class](#regenerating-a-class). |
@@ -387,6 +388,41 @@ library-internal exceptions are named there with a premise the file asserts.
 The precedence, stated once: an explicit `--region` (or `region=`) wins;
 otherwise boto3's own chain applies. No hardcoded region is substituted at any
 point in this layer.
+
+## Retired models
+
+`retired_models.py` holds every Bedrock model past its AWS **end-of-life** date —
+inaccessible in every region, every call returning
+`ResourceNotFoundException: This model version has reached the end of its life`.
+That is distinct from `LEGACY`, where existing users can still invoke the model and
+it correctly stays selectable; only the first class is listed.
+
+It lives in shipped code because three consumers need the same answer:
+`validate_config` (so `idp-cli config-validate` and `config-upload --validate`
+reject a configuration that pins a dead model before a document fails two stages
+in), `scripts/tests/test_model_surface_consistency.py`, and the #708 gate
+`scripts/sdlc/tests/test_retired_models_not_offered.py`.
+
+**Why one registry and not two.** There were two, and they encoded contradictory
+policies. The #708 gate required a retired model to be *absent* from
+`pricing.yaml`, because `validate_config` derived its valid-model set from that
+file and the absence is what made validation fail. But a pricing entry is read
+retrospectively — a cost report over documents processed while the model was still
+selectable resolves its rate by model id, so deleting the row re-prices historical
+runs at zero. Both goals are legitimate and neither can be met by the presence or
+absence of a pricing row. So validation now rejects a model because it is *known to
+be retired*, the pricing row stays, and the fragile coupling to an unrelated file
+is gone.
+
+`is_retired()` matches any region or geo variant: end of life is a property of the
+**foundation model**, so when `amazon.nova-premier-v1:0` was withdrawn the `us.`,
+`eu.` and `global.` profiles routing to it died with it, and the bare form is the
+one GovCloud uses.
+
+`was_offered` decides one thing only — whether a `pricing.yaml` row must be
+retained. A model this solution never made selectable cannot appear in anyone's
+cost report, so it needs no rate, and inventing one would breach the "never invent
+model facts" rule in `.claude/skills/add-model.md`.
 
 ## Adding or changing a model
 

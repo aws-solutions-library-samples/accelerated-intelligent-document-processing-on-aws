@@ -6,7 +6,10 @@
 Which model a deployment can run is decided across SEVEN places that nothing
 compared:
 
-1. the ``AllowedValues`` of a CloudFormation model parameter;
+1. the ``AllowedValues`` of a CloudFormation model parameter — and its
+   ``Default:``, which is a model a customer receives without choosing anything,
+   and which four templates set on a parameter carrying no ``AllowedValues`` at
+   all;
 2. the ``enum`` of every ``model`` / ``model_id`` field in the ConfigSchema that
    drives the configuration UI's picklists;
 3. ``config_library/pricing.yaml``, which is how a cost report resolves a rate;
@@ -40,20 +43,35 @@ Three failure modes follow, all of which had shipped:
 Everything here is DERIVED from the files. The expected model set is never
 restated: templates are discovered by content over ``git ls-files``, enums are
 read out of them, pricing and limits out of their YAML, presets out of
-``config_library/``, and defaults by **instantiating** ``IDPConfig`` and walking
-the resolved tree rather than pattern-matching declarations — because
-``default_factory`` overrides a nested class's own ``default=``, so a regex over
-``default=`` polices the overridden value and misses the effective one.
+``config_library/``, and defaults from the config models two ways at once —
+because neither way alone is enough. Instantiating ``IDPConfig`` and walking the
+resolved tree is needed since ``default_factory`` overrides a nested class's own
+``default=``, so a regex over ``default=`` polices the overridden value and misses
+the effective one. But the instance cannot reach a field behind
+``Optional[X] = None``, which is where four model defaults live — including the two
+this change found an end-of-life model on. So the declared field defaults of every
+BaseModel are collected as well, and the two results unioned.
 
-The one irreducibly hand-maintained fact is ``EOL_MODELS``: whether a model is
-dead is not knowable from this tree and CI is offline. Each entry carries the date
-and the exact command that establishes it, and ``LEGACY_EXAMPLES`` gives the
-deprecated-but-usable models an expiry date so a hard-coded lifecycle fact cannot
-rot silently.
+The one irreducibly hand-maintained fact is which models are dead, and it lives in
+**shipped code** (``idp_common.config.retired_models``) rather than here, so that
+``validate_config`` and the #708 gate read the same registry instead of keeping
+their own copies — which had already produced two lists encoding contradictory
+policies. ``LEGACY_EXAMPLES`` below gives the deprecated-but-still-usable models an
+expiry date so a hard-coded lifecycle fact cannot rot silently.
 
 Reading only ``git ls-files`` matters: walking the filesystem picks up
 ``.aws-sam`` build output and other worktrees, producing findings CI cannot
-reproduce.
+reproduce. ``code_defaults`` asserts the same thing about the ``idp_common`` it
+imports, because that package is an editable install: without ``PYTHONPATH``
+pointing at this checkout it would read defaults from one tree and file surfaces
+from another.
+
+**Two known gaps, latent today.** ``_walk_model_values`` recurses into a list but
+does not inspect a plain string *inside* one, so a model id in a list of strings
+(rather than as a mapping value) is not collected. ``_walk_enums`` reads parsed
+YAML, so an ``enum`` embedded inside a JSON **string** is invisible to it. No
+tracked file has either shape, and both are recorded rather than fixed so that a
+future change introducing one is a known risk rather than a surprise.
 """
 
 from __future__ import annotations
@@ -107,50 +125,26 @@ MODEL_ID = re.compile(
 NON_MODEL_CHOICES = {"LambdaHook"}
 
 # ---------------------------------------------------------------------------
-# End-of-life models. NOT derivable from this tree and CI has no network, so this
-# is the one hand-maintained list here. Each entry carries the EOL date and the
-# command that establishes it; re-run it to re-verify. An EOL model is completely
-# inaccessible in every region (AWS's model-lifecycle policy), which is why it
-# must not be selectable at all — unlike a LEGACY model, which existing users can
-# still invoke and which this gate deliberately does NOT flag.
+# End-of-life models come from SHIPPED CODE, not from a copy kept here.
 #
-# `eol` is a real date so a future check can act on it; `verify` is the exact
-# command. All three were confirmed on 2026-09-20 against the live API.
+# `idp_common.config.retired_models` is the single registry. It has to live in
+# product code because `validate_config` needs the same answer — `idp-cli
+# config-validate` rejects a configuration that pins a dead model — and because
+# this repository previously had TWO registries with contradictory policies: the
+# #708 gate (`scripts/sdlc/tests/test_retired_models_not_offered.py`) required a
+# retired model to be ABSENT from pricing.yaml, since that absence is what made
+# validation fail, while this gate requires the pricing row to be RETAINED so a
+# historical cost report still resolves its rate. Both goals are legitimate and
+# neither can be met by the presence or absence of a pricing row, so validation
+# now rejects on retirement itself and the row stays. See that module's docstring.
+#
+# Whether a model is dead is not knowable from this tree and CI is offline, so the
+# registry is hand-maintained — but it is hand-maintained in ONE place, with each
+# entry carrying its date and the exact command that establishes it.
 # ---------------------------------------------------------------------------
-EOL_MODELS = {
-    "us.amazon.nova-premier-v1:0": {
-        "was_offered": True,
-        "eol": "2026-09-14",
-        "verify": (
-            "aws bedrock get-foundation-model --region us-east-1 "
-            "--model-identifier amazon.nova-premier-v1:0"
-        ),
-        "note": "date from the Bedrock model card for Nova Premier",
-    },
-    "us.anthropic.claude-3-5-sonnet-20240620-v1:0": {
-        "was_offered": True,
-        "eol": "2026-09-20",
-        "verify": (
-            "aws bedrock get-foundation-model --region us-east-1 "
-            "--model-identifier anthropic.claude-3-5-sonnet-20240620-v1:0"
-        ),
-        "note": (
-            "past EOL, so AWS no longer publishes a model card; the date recorded "
-            "is when this was confirmed, not necessarily the EOL date itself"
-        ),
-    },
-    # Never selectable here, and recorded so it cannot be re-added. `docs/
-    # configuration.md` cites it as an end-of-life example, which this keeps honest.
-    "us.anthropic.claude-3-5-haiku-20241022-v1:0": {
-        "was_offered": False,
-        "eol": "2026-09-20",
-        "verify": (
-            "aws bedrock get-foundation-model --region us-east-1 "
-            "--model-identifier anthropic.claude-3-5-haiku-20241022-v1:0"
-        ),
-        "note": "past EOL; confirmation date, not the EOL date",
-    },
-}
+_retired = pytest.importorskip("idp_common.config.retired_models")
+EOL_MODELS = _retired.RETIRED_MODELS
+_base_model = _retired.base_model_id
 
 # Models this repo offers that AWS has moved to LEGACY: deprecated with a known
 # EOL date, but still invocable by existing users, so they correctly stay
@@ -221,23 +215,7 @@ NON_SELECTABLE_DEFAULTS = {
 }
 
 
-_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|global|us-gov)\.")
-
-
-def _base_model(model_id: str) -> str:
-    """Strip any region/geo prefix, leaving the foundation-model id.
-
-    End-of-life is a property of the FOUNDATION MODEL, not of an inference
-    profile: when `amazon.nova-premier-v1:0` was withdrawn, `us.`, `eu.` and
-    `global.` profiles routing to it all died with it, and the bare id is the form
-    GovCloud uses. Comparing EOL by exact string therefore misses every variant
-    except the one spelled in EOL_MODELS — a bare `amazon.nova-premier-v1:0`
-    appended to an enum was caught only incidentally, by the pricing invariant,
-    and would have passed entirely had someone added a pricing row with it.
-    """
-    return _REGION_PREFIX.sub("", model_id)
-
-
+#: base model id -> listed id, so any regional variant of a dead model matches.
 EOL_BASE_MODELS = {_base_model(m): m for m in EOL_MODELS}
 
 
@@ -289,13 +267,34 @@ def _tracked_templates() -> list[str]:
 
 
 def _walk_enums(node: Any, path: str, acc: dict[str, set[str]]) -> None:
-    """Collect every model-shaped string in an `enum` or `AllowedValues` list."""
+    """Collect every model-shaped string a template OFFERS.
+
+    Two shapes, not one:
+
+    * an ``enum`` / ``AllowedValues`` list — a constrained choice;
+    * a ``Default:`` on a CloudFormation ``Parameter`` — which a customer
+      **receives without choosing anything**. A parameter with no
+      ``AllowedValues`` is completely unconstrained, so a dead model there is
+      exactly the class this file's docstring calls "worse than a picklist entry",
+      and four tracked templates ship a model id in that shape today
+      (``GeneratorModelId``, ``BedrockModelId``, two ``TargetModelId``).
+    """
     if isinstance(node, dict):
         for key, value in node.items():
             if key in ("enum", "AllowedValues") and isinstance(value, list):
                 for item in value:
                     if isinstance(item, str) and MODEL_ID.match(item):
                         acc.setdefault(item, set()).add(f"{path}.{key}")
+            # A `Default:` is only a model offering when it sits on a Parameter;
+            # `Default` appears elsewhere in a ConfigSchema as a field default,
+            # which the code-defaults surface covers instead.
+            if (
+                key == "Default"
+                and isinstance(value, str)
+                and MODEL_ID.match(value)
+                and ".Parameters." in f"{path}.{key}"
+            ):
+                acc.setdefault(value, set()).add(f"{path}.{key}")
             _walk_enums(value, f"{path}.{key}", acc)
     elif isinstance(node, list):
         for item in node:
@@ -354,27 +353,101 @@ def _walk_model_values(node: Any, path: str, acc: dict[str, set[str]]) -> None:
             _walk_model_values(item, f"{path}[{i}]", acc)
 
 
+def _declared_field_defaults(models_module: Any, acc: dict[str, set[str]]) -> None:
+    """Every model-shaped field default declared by any BaseModel in models.py.
+
+    The second of two passes, and it exists because the first one alone was a
+    coverage REGRESSION. Walking the instantiated ``IDPConfig()`` sees only fields
+    present in the resolved instance, and ``RuleValidationConfig`` declares four
+    sub-configs as ``Optional[X] = None`` — so
+    ``IDPConfig().rule_validation.fact_extraction`` is ``None`` and the walk never
+    descends. The four fields it could not reach were
+    ``FactExtractionConfig.model``, ``RuleValidationOrchestratorConfig.model``,
+    ``Z3RuleTranslatorConfig.model`` and ``Z3ValueExtractionConfig.model`` — the
+    first two being exactly where this change found its second end-of-life model.
+    The default is live, not theoretical::
+
+        IDPConfig(rule_validation={"enabled": True, "fact_extraction": {}}) \\
+            .rule_validation.fact_extraction.model
+
+    The regex this replaced did catch those, because ``re.findall`` scans module
+    text irrespective of reachability. So the rewrite gained ``default_factory``
+    coverage and lost reachability-independent coverage, with the new blind spot
+    in a different place from the old one. Both passes are kept and unioned:
+    reachability-independent from the class declarations, factory-aware from the
+    instance.
+    """
+    import inspect as _inspect
+
+    import pydantic
+
+    for name, obj in vars(models_module).items():
+        if not (
+            _inspect.isclass(obj)
+            and issubclass(obj, pydantic.BaseModel)
+            and obj is not pydantic.BaseModel
+        ):
+            continue
+        # Only classes DEFINED here, not ones imported into the namespace.
+        if getattr(obj, "__module__", None) != models_module.__name__:
+            continue
+        for field_name, field in obj.model_fields.items():
+            # A pydantic v2 default_factory may take a validated-data argument, so
+            # calling it zero-arg can raise. A factory we cannot evaluate simply
+            # yields nothing here — the instantiated-tree pass covers the reachable
+            # ones, and this pass exists for the declared `default=` values behind
+            # Optional sub-configs.
+            produced = None
+            if field.default_factory is not None:
+                try:
+                    produced = field.default_factory()  # pyright: ignore[reportCallIssue]
+                except TypeError:
+                    produced = None
+            for value in (field.default, produced):
+                if isinstance(value, str) and MODEL_ID.match(value):
+                    acc.setdefault(value, set()).add(f"{name}.{field_name}")
+                elif isinstance(value, pydantic.BaseModel):
+                    # A factory returning a sub-model, e.g.
+                    # `default_factory=lambda: SummarizationConfig(model=…)`.
+                    _walk_model_values(
+                        value.model_dump(mode="python"), f"{name}.{field_name}", acc
+                    )
+
+
 @pytest.fixture(scope="module")
 def code_defaults() -> dict[str, set[str]]:
-    """Every model id an EFFECTIVE default resolves to, by instantiating IDPConfig.
+    """Every model id a default resolves to, from BOTH directions.
 
-    Instantiated, not pattern-matched. A regex over ``default="…"`` sees only the
-    simple case and misses ``default_factory=lambda: X(model="…")`` — and for
-    ``IDPConfig`` the ``default_factory`` is what GOVERNS, overriding the nested
-    class's own ``default=``. So the regex covered the overridden default and
-    missed the effective one: reverting only the ``default_factory`` to an
-    end-of-life model left this file green while
-    ``IDPConfig().summarization.model`` returned it, which is what a stack runs.
+    1. The **instantiated** ``IDPConfig()`` tree, which is what a stack actually
+       reads. A regex over ``default="…"`` misses
+       ``default_factory=lambda: X(model="…")``, and for ``IDPConfig`` the factory
+       GOVERNS, overriding the nested class's own ``default=``. Reverting only the
+       factory to an end-of-life model left a regex-based check green while
+       ``IDPConfig().summarization.model`` returned it.
+    2. Every **declared** field default on every BaseModel in the module, which
+       does not depend on a field being reachable from a default instance. See
+       ``_declared_field_defaults`` — four model fields live behind
+       ``Optional[X] = None`` and are invisible to (1).
 
-    Walking the instantiated tree removes that whole class of blind spot: whatever
-    Pydantic actually resolves is what gets checked, regardless of how it was
-    declared.
+    Neither pass alone is sufficient and their blind spots are in different places,
+    so both run and the results are unioned.
     """
     models = pytest.importorskip("idp_common.config.models")
-    acc: dict[str, set[str]] = {}
-    _walk_model_values(
-        models.IDPConfig().model_dump(mode="python"), "IDPConfig()", acc
+    # Same provenance guard as the SDK gate: idp_common is an editable install, so
+    # without PYTHONPATH pointing at this checkout the defaults could be read from
+    # a DIFFERENT tree than the file surfaces above — green for a fix that is not
+    # in the code under test.
+    module_path = Path(models.__file__).resolve()
+    assert module_path.is_relative_to(REPO_ROOT), (
+        f"idp_common.config.models resolved to {module_path}, outside the checkout "
+        f"under test ({REPO_ROOT}). Set PYTHONPATH to this checkout's "
+        "lib/idp_common_pkg — otherwise this fixture and the file-based fixtures "
+        "above describe two different trees."
     )
+
+    acc: dict[str, set[str]] = {}
+    _walk_model_values(models.IDPConfig().model_dump(mode="python"), "IDPConfig()", acc)
+    _declared_field_defaults(models, acc)
     return {k: v for k, v in acc.items() if k not in NON_MODEL_CHOICES}
 
 
@@ -445,13 +518,21 @@ def test_bare_provider_ids_are_recognised():
         assert MODEL_ID.match(bare), f"{bare} is a real id this gate must see"
     for prefixed in ("us.amazon.nova-pro-v1:0", "us-gov.anthropic.claude-sonnet-4-6"):
         assert MODEL_ID.match(prefixed), prefixed
-    # Still anchored: prose, ARNs and bare words are not ids.
+    # Still anchored: prose, ARNs and bare words are not ids. `0.7` and `v1.0` are
+    # the two shapes the prefix-optional widening actually created — a `top_p`
+    # default and a version string, both of which matched until the provider was
+    # required to start with a letter and the model segment to contain one.
     for not_an_id in (
         "LambdaHook",
         "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
         "a model id",
         "enabled",
         "us-east-1",
+        "0.7",
+        "1.0",
+        "0.95",
+        "2.5",
+        "v1.0",
     ):
         assert not MODEL_ID.match(not_an_id), f"{not_an_id} must not match"
 
@@ -655,8 +736,10 @@ def test_no_eol_model_is_a_code_default(code_defaults):
         f"{CONFIG_MODELS} resolves a default model field to end-of-life model(s) "
         f"{json.dumps(offenders, indent=2, sort_keys=True)}. A default is worse "
         "than a picklist entry: a stored config that omits the field gets it "
-        "without anyone choosing it. The paths are into the instantiated "
-        "IDPConfig(), so they name the field a stack actually reads."
+        "without anyone choosing it. An `IDPConfig().…` path names the field a "
+        "default instance already resolves; a `Class.field` path names a declared "
+        "default behind an Optional sub-config, which a config supplying that "
+        "sub-config resolves."
     )
 
 
@@ -925,3 +1008,146 @@ def test_eol_matching_is_prefix_insensitive():
         "global.amazon.nova-premier-v1:0",
     ):
         assert _base_model(variant) in EOL_BASE_MODELS, variant
+
+
+@pytest.mark.unit
+def test_every_model_bearing_config_class_is_covered(code_defaults):
+    """Coverage of the defaults walk, asserted rather than assumed.
+
+    Fifteen classes in ``models.py`` declare a model-shaped field default. The
+    instantiated-tree pass alone reaches eleven: ``RuleValidationConfig`` declares
+    four sub-configs as ``Optional[X] = None``, so a default instance has ``None``
+    there and the walk cannot descend. Those four —
+    ``FactExtractionConfig.model``, ``RuleValidationOrchestratorConfig.model``,
+    ``Z3RuleTranslatorConfig.model`` and ``Z3ValueExtractionConfig.model`` — are
+    where this change found its second end-of-life model, so a check that cannot
+    see them is no check at all.
+
+    This asserts the union covers every one, by comparing against the classes
+    discovered from the module rather than against a list written here.
+    """
+    import inspect as _inspect
+
+    import pydantic
+
+    models = pytest.importorskip("idp_common.config.models")
+
+    expected: set[str] = set()
+    for name, obj in vars(models).items():
+        if not (
+            _inspect.isclass(obj)
+            and issubclass(obj, pydantic.BaseModel)
+            and obj is not pydantic.BaseModel
+            and getattr(obj, "__module__", None) == models.__name__
+        ):
+            continue
+        for field_name, field in obj.model_fields.items():
+            if isinstance(field.default, str) and MODEL_ID.match(field.default):
+                expected.add(f"{name}.{field_name}")
+
+    assert len(expected) >= 15, (
+        f"only {len(expected)} model-bearing field defaults discovered; the class "
+        "walk has stopped finding them and this test is vacuous"
+    )
+
+    covered = {p for paths in code_defaults.values() for p in paths}
+    missing = sorted(expected - covered)
+    assert not missing, (
+        "these declared model defaults are not covered by the defaults walk, so an "
+        f"end-of-life model placed on one would be invisible: {missing}"
+    )
+
+    # The specific four the instantiated pass cannot reach, named so a future
+    # simplification back to one pass fails loudly instead of quietly regressing.
+    for behind_optional in (
+        "FactExtractionConfig.model",
+        "RuleValidationOrchestratorConfig.model",
+        "Z3RuleTranslatorConfig.model",
+        "Z3ValueExtractionConfig.model",
+    ):
+        assert behind_optional in covered, (
+            f"{behind_optional} sits behind an Optional[...] = None sub-config, so "
+            "the instantiated-tree pass cannot see it. The declared-defaults pass "
+            "is what covers it — do not drop one of the two passes."
+        )
+
+
+@pytest.mark.unit
+def test_the_optional_subconfigs_really_are_unreachable_from_a_default_instance():
+    """The premise behind keeping two passes.
+
+    If these ever stop defaulting to ``None``, the instantiated pass reaches them
+    and the second pass becomes belt-and-braces rather than load-bearing — worth
+    knowing, and worth failing on so the comment above stops being wrong.
+    """
+    models = pytest.importorskip("idp_common.config.models")
+    rv = models.IDPConfig().rule_validation
+    for field in (
+        "fact_extraction",
+        "rule_validation_orchestrator",
+        "z3_rule_translator",
+        "z3_value_extraction",
+    ):
+        assert getattr(rv, field) is None, (
+            f"rule_validation.{field} is no longer None by default, so the "
+            "instantiated-tree pass now reaches it. Update the reasoning in "
+            "_declared_field_defaults rather than leaving it stale."
+        )
+    # …and the default they hide is genuinely live once the sub-config is supplied.
+    supplied = models.IDPConfig(
+        rule_validation={"enabled": True, "fact_extraction": {}}
+    ).rule_validation.fact_extraction
+    assert supplied is not None and MODEL_ID.match(supplied.model), supplied
+
+
+@pytest.mark.unit
+def test_parameter_defaults_are_actually_collected(selectable):
+    """Not vacuous: a CloudFormation `Parameter` `Default:` is a real surface here.
+
+    An unconstrained parameter default is a model a customer receives without
+    choosing anything, and six tracked parameters carry one. If this ever collects
+    nothing, an end-of-life model placed on one becomes invisible.
+    """
+    default_paths = sorted(
+        {p for paths in selectable.values() for p in paths if p.endswith(".Default")}
+    )
+    assert len(default_paths) >= 5, (
+        f"only {len(default_paths)} parameter-default paths collected: {default_paths}"
+    )
+    # A Default is only an offering on a Parameter; the ConfigSchema's field-level
+    # `Default`s are the code-defaults surface's business, not this one.
+    for path in default_paths:
+        assert ".Parameters." in path, path
+
+
+@pytest.mark.unit
+def test_the_retired_model_registry_is_shared_with_the_other_eol_gate():
+    """One registry, read by both gates, so they cannot drift.
+
+    ``scripts/sdlc/tests/test_retired_models_not_offered.py`` (the #708 gate) kept
+    its own ``RETIRED_MODEL_IDS`` and covers two surfaces this file does not — the
+    Converse cachePoint allowlist and the UI's SchemaInspector list. Two hand-kept
+    lists of the same fact had already diverged: a newly retired model was in one
+    and not the other, and neither referenced the other. Both now derive from
+    ``idp_common.config.retired_models``, and this asserts the #708 gate really does
+    rather than having been re-hardcoded.
+    """
+    other = (
+        REPO_ROOT / "scripts/sdlc/tests/test_retired_models_not_offered.py"
+    ).read_text(encoding="utf-8")
+    assert "idp_common.config.retired_models" in other, (
+        "the #708 gate no longer derives its retired-model list from the shared "
+        "registry, so the two gates can disagree about which models are dead"
+    )
+    assert "_registry.RETIRED_MODELS.items()" in other, (
+        "the #708 gate's list is no longer built from the shared registry's entries"
+    )
+    # And the registry the product code enforces is the one this file uses.
+    validate_src = (
+        REPO_ROOT / "lib/idp_common_pkg/idp_common/config/merge_utils.py"
+    ).read_text(encoding="utf-8")
+    assert "retirement_of" in validate_src, (
+        "validate_config no longer consults the retired-model registry, so "
+        "`idp-cli config-validate` would accept a configuration pinning a dead "
+        "model — which is what #708 asked it not to do"
+    )
