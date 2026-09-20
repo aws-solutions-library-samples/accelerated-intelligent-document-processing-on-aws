@@ -92,6 +92,17 @@ _ESTIMATED_MODEL_CALL_SECONDS = 60.0
 # document-level alarm — 5% is the point where a reader should stop trusting the
 # confidence surface as a whole rather than a few rows in it.
 #
+# What the fraction does to a SHORT list is arithmetic, and #997 is about it: a
+# single unscored row is a shortfall of 1/N, so one unscored row fires the warning
+# for any section totalling ``int(1 / _COVERAGE_SHORTFALL_WARNING_FRACTION)`` rows or
+# fewer — 20 at the value below. The absolute floor further down bounds that class
+# for the ERROR rung only. ``confidence_coverage`` exists so the rate at which that
+# actually happens can be recorded rather than argued about; what the committed
+# benchmark artifacts already show, and the three reasons they cannot settle the
+# nested short-list case, are written up under "Coverage: measured and unobserved"
+# in this package's README. The rungs stay where they are until a multi-record run
+# measures them, because the available proxy cannot see the shape in question.
+#
 # Why 25% for error severity: at a quarter of the rows unscored the surface is no
 # longer a usable sample of the document — the #901 run was ~76% unscored. Below
 # that it is a warning: coverage is degraded but the scored majority is still
@@ -481,13 +492,19 @@ def _row_confidence_missing(row_assess: Any) -> bool:
     inner list was skipped entirely by the ``isinstance(v, dict)`` filter, so a
     row consisting only of scalars-plus-a-list could not be judged at all.
 
-    Measured live on a 3-record pay statement whose rows carry an ``Employee``
-    group and an ``Earnings`` list: every leaf came back at 0.99–1.0 confidence
-    with OCR geometry, ``truncated_calls: 0`` — and the section still reported
-    ``assessment_incomplete`` (**error**, rendering it Incomplete in the UI) for
-    all 3 rows after burning a `claude-sonnet-5:1m` escalation call that
-    recovered 0, because a stronger model reproduces the identical shape. The
-    ladder had no way out.
+    Under that one-level rule, measured live on a 3-record pay statement whose
+    rows carry an ``Employee`` group and an ``Earnings`` list: every leaf came
+    back at 0.99–1.0 confidence with OCR geometry, ``truncated_calls: 0`` — and
+    the section still reported ``assessment_incomplete`` (**error**, rendering it
+    Incomplete in the UI) for all 3 rows after burning a `claude-sonnet-5:1m`
+    escalation call that recovered 0, because a stronger model reproduces the
+    identical shape. The ladder had no way out. **That 100%-unscored figure
+    belongs to the one-level rule above, not to the recursive one below** — the
+    same shape scores clean here, which
+    ``test_a_healthy_nested_row_is_scored_not_unscored`` pins in both directions.
+    Reading it as current behaviour is what
+    [#997](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/997)
+    did, and it inverted the conclusion about how noisy the coverage rung is.
 
     Pre-existing for any list-of-object attribute whose rows contain a group or
     an inner list; multi-instance sections (#715) make every record a row, so it
@@ -1339,6 +1356,72 @@ def _ladder_reported_error(ladder_issues: list[Any] | None) -> bool:
     return False
 
 
+def coverage_from_gaps(
+    gaps: dict[str, list[int]], extraction_results: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Confidence coverage over extracted list rows, from an audit's ``gaps``.
+
+    ``scored_rows / expected_rows``, where ``expected_rows`` counts every row of
+    every list-valued extracted attribute and a row is *scored* exactly when
+    :func:`_row_confidence_missing` says it is not missing. Splitting this out of
+    :func:`audit_explainability` means the number a processing issue reports, the
+    number a benchmark records and the number a test asserts are one computation
+    rather than three — see :func:`confidence_coverage`.
+
+    ``unscored_fraction`` is the quantity the ``_COVERAGE_SHORTFALL_*`` thresholds
+    are compared against, and it is rounded to 4 places **after** the comparison,
+    never before.
+    """
+    expected_rows = sum(
+        len(v) for v in (extraction_results or {}).values() if isinstance(v, list)
+    )
+    unscored_rows = sum(len(idxs) for idxs in gaps.values())
+    scored_rows = expected_rows - unscored_rows
+    return {
+        "expected_rows": expected_rows,
+        "scored_rows": scored_rows,
+        "unscored_rows": unscored_rows,
+        "unscored_fraction": (
+            round(unscored_rows / expected_rows, 4) if expected_rows else 0.0
+        ),
+        "scored_fraction": (
+            round(scored_rows / expected_rows, 4) if expected_rows else None
+        ),
+        "unscored_rows_by_field": {f: len(idxs) for f, idxs in gaps.items()},
+    }
+
+
+def confidence_coverage(
+    assessment: dict[str, Any] | None,
+    extraction_results: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Measure confidence coverage for one section: scored rows over extracted rows.
+
+    The instrument for #997. The ``assessment_coverage_incomplete`` thresholds were
+    reasoned off the reconciliation code path — a run whose model scored every row
+    should land at 0% shortfall — and nothing in this repository recorded coverage
+    on real output, so the false-positive rate of the warning rung was not known.
+    This makes the figure something a caller can record unconditionally instead of
+    only learning it when the guard already fired.
+
+    It deliberately calls :func:`audit_explainability` rather than re-deriving the
+    rule. A measurement that reimplements "is this row scored?" measures a
+    *different* predicate from the one that ships, and would then agree or disagree
+    with the guard for reasons having nothing to do with the data.
+
+    ``assessment`` is the per-field assessment dict — ``explainability_info[0]`` as
+    written to a section's ``result.json`` — and ``extraction_results`` is the
+    matching ``inference_result``.
+
+    Returns the dict :func:`coverage_from_gaps` describes. ``expected_rows == 0``
+    means the section has no list-valued attribute, so coverage is undefined rather
+    than perfect: ``scored_fraction`` is ``None`` there, and callers aggregating
+    across a corpus must drop those rather than counting them as 100%.
+    """
+    gaps, _issues = audit_explainability(assessment, extraction_results)
+    return coverage_from_gaps(gaps, extraction_results)
+
+
 def audit_explainability(
     assessment: dict[str, Any] | None,
     extraction_results: dict[str, Any] | None,
@@ -1478,14 +1561,13 @@ def audit_explainability(
     # emitting both double-counts ProcessingIssueCount with two counts that can
     # legitimately disagree (``unrecoverable_rows`` tracks only the largest list
     # field; this audit counts every list field).
-    total_list_rows = sum(
-        len(v) for v in extraction_results.values() if isinstance(v, list)
-    )
-    unscored_list_rows = sum(len(idxs) for idxs in gaps.values())
+    coverage = coverage_from_gaps(gaps, extraction_results)
+    total_list_rows = coverage["expected_rows"]
+    unscored_list_rows = coverage["unscored_rows"]
     if total_list_rows and not _ladder_reported_error(ladder_issues):
-        shortfall = unscored_list_rows / total_list_rows
+        shortfall = coverage["unscored_fraction"]
         if shortfall >= _COVERAGE_SHORTFALL_WARNING_FRACTION:
-            scored = total_list_rows - unscored_list_rows
+            scored = coverage["scored_rows"]
             # Error severity needs BOTH a large proportion and a large absolute
             # number of unscored rows — see _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS.
             severity = (
@@ -1531,15 +1613,10 @@ def audit_explainability(
                         "confidence after the self-healing ladder finished"
                     ),
                     section_id=section_id,
-                    details={
-                        "expected_rows": total_list_rows,
-                        "scored_rows": scored,
-                        "unscored_rows": unscored_list_rows,
-                        "unscored_fraction": round(shortfall, 4),
-                        "unscored_rows_by_field": {
-                            f: len(idxs) for f, idxs in gaps.items()
-                        },
-                    },
+                    # The SAME dict the measurement instrument returns, so the
+                    # figure in a processing issue and the figure a benchmark or a
+                    # test records can never be two different computations.
+                    details=dict(coverage),
                 )
             )
     return gaps, issues

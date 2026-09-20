@@ -40,9 +40,15 @@ Note on scope: the batch SIZER that mis-estimates a multi-instance row's output
 from __future__ import annotations
 
 from idp_common.assessment.batching import (
+    _COVERAGE_SHORTFALL_ERROR_FRACTION,
+    _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS,
+    _COVERAGE_SHORTFALL_WARNING_FRACTION,
+    _row_confidence_missing,
     assess_results_batched,
     audit_explainability,
     build_assessment_issues,
+    confidence_coverage,
+    coverage_from_gaps,
     format_split_stats_report,
     merge_split_stats,
     split_stats_are_notable,
@@ -437,3 +443,193 @@ def test_coverage_issue_is_suppressed_when_the_ladder_already_reported_an_error(
     assert _coverage_issue(1200, 288, ladder_issues=recovered) is not None
     # Plain dicts are accepted too (either composition site may pass serialized ones).
     assert _coverage_issue(1200, 288, ladder_issues=[{"severity": "error"}]) is None
+
+
+# --------------------------------------------------------------------------- #
+# #997 — confidence coverage is a MEASURED figure, and two claims about it
+# --------------------------------------------------------------------------- #
+# The thresholds above were reasoned from the reconciliation code path ("a run
+# whose model scored every row lands at 0% shortfall") and never measured, so the
+# false-positive rate of the 5% rung was unknown. Two things close that:
+# `confidence_coverage` makes the figure recordable rather than only visible once
+# the guard has already fired, and the tests below pin what is derivable about the
+# rungs WITHOUT a corpus — which turns out to be most of what #997 asks.
+
+
+def _leaf(confidence):
+    return {"confidence": confidence, "confidence_reason": "ok"}
+
+
+def _pay_statement_rows(n: int = 3):
+    """The shape ``_row_confidence_missing``'s docstring names: rows carrying a
+    nested GROUP and an inner LIST, every leaf scored 0.99-1.0."""
+    return [
+        {
+            "RecordId": _leaf(1.0),
+            "Employee": {"Name": _leaf(0.99), "Id": _leaf(1.0)},
+            "Earnings": [
+                {"Description": _leaf(0.99), "Amount": _leaf(1.0)},
+                {"Description": _leaf(1.0), "Amount": _leaf(0.99)},
+            ],
+        }
+        for _ in range(n)
+    ]
+
+
+def _pay_statement_data(n: int = 3):
+    return [
+        {
+            "RecordId": f"r{i}",
+            "Employee": {"Name": "A", "Id": "1"},
+            "Earnings": [
+                {"Description": "x", "Amount": "1"},
+                {"Description": "y", "Amount": "2"},
+            ],
+        }
+        for i in range(n)
+    ]
+
+
+def test_a_healthy_nested_row_is_scored_not_unscored():
+    """#997 reads the ``_row_confidence_missing`` docstring as recording a healthy
+    three-record pay statement at **100% of rows unscored**, and treats that as
+    evidence the 5% rung must be firing on healthy short lists.
+
+    The 100% figure is what the docstring quotes as the behaviour of the
+    ``isinstance(v, dict)`` one-level implementation it replaced. The rule that
+    ships RECURSES, so the same shape scores clean. Both halves are asserted here,
+    because the distinction is the whole difference between "the rung is noise on
+    every multi-record section" and "the rung has not been observed firing at all".
+    """
+    rows = _pay_statement_rows()
+
+    def one_level_only(row):
+        leaves = [v for v in row.values() if isinstance(v, dict)]
+        return any(leaf.get("confidence") is None for leaf in leaves)
+
+    assert [one_level_only(r) for r in rows] == [True, True, True]
+    assert [_row_confidence_missing(r) for r in rows] == [False, False, False]
+
+    coverage = confidence_coverage(
+        {"PayStatements": rows}, {"PayStatements": _pay_statement_data()}
+    )
+    assert coverage["expected_rows"] == 3
+    assert coverage["unscored_rows"] == 0
+    assert coverage["scored_fraction"] == 1.0
+    assert _coverage_issue_for({"PayStatements": rows}, _pay_statement_data()) is None
+
+
+def _coverage_issue_for(assessment, data_rows):
+    _gaps, issues = audit_explainability(
+        assessment, {"PayStatements": data_rows}, geometry_mode="off", section_id="1"
+    )
+    found = [i for i in issues if i.code == "assessment_coverage_incomplete"]
+    return found[0] if found else None
+
+
+def test_one_unscored_row_fires_the_warning_on_any_short_enough_section():
+    """The rung's behaviour on short lists is arithmetic, not an empirical question.
+
+    A single unscored row is a shortfall of ``1/N``, so it crosses the warning
+    fraction for every section total ``N <= floor(1 / fraction)``. The bound is
+    DERIVED from the constant rather than written as 20, so re-tuning the constant
+    moves this test's expectation with it instead of breaking it for the wrong
+    reason.
+
+    The absolute floor bounds this class for the ``error`` rung only — which is what
+    it was introduced to do — so the warning rung still fires here, and that is the
+    part of #997 that no corpus is needed to settle.
+    """
+    largest_firing_total = int(1 / _COVERAGE_SHORTFALL_WARNING_FRACTION)
+    assert largest_firing_total >= 2, "fraction too coarse for this test to mean much"
+
+    for total in range(2, largest_firing_total + 1):
+        issue = _coverage_issue(total, total - 1)
+        assert issue is not None, f"one unscored row in {total} did not fire"
+        assert issue.severity == "warning", (total, issue.severity)
+        assert issue.details["unscored_rows"] == 1
+
+    # One past the bound, the same single unscored row is silent.
+    just_over = _coverage_issue(largest_firing_total + 1, largest_firing_total)
+    assert just_over is None, (
+        f"one unscored row in {largest_firing_total + 1} rows is "
+        f"{1 / (largest_firing_total + 1):.4f}, below the "
+        f"{_COVERAGE_SHORTFALL_WARNING_FRACTION} warning fraction, so it must "
+        "not fire"
+    )
+
+
+def test_the_measurement_is_the_guards_own_computation():
+    """``confidence_coverage`` must not be a second implementation of the rule.
+
+    A measurement that re-derived "is this row scored?" would agree or disagree with
+    the shipping guard for reasons unrelated to the data, which is precisely the
+    defect #997 reports. Asserting the instrument's output is byte-identical to the
+    dict the guard puts in its own issue is what makes that structural rather than a
+    claim in a comment.
+    """
+    assessment, data = _coverage_case(100, 90)
+    issue = _coverage_issue(100, 90)
+    assert issue is not None
+    assert confidence_coverage(assessment, data) == issue.details
+
+    # And the error rung's dict too, so the equality is not an artifact of one path.
+    error_assessment, error_data = _coverage_case(1200, 288)
+    error_issue = _coverage_issue(1200, 288)
+    assert error_issue is not None
+    assert error_issue.severity == "error"
+    assert confidence_coverage(error_assessment, error_data) == error_issue.details
+    assert (
+        error_issue.details["unscored_fraction"] >= _COVERAGE_SHORTFALL_ERROR_FRACTION
+    )
+    assert (
+        error_issue.details["unscored_rows"]
+        >= _COVERAGE_SHORTFALL_ERROR_MIN_UNSCORED_ROWS
+    )
+
+
+def test_coverage_is_undefined_rather_than_perfect_without_a_list_attribute():
+    """A section with no list attribute has no coverage to report.
+
+    Returning 1.0 there would be the difference between "every extracted row was
+    scored" and "there were no rows", and a corpus mean built on that would be
+    reporting the share of list-free documents. ``scored_fraction`` is None so an
+    aggregator drops it; the guard already declines to fire on ``expected_rows == 0``.
+    """
+    coverage = confidence_coverage({"Name": _leaf(0.9)}, {"Name": "Acme"})
+    assert coverage["expected_rows"] == 0
+    assert coverage["scored_fraction"] is None
+    assert coverage["unscored_fraction"] == 0.0
+
+    # An empty list is the same case: nothing extracted, nothing to score.
+    assert confidence_coverage({"rows": []}, {"rows": []})["scored_fraction"] is None
+
+
+def test_coverage_counts_every_list_field_not_just_the_largest():
+    """The ladder's own ``unrecoverable_rows`` tracks only the biggest list field;
+    this figure is document-wide, and the two legitimately disagree. Pinning the
+    per-field breakdown keeps that difference visible rather than averaged away."""
+    data = {
+        "transactions": [{"amount": "1"} for _ in range(10)],
+        "fees": [{"amount": "2"} for _ in range(4)],
+        "account_number": "1234",
+    }
+    assessment = {
+        "transactions": [{"amount": _leaf(0.9)} for _ in range(10)],
+        "fees": [{"amount": _leaf(None)} for _ in range(4)],
+        "account_number": _leaf(0.95),
+    }
+    coverage = confidence_coverage(assessment, data)
+    assert coverage["expected_rows"] == 14  # scalars are not rows
+    assert coverage["scored_rows"] == 10
+    assert coverage["unscored_rows_by_field"] == {"fees": 4}
+
+
+def test_coverage_from_gaps_rounds_only_for_reporting():
+    """The thresholds are compared against the exact ratio; the rounding is
+    presentation. A 1/3 shortfall must report 0.3333 and still be the same number
+    the guard compared."""
+    coverage = coverage_from_gaps({"rows": [0]}, {"rows": [1, 2, 3]})
+    assert coverage["unscored_fraction"] == 0.3333
+    assert coverage["scored_fraction"] == 0.6667
+    assert coverage["scored_rows"] == 2

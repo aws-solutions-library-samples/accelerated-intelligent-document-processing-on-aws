@@ -56,6 +56,16 @@ wrong conclusions here before:
 | `typed_accuracy` | The schema-**typed** target (`685.5`) | Whether values came back correctly typed. Populated only for truth files declaring `fields_typed`. |
 | `cell_accuracy` | Per-cell typed match on list rows, matched by `SEQ` tag | Value fidelity *inside* lists. Completeness answers "did the row come back"; this answers "with the right value". |
 | `sections_correct` | Section count vs `expected_sections`, as 1.0/0.0 | Boundary detection. Nothing else can see an over-split: a document split into 3 sections still reports `completeness_recall` 1.0 and status `COMPLETED`. The mean over repeats **is** the pass rate. |
+| `n_gaps` | Truth `SEQ` ids **absent** from the extraction | Completeness. It is an *extraction* metric and says nothing about confidence — a document can have `n_gaps` 0 and every recovered row unscored. |
+| `conf_coverage` | Extracted list rows carrying a confidence, over all extracted list rows | Whether the confidence surface covers the data. This is the quantity the `assessment_coverage_incomplete` guard fires on, computed by the same function (`idp_common.assessment.batching.confidence_coverage`) so the measurement and the guard cannot drift apart. |
+| `mean_confidence` | The mean of the confidence values that **exist** | The calibration question. It is silent about rows that have no confidence at all — that is `conf_coverage`'s job, and the two move independently. |
+
+`conf_coverage` is `None`, not `1.0`, for a document with no list attribute: coverage
+is undefined there, and `cell_stats` drops it rather than averaging it in. The cell
+roll-up carries min, max, stdev and CV as well as the mean, because a mean of 0.99 is
+equally consistent with every document at 0.99 and with one document at 0. The
+per-field breakdown (`conf_unscored_by_field`) is in `summary.json` only — the CSV
+carries the four scalars.
 
 **Did the feature under test actually engage?** `analyze.py` also reads the audit block
 each section records about itself, because a delta of zero is uninterpretable without
