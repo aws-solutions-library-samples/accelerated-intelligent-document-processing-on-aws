@@ -11,7 +11,18 @@ import boto3
 import pytest
 from moto import mock_aws
 
-# Mock environment variables and dependencies before importing
+# Mock environment variables and dependencies before importing.
+#
+# The credentials matter as much as the region, and for a less obvious reason.
+# ``index.py`` builds ``s3_presign_client`` at module scope, so it is constructed
+# by the ``exec_module`` below, and botocore freezes the session's credentials
+# object into a client when the client is created. ``generate_presigned_post``
+# signs offline with exactly that object, so a client built at a moment when no
+# credentials were resolvable can never presign — it raises ``AttributeError:
+# 'NoneType' object has no attribute 'access_key'`` however many credentials
+# appear afterwards, including the ones ``mock_aws`` sets for the fixtures. Naming
+# them here makes this module's import self-contained instead of dependent on
+# whatever the rest of the session has already done to the environment (#988).
 with patch.dict(
     os.environ,
     {
@@ -20,6 +31,10 @@ with patch.dict(
         "TEST_SET_BUCKET": "test-set-bucket",
         "TEST_SET_COPY_QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue",
         "AWS_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105 - fake moto credential  # pragma: allowlist secret
+        "AWS_SESSION_TOKEN": "testing",  # nosec B105 - fake moto credential
     },
 ):
     with patch("idp_common.dynamodb.DynamoDBClient"):

@@ -58,6 +58,42 @@ CI runs the same suites split across two targets — `make test-cicd -C
 lib/idp_common_pkg` and `make test-packages-cicd` — so a suite that exists but is
 wired into neither is invisible to CI even though `make test` runs it locally.
 
+Both of those targets run every suite with the AWS environment **removed** — no
+region, no credentials, no profile, the shared AWS config file neutralised and the
+instance metadata service disabled — because that is what a CI runner supplies. The
+wrapper is defined once, in `make/hermetic_aws.mk`, and included by the root
+`Makefile` and by `lib/idp_common_pkg/Makefile`; `make test-integration` there
+deliberately does **not** use it, because integration tests need real credentials.
+
+A suite that needs a region or placeholder credentials must therefore supply them
+in its own `conftest.py`, where `os.environ.setdefault` reinstates them after the
+wrapper has taken the machine's real ones away. Inheriting either from the shell
+means the suite passes where it was written and fails where it is gated, and there
+are two distinct ways that happens:
+
+- **A region.** A Lambda handler the suite imports builds a boto3 client at module
+  scope, so importing it needs a resolvable region and botocore raises
+  `NoRegionError` during collection without one. A developer machine supplies one
+  from the shared AWS config file; a runner supplies nothing.
+- **Credentials.** botocore freezes the session's credentials object into a client
+  when the client is *constructed*, so a client built at import time with none
+  resolvable can never sign — no matter how many credentials appear later, including
+  the ones `moto` sets when a fixture starts. A developer box on EC2 resolves
+  credentials from the instance metadata service without anyone noticing; a runner
+  cannot reach it. The symptom is `AttributeError: 'NoneType' object has no
+  attribute 'access_key'` out of `botocore/auth.py`, which does not mention
+  credentials at all.
+
+A corollary worth knowing: **anything a test module does to `os.environ` at import
+time affects the whole session.** `-m "not integration"` deselects tests *after*
+collection has imported their modules, so even a file whose tests never run can
+change the environment every later module is imported under.
+
+`scripts/tests/test_offline_suites_are_hermetic.py` checks all of this, and checks
+the stripping wrapper itself by measurement: it builds an environment that supplies
+a region and credentials through every source, puts it through the wrapper, and
+requires that neither survives.
+
 There is **no standing failure set** — **Expected standing failures: 0** on a
 correctly installed tree, and the enumerated list of accepted failures in
 [`full-test-battery`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/full-test-battery.md)

@@ -764,12 +764,16 @@ class TestGroupMapping:
     ``boto3.client("cognito-idp")``. Because ``clear=True`` wipes the whole
     environment, that client construction has no region unless one is put back,
     and botocore then raises ``NoRegionError`` — so these three tests passed only
-    on a machine whose region comes from ``~/.aws/config`` (which ``clear=True``
-    cannot remove) and failed on any CI runner, where the region is an
-    environment variable or absent. AWS_DEFAULT_REGION is therefore restored
-    below. It cannot affect what is asserted: the mapping is built from the
-    ``*_GROUP_NAME`` variables only. Making this suite import-safe so that no
-    caller has to know about the region at all is tracked in #988.
+    on a machine whose region comes from the shared AWS config file (which
+    ``clear=True`` cannot reach) and failed on any CI runner, where the region is
+    an environment variable or absent. ``AWS_DEFAULT_REGION`` is therefore
+    restored in each dictionary below.
+
+    This is the one case ``conftest.py`` cannot cover, which is why the region
+    appears in both places. ``conftest.py`` populates the process environment
+    before collection, and ``clear=True`` removes it again for the duration of
+    these three tests specifically. Neither setting can affect what is asserted:
+    ``GROUP_MAPPING`` is built from the ``*_GROUP_NAME`` variables only.
     """
 
     def test_partial_env_vars(self):
