@@ -271,11 +271,15 @@ Conditions:
   # turned off at all, which is what the parameter's description promises.
   # PassThrough — not an absent property — is written on the false branch: the
   # two resolve identically, and naming it says the choice was made. Neither
-  # branch changes a function's IAM: SAM attaches AWSXrayWriteOnlyAccess to a
+  # branch changes a function's IAM: SAM attaches its X-Ray managed policy to a
   # role it GENERATES whenever Tracing is declared in any form, because it
-  # cannot evaluate the Fn::If. A function with an explicit `Role:` gets
-  # nothing from SAM and must carry the X-Ray grant itself — checked by
-  # scripts/tests/test_xray_tracing.py, along with the rest of this.
+  # cannot evaluate the Fn::If. Which policy that is depends on the partition —
+  # AWSXrayWriteOnlyAccess in `aws`, AWSXRayDaemonWriteAccess in aws-cn and
+  # aws-us-gov (SAM's get_xray_managed_policy_name) — and both grant
+  # xray:PutTraceSegments, so the behaviour is the same either way.
+  # A function with an explicit `Role:` gets nothing from SAM and must carry the
+  # X-Ray grant itself — checked by scripts/tests/test_xray_tracing.py, along
+  # with the rest of this.
   EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, "true"]
   DeployInVPC: !Not [!Equals [!Ref VpcId, ""]]
   HasGuardrailConfig:

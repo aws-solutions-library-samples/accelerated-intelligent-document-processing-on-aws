@@ -1390,7 +1390,7 @@ Conditions:
   # turned off at all, which is what the parameter's description promises.
   # PassThrough — not an absent property — is written on the false branch: the
   # two resolve identically, and naming it says the choice was made. Neither
-  # branch changes a function's IAM: SAM attaches AWSXrayWriteOnlyAccess to a
+  # branch changes a function's IAM: SAM attaches its X-Ray managed policy to a
   # role it GENERATES whenever Tracing is declared in any form, because it
   # cannot evaluate the Fn::If. A function with an explicit `Role:` gets
   # nothing from SAM and must carry the X-Ray grant itself — checked by
@@ -3216,6 +3216,13 @@ Resources:
         # groups, which carry NO retention policy, so their logs accumulated
         # and were billed indefinitely (issue #826).
         LogRetentionDays: !Ref LogRetentionDays
+        # Tracing for the nested stack's Lambdas. Without this they hardcoded
+        # `Tracing: Active`, so EnableXRayTracing=false left them tracing —
+        # the #983 defect surviving in the one extension template that IS part
+        # of the main deployment. The six catalog extensions are separate
+        # stacks with their own parameters and cannot be reached this way; see
+        # docs/monitoring.md.
+        EnableXRayTracing: !Ref EnableXRayTracing
         # Forward the permissions boundary so the nested stack's IAM role
         # (FeaturePlatformLambdaRole) is created with it. Without this,
         # accounts with an SCP that requires a boundary on every role fail

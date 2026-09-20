@@ -435,6 +435,76 @@ only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
   default on a new stack or to preserve the current value on an update. Passing
   `--log-level INFO` is honoured; it used to be silently treated as "unset".
 
+## X-Ray Tracing
+
+`EnableXRayTracing` (default `true`) controls AWS X-Ray tracing. On `true` each
+covered Lambda runs in `Active` mode and both state machines set
+`TracingConfiguration.Enabled`; on `false` the Lambdas run in `PassThrough`, which
+records nothing of their own and continues a trace only if a caller already sampled
+the request, and the state machines stop tracing. X-Ray is billed per trace
+recorded, so `false` is how you take that line of the bill to zero.
+
+It covers both state machines and every traced Lambda in the three templates the
+main stack deploys: `template.yaml`, `patterns/unified/template.yaml`, and the
+nested `feature-platform/main-stack-extensions/template.yaml`, which receives the
+parameter from the main stack the same way it receives `LogLevel` and
+`LogRetentionDays`. `scripts/tests/test_xray_tracing.py` is what keeps that true —
+it fails if any function in those templates hardcodes a mode, and if any function in
+the nested one omits it.
+
+⚠️ **The feature-platform resolvers are new to the traced set, and on the default
+`true` they add X-Ray charges an existing deployment did not have.** Those are the
+UI-facing resolvers and install hooks in the nested stack. They declared
+`Tracing: Active` before, but they share one execution role that carried no
+`xray:PutTraceSegments`, so no segment was ever written and nothing was billed —
+tracing was on and inert. The role now carries the grant, so with
+`EnableXRayTracing=true` they emit segments like every other traced function in the
+deployment, and with `false` they emit nothing. If you upgrade and want the previous
+X-Ray spend, set the parameter to `false`.
+
+### Installed extensions trace unconditionally
+
+An extension you install from the Extensions catalog — `pii-anonymizer`,
+`idp-data-generator`, `confbench-testset`, `sample-feature`,
+`sample-health-insurance-review`, or a stack scaffolded from `feature-template` — is
+its own CloudFormation stack with its own parameters, launched by you rather than
+created by the main stack. The install URL pre-fills only two host-derived values,
+`MainStackName` and `FeatureBucket`, so **the main stack's `EnableXRayTracing` does
+not reach it**, the same way its `LogLevel` does not (see above). Each of those
+templates sets `Tracing: Active` for every function in its `Globals` block, so
+setting `EnableXRayTracing=false` on the main stack leaves them tracing.
+
+What that costs depends on the function's execution role, because SAM attaches the
+X-Ray write policy only to a role it *generates*:
+
+| Functions in the six extension templates | Traces recorded |
+|---|---|
+| Those with a SAM-generated execution role — the majority, and every one that serves requests | Yes — SAM attaches its X-Ray managed policy because `Tracing` is declared, so these emit segments and are billed |
+| Those with an explicit `Role:` — each `UiDeployerFunction`, plus `idp-data-generator`'s `DockerBuildRunFunction` and `AgentCoreRuntimeManagerFunction` | No — their roles carry no `xray:PutTraceSegments`, so tracing is declared and produces nothing |
+
+To see the split for the version you are running, rather than trusting a number
+written down here, `scripts/tests/test_xray_tracing.py`'s `_traced_without_a_grant`
+is the predicate: a function it reports has an explicit role that cannot write a
+segment, and every other function in those templates emits.
+
+The policy SAM picks depends on the partition: `AWSXrayWriteOnlyAccess` in `aws`,
+and `AWSXRayDaemonWriteAccess` in China and GovCloud. Both grant
+`xray:PutTraceSegments`, so the table above reads the same in every partition.
+
+To stop the 13 from tracing today, delete the extension stack, or change
+`Globals.Function.Tracing` in the extension's template to `PassThrough` and
+republish it. There is no per-extension parameter yet, and adding one is the
+obvious third option rather than an unavailable one: all six already declare a
+`LogLevel` parameter with its own default that you set on that stack when you
+install it, so an `EnableXRayTracing` beside it would follow a pattern these
+templates already use. What it would not do is make the main stack's setting reach
+them — the catalog install flow pre-fills only `MainStackName` and `FeatureBucket`
+from the host — so it is a knob per stack, not one setting for the deployment.
+
+`scripts/tests/test_xray_tracing.py` records these six templates exactly, in both
+directions, so a seventh cannot join them silently and converting one forces its
+entry to be removed.
+
 ## Pattern-Specific Monitoring
 
 Each pattern includes additional monitoring tailored to its specific workflow:

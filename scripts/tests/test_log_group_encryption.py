@@ -117,6 +117,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from repo_files import tracked_paths
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -303,10 +304,10 @@ OUTSIDE_CMK_TEMPLATES: dict[str, tuple[str, set[str]]] = {
 # ---------------------------------------------------------------------------
 _CFN_YAML = REPO_ROOT / "lib" / "idp_sdk" / "idp_sdk" / "_core" / "cfn_yaml.py"
 
-# The sibling log-group gate. Imported for two helpers it already owns rather than
-# copied: `walk_yaml` (the pruning repo walk) and `custom_resource_only_violation`
-# (the structural proof that a Lambda runs only during a stack operation). A third
-# copy of the latter is exactly how two justifications drift apart.
+# The sibling log-group gate. Imported for `custom_resource_only_violation` (the
+# structural proof that a Lambda runs only during a stack operation) rather than
+# copied: a third copy of that is exactly how two justifications drift apart. File
+# discovery is NOT taken from it — both gates now share `repo_files.tracked_paths`.
 _SIBLING_GATE = REPO_ROOT / "scripts" / "tests" / "test_lambda_log_groups.py"
 
 
@@ -489,11 +490,16 @@ def _discover_log_group_templates(root: Path | None = None) -> list[str]:
     The substring pre-filter only ever over-includes — a comment mentioning the type
     is then rejected by parsing — so it cannot hide a template.
     """
-    root = root or REPO_ROOT
-    walk_yaml = _sibling_module().walk_yaml
+    root = (root or REPO_ROOT).resolve()
     # `scratch/` and `.claude/` are the repo's gitignored local-work directories and
     # both hold whole git worktrees (`.claude/worktrees/agent-*/`), i.e. full copies
-    # of every template. Keep in step with the sibling gates.
+    # of every template. `tracked_paths` excludes them by asking git, which is what
+    # makes this sweep work from *inside* one of those worktrees: matching these
+    # names against a file's ABSOLUTE path discards the whole checkout, because the
+    # worktree itself lives under `.claude/`. That left rules 4 and 5 with an empty
+    # parametrisation and tripped this module's own self-guard. See repo_files.py.
+    # The set is kept as a second filter on the repo-RELATIVE path so the fallback
+    # walk (synthetic trees in `tmp_path`) and the git listing agree.
     skip_dirs = {
         ".aws-sam",
         "node_modules",
@@ -505,33 +511,32 @@ def _discover_log_group_templates(root: Path | None = None) -> list[str]:
         ".claude",
     }
     found = []
-    for pattern in ("*.yaml", "*.yml"):
-        for path in walk_yaml(pattern, root):
-            # Meta-tests elsewhere write synthetic probe templates; skip them so a
-            # parallel run (`pytest -n auto`) cannot see another worker's probe.
-            if path.name.startswith("_") and path.name.endswith(
-                ("_probe.yaml", "_probe.yml")
-            ):
-                continue
-            if any(part in skip_dirs for part in path.parts):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            if LOG_GROUP_TYPE not in text:
-                continue
-            try:
-                doc = _load_text(text)
-            except Exception:
-                # Not a parseable CloudFormation document. Broad on purpose: the
-                # sweep reads every YAML file in the repo, including CI configs and
-                # config_library presets, and one of them failing to parse must not
-                # take the gate down. A file that cannot be parsed also cannot
-                # declare a log group, so skipping it loses no coverage.
-                continue
-            if isinstance(doc, dict) and _log_groups(doc):
-                found.append(str(path.relative_to(root)))
+    for path in tracked_paths(root, "*.yaml", "*.yml"):
+        # Meta-tests elsewhere write synthetic probe templates; skip them so a
+        # parallel run (`pytest -n auto`) cannot see another worker's probe.
+        if path.name.startswith("_") and path.name.endswith(
+            ("_probe.yaml", "_probe.yml")
+        ):
+            continue
+        if any(part in skip_dirs for part in path.relative_to(root).parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if LOG_GROUP_TYPE not in text:
+            continue
+        try:
+            doc = _load_text(text)
+        except Exception:
+            # Not a parseable CloudFormation document. Broad on purpose: the
+            # sweep reads every YAML file in the repo, including CI configs and
+            # config_library presets, and one of them failing to parse must not
+            # take the gate down. A file that cannot be parsed also cannot
+            # declare a log group, so skipping it loses no coverage.
+            continue
+        if isinstance(doc, dict) and _log_groups(doc):
+            found.append(str(path.relative_to(root)))
     return sorted(found)
 
 
