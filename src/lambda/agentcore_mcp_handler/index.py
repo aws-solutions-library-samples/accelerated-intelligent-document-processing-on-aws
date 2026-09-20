@@ -9,7 +9,7 @@ Provides IDP operations through AgentCore Gateway's built-in MCP server.
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 from tools import get_tool
 
@@ -34,12 +34,21 @@ except ImportError as _logging_import_error:
 # load even when the agents layer is missing. The fallback is fail-closed — with
 # no redactor available the handler logs a placeholder instead of the event, since
 # the event is the tool's argument payload as the caller supplied it.
-try:
+# Guarded at run time but NOT for the type checker: under TYPE_CHECKING the real
+# signature is always the declared one. Declaring the name from the fallback instead
+# makes `make typecheck`'s verdict depend on whether idp_common happens to resolve on
+# the path — clean in CI, which does not put it there, and a reportAssignmentType
+# error on a machine that does, over a parameter-name and **kwargs mismatch no
+# runtime caller can observe.
+if TYPE_CHECKING:
     from idp_common.utils.log_sanitizer import sanitize_event_for_logging
-except ImportError:  # pragma: no cover - only reachable with no agents layer
+else:
+    try:
+        from idp_common.utils.log_sanitizer import sanitize_event_for_logging
+    except ImportError:  # pragma: no cover - only reachable with no agents layer
 
-    def sanitize_event_for_logging(event, **_kwargs):  # type: ignore[misc]
-        return "<redactor unavailable: idp_common not importable>"
+        def sanitize_event_for_logging(event, **_kwargs):  # type: ignore[misc]
+            return "<redactor unavailable: idp_common not importable>"
 
 
 # Get logger for this module
