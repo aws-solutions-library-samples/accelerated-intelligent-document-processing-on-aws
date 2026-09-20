@@ -163,19 +163,18 @@ WRITE_ONCE_KEY_RULES = (
 # a second object is ever written under a run prefix, widen this and say so here.
 
 
-# S3's POST-policy form treats this token specially: a key containing it is signed
-# not as an exact `{"key": ...}` condition but as `["starts-with", "$key", <the text
-# before it>]`, i.e. a grant over a whole prefix rather than one object. So the key as
-# WRITTEN is not the key S3 will accept, and any rule evaluated against the written
-# form is evaluated against the wrong thing.
+# A requested key is not always what S3 ends up accepting: for some key forms the
+# signed policy permits a range of keys rather than the one named. So a rule applied
+# to the key AS WRITTEN can be applied to something other than what the write can
+# reach, and the rules below have to see the resolved form instead.
 _FILENAME_VARIABLE = "${filename}"
 
 
 def effective_key(key: str):
-    """What S3 will actually accept for ``key``: ``("exact", k)`` or ``("prefix", p)``.
+    """What S3 will accept for ``key``: ``("exact", k)`` or ``("prefix", p)``.
 
-    Derived from S3's own substitution rather than pattern-matching the written key,
-    so the check below sees the grant that will really be signed.
+    Derived from S3's own handling rather than from a pattern match on the written
+    key, so a new key form is resolved here rather than needing a rule of its own.
     """
     if _FILENAME_VARIABLE in key:
         return "prefix", key.split(_FILENAME_VARIABLE, 1)[0]
