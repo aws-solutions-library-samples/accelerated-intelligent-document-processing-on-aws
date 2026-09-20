@@ -236,6 +236,87 @@ def _sam_override(key: str, value: str) -> str:
     return f"{key}='{value}'"
 
 
+def template_parameter_names(template_path: Path) -> set[str]:
+    """The names in a CloudFormation/SAM template's top-level ``Parameters`` block.
+
+    The source of truth for which overrides a template will accept. Used by
+    :func:`validate_parameter_overrides` so the check is derived from the template
+    rather than restated as a list that can drift away from it.
+
+    CloudFormation short tags (``!Ref``, ``!Sub``, ``!GetAtt`` …) are not valid
+    YAML, so a plain ``safe_load`` raises on every template in this repository. A
+    multi-constructor maps every ``!`` tag to ``None``; nothing here reads a tagged
+    value, only the parameter *keys*, so discarding them is lossless for this
+    purpose.
+
+    Raises ``SellerServiceError`` if the template cannot be read or parsed —
+    silence would defeat the point of the check.
+    """
+    import yaml
+
+    class _AnyTagLoader(yaml.SafeLoader):
+        pass
+
+    _AnyTagLoader.add_multi_constructor("!", lambda loader, suffix, node: None)
+
+    try:
+        document = yaml.load(  # nosec B506 - _AnyTagLoader derives from SafeLoader
+            template_path.read_text(encoding="utf-8"), Loader=_AnyTagLoader
+        )
+    except (OSError, yaml.YAMLError) as exc:
+        raise SellerServiceError(
+            f"Could not read the parameters declared by {template_path}: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise SellerServiceError(
+            f"{template_path} is not a CloudFormation template (parsed as "
+            f"{type(document).__name__}, expected a mapping)."
+        )
+    parameters = document.get("Parameters") or {}
+    if not isinstance(parameters, dict):
+        raise SellerServiceError(
+            f"{template_path} has a 'Parameters' section that is not a mapping."
+        )
+    return set(parameters)
+
+
+def validate_parameter_overrides(overrides: list[str], template_path: Path) -> None:
+    """Refuse a ``Key=Value`` override naming a parameter the template does not declare.
+
+    Why this is a hard error rather than something CloudFormation would catch:
+    **``sam deploy`` discards it silently.** ``merge_parameters``
+    (``samcli/commands/deploy/deploy_context.py``) iterates the *template's*
+    ``Parameters`` and emits a ``ParameterKey`` only for names it finds there, so an
+    override for an undeclared name never reaches ``CreateChangeSet`` at all — no
+    error, no warning, and the pre-deploy banner still prints the override as though
+    it were applied. The parameter simply keeps its template default.
+
+    Verified two ways against SAM CLI 1.142.1: by reading that function, and by
+    pointing the deploy at a local endpoint and reading back the ``CreateChangeSet``
+    it actually sent (one parameter, not two).
+
+    That makes a misspelled override the worst kind of defect — a configuration the
+    operator believes they set and did not — so the only place it can be caught is
+    here, before the deploy runs. ``aws cloudformation deploy`` and the boto3
+    ``create_change_set`` do reject unknown names, so the same mistake fails loudly
+    on those paths; this check makes the ``sam`` path behave like them.
+    """
+    declared = template_parameter_names(template_path)
+    undeclared = [
+        override.partition("=")[0]
+        for override in overrides
+        if override.partition("=")[0] not in declared
+    ]
+    if undeclared:
+        raise SellerServiceError(
+            f"These parameter overrides name parameters {template_path} does not "
+            f"declare: {', '.join(undeclared)}.\n"
+            f"  the template declares: {', '.join(sorted(declared))}\n"
+            "`sam deploy` would DISCARD them silently — the deploy succeeds and the "
+            "parameter keeps its template default — so this is refused here instead."
+        )
+
+
 def build_sam_deploy_command(
     *,
     service_dir: Path,
@@ -247,7 +328,12 @@ def build_sam_deploy_command(
     guided: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
-    """The `sam deploy` argv. Separated out so tests can assert it without AWS."""
+    """The `sam deploy` argv. Separated out so tests can assert it without AWS.
+
+    Every override built here is checked against the parameters
+    ``service_dir/template.yaml`` declares — see
+    :func:`validate_parameter_overrides` for why that cannot be left to the deploy.
+    """
     # Compact the registry before quoting it. Two reasons: SAM's override parser
     # splits on whitespace, so a pretty-printed / multi-line JSON blob (an obvious
     # thing for an operator to paste when registering a second product) would be
@@ -267,7 +353,12 @@ def build_sam_deploy_command(
         overrides.append(_sam_override("AllowedAccounts", allowed_accounts))
     if token_ttl_seconds is not None:
         overrides.append(_sam_override("TokenTtlSeconds", str(token_ttl_seconds)))
-    overrides.append(_sam_override("MarketplaceAgreementRegion", region))
+    # `AgreementRegion`, matching the template. `MarketplaceAgreementRegion` is the
+    # name in feature-platform/main-stack-extensions/template.yaml — a different
+    # template — and passing it here set nothing at all.
+    overrides.append(_sam_override("AgreementRegion", region))
+
+    validate_parameter_overrides(overrides, service_dir / "template.yaml")
 
     cmd = [
         "sam",

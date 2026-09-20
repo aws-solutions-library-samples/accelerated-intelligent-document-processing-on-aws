@@ -93,6 +93,18 @@ to be caught at deploy time or not at all.
 > `sam deploy --parameter-overrides ProductRegistryJson={"prod-…":…}` delivers a
 > registry of exactly `{`. The CLI compacts the JSON and single-quotes it.
 
+> **A `--parameter-overrides` name this template does not declare is discarded
+> silently.** `sam deploy` builds its `CreateChangeSet` call by walking the
+> *template's* `Parameters` and emitting a value only for names it finds there, so a
+> misspelled override never reaches CloudFormation: the deploy succeeds, the
+> parameter keeps its template default, and the pre-deploy banner still lists the
+> override as though it had been applied. `aws cloudformation deploy` and the boto3
+> `create_change_set` reject an unknown name outright, so the same typo fails loudly
+> there — the `sam` path is the one that hides it. The CLI therefore checks every
+> override it builds against this template's `Parameters` before running the deploy
+> (`validate_parameter_overrides` in `idp_feature_sdk/seller_service.py`); if you
+> deploy by hand, check the names yourself against the `Parameters` block above.
+
 ### Two account-level prerequisites the template handles for you
 
 Worth knowing about, because both are account-global rather than stack-local:

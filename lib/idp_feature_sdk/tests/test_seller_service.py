@@ -13,6 +13,8 @@ So the tests here are mostly about refusing, not about succeeding.
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -31,11 +33,57 @@ from idp_feature_sdk.seller_service import (
     publish_activation_pointer,
     read_service_version,
     resolve_stack_output,
+    template_parameter_names,
+    validate_parameter_overrides,
     verify_deployed_registry,
 )
 
 _PRODUCT = "prod-a5ee62vs2xa72"
 _REGISTRY = json.dumps({_PRODUCT: {"productCode": "abc", "allowFreeTier": True}})
+
+_SERVICE_RELATIVE_DIR = "feature-platform/seller-entitlement-service"
+
+
+def _repo_root() -> Path:
+    """The repository root, resolved from this file rather than the cwd.
+
+    Deriving it from ``__file__`` rather than ``Path.cwd()`` matters: these tests
+    run from ``lib/idp_feature_sdk`` under ``make test-feature-sdk`` and from the
+    repository root under ``pytest``, and a cwd-relative lookup silently finds
+    nothing in one of those.
+    """
+    return Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture(scope="module")
+def service_dir() -> Path:
+    """The REAL ``feature-platform/seller-entitlement-service`` directory.
+
+    The deploy-argv tests below use this rather than a ``tmp_path`` stub so that
+    every one of them validates its overrides against the template that actually
+    ships. A stub directory would let a misspelled override name pass every test
+    in this file, which is how the ``MarketplaceAgreementRegion`` /
+    ``AgreementRegion`` mismatch survived: the old assertions checked the flag was
+    *built*, never that it was *valid*.
+
+    Resolved through ``git ls-files`` so the fixture cannot be satisfied by an
+    untracked stray file, and it FAILS rather than skips when the template is not
+    found — a skipped guard reads as a pass on the summary line.
+    """
+    root = _repo_root()
+    relative = f"{_SERVICE_RELATIVE_DIR}/template.yaml"
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0 and result.stdout.strip() == relative, (
+        f"{relative} is not a git-tracked file under {root}. This fixture must "
+        f"resolve the real template; it deliberately does not fall back to a stub "
+        f"or skip.\n  git said: {result.stdout.strip()!r} {result.stderr.strip()!r}"
+    )
+    return root / _SERVICE_RELATIVE_DIR
 
 
 class _Sts:
@@ -241,9 +289,9 @@ def test_skip_ownership_check_still_honours_the_account_assertion():
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_command_passes_registry_and_region(tmp_path):
+def test_deploy_command_passes_registry_and_region(service_dir):
     cmd = build_sam_deploy_command(
-        service_dir=tmp_path,
+        service_dir=service_dir,
         stack_name="idp-seller-entitlement",
         region="us-east-1",
         product_registry_json=_REGISTRY,
@@ -265,13 +313,13 @@ def test_deploy_command_passes_registry_and_region(tmp_path):
         "truncate it at the first double quote"
     )
     assert json.loads(value[1:-1]) == json.loads(_REGISTRY)
-    assert "MarketplaceAgreementRegion='us-east-1'" in overrides
+    assert "AgreementRegion='us-east-1'" in overrides
     # Omitted options must not appear as empty overrides.
     assert not any(o.startswith("AllowedAccounts=") for o in overrides)
     assert not any(o.startswith("TokenTtlSeconds=") for o in overrides)
 
 
-def test_deploy_command_survives_sams_override_parser(tmp_path):
+def test_deploy_command_survives_sams_override_parser(service_dir):
     """Round-trip the override through SAM's actual parsing rules.
 
     This is the regression guard for a live defect: the registry was passed bare,
@@ -283,7 +331,7 @@ def test_deploy_command_survives_sams_override_parser(tmp_path):
     import re
 
     cmd = build_sam_deploy_command(
-        service_dir=tmp_path,
+        service_dir=service_dir,
         stack_name="s",
         region="us-east-1",
         product_registry_json=_REGISTRY,
@@ -301,7 +349,7 @@ def test_deploy_command_survives_sams_override_parser(tmp_path):
     )
 
 
-def test_deploy_command_compacts_pretty_printed_registry(tmp_path):
+def test_deploy_command_compacts_pretty_printed_registry(service_dir):
     """A multi-line registry is the natural thing to paste when adding a second
     product; SAM splits overrides on whitespace, so it must be compacted first."""
     pretty = """{
@@ -309,7 +357,7 @@ def test_deploy_command_compacts_pretty_printed_registry(tmp_path):
       "prod-bbbbbbbbbbbbbb": {"productCode": "c2", "allowFreeTier": true}
     }"""
     cmd = build_sam_deploy_command(
-        service_dir=tmp_path,
+        service_dir=service_dir,
         stack_name="s",
         region="us-east-1",
         product_registry_json=pretty,
@@ -322,10 +370,10 @@ def test_deploy_command_compacts_pretty_printed_registry(tmp_path):
     assert json.loads(value[1:-1]) == json.loads(pretty)
 
 
-def test_deploy_command_rejects_a_single_quote_rather_than_mangling_it(tmp_path):
+def test_deploy_command_rejects_a_single_quote_rather_than_mangling_it(service_dir):
     with pytest.raises(SellerServiceError, match="single quote"):
         build_sam_deploy_command(
-            service_dir=tmp_path,
+            service_dir=service_dir,
             stack_name="s",
             region="us-east-1",
             product_registry_json=_REGISTRY,
@@ -333,9 +381,9 @@ def test_deploy_command_rejects_a_single_quote_rather_than_mangling_it(tmp_path)
         )
 
 
-def test_deploy_command_includes_optional_overrides(tmp_path):
+def test_deploy_command_includes_optional_overrides(service_dir):
     cmd = build_sam_deploy_command(
-        service_dir=tmp_path,
+        service_dir=service_dir,
         stack_name="s",
         region="us-east-1",
         product_registry_json=_REGISTRY,
@@ -348,6 +396,115 @@ def test_deploy_command_includes_optional_overrides(tmp_path):
     assert "AllowedAccounts='111122223333'" in overrides
     assert "TokenTtlSeconds='900'" in overrides
     assert "--guided" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Override names vs the template's declared Parameters (#1043)
+# ---------------------------------------------------------------------------
+#
+# The gap #1043 records is not the misspelled name, it is that an argv assertion
+# proves a flag was BUILT, not that it is VALID. `sam deploy` discards an override
+# naming an undeclared parameter silently — no error, and the banner still prints
+# it — so the deploy succeeds with the parameter at its template default and there
+# is no downstream signal at all. These tests are the only place the mismatch can
+# surface, so they derive the expectation from the template rather than restating
+# a list of names.
+
+
+def test_template_parameter_names_reads_the_real_template(service_dir):
+    """Non-vacuity guard for the check below.
+
+    If the parser silently returned an empty set — a short-tag parse failure
+    swallowed, a renamed ``Parameters`` block — then "no override is undeclared"
+    would be trivially true and the gate would pass on any name at all.
+    """
+    declared = template_parameter_names(service_dir / "template.yaml")
+    # Every override the builder can emit corresponds to one of these, and the
+    # registry is the one parameter the service cannot function without.
+    assert "ProductRegistryJson" in declared
+    assert len(declared) >= 5, f"suspiciously few parameters parsed: {declared}"
+
+
+def test_every_override_names_a_parameter_the_template_declares(service_dir):
+    """Cross-check EVERY override the builder emits against the template.
+
+    Supplies every optional argument so no branch of the builder is left
+    unexercised — an override only emitted for, say, ``--token-ttl-seconds`` would
+    otherwise be unchecked.
+    """
+    declared = template_parameter_names(service_dir / "template.yaml")
+    cmd = build_sam_deploy_command(
+        service_dir=service_dir,
+        stack_name="s",
+        region="us-east-1",
+        product_registry_json=_REGISTRY,
+        allowed_accounts="111122223333",
+        token_ttl_seconds=900,
+    )
+    overrides = cmd[cmd.index("--parameter-overrides") + 1 :]
+    names = {o.partition("=")[0] for o in overrides}
+    assert names, "the builder emitted no overrides, so this check is vacuous"
+    undeclared = sorted(names - declared)
+    assert not undeclared, (
+        f"these overrides name parameters the seller template does not declare: "
+        f"{undeclared}. `sam deploy` would DISCARD them silently, so the deploy "
+        f"would succeed with the parameter left at its template default.\n"
+        f"  template declares: {sorted(declared)}"
+    )
+
+
+def test_validate_parameter_overrides_names_the_offender(service_dir):
+    template = service_dir / "template.yaml"
+    validate_parameter_overrides(["ProductRegistryJson='{}'"], template)
+    with pytest.raises(SellerServiceError) as exc:
+        validate_parameter_overrides(
+            ["ProductRegistryJson='{}'", "MarketplaceAgreementRegion='us-east-1'"],
+            template,
+        )
+    message = str(exc.value)
+    assert "MarketplaceAgreementRegion" in message
+    # It must not blame the override that IS declared.
+    assert "does not declare: MarketplaceAgreementRegion" in message
+    assert "DISCARD" in message
+
+
+def test_template_parameter_names_refuses_to_guess_when_it_cannot_parse(tmp_path):
+    """An unreadable or non-template file must raise, not return an empty set —
+    an empty set would make every override look declared."""
+    with pytest.raises(SellerServiceError, match="Could not read the parameters"):
+        template_parameter_names(tmp_path / "absent.yaml")
+
+    not_a_template = tmp_path / "scalar.yaml"
+    not_a_template.write_text("just a string\n", encoding="utf-8")
+    with pytest.raises(SellerServiceError, match="not a CloudFormation template"):
+        template_parameter_names(not_a_template)
+
+    bad_params = tmp_path / "bad.yaml"
+    bad_params.write_text("Parameters:\n  - AgreementRegion\n", encoding="utf-8")
+    with pytest.raises(SellerServiceError, match="not a mapping"):
+        template_parameter_names(bad_params)
+
+
+def test_template_parameter_names_tolerates_cloudformation_short_tags(tmp_path):
+    """`!Ref`/`!Sub` are not valid YAML; a plain safe_load raises on every template
+    in this repository, which would turn the check into an unconditional error."""
+    template = tmp_path / "template.yaml"
+    template.write_text(
+        "Parameters:\n"
+        "  AgreementRegion:\n"
+        "    Type: String\n"
+        "Resources:\n"
+        "  Fn:\n"
+        "    Type: AWS::Serverless::Function\n"
+        "    Properties:\n"
+        "      Environment:\n"
+        "        Variables:\n"
+        "          R: !Ref AgreementRegion\n"
+        "          N: !Sub '${AWS::StackName}-x'\n"
+        "          A: !GetAtt Other.Arn\n",
+        encoding="utf-8",
+    )
+    assert template_parameter_names(template) == {"AgreementRegion"}
 
 
 # ---------------------------------------------------------------------------
