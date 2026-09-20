@@ -69,12 +69,33 @@ describe('publishing a version from the set detail page', () => {
     expect(SETUP_DOC).not.toMatch(/so every subsequent test run records which/);
   });
 
-  it('keeps the freeze language out of the control as well as the dialog', () => {
-    // Publishing writes a DynamoDB row and copies no baseline bytes, so the hover
-    // text on the disabled control may not promise what the dialog no longer does.
-    expect(DETAIL).not.toMatch(/freezes the labels/);
-    expect(DETAIL).not.toMatch(/freezing a version/);
-    expect(DETAIL).toMatch(/records the labels as they stand/);
+  /**
+   * A publish that reports an error may still have succeeded: the copy can outlast the
+   * dispatcher's request budget. The retry therefore has to be recognisable as the same
+   * attempt, or it makes a second version and a second full copy of the labels.
+   *
+   * The dedupe itself is guarded in `test_test_set_resolver.py`
+   * (`test_a_retry_under_the_same_client_token_does_not_publish_twice`); what can only be
+   * checked here is that the page sends a token at all, that it is the same one after a
+   * failure, and that success retires it so the next publish is a new attempt.
+   */
+  it('sends a retry-stable client token, and retires it on success', () => {
+    expect(DETAIL).toMatch(/clientToken: publishAttemptToken\.current/);
+    // Reused while set: only assigned when absent, so a retry carries the first token.
+    expect(DETAIL).toMatch(/if \(!publishAttemptToken\.current\)/);
+    // Cleared on the success path only — the catch block must not reset it.
+    const handler = DETAIL.slice(DETAIL.indexOf('const handlePublishVersion'), DETAIL.indexOf('const handleResetLabels'));
+    const [beforeCatch, afterCatch] = handler.split('} catch (err) {');
+    expect(beforeCatch).toMatch(/publishAttemptToken\.current = null;/);
+    expect(afterCatch).not.toMatch(/publishAttemptToken\.current = null;/);
+  });
+
+  it('gives the same account of publishing as the dialog does', () => {
+    // Publishing copies the set's labels aside, which is why the guard below cares about
+    // the set having settled: a copy taken mid-write freezes a half-written set under a
+    // version number. The control and the dialog must not describe that differently.
+    expect(DETAIL).toMatch(/copies the labels as they stand/);
+    expect(DETAIL).toMatch(/records a settled set of labels/);
   });
 
   it('will not publish an empty set, one mid-labelling, or one still being written', () => {

@@ -91,6 +91,9 @@ def publish_table():
     and the concurrency guarantee would go untested. The module-level
     db_client is a mock (patched at import), so point its get_item/put_item at
     the real table for the duration of the test.
+
+    Publishing copies the set's baselines as part of recording a version, so this
+    needs a real (moto) bucket too — a version that cannot copy must not be written.
     """
     # The resolver builds its own boto3 resource with no explicit region, so it
     # picks up the ambient one. Pin the region for both here — other tests in
@@ -100,6 +103,7 @@ def publish_table():
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_REGION": "us-east-1",
         "TRACKING_TABLE": "test-table",
+        "TEST_SET_BUCKET": "test-set-bucket",
     }
     with mock_aws(), patch.dict(os.environ, region_env):
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
@@ -115,8 +119,10 @@ def publish_table():
             ],
             BillingMode="PAY_PER_REQUEST",
         )
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-set-bucket")
 
-        with _db_client_on(table):
+        with _db_client_on(table), patch.object(test_set_index, "s3_client", s3):
             yield table
 
 
@@ -1144,9 +1150,16 @@ class TestTestSetResolver:
             Key={"PK": "testset#ts1", "SK": "metadata"}
         )
 
-    @patch.dict(os.environ, {"TRACKING_TABLE": "test-table"})
+    @patch.dict(
+        os.environ, {"TRACKING_TABLE": "test-table", "TEST_SET_BUCKET": "ts-bucket"}
+    )
     def test_get_test_set_versions_maps_and_sorts(self):
-        with patch.object(test_set_index, "boto3") as mock_boto3:
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 1}
+        with (
+            patch.object(test_set_index, "boto3") as mock_boto3,
+            patch.object(test_set_index, "s3_client", s3),
+        ):
             mock_table = MagicMock()
             mock_table.query.return_value = {
                 "Items": [
@@ -1173,6 +1186,8 @@ class TestTestSetResolver:
             assert [r["version"] for r in result] == [1, 2]  # ascending
             assert result[0]["label"] == "v1"
             assert result[1]["fileCount"] == 12
+            # Probed per version, not inferred from the row.
+            assert [r["hasStoredLabels"] for r in result] == [True, True]
 
     # -- Membership editing: remove ---------------------------------------
 
@@ -3491,6 +3506,188 @@ class TestTestSetResolver:
             )["Body"].read()
         )
         assert frozen["inference_result"]["total"] == "original"
+
+    def test_publishing_copies_the_labels_the_version_names(self, labeling_env):
+        """Publishing is the call that promises a version's content, so it is the call
+        that copies it. A version that is a DynamoDB row and no bytes is a number whose
+        meaning the next baseline write can change."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+
+        result = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["version"] == 1
+        assert result["snapshotObjectCount"] == 1
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == [
+            "ts1/versions/1/baseline/a.pdf/sections/1/result.json"
+        ]
+        # And the row records what it froze, so "is this version's content actually
+        # frozen?" is answerable without listing S3.
+        written = table.get_item(Key={"PK": "testset#ts1", "SK": "version#000001"})[
+            "Item"
+        ]
+        assert int(written["snapshotObjectCount"]) == 1
+
+    def test_a_retry_under_the_same_client_token_does_not_publish_twice(
+        self, labeling_env
+    ):
+        """Publishing copies the labels, so it can outlast the dispatcher's 20s bound and
+        report failure for work that in fact succeeded. Without a token, the retry that
+        follows creates a second version and a second full copy of the labels — the caller
+        having been told the first one failed."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        first = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "label": "reviewed", "clientToken": "tok-1"}}
+        )
+        # The caller saw a 504 and tried again. The dialog no longer holds the label.
+        second = test_set_index.publish_test_set_version(
+            {"input": {"testSetId": "ts1", "clientToken": "tok-1"}}
+        )
+
+        assert second["version"] == first["version"] == 1
+        # The version that exists is the one the first try created, label included.
+        assert second["label"] == "reviewed"
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1]
+
+    def test_publishing_without_a_token_still_publishes_every_time(self, labeling_env):
+        # Two deliberate publishes are two versions; the token is opt-in and its absence
+        # must not dedupe anything.
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        assert [
+            v["version"]
+            for v in test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        ] == [1, 2]
+
+    def test_a_published_version_survives_a_regenerate_then_annotate(
+        self, labeling_env
+    ):
+        """The sequence that made a published version mutable.
+
+        Publish v1; regenerate the draft labels, which rewrites ``{id}/baseline/``
+        wholesale; then open an annotation draft. Taking the copy at draft-open time
+        snapshotted the *regenerated* labels as v1, so v1's content became labels that
+        were never v1's — and a run pinned to v1 scored against them, with nothing in the
+        version row changing to say so.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="as-published")
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        # Generate draft labels: the live baselines are rewritten in place.
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/a.pdf/sections/1/result.json",
+            Body=json.dumps({"inference_result": {"total": "regenerated"}}).encode(),
+        )
+
+        # A colleague clicks Annotate.
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert (result["baseVersion"], result["draftVersion"]) == (1, 2)
+        frozen = json.loads(
+            s3.get_object(
+                Bucket="test-set-bucket",
+                Key="ts1/versions/1/baseline/a.pdf/sections/1/result.json",
+            )["Body"].read()
+        )
+        assert frozen["inference_result"]["total"] == "as-published"
+        # Nothing to copy: v1 was frozen when it was published.
+        assert result["snapshotObjectCount"] == 0
+
+    def test_a_version_published_before_snapshots_existed_is_backfilled_once(
+        self, labeling_env
+    ):
+        """An existing deployment's v1 rows have no snapshot, so the number refers to
+        nothing. The current labels are the most that can still be captured for it —
+        they are not what was published, and the row's missing snapshotObjectCount is
+        what says so.
+        """
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3, value="unknown-provenance")
+        # A version row as an older release wrote it: no snapshotObjectCount, no bytes.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "version#000001",
+                "ItemType": "testset_version",
+                "testSetId": "ts1",
+                "versionNumber": 1,
+                "label": "v1",
+            }
+        )
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET publishedVersion = :v, latestVersion = :v",
+            ExpressionAttributeValues={":v": 1},
+        )
+
+        result = test_set_index.open_test_set_annotation_draft(
+            {"input": {"testSetId": "ts1"}}
+        )
+
+        assert result["snapshotObjectCount"] == 1
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/")
+        # Detectable, not repairable: the row still reports no publish-time snapshot.
+        [version] = test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        assert version["snapshotObjectCount"] is None
+        # But it does have labels to score against now, which is a different question and
+        # the one a run pinned to it turns on.
+        assert version["hasStoredLabels"] is True
+
+    def test_whether_a_version_has_stored_labels_is_not_its_object_count(
+        self, labeling_env
+    ):
+        """The two disagree in both directions, so a reader must not substitute one.
+
+        A version published from a set with no labels yet has a count of 0 and an empty
+        prefix — a run pinned to it scores the set's current labels. A version published
+        before publishing copied anything has no count at all and yet does have labels once
+        annotation backfilled them. Reading the count as "has content" is wrong for the
+        first; reading its absence that way is wrong for the second.
+        """
+        table, s3 = labeling_env
+        # A set with a document but no ground truth for it.
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/a.pdf", Body=b"x")
+
+        test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        [version] = test_set_index.get_test_set_versions({"testSetId": "ts1"})
+        assert version["snapshotObjectCount"] == 0
+        assert version["hasStoredLabels"] is False
+
+    def test_an_oversize_set_is_refused_at_publish_with_no_version_written(
+        self, labeling_env, monkeypatch
+    ):
+        """The copy is bounded, so publishing a set too large to freeze inside one
+        request has to refuse rather than write a version it cannot back with bytes."""
+        table, s3 = labeling_env
+        self._seed_labelled_set(table, s3)
+        monkeypatch.setattr(test_set_index, "_SNAPSHOT_MAX_OBJECTS", 0)
+
+        with pytest.raises(Exception, match="more than the 0"):
+            test_set_index.publish_test_set_version({"input": {"testSetId": "ts1"}})
+
+        assert "Item" not in table.get_item(
+            Key={"PK": "testset#ts1", "SK": "version#000001"}
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta.get("publishedVersion") is None
+        assert self._baseline_keys(s3, "ts1/versions/1/baseline/") == []
 
     def test_a_set_with_no_published_version_gets_its_arriving_labels_captured(
         self, labeling_env

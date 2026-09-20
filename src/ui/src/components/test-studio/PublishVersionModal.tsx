@@ -21,10 +21,17 @@
  * defaults to the set's *current* labels precisely so the ordinary loop scores the
  * corrections just made rather than the last published state.
  *
- * ⚠️ Nor does publishing copy any bytes — it writes a DynamoDB row. The baselines a
- * version stands for are snapshotted later, by the annotation draft path, from
- * whatever is in the set at that moment. The wording here stays inside what the
- * backend actually guarantees.
+ * Publishing does copy bytes: the resolver writes the version row *and* copies the set's
+ * labels to `{testSetId}/versions/{n}/baseline/`, which is why the dialog can say the
+ * version's content is settled and why it warns that a large set takes a moment. The copy
+ * is bounded — an oversize set is refused with that as the reason rather than recorded as
+ * a version it cannot back with bytes — so the mutation can fail for a reason that is not
+ * the caller's fault, and the error is surfaced rather than swallowed.
+ *
+ * ⚠️ A failure message does not prove nothing happened. The copy can outlast the request
+ * budget the dispatcher allows, so the caller can be told it failed after it succeeded.
+ * `TestSetDetail` therefore sends a `clientToken` that survives a retry, which is what stops
+ * the retry creating a second version and a second copy — do not drop it from the call.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -102,9 +109,10 @@ const PublishVersionModal = ({
     >
       <SpaceBetween size="m">
         <Box>
-          Records a numbered version of {documentCount === null ? 'this test set' : `this test set's ${documentCount} document(s)`} and the
-          ground truth they currently carry, so a test run can name the state of the labels it was scored against. The version number and
-          its label and notes are immutable once written.
+          Records a numbered version of {documentCount === null ? 'this test set' : `this test set's ${documentCount} document(s)`} and
+          copies the ground truth they currently carry, so a test run can name the state of the labels it was scored against. Later
+          annotation and later draft-labelling runs do not change what this version holds. Publishing a large set takes a moment while the
+          labels are copied.
         </Box>
 
         <FormField label="Label (optional)" description="A short name for this version, shown wherever versions are listed.">

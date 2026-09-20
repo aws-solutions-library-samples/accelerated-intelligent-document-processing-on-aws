@@ -10,6 +10,7 @@ import handlePrint from './PrintUtils';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import { getErrorMessage } from '../../utils/errorUtils';
+import { testSetVersionOptions, CURRENT_LABELS, type TestSetVersionOption } from './testSetVersionOptions';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GqlResult = { data: Record<string, any> };
@@ -57,7 +58,7 @@ const TestRunner = ({
    * published version, the counterpart of pinning a configuration revision above:
    * both are what make two runs comparable once the thing they measure has moved.
    */
-  const [testSetVersions, setTestSetVersions] = useState<{ version: number; label?: string | null }[]>([]);
+  const [testSetVersions, setTestSetVersions] = useState<TestSetVersionOption[]>([]);
   const [selectedTestSetVersion, setSelectedTestSetVersion] = useState<number | null>(null);
 
   useEffect(() => {
@@ -69,11 +70,11 @@ const TestRunner = ({
     (async () => {
       try {
         const result = (await client.graphql({ query: getTestSetVersions, variables: { testSetId: id } })) as {
-          data?: { getTestSetVersions?: ({ version?: number | null; label?: string | null } | null)[] | null };
+          data?: { getTestSetVersions?: (Partial<TestSetVersionOption> | null)[] | null };
         };
         if (cancelled) return;
         const versions = (result.data?.getTestSetVersions ?? [])
-          .filter((v): v is { version: number; label?: string | null } => v?.version != null)
+          .filter((v): v is TestSetVersionOption => v?.version != null)
           .sort((a, b) => b.version - a.version);
         setTestSetVersions(versions);
       } catch (err) {
@@ -86,18 +87,12 @@ const TestRunner = ({
     };
   }, [selectedTestSet?.value]);
 
-  const CURRENT_LABELS = '__current__';
-  const testSetVersionOptions: SelectProps.Option[] = [
-    { value: CURRENT_LABELS, label: 'Current labels', description: 'Including any annotation in progress' },
-    ...testSetVersions.map((v) => ({
-      value: String(v.version),
-      label: `v${v.version}`,
-      description: v.label ?? undefined,
-    })),
-  ];
+  // Built in testSetVersionOptions.ts, which also explains why a version with no stored
+  // labels is called out here rather than discovered in the copier's log after the run.
+  const versionOptionsForSet = testSetVersionOptions(testSetVersions);
   const selectedTestSetVersionOption =
-    testSetVersionOptions.find((o) => o.value === (selectedTestSetVersion === null ? CURRENT_LABELS : String(selectedTestSetVersion))) ??
-    testSetVersionOptions[0];
+    versionOptionsForSet.find((o) => o.value === (selectedTestSetVersion === null ? CURRENT_LABELS : String(selectedTestSetVersion))) ??
+    versionOptionsForSet[0];
   const [numberOfFiles, setNumberOfFiles] = useState('');
   const [context, setContext] = useState('');
   const [error, setError] = useState('');
@@ -327,7 +322,7 @@ const TestRunner = ({
             onChange={({ detail }) =>
               setSelectedTestSetVersion(detail.selectedOption.value === CURRENT_LABELS ? null : Number(detail.selectedOption.value))
             }
-            options={testSetVersionOptions}
+            options={versionOptionsForSet}
             disabled={loading || !selectedTestSet}
           />
         </FormField>

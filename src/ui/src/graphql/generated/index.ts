@@ -995,6 +995,8 @@ export const getTestSetVersions = /* GraphQL */ `
       label
       notes
       fileCount
+      snapshotObjectCount
+      hasStoredLabels
       createdAt
       createdBy
     }

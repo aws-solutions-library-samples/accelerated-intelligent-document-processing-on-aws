@@ -797,12 +797,30 @@ documents it covers, and takes an optional **Label** and **Notes** that appear
 wherever versions are listed.
 
 Publishing records the current document and label state as a numbered version
-(`v1`, `v2`, …) so a test run can name the state of the labels it was scored against,
-and by default also marks it the **active reference** — the version the **Test Sets**
-table reports as that set's reference point. Clear **Make this the active reference**
-to publish without moving that pointer. Publishing does not require every document to
-be reviewed; unreviewed fields keep their machine labels and remain flagged as such,
-which supports time-boxed "first pass" golden sets.
+(`v1`, `v2`, …) and copies the set's labels to `{testSetId}/versions/{n}/baseline/`, so
+the number names a fixed set of bytes that later annotation and later draft-labelling runs
+cannot change. By default it also marks the version the **active reference** — the version
+the **Test Sets** table reports as that set's reference point. Clear **Make this the
+active reference** to publish without moving that pointer. Publishing does not require
+every document to be reviewed; unreviewed fields keep their machine labels and remain
+flagged as such, which supports time-boxed "first pass" golden sets.
+
+The copy is what makes publishing take a moment on a large set, and it has a ceiling of
+3000 baseline objects — roughly what fits the request budget the UI's API gateway allows.
+A set above that is **refused**, with that as the reason, rather than recorded as a version
+whose content was never captured. Publishing such a set needs an asynchronous snapshot,
+which is not available yet.
+
+Retrying a publish that reported an error is safe. The copy can outlast the request budget,
+so a failure message does not always mean nothing happened; a retry from the same dialog
+returns the version the first attempt created, if it created one, instead of making a second
+version and a second copy.
+
+⚠️ **A version published before 0.6.10 has no such copy.** Its number refers to whatever
+the set's labels were when annotation was next started on it, which is not necessarily the
+state that was published, and the original state cannot be recovered. Versions published
+from 0.6.10 onward report how many objects they froze; earlier ones report nothing, which
+is how you tell them apart.
 
 ⚠️ **The active reference does not decide what a test run is scored against.** A run
 is scored against whichever version you pick in the runner, and that control defaults
@@ -840,7 +858,19 @@ revision, and for the same reason: two runs are comparable only when both name w
 they measured against, so a metric delta can be attributed to the configuration or to
 the ground truth rather than left ambiguous.
 
-> **Storage.** Every version transition copies the set's whole baseline tree under
+A version with no stored labels has nothing to stage, so a run pinned to it falls back to
+the set's **current** labels while still recording the version number it was asked for. Two
+kinds of version are in that state: one published before 0.6.10 that nobody has annotated
+since, and one published from a set that had no labels yet. The version picker marks both,
+so the choice is visible before the run rather than only in the file copier's log
+afterwards.
+
+Note that a version published before 0.6.10 on a set that *has* been annotated since does
+have stored labels — they were captured when annotation started — so a run pinned to it
+scores those. They are not necessarily the labels the version was published with, which is
+the caveat above.
+
+> **Storage.** Every publish copies the set's whole baseline tree under
 > `versions/{n}/baseline/`, and nothing prunes old versions; deleting the test set
 > removes them all. For a 2000-document set that is a full copy of its labels per
 > version — cheap in absolute terms, but it grows with every publish.
@@ -1303,12 +1333,12 @@ Correcting ground truth changes what every previously-scored run was measured ag
 starting an annotation session is an explicit step: **Start annotating** opens a *version
 transition*, shown in the header as e.g. `v1 → v2`.
 
-Agreeing to it is what preserves the labels you are moving away from. The set's current
-baselines are copied to `{testSetId}/versions/{n}/baseline/`, so `v1` keeps meaning the
-bytes it meant when a run scored against it. A set that arrived with its own ground truth
-and was never published gets that state captured first as `v1` — without
-it, the labels a set was uploaded with are exactly the ones overwritten with no record of
-what they were.
+Agreeing to it is what names the version you are moving away from. The labels themselves
+were already copied to `{testSetId}/versions/{n}/baseline/` when that version was
+published, so `v1` keeps meaning the bytes it meant when a run scored against it, and
+starting a session does not disturb them. A set that arrived with its own ground truth and
+was never published gets that state published first as `v1` — without it, the labels a set
+was uploaded with are exactly the ones overwritten with no record of what they were.
 
 Until the transition is open the editor is read-only. You can read every document and its
 labels; you cannot change them. That ordering is the point: editing first and versioning

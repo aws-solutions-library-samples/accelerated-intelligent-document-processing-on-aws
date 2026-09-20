@@ -5,6 +5,8 @@ query GetTestSetVersions($testSetId: String!) {
     label
     notes
     fileCount
+    snapshotObjectCount
+    hasStoredLabels
     createdAt
     createdBy
   }

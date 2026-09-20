@@ -601,16 +601,31 @@ const TestSetDetail = (): React.JSX.Element => {
     }
   };
 
+  /**
+   * Identifies one publish *attempt*, across however many tries it takes.
+   *
+   * Publishing copies the set's labels, and the dispatcher gives up at 20s while the
+   * resolver runs on — so an error here does not mean nothing happened. Retrying under the
+   * same token returns the version the first try created, if it created one, instead of
+   * making a second version and a second full copy. Retired on success, so the next publish
+   * is a new attempt.
+   */
+  const publishAttemptToken = useRef<string | null>(null);
+
   const handlePublishVersion = async (input: PublishVersionInput) => {
     if (!testSetId) return;
+    if (!publishAttemptToken.current) {
+      publishAttemptToken.current = globalThis.crypto?.randomUUID?.() ?? `publish-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
     setIsPublishing(true);
     setError(null);
     try {
       const response = await client.graphql({
         query: publishTestSetVersion,
-        variables: { input: { testSetId, ...input } },
+        variables: { input: { testSetId, ...input, clientToken: publishAttemptToken.current } },
       });
       const published = response.data?.publishTestSetVersion;
+      publishAttemptToken.current = null;
       setShowPublishModal(false);
       setPublishedMessage(
         input.setAsActiveReference
@@ -760,8 +775,10 @@ const TestSetDetail = (): React.JSX.Element => {
    * why — including the transient one, since a control that is dim for a reason it
    * does not give is the outcome this is meant to avoid.
    *
-   * A version records the labels as they stand, so the conditions are about whether
-   * the set has settled. Permission is a separate check on the control itself.
+   * A version copies the labels as they stand, so the conditions are about whether the
+   * set has settled: a copy taken while something is still writing freezes a half-written
+   * set, permanently and under a version number. Permission is a separate check on the
+   * control itself.
    *
    * The status branch comes before the empty check because a set still being copied
    * into has no documents *yet*, and "still copying" is the more useful of the two

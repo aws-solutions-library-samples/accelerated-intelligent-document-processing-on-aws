@@ -155,9 +155,20 @@ _S3_DATAPLANE_BOUNDS = (
 # Every actual S3 API call this resolver makes.
 # Fan-out for the baseline snapshot, and the ceiling it can reach inside one request.
 _SNAPSHOT_CONCURRENCY = 16
-# ~16 concurrent server-side copies fit roughly this many objects inside the
-# dispatcher's 29-second budget with margin; see _snapshot_baselines.
-_SNAPSHOT_MAX_OBJECTS = 6000
+# The ceiling is set by the **dispatcher's** budget, not the function's Timeout: the
+# dispatcher bounds its invoke at _RESOLVER_READ_TIMEOUT_SECONDS = 20 (see
+# http_api_dispatcher) so that it, rather than API Gateway's 29s clock, loses the race and
+# can return a labelled 504. Past 20s the caller has already been told the request failed
+# while this function keeps working — and publishing, unlike opening a draft, then leaves a
+# version behind that the caller does not know exists.
+#
+# Derived, not measured: at 16-way fan-out and a pessimistic 50ms per server-side copy,
+# N objects take N/16 x 0.05s, so 3000 is ~9.4s. The rest of the 20s absorbs a cold start,
+# the LIST pagination, the reservation, the version write and the pointer writes. If a real
+# set needs more than this, the lever is the fan-out above (with max_pool_connections to
+# match) or the asynchronous snapshot the refusal message names — not a larger ceiling at
+# this concurrency.
+_SNAPSHOT_MAX_OBJECTS = 3000
 
 s3_config = Config(
     signature_version="s3v4",
@@ -747,8 +758,16 @@ def add_documents_to_test_set_from_upload(args):
 # ---------------------------------------------------------------------------
 # Versioning: a test set has a mutable working draft (the SK='metadata' item)
 # plus zero or more immutable published versions (SK='version#<n>'). Publishing
-# freezes the current document + label state into a numbered version and, by
-# default, marks it the "active reference" that scoring runs compare against.
+# writes the version row *and* copies the set's baselines to
+# ``{id}/versions/{n}/baseline/``, so the number names bytes that cannot change
+# afterwards; by default it also marks the version the "active reference", the
+# reference point the Test Sets table reports (which version a run scores against
+# is chosen per run — see test_runner).
+#
+# The copy belongs here because this is the call that promises a version's
+# content. Deferring it to whenever annotation next opens a draft preserves
+# whatever the baselines are *then*, which is a different set of labels if
+# anything rewrote them in between — draft labelling rewrites them wholesale.
 #
 # Test sets with no version items read as latestVersion=0 / activeReference=None,
 # so no backfill is required.
@@ -781,7 +800,7 @@ def _list_version_items(test_set_id):
     return items
 
 
-def _version_to_result(item):
+def _version_to_result(item, has_stored_labels=None):
     return {
         "testSetId": item.get("testSetId"),
         "version": item.get("versionNumber"),
@@ -790,30 +809,98 @@ def _version_to_result(item):
         "fileCount": item.get("fileCount"),
         "createdAt": item.get("createdAt"),
         "createdBy": item.get("createdBy"),
+        # How many baseline objects publishing copied into this version. **null** means the
+        # version was published before publishing copied anything; zero means the set
+        # genuinely had no labels yet. Provenance, not the answer to "can a run score
+        # against this version" — for that, read hasStoredLabels.
+        "snapshotObjectCount": item.get("snapshotObjectCount"),
+        # Whether ``{id}/versions/{n}/baseline/`` holds anything, which is the only
+        # question that decides what a run pinned to this version scores against: the file
+        # copier stages the prefix when it is non-empty and falls back to the set's current
+        # labels when it is not. It is **not** derivable from snapshotObjectCount in either
+        # direction — a version published before publishing copied anything has no count
+        # and yet does have bytes once annotation backfilled them, and a version published
+        # from a set with no labels yet has a count of zero and no bytes at all.
+        "hasStoredLabels": has_stored_labels,
     }
 
 
 def get_test_set_versions(args):
-    """List the immutable published versions of a test set (ascending)."""
+    """List the immutable published versions of a test set (ascending).
+
+    Probes each version's snapshot prefix, because whether a version has stored labels is
+    what decides whether pinning a run to it does anything, and the row cannot answer it
+    (see ``hasStoredLabels``). One LIST per version, and a set has a handful of versions —
+    the same order of cost as the query that fetched them.
+    """
     test_set_id = args["testSetId"]
-    return [_version_to_result(it) for it in _list_version_items(test_set_id)]
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    results = []
+    for item in _list_version_items(test_set_id):
+        version = _as_int(item.get("versionNumber"))
+        stored = (
+            _version_snapshot_exists(test_set_bucket, test_set_id, version)
+            if version
+            else None
+        )
+        results.append(_version_to_result(item, has_stored_labels=stored))
+    return results
 
 
 def publish_test_set_version(args, event=None):
     """Freeze the current test-set state into a new immutable version.
 
+    Both halves of "freeze": the version row records the number, label and file count,
+    and the set's baselines are copied to ``{id}/versions/{n}/baseline/`` so the number
+    refers to bytes. A run pinned to the version reads that prefix (see
+    ``test_file_copier._resolve_baseline_folder``), so what it scores against cannot be
+    changed by later annotation or by a draft-labelling run.
+
+    The copy is bounded and refused rather than truncated for a set too large to
+    snapshot inside one request; see ``_snapshot_baselines``. It happens after the
+    version number is reserved and before the version row is written, so a failure
+    leaves a numbering gap rather than a version whose content was never captured.
+
     Optionally (default true) set the new version as the active reference. The
     metadata pointer tracks latestVersion / publishedVersion / activeReference.
+
+    ``clientToken`` makes a retry safe. The dispatcher abandons the request at 20s while
+    this function runs on to its own Timeout, so a caller can be told the publish failed
+    after it in fact succeeded; publishing again would then create a second version and a
+    second full copy of the labels. A token already recorded on a version returns that
+    version instead. The lookup is not transactional, so two *concurrent* calls sharing a
+    token could still both proceed — but a retry after an error is sequential, which is the
+    case this exists for.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
     label = input_data.get("label")
     notes = input_data.get("notes")
     set_active = input_data.get("setAsActiveReference", True)
+    client_token = input_data.get("clientToken")
 
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise Exception(f"Test set '{test_set_id}' not found")
+
+    if client_token:
+        for existing in _list_version_items(test_set_id):
+            if existing.get("clientToken") == client_token:
+                logger.info(
+                    f"Test set '{test_set_id}' already has a version for this client "
+                    f"token (v{existing.get('versionNumber')}); returning it rather than "
+                    "publishing again"
+                )
+                replay = _version_to_result(
+                    existing,
+                    has_stored_labels=_version_snapshot_exists(
+                        os.environ["TEST_SET_BUCKET"],
+                        test_set_id,
+                        _as_int(existing.get("versionNumber")),
+                    ),
+                )
+                replay["activeReference"] = _as_int(meta.get("activeReference"))
+                return replay
 
     if (_as_int(meta.get("fileCount")) or 0) <= 0:
         raise Exception(
@@ -841,6 +928,13 @@ def publish_test_set_version(args, event=None):
         raise
     next_version = int(reserve["Attributes"]["latestVersion"])
 
+    # Copy the labels this version names, before the row that names them exists. A
+    # failure here leaves the reserved number unused — the same numbering gap a failed
+    # version write leaves — rather than a published version pointing at no bytes.
+    snapshot_count = _snapshot_baselines(
+        os.environ["TEST_SET_BUCKET"], test_set_id, next_version
+    )
+
     now = datetime.utcnow().isoformat() + "Z"
     created_by = None
     if event:
@@ -862,6 +956,13 @@ def publish_test_set_version(args, event=None):
         # The configuration the set's labels were produced under (#759): the
         # bound field was never written, so this used to be always null.
         "configVersion": _resolve_set_config_version(test_set_id, meta)[0],
+        # What was copied, recorded on the row so "is this version's content actually
+        # frozen?" is answerable without listing S3. A row missing this attribute was
+        # published before publishing copied anything.
+        "snapshotObjectCount": snapshot_count,
+        # Recorded so a retry of this same publish returns this version instead of making
+        # another one. Absent when the caller supplied no token.
+        **({"clientToken": client_token} if client_token else {}),
         "createdAt": now,
         "createdBy": created_by,
     }
@@ -907,24 +1008,44 @@ def publish_test_set_version(args, event=None):
 
     logger.info(
         f"Published test set '{test_set_id}' version {next_version} "
-        f"(active={set_active})"
+        f"(active={set_active}, {snapshot_count} baseline object(s) frozen)"
     )
-    result = _version_to_result(version_item)
+    # Known without a probe: this call did the copy, so the prefix holds exactly what it
+    # copied. Zero objects means the set had no labels to freeze and the prefix is empty.
+    result = _version_to_result(version_item, has_stored_labels=snapshot_count > 0)
     result["activeReference"] = (
         next_version if set_active else meta.get("activeReference")
     )
     return result
 
 
+def _version_snapshot_exists(test_set_bucket, test_set_id, version):
+    """Whether ``{id}/versions/{version}/baseline/`` already holds objects.
+
+    One LIST capped at a single key — the same probe
+    ``test_file_copier._resolve_baseline_folder`` uses to decide which baseline folder a
+    pinned run scores against, so the two agree on what "this version has content"
+    means.
+    """
+    listing = s3_client.list_objects_v2(
+        Bucket=test_set_bucket,
+        Prefix=f"{test_set_id}/versions/{int(version)}/baseline/",
+        MaxKeys=1,
+    )
+    return bool(listing.get("KeyCount"))
+
+
 def _snapshot_baselines(test_set_bucket, test_set_id, version):
     """Copy the live baselines to ``{id}/versions/{version}/baseline/``.
 
     Server-side copies, paginated: a 2000-document set has thousands of baseline
-    objects, which is exactly why this runs once when a draft opens rather than on every
-    save. Returns the number of objects copied.
+    objects, which is exactly why this runs when a version is published rather than on
+    every save. Returns the number of objects copied.
 
     Idempotent by overwrite: re-copying the same keys is harmless, so a retry after a
-    partial failure converges instead of needing cleanup.
+    partial failure converges instead of needing cleanup. That property is not a licence
+    to re-run it over a version that already has content — see
+    ``open_test_set_annotation_draft``.
     """
     source_prefix = f"{test_set_id}/baseline/"
     dest_prefix = f"{test_set_id}/versions/{int(version)}/baseline/"
@@ -957,12 +1078,12 @@ def _snapshot_baselines(test_set_bucket, test_set_id, version):
         )
 
     # Bounded fan-out. Each copy is server-side, so the cost is a round trip, and
-    # this runs inside a synchronous request the dispatcher abandons after 29s: a
+    # this runs inside a synchronous request the dispatcher abandons after 20s: a
     # sequential pass over a few thousand objects did not fit, and left the draft
     # unrecorded while the resolver kept copying to its own timeout. Sixteen at a
-    # time fits the set sizes seen so far; beyond that this belongs in an
-    # asynchronous job the UI polls. `list()` re-raises the first failure, so a
-    # partial snapshot is reported as an error rather than as a version.
+    # time fits the ceiling above; beyond that this belongs in an asynchronous job
+    # the UI polls. `list()` re-raises the first failure, so a partial snapshot is
+    # reported as an error rather than as a version.
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=_SNAPSHOT_CONCURRENCY
     ) as pool:
@@ -982,29 +1103,28 @@ def open_test_set_annotation_draft(args, event=None):
     Starting annotation on a set, even one that already has ground truth, commits to a
     new version of it, and the queue link should name that transition.
 
-    The problem underneath is worse than the queue link. A version was
-    a **DynamoDB row only** — ``publish_test_set_version`` records a number, a label and
-    a file count, and copies nothing. Annotation writes straight to ``{id}/baseline/``.
-    So a run stamped ``TestSetVersion = 3`` could not be reproduced against the labels it
-    actually scored: the number was immutable, its content was not.
-
-    This makes the transition explicit and preserves what it moves away from:
+    Annotation writes straight to ``{id}/baseline/``, so a run stamped
+    ``TestSetVersion = 3`` is reproducible only if version 3's labels were copied
+    somewhere before they were edited. This makes the transition explicit and records
+    what it moves away from:
 
       * ``baseVersion`` is the state being left. A set that has never been published gets
         its arriving labels published as a version first — the "even if we still have
         ground truth" case, and the common one for an uploaded set.
-      * that state is snapshotted to ``{id}/versions/{baseVersion}/baseline/``, so the
-        number now refers to bytes.
       * ``draftVersion`` is ``baseVersion + 1``, recorded on the metadata row. The queue
         link carries it, so a link says which transition it belongs to.
 
+    **The copy belongs to publishing, not to this call.** ``publish_test_set_version``
+    freezes the baselines as part of recording a version, so by the time a draft opens,
+    ``baseVersion`` already refers to bytes. Copying again here is what made a published
+    version mutable: it replaced the version's labels with whatever the live baselines
+    were at that later moment, which is a different set of labels whenever anything
+    rewrote them in between — draft labelling rewrites them wholesale. So the copy runs
+    here only as a **backfill**, for a version published before publishing copied
+    anything, where the alternative is a number that refers to nothing at all.
+
     Idempotent: opening a draft that is already open returns it and copies nothing, which
     matters because the annotate view calls this on entry.
-
-    Why an explicit call rather than copy-on-write: the editor saves a baseline through a
-    **presigned POST straight from the browser**, so no Lambda observes the write. There
-    is no server-side moment to hang a lazy snapshot on — and making the commitment
-    visible is what was being asked for anyway.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -1030,6 +1150,7 @@ def open_test_set_annotation_draft(args, event=None):
             "alreadyOpen": True,
         }
 
+    published = None
     base_version = _as_int(meta.get("publishedVersion"))
     if not base_version:
         # Never published. Publishing the arriving state first is what stops the labels
@@ -1059,7 +1180,25 @@ def open_test_set_annotation_draft(args, event=None):
         )
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
-    copied = _snapshot_baselines(test_set_bucket, test_set_id, base_version)
+    if published is not None:
+        # The publish above froze the baselines as part of recording the version.
+        copied = int(published.get("snapshotObjectCount") or 0)
+    elif _version_snapshot_exists(test_set_bucket, test_set_id, base_version):
+        # Already frozen, by the publish that created it. Re-copying here would replace
+        # the version's labels with the current ones.
+        copied = 0
+    else:
+        # Published before publishing copied anything: the number refers to nothing, and
+        # capturing the current state is the most that can still be done for it. It is
+        # not the state that was published, and nothing can recover that — the version
+        # row's missing snapshotObjectCount is what distinguishes the two.
+        copied = _snapshot_baselines(test_set_bucket, test_set_id, base_version)
+        logger.warning(
+            f"Test set '{test_set_id}' version {base_version} had no baseline snapshot; "
+            f"captured the current labels ({copied} object(s)) before opening a draft. "
+            "These are the labels as they stand now, not necessarily the labels that "
+            "version was published with."
+        )
 
     # publish_test_set_version reserves ``latestVersion + 1``, and a failed version
     # write leaves a gap by design, so ``publishedVersion + 1`` can name a number the
