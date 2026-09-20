@@ -77,6 +77,8 @@ checkout and in an agent worktree.
 from __future__ import annotations
 
 import ast
+import functools
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -227,12 +229,11 @@ _TRY_NODES: tuple[type, ...] = (
 # ⚠️ When #1020 lands, that test fails and the only correct response is to delete the
 # entry it names.
 PENDING_FIX: dict[str, frozenset[str]] = {
-    "src/lambda/chat_with_document_processor/index.py": frozenset(
-        {"SCOPE1", "SCOPE2", "SCOPE3"}
-    ),
-    "src/lambda/chat_stream_processor/vendored/chat_with_document_processor.py": (
-        frozenset({"SCOPE1", "SCOPE2", "SCOPE3"})
-    ),
+    # Empty, and it should stay that way. This mapped a file to the specific rules a
+    # concurrent change was known to be fixing, so the suppression could not outlive its
+    # reason: ``test_the_pending_exemption_is_still_needed`` fails the moment a named rule
+    # stops firing. It did exactly that when the chat processor's fix landed, and the two
+    # entries came out. Add one only with the rules named, never a bare path.
 }
 
 
@@ -257,6 +258,22 @@ def repo_root() -> Path:
 # --------------------------------------------------------------------------- #
 # reading the tree
 # --------------------------------------------------------------------------- #
+@functools.lru_cache(maxsize=None)
+def _tracked_files(root: Path) -> frozenset[str]:
+    """Every path git tracks under ``root``, as repo-relative posix strings."""
+    out = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "*.py"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return frozenset(p for p in out.split("\0") if p)
+
+
+def _is_tracked(root: Path, path: Path) -> bool:
+    return path.relative_to(root).as_posix() in _tracked_files(root)
+
+
 def _python_files(root: Path):
     for scan_root in SCAN_ROOTS:
         base = root / scan_root
@@ -266,6 +283,13 @@ def _python_files(root: Path):
             if _SKIP_DIR_PARTS.intersection(path.parts):
                 continue
             if path.name.startswith("test_"):
+                continue
+            if not _is_tracked(root, path):
+                # Gitignored build output, not source. Extensions vendor an entire
+                # ``idp_common_pkg`` when built, so scanning untracked files makes this
+                # gate's result depend on whether the developer happens to have built
+                # one — findings CI could never reproduce, and silence where a real
+                # source file is missing from git.
                 continue
             yield path
 
