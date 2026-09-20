@@ -81,26 +81,59 @@ export const SUBSCHEMA_MAP_KEYWORDS = ['properties', 'patternProperties', 'depen
 export const DESIGNER_ONLY_KEYS = ['id', 'name', 'schemaId'] as const;
 
 /**
- * Keywords that make a definition describe its own shape, so no `type` should be invented
- * for it. `{"$ref": …}` is an alias; `{"enum": [...]}` and `{"const": …}` constrain a
- * value whose type is implied. Stamping `type: "object"` onto any of them publishes a
- * contradiction: a `$ref` beside a `type` is the pair `refAttributeUpdates` exists to
- * prevent, and an `enum` of strings beside `type: "object"` matches nothing.
+ * The keywords an **object** definition can carry. Anything else in a body implies some
+ * other shape, so `type: "object"` must not be invented for it.
+ *
+ * Stated as an allow-list on purpose. A deny-list of "keywords that mean something other
+ * than object" cannot be completed — `enum`, `const`, `items`, `contains`, `prefixItems`,
+ * `pattern`, `format`, `minLength`, `multipleOf`, `minimum`, `uniqueItems` and more all
+ * qualify — and every one it misses is a definition published with a type it contradicts:
+ * an array or a string can never validate against `type: "object"`.
+ *
+ * Every keyword listed is object-applicable and cannot imply another type, so a typeless
+ * body carrying only these still gets `object`, which is what keeps 113 of the 232 shipped
+ * `$defs` entries — typeless, with properties — exporting exactly as they do today. `x-`
+ * extensions are allowed by prefix for the same reason: they are type-agnostic.
  */
-export const SELF_DESCRIBING_KEYWORDS = ['$ref', 'enum', 'const', 'oneOf', 'anyOf', 'allOf', 'not', 'if'] as const;
+export const OBJECT_BODY_KEYWORDS = [
+  'type',
+  'description',
+  'properties',
+  'required',
+  'minProperties',
+  'maxProperties',
+  'additionalProperties',
+  'patternProperties',
+  'propertyNames',
+  'dependentSchemas',
+  'dependentRequired',
+  'unevaluatedProperties',
+] as const;
 
 /**
- * Keywords that describe an object defined *inline* and so must not sit beside a `$ref`,
- * which delegates the whole type designation to the referenced `$defs` entry.
+ * Keywords that must not sit beside a `$ref` in a node the designer **writes**.
  *
- * `type` is in this list. A `$ref` with a sibling `type` is legal draft 2020-12 — both
- * keywords apply — but it is the referenced entry that declares the type, and a `$defs`
- * entry may declare any type, not only `object`. So a sibling is at best redundant and at
- * worst contradictory, and either way it makes the node read back differently from one
- * without it: `resolveAttributeType` prefers a sibling `type` over following the pointer,
- * so the same attribute answers differently depending on which route created it.
+ * `type` is here because `resolveAttributeType` prefers a sibling `type` over following the
+ * pointer, so the same attribute would read back differently depending on which route
+ * created it; `properties` and `required` because they described the inline object the
+ * reference replaces, and `updateAttribute` treats an absent key as "leave it alone", so
+ * they have to be cleared explicitly or they stay underneath as orphans.
+ *
+ * ⚠️ This is a **write** list, not a sanitizer list. `refAttributeUpdates` uses it when a
+ * user turns a property into a reference, where clearing stale inline-object state is the
+ * whole point. Sanitization runs over every node of every export, including hand-authored
+ * ones, where `minProperties`, `maxProperties` and `additionalProperties` beside a `$ref`
+ * are the documented draft-2020-12 way to constrain a reference — nothing reads them, they
+ * contradict nothing, and deleting them loses authored intent. `REF_INCOMPATIBLE_KEYWORDS`
+ * below is what the sanitizer uses.
  */
 export const INLINE_OBJECT_KEYWORDS = ['type', 'properties', 'required', 'minProperties', 'maxProperties', 'additionalProperties'] as const;
+
+/**
+ * Keywords a sanitizer removes from a node that carries a `$ref`: only the ones that
+ * genuinely conflict with delegating the type designation to the referenced entry.
+ */
+export const REF_INCOMPATIBLE_KEYWORDS = ['type', 'properties', 'required'] as const;
 
 // ============================================================================
 // JSON Schema Type Values

@@ -28,8 +28,24 @@
  * forms let any line already containing one launder a real write appended to it — and such a
  * line exists today (`SchemaInspector.tsx`'s `{ $ref: undefined, … }`).
  *
- * The pattern also catches the computed form `{ [REF_FIELD]: … }`, because `REF_FIELD` is an
- * exported constant, so the natural tidy-up is also the bypass.
+ * Three write positions are matched, because an unquoted key literal is not the only way to
+ * set one:
+ *
+ *   `{ $ref: v }`         an object literal
+ *   `node.$ref = v`       a property assignment — the form pre-#1024 `SchemaBuilder` used,
+ *                         and still the live form for *clearing* a reference, so it is the
+ *                         local style a new writer is most likely to copy
+ *   `{ [REF_FIELD]: v }`  a computed key, via the exported constant or a string literal
+ *
+ * And separately, the **string literal** `'$ref'` may not appear in code outside the helper
+ * and the constants module. That is what closes the computed-key family for good: a local
+ * `const K = '$ref'` followed by `{ [K]: v }` cannot be caught by inspecting the write
+ * position, but it cannot be written without the literal. Every such literal in this tree
+ * today sits in a comment, and comment lines are skipped.
+ *
+ * Quoted keys matter because nothing normalises them away: `npm run lint` is eslint only and
+ * prettier runs as `format --write` rather than as a check, so `{ "$ref": v }` would survive
+ * review formatting.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -41,6 +57,9 @@ const UI_SRC = join(__dirname, '..', '..', '..');
 
 /** The one module allowed to write a `$ref`. */
 const HELPER_MODULE = join('components', 'json-schema-builder', 'utils', 'schemaHelpers.ts');
+
+/** And the one allowed to name the keyword as a string, since `REF_FIELD` is declared there. */
+const CONSTANTS_MODULE = join('constants', 'schemaConstants.ts');
 
 /**
  * `.js` and `.jsx` are included: ESLint lints them, and `aws-exports.js` shows the extension
@@ -59,22 +78,35 @@ const isExcluded = (relativePath: string): boolean =>
   relativePath.startsWith(join('graphql', 'generated') + sep);
 
 /**
- * A write of the `$ref` keyword: the literal key, or the computed `[REF_FIELD]` form, in a
- * position where a value follows.
+ * Every position that sets `$ref`. The assignment form excludes `===`, which is a read.
+ * `$ref?:` is not matched at all, since `?` is not whitespace.
  */
-const REF_WRITE = /(?:\$ref|\[\s*REF_FIELD\s*\])\s*:/g;
+const WRITE_POSITIONS: RegExp[] = [/\$ref\s*:/g, /\.\$ref\s*=(?!=)/g, /\[\s*(?:REF_FIELD|['"]\$ref['"])\s*\]\s*[:=]/g];
 
 /**
- * Occurrences that are not writes, tested against the matched occurrence and what follows it
- * rather than against the whole line:
- *   `$ref?: string`     — a type declaration
- *   `$ref: undefined`   — clearing a reference
- *   `$ref: _dropped`    — a destructuring rename, by convention underscore-prefixed
+ * Values that make an occurrence a clear rather than a write:
+ *   `undefined`         — removing the reference
+ *   `_name,` / `_name}` — a destructuring rename, underscore-prefixed by convention. The
+ *                         trailing delimiter is what stops `_mk(name)` — a call returning a
+ *                         pointer — from being forgiven as one.
  */
-const NON_WRITE = /^(?:\$ref\s*\?\s*:|(?:\$ref|\[\s*REF_FIELD\s*\])\s*:\s*(?:undefined\b|_))/;
+const FORGIVEN_VALUE = /^\s*(?:undefined\b|_\w*\s*[,}])/;
 
-/** A line that only talks about `$ref:` — a comment or a log message — is not a write. */
+/** The string literal, which the computed-key family cannot be written without. */
+const REF_LITERAL = /['"]\$ref['"]/;
+
+/** A comment line that only talks about `$ref` is not a write. */
 const isProse = (line: string): boolean => /^\s*(?:\/\/|\/\*|\*)/.test(line);
+
+/** Whether one line of code writes a `$ref`, judged per occurrence. */
+export const lineWritesRef = (line: string): boolean => {
+  if (isProse(line)) return false;
+  return WRITE_POSITIONS.some((pattern) =>
+    // A clear earlier in the line must not excuse a write later in it, so every occurrence is
+    // judged on the value that follows it.
+    [...line.matchAll(pattern)].some((match) => !FORGIVEN_VALUE.test(line.slice((match.index ?? 0) + match[0].length))),
+  );
+};
 
 const sourceFiles = (dir: string): string[] =>
   readdirSync(dir).flatMap((entry) => {
@@ -96,16 +128,9 @@ const refWritesOutsideHelper = (): string[] => {
     readFileSync(file, 'utf8')
       .split('\n')
       .forEach((line, index) => {
-        if (isProse(line)) return;
-        // Per occurrence: a type declaration earlier in the line must not excuse a write
-        // later in it.
-        for (const match of line.matchAll(REF_WRITE)) {
-          // `?:` is not part of the match, so re-read the keyword plus what follows it.
-          const from = line.slice(match.index);
-          if (!NON_WRITE.test(from)) {
-            offenders.push(`${rel}:${index + 1}: ${line.trim()}`);
-            return;
-          }
+        const namesTheKeyword = rel !== CONSTANTS_MODULE && !isProse(line) && REF_LITERAL.test(line);
+        if (lineWritesRef(line) || namesTheKeyword) {
+          offenders.push(`${rel}:${index + 1}: ${line.trim()}`);
         }
       });
   });
@@ -124,36 +149,43 @@ describe('$ref writers', () => {
 
   it('sees the files it is meant to police', () => {
     // A path typo, a moved directory or a broken traversal would make the assertion above
-    // pass by scanning nothing. Only the helper is named: pinning any other file would make
-    // deleting a dead component break the gate.
+    // pass by scanning nothing. Only the two allowlisted modules are named: pinning any other
+    // file would make deleting a dead component break the gate.
     const scanned = sourceFiles(UI_SRC).map((file) => relative(UI_SRC, file));
 
     expect(scanned.length).toBeGreaterThan(100);
     expect(scanned).toContain(HELPER_MODULE);
+    expect(scanned).toContain(CONSTANTS_MODULE);
     expect(scanned.some((path) => /\.jsx?$/.test(path))).toBe(true);
     expect(scanned.filter((path) => !isExcluded(path)).length).toBeGreaterThan(100);
   });
 
   /**
-   * The evasions that got past a whole-line check. Each is a write the gate must flag, run
-   * through the same matcher the scan uses, so the matcher is tested rather than assumed.
+   * The launderings a whole-line check, or a key-literal-only pattern, let through. Each is a
+   * write the gate must flag, run through the same predicate the scan uses.
    */
   it.each([
-    ['a write appended to a line that already clears a $ref', 'onUpdate({ $ref: undefined }); onUpdate({ items: { $ref: v } });'],
-    ['the computed key form', 'updates.items = { [REF_FIELD]: pointer };'],
+    ['a write appended to a line that already clears one', 'onUpdate({ $ref: undefined }); onUpdate({ items: { $ref: v } });'],
+    ['a single-quoted key', "updates.items = { '$ref': pointer };"],
+    ['a double-quoted key', 'updates.items = { "$ref": pointer };'],
+    ['a property assignment', 'node.$ref = pointer;'],
+    ['a computed key via the exported constant', 'updates.items = { [REF_FIELD]: pointer };'],
+    ['a computed key via a string literal', "updates.items = { ['$ref']: pointer };"],
+    ['a value from a call, which is not a destructuring rename', 'b = { $ref: _mk(name) };'],
     ['a write after a destructuring rename', 'const { $ref: _drop } = a; b = { $ref: pointer };'],
     ['a plain write', 'onChange({ $ref: `#/$defs/${name}` });'],
   ])('flags %s', (_description, line) => {
-    const flagged = [...line.matchAll(REF_WRITE)].some((match) => !NON_WRITE.test(line.slice(match.index)));
-    expect(flagged).toBe(true);
+    expect(lineWritesRef(line) || REF_LITERAL.test(line)).toBe(true);
   });
 
   it.each([
-    ['a type declaration', '  $ref?: string;'],
-    ['clearing a reference', "        onUpdate({ $ref: undefined, type: selectedAttribute.type || 'object' });"],
+    ['an optional type declaration', '  $ref?: string;'],
+    ['clearing a reference in an object literal', "        onUpdate({ $ref: undefined, type: selectedAttribute.type || 'object' });"],
+    ['clearing a reference by assignment', '    updates.$ref = undefined;'],
+    ['comparing a reference', '    if (attrSchema.$ref === `#/$defs/${selectedClass.name}`) {'],
     ['a destructuring rename', 'const { $ref: _drop, ...siblings } = asObj;'],
+    ['a comment that names the keyword', '   * A property written as `{"$ref": "#/$defs/Address"}` has no type.'],
   ])('forgives %s', (_description, line) => {
-    const flagged = [...line.matchAll(REF_WRITE)].some((match) => !NON_WRITE.test(line.slice(match.index)));
-    expect(flagged).toBe(false);
+    expect(lineWritesRef(line)).toBe(false);
   });
 });

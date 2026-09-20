@@ -4,8 +4,9 @@ import {
   SUBSCHEMA_KEYWORDS,
   SUBSCHEMA_MAP_KEYWORDS,
   DESIGNER_ONLY_KEYS,
-  SELF_DESCRIBING_KEYWORDS,
+  OBJECT_BODY_KEYWORDS,
   INLINE_OBJECT_KEYWORDS,
+  REF_INCOMPATIBLE_KEYWORDS,
 } from '../../../constants/schemaConstants';
 
 /** A property node as the schema builder holds it (structural, index-signature friendly). */
@@ -69,7 +70,29 @@ export const resolveAttributeType = (
   return typeof declared === 'string' && declared ? declared : TYPE_OBJECT;
 };
 
-const DEFS_POINTER_PREFIX = '#/$defs/';
+/**
+ * Whether a `$defs` body says it is something other than an object.
+ *
+ * The question three places need answering and must answer the same way: the importer and
+ * the exporter, deciding whether to supply `type: "object"` for a body that declares no
+ * type, and `addAttribute`, deciding whether giving the body a property converts it.
+ *
+ * Allow-list, not deny-list — see `OBJECT_BODY_KEYWORDS`. A declared non-object `type`
+ * settles it outright; otherwise any keyword that is not object-applicable does.
+ */
+export const declaresNonObjectShape = (body: Record<string, unknown> | undefined | null): boolean => {
+  if (!body) return false;
+  const declared = body.type;
+  if (typeof declared === 'string' && declared && declared !== TYPE_OBJECT) return true;
+  return Object.keys(body).some((keyword) => !keyword.startsWith('x-') && !(OBJECT_BODY_KEYWORDS as readonly string[]).includes(keyword));
+};
+
+/**
+ * The keywords to strip when a body that was not an object becomes one. Complete by
+ * construction: everything the allow-list does not cover described the old shape.
+ */
+export const nonObjectBodyKeywords = (body: Record<string, unknown>): string[] =>
+  Object.keys(body).filter((keyword) => !keyword.startsWith('x-') && !(OBJECT_BODY_KEYWORDS as readonly string[]).includes(keyword));
 
 /**
  * The partial update that turns a property into a reference to a shared class.
@@ -105,7 +128,7 @@ export const refAttributeUpdates = (ref: string): Record<string, unknown> => {
  * call it carry both conventions.
  */
 export const refNode = (classNameOrPointer: string): { $ref: string } => ({
-  $ref: classNameOrPointer.startsWith(DEFS_POINTER_PREFIX) ? classNameOrPointer : `${DEFS_POINTER_PREFIX}${classNameOrPointer}`,
+  $ref: classNameOrPointer.startsWith(DEFS_PREFIX) ? classNameOrPointer : `${DEFS_PREFIX}${classNameOrPointer}`,
 });
 
 const typeColorCache = new Map<string, string>();
@@ -131,13 +154,14 @@ export const sanitizeAttribute = (attr: unknown): unknown => {
   const cleaned: Record<string, unknown> = { ...(attr as Record<string, unknown>) };
   DESIGNER_ONLY_KEYS.forEach((key) => delete cleaned[key]);
 
-  // A `$ref` delegates the type designation to the referenced `$defs` entry, so
-  // the keywords describing an inline object go with it. Mirrors
-  // `sanitizeAttributeSchema` in `useSchemaDesigner`, which is what the live
-  // export path runs; a node that picked up a stray `type` (an older saved
-  // schema, or a hand edit) is normalized by either.
+  // A `$ref` delegates the type designation to the referenced `$defs` entry, so the
+  // keywords that would contradict it go with it. Mirrors `sanitizeAttributeSchema` in
+  // `useSchemaDesigner`, which is what the live export path runs, and uses the narrow list
+  // rather than `refAttributeUpdates`' write list: `minProperties`, `maxProperties` and
+  // `additionalProperties` beside a `$ref` are the documented way to constrain a
+  // reference, and this runs over hand-authored nodes too.
   if (cleaned.$ref) {
-    INLINE_OBJECT_KEYWORDS.forEach((keyword) => delete cleaned[keyword]);
+    REF_INCOMPATIBLE_KEYWORDS.forEach((keyword) => delete cleaned[keyword]);
   }
 
   SUBSCHEMA_KEYWORDS.forEach((keyword) => {
@@ -205,8 +229,7 @@ export const buildJSONSchema = (classObj: SchemaClassObj, allClasses: SchemaClas
     // is invented for a body that already describes its own shape. Mirrors `exportSchema`
     // in `useSchemaDesigner`, which is what the live save path runs.
     const { type: bodyType, properties: _bodyProps, required: bodyRequired, ...bodyConstraints } = cls.attributes || {};
-    const describesItself = SELF_DESCRIBING_KEYWORDS.some((keyword) => bodyConstraints[keyword] !== undefined);
-    const definitionType = bodyType || (describesItself ? null : TYPE_OBJECT);
+    const definitionType = bodyType || (declaresNonObjectShape(bodyConstraints) ? null : TYPE_OBJECT);
 
     defs[cls.name] = sanitizeAttribute({
       ...(definitionType ? { type: definitionType } : {}),

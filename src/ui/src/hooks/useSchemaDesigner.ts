@@ -19,11 +19,10 @@ import {
   SUBSCHEMA_KEYWORDS,
   SUBSCHEMA_MAP_KEYWORDS,
   DESIGNER_ONLY_KEYS,
-  SELF_DESCRIBING_KEYWORDS,
-  INLINE_OBJECT_KEYWORDS,
+  REF_INCOMPATIBLE_KEYWORDS,
   TYPE_OBJECT,
 } from '../constants/schemaConstants';
-import { refNode } from '../components/json-schema-builder/utils/schemaHelpers';
+import { refNode, declaresNonObjectShape, nonObjectBodyKeywords } from '../components/json-schema-builder/utils/schemaHelpers';
 
 interface JsonSchemaProperty {
   type?: string;
@@ -122,13 +121,13 @@ const extractNameFromId = (id: string | undefined): string | undefined => {
  */
 const defClassBody = (defSchema: JsonSchemaProperty, properties: Record<string, JsonSchemaProperty>): SchemaClass['attributes'] => {
   const { type, properties: _properties, required, description: _description, ...constraints } = defSchema;
-  // No type is invented for a definition that already describes its own shape — an alias
-  // or an enumeration. Defaulting here rather than at export time is still a default: the
-  // body would reach `exportSchema` already carrying `type: 'object'`, and the pointer or
-  // the enum would be published beside a type contradicting it.
-  const describesItself = SELF_DESCRIBING_KEYWORDS.some((keyword) => constraints[keyword] !== undefined);
+  // No type is invented for a definition that says it is something else — an alias, an
+  // enumeration, an array, a constrained string. Defaulting here rather than at export time
+  // is still a default: the body would reach `exportSchema` already carrying
+  // `type: 'object'`, and the pointer or the constraint would be published beside a type
+  // contradicting it.
   return {
-    ...(type ? { type } : describesItself ? {} : { type: TYPE_OBJECT }),
+    ...(type ? { type } : declaresNonObjectShape(constraints) ? {} : { type: TYPE_OBJECT }),
     ...constraints,
     properties,
     required: required || [],
@@ -534,15 +533,22 @@ export const useSchemaDesigner = (
       produce(prev, (draft) => {
         const cls = draft.find((c) => c.id === classId);
         if (cls) {
-          // Giving a scalar or enumerated definition a property converts it to an object.
-          // The alternative is a body that says `type: 'string'` and carries `properties`,
-          // or an `enum` beside them — which is the corruption the round-trip fix exists to
-          // prevent, arrived at from the editor instead of the importer. The keywords that
-          // described the old scalar go with the type that declared them.
-          if (cls.attributes.type && cls.attributes.type !== TYPE_OBJECT) {
-            SELF_DESCRIBING_KEYWORDS.forEach((keyword) => delete cls.attributes[keyword]);
-            delete cls.attributes.pattern;
-            delete cls.attributes.format;
+          // Giving a definition that is not an object a property converts it to one. The
+          // alternative is a body that says `type: 'string'` — or carries an `enum`, or a
+          // `$ref` — and `properties` at the same time: the corruption the round-trip fix
+          // exists to prevent, arrived at from the editor instead of the importer.
+          //
+          // The condition has to cover a body that declares no type at all, which is the
+          // state preserved for an alias or an enumeration, and not only one that declares
+          // a non-object type. Otherwise the `$ref` case is worse than a contradiction: the
+          // sanitizer strips `properties` beside a `$ref`, so the attribute just added
+          // disappears on export with nothing said.
+          //
+          // Every keyword the object allow-list does not cover described the old shape, so
+          // dropping exactly those is complete by construction — including the `$ref`,
+          // which is what makes this a conversion rather than a silent no-op.
+          if (declaresNonObjectShape(cls.attributes)) {
+            nonObjectBodyKeywords(cls.attributes).forEach((keyword) => delete cls.attributes[keyword]);
             cls.attributes.type = TYPE_OBJECT;
           }
           cls.attributes.properties[attributeName] = newAttribute;
@@ -673,12 +679,15 @@ export const useSchemaDesigner = (
     const sanitized: JsonSchemaProperty = { ...attrObj };
     DESIGNER_ONLY_KEYS.forEach((key) => delete sanitized[key]);
 
-    // A `$ref` delegates the whole type designation to the referenced `$defs` entry, so
-    // every keyword describing an inline object goes with it. The same list
-    // `refAttributeUpdates` clears when it writes a reference, so a node normalizes to
-    // the shape that helper would have produced however it acquired its siblings.
+    // A `$ref` delegates the type designation to the referenced `$defs` entry, so the
+    // keywords that would contradict it go with it — and only those. This runs over every
+    // node of every export, hand-authored ones included, where `minProperties`,
+    // `maxProperties` and `additionalProperties` beside a `$ref` are the documented
+    // draft-2020-12 way to constrain a reference: nothing reads them, they contradict
+    // nothing, and deleting them would lose authored intent. `refAttributeUpdates` clears
+    // the wider set because it is a *write*, where stale inline-object state is the point.
     if (sanitized.$ref) {
-      INLINE_OBJECT_KEYWORDS.forEach((keyword) => delete sanitized[keyword]);
+      REF_INCOMPATIBLE_KEYWORDS.forEach((keyword) => delete sanitized[keyword]);
     }
 
     // Recursing into `items` and `properties` alone left every composition, conditional
@@ -823,8 +832,7 @@ export const useSchemaDesigner = (
           // keeps a designer key or a nested `$ref`-beside-`type` out of `$defs`.
           const { type: bodyType, properties: _bodyProps, required: bodyRequired, ...bodyConstraints } = cls.attributes;
           const declaredType = typeof bodyType === 'string' && bodyType ? bodyType : null;
-          const describesItself = SELF_DESCRIBING_KEYWORDS.some((keyword) => bodyConstraints[keyword] !== undefined);
-          const definitionType = declaredType ?? (describesItself ? null : TYPE_OBJECT);
+          const definitionType = declaredType ?? (declaresNonObjectShape(bodyConstraints) ? null : TYPE_OBJECT);
           const carriesProperties = definitionType === TYPE_OBJECT || Object.keys(sanitizedProps).length > 0;
 
           defs[cls.name] = sanitizeAttributeSchema({

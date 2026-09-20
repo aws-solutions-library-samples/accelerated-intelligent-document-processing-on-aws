@@ -358,20 +358,118 @@ describe('useSchemaDesigner $defs definitions that are not objects', () => {
     expect(Object.keys(defs)).toContain('LineItem');
   });
 
-  it('converts a scalar definition to an object rather than contradicting itself', () => {
-    // The designer renders a scalar class as "0 attribute(s)" with a live Add-first-attribute
-    // button, so this is reachable from the UI: adding a property to a definition that says
-    // `type: 'string'` would otherwise re-create the contradiction from the editor side.
-    const { result } = renderHook(() => useSchemaDesigner(schemaWithScalarDef));
+  /**
+   * A definition that declares no type but is not an object either — an array, a constrained
+   * string, an alias — gets no type invented for it. The rule is an allow-list of
+   * object-applicable keywords rather than a list of keywords that mean something else,
+   * because the latter cannot be completed: `items`, `contains`, `prefixItems`, `pattern`,
+   * `format`, `minLength`, `multipleOf`, `uniqueItems` and more all qualify, and each one
+   * missed is a definition published with a type it contradicts.
+   */
+  it.each([
+    ['an array of a shared class', { items: { $ref: '#/$defs/Address' } }],
+    ['a contains constraint', { contains: { type: 'string' } }],
+    ['a tuple', { prefixItems: [{ type: 'string' }] }],
+    ['a constrained string', { pattern: '^[A-Z]{2}$' }],
+    ['a formatted value', { format: 'date' }],
+  ])('invents no type for a typeless definition that is %s', (_label, body) => {
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: { thing: { $ref: '#/$defs/Thing' } },
+        $defs: { Thing: body, Address: { type: 'object', properties: {} } },
+      }),
+    );
 
-    const stateCode = result.current.classes.find((c) => c.name === 'StateCode')!;
+    expect(result.current.exportSchema()![0].$defs!.Thing).toEqual(body);
+  });
+
+  it.each([
+    ['an object with properties', { properties: { q: { type: 'string' } } }],
+    ['an empty body', {}],
+    ['an object with an object-only constraint', { additionalProperties: false, properties: { q: { type: 'string' } } }],
+  ])('still supplies object for a typeless definition that is %s', (_label, body) => {
+    // 113 of the 232 `$defs` entries shipped here are typeless with properties, and every
+    // one has always been written out as an object. The allow-list is what keeps that true;
+    // `useSchemaDesigner.shippedSchemas.test.ts` measures it over the real files.
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: { thing: { $ref: '#/$defs/Thing' } },
+        $defs: { Thing: body },
+      }),
+    );
+
+    expect(result.current.exportSchema()![0].$defs!.Thing).toMatchObject({ type: 'object' });
+  });
+
+  /**
+   * `SchemaCanvas` renders "Add first attribute" for any zero-attribute class, and a
+   * definition that is not an object has no attributes — so this is the reachable route by
+   * which the editor could re-create the contradiction the round-trip fix removes.
+   *
+   * The condition has to cover a body that declares **no** type, not only one declaring a
+   * non-object type, because typeless is exactly the state preserved for an alias or an
+   * enumeration. For the alias the consequence of missing it is worse than a contradiction:
+   * the sanitizer strips `properties` beside a `$ref`, so the attribute just added would
+   * disappear on export with nothing said.
+   */
+  it.each([
+    ['a declared scalar', { type: 'string', pattern: '^a$', minLength: 2, multipleOf: 3 }],
+    ['a typeless enum', { enum: ['A', 'B'] }],
+    ['a typeless const', { const: 'x' }],
+    ['a typeless composition', { oneOf: [{ type: 'string' }] }],
+    ['an alias', { $ref: '#/$defs/Address' }],
+  ])('converts %s to an object when it gains an attribute, keeping the attribute', (_label, body) => {
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: { thing: { $ref: '#/$defs/Thing' } },
+        $defs: { Thing: body, Address: { type: 'object', properties: {} } },
+      }),
+    );
+
+    const thing = result.current.classes.find((c) => c.name === 'Thing')!;
     act(() => {
-      result.current.addAttribute(stateCode.id, 'line1', 'string');
+      result.current.addAttribute(thing.id, 'line1', 'string');
     });
 
-    expect(result.current.exportSchema()![0].$defs!.StateCode).toEqual({
+    // Nothing of the old shape survives — the residue is complete by construction, since
+    // every keyword the object allow-list does not cover described it.
+    expect(result.current.exportSchema()![0].$defs!.Thing).toEqual({
       type: 'object',
       properties: { line1: { type: 'string', description: '' } },
+    });
+  });
+
+  /**
+   * Sanitization runs over every node of every export, hand-authored ones included, so it
+   * must remove from a `$ref` node only what genuinely conflicts with delegating the type to
+   * the referenced entry. `minProperties`, `maxProperties` and `additionalProperties` beside
+   * a `$ref` are the documented draft-2020-12 way to constrain a reference: nothing reads
+   * them, they contradict nothing, and deleting them loses authored intent.
+   *
+   * `refAttributeUpdates` clears the wider set because it is a *write* — the user turning a
+   * property into a reference, where stale inline-object state is the thing being replaced.
+   * Same keywords, two different jobs, so two lists.
+   */
+  it('keeps the constraints a reference is allowed to carry', () => {
+    const { result } = renderHook(() =>
+      useSchemaDesigner({
+        ...schemaWithScalarDef,
+        properties: {
+          shipsTo: { $ref: '#/$defs/Address', additionalProperties: false, minProperties: 1, maxProperties: 3, description: 'd' },
+        },
+        $defs: { Address: { type: 'object', properties: { street: { type: 'string' } } } },
+      }),
+    );
+
+    expect(result.current.exportSchema()![0].properties!.shipsTo).toEqual({
+      $ref: '#/$defs/Address',
+      additionalProperties: false,
+      minProperties: 1,
+      maxProperties: 3,
+      description: 'd',
     });
   });
 
