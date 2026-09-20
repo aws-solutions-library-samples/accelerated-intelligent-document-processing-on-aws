@@ -983,7 +983,7 @@ summarization:
     Do not include any text, explanations, or notes outside of this JSON
     structure. The JSON must be properly formatted and parseable.
   temperature: "0.0"
-  model: us.amazon.nova-premier-v1:0
+  model: us.amazon.nova-pro-v1:0
   system_prompt: >
     You are a document summarization expert who can analyze and summarize
     documents from various domains including medical, financial, legal, and

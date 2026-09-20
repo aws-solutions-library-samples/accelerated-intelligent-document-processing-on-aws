@@ -175,6 +175,37 @@ idp-cli deploy --profile production --stack-name my-stack ...
 idp-cli deploy --stack-name my-stack --profile production ...
 ```
 
+#### Region and its precedence
+
+`--region` is a **per-command** option, not a global one, so it goes after the
+subcommand:
+
+```bash
+idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
+    --config-profile v2 --region eu-west-1
+```
+
+The resolution order is:
+
+1. `--region` on the subcommand, if given.
+2. Otherwise boto3's own chain: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
+   `region` configured for the selected `--profile` (or `AWS_PROFILE`), then EC2
+   instance metadata.
+
+Nothing substitutes a hardcoded region for the configuration commands, so a
+command run with no `--region` and no region resolvable from the environment fails
+with boto3's `NoRegionError` rather than guessing.
+
+`--region` applies to **every** AWS call a command makes, including the DynamoDB
+read/write of the Configuration Table and the S3 write of revision history — not
+only to the CloudFormation lookup that resolves the table's name. On a
+multi-region account those differ: a stack's `ConfigurationTable` physical id is
+not region-qualified, so a command that looked the name up in one region and wrote
+it in another would write to a different stack's table and report success.
+
+Three commands take no `--region` because they make no AWS calls at all:
+`config-create`, `config-validate` and `validate-manifest`.
+
 ### Machine-readable output
 
 Every payload the CLI writes to stdout for a program to read is written verbatim:

@@ -16,7 +16,7 @@ The following table shows all US to EU model mappings currently configured in th
 |----------|----------|-------|
 | `us.amazon.nova-lite-v1:0` | `eu.amazon.nova-lite-v1:0` | Direct mapping |
 | `us.amazon.nova-pro-v1:0` | `eu.amazon.nova-pro-v1:0` | Direct mapping |
-| `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping** |
+| `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | **Fallback mapping.** Nova Premier reached end of life on 2026-09-14 and cannot be selected any more; the row remains so that a configuration stored before its removal is rewritten onto a working model when the stack is deployed in an EU region |
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
 | `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-3-haiku-20240307-v1:0` | Direct mapping |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
@@ -144,8 +144,11 @@ The UpdateConfiguration lambda processes default configurations as follows:
 
 **⚠️ Critical**: Some US models are not directly available in EU regions and use fallback mappings:
 
-- **Nova Premier**: `us.amazon.nova-premier-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
 - **Claude Opus Models**: Both Opus variants → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- **Nova Premier**: `us.amazon.nova-premier-v1:0` →
+  `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`. Reachable only by a
+  configuration stored before Nova Premier reached end of life (2026-09-14); it
+  can no longer be selected, so nothing new produces this mapping.
 
 ### Implications of Fallback Mappings
 

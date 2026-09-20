@@ -60,7 +60,6 @@ DEFAULT_MODELS_TO_TEST = [
     "us.anthropic.claude-3-haiku-20240307-v1:0",
     "us.anthropic.claude-3-opus-20240229-v1:0",
     # Amazon Nova models (1st gen)
-    "us.amazon.nova-premier-v1:0",
     "us.amazon.nova-pro-v1:0",
     "us.amazon.nova-lite-v1:0",
     "us.amazon.nova-micro-v1:0",

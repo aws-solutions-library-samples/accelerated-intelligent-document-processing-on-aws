@@ -138,13 +138,24 @@ class ConfigurationManager:
         manager.save_configuration(CONFIG_TYPE_CONFIG, config, version="v1")
     """
 
-    def __init__(self, table_name: Optional[str] = None):
+    def __init__(self, table_name: Optional[str] = None, region: Optional[str] = None):
         """
         Initialize the configuration manager.
 
         Args:
             table_name: Optional override for configuration table name.
                        If not provided, uses CONFIGURATION_TABLE_NAME env var.
+            region: Optional AWS region for the DynamoDB and S3 clients this
+                   manager builds. ``None`` means "let boto3 resolve it"
+                   (AWS_REGION / AWS_DEFAULT_REGION / profile / IMDS), which is
+                   what a Lambda wants — the runtime always sets AWS_REGION.
+                   A caller that resolved the table name in a specific region
+                   MUST pass that same region: the table name is not
+                   region-qualified, so reading it back under a different region
+                   either raises ResourceNotFoundException or, on a multi-region
+                   account, silently hits a same-named table in the wrong
+                   region. That is how ``idp-cli config-upload --region`` used to
+                   report success after writing to the wrong stack.
 
         Raises:
             ValueError: If table name cannot be determined
@@ -156,13 +167,16 @@ class ConfigurationManager:
                 "environment variable or provide table_name parameter."
             )
 
-        self.dynamodb = boto3.resource("dynamodb")
+        self.region = region
+        self.dynamodb = boto3.resource("dynamodb", region_name=region)
         self.table = self.dynamodb.Table(table_name)  # pyright: ignore[reportAttributeAccessIssue]
         self.table_name = table_name
         # Revision history for Configuration Profiles. Disabled (no-op) when no
         # configuration bucket is configured, so an older deployment or a unit
-        # test that does not exercise history keeps working unchanged.
-        self.revisions = ConfigRevisionStore(self.table)
+        # test that does not exercise history keeps working unchanged. The region
+        # is passed through for the same reason as above: the revision objects
+        # live in the configuration bucket of the stack we just resolved.
+        self.revisions = ConfigRevisionStore(self.table, region=region)
         logger.info(f"ConfigurationManager initialized with table: {table_name}")
 
     def get_configuration(

@@ -1580,8 +1580,14 @@ class SummarizationConfig(BaseModel):
         description="Pipeline hooks invoked after summarization (Feature Platform)",
     )
     enabled: bool = Field(default=True, description="Enable summarization")
+    # Nova Pro, not Nova Premier. Premier reached end of life on 2026-09-14 and
+    # every call to it now fails, so it was the one default in this file that
+    # made a stack fail out of the box: no config preset under config_library/
+    # sets summarization.model, so this default is what most deployments run.
+    # Pro is the highest-tier Nova still Active and is already the default for
+    # classification and discovery below.
     model: str = Field(
-        default="us.amazon.nova-premier-v1:0",
+        default="us.amazon.nova-pro-v1:0",
         description="Bedrock model ID for summarization. Use 'LambdaHook' to invoke a custom Lambda function instead of Bedrock.",
     )
     model_lambda_hook_arn: Optional[str] = Field(
@@ -2502,8 +2508,13 @@ class ModelConfigLimitsConfig(BaseModel):
 class FactExtractionConfig(BaseModel):
     """Fact extraction configuration for rule validation"""
 
+    # Claude Sonnet 4.5, not Claude 3.5 Sonnet (20240620). That model has reached
+    # end of life — Bedrock's GetFoundationModel answers ResourceNotFoundException
+    # for it — and it is in no model enum, so it could not be selected in the UI
+    # either. No config preset under config_library/ sets this field, so the
+    # default is what rule validation actually ran on.
     model: str = Field(
-        default="us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         description="Bedrock model ID for fact extraction",
     )
     system_prompt: str = Field(
@@ -2536,8 +2547,10 @@ class FactExtractionConfig(BaseModel):
 class RuleValidationOrchestratorConfig(BaseModel):
     """Rule validation summarization configuration"""
 
+    # See FactExtractionConfig.model above: Claude 3.5 Sonnet (20240620) is
+    # end-of-life and absent from every enum.
     model: str = Field(
-        default="us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        default="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         description="Bedrock model ID for rule validation summarization",
     )
     system_prompt: str = Field(
@@ -3091,9 +3104,7 @@ class IDPConfig(BaseModel):
         description="Human-in-the-Loop review configuration (v0.6, top-level)",
     )
     summarization: SummarizationConfig = Field(
-        default_factory=lambda: SummarizationConfig(
-            model="us.amazon.nova-premier-v1:0"
-        ),
+        default_factory=lambda: SummarizationConfig(model="us.amazon.nova-pro-v1:0"),
         description="Summarization configuration",
     )
     chat: ChatConfig = Field(

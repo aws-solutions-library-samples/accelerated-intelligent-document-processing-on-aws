@@ -82,6 +82,12 @@ def resolve_content(content: Union[str, Dict[str, Any]]) -> Union[Dict[str, Any]
 MODEL_MAPPINGS = {
     "us.amazon.nova-lite-v1:0": "eu.amazon.nova-lite-v1:0",
     "us.amazon.nova-pro-v1:0": "eu.amazon.nova-pro-v1:0",
+    # Nova Premier reached end of life on 2026-09-14 and is no longer selectable
+    # in any US enum, so nothing NEW can produce this key. It is kept as a
+    # source key on purpose: a config stored before the removal may still name
+    # it, and this mapping is what rewrites such a config onto a working model
+    # when the stack is deployed in an EU region. Dropping the row would leave
+    # that stack pointing at a dead model.
     "us.amazon.nova-premier-v1:0": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "us.amazon.nova-2-lite-v1:0": "eu.amazon.nova-2-lite-v1:0",
     "us.anthropic.claude-3-haiku-20240307-v1:0": "eu.anthropic.claude-3-haiku-20240307-v1:0",

@@ -70,7 +70,7 @@ if not result["valid"]:
 |------|---------|
 | `models.py` | Typed `IDPConfig` Pydantic models (per-service config: OCR, classification, extraction, assessment, summarization, evaluation, chat, discovery, …). The source of truth for config field defaults and validation. |
 | `merge_utils.py` | Merge user config with system defaults, diff/strip helpers, and `validate_config()` with its enhanced validators. |
-| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. |
+| `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
@@ -351,6 +351,34 @@ detects a rollback (a stored `config_format_version` newer than the running
 code's) and returns SUCCESS rather than FAILED on a parse error, so the rollback
 completes instead of wedging — a genuine forward bad-config still fails loudly.
 
+## Region for the underlying clients
+
+`ConfigurationManager(table_name=…, region=…)` and
+`ConfigurationReader(table_name=…, region=…)` take an optional `region`, which is
+passed to the DynamoDB resource they build and, through `ConfigRevisionStore`, to
+the S3 client used for revision history.
+
+`region=None` means "let boto3 resolve it" — `AWS_REGION`, then
+`AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
+a Lambda, where the runtime always sets `AWS_REGION`, and it is why these classes
+worked for years without the parameter.
+
+**An out-of-region caller must pass it.** A DynamoDB table name is not
+region-qualified, so a caller that resolved `ConfigurationTable`'s physical id
+from CloudFormation in one region and then builds a manager without that region
+reads and writes *the same name* in whatever region the ambient credentials
+resolve to. On a multi-region account that is a successful write to a different
+stack's configuration table, and the caller is told it succeeded. Every
+`idp-cli config-*` command, `idp-cli bootstrap` and
+`scripts/migrate_multi_instance_baselines.py` are out-of-region callers in this
+sense; the SDK's `idp_sdk.operations.config` passes `region=self._client._region`
+at every construction site, asserted by
+`lib/idp_sdk/tests/unit/test_config_operations_region.py`.
+
+The precedence, stated once: an explicit `--region` (or `region=`) wins;
+otherwise boto3's own chain applies. No hardcoded region is substituted at any
+point in this layer.
+
 ## Adding or changing a model
 
 Model defaults and inference fields live in `models.py`, and model/feature
@@ -358,3 +386,12 @@ compatibility is enforced in `merge_utils.py`. Adding a selectable Bedrock model
 touches many other files too (template enums, pricing, UI, the bedrock client,
 docs) — follow the checklist in
 [.claude/skills/documentation.md](../../../../.claude/skills/documentation.md).
+
+Removing one that has reached **end of life** is the reverse walk of that
+checklist, with one exception: the model keeps its `pricing.yaml` entry, its
+`model_config_limits.yaml` pattern and its quota-code entries, because all three
+are consulted for whatever model a *deployed* stack's stored configuration names,
+which is a superset of what is newly selectable. What must go is every surface a
+customer can newly choose from — the template enums, the UI dropdown, the config
+presets and any `default=` in `models.py`.
+`scripts/tests/test_model_surface_consistency.py` enforces both halves.

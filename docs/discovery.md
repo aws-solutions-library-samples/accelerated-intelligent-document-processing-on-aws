@@ -564,7 +564,6 @@ The Discovery module supports comprehensive configuration through the deployment
 **Supported Models:**
 - `us.amazon.nova-lite-v1:0` - Fast, cost-effective for simple documents
 - `us.amazon.nova-pro-v1:0` - Balanced performance and accuracy (recommended)
-- `us.amazon.nova-premier-v1:0` - Highest accuracy for complex documents
 - `us.anthropic.claude-3-haiku-20240307-v1:0` - Fast processing
 - `us.anthropic.claude-3-5-sonnet-20241022-v2:0` - High accuracy
 - `us.anthropic.claude-3-7-sonnet-20250219-v1:0` - Latest capabilities
@@ -1961,7 +1960,6 @@ def validate_discovery_config(config):
     supported_models = [
         'us.amazon.nova-lite-v1:0',
         'us.amazon.nova-pro-v1:0',
-        'us.amazon.nova-premier-v1:0',
         # ... other supported models
     ]
     

@@ -231,17 +231,33 @@ current model to fix it.
 
 Two failure shapes to distinguish:
 
-- **End of life** — the model is gone for everyone. It is removed from the
-  picklists. `us.anthropic.claude-3-5-haiku-20241022-v1:0` is the most recent
-  example.
-- **Provider-legacy, account-scoped** — the model still exists but access is
-  withdrawn per account after inactivity:
+- **End of life** — the model is gone for everyone, in every region, and no
+  account can invoke it. It is removed from the picklists.
+  `us.amazon.nova-premier-v1:0` (end of life 2026-09-14) and
+  `us.anthropic.claude-3-5-haiku-20241022-v1:0` are examples. You can confirm the
+  state yourself: `aws bedrock get-foundation-model --model-identifier
+  amazon.nova-premier-v1:0` answers `ResourceNotFoundException` with the
+  end-of-life message, while a live model returns its details.
+- **Provider-legacy, account-scoped** — the model still exists and existing users
+  can still invoke it, but access is withdrawn per account after inactivity:
   `ResourceNotFoundException: Access denied. This Model is marked by provider as
   Legacy and you have not been actively using the model in the last 30 days.`
-  `us.amazon.nova-premier-v1:0` is currently in this state for some accounts. It
-  remains selectable because it works for accounts that have used it recently —
-  if you hit this error, either pick a current model or request access again in
-  the Bedrock console.
+  `us.anthropic.claude-sonnet-4-20250514-v1:0` is in this state. Such models stay
+  selectable, because they work for accounts that have used them recently — if
+  you hit this error, either pick a current model or request access again in the
+  Bedrock console.
+
+A model removed from the picklists keeps its `pricing.yaml` entry, so cost
+reports covering documents processed while it was selectable still resolve the
+right rate.
+
+**Upgrading a stack that selected a removed model.** `KnowledgeBaseModelId` is a
+CloudFormation parameter, so if your stack's current value is a model that this
+release removed from `AllowedValues`, the stack update is rejected with
+`Parameter value ... does not match AllowedValues` rather than proceeding. Pass a
+current model for that parameter in the same update. A removed model named in
+your stored *configuration* (rather than a stack parameter) does not block the
+update; repoint that stage in the Configuration editor.
 
 ## Summarization Configuration
 

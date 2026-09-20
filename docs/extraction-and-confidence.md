@@ -159,12 +159,6 @@ Agentic extraction requires models with tool-use support:
   mid-stream tool-use failure described below and the grid was abandoned, so it is
   unmeasured on this path rather than known to be incapable. Treat it as unproven
   until a benchmark run completes on it
-- ~~**Amazon Nova Premier**~~ — **not usable.** As of 2026-09-20 every
-  `us.amazon.nova-premier-v1:0` call in `us-west-2`, including a trivial baseline,
-  returns `ResourceNotFoundException: This model version has reached the end of its
-  life`. That applies to extraction, classification and confidence, not just the
-  agentic path. The model id still appears in the selectable list; pick a different
-  one.
 
 > **⚠️ Amazon Nova Lite does not complete Advanced (agentic) extraction as
 > shipped.** On the agentic path Nova Lite fails mid-stream with Bedrock's

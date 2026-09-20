@@ -212,6 +212,12 @@ pricing:
       - name: cacheWriteInputTokens
         price: "1.5E-7"
   
+  # Nova Premier reached end of life on 2026-09-14 and is no longer selectable
+  # (removed from every model enum). This entry stays because pricing lookup is
+  # retrospective: a cost report over documents processed while Premier WAS
+  # selectable resolves the rate from this table by model id, so deleting the
+  # entry would silently re-price historical runs at zero. Rates are frozen as
+  # of the EOL date and will not change again.
   - name: bedrock/us.amazon.nova-premier-v1:0
     units:
       - name: inputTokens

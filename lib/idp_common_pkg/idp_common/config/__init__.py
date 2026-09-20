@@ -38,15 +38,19 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigurationReader:
-    def __init__(self, table_name=None):
+    def __init__(self, table_name=None, region=None):
         """
         Initialize the configuration reader using the table name from environment variable or parameter
 
         Args:
             table_name: Optional override for configuration table name
+            region: Optional AWS region for the underlying clients. ``None``
+                   leaves it to boto3, which is correct in Lambda. An
+                   out-of-region caller (the CLI with an explicit ``--region``)
+                   must pass it — see ConfigurationManager's region docstring.
         """
         # Use ConfigurationManager for all operations (with built-in migration)
-        self.manager = ConfigurationManager(table_name)
+        self.manager = ConfigurationManager(table_name, region=region)
         logger.info(f"Initialized ConfigurationReader with ConfigurationManager")
 
     @overload

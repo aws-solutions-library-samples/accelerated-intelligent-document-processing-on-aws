@@ -481,7 +481,6 @@ Resources:
                   - "LambdaHook"
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -699,7 +698,6 @@ Resources:
                     - ""
                     - "us.amazon.nova-lite-v1:0"
                     - "us.amazon.nova-pro-v1:0"
-                    - "us.amazon.nova-premier-v1:0"
                     - "us.amazon.nova-2-lite-v1:0"
                     - "us.anthropic.claude-haiku-4-5-20251001-v1:0"
                     - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -1012,7 +1010,6 @@ Resources:
                     - !Ref AWS::NoValue
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1494,7 +1491,6 @@ Resources:
                       - ""
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.amazon.nova-2-lite-v1:0:priority"
                       - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1630,7 +1626,6 @@ Resources:
                     - !Ref AWS::NoValue
                   - "us.amazon.nova-lite-v1:0"
                   - "us.amazon.nova-pro-v1:0"
-                  - "us.amazon.nova-premier-v1:0"
                   - "us.amazon.nova-2-lite-v1:0"
                   - "us.amazon.nova-2-lite-v1:0:priority"
                   - "us.amazon.nova-2-lite-v1:0:flex"
@@ -1834,7 +1829,6 @@ Resources:
                         "LambdaHook",
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2092,7 +2086,6 @@ Resources:
                     "LambdaHook",
                     "us.amazon.nova-lite-v1:0",
                     "us.amazon.nova-pro-v1:0",
-                    "us.amazon.nova-premier-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2308,7 +2301,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2522,7 +2514,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2624,7 +2615,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2726,7 +2716,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -2845,7 +2834,6 @@ Resources:
                     enum:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.anthropic.claude-sonnet-4-20250514-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
@@ -3013,7 +3001,6 @@ Resources:
                     enum:
                       - "us.amazon.nova-lite-v1:0"
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.amazon.nova-2-lite-v1:0"
                       - "us.amazon.nova-2-lite-v1:0:priority"
                       - "us.amazon.nova-2-lite-v1:0:flex"
@@ -3091,7 +3078,6 @@ Resources:
                     description: Bedrock model ID for the error analysis agent (requires tool use support)
                     enum:
                       - "us.amazon.nova-pro-v1:0"
-                      - "us.amazon.nova-premier-v1:0"
                       - "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
                       - "us.anthropic.claude-sonnet-4-6"
                       - "us.anthropic.claude-sonnet-4-6:1m"
@@ -3178,7 +3164,6 @@ Resources:
                     "LambdaHook",
                     "us.amazon.nova-lite-v1:0",
                     "us.amazon.nova-pro-v1:0",
-                    "us.amazon.nova-premier-v1:0",
                     "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                     "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3351,7 +3336,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -3460,7 +3444,6 @@ Resources:
                       [
                         "us.amazon.nova-lite-v1:0",
                         "us.amazon.nova-pro-v1:0",
-                        "us.amazon.nova-premier-v1:0",
                         "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0:priority", "us.amazon.nova-2-lite-v1:0:flex", "global.amazon.nova-2-lite-v1:0", "global.amazon.nova-2-lite-v1:0:priority", "global.amazon.nova-2-lite-v1:0:flex",
                         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
