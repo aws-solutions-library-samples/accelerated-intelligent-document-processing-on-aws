@@ -71,6 +71,51 @@ with curated evaluation baselines. Real-world messiness the synthetic set can't 
 > bank-statement docs), and those are run under their own `--class` in a
 > separate invocation.
 
+## Setup failures do not silently become results
+
+A cell may only run if its configuration reached the stack. If
+`idp-cli config-upload` fails for a version, the stack still holds *some*
+configuration under that name — `Config#bench-*` names are deterministic and
+reused across grids, so a previous grid's version of the same name is often still
+there — and launching the cell anyway produces a full set of plausible numbers
+attributed to a configuration that never landed. That is worse than a crash,
+because the numbers get written down.
+
+`run_matrix.py` therefore:
+
+- **skips the affected cells** rather than aborting the grid. A sibling cell whose
+  configuration did land is unaffected and still worth running, so an overnight
+  40-cell suite does not lose 39 good arms to one bad upload. If *every* version
+  fails, nothing is launched and the run exits immediately.
+- records `config_upload_failed_versions` and `cells_skipped_config_upload` in
+  `runmap.json`, which `aggregate.py` carries into `summary.json`'s `meta`. The
+  runmap is gitignored, so the committed summary is the only durable record —
+  a non-empty `cells_skipped_config_upload` means that summary **does not cover
+  the whole suite**. `aggregate.py` also prints the warning at scoring time,
+  because whoever scores is the person about to copy the numbers somewhere and
+  did not necessarily watch the launch.
+- **exits non-zero** after draining, so an unattended invocation or a wrapper
+  script does not read a partial grid as a complete one.
+
+Upload success is read from `idp-cli config-upload`'s **exit code**, not by
+looking for a success message in its output: that message is rendered by `rich`,
+which hard-wraps at the terminal width, so a narrow or non-tty terminal splits it
+mid-string. While a FAIL was only a misleading console line that was cosmetic;
+now that a FAIL skips a paid-for arm and fails the grid, it is not.
+
+A grid whose every launch was **rejected** by the TestRunner — a stale `--stack`,
+or a missing TestRunner Lambda — also exits non-zero. It used to print `done.` and
+exit 0 after measuring nothing.
+
+Two other setup steps fail closed for the same reason. A test-set registration
+whose `aws s3 cp` fails is fatal before anything is launched — the metadata row
+asserts `status: READY` and `fileCount: 1`, so writing it for a document that is
+not in the bucket produces a test set the runner accepts and never completes. And
+a synthetic document with no `<id>.pdf.truth.json` beside its PDF is recorded in
+`docs_missing_truth`: the run is still valid, but it is scored by the stack's own
+evaluation rather than exact local ground truth, which is a different scorer and
+not comparable.
+
 ## 2. Test-set + config registration
 - Each synthetic doc is uploaded to `s3://<stack>-testsetbucket-*/bench-<id>/input/` and
   registered as a test set (a `testset#bench-<id>` metadata row with `filePattern`).

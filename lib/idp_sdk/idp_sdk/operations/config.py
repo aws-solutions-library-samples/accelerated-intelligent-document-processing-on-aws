@@ -82,9 +82,30 @@ class ConfigOperation:
         left its revision bodies orphaned in S3. The Lambdas always had both set,
         which is why this was invisible until the CLI read a real stack.
 
+        Also bridges the resolved region into the environment, as the backstop for
+        clients built too deep in `idp_common` to be handed one explicitly. The
+        constructors that a CLI command reaches directly take `region=` (see
+        `ConfigurationManager`), but some are several frames down with no region in
+        scope — `bedrock.model_utils._load_model_limits_from_dynamodb`, on
+        `config-upload`'s own validation path, builds a `ConfigurationManager` with
+        no caller able to pass one. Without this bridge that read lands in the
+        ambient region, fails, and is swallowed by a total `except`, so the upload
+        validates against on-disk default limits instead of the stack's and can
+        reject a config that is legitimately above a default cap.
+
+        `AWS_DEFAULT_REGION` (not `AWS_REGION`) because it is the variable boto3
+        consults for a client built with no explicit region, which is exactly the
+        case being covered. `_core/publish.py` uses the same bridge for the same
+        reason. Only set when a region was actually requested — writing it
+        unconditionally would pin the process to `None`.
+
         Returns the configuration table's physical ID.
         """
         import os
+
+        region = self._client._region
+        if region:
+            os.environ["AWS_DEFAULT_REGION"] = region
 
         found = self._lookup_stack_resources(
             stack_name, {"ConfigurationTable", "ConfigurationBucket"}
@@ -281,7 +302,7 @@ class ConfigOperation:
         if not config_version:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             for v in manager.list_config_versions():
                 if v.get("isActive"):
                     config_version = v.get("versionName")
@@ -298,7 +319,7 @@ class ConfigOperation:
         if config_revision is not None:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             body = manager.get_revision(config_version, int(config_revision))
             if body is None:
                 raise IDPResourceNotFoundError(
@@ -316,7 +337,9 @@ class ConfigOperation:
         else:
             from idp_common.config import ConfigurationReader
 
-            reader = ConfigurationReader(table_name=config_table)
+            reader = ConfigurationReader(
+                table_name=config_table, region=self._client._region
+            )
             config_data = reader.get_configuration(
                 "Config", version=config_version, as_model=False
             )
@@ -464,7 +487,16 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            # `region=` is not optional decoration. _configure_config_env above
+            # resolved the ConfigurationTable NAME from CloudFormation in
+            # self._client._region, and a DynamoDB table name is not
+            # region-qualified — so a manager built without the region reads and
+            # writes that name in whatever region the ambient credentials resolve
+            # to. On a multi-region account that is a successful write to another
+            # stack's configuration table, reported as success. Every
+            # ConfigurationManager in this module is constructed the same way for
+            # the same reason.
+            manager = ConfigurationManager(region=self._client._region)
 
             # Enhancement 4: check whether the version already exists and set saveAsVersion
             # flag for new versions, matching CLI config_upload behavior.
@@ -542,7 +574,7 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             versions_raw = manager.list_config_versions()
 
             versions = [
@@ -621,7 +653,7 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             # A disabled store returns [] from every read, which would report
             # "this profile has no history" for a profile that has plenty — the
             # store just cannot see it. Say which of the two it is.
@@ -695,7 +727,7 @@ class ConfigOperation:
             os.environ["STACK_NAME"] = name
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
 
             # Check if the version exists
             existing_config = manager.get_configuration(
@@ -729,7 +761,8 @@ class ConfigOperation:
 
                     bda_project_arn = manager.get_bda_project_arn(config_version)
                     bda_service = BdaBlueprintService(
-                        dataAutomationProjectArn=bda_project_arn
+                        dataAutomationProjectArn=bda_project_arn,
+                        region=self._client._region,
                     )
 
                     if not bda_project_arn:
@@ -847,7 +880,7 @@ class ConfigOperation:
         try:
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
             manager.delete_configuration("Config", version=config_version)
 
             return ConfigDeleteResult(success=True, deleted_version=config_version)
@@ -899,7 +932,7 @@ class ConfigOperation:
             from idp_common.bda.bda_blueprint_service import BdaBlueprintService
             from idp_common.config.configuration_manager import ConfigurationManager
 
-            manager = ConfigurationManager()
+            manager = ConfigurationManager(region=self._client._region)
 
             # Resolve config version if not provided
             if not config_version:
@@ -910,7 +943,10 @@ class ConfigOperation:
 
             # Get or create BDA project ARN
             bda_project_arn = manager.get_bda_project_arn(config_version)
-            bda_service = BdaBlueprintService(dataAutomationProjectArn=bda_project_arn)
+            bda_service = BdaBlueprintService(
+                dataAutomationProjectArn=bda_project_arn,
+                region=self._client._region,
+            )
 
             if not bda_project_arn:
                 bda_project_arn = bda_service.get_or_create_project_for_version(

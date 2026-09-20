@@ -226,7 +226,6 @@ export const EXTRACTION_MODEL_OVERRIDE_OPTIONS = [
   { label: '(Use global default)', value: '' },
   { label: 'us.amazon.nova-lite-v1:0', value: 'us.amazon.nova-lite-v1:0' },
   { label: 'us.amazon.nova-pro-v1:0', value: 'us.amazon.nova-pro-v1:0' },
-  { label: 'us.amazon.nova-premier-v1:0', value: 'us.amazon.nova-premier-v1:0' },
   { label: 'us.amazon.nova-2-lite-v1:0', value: 'us.amazon.nova-2-lite-v1:0' },
   { label: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', value: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' },
   { label: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', value: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0' },

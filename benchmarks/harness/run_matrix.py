@@ -155,12 +155,28 @@ def resolve_stack(stack):
 
 
 def register_testset(stack, res, doc_id, pdf_path):
-    """Upload PDF + put a testset# metadata row (idempotent)."""
+    """Upload PDF + put a testset# metadata row (idempotent). True on success.
+
+    The metadata row asserts `status: READY` and `fileCount: 1`, so it must not
+    be written unless the object really landed. It used to be written
+    unconditionally with the `aws s3 cp` result discarded — not even bound to a
+    name — which produced a test set advertising a document that is not there.
+    That is worse than a failed launch: the runner accepts the set and returns a
+    run id, but `run_complete` needs at least one document to finish, so the
+    drain loop spins for the whole --timeout-min and the cell is scored as if the
+    document had been measured.
+    """
     tsb = res["testset_bucket"]
     key = f"bench-{doc_id}/input/{os.path.basename(pdf_path)}"
-    sh(
+    r = sh(
         f'AWS_PROFILE=default aws s3 cp "{pdf_path}" s3://{tsb}/{key} --region {lib.REGION}'
     )
+    if r.returncode != 0:
+        print(
+            f"    s3 cp failed for {doc_id} (exit {r.returncode}): "
+            f"{(r.stderr or r.stdout).strip()[:500]}"
+        )
+        return False
     now = datetime.datetime.utcnow().isoformat() + "Z"
     item = {
         "PK": {"S": f"testset#bench-{doc_id}"},
@@ -175,6 +191,7 @@ def register_testset(stack, res, doc_id, pdf_path):
         "InitialEventTime": {"S": now},
     }
     lib.ddb().put_item(TableName=res["tracking_table"], Item=item)
+    return True
 
 
 def upload_config(stack, version, path, res=None, native=False):
@@ -206,7 +223,120 @@ def upload_config(stack, version, path, res=None, native=False):
         f'--stack-name {stack} --config-file "{path}" --config-profile {version} '
         f'--version-description "benchmark {version}" --region {lib.REGION}'
     )
-    return "uploaded successfully" in (r.stdout + r.stderr)
+    # The EXIT CODE, not a substring of the console output. `idp-cli config-upload`
+    # sets it authoritatively (`sys.exit(1)` on every failure path), whereas the
+    # success line is Rich-rendered — `✓ Configuration uploaded successfully` is
+    # 37 characters and `rich.Console` hard-wraps at `COLUMNS`, so a narrow or
+    # non-tty terminal splits it mid-string and the substring test reports a
+    # false FAIL. That used to cost a misleading console line; now that a FAIL
+    # skips the cell, it would drop a paid-for arm and fail the whole grid.
+    if r.returncode != 0:
+        print(
+            f"    config-upload exited {r.returncode}: {(r.stderr or '').strip()[:300]}"
+        )
+        return False
+    return True
+
+
+def upload_all_configs(stack, cells, res=None, native=False):
+    """Upload each cell's config once per version. Returns the failed versions.
+
+    Extracted from main() so the failure path is testable without a stack: the
+    caller must act on the returned set, and a test can prove it does.
+
+    A version whose upload failed is NOT on the stack (or, worse, is present but
+    stale — `Config#bench-*` names are deterministic and reused across grids, so
+    a previous grid's version of the same name can still be there). Launching a
+    cell against it produces a complete set of plausible numbers attributed to a
+    configuration that never landed, which is the one failure mode that ends up
+    written down in a results table. So the caller must skip those cells.
+    """
+    failed = []
+    for c in {cc["version"]: cc for cc in cells}.values():
+        ok = upload_config(stack, c["version"], c["path"], res=res, native=native)
+        print(f"  config {c['version']}: {'ok' if ok else 'FAIL'}")
+        if not ok:
+            failed.append(c["version"])
+    return failed
+
+
+def plan_after_upload_failures(pairs, ref_pairs, cells, failed_versions):
+    """Drop the (cell, doc, repeat) work whose configuration never landed.
+
+    Returns ``(pairs, ref_pairs, skipped_cells)``. Deliberately does NOT exit when
+    the failures leave nothing launchable: main() has to write the manifest first,
+    or a grid that launched nothing leaves no artifact at all and the only record
+    of why is a console scrollback. See ``assert_something_launchable``.
+
+    Extracted from ``main()`` and tested against its own behaviour. The previous
+    version of this filter lived inline, and the tests asserted a
+    *re-implementation* of it in the test body plus an ``inspect.getsource``
+    substring — so deleting the real filter left the suite green, which is the
+    same "a control exists but nothing consults it" shape as the defect itself.
+
+    The skip is per VERSION, so a sibling cell on a version that did upload still
+    runs: an overnight 40-cell grid must not lose 39 good arms to one bad upload.
+    """
+    failed_versions = set(failed_versions)
+    skipped_cells = sorted(
+        {c["cell"] for c in cells if c["version"] in failed_versions}
+    )
+    if not failed_versions:
+        return pairs, ref_pairs, skipped_cells
+
+    pairs = [p for p in pairs if p[0]["version"] not in failed_versions]
+    ref_pairs = [p for p in ref_pairs if p[0]["version"] not in failed_versions]
+    print(
+        f"  ⚠ config upload FAILED for {sorted(failed_versions)}; skipping "
+        f"{len(skipped_cells)} cell(s): {skipped_cells}"
+    )
+    return pairs, ref_pairs, skipped_cells
+
+
+def assert_something_launchable(pairs, ref_pairs, failed_versions):
+    """Stop before the launch loops if the upload failures left no work.
+
+    Split from the filter above so it can be called AFTER the manifest is written:
+    the total-failure case is precisely the one where an artifact matters most, and
+    exiting inside the filter left the results directory empty.
+    """
+    if not pairs and not ref_pairs:
+        sys.exit(
+            f"no launchable runs: config upload failed for every version "
+            f"({sorted(failed_versions)}). Nothing was launched; the runmap "
+            f"records which versions failed."
+        )
+
+
+def exit_status_for_grid(failed_versions, skipped_cells, runmap):
+    """Raise ``SystemExit`` if the grid is incomplete or measured nothing.
+
+    Called after the drain, so the arms that did land are finished and scoreable,
+    while an unattended invocation or a wrapper script still sees a non-zero
+    status instead of reading a partial grid as a whole suite.
+
+    Two independent conditions:
+
+    * a configuration upload failed, so some cells were never launched;
+    * every launch was rejected by the runner (all ``run_id`` are ``None``), which
+      is what a stale ``--stack`` or a missing TestRunner Lambda produces. That
+      used to print ``done.`` and exit 0 — a grid that measured nothing, reported
+      as success. ``run_classification_bench.py`` already exits on the same
+      condition.
+    """
+    if failed_versions:
+        sys.exit(
+            f"incomplete grid: config upload failed for {sorted(failed_versions)}, "
+            f"so {len(skipped_cells)} cell(s) were never launched: {skipped_cells}. "
+            f"The runs that did launch are valid and scoreable; do NOT report this "
+            f"grid as covering the whole suite."
+        )
+    if runmap and not any(r.get("run_id") for r in runmap):
+        sys.exit(
+            f"no run launched: all {len(runmap)} run(s) were rejected by the "
+            f"TestRunner (every run_id is null). This grid measured nothing. "
+            f"Check --stack names a live stack with a TestRunner Lambda."
+        )
 
 
 _LAMBDA_FNS = None
@@ -710,10 +840,25 @@ def main():
     outdir = os.path.join(RESULTS, f"run-{run_stamp}-{slug}-{uuid.uuid4().hex[:6]}")
     os.makedirs(outdir, exist_ok=False)
 
-    # 1. register test sets (unique docs)
-    for d in set(doc_ids):
-        register_testset(a.stack, res, d, os.path.join(DOCS, d + ".pdf"))
-        print(f"  registered bench-{d}")
+    # 1. register test sets (unique docs). Fatal on failure, and deliberately so:
+    #    this runs before any config upload or launch, so aborting here costs
+    #    nothing, while continuing would leave a test set whose metadata row
+    #    claims a document that is not in the bucket. Docs are shared by every
+    #    cell, so one missing document degrades every arm equally — there is no
+    #    subset worth running.
+    unregistered = []
+    for d in sorted(set(doc_ids)):
+        if register_testset(a.stack, res, d, os.path.join(DOCS, d + ".pdf")):
+            print(f"  registered bench-{d}")
+        else:
+            unregistered.append(d)
+    if unregistered:
+        sys.exit(
+            f"test-set registration failed for {unregistered}: the PDF could not be "
+            f"copied to s3://{res['testset_bucket']}/. Nothing has been launched and "
+            f"no configuration has been uploaded. Check credentials for "
+            f"{lib.REGION} and the bucket policy, then re-run."
+        )
     # 2. upload configs (unique versions), but only after proving each file on
     #    disk really holds the axes its index advertises.
     # bank_real shares the synthetic class's cells, so dedupe by version before
@@ -730,11 +875,37 @@ def main():
     # The stack must not move underneath the grid. Checked here and again
     # before every launch — see assert_stack_unchanged.
     stack_expected = assert_stack_quiesced(a.stack)
-    for c in {cc["version"]: cc for cc in cells + ref_cells}.values():
-        ok = upload_config(
-            a.stack, c["version"], c["path"], res=res, native=a.native_upload
+    failed_versions = set(
+        upload_all_configs(a.stack, cells + ref_cells, res=res, native=a.native_upload)
+    )
+
+    # A cell whose configuration did not land must not run: it would measure
+    # whatever config the stack already holds and attribute the numbers to this
+    # cell. A SIBLING cell whose config DID land is unaffected and still worth
+    # running, so this skips per version rather than aborting the grid — an
+    # overnight 40-cell suite should not lose 39 good arms to one bad upload.
+    # (run_classification_bench.py aborts outright; it uploads one version, so
+    # there is no sibling to preserve.)
+    pairs, ref_pairs, skipped_cells = plan_after_upload_failures(
+        pairs, ref_pairs, cells + ref_cells, failed_versions
+    )
+
+    # Synthetic docs are scored against exact local ground truth; without the
+    # .truth.json beside the PDF, aggregate.py silently falls back to the stack's
+    # own evaluation, which is a different scorer and not comparable. Recorded
+    # rather than fatal because the run is still valid, just scored differently.
+    missing_truth = sorted(
+        {
+            d
+            for _, d, _ in pairs
+            if not os.path.exists(os.path.join(DOCS, d + ".pdf.truth.json"))
+        }
+    )
+    if missing_truth:
+        print(
+            f"  ⚠ no .pdf.truth.json for {missing_truth}; these will be scored by "
+            f"the stack's own evaluation, not exact local ground truth"
         )
-        print(f"  config {c['version']}: {'ok' if ok else 'FAIL'}")
 
     # 3. launch with an in-flight cap; poll
     runmap = []
@@ -798,11 +969,31 @@ def main():
                 "docs_skipped_reference": skipped_reference,
                 "docs_unlaunchable": unlaunchable,
                 "docs_other_class": other_class,
+                # Setup outcomes. These belong in the artifact, not only on
+                # stderr: these grids run unattended for hours and the console
+                # scrollback is gone by the time anyone reads the numbers. A
+                # `cells_skipped_config_upload` entry means that cell was NOT
+                # measured — its configuration never reached the stack — so any
+                # table that reports it is mislabelled. Empty list = every
+                # version uploaded; absent = a runmap written before this
+                # existed, which is "unknown", not "nothing failed".
+                "config_upload_failed_versions": sorted(failed_versions),
+                "cells_skipped_config_upload": skipped_cells,
+                # Synthetic docs with no local .pdf.truth.json: scored by the
+                # stack's own evaluation instead of exact ground truth.
+                "docs_missing_truth": missing_truth,
                 "runs": runmap,
             },
             open(os.path.join(outdir, "runmap.json"), "w"),
             indent=2,
         )
+
+    # Write the manifest once BEFORE launching anything, so the setup outcomes
+    # above survive even a run that dies in the launch loop or is interrupted.
+    # Previously runmap.json first appeared after the first successful launch, so a
+    # grid that launched nothing left no artifact at all.
+    _write_runmap()
+    assert_something_launchable(pairs, ref_pairs, failed_versions)
 
     # Reference corpora first: they are the longest runs (n documents each), so
     # starting them early keeps the in-flight cap busy while the one-page
@@ -884,6 +1075,11 @@ def main():
         print(f"  {len(pending)} runs pending...")
         time.sleep(a.poll_interval)
     print(f"done. runmap -> {outdir}/runmap.json")
+
+    # Non-zero exit AFTER the drain, so the arms that did land are completed and
+    # scoreable, but an unattended invocation (or a wrapper script) still sees
+    # that this grid is incomplete rather than reading exit 0 as a full matrix.
+    exit_status_for_grid(failed_versions, skipped_cells, runmap)
 
 
 if __name__ == "__main__":

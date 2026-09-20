@@ -23,6 +23,7 @@ from idp_common.bedrock.model_utils import (
     get_model_max_output_tokens,
     resolve_model_id_from_arn,
 )
+from idp_common.config.retired_models import retirement_of
 
 # Use importlib.resources for Python 3.9+
 if sys.version_info >= (3, 9):
@@ -794,6 +795,26 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
             continue
 
         resolved = resolve_model_id_from_arn(model_id)
+
+        # Retired first, and on its own merits. A model past its AWS end-of-life
+        # date is inaccessible in every region, so pinning it is a pre-flight
+        # error rather than something to discover two stages into a document
+        # (#708). This used to work only as a side effect: the retired model was
+        # deleted from pricing.yaml, so it fell out of `valid_models` below. That
+        # coupling cannot survive a model whose pricing entry must be RETAINED so
+        # historical cost reports still resolve its rate — see
+        # config/retired_models.py.
+        retirement = retirement_of(resolved)
+        if retirement is not None:
+            result["valid"] = False
+            result["errors"].append(
+                f"{section}.{field_name} has invalid model ID: {model_id} reached "
+                f"end of life on {retirement['eol']} and is no longer available in "
+                f"any region — every call returns ResourceNotFoundException. "
+                f"Choose a current model. Verify with: {retirement['verify']}"
+            )
+            continue
+
         if resolved in valid_models:
             continue
 
@@ -891,7 +912,7 @@ def _validate_agentic_openai(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
             "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
             "Set agentic.enabled=false or choose a Converse model — Claude, Amazon "
-            "Nova Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
+            "Nova Pro (not Nova Lite, which fails mid-stream on this path; "
             "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
             "Astra support agentic extraction."
         )

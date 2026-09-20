@@ -162,7 +162,7 @@ By default, Bedrock usage appears in AWS Cost Explorer as a single line item per
 
 1. Open the **Amazon Bedrock Console** → **Inference** → **Inference profiles**
 2. Click **Create inference profile**
-3. Select the **foundation model** currently used in your IDP configuration (e.g., `us.anthropic.claude-3-7-sonnet-20250219-v1:0`)
+3. Select the **foundation model** currently used in your IDP configuration (e.g., `us.anthropic.claude-sonnet-4-5-20250929-v1:0`)
 4. Add your cost-allocation tags. For example:
    - `map-migrated`: `migDNDBZMXMLZ`
    - `project`: `my-idp-workload`
@@ -186,7 +186,7 @@ By default, Bedrock usage appears in AWS Cost Explorer as a single line item per
 
    **Before:**
    ```yaml
-   model_id: us.anthropic.claude-3-7-sonnet-20250219-v1:0
+   model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
    ```
 
    **After:**

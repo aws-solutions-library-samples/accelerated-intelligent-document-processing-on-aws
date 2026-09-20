@@ -473,7 +473,7 @@ Despite its strengths in handling full-document context, this method has several
 **Context & Model Constraints:**: 
 - Long documents can exceed the context window of smaller models, resulting in request failure.
 - Lengthy inputs may dilute the model’s focus, leading to inaccurate or inconsistent classifications.
-- Requires high-context models such as Amazon Nova Premier, which supports up to 1 million tokens. Smaller models are not suitable for this method.
+- Requires high-context models. The extended-context Claude variants — `us.anthropic.claude-sonnet-4-6:1m`, `us.anthropic.claude-sonnet-5:1m` and the `:1m` Opus variants — carry a 1-million-token input window; the base Claude 4.x/5 models carry 200K and the Nova family ~300K. Smaller models are not suitable for this method.
 - For more details on supported models and their context limits, refer to the [Amazon Bedrock Supported Models documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html).
 
 **Scalability Challenges**: Not ideal for very large or visually complex document sets. In such cases, the Multi-Modal Page-Level Classification method is more appropriate.
@@ -841,7 +841,7 @@ When deciding between Text-Based Holistic Classification and MultiModal Page-Lev
 ### Use Text-Based Holistic Classification When:
 - Documents have clear logical boundaries based on content
 - Text context spans multiple pages and requires understanding the full document
-- You have access to high-context models (e.g., Amazon Nova Premier)
+- You have access to high-context models (e.g. `us.anthropic.claude-sonnet-4-6:1m`)
 - Document packets are relatively small (within model context limits)
 - Visual elements are less important than textual continuity
 

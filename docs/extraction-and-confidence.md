@@ -89,7 +89,7 @@ and is a good fit for the majority of documents.
 extraction:
   agentic:
     enabled: false            # Simple mode (default)
-  model: anthropic.claude-3-haiku-20240307-v1:0
+  model: anthropic.claude-haiku-4-5-20251001-v1:0
   temperature: 0.0
   reasoning_effort: low       # reasoning-capable models only (see note below)
 ```
@@ -151,20 +151,14 @@ extraction:
 Agentic extraction requires models with tool-use support:
 
 - **Anthropic Claude Sonnet** models (recommended for optimal performance)
-  - `anthropic.claude-3-5-sonnet-20241022-v2:0` — Best balance of speed and accuracy
-  - `anthropic.claude-3-7-sonnet-20250219-v1:0` — Latest with enhanced capabilities
+  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Best balance of speed and accuracy
+  - `anthropic.claude-sonnet-4-5-20250929-v1:0` — Latest with enhanced capabilities
 - **Anthropic Claude Opus** models (for highest accuracy requirements)
 - **Amazon Nova Pro** (AWS native alternative) — **no successful agentic run has
   been measured for Nova Pro**: its advanced cells in the v0.6.8 sweep hit the same
   mid-stream tool-use failure described below and the grid was abandoned, so it is
   unmeasured on this path rather than known to be incapable. Treat it as unproven
   until a benchmark run completes on it
-- ~~**Amazon Nova Premier**~~ — **not usable.** As of 2026-09-20 every
-  `us.amazon.nova-premier-v1:0` call in `us-west-2`, including a trivial baseline,
-  returns `ResourceNotFoundException: This model version has reached the end of its
-  life`. That applies to extraction, classification and confidence, not just the
-  agentic path. The model id still appears in the selectable list; pick a different
-  one.
 
 > **⚠️ Amazon Nova Lite does not complete Advanced (agentic) extraction as
 > shipped.** On the agentic path Nova Lite fails mid-stream with Bedrock's
@@ -615,7 +609,7 @@ classes:
 extraction:
   agentic:
     enabled: true            # Advanced mode recommended for production
-  model: anthropic.claude-3-5-sonnet-20241022-v2:0
+  model: anthropic.claude-sonnet-4-5-20250929-v1:0
   temperature: 0.0           # Keep low for consistency
   top_p: 0.1
   top_k: 5

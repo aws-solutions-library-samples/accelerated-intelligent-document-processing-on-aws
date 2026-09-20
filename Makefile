@@ -455,6 +455,9 @@ cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) 
 check-branch-protection: ## Report whether branch protection actually requires the CI checks (opt-in, needs a GitHub token; see issue #933)
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
+check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
+	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
+
 ##@ Type Checking
 typecheck: ## Run type checks with basedpyright
 	@echo "Running type checks..."
