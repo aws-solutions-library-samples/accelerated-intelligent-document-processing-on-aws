@@ -1373,6 +1373,18 @@ Conditions:
   # Without DeployInVPC, Lambdas run on the public Lambda network and cannot
   # reach the VPCE hostname — setting endpoint_url would cause timeouts.
   HasS3VpcEndpointAndVpc: !And [!Condition HasS3VpcEndpoint, !Condition DeployInVPC]
+  # Gates the state machines' Tracing.Enabled AND every Lambda's Tracing mode.
+  # Each traced function writes `Tracing: !If [EnableXRayTracingCondition,
+  # Active, PassThrough]` rather than a literal, so setting the parameter to
+  # "false" actually turns Lambda tracing off; a hardcoded `Active` cannot be
+  # turned off at all, which is what the parameter's description promises.
+  # PassThrough — not an absent property — is written on the false branch: the
+  # two resolve identically, and naming it says the choice was made. Neither
+  # branch changes a function's IAM: SAM attaches AWSXrayWriteOnlyAccess to a
+  # role it GENERATES whenever Tracing is declared in any form, because it
+  # cannot evaluate the Fn::If. A function with an explicit `Role:` gets
+  # nothing from SAM and must carry the X-Ray grant itself — checked by
+  # scripts/tests/test_xray_tracing.py, along with the rest of this.
   EnableXRayTracingCondition: !Equals [ !Ref EnableXRayTracing, "true" ]
   UsePrivateApi: !Equals [ !Ref ApiGatewayVisibility, "PRIVATE" ]
   HasArtifactsBucketKmsKey: !Not [ !Equals [ !Ref ArtifactsBucketKmsKeyArn, "" ] ]
@@ -5476,7 +5488,7 @@ Resources:
       Description: Data-mart rollup Lambda — populates metering_hourly, metering_daily, control_plane_hourly, and data_plane_lambda_hourly tables.
       MemorySize: 512
       Timeout: 900
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       Layers:
         # pyarrow + boto3 + idp_common (metrics helper etc.). Same layer the
         # migration Lambda uses. Bundling pyarrow in this function too would
@@ -6869,7 +6881,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7011,7 +7023,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7166,7 +7178,7 @@ Resources:
 
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds
@@ -7386,7 +7398,7 @@ Resources:
         idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt JobTrackerDLQ.Arn
@@ -7493,7 +7505,7 @@ Resources:
       Layers:
         - !Ref IDPCommonBaseLayer
       MemorySize: 512
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt PostProcessingDecompressorDLQ.Arn
@@ -7596,7 +7608,7 @@ Resources:
       Layers:
         - !Ref IDPCommonReportingLayer
       MemorySize: 1024
-      Tracing: Active
+      Tracing: !If [EnableXRayTracingCondition, Active, PassThrough]
       VpcConfig: !If
         - DeployInVPC
         - SubnetIds: !Ref PrivateSubnetIds

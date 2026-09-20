@@ -347,9 +347,15 @@ For Cognito authentication problems:
 
 Use X-Ray tracing for advanced diagnostics:
 
-1. Enable X-Ray tracing in the CloudFormation template
+1. Deploy with `EnableXRayTracing=true` (the default). It controls the Lambda
+   functions and both state machines together; set it to `false` to turn tracing
+   off across the stack.
 2. View service map in X-Ray console
 3. Analyze trace details for latency and error hotspots
+
+The document-processing Lambdas annotate their segments with `document_id` and
+`processing_stage`, so a filter expression like
+`annotation.document_id = "<id>"` narrows the console to one document.
 
 ### Log Correlation
 

@@ -54,7 +54,8 @@ The clearest way to read this document is to know the split up front.
 **Provided by the accelerator, active on a default deployment.** Infrastructure as code
 for the whole stack; fourteen CloudWatch alarms (a fifteenth is declared but only
 created when you enable the Bedrock circuit breaker); two CloudWatch dashboards; AWS
-X-Ray tracing on the document-processing Lambda functions; Step Functions retry and catch
+X-Ray tracing on the document-processing Lambda functions and both state machines, which
+`EnableXRayTracing` turns off in one place if you do not want it; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
 encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 32 TLS-only
 resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
@@ -114,13 +115,17 @@ ingestion, queue depth, the concurrency counter and workflow outcomes, and one i
 `patterns/unified/template.yaml` covering the per-service processing steps. See
 [Monitoring](./monitoring.md).
 
-Distributed tracing is instrumented, not merely recommended: `Tracing: Active` is set on
-nineteen Lambda functions across the two main templates — seven in `template.yaml` and
-twelve in `patterns/unified/template.yaml` — plus seven of the eight optional
-`feature-platform/` extension templates (`seller-entitlement-service` is the
-exception). Note the boundary: the Step Functions state machine declares no `TracingConfiguration` and the
-REST API stage does not enable X-Ray, so a trace covers Lambda-to-service calls rather
-than the whole orchestration.
+Distributed tracing is instrumented, not merely recommended: twenty-two Lambda functions
+across the two main templates — seven in `template.yaml` and fifteen in
+`patterns/unified/template.yaml` — plus both state machines trace, and seven of the eight
+optional `feature-platform/` extension templates set `Tracing: Active` in their `Globals`
+section (`seller-entitlement-service` is the exception). In the two main templates the
+mode is `!If [EnableXRayTracingCondition, Active, PassThrough]` rather than a literal, so
+the single `EnableXRayTracing` parameter — default `true` — turns the whole stack's
+tracing on or off; `scripts/tests/test_xray_tracing.py` fails a function that hardcodes it
+instead. The extension templates are deployed independently, with their own parameters,
+so that switch does not reach them. Note the boundary: the REST API stage does not enable
+X-Ray, so an API-initiated call is traced from the Lambda inward rather than from the edge.
 
 Logging verbosity is a single deploy-time parameter. `LogLevel` defaults to `WARN` and
 applies across the Lambda functions and the API stage;
@@ -153,7 +158,7 @@ is in `benchmarks/`, with sample documents in `samples/`.
 | Have you tuned `ErrorThreshold`, `ExecutionTimeThresholdMs` and `QueueStalledAgeThresholdSeconds` to your document mix, or are you running the defaults? | | | |
 | Is `LogLevel` still `WARN` or `ERROR` in this deployment? If it was raised to `INFO` or `DEBUG` for troubleshooting, was it lowered again? | | | |
 | Does `LogRetentionDays` meet your retention obligation, and have you set retention on the custom-resource log groups that keep CloudWatch's indefinite default? | | | |
-| Do you accept that the state machine and the REST API stage are not X-Ray traced, or do you need to add `TracingConfiguration` and stage tracing? | | | |
+| Do you accept that the REST API stage is not X-Ray traced, or do you need to add stage tracing? Is `EnableXRayTracing` set the way you want it? It defaults to `true` and controls the Lambda functions as well as the state machines, so it is also the X-Ray cost lever. | | | |
 | At the default `LogLevel=WARN` the API access log is off. Do you accept that, or do you need request-level API telemetry enough to raise the level and accept the PII exposure that comes with it? | | | |
 | Who owns the runbook for a stalled queue, and has `DocumentQueueStalledAlarm` been exercised at least once? | | | |
 | How do you validate a configuration change before it reaches production — the integration suite, the `benchmarks/` harness against your own corpus, or a separate stack? | | | |

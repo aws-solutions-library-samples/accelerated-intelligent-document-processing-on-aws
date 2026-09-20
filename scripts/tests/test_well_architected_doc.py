@@ -132,8 +132,6 @@ NOT_LOGICAL_IDS = {
     "PublicAccessBlockConfiguration": "S3 bucket property name",
     "RedrivePolicy": "SQS queue property name",
     "Retry": "Step Functions state field name",
-    "TracingConfiguration": "state-machine property the template deliberately does "
-    "NOT set — the page's point is its absence",
     "VisibilityTimeout": "SQS queue property name",
     "WARN": "LogLevel enum value",
 }
@@ -448,6 +446,50 @@ def test_s3_bucket_count() -> None:
     n = len(_of_type(PARENT_TEMPLATE, "AWS::S3::Bucket"))
     _assert_count_phrase(
         n, "{n} buckets", f"template.yaml declares {n} AWS::S3::Bucket resources."
+    )
+
+
+@pytest.mark.unit
+def test_traced_lambda_counts() -> None:
+    """The observability paragraph's three tracing numbers, derived per template.
+
+    A count on this page needs a gate or it rots in place: the numbers it carried
+    before were a per-template split that stopped matching the templates and
+    nothing noticed. ``scripts/tests/test_xray_tracing.py`` asserts only a floor,
+    on purpose — a floor is what stops that gate needing an edit every time a
+    function is added — so the exact figures have to be pinned here, where the
+    claim is actually made.
+    """
+    per_template = {
+        path: sum(
+            1
+            for body in _of_type(path, "AWS::Serverless::Function").values()
+            if re.search(r"^\s+Tracing:", body, re.MULTILINE)
+        )
+        for path in (PARENT_TEMPLATE, UNIFIED_TEMPLATE)
+    }
+    total = sum(per_template.values())
+
+    _assert_count_phrase(
+        total,
+        "{n} Lambda functions",
+        f"the two main templates declare a tracing mode on {total} functions "
+        f"({per_template[PARENT_TEMPLATE]} + {per_template[UNIFIED_TEMPLATE]}).",
+    )
+    # The per-template legs carry the surrounding words as well: bare
+    # "{n} in `template.yaml`" also matches the alarm, dashboard, wildcard-policy
+    # and PITR sentences, each of which legitimately states a different number.
+    _assert_count_phrase(
+        per_template[PARENT_TEMPLATE],
+        "{n} in `template.yaml` and",
+        f"template.yaml declares a tracing mode on "
+        f"{per_template[PARENT_TEMPLATE]} functions.",
+    )
+    _assert_count_phrase(
+        per_template[UNIFIED_TEMPLATE],
+        "{n} in `patterns/unified/template.yaml` — plus both state machines",
+        f"patterns/unified/template.yaml declares a tracing mode on "
+        f"{per_template[UNIFIED_TEMPLATE]} functions.",
     )
 
 
