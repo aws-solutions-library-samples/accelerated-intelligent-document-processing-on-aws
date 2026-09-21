@@ -442,8 +442,14 @@ def shard_validation_schema(schema: dict[str, Any]) -> dict[str, Any]:
     — a shard whose pages hold more rows than the section's ``maxItems`` must not
     be told to drop rows before the merge counts them. What remains — type,
     format, enum, pattern, value bounds, ``uniqueItems`` — is what a shard CAN fix.
-    Presence and row counts are enforced once, on the merged section, against the
+    Presence and row counts are checked again on the merged section, against the
     real schema.
+
+    ⚠️ Scope: this schema feeds the agent's in-loop **feedback** validator only. The
+    shard's ``extraction_tool`` is generated from the whole-section transport model,
+    so a ``minItems`` floor is still enforced per shard at the tool boundary — a
+    section-sized floor is therefore unsatisfiable by a shard covering part of the
+    pages, and ``extraction.row_shortfall_action`` is the shard-aware lever.
 
     Only the KEYWORD forms are dropped: ``required`` as a list of names, and the
     bounds as integers. A property literally named ``minItems`` (its value is a

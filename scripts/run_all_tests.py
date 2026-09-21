@@ -46,8 +46,16 @@ PRUNE_DIR_MARKERS = (
     # scratch/ is gitignored (local benchmarks, cloned tools, throwaway work);
     # never part of the gate. CI never sees it, so prune it locally too.
     "/scratch/",
-    # idp_common ships fixture-style helper "tests" that are not a suite.
-    "/idp_common/agents/testing/",
+    # Two gitignored, locally-staged copies of lib/idp_common_pkg that the
+    # idp-data-generator feature's build drops next to its Lambda sources. They
+    # hold library code only (no tests/ dir), so every test_*.py they contain is
+    # a duplicate of one in lib/idp_common_pkg. CI never sees them; a developer
+    # machine that has built that feature does. They cannot be matched by a
+    # shared substring -- `/idp-data-generator/` would also prune
+    # feature-platform/idp-data-generator/feature-api/tests, which is a real
+    # registered suite -- so each copy root is named.
+    "/idp-data-generator/idp_common_pkg/",
+    "/idp-data-generator/bootstrap-processor/idp_common_pkg/",
     # Agent worktrees: `git worktree` checkouts of this same repo, created under
     # .claude/worktrees/ when work is delegated to a subagent. Every test file in
     # the repo therefore appears once per live worktree, so without this the guard
@@ -206,8 +214,24 @@ QUARANTINE = {
     "src/lambda/ocr_benchmark_deployer": (
         "Requires huggingface_hub, which is not a test dependency."
     ),
+    # The obstruction here is ONE assertion, not the environment. The environment
+    # half is fixed: `conftest.py` in this directory stubs `cfnresponse` and
+    # supplies a region and placeholder credentials, so `handler.py` imports and
+    # four of `test_handler.py`'s five tests pass. (test_handler.py does stub
+    # `cfnresponse` itself, but on the line AFTER the `from handler import ...`
+    # that needs it, so its own stub never runs.) The fifth,
+    # test_get_s3_vector_info_function, mocks `get_index` and asserts
+    # Status == 'Existing'; `get_s3_vector_info` no longer consults `get_index` --
+    # it always attempts `create_index` and reports 'Existing' only when that
+    # raises ConflictException -- so against a plain Mock it reports
+    # 'IndexCreated' and the assertion fails. That is a stale test expectation
+    # rather than a handler defect, and correcting it is a change to the suite
+    # that this registration deliberately does not make. Once it is corrected
+    # this root moves to RUN_ROOTS and the recipe line below it can name the
+    # directory instead of `tests`.
     "nested/bedrockkb/src/s3_vectors_manager": (
-        "Requires the Lambda-runtime-only 'cfnresponse' module."
+        "test_handler.py::test_get_s3_vector_info_function asserts a Status the "
+        "handler stopped returning; the other four tests pass."
     ),
     "samples/lambda-hook-inference/GENAIIDP-chandra-ocr-hook": (
         "test_local.py is a manual local-run script; collects zero pytest tests."
@@ -219,11 +243,25 @@ QUARANTINE = {
     # than `make test` does.
     "nested/bedrockkb/src/s3_vectors_manager/tests": (
         "Run directly by `make test-packages-cicd` in both CI systems instead; "
-        "the parent dir is quarantined for its cfnresponse dependency."
+        "the parent dir is quarantined for one stale assertion in test_handler.py."
     ),
     # Vendored/internal helper trees that contain test_*.py but are not suites.
     "lib/idp_sdk/idp_sdk/_core": (
         "Source tree, not a test root (contains helper modules named test_*)."
+    ),
+    # Operator-run agent scripts. Every one drives real Bedrock, Athena or
+    # DynamoDB against a deployed stack, so they are run by hand, never in a gate,
+    # and `norecursedirs` in lib/idp_common_pkg/pytest.ini keeps pytest from
+    # collecting them. Registered here rather than pruned above so that the
+    # exclusion carries the registry's ratchets: the directory appears in
+    # `--list`, it has to be named in docs/testing.md, and -- because nesting
+    # under a QUARANTINE entry deliberately does not inherit the exclusion -- a
+    # NEW subdirectory of manual_tests/ fails this guard instead of being
+    # silently accepted, which a substring prune marker would have allowed.
+    "lib/idp_common_pkg/manual_tests/agents": (
+        "Operator-run scripts that call real Bedrock/Athena against a deployed "
+        "stack; run by hand, excluded from pytest collection by "
+        "lib/idp_common_pkg/pytest.ini's norecursedirs."
     ),
 }
 

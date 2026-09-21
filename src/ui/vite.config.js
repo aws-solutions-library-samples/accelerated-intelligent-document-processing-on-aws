@@ -51,7 +51,7 @@ export default defineConfig(({ mode }) => ({
         // Manual chunking for better code splitting
         manualChunks: {
           'aws-amplify': ['aws-amplify', '@aws-amplify/ui-react'],
-          'aws-sdk': ['@aws-sdk/client-s3', '@aws-sdk/client-ssm', '@aws-sdk/client-cognito-identity', '@aws-sdk/s3-request-presigner'],
+          'aws-sdk': ['@aws-sdk/client-ssm', '@aws-sdk/client-cognito-identity', '@aws-sdk/s3-request-presigner'],
           cloudscape: ['@cloudscape-design/components', '@cloudscape-design/global-styles'],
           chart: ['chart.js', 'react-chartjs-2'],
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],

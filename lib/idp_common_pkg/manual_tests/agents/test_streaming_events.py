@@ -6,7 +6,7 @@ This script creates an orchestrator with sub-agents and streams a query,
 printing out every event to understand the event structure.
 
 Usage:
-    python test_streaming_events.py
+    python manual_tests/agents/test_streaming_events.py
 """
 
 import asyncio
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import boto3
 

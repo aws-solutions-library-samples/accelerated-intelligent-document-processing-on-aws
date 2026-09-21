@@ -131,6 +131,13 @@ TEXT_SOURCES: tuple[tuple[str, str], ...] = (
     # decides which files ruff never sees, which is a path exemption by another name.
     ("pyrightconfig.json", r'^\s*"(exclude|ignore)"\s*:'),
     ("pytest.ini", r"^(norecursedirs|ignore)\b"),
+    # The per-package pytest.ini files, which is where this surface is actually
+    # used. These strings become `git ls-files` pathspecs, and a bare "pytest.ini"
+    # has no wildcard, so it matched only the repo-root file -- which carries no
+    # norecursedirs. Four pytest.ini files are tracked; the exemption surface was
+    # discoverable in one of them, and not the one holding an exemption. TOML_SOURCES
+    # below already pairs `pyproject.toml` with `*/pyproject.toml` for this reason.
+    ("*/pytest.ini", r"^(norecursedirs|ignore)\b"),
     (".pre-commit-config.yaml", r"^\s*(exclude|exclude_types)\s*:"),
     (".ash/.ash.yaml", r"^\s*(ignore-findings|suppressions|ignore_findings)\s*:"),
 )

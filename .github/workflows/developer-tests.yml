@@ -37,22 +37,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
-          fetch-depth: 0 # Fetch all history for git diff in typecheck-pr
+          # Full clone. No gate below diffs against the base ref any more, but a
+          # shallow clone is a trap for any that later does, and the cost here is
+          # negligible.
+          fetch-depth: 0
 
       - name: Set up Git safe directory
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # `github.base_ref` is attacker-controllable (a fork can name its branch
-      # anything), so it must never be interpolated straight into `run:` where
-      # the shell would evaluate it. Pass it through `env:` and quote the
-      # expansion instead.
-      - name: Fetch base branch
-        env:
-          BASE_REF: ${{ github.base_ref || 'main' }}
-        run: |
-          git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-          git branch -a
+      # No step fetches or interpolates `github.base_ref`. If one is ever added,
+      # note that it is attacker-controllable — a fork can name its branch
+      # anything — so it must be passed through `env:` and quoted, never
+      # interpolated straight into `run:` where the shell would evaluate it.
 
       - name: Set up environment
         run: |
@@ -130,18 +127,14 @@ jobs:
       - name: Validate CloudFormation service-role permissions
         run: python scripts/sdlc/validate_service_role_permissions.py
 
+      # The WHOLE tree, not just the files this PR touched. A PR-scoped check
+      # (`make typecheck-pr`) was what ran here, and it narrows basedpyright to
+      # the changed files — so it cannot see a break the change caused in a file
+      # the diff did not include, which is the ordinary shape of a type error.
+      # It also meant nothing ever ran the check that pyrightconfig.json's
+      # `include` closure is a closure OF. A full run is ~1 minute over 1273 files.
       - name: Run type checking
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          TARGET_BRANCH="$BASE_REF"
-          echo "=== Type Checking Configuration ==="
-          echo "PR target branch (github.base_ref): $TARGET_BRANCH"
-          echo "Comparing: origin/$TARGET_BRANCH...HEAD"
-          echo "===================================="
-          echo ""
-
-          make typecheck-pr TARGET_BRANCH="$TARGET_BRANCH"
+        run: make typecheck
 
       - name: Run tests
         id: run-tests
@@ -187,6 +180,20 @@ jobs:
           check_name: Test Results
           comment_mode: off  # Disable PR comments to avoid permission issues on fork PRs
 
+      # COVERAGE IS REPORTED, NOT ENFORCED, AND DELIBERATELY SO.
+      #
+      # `fail_below_min: false` is the decision, and `thresholds` below only
+      # colours the badge — read together they look like a 60% gate, and they are
+      # not one. The reason is scope, not laziness: the only coverage.xml that
+      # exists is lib/idp_common_pkg's, which is ONE of the ~64 test roots
+      # scripts/run_all_tests.py discovers. A repo-wide minimum computed from it
+      # would be a number about one package presented as a number about the
+      # repository, and it would move whenever that package's share of the code
+      # changed, with no relation to whether a PR was tested.
+      #
+      # Widening the measurement is the prerequisite for enforcing it, in that
+      # order. See the "Coverage is reported, not enforced" section in
+      # CONTRIBUTING.md.
       - name: Code Coverage Report
         uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95  # v1.3.0
         if: always() && hashFiles('lib/idp_common_pkg/test-reports/coverage.xml') != ''
@@ -199,6 +206,7 @@ jobs:
           hide_complexity: true
           indicators: true
           output: both
+          # Badge colour thresholds only. Enforcement is `fail_below_min`, above.
           thresholds: "60 80"
 
       # Note: PR comments disabled for fork PRs due to permission restrictions

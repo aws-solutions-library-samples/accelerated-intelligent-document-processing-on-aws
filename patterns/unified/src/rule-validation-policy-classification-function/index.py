@@ -23,7 +23,7 @@ logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 
-@xray_recorder.capture("policy_classification_handler")
+@xray_recorder.capture("policy_classification_handler")  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
     """
     Lambda handler for policy classification.

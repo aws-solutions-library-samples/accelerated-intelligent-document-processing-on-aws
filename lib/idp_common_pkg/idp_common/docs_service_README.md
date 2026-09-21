@@ -251,6 +251,6 @@ need to change — those arguments are ignored (see the shim table above).
 
 ## Examples
 
-See `idp_common/dynamodb/example.py` for runnable usage examples covering basic
+See `scripts/examples/dynamodb_service_example.py` for runnable usage examples covering basic
 service creation, factory usage, and document operations with pages and
 sections.
