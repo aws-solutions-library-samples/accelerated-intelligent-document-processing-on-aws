@@ -650,23 +650,42 @@ class DocumentDynamoDBService:
         expression_names["#ConfidenceAlertCount"] = "ConfidenceAlertCount"
         expression_values[":ConfidenceAlertCount"] = document.confidence_alert_count
 
-        # Always persist processing-issue count (even 0) so the document list can
-        # show/filter on it, mirroring ConfidenceAlertCount (the authoritative
-        # filterable source of truth).
-        issue_count = document.processing_issue_count
-        set_expressions.append("#ProcessingIssueCount = :ProcessingIssueCount")
-        expression_names["#ProcessingIssueCount"] = "ProcessingIssueCount"
-        expression_values[":ProcessingIssueCount"] = issue_count
+        # Persist the processing-issue count (including 0) so the document list can
+        # show/filter on it, mirroring ConfidenceAlertCount — but ONLY when this
+        # document object carries the sections the count is derived from.
+        #
+        # `processing_issue_count` counts the sections' issues plus the
+        # document-level ones, so a Document with no sections has no *information*
+        # about the count and reports 0 by absence rather than by measurement.
+        # Writing that 0 asserts something the object does not know, and the caller
+        # that does it is `workflow_tracker`: on a FAILED execution it builds a
+        # deliberately bare Document (status + completion time only; the sections
+        # branch is gated on SUCCEEDED) and calls this method. The `#Sections`
+        # attribute survives that write because it is gated the same way three
+        # blocks above — but the counter was not, so a section-level issue written
+        # by a processing Lambda moments earlier kept its `#Sections` entry while
+        # the document list's badge was stamped back to 0. The UI prefers the stored
+        # value whenever it is merely non-null, so the badge read green for a
+        # document whose section says it failed.
+        #
+        # Gated on the same condition as `#Sections` for the same reason: this
+        # writer only claims what the object it was handed can support.
+        if document.sections:
+            issue_count = document.processing_issue_count
+            set_expressions.append("#ProcessingIssueCount = :ProcessingIssueCount")
+            expression_names["#ProcessingIssueCount"] = "ProcessingIssueCount"
+            expression_values[":ProcessingIssueCount"] = issue_count
 
-        # Sparse GSI attribute for cheap "has processing issues" filtering — SET
-        # only when there ARE issues (mirrors the HITLPendingReview sparse pattern).
-        # Not proactively removed on issue-free writes: ProcessingIssueCount (always
-        # written, above) is the authoritative filter source, and avoiding a REMOVE
-        # here keeps the update-expression additive.
-        if issue_count > 0:
-            set_expressions.append("#HasProcessingIssues = :HasProcessingIssues")
-            expression_names["#HasProcessingIssues"] = "HasProcessingIssues"
-            expression_values[":HasProcessingIssues"] = "true"
+            # Sparse GSI attribute for cheap "has processing issues" filtering — SET
+            # only when there ARE issues (mirrors the HITLPendingReview sparse
+            # pattern). Not proactively removed on issue-free writes:
+            # ProcessingIssueCount (written whenever sections are present, above) is
+            # the authoritative filter source, and avoiding a REMOVE here keeps the
+            # update-expression additive.
+            if issue_count > 0:
+                set_expressions.append("#HasProcessingIssues = :HasProcessingIssues")
+                expression_names["#HasProcessingIssues"] = "HasProcessingIssues"
+                expression_values[":HasProcessingIssues"] = "true"
 
         # Build update expression with optional REMOVE clause
         update_expression = "SET " + ", ".join(set_expressions)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import botocore.exceptions
 import pytest
 
 from idp_common.extraction.failure import (
@@ -29,6 +30,7 @@ from idp_common.extraction.failure import (
 )
 from idp_common.extraction.service import ExtractionOutputIncomplete
 from idp_common.models import Document, ProcessingIssue, Section, Status
+from idp_common.utils.transient_errors import is_transient_error
 
 ROW_SHORTFALL_CODE = "extraction_rows_below_ocr_estimate"
 
@@ -180,6 +182,124 @@ def test_the_write_targets_the_section_by_index_and_carries_the_issue():
         ROW_SHORTFALL_CODE,
         EXTRACTION_FAILED_CODE,
     ]
+
+
+@pytest.mark.unit
+def test_a_transient_error_records_nothing():
+    """A retry is coming, so marking the section would show it failed for the length
+    of the ladder and then clear itself. ``is_transient_error`` is the same predicate
+    the handler uses to decide whether to re-raise under the name the state machine
+    retries, so this is exactly "a retry is coming"."""
+    document = _document()
+    service = MagicMock()
+
+    error = botocore.exceptions.ReadTimeoutError(
+        endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com"
+    )
+    assert is_transient_error(error), "fixture precondition"
+
+    assert (
+        persist_section_after_extraction_failure(
+            document_service=service,
+            document=document,
+            section_id="1",
+            section_index=0,
+            error=error,
+        )
+        is None
+    )
+    assert not service.update_document_section.called
+    assert document.sections[0].processing_issues == []
+
+
+@pytest.mark.unit
+def test_a_deterministic_error_is_recorded_even_when_it_shares_vocabulary():
+    """The guard must key on the classifier, not on the words in the message. The
+    row-shortfall and input-overflow exceptions are deterministic by construction —
+    neither class name is in any Retry list."""
+    for error in (
+        ExtractionOutputIncomplete("materially incomplete"),
+        ValueError("connection to the schema was reset"),
+    ):
+        assert not is_transient_error(error), f"fixture precondition for {error!r}"
+        document = _document()
+        service = MagicMock()
+        assert persist_section_after_extraction_failure(
+            document_service=service,
+            document=document,
+            section_id="1",
+            section_index=0,
+            error=error,
+        )
+        assert service.update_document_section.called
+
+
+@pytest.mark.unit
+def test_root_cause_is_bounded_so_the_write_cannot_exceed_the_item_limit():
+    """An exception echoing document content must not be copied in whole.
+
+    A Pydantic ``ValidationError`` over a merged 1,200-row list renders one entry
+    per offending row, each carrying its ``input_value``. Unbounded that is
+    hundreds of kilobytes of extracted text in a field the UI renders — and past
+    DynamoDB's 400 KB item ceiling the section write fails, is swallowed, and the
+    section is not marked at all, on exactly the large documents this exists for.
+    """
+    document = _document()
+    issue = record_section_extraction_failure(
+        document, "1", ExtractionOutputIncomplete("row data: " + "y" * 500_000)
+    )
+
+    assert issue is not None
+    assert len(issue.root_cause) <= ProcessingIssue.MAX_ROOT_CAUSE_CHARS + len(
+        "… [truncated]"
+    )
+    assert issue.root_cause.endswith("… [truncated]")
+    # The head survives, so the exception type still identifies the failure.
+    assert issue.root_cause.startswith("ExtractionOutputIncomplete: row data:")
+
+
+@pytest.mark.unit
+def test_the_bound_is_enforced_by_the_model_so_the_sibling_path_is_covered_too():
+    """The cap lives in ``ProcessingIssue.__post_init__``, not at this call site.
+
+    ``idp_common.assessment.degradation`` builds ``root_cause`` the same way from
+    its own broad ``except`` and is reached by the identical
+    oversized-``ValidationException`` failure. A cap applied only here would fix
+    one instance of a class-level gap, so this asserts the *class* enforces it and
+    that the sibling is bounded in consequence.
+    """
+    from idp_common.assessment.degradation import degrade_section_to_no_confidence
+
+    # Any construction, anywhere, is bounded.
+    direct = ProcessingIssue(
+        stage="ocr", severity="info", code="c", message="m", root_cause="z" * 100_000
+    )
+    assert direct.root_cause.endswith("… [truncated]")
+
+    document = _document()
+    sibling = degrade_section_to_no_confidence(
+        document, "1", ValueError("scored rows: " + "z" * 200_000)
+    )
+    assert len(sibling.root_cause) <= ProcessingIssue.MAX_ROOT_CAUSE_CHARS + len(
+        "… [truncated]"
+    )
+    assert sibling.root_cause.startswith("ValueError: scored rows:")
+
+
+@pytest.mark.unit
+def test_a_root_cause_within_the_bound_is_left_exactly_as_it_is():
+    """Truncation must not touch the ordinary case: every diagnostic sentence in
+    the tree is far shorter than the cap, and an ellipsis on one would be noise."""
+    cause = "ExtractionOutputIncomplete: materially incomplete: 43 of 1200 rows."
+    issue = ProcessingIssue(
+        stage="extraction",
+        severity="error",
+        code=EXTRACTION_FAILED_CODE,
+        message="m",
+        root_cause=cause,
+    )
+    assert issue.root_cause == cause
+    assert ProcessingIssue.MAX_ROOT_CAUSE_CHARS > len(cause)
 
 
 @pytest.mark.unit

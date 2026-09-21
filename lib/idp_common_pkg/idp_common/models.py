@@ -9,10 +9,13 @@ as it moves through the processing pipeline.
 """
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def coerce_revision(value: Any) -> Optional[int]:
@@ -176,6 +179,25 @@ class ProcessingIssue:
             chain) for the processing report / debugging.
     """
 
+    #: Hard ceiling on ``root_cause``, enforced in ``__post_init__`` so it binds
+    #: at EVERY construction site rather than at the ones that remembered.
+    #:
+    #: ``root_cause`` is overwhelmingly built as ``f"{type(e).__name__}: {e}"`` from
+    #: a broad ``except``, and some exceptions carry document content. A Pydantic
+    #: ``ValidationError`` over a merged 1,200-row list renders one entry per
+    #: offending row, each echoing its ``input_value`` — hundreds of kilobytes of
+    #: extracted text. Two things go wrong at that size and the second is worse
+    #: than the first: document content lands in a field the UI renders, and the
+    #: section write can exceed DynamoDB's 400 KB item limit, at which point the
+    #: write fails and the issue is not recorded at all — precisely on the large
+    #: documents these issues exist to explain.
+    #:
+    #: 2 KB is far more than any diagnostic sentence in the tree needs and far
+    #: less than an item budget. ``details`` is NOT bounded here: it is structured,
+    #: authored per call site rather than built from an exception, and the API
+    #: resolvers strip it.
+    MAX_ROOT_CAUSE_CHARS: ClassVar[int] = 2048
+
     stage: str
     severity: str
     code: str
@@ -183,6 +205,18 @@ class ProcessingIssue:
     root_cause: str = ""
     section_id: Optional[str] = None
     details: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.root_cause and len(self.root_cause) > self.MAX_ROOT_CAUSE_CHARS:
+            kept = self.MAX_ROOT_CAUSE_CHARS
+            logger.warning(
+                "Truncating ProcessingIssue.root_cause for %s from %d to %d "
+                "characters; the full text is in the logs above.",
+                self.code,
+                len(self.root_cause),
+                kept,
+            )
+            self.root_cause = f"{self.root_cause[:kept]}… [truncated]"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to a compact dict (omitting empty optional fields)."""

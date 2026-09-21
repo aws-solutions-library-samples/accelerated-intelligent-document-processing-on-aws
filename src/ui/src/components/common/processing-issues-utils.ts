@@ -21,9 +21,17 @@ export interface SectionWithIssues {
 }
 
 /**
+ * Codes that mean the stage RAISED, as opposed to flagging a result the pipeline
+ * still accepted. Both are error severity, so severity alone cannot tell them
+ * apart, and the difference is the one an operator acts on first: a failed
+ * section has no trustworthy result, while a flagged one does and was kept.
+ */
+const FAILURE_CODES = new Set(['extraction_failed']);
+
+/**
  * Reduce a section's issues to a single Cloudscape StatusIndicator type +
  * label, worst-severity-wins:
- *   error   -> "error"   ("Failed" / "Incomplete")
+ *   error   -> "error"   ("Failed" when the stage raised, else "Incomplete")
  *   warning -> "warning" ("Degraded")
  *   info    -> "info"    ("Auto-recovered")
  *   none    -> "success" ("OK")
@@ -37,7 +45,8 @@ export const getSectionIssueStatus = (
   }
   const severities = new Set(issues.map((i) => (i.severity || 'info').toLowerCase()));
   if (severities.has('error')) {
-    return { type: 'error', label: 'Incomplete', count: issues.length };
+    const failed = issues.some((i) => FAILURE_CODES.has((i.code || '').toLowerCase()));
+    return { type: 'error', label: failed ? 'Failed' : 'Incomplete', count: issues.length };
   }
   if (severities.has('warning')) {
     return { type: 'warning', label: 'Degraded', count: issues.length };

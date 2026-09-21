@@ -117,24 +117,38 @@ def delete_extraction_checkpoint(
         logger.warning(f"Failed to delete extraction checkpoint: {e}")
 
 
-def delete_shard_results(bucket: str, execution_arn: str, section_id: str) -> None:
+def delete_shard_results(bucket: str, execution_arn: str, section) -> None:
     """Delete all per-shard result objects for a section after it completes.
 
-    Per-shard results live under
-    ``checkpoints/{safe_arn}/{section_id}/shards/`` (see
-    ``idp_common.extraction.runtime.shard_result_key``). They must survive across
-    SFN retries (to skip completed shards) but are removed once the whole section
-    succeeds so a later re-process of the same execution+section starts clean.
+    They must survive across SFN retries (to skip completed shards) but are
+    removed once the whole section succeeds so a later re-process of the same
+    execution+section starts clean.
+
+    Takes the **section**, not a section id, and derives the prefix through
+    ``shard_results_prefix(shard_persistence_section_id(...))`` — the same
+    definitions the shard writer uses. Shards are keyed by
+    ``{class_label}_{first_page}_{last_page}``, not by the section's ordinal
+    ``section_id``, so a prefix built from the ordinal addressed a location
+    nothing was ever written to and this deleted nothing.
     """
-    safe_arn = execution_arn.replace(":", "_").replace("/", "_")
-    prefix = f"checkpoints/{safe_arn}/{section_id}/shards/"
+    from idp_common.extraction.runtime import (
+        shard_persistence_section_id,
+        shard_results_prefix,
+    )
+
     s3 = _get_s3_client()
     try:
+        prefix = shard_results_prefix(
+            execution_arn,
+            shard_persistence_section_id(section.classification, section.page_ids),
+        )
         resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         keys = [{"Key": o["Key"]} for o in resp.get("Contents", [])]
         if keys:
             s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
             logger.info(f"Deleted {len(keys)} per-shard result(s) under {prefix}")
+        else:
+            logger.info(f"No per-shard results to delete under {prefix}")
     except Exception as e:
         logger.warning(f"Failed to delete per-shard results: {e}")
 
@@ -439,6 +453,16 @@ def _handle(event, context):
             checkpoint_data=checkpoint_data,
             deadline_epoch=deadline_epoch,
         )
+        # Unreachable today — the extraction service never assigns Status.FAILED,
+        # and this handler set the document to EXTRACTING above. Kept as a guard,
+        # and kept INSIDE the try so that if the service ever does start failing a
+        # section this way it takes the same persist-then-re-raise path as a raise.
+        # sfn_runtime_handler's merge branch has the identical guard in the
+        # identical position; the two must not drift.
+        if section_document.status == Status.FAILED:
+            error_message = f"Extraction failed for document {section_document.id}, section {section_id}"
+            logger.error(error_message)
+            raise Exception(error_message)
     except Exception as error:
         persist_section_after_extraction_failure(
             document_service=document_service,
@@ -447,12 +471,13 @@ def _handle(event, context):
             section_index=section_index,
             error=error,
         )
-        # The checkpoint and the per-shard results are deliberately NOT cleaned up
-        # here (see the success-path cleanup below): they are what lets a Step
-        # Functions retry of this section re-infer only the shards that did not
-        # finish, which is the entire reason per-shard persistence exists (#1014).
-        # They cost nothing to keep — the working bucket expires every object on
-        # the stack's retention schedule.
+        # The checkpoint and the per-shard results are deliberately NOT released
+        # here (see the success-path cleanup below). ExtractionStep retries a
+        # Lambda timeout once and the transient families up to eight times, and
+        # resuming from the checkpoint — re-inferring only the shards that did not
+        # finish — is exactly what they exist for (#1014). Releasing them before
+        # re-raising would make that retry start from nothing. Keeping them costs
+        # only space the working bucket's lifecycle rule reclaims anyway.
         raise
     t1 = time.time()
     logger.info(f"Total extraction time: {t1 - t0:.2f} seconds")
@@ -461,13 +486,7 @@ def _handle(event, context):
     if agentic_enabled and working_bucket and execution_arn:
         delete_extraction_checkpoint(working_bucket, execution_arn, section_id)
         # Remove per-shard results now the section is fully merged & saved.
-        delete_shard_results(working_bucket, execution_arn, section_id)
-
-    # Check if document processing failed
-    if section_document.status == Status.FAILED:
-        error_message = f"Extraction failed for document {section_document.id}, section {section_id}"
-        logger.error(error_message)
-        raise Exception(error_message)
+        delete_shard_results(working_bucket, execution_arn, section)
 
     # Add Lambda metering for successful extraction execution
     try:

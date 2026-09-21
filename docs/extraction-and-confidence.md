@@ -2173,9 +2173,10 @@ it reaches this far less often.
 ##### Where a failed section shows up
 
 A section whose extraction **failed** is recorded on the section itself, so the
-document's Sections panel shows which section failed and why. That applies to
-every raising extraction failure, not only a row shortfall:
-`ExtractionInputTooLarge`, `ExtractionImageRejected`,
+document's Sections panel shows which section failed and why — as **Failed** in the
+Status column, distinct from the **Incomplete** a section that was flagged but
+accepted shows. That applies to every raising extraction failure, not only a row
+shortfall: `ExtractionInputTooLarge`, `ExtractionImageRejected`,
 `ModelInvalidToolUseSequence` and `ExtractionOutputIncomplete` all leave an
 error-severity `extraction_failed` issue whose `root_cause` is the exception's own
 explanation and remedy — the same sentence the Step Functions cause reports, which
@@ -2190,6 +2191,12 @@ cannot carry that on its own, because it is written at `warning` severity under
 The rows that were extracted are still in the section's `result.json` and the
 section still points at it, so a partial result stays readable in the Visual
 Editor rather than being discarded with the failure.
+
+**A transient failure is not marked.** A throttle or a read timeout is retried by
+the state machine, so flagging the section would show it failed for as long as that
+ladder runs and then clear itself. Only a failure that will not be retried is
+recorded. If a retry ladder exhausts every attempt, the document fails with the
+explanation in the Step Functions cause and the section is not flagged.
 
 ##### Why `fail` is opt-in, and what to check before turning it on
 

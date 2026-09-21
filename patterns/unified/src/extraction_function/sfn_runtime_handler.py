@@ -31,6 +31,10 @@ import boto3
 from idp_common import extraction, get_config
 from idp_common.docs_service import create_document_service
 from idp_common.extraction.failure import persist_section_after_extraction_failure
+from idp_common.extraction.runtime import (
+    shard_persistence_section_id,
+    shard_results_prefix,
+)
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
@@ -89,16 +93,28 @@ def _persistence(working_bucket, execution_arn):
     )
 
 
-def _cleanup_shards(working_bucket, execution_arn, section_id):
+def _cleanup_shards(working_bucket, execution_arn, section):
+    """Release a section's per-shard results once the section has been merged.
+
+    Takes the **section**, not a section id, and derives the prefix through the
+    same two functions the shard writer uses. Shards are keyed by
+    ``{class_label}_{first_page}_{last_page}`` (``shard_persistence_section_id``),
+    not by the section's ordinal ``section_id``, so a prefix built from the ordinal
+    listed a location nothing was ever written to and this deleted nothing.
+    """
     try:
-        safe_arn = execution_arn.replace(":", "_").replace("/", "_")
-        prefix = f"checkpoints/{safe_arn}/{section_id}/shards/"
+        prefix = shard_results_prefix(
+            execution_arn,
+            shard_persistence_section_id(section.classification, section.page_ids),
+        )
         s3 = _get_s3_client()
         resp = s3.list_objects_v2(Bucket=working_bucket, Prefix=prefix)
         keys = [{"Key": o["Key"]} for o in resp.get("Contents", [])]
         if keys:
             s3.delete_objects(Bucket=working_bucket, Delete={"Objects": keys})
-            logger.info("Deleted %d per-shard result(s)", len(keys))
+            logger.info("Deleted %d per-shard result(s) under %s", len(keys), prefix)
+        else:
+            logger.info("No per-shard results to delete under %s", prefix)
     except Exception as e:
         logger.warning("Failed to clean up per-shard results: %s", e)
 
@@ -205,15 +221,22 @@ def _handle(event, context):
                 section_index=section_index,
                 error=error,
             )
-            # The per-shard results are deliberately KEPT on failure. They exist so
-            # a Step Functions retry of the section re-infers only the shards that
-            # did not finish (#1014); deleting them here would discard paid-for
-            # shard inference at the one moment a retry is most likely, to reclaim
-            # space the working bucket's lifecycle rule reclaims anyway. They are
-            # cleaned up on success below, and by the next successful run of the
-            # same execution + section.
+            # The per-shard results are deliberately KEPT on failure, because
+            # `merge_section_shards` RE-LOADS every shard from S3 on entry and
+            # raises if any is absent. ExtractionMergeStep retries the transient
+            # families (TransientError, Lambda.ServiceException, throttling, …),
+            # and releasing the shards before re-raising one of those would turn a
+            # recoverable merge into a permanent "shard(s) have no persisted
+            # result" failure on the very next attempt. Deleting them would also
+            # reclaim only space the working bucket's lifecycle rule reclaims
+            # anyway. They are released on success below.
+            #
+            # Note this state has no Catch and no path back to
+            # ExtractionShardMap, so a DETERMINISTIC merge failure — the
+            # row-shortfall case this persist exists for, or a genuinely missing
+            # shard — is not retried at all, and the kept objects simply expire.
             raise
-        _cleanup_shards(working_bucket, execution_arn, section_id)
+        _cleanup_shards(working_bucket, execution_arn, section)
         try:
             lambda_metering = calculate_lambda_metering(
                 "Extraction", context, start_time

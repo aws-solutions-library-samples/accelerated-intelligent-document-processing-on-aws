@@ -5736,10 +5736,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         context="Extraction",
                         checkpoint_callback=self._checkpoint_callback,
                         custom_instruction=shard_custom_instruction,
-                        section_id=(
-                            f"{section_info.class_label}_"
-                            f"{section_info.start_page}_{section_info.end_page}"
-                        ),
+                        section_id=self._persist_section_id(section_info),
                         persistence=self._shard_persistence,
                         runtime=runtime,
                         assess_runner=self._build_assess_runner(
@@ -7855,10 +7852,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         return model_id, dynamic_model, shard_payloads, custom_instruction
 
     def _persist_section_id(self, section_info: SectionInfo) -> str:
-        """Deterministic per-section id used for shard persistence keys."""
-        return (
-            f"{section_info.class_label}_"
-            f"{section_info.start_page}_{section_info.end_page}"
+        """Deterministic per-section id used for shard persistence keys.
+
+        Delegates to ``runtime.shard_persistence_section_id`` so this value and the
+        prefix ``_cleanup_shards`` / ``delete_shard_results`` list have exactly one
+        definition between them.
+        """
+        from idp_common.extraction.runtime import shard_persistence_section_id
+
+        return shard_persistence_section_id(
+            section_info.class_label, section_info.sorted_page_ids
         )
 
     def run_one_section_shard(

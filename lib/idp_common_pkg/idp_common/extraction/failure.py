@@ -34,6 +34,11 @@ boundary, which is what owns the write; only the body is shared, so the two mode
 cannot drift apart on it (the same reasoning that put the raise itself in
 ``_save_results``).
 
+**Transient failures are excluded.** A read timeout or a throttle is going to be
+retried by the state machine, so marking the section would show a red section for
+the length of the ladder and then clear it. See
+:func:`persist_section_after_extraction_failure`.
+
 **No metric here.** Unlike the assessment degradation path
 (``idp_common.assessment.degradation``), which exists precisely because the
 document *completes* and therefore trips no alarm, everything routed through this
@@ -45,6 +50,7 @@ import logging
 from typing import Any, Optional
 
 from idp_common.models import Document, ProcessingIssue, Section
+from idp_common.utils.transient_errors import is_transient_error
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +160,17 @@ def persist_section_after_extraction_failure(
     place and return the same object, so on a raise it is still the caller's
     handle on everything the service recorded before giving up.
 
+    **A TRANSIENT error records nothing.** ``is_transient_error`` is the same
+    predicate the handler's own wrapper uses to decide whether to re-raise under
+    the name ``ExtractionStep`` / ``ExtractionMergeStep`` retries, so it is exactly
+    "a retry is coming". Marking the section in the meantime would show it as
+    failed for as long as that ladder runs — eight attempts at 2.5x backoff from a
+    10-second interval is most of three hours — and then clear itself, which is a
+    false alarm rather than a diagnosis. The sibling assessment path declines the
+    same case for the same reason. The residual is that a ladder which exhausts
+    every attempt leaves the section unmarked; the execution still fails and the
+    failure alarms still see it.
+
     **Nothing in here may raise.** The original exception is what the user needs —
     it is the one that names the rows lost, or the input that was too large, and
     it is what the Step Functions cause reports. A DynamoDB write that fails while
@@ -161,6 +178,14 @@ def persist_section_after_extraction_failure(
     every failure here is logged and swallowed. Returns ``None`` if nothing was
     recorded or the write did not happen.
     """
+    if is_transient_error(error):
+        logger.info(
+            "Not marking section %s as failed: %s is transient, so the step will "
+            "be retried and a marked section would clear itself.",
+            section_id,
+            type(error).__name__,
+        )
+        return None
     issue = record_section_extraction_failure(document, section_id, error)
     if issue is None:
         return None

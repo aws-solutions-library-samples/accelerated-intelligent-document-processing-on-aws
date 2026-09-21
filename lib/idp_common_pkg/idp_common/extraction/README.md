@@ -1054,12 +1054,43 @@ Three properties it relies on, and one it deliberately does not do:
 - **No metric.** Unlike `idp_common.assessment.degradation`, whose whole reason for
   existing is that the document *completes* and trips no alarm, everything here
   re-raises — the execution fails and the existing failure alarms already count it.
+- **A transient error records nothing.** `is_transient_error` is the same predicate
+  that decides whether the handler re-raises under the name `ExtractionStep` /
+  `ExtractionMergeStep` retries, so it reads as "a retry is coming". Marking the
+  section would show it failed for the length of the ladder — eight attempts at
+  2.5x backoff from a 10-second interval — and then clear itself. The residual is
+  that an exhausted ladder leaves the section unmarked; the execution still fails.
 
-**Per-shard results are kept on failure.** `_cleanup_shards` runs only on success.
-Per-shard S3 persistence exists so a Step Functions retry re-infers only the shards
-that did not finish; deleting them on failure would discard paid-for inference at
-the moment a retry is most likely, to reclaim space the working bucket's lifecycle
-rule reclaims anyway.
+**Per-shard results are kept on failure**, released on success. The reason is that
+`merge_section_shards` **re-loads every shard from S3 on entry** and raises if any is
+absent, and `ExtractionMergeStep` retries the transient families — so releasing the
+shards before re-raising one of those would turn a recoverable merge into a permanent
+"shard(s) have no persisted result" on the next attempt. On the in-process path the
+same holds for the whole-section checkpoint, which is what lets `ExtractionStep`'s
+single Lambda-timeout retry resume. Note that `ExtractionMergeStep` has no `Catch`
+and no path back to `ExtractionShardMap`, so a *deterministic* merge failure is not
+retried at all and the kept objects simply expire on the working bucket's lifecycle
+schedule.
+
+### Shard results are keyed by content, not by the section's ordinal id
+
+`shard_result_key` takes a **shard-persistence section id** —
+`{class_label}_{first_page}_{last_page}`, built by `shard_persistence_section_id` —
+rather than the `section_id` classification assigns, which is an ordinal (`"0"`,
+`"1"`, …) and is not stable across a reclassify.
+
+There are consequently two prefixes under `checkpoints/{safe_arn}/`: the
+whole-section checkpoint at `{section_id}/extraction_state.json` uses the ordinal,
+and the shard results at `{persist_section_id}/shards/` do not. Anything that
+addresses the `shards/` prefix must go through `shard_results_prefix`, which
+`shard_result_key` is itself built on so the two cannot diverge, and must derive its
+id through `shard_persistence_section_id`. Both cleanup callers
+(`delete_shard_results`, `_cleanup_shards`) therefore take the **section** rather
+than a section id, so a raw ordinal cannot be passed by mistake — which is what
+happened, leaving both listing a prefix nothing had ever been written to and
+deleting nothing while logging success.
+`tests/unit/extraction/test_shard_cleanup_prefix.py` drives the real service against
+both deployed handlers with a fake S3 that answers the correct prefix only.
 
 ### An empty effective schema: three causes, one of them a fault
 

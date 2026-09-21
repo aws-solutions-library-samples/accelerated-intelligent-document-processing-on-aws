@@ -41,15 +41,21 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import botocore.exceptions
 import pytest
 
 from idp_common.config.models import IDPConfig
 from idp_common.extraction.failure import EXTRACTION_FAILED_CODE
+from idp_common.extraction.runtime import (
+    shard_persistence_section_id,
+    shard_results_prefix,
+)
 from idp_common.extraction.service import (
     ExtractionInputTooLarge,
     ExtractionOutputIncomplete,
 )
 from idp_common.models import Document, ProcessingIssue, Section, Status
+from idp_common.utils.transient_errors import TransientError
 
 _SRC = os.path.join(
     os.path.dirname(__file__),
@@ -290,6 +296,55 @@ def test_a_failing_write_does_not_replace_the_original_error(in_process, monkeyp
 
 
 @pytest.mark.unit
+def test_a_transient_failure_does_not_mark_the_section(in_process, monkeypatch):
+    """A read timeout is retried by ExtractionStep — eight attempts at 2.5x backoff
+    from a 10-second interval, which is most of three hours. Marking the section
+    failed for that long and then clearing it is a false alarm, not a diagnosis, and
+    the sibling assessment path declines the same case. The retry classification
+    itself is untouched: it still surfaces as TransientError."""
+    error = botocore.exceptions.ReadTimeoutError(
+        endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com"
+    )
+
+    with pytest.raises(TransientError):
+        _invoke_in_process(
+            monkeypatch, _service_that_fails(error, record_diagnosis=False)
+        )
+
+    assert not in_process.update_document_section.called
+
+
+@pytest.mark.unit
+def test_a_bounded_root_cause_keeps_the_write_under_the_item_limit(
+    in_process, monkeypatch
+):
+    """An exception echoing document content must not be copied verbatim.
+
+    A Pydantic ValidationError over a merged 1,200-row list renders one entry per
+    offending row, each carrying its input_value. Unbounded, that is hundreds of
+    kilobytes of extracted text written into a field the UI renders — and past
+    DynamoDB's 400 KB item ceiling the write fails, is swallowed, and the section
+    is not marked at all, on exactly the large documents this exists for.
+    """
+    from idp_common.models import ProcessingIssue as PI
+
+    error = ExtractionInputTooLarge("row content: " + ("x" * 500_000))
+
+    with pytest.raises(ExtractionInputTooLarge):
+        _invoke_in_process(
+            monkeypatch, _service_that_fails(error, record_diagnosis=False)
+        )
+
+    persisted = in_process.update_document_section.call_args.kwargs["section"]
+    root_cause = persisted.processing_issues[0].root_cause
+    assert len(root_cause) <= PI.MAX_ROOT_CAUSE_CHARS + len("… [truncated]")
+    assert root_cause.endswith("… [truncated]")
+    # The head survives, so the exception type and the start of its message — the
+    # part that identifies the failure — are still readable.
+    assert root_cause.startswith("ExtractionInputTooLarge: row content:")
+
+
+@pytest.mark.unit
 def test_a_successful_extraction_records_no_failure_issue(in_process, monkeypatch):
     """The guard on the other direction: a section that succeeded must not be
     flagged, or every document would show an error in the Sections panel."""
@@ -337,10 +392,22 @@ def merge_mode(monkeypatch):
     monkeypatch.setattr(
         shard_runtime, "create_document_service", lambda *a, **kw: doc_service
     )
+    # The fake S3 answers a hit for the prefix shards are ACTUALLY written to and
+    # nothing else, which is what the real bucket does. A mock returning Contents
+    # for any prefix would pass against a cleanup addressing a prefix that has
+    # never held an object — the exact defect
+    # tests/unit/extraction/test_shard_cleanup_prefix.py exists for.
+    section = next(s for s in document.sections if s.section_id == "2")
+    shard_prefix = shard_results_prefix(
+        "arn:exec",
+        shard_persistence_section_id(section.classification, section.page_ids),
+    )
     s3_client = MagicMock()
-    s3_client.list_objects_v2.return_value = {
-        "Contents": [{"Key": "checkpoints/exec/2/shards/0.json"}]
-    }
+    s3_client.list_objects_v2.side_effect = lambda Bucket, Prefix: (  # noqa: N803
+        {"Contents": [{"Key": f"{shard_prefix}shard_0_0.json"}]}
+        if Prefix == shard_prefix
+        else {}
+    )
     monkeypatch.setattr(shard_runtime, "_get_s3_client", lambda: s3_client)
     monkeypatch.setenv("WORKING_BUCKET", "")
     return doc_service, s3_client
@@ -381,10 +448,11 @@ def test_a_failed_merge_persists_the_section_and_keeps_its_shards(
         EXTRACTION_FAILED_CODE,
     ]
 
-    # (4) The per-shard results are KEPT. They exist so a retry of the section
-    # re-infers only the shards that did not finish (#1014); deleting them here
-    # would discard paid-for inference at the moment a retry is most likely, to
-    # reclaim space the working bucket's lifecycle rule reclaims anyway.
+    # (4) The per-shard results are KEPT. merge_section_shards re-loads every shard
+    # from S3 on entry and raises if any is absent, so releasing them before
+    # re-raising would turn a retryable merge failure (ExtractionMergeStep retries
+    # the transient families) into a permanent "shard(s) have no persisted result"
+    # on the next attempt.
     assert not s3_client.delete_objects.called
 
 
