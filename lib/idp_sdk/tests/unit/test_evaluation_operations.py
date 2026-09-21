@@ -257,10 +257,59 @@ def _bare_processor():
 
 
 @pytest.mark.unit
+class TestEvaluationResultsContract:
+    """The reader's key must stay the producer's key.
+
+    Asserted against ``idp_common.evaluation.contract`` rather than against a
+    literal. The producer (``idp_common.evaluation.service``) and the aggregation
+    Lambda import that helper, so pinning the string here instead would let the
+    template be changed in one place and silently return this reader to looking
+    for an object nothing writes — reinstating the defect these tests cover.
+    """
+
+    def test_the_report_key_is_the_producers_key(self):
+        from idp_common.evaluation.contract import evaluation_results_key
+        from idp_sdk._core.evaluation_processor import EvaluationProcessor
+
+        for document_id in ("invoice-001.pdf", "batch-1/nested/doc.pdf", "no-suffix"):
+            assert EvaluationProcessor._evaluation_results_key(
+                document_id
+            ) == evaluation_results_key(document_id)
+
+    def test_the_metrics_suffix_filter_matches_a_real_key(self):
+        """Both ways this derivation fails, and both fail silently.
+
+        ``get_metrics`` sifts a bucket listing by suffix rather than by a known
+        key. If the document id ever moved out of the front of the template, no
+        real key would end with the derived string and the scan would report zero
+        evaluations with nothing raising. If the suffix were empty, every object
+        in the bucket would match and be fetched.
+        """
+        from idp_common.evaluation.contract import evaluation_results_key
+        from idp_sdk._core.evaluation_processor import EvaluationProcessor
+
+        suffix = EvaluationProcessor._evaluation_results_suffix()
+
+        assert suffix, (
+            "the derived results suffix is empty, so get_metrics' "
+            "`key.endswith(suffix)` filter matches every object in the output "
+            "bucket and would fetch all of them."
+        )
+        assert evaluation_results_key("batch-1/doc.pdf").endswith(suffix), (
+            f"a real results key does not end with the derived suffix {suffix!r}. "
+            "The document id has moved out of the front of "
+            "EVALUATION_RESULTS_KEY_TEMPLATE, so get_metrics would silently match "
+            "nothing. Derive the filter differently rather than adjusting this test."
+        )
+
+
+@pytest.mark.unit
 class TestGetReportProcessor:
     """EvaluationProcessor.get_report reads the artifact the pipeline writes."""
 
     def test_reads_the_evaluation_results_key(self):
+        from idp_common.evaluation.contract import evaluation_results_key
+
         proc = _bare_processor()
         proc.s3.get_object.return_value = _body(RESULTS_JSON)
 
@@ -268,7 +317,7 @@ class TestGetReportProcessor:
 
         proc.s3.get_object.assert_called_once_with(
             Bucket="output-bucket",
-            Key="invoice-001.pdf/evaluation/results.json",
+            Key=evaluation_results_key("invoice-001.pdf"),
         )
 
     def test_selects_the_requested_section(self):
@@ -378,10 +427,32 @@ class TestGetMetricsProcessor:
             0.725
         )
         assert result["by_document_class"]["receipt"]["count"] == 1
-        # The running total is an implementation detail and must not leak out.
-        assert "_total_accuracy" not in result["by_document_class"]["invoice"]
+        # The running accumulator is an implementation detail and must not leak.
+        assert "_scores" not in result["by_document_class"]["invoice"]
 
-    def test_no_evaluations_yields_zeroes_rather_than_dividing_by_zero(self):
+    def test_the_class_breakdown_carries_all_four_scores(self):
+        proc = _bare_processor()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": "a.pdf/evaluation/results.json"}]}
+        ]
+        proc.s3.get_paginator.return_value = paginator
+        proc.s3.get_object.return_value = _body(RESULTS_JSON)
+
+        by_class = proc.get_metrics()["by_document_class"]
+
+        invoice = by_class["invoice"]
+        assert invoice["avg_precision"] == pytest.approx(0.7)
+        assert invoice["avg_recall"] == pytest.approx(0.6)
+        assert invoice["avg_f1_score"] == pytest.approx(0.65)
+        # Section 2 reports only accuracy, so the other three have no data there
+        # and must be None rather than averaged against a count that includes it.
+        receipt = by_class["receipt"]
+        assert receipt["avg_accuracy"] == pytest.approx(0.5)
+        assert receipt["avg_precision"] is None
+
+    def test_no_evaluations_yields_none_rather_than_a_zero_score(self):
+        """Zero documents is not "accuracy 0.0" — that reads as a measurement."""
         proc = _bare_processor()
         paginator = Mock()
         paginator.paginate.return_value = [{"Contents": []}]
@@ -390,8 +461,72 @@ class TestGetMetricsProcessor:
         result = proc.get_metrics()
 
         assert result["total_documents"] == 0
-        assert result["avg_accuracy"] == 0.0
+        assert result["avg_accuracy"] is None
         assert result["by_document_class"] == {}
+
+    def test_an_unscored_section_does_not_dilute_its_class_average(self):
+        """A section the pipeline excluded carries no scores, only flags.
+
+        Counting it in the denominator would drag the class average toward zero
+        with nothing saying so, which is the shape of the defects this module
+        covers.
+        """
+        proc = _bare_processor()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": "a.pdf/evaluation/results.json"}]}
+        ]
+        proc.s3.get_paginator.return_value = paginator
+        proc.s3.get_object.return_value = _body(
+            {
+                "document_id": "a.pdf",
+                "overall_metrics": {"accuracy": 0.8},
+                "section_results": [
+                    {
+                        "section_id": "1",
+                        "document_class": "invoice",
+                        "metrics": {"accuracy": 0.8},
+                        "attributes": [],
+                    },
+                    {
+                        "section_id": "2",
+                        "document_class": "invoice",
+                        # What the evaluation service writes for a skipped section.
+                        "metrics": {
+                            "weighted_overall_score": None,
+                            "evaluation_skipped": True,
+                        },
+                        "attributes": [],
+                    },
+                ],
+            }
+        )
+
+        invoice = proc.get_metrics()["by_document_class"]["invoice"]
+
+        assert invoice["count"] == 2
+        assert invoice["avg_accuracy"] == pytest.approx(0.8), (
+            "the skipped section was counted in the denominator, halving the "
+            "reported accuracy"
+        )
+
+    def test_a_boolean_flag_is_not_averaged_as_a_score(self):
+        """`bool` is an `int`, so a flag where a score belongs would read as 1.0."""
+        proc = _bare_processor()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": "a.pdf/evaluation/results.json"}]}
+        ]
+        proc.s3.get_paginator.return_value = paginator
+        proc.s3.get_object.return_value = _body(
+            {
+                "document_id": "a.pdf",
+                "overall_metrics": {"accuracy": True},
+                "section_results": [],
+            }
+        )
+
+        assert proc.get_metrics()["avg_accuracy"] is None
 
     def test_a_document_class_filter_drops_documents_without_that_class(self):
         proc = _bare_processor()
@@ -409,6 +544,35 @@ class TestGetMetricsProcessor:
         proc.s3.get_object.return_value = _body(RESULTS_JSON)
         dropped = proc.get_metrics(document_class="bank-statement")
         assert dropped["total_documents"] == 0
+
+    def test_a_class_filter_suppresses_the_whole_document_averages(self):
+        """The top-level averages cannot answer a class-scoped question.
+
+        The document in RESULTS_JSON scores 0.9 overall but its receipt section
+        scores 0.5. Reporting 0.9 for `document_class="receipt"` would be a real
+        number measuring something other than what the caller asked for, so it is
+        `None` and the answer lives in the breakdown.
+        """
+        proc = _bare_processor()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": "a.pdf/evaluation/results.json"}]}
+        ]
+        proc.s3.get_paginator.return_value = paginator
+        proc.s3.get_object.return_value = _body(RESULTS_JSON)
+
+        unfiltered = proc.get_metrics()
+        assert unfiltered["avg_accuracy"] == pytest.approx(0.9)
+
+        proc.s3.get_object.return_value = _body(RESULTS_JSON)
+        filtered = proc.get_metrics(document_class="receipt")
+
+        assert filtered["total_documents"] == 1
+        for name in ("accuracy", "precision", "recall", "f1_score"):
+            assert filtered[f"avg_{name}"] is None, f"avg_{name} is not class-scoped"
+        assert filtered["by_document_class"]["receipt"][
+            "avg_accuracy"
+        ] == pytest.approx(0.5)
 
 
 @pytest.mark.unit
@@ -528,6 +692,30 @@ class TestEvaluationOperationResults:
             "2024-01-01",
             "2024-01-31",
         )
+        assert metrics.document_class is None
+
+    @patch("idp_sdk._core.evaluation_processor.EvaluationProcessor")
+    def test_get_metrics_echoes_the_class_filter_that_nulls_the_averages(
+        self, mock_processor
+    ):
+        """`document_class` on the result is what explains the `None` averages."""
+        mock_processor.return_value = _stub_processor(
+            get_metrics={
+                "total_documents": 1,
+                "avg_accuracy": None,
+                "avg_precision": None,
+                "avg_recall": None,
+                "avg_f1_score": None,
+                "by_document_class": {"invoice": {"count": 1, "avg_accuracy": 0.9}},
+            }
+        )
+
+        client = IDPClient(stack_name="test-stack")
+        metrics = client.evaluation.get_metrics(document_class="invoice")
+
+        assert metrics.document_class == "invoice"
+        assert metrics.avg_accuracy is None
+        assert metrics.by_document_class["invoice"]["avg_accuracy"] == 0.9
 
     @patch("idp_sdk._core.evaluation_processor.EvaluationProcessor")
     def test_get_metrics_failure_becomes_a_processing_error(self, mock_processor):

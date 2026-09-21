@@ -186,7 +186,13 @@ class EvaluationOperation:
             **kwargs: Additional parameters
 
         Returns:
-            EvaluationMetrics with aggregated statistics
+            EvaluationMetrics with aggregated statistics.
+
+            Passing ``document_class`` leaves the four top-level averages ``None``
+            and puts the class-scoped answer in
+            ``by_document_class[document_class]``: the top-level figures come from
+            each document's whole-document metrics, which cannot answer a question
+            about one class of section.
         """
         from idp_sdk._core.evaluation_processor import EvaluationProcessor
 
@@ -212,6 +218,7 @@ class EvaluationOperation:
                 by_document_class=result["by_document_class"],
                 start_date=start_date,
                 end_date=end_date,
+                document_class=document_class,
             )
         except Exception as e:
             raise IDPProcessingError(f"Failed to get evaluation metrics: {e}") from e

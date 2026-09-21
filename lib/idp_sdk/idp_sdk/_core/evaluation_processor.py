@@ -197,20 +197,73 @@ class EvaluationProcessor:
                 f"Failed to set EvaluationStatus={status} for {document_id}: {e}"
             )
 
-    #: Where the pipeline writes a document's evaluation results, relative to the
-    #: output bucket. Mirrors ``idp_common.evaluation.contract``'s
-    #: ``EVALUATION_RESULTS_KEY_TEMPLATE`` — the one artifact the evaluation
-    #: service actually produces, alongside a sibling ``report.md``.
-    EVALUATION_RESULTS_SUFFIX = "/evaluation/results.json"
-
     #: The scores ``idp_common.evaluation``'s derived-metrics helper writes into
     #: every ``metrics`` and ``overall_metrics`` block. It also writes
     #: ``false_alarm_rate`` and ``false_discovery_rate``, which are passed through
     #: in ``overall_metrics`` rather than averaged.
     METRIC_NAMES = ("accuracy", "precision", "recall", "f1_score")
 
-    def _evaluation_results_key(self, document_id: str) -> str:
-        return f"{document_id}{self.EVALUATION_RESULTS_SUFFIX}"
+    @staticmethod
+    def _evaluation_results_key(document_id: str) -> str:
+        """Where the pipeline writes a document's evaluation results.
+
+        Delegates to ``idp_common`` rather than restating the template. The
+        producer (``idp_common.evaluation.service``) and the aggregation Lambda
+        both import this helper, so a copy here would let the key be changed in
+        one place and leave this reader silently looking for an object nothing
+        writes — which is the defect this method exists to fix. Imported inside
+        the function, the pattern the rest of the SDK uses for ``idp_common``, so
+        an operation that never touches evaluation never pays for the import.
+        """
+        from idp_common.evaluation.contract import evaluation_results_key
+
+        return evaluation_results_key(document_id)
+
+    @classmethod
+    def _evaluation_results_suffix(cls) -> str:
+        """The trailing part of that key, for filtering a bucket listing.
+
+        ``get_metrics`` has no document id to work from — it sifts every object
+        under a prefix — so it needs the template's tail rather than a concrete
+        key, and derives it from the same helper by passing an empty id.
+
+        Two properties this relies on and ``tests/unit/test_evaluation_operations
+        .py`` asserts, because both fail *silently* rather than loudly: the
+        document id must sit at the **front** of the template (otherwise no real
+        key ends with this string and the scan reports zero evaluations), and the
+        result must be non-empty (otherwise it matches every object in the
+        bucket).
+        """
+        return cls._evaluation_results_key("")
+
+    @classmethod
+    def _new_score_accumulator(cls) -> Dict[str, list]:
+        """A running ``[total, n]`` per metric.
+
+        ``n`` is per metric rather than shared, because a section the pipeline
+        excluded or failed to evaluate carries a ``metrics`` block with none of
+        the four scores in it. Counting those in one shared denominator would
+        pull every average toward zero without anything saying so.
+        """
+        return {name: [0.0, 0] for name in cls.METRIC_NAMES}
+
+    @classmethod
+    def _accumulate_scores(cls, accumulator: Dict[str, list], metrics: Dict) -> None:
+        for name in cls.METRIC_NAMES:
+            value = metrics.get(name)
+            # `bool` is an `int`; a `True` here would mean the artifact put a flag
+            # where a score belongs, so it is not silently averaged as 1.0.
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                accumulator[name][0] += float(value)
+                accumulator[name][1] += 1
+
+    @classmethod
+    def _averages(cls, accumulator: Dict[str, list]) -> Dict[str, Optional[float]]:
+        """``{"avg_<metric>": mean or None}``, ``None`` when nothing reported it."""
+        return {
+            f"avg_{name}": (total / n if n else None)
+            for name, (total, n) in accumulator.items()
+        }
 
     @staticmethod
     def _section_metrics(section: Dict) -> Dict:
@@ -323,26 +376,36 @@ class EvaluationProcessor:
             batch_id: Batch ID filter
 
         Returns:
-            Dictionary with the document-count and the four averaged
-            ``overall_metrics`` scores, plus a per-document-class breakdown.
-            ``document_class`` is a property of a *section*, so the breakdown
-            aggregates sections while the top-level averages aggregate documents.
+            Dictionary with ``total_documents``, the four ``avg_*`` scores
+            averaged over documents, and ``by_document_class`` giving the same
+            four averaged over that class's *sections* plus a section ``count``.
+
+            A document class is a property of a **section**, and the document
+            level has only whole-document ``overall_metrics`` — so when
+            ``document_class`` is set the four top-level averages are ``None``
+            rather than a whole-document figure that reads as a class-scoped one.
+            The class-scoped answer is in ``by_document_class[document_class]``.
+
+            Any average is ``None`` when nothing in scope reported that metric: a
+            section the pipeline excluded or failed to evaluate carries no scores,
+            and counting it in the denominator would drag the average toward zero.
         """
         output_bucket = self.resources["OutputBucket"]
 
         try:
             prefix = f"{batch_id}/" if batch_id else ""
+            results_suffix = self._evaluation_results_suffix()
             paginator = self.s3.get_paginator("list_objects_v2")
             pages = paginator.paginate(Bucket=output_bucket, Prefix=prefix)
 
-            totals = dict.fromkeys(self.METRIC_NAMES, 0.0)
+            document_scores = self._new_score_accumulator()
             by_class: Dict[str, Dict] = {}
             count = 0
 
             for page in pages:
                 for obj in page.get("Contents", []):
                     key = obj["Key"]
-                    if not key.endswith(self.EVALUATION_RESULTS_SUFFIX):
+                    if not key.endswith(results_suffix):
                         continue
 
                     # Apply date filter
@@ -374,37 +437,36 @@ class EvaluationProcessor:
                             continue
 
                     overall = eval_data.get("overall_metrics")
-                    overall = overall if isinstance(overall, dict) else {}
-                    for name in self.METRIC_NAMES:
-                        value = overall.get(name)
-                        if isinstance(value, (int, float)):
-                            totals[name] += float(value)
+                    self._accumulate_scores(
+                        document_scores, overall if isinstance(overall, dict) else {}
+                    )
                     count += 1
 
                     for section in sections:
                         doc_class = section.get("document_class") or "unknown"
                         bucket_for_class = by_class.setdefault(
-                            doc_class, {"count": 0, "_total_accuracy": 0.0}
+                            doc_class,
+                            {"count": 0, "_scores": self._new_score_accumulator()},
                         )
                         bucket_for_class["count"] += 1
-                        accuracy = self._section_metrics(section).get("accuracy")
-                        if isinstance(accuracy, (int, float)):
-                            bucket_for_class["_total_accuracy"] += float(accuracy)
+                        self._accumulate_scores(
+                            bucket_for_class["_scores"], self._section_metrics(section)
+                        )
 
             for class_data in by_class.values():
-                class_data["avg_accuracy"] = (
-                    class_data["_total_accuracy"] / class_data["count"]
-                    if class_data["count"] > 0
-                    else 0.0
-                )
-                del class_data["_total_accuracy"]
+                class_data.update(self._averages(class_data.pop("_scores")))
+
+            # A class-scoped question cannot be answered from whole-document
+            # metrics, so it is not answered with them.
+            averages = (
+                dict.fromkeys(f"avg_{name}" for name in self.METRIC_NAMES)
+                if document_class
+                else self._averages(document_scores)
+            )
 
             return {
                 "total_documents": count,
-                "avg_accuracy": totals["accuracy"] / count if count else 0.0,
-                "avg_precision": totals["precision"] / count if count else 0.0,
-                "avg_recall": totals["recall"] / count if count else 0.0,
-                "avg_f1_score": totals["f1_score"] / count if count else 0.0,
+                **averages,
                 "by_document_class": by_class,
             }
 

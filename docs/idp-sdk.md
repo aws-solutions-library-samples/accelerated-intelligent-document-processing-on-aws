@@ -761,12 +761,21 @@ the score — `EXACT`, `FUZZY`, `LLM`, …) and `reason`. `expected` and `actual
 whatever the schema declared for the attribute, so they may be scalars, lists or
 nested objects.
 
+Because the scores are optional and `overall_metrics` may be `{}`, format them
+only once you have checked — a bare `f"{report.accuracy:.1%}"` raises `TypeError`
+on a section that recorded no metrics, and `overall_metrics['accuracy']` raises
+`KeyError` on a document that recorded none.
+
 ```python
+def pct(value):
+    return f"{value:.1%}" if value is not None else "n/a"
+
+
 report = client.evaluation.get_report(document_id="test-invoice-001.pdf")
 
 print(f"Section {report.section_id} ({report.document_class})")
-print(f"Accuracy: {report.accuracy:.1%}  F1: {report.f1_score:.1%}")
-print(f"Document overall accuracy: {report.overall_metrics['accuracy']:.1%}")
+print(f"Accuracy: {pct(report.accuracy)}  F1: {pct(report.f1_score)}")
+print(f"Document overall accuracy: {pct(report.overall_metrics.get('accuracy'))}")
 
 for field in report.field_comparisons:
     if field.matched:
@@ -791,17 +800,26 @@ Get aggregated evaluation metrics across multiple documents.
 
 **Returns:** `EvaluationMetrics` with `total_documents`, `avg_accuracy`,
 `avg_precision`, `avg_recall`, `avg_f1_score`, `by_document_class`, and the
-`start_date` / `end_date` filters echoed back
+`start_date` / `end_date` / `document_class` filters echoed back
 
-The four averages aggregate **documents** — one `overall_metrics` block each.
-`by_document_class` aggregates **sections**, because a document class is a
-property of a section rather than of the whole document, and it maps each class to
-`{"count": int, "avg_accuracy": float}`. A document with an invoice section and a
-receipt section therefore contributes one document to `total_documents` and one
-section to each class.
+The four `avg_*` scores aggregate **documents** — one `overall_metrics` block
+each. `by_document_class` aggregates **sections**, because a document class is a
+property of a section rather than of the whole document, and maps each class to
+`{"count", "avg_accuracy", "avg_precision", "avg_recall", "avg_f1_score"}`. A
+document with an invoice section and a receipt section contributes one to
+`total_documents` and one section to each class, so the class counts can sum to
+more than `total_documents`.
 
-Passing `document_class` keeps only documents that contain a section of that class
-and narrows the breakdown to those sections.
+⚠️ **Passing `document_class` sets the four top-level averages to `None`.** They
+come from whole-document metrics, which cannot answer a question about one class
+of section — a class-filtered `avg_accuracy` would be a real number measuring
+something other than what was asked for. The class-scoped answer is
+`by_document_class[document_class]`. The filter still narrows which documents are
+counted and which sections appear in the breakdown.
+
+Every average is `Optional[float]` for a second reason too: a section the pipeline
+excluded or failed to evaluate carries no scores, and a class where none of them
+did reports `None` rather than `0.0`.
 
 ```python
 metrics = client.evaluation.get_metrics(
@@ -810,11 +828,16 @@ metrics = client.evaluation.get_metrics(
 )
 
 print(f"Documents evaluated: {metrics.total_documents}")
-print(f"Average accuracy: {metrics.avg_accuracy:.1%}")
-print(f"Average F1: {metrics.avg_f1_score:.1%}")
+print(f"Average accuracy: {pct(metrics.avg_accuracy)}")
+print(f"Average F1: {pct(metrics.avg_f1_score)}")
 
 for doc_class, stats in metrics.by_document_class.items():
-    print(f"{doc_class}: {stats['count']} sections, {stats['avg_accuracy']:.1%}")
+    print(f"{doc_class}: {stats['count']} sections, {pct(stats['avg_accuracy'])}")
+
+# Scoped to one class: read the breakdown, not the top-level averages.
+invoices = client.evaluation.get_metrics(document_class="invoice")
+assert invoices.avg_accuracy is None
+print(f"Invoice sections: {pct(invoices.by_document_class['invoice']['avg_accuracy'])}")
 ```
 
 ### evaluation.list_baselines()

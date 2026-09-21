@@ -98,18 +98,31 @@ class EvaluationMetrics:
     """Aggregate evaluation metrics across documents."""
 
     total_documents: int
-    avg_accuracy: float
-    avg_precision: float
-    avg_recall: float
-    avg_f1_score: float
-    #: Per document class: ``{"count": int, "avg_accuracy": float}``, aggregated
-    #: over sections rather than documents, because a document class is a
-    #: property of a section.
+    #: Averaged over documents, from each one's ``overall_metrics``.
+    #:
+    #: ``None`` in two cases, both of which would otherwise be a plausible-looking
+    #: number that answers a different question than the caller asked. When
+    #: ``document_class`` was passed: a document class belongs to a *section*, and
+    #: these are whole-document figures, so the class-scoped answer is in
+    #: ``by_document_class`` and there is nothing truthful to put here. And when
+    #: no document in scope reported the metric at all, which is not a zero.
+    avg_accuracy: Optional[float]
+    avg_precision: Optional[float]
+    avg_recall: Optional[float]
+    avg_f1_score: Optional[float]
+    #: Per document class: ``{"count": int, "avg_accuracy": float | None,
+    #: "avg_precision": ..., "avg_recall": ..., "avg_f1_score": ...}``. Aggregated
+    #: over **sections**, since that is the level a document class exists at, so
+    #: ``count`` is a section count and the sum over classes can exceed
+    #: ``total_documents``.
     by_document_class: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     #: The date filters the caller supplied, echoed back so a stored result
     #: records the window it covers. ``None`` means "unfiltered".
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    #: The class filter the caller supplied, echoed back for the same reason —
+    #: and because it is what explains the four averages above being ``None``.
+    document_class: Optional[str] = None
 
 
 @dataclass
