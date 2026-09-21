@@ -1,0 +1,66 @@
+#!/bin/sh
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Refuse a push whose destination is develop or main.
+#
+# Install with `make install-git-hooks`, which copies this into the repository's
+# hooks directory. It is tracked here rather than only in .git/hooks because git
+# does not clone hooks, so an untracked one protects whoever happened to install
+# it and nobody else.
+#
+# Why this exists alongside the PreToolUse hook (scripts/hooks/check_shared_branch.py):
+# that one inspects commands the coding assistant runs, and a push has three other
+# routes — a shell the assistant never sees, an IDE's push button, and the
+# `git push` inside `make commit`. git supplies the resolved destination refs on
+# stdin here, so no command-line parsing can get it wrong.
+#
+# On an Amazon-managed machine core.hooksPath points at git-defender, which would
+# normally mean a repository hook is never run. git-defender's hooks are a runner
+# that chains to the repository's own .git/hooks/<name>, so this does run — after
+# git-defender's own checks, and only if they pass.
+#
+# Override: ALLOW_SHARED_BRANCH=1 git push ...
+#
+# This is a local convention, not an enforced control. Branch protection on this
+# repository is off and enabling it needs repository admin (issue #933); nothing
+# on a contributor's machine can stop a merge made through GitHub's Merge button.
+
+set -u
+
+if [ -n "${ALLOW_SHARED_BRANCH:-}" ]; then
+	exit 0
+fi
+
+blocked=''
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref.
+# A delete (local sha all zeroes) still names its remote ref, so it is covered.
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	case "$remote_ref" in
+		refs/heads/develop | refs/heads/main)
+			blocked="$blocked ${remote_ref#refs/heads/}"
+			;;
+	esac
+done
+
+if [ -z "$blocked" ]; then
+	exit 0
+fi
+
+printf '\n' >&2
+printf 'Refusing to push directly to:%s\n\n' "$blocked" >&2
+cat >&2 <<'MSG'
+Changes reach develop and main through a pull request, so that the lint,
+type-check, test, security and dependency gates run and a reviewer sees the
+change.
+
+Work on a branch instead:
+
+  git switch -c feature/<name>        # or fix/<name>, docs/<name>
+  git push -u origin feature/<name>
+  gh pr create --base develop
+
+or re-run with ALLOW_SHARED_BRANCH=1 to push here deliberately.
+MSG
+exit 1

@@ -264,6 +264,18 @@ Use the prefix that matches the change: `feature/`, `fix/`, or `docs/`. Keep a
 branch focused on one issue or feature — a reviewer can approve a small change
 quickly and cannot do much with a large mixed one.
 
+Install the push guard once per clone:
+
+```bash
+make install-git-hooks
+```
+
+It adds a `pre-push` hook that refuses a push whose destination is `develop` or
+`main`, so a change cannot reach a shared branch without a pull request and the
+gates that come with one. Override it deliberately with
+`ALLOW_SHARED_BRANCH=1 git push …`. git does not clone hooks, which is why this is
+a step rather than something the repository can do for you.
+
 ### Where the domain conventions live
 
 The per-domain conventions, checklists and gotchas are in **`.claude/skills/`**.

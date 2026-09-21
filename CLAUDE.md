@@ -288,14 +288,26 @@ It is **opt-in and non-blocking on purpose**: it needs network access and a toke
 comes from the nested `protection.required_status_checks` object on
 `GET .../branches/<branch>`; `administration:read` is what the other five
 assertions need, and without it those five are reported **unread** rather than
-satisfied), and it reports "not protected" until
+satisfied), and it reports "not protected", which is the standing answer here.
+Enabling protection needs repository **admin**, which no contributor and no CI
+token has, so
 [issue #933](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/933)
-is closed — enabling protection needs repository **admin**, which no contributor
-and no CI token here has. In `lint-cicd` it would red-line every branch for a
-condition nobody in the tree can fix, so it is in neither `lint-cicd` nor
-`test_ci_gate_parity.py`'s `SHARED_GATES`. With no token or no network it exits 0
-with an explanation; `--fail-on-skip` turns that into an error, which is how it
-should be run once #933 closes and it becomes a required, blocking gate.
+is closed as out of this repository's reach rather than as done. In `lint-cicd` the
+check would red-line every branch for a condition nobody in the tree can fix, so
+it is in neither `lint-cicd` nor `test_ci_gate_parity.py`'s `SHARED_GATES`. With no
+token or no network it exits 0 with an explanation; `--fail-on-skip` turns that
+into an error, which is how to run it if protection is ever granted and it becomes
+a required, blocking gate. Keep it: it is the instrument that measures the claim,
+and "we believe protection is off" is not the same as knowing.
+
+What exists instead is a **client-side** guard, described under
+[the shared-branch guard](#the-check-shared-branch-guard) below. Be precise about
+what it buys, because the two are not substitutes: it refuses an accidental direct
+commit or push to `develop`/`main` from a checkout, and refuses a `gh pr merge` of
+a pull request with a failing check. It cannot make a red gate block anything,
+because a merge through GitHub's own Merge button runs no code on a contributor's
+machine. **So the statement at the top of this section still holds in full: a
+pull request can be merged with all checks red.**
 
 ### Testing
 
@@ -647,6 +659,51 @@ judgment above to you. The patterns live in the script itself rather than being
 restated here. If it blocks a string that is legitimately public, add that string
 to the allowlist in the script with a comment saying why, rather than loosening the
 pattern. Run its tests with `make test-hooks`.
+
+#### The `check-shared-branch` guard
+
+Changes reach `develop` and `main` through a pull request. Nothing on GitHub
+enforces that (see [Visible is not blocking](#visible-is-not-blocking--make-check-branch-protection)),
+so two client-side halves do, and they are deliberately separate because they cover
+different routes:
+
+| Half | Covers | Install |
+|---|---|---|
+| `scripts/hooks/check_shared_branch.py` — a second `PreToolUse` hook on `Bash` | `git commit` and `git push` run **through the assistant's Bash tool**, plus `gh pr merge` | none; registered in `.claude/settings.json` |
+| `scripts/hooks/pre-push` — a real git `pre-push` hook | **every** push from the checkout: a plain shell, an IDE button, and the `git push` inside `make commit` | `make install-git-hooks`, once per clone |
+
+The `PreToolUse` half refuses a `git commit` while `HEAD` is a shared branch **or
+tracks one** — a local branch named `fix/thing` whose upstream is `origin/develop`
+is the case a branch-name-only check misses — and refuses a `git push` whose
+destination resolves to a shared branch. Destination resolution is the load-bearing
+part: it covers the forms that never name the branch (a bare `git push` with an
+upstream, `git push origin HEAD`), the delete form `git push origin :develop`, and
+`--all`/`--mirror`, which push every branch. It also refuses `gh pr merge` when a
+check has **concluded** as failing.
+
+Overrides, one per decision: `ALLOW_SHARED_BRANCH=1` for a commit or push,
+`ALLOW_RED_MERGE=1` for a merge. Both are read from the environment **and** from an
+inline assignment on the command itself (`ALLOW_SHARED_BRANCH=1 git push origin
+develop`), because inline is the only form available mid-session.
+
+Three properties worth knowing before relying on it:
+
+- **It fails open.** An unparseable command, a directory that is not a repository,
+  `git` or `gh` unavailable, a network failure — all allow the command. A guard that
+  wedges the session is worse than one that misses a case, which is the same choice
+  `check_commit_text.py` makes.
+- **Only *concluded* failures block a merge.** `pending` is the steady state for the
+  two path-filtered workflows and the one conditional check, so refusing on pending
+  would refuse every merge. A pull request whose checks **never ran** — a fork PR
+  gets no GitHub CI here — is not refused either, since refusing it would block the
+  only route a fork contribution has.
+- **`make install-git-hooks` writes to `$(git rev-parse --git-common-dir)/hooks`,
+  not `git rev-parse --git-path hooks`.** The latter honours `core.hooksPath`, which
+  on an Amazon-managed machine points at git-defender's root-owned directory. That
+  same setting is why a repository hook works at all: git-defender's hooks are a
+  runner that chains to the repository's own, after its checks pass.
+
+Run the tests for both halves with `make test-hooks`.
 
 ## Important Implementation Details
 

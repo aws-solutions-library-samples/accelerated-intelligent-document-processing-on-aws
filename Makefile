@@ -658,9 +658,10 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the Claude PreToolUse hook tests (commit/PR text guard)
+test-hooks: ## Run only the hook tests (commit/PR text guard, shared-branch guard)
 	@echo "Running Claude hook tests..."
-	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py -v
+	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
+		scripts/tests/test_check_shared_branch.py -v
 
 test-capacity: ## Run only capacity planning tests
 	@echo "Running capacity planning Lambda tests..."
@@ -947,6 +948,34 @@ classes-from-bda: ## Generate standard class catalog from BDA blueprints
 	@echo -e "$(GREEN)✅ Standard class catalog updated! Review changes in src/ui/src/data/standard-classes.json$(NC)"
 
 ##@ Git Workflow
+# `install-git-hooks` installs scripts/hooks/pre-push, which refuses a push whose
+# destination is develop or main (override: ALLOW_SHARED_BRANCH=1). git does not
+# clone hooks, so this is a per-checkout step; the tracked script is the shared
+# copy. The assistant-side half of the same guard needs no install — it is a
+# PreToolUse hook in .claude/settings.json. Neither is a substitute for branch
+# protection, which is a repository setting and needs admin (issue #933).
+#
+# The destination is $(git rev-parse --git-common-dir)/hooks, NOT `git rev-parse
+# --git-path hooks`: the latter honours core.hooksPath, which on an Amazon-managed
+# machine points at git-defender's root-owned system directory, so it resolves to
+# a path this must never write to. git-defender's hooks are a runner that chains
+# to the repository's own hooks, which is why installing into the repository
+# works despite core.hooksPath pointing elsewhere. The common dir is also the
+# right answer inside a worktree, where hooks are shared with the main checkout.
+.PHONY: install-git-hooks
+install-git-hooks: ## Install the shared-branch pre-push guard into this checkout
+	@set -e; \
+	COMMON_DIR=$$(git rev-parse --git-common-dir); \
+	HOOK_DIR="$$COMMON_DIR/hooks"; \
+	mkdir -p "$$HOOK_DIR"; \
+	if [ -e "$$HOOK_DIR/pre-push" ] && ! cmp -s scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; then \
+		echo -e "$(YELLOW)$$HOOK_DIR/pre-push exists and differs — backing it up to pre-push.bak$(NC)"; \
+		cp "$$HOOK_DIR/pre-push" "$$HOOK_DIR/pre-push.bak"; \
+	fi; \
+	cp scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; \
+	chmod +x "$$HOOK_DIR/pre-push"; \
+	echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"
+
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."
 	@git add . && \
