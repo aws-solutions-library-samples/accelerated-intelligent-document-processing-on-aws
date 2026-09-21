@@ -160,14 +160,24 @@ def _assert_canonical_key(key: str) -> None:
     client this deployment does not control, and any normalising intermediary — an HTTP
     library collapsing ``//``, a proxy placed in front of the URL later — would turn
     one of them into a real bypass, silently, because the resolver's own log line said
-    400. Refusing the non-canonical form keeps the check's correctness a property of
-    this function rather than of everything downstream of it.
+    400.
 
-    Percent sequences are deliberately **not** rejected: S3 does not decode them, a
-    document name may legitimately contain ``%``, and a blanket refusal would break
-    real keys. The narrower guarantee that matters for the profile axis is made where
-    it can be made precisely — see ``_SAFE_PROFILE_RE`` in ``scope_subject`` — since a
-    profile name can never contain ``%`` in the first place.
+    ⚠️ **What this does and does not make self-contained.** For the spellings it names,
+    the refusal is decided here and needs nothing of the path below it. It is **not** a
+    general guarantee that no rewriting anywhere can change which subject a key resolves
+    to: a form nobody has thought of is by definition not in the list. Two facts bound
+    the residual rather than this function doing so — botocore percent-encodes a literal
+    ``%`` to ``%25`` on both the proxy and the presign path, so a ``%2f`` in the key
+    never reaches S3 as a separator; and a signature covers the canonical request, so an
+    intermediary that rewrote the path would invalidate it and the fetch fails closed.
+    Those are properties of the AWS SDK and of SigV4, not of this module.
+
+    Percent sequences are therefore not rejected wholesale: S3 does not decode them and
+    a Test-Set key's tail can legitimately contain ``%`` (a test set holds documents, and
+    a document name may). Where the guarantee *can* be made precisely it is: a profile
+    name can never contain ``%``, so a Configuration-bucket key gets both
+    ``_SAFE_PROFILE_RE`` on its profile segment and a near-miss check on its first
+    segment — see :func:`scope_subject`.
     """
     for segment in key.split("/"):
         if segment in _NON_CANONICAL_SEGMENTS:
@@ -204,7 +214,22 @@ def scope_subject(
     argument is malformed discloses nothing about what exists.
     """
     if configuration_bucket and bucket == configuration_bucket:
-        _assert_canonical_key(key)
+        # A well-formed revision body is resolved FIRST, before the generic
+        # canonical-form scan, because the two overlap on a real case: `.` and `..` are
+        # inside `_SAFE_PROFILE_RE`, so `ConfigRevisionStore` can and will write
+        # `config_revisions/./000001.json.gz` for a profile actually named `.`. Nothing
+        # forbids creating one — `validate_version_name` adds only a length cap and one
+        # reserved name — so refusing those keys would deny a scoped caller their own
+        # profile's history, and the generic scan (which rejects `.` and `..` segments
+        # anywhere) does exactly that if it runs first.
+        #
+        # Resolving them here is safe, and safe for a reason specific to this bucket:
+        # the prefix anchors the key, so a normalising intermediary that collapsed
+        # `config_revisions/./x` or `config_revisions/../x` lands on
+        # `config_revisions/x` or `x` — neither of which is another profile's revision
+        # body. The Test Set branch below cannot make the same trade, because there the
+        # id IS the first segment and collapsing `../ts-b/…` would shift the read to a
+        # different test set than the one authorised.
         match = _REVISION_KEY_RE.match(key)
         if match:
             profile = match.group(1)
@@ -221,19 +246,35 @@ def scope_subject(
                 )
                 raise ValueError("Invalid S3 URI: key is not in canonical form")
             return CONFIG_PROFILE, profile
-        first = key.split("/", 1)[0]
-        if first.lower() == _REVISION_PREFIX and not key.startswith(
-            _REVISION_PREFIX + "/"
-        ):
-            # A case variant of the prefix, or the prefix with nothing after it.
-            # S3 keys are case-sensitive, so this names no revision body — but it is
-            # also not a key any writer here produces, and reading it as merely
-            # "unpartitioned" is the shape this whole function exists to avoid.
+
+        _assert_canonical_key(key)
+
+        # Anything else under the revision prefix is not a revision body — a key of the
+        # wrong depth, or the prefix with nothing after it. Refused rather than read as
+        # unpartitioned: it is inside the store this axis governs, and no writer here
+        # produces it.
+        if key.startswith(_REVISION_PREFIX + "/"):
+            logger.warning(
+                "Refusing a Configuration-bucket read under the revision prefix for a "
+                "key that is not a revision body."
+            )
+            raise ValueError("Invalid S3 URI: key is not in canonical form")
+
+        # A near-miss of the prefix in the first segment: a case variant, a
+        # percent-encoded or backslash separator, or the prefix with a suffix glued on.
+        # None of these names a revision body and none is a key any writer produces, so
+        # reading one as merely "unpartitioned" is the shape this function exists to
+        # avoid. ⚠️ This also refuses a hypothetical future prefix whose name *contains*
+        # `config_revisions` (say `config_revisions_archive/`): if one is ever added, it
+        # has to decide its own scope rule here rather than inherit "unscoped" by
+        # default.
+        if _REVISION_PREFIX in key.split("/", 1)[0].lower():
             logger.warning(
                 "Refusing a Configuration-bucket read for a near-miss of the "
                 "revision prefix that names no revision body."
             )
             raise ValueError("Invalid S3 URI: key is not in canonical form")
+
         # `config_library/`, `samples/` and anything else in this bucket is not
         # partitioned by profile. The bucket allow-list remains the control there,
         # exactly as before.

@@ -679,11 +679,11 @@ class TestScopeSubjectDerivation:
         "key",
         [
             # Anchored: the prefix must start the key, not appear in it. This is a
-            # genuinely different, canonical prefix in the same bucket.
+            # genuinely different, canonical prefix in the same bucket — the same shape
+            # as `config_library/` and `samples/`, which live here too.
             "backup/config_revisions/claims/000001.json.gz",
-            # A near-miss prefix is a different prefix — and a real one, since
-            # `config_library/` and `samples/` live here too.
-            "config_revisions_backup/claims/000001.json.gz",
+            "config_library/unified/default/config.yaml",
+            "samples/lending_package.pdf",
         ],
     )
     def test_a_canonical_key_outside_the_revision_prefix_names_no_profile(self, key):
@@ -725,16 +725,27 @@ _NON_CANONICAL_CONFIG_KEYS = [
     # A leading slash defeats the `^` anchor.
     "/config_revisions/claims/000001.json.gz",
     "//config_revisions/claims/000001.json.gz",
-    # Relative-path segments.
+    # A relative segment BEFORE the prefix, so the key is not in the store at all.
     "./config_revisions/claims/000001.json.gz",
-    "config_revisions/./claims/000001.json.gz",
-    "config_revisions/../config_revisions/claims/000001.json.gz",
+    "../config_revisions/claims/000001.json.gz",
     # The prefix with nothing after it — an empty trailing segment.
     "config_revisions/",
+    # Inside the store but the wrong depth: two segments name no revision body.
+    "config_revisions/claims",
     # Case variants. S3 keys are case-sensitive so these name no revision body, but
     # they are not keys any writer here produces either.
     "CONFIG_REVISIONS/claims/000001.json.gz",
     "Config_Revisions/claims/000001.json.gz",
+    # Separators a normalising intermediary might rewrite into `/`, which would change
+    # which profile the key names. Neither is a separator to S3.
+    "config_revisions%2Fclaims/000001.json.gz",
+    "config_revisions%2fclaims/000001.json.gz",
+    "config_revisions\\claims\\000001.json.gz",
+    # A prefix whose name merely CONTAINS the store's. Nothing writes here today; if a
+    # second revision-like store is ever added it must state its own scope rule rather
+    # than inherit "unscoped".
+    "config_revisions_backup/claims/000001.json.gz",
+    "config_revisions-archive/claims/000001.json.gz",
 ]
 
 _NON_CANONICAL_TEST_SET_KEYS = [
@@ -815,21 +826,71 @@ class TestNonCanonicalKeysAreRejectedNotTreatedAsUnpartitioned:
                 test_set_bucket=TEST_SET_BUCKET,
             )
 
-    def test_every_character_the_revision_store_can_write_is_still_accepted(self):
-        """The check must not refuse a profile name the product can actually create.
-
-        `ConfigRevisionStore._safe_profile` permits letters, digits, dot, dash and
-        underscore; a semver-style preset name uses three of those.
-        """
+    # Every profile name the product can actually create must still resolve. The list
+    # is written to cover the character class's EDGES, not a handful of realistic names:
+    # `.` and `..` are inside `_SAFE_PROFILE_RE` and `validate_version_name` adds only a
+    # length cap and one reserved name, so both are creatable through the API and their
+    # revision bodies land at real, distinct S3 objects. They are also exactly the two
+    # the generic canonical-form scan rejects, so they are the members a list of
+    # plausible-looking names silently fails to exercise — the aggregate-reading mistake
+    # this repository keeps writing down.
+    @pytest.mark.parametrize(
+        "profile",
+        [
+            "default",
+            "lending-2",
+            "usecase_A.v1",
+            "sample-v0.1.6",
+            "_",
+            "-",
+            # The two that break the generic scan.
+            ".",
+            "..",
+            # A name made only of dots, for the same reason.
+            "...",
+        ],
+    )
+    def test_every_profile_name_the_store_can_write_is_still_accepted(self, profile):
         import key_scope
 
-        for profile in ("default", "lending-2", "usecase_A.v1", "sample-v0.1.6"):
-            assert key_scope.scope_subject(
-                CONFIG_BUCKET,
-                f"config_revisions/{profile}/000007.json.gz",
-                configuration_bucket=CONFIG_BUCKET,
-                test_set_bucket=TEST_SET_BUCKET,
-            ) == (key_scope.CONFIG_PROFILE, profile)
+        assert key_scope.scope_subject(
+            CONFIG_BUCKET,
+            f"config_revisions/{profile}/000007.json.gz",
+            configuration_bucket=CONFIG_BUCKET,
+            test_set_bucket=TEST_SET_BUCKET,
+        ) == (key_scope.CONFIG_PROFILE, profile)
+
+    @pytest.mark.parametrize("profile", [".", ".."])
+    def test_a_dot_profiles_scope_is_enforced_rather_than_refused(
+        self, resolver, profile
+    ):
+        """End to end: a profile named `.` or `..` is scoped, not 400-ed.
+
+        Refusing these would deny a scoped Author their own profile's history, which is
+        a functional regression dressed as a hardening. Resolving them is safe here for
+        a reason particular to this bucket: the `config_revisions/` prefix anchors the
+        key, so a normalising intermediary that collapsed the segment lands on
+        `config_revisions/<file>` or `<file>` — neither of which is another profile's
+        revision body. The Test Set bucket cannot make that trade, because there the id
+        is the first segment.
+        """
+        index, table = resolver
+        _put_user(table, "user@example.test", allowedConfigVersions=[profile])
+        key = f"config_revisions/{profile}/000001.json.gz"
+
+        # In scope: resolved and read.
+        import boto3
+
+        boto3.client("s3", region_name="us-east-1").put_object(
+            Bucket=CONFIG_BUCKET, Key=key, Body=b"{}", ContentType="application/json"
+        )
+        assert index.handler(_event("getFileContents", CONFIG_BUCKET, key), None)
+
+        # Out of scope: refused, not 400-ed as malformed.
+        with pytest.raises(PermissionError, match="^Unauthorized"):
+            index.handler(
+                _event("getFileContents", CONFIG_BUCKET, _revision_key(THEIRS)), None
+            )
 
     def test_a_non_canonical_key_in_an_unpartitioned_bucket_is_still_served(self):
         """The canonical-form rule is scoped to the two partitioned buckets.

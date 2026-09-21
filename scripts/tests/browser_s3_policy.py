@@ -25,6 +25,7 @@ diverges is the one nobody re-reads.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator
 
@@ -41,6 +42,7 @@ def _as_list(value):
     return value if isinstance(value, list) else [value]
 
 
+@lru_cache(maxsize=1)
 def _load_template() -> dict:
     """``template.yaml`` parsed with CloudFormation short-form tags left opaque.
 
@@ -64,7 +66,8 @@ def _load_template() -> dict:
     return yaml.load(TEMPLATE.read_text(), Loader=Loader)  # nosec B506 - SafeLoader subclass
 
 
-def role_s3_statements() -> list:
+@lru_cache(maxsize=1)
+def _role_s3_statements_cached() -> tuple:
     """``(policy_name, statement)`` for every S3 statement on :data:`ROLE`.
 
     Collected across **all** of the role's inline policies rather than the one named
@@ -83,7 +86,18 @@ def role_s3_statements() -> list:
             actions = [str(a) for a in _as_list(statement.get("Action"))]
             if any(a.startswith("s3:") or a == "*" for a in actions):
                 statements.append((policy.get("PolicyName"), statement))
-    return statements
+    return tuple(statements)
+
+
+def role_s3_statements() -> list:
+    """Every S3 statement on :data:`ROLE`, as a fresh list.
+
+    Thin wrapper over the cached derivation. Parsing a 14,000-line template is not
+    free, and the prose gate derives this once per markdown file in the repository --
+    which took the suite from seconds to minutes before the cache existed. A new list
+    is returned each call so a caller cannot mutate the cached tuple.
+    """
+    return list(_role_s3_statements_cached())
 
 
 def flatten_resource(node) -> Iterator[str]:
@@ -195,3 +209,27 @@ def is_wildcard_resource(text: str) -> bool:
 def browser_readable_buckets() -> set:
     """The set of bucket logical ids the browser's own credentials can read."""
     return buckets_named(role_s3_statements())
+
+
+def granted_s3_actions() -> set:
+    """The S3 actions :data:`ROLE` is granted, e.g. ``{"s3:GetObject", ...}``.
+
+    Derived because the prose gate needs it to tell a statement *about this grant*
+    from a statement that merely mentions a bucket and an S3 action in the same
+    breath. This role's grant is read-only, so a sentence citing ``s3:PutObject`` is
+    not describing it — and a recognizer that accepted any ``s3:`` token read
+    "``s3:PutObject`` writes land on the Logging bucket" as a claim that the role
+    grants Logging-bucket access, then failed on it.
+
+    Deriving rather than listing matters for the same reason everything else here is
+    derived: if the role gains a write action, prose describing that write becomes a
+    real claim about the grant and should be checked, without anyone remembering to
+    extend a literal list.
+    """
+    actions = set()
+    for _policy, statement in role_s3_statements():
+        for action in _as_list(statement.get("Action")):
+            text = str(action)
+            if text.startswith("s3:"):
+                actions.add(text)
+    return actions
