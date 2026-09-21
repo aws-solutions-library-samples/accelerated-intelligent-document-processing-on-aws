@@ -522,6 +522,27 @@ agree — an upper-envelope method needing no corpus constants, and one using th
 generator's known 3-cells-per-row shape. That is consistent with healthy runs
 sitting at 0%.
 
+The leaf model is not an estimate: `n_conf_leaves − 3 × rows_extracted` has a
+dominant mode of exactly **7** for every synthetic document (14 for the two-section
+`twodocs_2x20`, 13 for the repeated-header `repeathdr_3pg`), and it holds for the
+8-column document too, so "3 cells per row plus a 7-leaf document scalar block" is
+read off the data rather than assumed.
+
+**Restricted to the regime the warning rung is actually about, the rate is several
+times higher.** Among runs extracting 20 rows or fewer — the range where a single
+unscored row crosses 5% — **2.6× the corpus-wide rate** would trip the warning. Two
+independent reconstructions on different populations give the same multiplier while
+differing on the absolute figure (3.4% of 703 such runs against a 1.3% corpus rate;
+6.2% of 649 against theirs), so treat the ratio as the finding and the absolute as
+population-dependent.
+
+That figure is not an artifact of truncated large documents: 681 of those 703 runs
+are `tiny_form.pdf`, a genuinely 5-row document, and it alone trips at 3.2%. So the
+answer to "do healthy runs produce the single unscored row that makes the rung fire"
+is **sometimes yes, on flat data, at a measurable rate** — which sharpens the open
+question rather than dissolving it, because 3% of short-list runs carrying a
+low-severity warning is a defensible design and 30% would not be.
+
 Three limits on that evidence, all of which keep the specific concern open:
 
 - It is a **lower bound** on the guard's shortfall. `_row_confidence_missing` marks a
