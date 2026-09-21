@@ -956,12 +956,17 @@ classes-from-bda: ## Generate standard class catalog from BDA blueprints
 # protection, which is a repository setting and needs admin (issue #933).
 #
 # The destination is $(git rev-parse --git-common-dir)/hooks, NOT `git rev-parse
-# --git-path hooks`: the latter honours core.hooksPath, which on an Amazon-managed
-# machine points at git-defender's root-owned system directory, so it resolves to
-# a path this must never write to. git-defender's hooks are a runner that chains
-# to the repository's own hooks, which is why installing into the repository
-# works despite core.hooksPath pointing elsewhere. The common dir is also the
-# right answer inside a worktree, where hooks are shared with the main checkout.
+# --git-path hooks`: the latter honours core.hooksPath, and a managed developer
+# machine may set that system-wide (in /etc/gitconfig) to a root-owned directory
+# of hook runners belonging to a security tool, so it resolves to a path this
+# must never write to. The common dir is also the right answer inside a worktree,
+# where hooks are shared with the main checkout.
+#
+# When core.hooksPath does point elsewhere, the repository's own hook is reached
+# only if that runner chains to it. The runners seen here do chain, and forward
+# the hook's arguments, but not its stdin — so the pre-push hook gets no ref list
+# and falls back to judging by HEAD. This target says so rather than printing an
+# unqualified success, because "installed" and "effective" are different claims.
 .PHONY: install-git-hooks
 install-git-hooks: ## Install the shared-branch pre-push guard into this checkout
 	@set -e; \
@@ -969,12 +974,24 @@ install-git-hooks: ## Install the shared-branch pre-push guard into this checkou
 	HOOK_DIR="$$COMMON_DIR/hooks"; \
 	mkdir -p "$$HOOK_DIR"; \
 	if [ -e "$$HOOK_DIR/pre-push" ] && ! cmp -s scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; then \
-		echo -e "$(YELLOW)$$HOOK_DIR/pre-push exists and differs — backing it up to pre-push.bak$(NC)"; \
-		cp "$$HOOK_DIR/pre-push" "$$HOOK_DIR/pre-push.bak"; \
+		BACKUP="$$HOOK_DIR/pre-push.bak"; N=1; \
+		while [ -e "$$BACKUP" ]; do BACKUP="$$HOOK_DIR/pre-push.bak.$$N"; N=$$((N+1)); done; \
+		echo -e "$(YELLOW)$$HOOK_DIR/pre-push exists and differs — copying it to $$BACKUP$(NC)"; \
+		echo -e "$(YELLOW)   The guard REPLACES that hook rather than chaining to it, so whatever it did stops happening.$(NC)"; \
+		cp "$$HOOK_DIR/pre-push" "$$BACKUP"; \
 	fi; \
 	cp scripts/hooks/pre-push "$$HOOK_DIR/pre-push"; \
 	chmod +x "$$HOOK_DIR/pre-push"; \
-	echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"
+	HOOKS_PATH=$$(git config --get core.hooksPath || true); \
+	if [ -n "$$HOOKS_PATH" ] && [ "$$(cd "$$HOOKS_PATH" 2>/dev/null && pwd -P)" != "$$(cd "$$HOOK_DIR" && pwd -P)" ]; then \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push$(NC)"; \
+		echo -e "$(YELLOW)⚠️  core.hooksPath is set to $$HOOKS_PATH, outside this repository.$(NC)"; \
+		echo -e "$(YELLOW)   git runs that directory's hooks, so this one is reached only if they chain to it.$(NC)"; \
+		echo -e "$(YELLOW)   A chaining runner may not forward the ref list; the hook then judges by HEAD,$(NC)"; \
+		echo -e "$(YELLOW)   which refuses any push while HEAD is on develop or main. Override: ALLOW_SHARED_BRANCH=1$(NC)"; \
+	else \
+		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
+	fi
 
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."

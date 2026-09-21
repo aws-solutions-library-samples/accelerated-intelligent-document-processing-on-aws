@@ -670,23 +670,49 @@ different routes:
 | Half | Covers | Install |
 |---|---|---|
 | `scripts/hooks/check_shared_branch.py` — a second `PreToolUse` hook on `Bash` | `git commit` and `git push` run **through the assistant's Bash tool**, plus `gh pr merge` | none; registered in `.claude/settings.json` |
-| `scripts/hooks/pre-push` — a real git `pre-push` hook | **every** push from the checkout: a plain shell, an IDE button, and the `git push` inside `make commit` | `make install-git-hooks`, once per clone |
+| `scripts/hooks/pre-push` — a real git `pre-push` hook | pushes the first half never sees: a plain shell, an IDE button, and the `git push` inside `make commit` | `make install-git-hooks`, once per clone |
 
-The `PreToolUse` half refuses a `git commit` while `HEAD` is a shared branch **or
-tracks one** — a local branch named `fix/thing` whose upstream is `origin/develop`
-is the case a branch-name-only check misses — and refuses a `git push` whose
-destination resolves to a shared branch. Destination resolution is the load-bearing
-part: it covers the forms that never name the branch (a bare `git push` with an
-upstream, `git push origin HEAD`), the delete form `git push origin :develop`, and
-`--all`/`--mirror`, which push every branch. It also refuses `gh pr merge` when a
-check has **concluded** as failing.
+The `PreToolUse` half refuses a `git commit` whose commit would land on a shared
+branch, and a `git push` whose destination resolves to one. Both questions are
+answered about the *whole* command rather than the state it started in, so `git
+switch -c fix/x && git commit` is allowed and `git switch develop && git commit` is
+refused — which matters because the remedy the refusal prints is usually typed as
+one line. Destination resolution is the load-bearing part: it covers the forms that
+never name the branch (a bare `git push` with an upstream, `git push origin HEAD`,
+`git push origin @`), the delete form `git push origin :develop`, `--all`/`--mirror`,
+and a bare push under `push.default=matching`, which sends every same-named branch.
+It also refuses `gh pr merge` when a check has **concluded** as failing.
+
+A commit on a branch that merely *tracks* `origin/develop` is allowed. `git
+checkout -b fix/x origin/develop` sets that upstream, so refusing it would refuse
+the ordinary way of starting work; the bare `git push` from such a branch is the
+thing that would reach `develop`, and that is refused.
 
 Overrides, one per decision: `ALLOW_SHARED_BRANCH=1` for a commit or push,
-`ALLOW_RED_MERGE=1` for a merge. Both are read from the environment **and** from an
-inline assignment on the command itself (`ALLOW_SHARED_BRANCH=1 git push origin
-develop`), because inline is the only form available mid-session.
+`ALLOW_RED_MERGE=1` for a merge. Put the assignment in front of the command
+(`ALLOW_SHARED_BRANCH=1 git push origin develop`). The environment is read too, but
+a variable exported in one tool call is gone by the next, so inline is the form that
+works mid-session. Only an affirmative value (`1`, `true`, `yes`, `y`, `on`) counts:
+`ALLOW_SHARED_BRANCH=0` leaves the guard on.
 
-Three properties worth knowing before relying on it:
+**What neither half covers.** The claim is bounded, and these are the routes
+around it:
+
+- A merge performed through GitHub's own Merge button, which runs no code here.
+- A pull request whose checks never ran (a fork PR gets no GitHub CI here).
+- `git push --no-verify`, which skips the `pre-push` hook outright.
+- Commands inside a script file or `bash -c`: the `PreToolUse` half reads the
+  command text it is given, and `sh deploy.sh` says nothing about what the script
+  does. The `pre-push` hook is what catches those.
+- History written onto a shared branch by anything other than `git commit` —
+  `merge`, `cherry-pick`, `revert`, `rebase`, `am`. Those are local until pushed,
+  and the push is what gets refused.
+
+Neither half looks at *which* remote, so pushing `develop` to a personal fork is
+refused too, and both key on the branch *name*, so a commit onto `main` in an
+unrelated repository visited in the same session is refused. Both are overridable.
+
+Four properties worth knowing before relying on it:
 
 - **It fails open.** An unparseable command, a directory that is not a repository,
   `git` or `gh` unavailable, a network failure — all allow the command. A guard that
@@ -698,10 +724,23 @@ Three properties worth knowing before relying on it:
   gets no GitHub CI here — is not refused either, since refusing it would block the
   only route a fork contribution has.
 - **`make install-git-hooks` writes to `$(git rev-parse --git-common-dir)/hooks`,
-  not `git rev-parse --git-path hooks`.** The latter honours `core.hooksPath`, which
-  on an Amazon-managed machine points at git-defender's root-owned directory. That
-  same setting is why a repository hook works at all: git-defender's hooks are a
-  runner that chains to the repository's own, after its checks pass.
+  not `git rev-parse --git-path hooks`.** The latter honours `core.hooksPath`, and a
+  managed developer machine may set that system-wide (in `/etc/gitconfig`) to a
+  root-owned directory of hook runners belonging to a security tool, so it resolves
+  to a path the target must never write to. The common dir is also the right answer
+  inside a worktree, where hooks are shared with the main checkout.
+- ⚠️ **Under a system-wide `core.hooksPath`, the `pre-push` hook judges by `HEAD`
+  rather than by the refs.** git runs the *runner's* hooks, and the repository's own
+  hook is reached only because those runners chain to it. They forward the hook's
+  arguments but **not its stdin**, so the hook receives no ref list — and exiting 0
+  on an empty ref list is how a hook can be installed, reported successful, and
+  refuse nothing. It therefore falls back to `HEAD` and its upstream, and says which
+  basis it used. The trade is one false refusal: pushing a feature branch, or a
+  no-op push, while `HEAD` sits on `develop` is refused. `make install-git-hooks`
+  prints this when it detects the redirect, and
+  `test_pre_push_still_refuses_through_a_runner_that_drops_stdin` reproduces the
+  shape, because a suite that only points `core.hooksPath` at the repository's own
+  hooks cannot see it.
 
 Run the tests for both halves with `make test-hooks`.
 

@@ -15,41 +15,103 @@
 # `git push` inside `make commit`. git supplies the resolved destination refs on
 # stdin here, so no command-line parsing can get it wrong.
 #
-# On an Amazon-managed machine core.hooksPath points at git-defender, which would
-# normally mean a repository hook is never run. git-defender's hooks are a runner
-# that chains to the repository's own .git/hooks/<name>, so this does run — after
-# git-defender's own checks, and only if they pass.
+# TWO WAYS THIS HOOK IS REACHED, and why the second needs a fallback.
+#
+# Normally git runs it with the refs on stdin, one line per ref, and the
+# destination is exact. But a managed developer machine may set core.hooksPath
+# system-wide (in /etc/gitconfig) to a directory of hook runners belonging to a
+# security tool. Those runners do chain to the repository's own
+# .git/hooks/<name> and forward the *arguments* — but at least one of them does
+# not forward *stdin*, so this hook is invoked with no ref lines at all.
+# Exiting 0 on that would make the hook silently inert on exactly the machines
+# it is meant to protect, which is worse than not having it: `make
+# install-git-hooks` reports success either way.
+#
+# So when there are no ref lines, this judges by HEAD and its upstream instead.
+# That is deliberately imprecise in one direction: pushing a feature branch
+# while HEAD happens to be on develop is refused even though the push was fine.
+# That false refusal is overridable in one keystroke; a guard that does nothing
+# is not detectable at all. The message says which basis it used.
+#
+# A genuinely empty push — nothing to send, HEAD not on a shared branch — still
+# passes.
+#
+# Two deliberate behaviours, matching the PreToolUse half:
+#   * It does not look at which remote, so pushing develop to a personal fork is
+#     refused too.
+#   * It keys on the branch name, so `develop` and `main` are shared wherever
+#     this hook is installed.
 #
 # Override: ALLOW_SHARED_BRANCH=1 git push ...
 #
 # This is a local convention, not an enforced control. Branch protection on this
 # repository is off and enabling it needs repository admin (issue #933); nothing
-# on a contributor's machine can stop a merge made through GitHub's Merge button.
+# on a contributor's machine can stop a merge made through GitHub's Merge button,
+# and `git push --no-verify` skips this hook outright.
 
 set -u
 
-if [ -n "${ALLOW_SHARED_BRANCH:-}" ]; then
-	exit 0
-fi
+# Only an affirmative value overrides, so ALLOW_SHARED_BRANCH=0 leaves the guard
+# on rather than reading as permission.
+case "${ALLOW_SHARED_BRANCH:-}" in
+	1 | true | TRUE | True | yes | YES | Yes | y | Y | on | ON | On)
+		exit 0
+		;;
+esac
 
 blocked=''
+saw_refs=0
+basis='the refs git supplied'
 
 # stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref.
 # A delete (local sha all zeroes) still names its remote ref, so it is covered.
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
+#
+# `|| [ -n "$_local_ref" ]` keeps a final line that has no trailing newline: plain
+# `read` reports failure at EOF and a bare `while read` would drop that line. git
+# terminates every line, so this is belt and braces rather than an observed case.
+CR=$(printf '\r')
+_local_ref=''
+while read -r _local_ref _local_sha remote_ref _remote_sha || [ -n "$_local_ref" ]; do
+	saw_refs=1
+	# A CR only reaches the ref itself if the ref is the line's last field, which
+	# git never does; stripping it costs nothing and makes the answer general.
+	remote_ref=${remote_ref%"$CR"}
 	case "$remote_ref" in
 		refs/heads/develop | refs/heads/main)
 			blocked="$blocked ${remote_ref#refs/heads/}"
 			;;
 	esac
+	_local_ref=''
 done
+
+if [ "$saw_refs" -eq 0 ]; then
+	# No ref lines: either nothing to push, or a hook runner did not forward
+	# stdin. Fall back to HEAD and its upstream. Any git failure here leaves
+	# both empty, which allows the push.
+	basis='HEAD, because the ref list was not supplied to this hook'
+	head_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || head_branch=''
+	upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' \
+		2>/dev/null) || upstream=''
+	upstream=${upstream#*/}
+	for name in $head_branch $upstream; do
+		case "$name" in
+			develop | main)
+				case " $blocked " in
+					*" $name "*) ;;
+					*) blocked="$blocked $name" ;;
+				esac
+				;;
+		esac
+	done
+fi
 
 if [ -z "$blocked" ]; then
 	exit 0
 fi
 
 printf '\n' >&2
-printf 'Refusing to push directly to:%s\n\n' "$blocked" >&2
+printf 'Refusing to push directly to:%s\n' "$blocked" >&2
+printf 'Judged by %s.\n\n' "$basis" >&2
 cat >&2 <<'MSG'
 Changes reach develop and main through a pull request, so that the lint,
 type-check, test, security and dependency gates run and a reviewer sees the
@@ -61,6 +123,8 @@ Work on a branch instead:
   git push -u origin feature/<name>
   gh pr create --base develop
 
-or re-run with ALLOW_SHARED_BRANCH=1 to push here deliberately.
+or re-run with the override in front of the command, to push here deliberately:
+
+  ALLOW_SHARED_BRANCH=1 git push ...
 MSG
 exit 1
