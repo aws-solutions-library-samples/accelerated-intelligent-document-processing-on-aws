@@ -716,17 +716,29 @@ also walks the tree somewhere, so a stale entry has a decent chance of being cau
 Read the `ONLY RECORD` rows; skim the rest. This is a heuristic on the file, not the
 assignment, so confirm by reading before you report.
 
-**Last measured** at `fac1c120b`: **15 inventories, 8 of them `ONLY RECORD`.** The one
-to lead with is `scripts/tests/test_ci_gate_parity.py:36` `SHARED_GATES`, an eight-entry
-list of the gates that must run in both CIs — and the file contains no walk, so the
-list is the only record. Its blind spot is live and specific: the test asserts each
-listed gate appears in **both** CI configurations, so it cannot see a gate that is
-absent from **both**. Adding a gate to `Makefile` and to neither CI passes. Note that
-`grep -c -i 'hard.coded' scripts/tests/test_ci_gate_parity.py` returns **0** — this is
-exactly the inventory the old search could not reach.
-`scripts/tests/test_state_machine_provisioning_retry.py:50` `ASL_JSON_PATHS` also comes
-back `ONLY RECORD`, correctly: it is deliberately the only record, and the paragraph
-above is why that is defensible.
+**Last measured** at `fac1c120b`: **15 inventories, 8 of them `ONLY RECORD`.** Re-derive
+that count before quoting it; the two entries below are the ones worth knowing about.
+
+`scripts/tests/test_ci_gate_parity.py` `SHARED_GATES` is still hand-authored, and still
+the only record of *which specific invocations* must appear in both CI configurations —
+deliberately, because deciding which lines of a CI config are gate invocations is not
+derivable. But do **not** lead a review with "adding a gate to the `Makefile` and to
+neither CI passes": the file derives a gate universe from the `Makefile`
+(`gate_universe()`) and fails when a target in it is absent from both CIs *and* from
+`GATES_DELIBERATELY_OUT_OF_CI`. Verify rather than assume — add a `check-*` target to one
+of the scanned sections, run the suite, and watch
+`test_every_gate_shaped_target_is_in_both_cis_or_registered` fail.
+
+What is still worth probing there is the universe's own edge. It is every target in the
+five `##@` sections that are entirely checks, plus any **check-shaped-by-name** target in
+any other section, minus the live-stack section. A check elsewhere whose *name* does not
+look like one is outside it. That residual is registered with its ratchet in
+`scripts/tests/gate_exemptions.json`, so the question to ask is whether the registered
+reason still matches the tree — not whether the gap exists.
+
+`scripts/tests/test_state_machine_provisioning_retry.py:50` `ASL_JSON_PATHS` comes back
+`ONLY RECORD`, correctly: it is deliberately the only record, and the paragraph above is
+why that is defensible.
 
 Two known limits of the search, so you do not over-read a clean run. It scans dict
 *values* and not keys — including keys found nothing extra and, by doubling the element

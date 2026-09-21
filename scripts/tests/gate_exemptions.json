@@ -1196,6 +1196,63 @@
         "933"
       ]
     },
+    "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES": {
+      "kind": "enforced-universe",
+      "memberKind": "Makefile ##@ section heading",
+      "turnsOff": "nothing on its own; it names the 5 of 16 Makefile sections scanned wholesale, so a section absent from it contributes targets to the universe only if their NAME is check-shaped",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Whether every target in a section is a check is a property of the section, readable from its heading, and true of these five. It is NOT true in reverse: UI Development holds `ui-lint` and `ui-test`, and Code Generation holds `codegen-check`, so a rule that the other eleven sections hold no checks would be false for the two sections nearest this module's own subject. That is why section scope is not the only route into the universe -- CHECK_SHAPED_NAME_PREFIXES adds a check-shaped target from any unscanned section, and a non-vacuity test names those three so the second route cannot quietly stop matching.",
+      "ratchetGap": "A check in an unscanned, non-live-stack section whose NAME is not check-shaped -- neither `check-`/`validate-`/`lint`/`typecheck`-prefixed nor `-check`/`-checks`/`-lint`/`-test`/`-tests`-suffixed -- is in neither route and would not be classified. Naming is the only signal used, deliberately: deciding from a recipe whether it checks something is a guess, and a wrong guess produces a green gate.",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::LIVE_STACK_SECTION_PREFIXES",
+        "scripts/tests/test_ci_gate_parity.py::GATES_DELIBERATELY_OUT_OF_CI"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::LIVE_STACK_SECTION_PREFIXES": {
+      "kind": "exemption",
+      "memberKind": "Makefile ##@ section heading",
+      "turnsOff": "universe closure for every target in the Stack tests section, including check-shaped ones the name route would otherwise pull in",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "reason": "This is the one section where a single justification is genuinely a property of every member: each target deploys or drives a live IDP stack, which its own heading states, and no pull-request gate can do that. Which targets those are is recorded in docs/testing.md, and that each appears there is enforced by scripts/tests/test_testing_doc.py rather than asserted here.",
+      "ratchetGap": "The premise is not computed per member -- nothing reads a recipe to confirm it needs a stack. What is mechanical is the member COUNT: a target added to this section fails until someone confirms the premise holds for it and updates the pinned number.",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::GATES_DELIBERATELY_OUT_OF_CI": {
+      "kind": "exemption",
+      "turnsOff": "the 'every check-shaped Makefile target runs in both CIs' assertion, for one named target",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "reason": "Whether a target CAN be a CI gate is a property of what it does — mutates the tree, prompts a human, needs AWS credentials, needs a deployed stack, reports rather than asserts — and none of that is readable from the Makefile. So one sentence per target, naming that target's own obstacle.",
+      "ratchetGap": "The reasons themselves are unchecked prose. What is mechanical: no target IN THE UNIVERSE may be absent from both this list and CI; a listed target CI has since started running fails; a listed target that no longer exists fails. Read 'in the universe' precisely -- it is every target in the 5 sections GATE_SECTION_PREFIXES names, plus any check-shaped-by-name target in any other section except Stack tests. It is NOT every Makefile target, and the residual is stated on the GATE_SECTION_PREFIXES entry.",
+      "memberKind": "make target",
+      "crossReferences": [
+        "scripts/tests/test_ci_gate_parity.py::GATE_SECTION_PREFIXES"
+      ],
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
+    "scripts/tests/test_ci_gate_parity.py::CHECK_ONLY_EQUIVALENTS": {
+      "kind": "exemption",
+      "turnsOff": "the 'lint-cicd invokes make <target>' form of the lint-parity assertion, for one prerequisite of `lint`",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "reason": "Two of `make lint`'s prerequisites auto-fix, so `lint-cicd` cannot invoke them — it runs the check-only command instead, and that command's spelling is not derivable from the target's name. The substituted command must still be present in the recipe, so this relaxes how the gate is spelled and not whether it runs.",
+      "memberKind": "make target",
+      "ratchetEvidence": "scripts/tests/test_ci_gate_parity.py"
+    },
     "scripts/tests/test_classification_prompt_copies_in_sync.py::EXEMPT": {
       "kind": "exemption",
       "turnsOff": "the 'every committed copy carries the #653 rules' check for four files",
