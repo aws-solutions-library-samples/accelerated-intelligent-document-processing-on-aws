@@ -355,8 +355,12 @@ def cell_stats(rows):
 # Compacting them is a reformat of untouched data and belongs in its own change.
 COMPACT_PAYLOAD_KEYS = ("calibration_curve", "calibration", "conf_coverage")
 
-_COMPACT_TOKEN = "@@compact-payload-{}@@"
-_COMPACT_TOKEN_RE = re.compile(r'"@@compact-payload-(\d+)@@"')
+# Named *PLACEHOLDER* rather than *TOKEN*: Bandit's B105 matches on the identifier, so a
+# module-level constant whose name contains "token" and whose value is a string literal is
+# reported as a hardcoded credential. Renaming removes a real false positive from a
+# blocking gate, which is better than carrying a `# nosec` that a reader has to evaluate.
+_COMPACT_PLACEHOLDER = "@@compact-payload-{}@@"
+_COMPACT_PLACEHOLDER_RE = re.compile(r'"@@compact-payload-(\d+)@@"')
 
 
 def _reserve_compact_payloads(node, payloads, key=None):
@@ -364,7 +368,7 @@ def _reserve_compact_payloads(node, payloads, key=None):
     if isinstance(node, dict):
         if key in COMPACT_PAYLOAD_KEYS and node:
             payloads.append(node)
-            return _COMPACT_TOKEN.format(len(payloads) - 1)
+            return _COMPACT_PLACEHOLDER.format(len(payloads) - 1)
         return {k: _reserve_compact_payloads(v, payloads, k) for k, v in node.items()}
     if isinstance(node, list):
         return [_reserve_compact_payloads(v, payloads, key) for v in node]
@@ -381,7 +385,7 @@ def dump_summary(summary, path):
     """
     payloads = []
     text = json.dumps(_reserve_compact_payloads(summary, payloads), indent=2)
-    text = _COMPACT_TOKEN_RE.sub(
+    text = _COMPACT_PLACEHOLDER_RE.sub(
         lambda m: json.dumps(payloads[int(m.group(1))], separators=(", ", ": ")), text
     )
     with open(path, "w") as f:
