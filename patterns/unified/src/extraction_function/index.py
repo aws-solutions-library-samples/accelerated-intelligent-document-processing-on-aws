@@ -12,6 +12,7 @@ from aws_xray_sdk.core import patch_all, xray_recorder
 
 from idp_common import extraction, get_config, metrics
 from idp_common.docs_service import create_document_service
+from idp_common.extraction.failure import persist_section_after_extraction_failure
 from idp_common.models import Document, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
 from idp_common.utils.bedrock_utils import set_lambda_deadline_epoch
@@ -116,24 +117,44 @@ def delete_extraction_checkpoint(
         logger.warning(f"Failed to delete extraction checkpoint: {e}")
 
 
-def delete_shard_results(bucket: str, execution_arn: str, section_id: str) -> None:
+def delete_shard_results(bucket: str, execution_arn: str, section) -> None:
     """Delete all per-shard result objects for a section after it completes.
 
-    Per-shard results live under
-    ``checkpoints/{safe_arn}/{section_id}/shards/`` (see
-    ``idp_common.extraction.runtime.shard_result_key``). They must survive across
-    SFN retries (to skip completed shards) but are removed once the whole section
-    succeeds so a later re-process of the same execution+section starts clean.
+    They must survive across SFN retries (to skip completed shards) but are
+    removed once the whole section succeeds so a later re-process of the same
+    execution+section starts clean.
+
+    Takes the **section**, not a section id, and derives the prefix through
+    ``shard_results_prefix(shard_persistence_section_id(...))`` — the same
+    definitions the shard writer uses. Shards are keyed by
+    ``{class_label}_{first_page}_{last_page}``, not by the section's ordinal
+    ``section_id``, so a prefix built from the ordinal addressed a location
+    nothing was ever written to and this deleted nothing.
+
+    **Everything is inside the ``try``, including the import and the client.** This
+    is the last thing a successful invocation does, so anything escaping here fails a
+    Lambda whose extraction, persistence and serialise have all already succeeded —
+    the hazard that moving the call to the end exists to close, arriving from the
+    other direction.
     """
-    safe_arn = execution_arn.replace(":", "_").replace("/", "_")
-    prefix = f"checkpoints/{safe_arn}/{section_id}/shards/"
-    s3 = _get_s3_client()
     try:
+        from idp_common.extraction.runtime import (
+            shard_persistence_section_id,
+            shard_results_prefix,
+        )
+
+        s3 = _get_s3_client()
+        prefix = shard_results_prefix(
+            execution_arn,
+            shard_persistence_section_id(section.classification, section.page_ids),
+        )
         resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
         keys = [{"Key": o["Key"]} for o in resp.get("Contents", [])]
         if keys:
             s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
             logger.info(f"Deleted {len(keys)} per-shard result(s) under {prefix}")
+        else:
+            logger.info(f"No per-shard results to delete under {prefix}")
     except Exception as e:
         logger.warning(f"Failed to delete per-shard results: {e}")
 
@@ -417,28 +438,54 @@ def _handle(event, context):
     # 1800s inside a 900s function). No-op when the deadline is unknown.
     set_lambda_deadline_epoch(deadline_epoch)
 
-    # Process the section in our focused document
+    # Process the section in our focused document.
+    #
+    # #1049: every extraction failure RAISES (ExtractionInputTooLarge,
+    # ExtractionImageRejected, ModelInvalidToolUseSequence,
+    # ExtractionOutputIncomplete), and the section write below — the one the
+    # Sections panel reads — sits after this call, so it never happened on a
+    # failure. The section's DynamoDB record still said whatever classification
+    # left there.
+    #
+    # `process_document_section` mutates the document it is given and returns the
+    # same object, so on a raise `section_document` still carries everything the
+    # service recorded before giving up — which for ExtractionOutputIncomplete is
+    # the persisted partial result and the error-severity row-shortfall issue.
     t0 = time.time()
-    section_document = extraction_service.process_document_section(
-        document=section_document,
-        section_id=section_id,
-        checkpoint_data=checkpoint_data,
-        deadline_epoch=deadline_epoch,
-    )
+    try:
+        section_document = extraction_service.process_document_section(
+            document=section_document,
+            section_id=section_id,
+            checkpoint_data=checkpoint_data,
+            deadline_epoch=deadline_epoch,
+        )
+        # Unreachable today — the extraction service never assigns Status.FAILED,
+        # and this handler set the document to EXTRACTING above. Kept as a guard,
+        # and kept INSIDE the try so that if the service ever does start failing a
+        # section this way it takes the same persist-then-re-raise path as a raise.
+        # sfn_runtime_handler's merge branch has the identical guard in the
+        # identical position; the two must not drift.
+        if section_document.status == Status.FAILED:
+            error_message = f"Extraction failed for document {section_document.id}, section {section_id}"
+            logger.error(error_message)
+            raise Exception(error_message)
+    except Exception as error:
+        persist_section_after_extraction_failure(
+            document_service=document_service,
+            document=section_document,
+            section_id=section_id,
+            section_index=section_index,
+            error=error,
+        )
+        # The checkpoint and the per-shard results are deliberately NOT released
+        # here (see the success-path cleanup at the very end). ExtractionStep
+        # retries a Lambda timeout once and the transient families up to eight
+        # times, and resuming from the checkpoint — re-inferring only the shards
+        # that did not finish — is exactly what they exist for (#1014). Releasing
+        # them before re-raising would make that retry start from nothing.
+        raise
     t1 = time.time()
     logger.info(f"Total extraction time: {t1 - t0:.2f} seconds")
-
-    # --- Checkpoint: cleanup on successful completion ---
-    if agentic_enabled and working_bucket and execution_arn:
-        delete_extraction_checkpoint(working_bucket, execution_arn, section_id)
-        # Remove per-shard results now the section is fully merged & saved.
-        delete_shard_results(working_bucket, execution_arn, section_id)
-
-    # Check if document processing failed
-    if section_document.status == Status.FAILED:
-        error_message = f"Extraction failed for document {section_document.id}, section {section_id}"
-        logger.error(error_message)
-        raise Exception(error_message)
 
     # Add Lambda metering for successful extraction execution
     try:
@@ -475,6 +522,28 @@ def _handle(event, context):
             working_bucket, f"extraction_{section_id}", logger
         ),
     }
+
+    # --- Checkpoint + per-shard cleanup, LAST ---
+    #
+    # After `serialize_document`, deliberately, rather than next to the extraction
+    # call that produced them. `size_threshold_kb` defaults to 0, so serialising
+    # always performs an S3 put, and it is not wrapped: a SlowDown, a
+    # ServiceUnavailable or a read timeout there surfaces as TransientError, which
+    # ExtractionStep retries eight times. Releasing the resume state before that
+    # point meant a fully successful, fully paid-for extraction could be retried
+    # with nothing to resume from, so the retry re-inferred the whole section.
+    #
+    # Unlike the shard-merge handler — where the shards are a PRECONDITION and their
+    # absence is a permanent failure, which is why nothing there deletes them at all
+    # — these are an optimisation on this path: without them a retry re-runs
+    # extraction from scratch, which costs money rather than correctness. That is
+    # what makes deleting them safe here, and doing it last is what makes it cheap.
+    # A residual window remains between this and the Lambda returning, and it cannot
+    # be closed from inside the function: whether the STATE succeeded is not
+    # observable here. Its cost is bounded at re-inference.
+    if agentic_enabled and working_bucket and execution_arn:
+        delete_extraction_checkpoint(working_bucket, execution_arn, section_id)
+        delete_shard_results(working_bucket, execution_arn, section)
 
     logger.info(f"Response: {json.dumps(response, default=str)}")
     return response
