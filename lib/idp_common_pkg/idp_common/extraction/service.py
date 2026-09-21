@@ -2188,9 +2188,11 @@ class ExtractionService:
         Read through ``getattr`` with the shipped default so a config object
         built by an older release (or a test fixture that predates the field)
         still resolves, rather than raising and taking extraction down with it.
+        The default is ``warn``, so a config that has never heard of this field
+        behaves exactly as it did before the field existed.
         """
         return str(
-            getattr(self.config.extraction, "row_shortfall_action", "fail") or "fail"
+            getattr(self.config.extraction, "row_shortfall_action", "warn") or "warn"
         ).lower()
 
     @classmethod
@@ -4149,8 +4151,23 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # table) is not misreported as a clean SUCCESS.
         issues_for_status = metadata.get("processing_issues") or []
         severities = {str(i.get("severity", "")).lower() for i in issues_for_status}
+        # A row shortfall under row_shortfall_action='fail' is the one issue that
+        # fails the section outright (_fail_on_row_shortfall raises immediately
+        # after this report is written into the section output). So the report
+        # must not say COMPLETED: this artifact is the thing the reader opens to
+        # find out what happened, and it would have contradicted the outcome it
+        # was written to explain. Narrow on purpose — for every OTHER
+        # error-severity issue the section really did complete, and
+        # COMPLETED WITH ERRORS is the right line.
+        fails_section = any(
+            str(i.get("code", "")) == self.ROW_SHORTFALL_CODE
+            and str(i.get("severity", "")).lower() == "error"
+            for i in issues_for_status
+        )
         if not metadata.get("parsing_succeeded"):
             status_line = "FAILED"
+        elif fails_section:
+            status_line = "FAILED — EXTRACTION MATERIALLY INCOMPLETE"
         elif "error" in severities:
             status_line = "COMPLETED WITH ERRORS"
         elif "warning" in severities:

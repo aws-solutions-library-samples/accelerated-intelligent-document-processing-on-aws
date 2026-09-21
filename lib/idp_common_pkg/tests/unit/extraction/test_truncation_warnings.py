@@ -17,6 +17,12 @@ Bedrock's bare "Input is too long". This pins:
   ``ExtractionOutputIncomplete`` (#1032). Detection and consequence are separate
   concerns here — the action moves the severity and the outcome, never the floor or
   the ratio, and ``TestRowShortfallOutcome`` asserts both halves of that.
+* why ``fail`` is OPT-IN rather than the default: ``TestWhyFailIsOptIn`` drives the
+  **shipped** default preset's ``Bank-Statement`` class through the real check with a
+  100%-correct extraction and shows it flagged, because a statement's 31-row
+  two-column Daily Balance table is summed into the evidence for a 5-row
+  two-property ``account_summary``. That test fails if the default is ever flipped
+  without narrowing the attribution first.
 """
 
 from __future__ import annotations
@@ -124,12 +130,11 @@ class TestRowShortfall:
         issues = _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
         assert CODE in _codes(issues)
         issue = next(i for i in issues if i.code == CODE)
-        # error, not warning: the shipped row_shortfall_action is 'fail', and the
-        # severity is what says so. The advisory-only reading of this outcome is
-        # the #1032 defect, and it is asserted under the opt-out action instead —
-        # see TestRowShortfallOutcome.test_warn_restores_the_advisory_behaviour.
-        assert issue.severity == "error"
-        assert issue.details["row_shortfall_action"] == "fail"
+        # warning under the SHIPPED default: row_shortfall_action is 'warn', so the
+        # detection is advisory unless a deployment opts in. The error severity and
+        # the section failure are asserted under 'fail' in TestRowShortfallOutcome.
+        assert issue.severity == "warning"
+        assert issue.details["row_shortfall_action"] == "warn"
         assert issue.details["list_fields"] == ["Transactions"]
         assert issue.details["extracted_rows"] == 43
         assert (
@@ -343,8 +348,8 @@ class TestRowShortfallOutcome:
                 return write, doc, section, e
         return write, doc, section, None
 
-    def test_the_default_action_fails_the_section_after_persisting_the_partial(self):
-        svc = _svc()
+    def test_fail_fails_the_section_after_persisting_the_partial(self):
+        svc = _svc(row_shortfall_action="fail")
         write, doc, section, exc = self._saved(
             svc, {"Account Number": "1", "Transactions": _rows(43)}
         )
@@ -356,7 +361,15 @@ class TestRowShortfallOutcome:
         assert len(written["inference_result"]["Transactions"]) == 43
         persisted = written["metadata"]["processing_issues"]
         assert [i for i in persisted if i["code"] == CODE and i["severity"] == "error"]
-        assert "COMPLETED WITH ERRORS" in written["processing_report"]
+        # The preserved artifact must not claim the section completed. This report
+        # is what a reader opens to find out what happened, and it is written one
+        # statement before the section fails, so "COMPLETED WITH ERRORS" would have
+        # contradicted the outcome it exists to explain.
+        assert (
+            "Status: FAILED — EXTRACTION MATERIALLY INCOMPLETE"
+            in (written["processing_report"])
+        )
+        assert "COMPLETED" not in written["processing_report"].split("\n")[4]
         # and document.errors carries it, as the sibling overflow/image handlers
         # do. Ordinarily this exception fails the Step Functions execution before
         # processresults_function (which fails a document on a non-empty
@@ -365,8 +378,41 @@ class TestRowShortfallOutcome:
         assert any("materially incomplete" in e for e in doc.errors)
         assert "43 row(s)" in str(exc) and "row_shortfall_action" in str(exc)
 
-    def test_warn_restores_the_advisory_behaviour(self):
-        svc = _svc(row_shortfall_action="warn")
+    def test_the_section_fails_with_exactly_one_recorded_error(self):
+        """Pins the ``except ExtractionOutputIncomplete: raise`` pass-through.
+
+        Without it, control reaches the generic handler, which appends a SECOND,
+        differently-prefixed entry to ``document.errors`` for one failure. Not
+        visible in a Step Functions cause, but a duplicated error list is what a
+        report or an alarm counts, so the pass-through is observable here.
+        """
+        svc = _svc(row_shortfall_action="fail")
+        doc = Document(
+            id="d",
+            input_key="d.pdf",
+            input_bucket="in",
+            output_bucket="out",
+            status=Status.EXTRACTING,
+        )
+        section = Section(section_id="1", classification="Statement", page_ids=["1"])
+        doc.sections = [section]
+        svc._document_text = _table(800, pages=17)
+        with pytest.raises(ExtractionOutputIncomplete):
+            svc._fail_on_row_shortfall(
+                doc,
+                SimpleNamespace(
+                    processing_issues=[
+                        SimpleNamespace(
+                            code=CODE, severity="error", message="Extracted 43 row(s)."
+                        )
+                    ]
+                ),
+                "1",
+            )
+        assert len(doc.errors) == 1, doc.errors
+
+    def test_warn_is_the_default_and_reports_success(self):
+        svc = _svc()  # no explicit action: the shipped default
         write, doc, section, exc = self._saved(
             svc, {"Account Number": "1", "Transactions": _rows(43)}
         )
@@ -397,7 +443,7 @@ class TestRowShortfallOutcome:
         outcome must not be success either — a fix applied only to Simple mode
         would leave the same lie reachable through the other mode.
         """
-        svc = _svc(agentic=True)
+        svc = _svc(agentic=True, row_shortfall_action="fail")
         _w, _d, _s, exc = self._saved(
             svc, {"Account Number": "1", "Transactions": _rows(43)}
         )
@@ -427,10 +473,13 @@ class TestRowShortfallOutcome:
         assert seen == {"fail": fires, "warn": fires}
 
     def test_a_blank_or_null_action_resolves_to_the_shipped_default(self):
-        """The config editor has persisted nulls for scalar fields before."""
-        for raw in (None, "", "   ", "FAIL"):
+        """The config editor has persisted nulls for scalar fields before — and an
+        UPGRADE is the same shape: every stored config predating this field has the
+        key absent, so the resolved value is what decides whether upgrading changes
+        any document's outcome. It must be 'warn'."""
+        for raw in (None, "", "   ", "WARN"):
             cfg = IDPConfig(**{"extraction": {"row_shortfall_action": raw}})
-            assert cfg.extraction.row_shortfall_action == "fail", raw
+            assert cfg.extraction.row_shortfall_action == "warn", raw
 
     def test_an_unknown_action_is_rejected_rather_than_silently_accepted(self):
         with pytest.raises(Exception) as ei:
@@ -508,6 +557,191 @@ class TestRowShortfallOutcome:
             err = ExtractionOutputIncomplete(text)
             assert not is_input_token_overflow(err), text
             assert not is_image_request_rejection(err), text
+
+
+class TestWhyFailIsOptIn:
+    """The evidence model cannot support `fail` as a DEFAULT, and this pins why.
+
+    ``_expected_rows_for_width`` sums every OCR table of the list's width over the
+    whole section. For a 2- or 3-property array that models an entity GROUP rather
+    than table rows — and such an array is structurally identical to one that
+    models rows — that evidence has no legitimate contribution, so a completely
+    correct extraction can score below the ratio. Nine such fields ship in the
+    config library.
+
+    These tests are the reason ``row_shortfall_action`` defaults to ``warn``. If a
+    later change makes ``fail`` the default, the first one below fails and names
+    the shipped field it would have broken.
+    """
+
+    @staticmethod
+    def _shipped_bank_statement() -> dict:
+        """The Bank-Statement class from the template's DEFAULT preset.
+
+        Read from the config library rather than restated, so the test tracks what
+        actually ships; skipped rather than silently passing if it moves.
+        """
+        import subprocess
+
+        import yaml
+
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        rel = "config_library/unified/lending-package-sample/config.yaml"
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", rel],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if tracked.returncode != 0:
+            pytest.skip(f"{rel} is not tracked by git")
+        cfg = yaml.safe_load((Path(root) / rel).read_text(encoding="utf-8")) or {}
+        for cls in cfg.get("classes") or []:
+            if isinstance(cls, dict) and cls.get("$id") == "Bank-Statement":
+                return cls
+        pytest.skip("Bank-Statement is no longer in the default preset")
+
+    @staticmethod
+    def _monthly_statement_ocr() -> str:
+        """OCR for an ordinary statement: a 5-row 2-column Account Summary, a
+        60-row 5-column transaction table, and a 31-row 2-column Daily Balance
+        table — the last being the one the shortfall check misattributes."""
+        return "\n\n".join(
+            [
+                "ACCOUNT SUMMARY",
+                _table(5, 2, heading="| Description | Amount |"),
+                "TRANSACTION DETAILS",
+                _table(
+                    60,
+                    5,
+                    heading="| Date | Description | Deposits | Withdrawals | Balance |",
+                ),
+                "DAILY BALANCE SUMMARY",
+                _table(31, 2, heading="| Date | Balance |"),
+            ]
+        )
+
+    def test_a_correct_extraction_of_the_default_preset_is_flagged(self):
+        schema = self._shipped_bank_statement()
+        svc = _svc(schema=schema)
+        svc._document_text = self._monthly_statement_ocr()
+        # A 100% CORRECT extraction: every summary row and every transaction.
+        issues = _issues(
+            svc,
+            {
+                "account_summary": [
+                    {"summary_desc": f"d{i}", "summary_amount": str(i)}
+                    for i in range(5)
+                ],
+                "transaction_details": [
+                    {
+                        "date": "01/01/2024",
+                        "description": f"t{i}",
+                        "balance": "1",
+                        "deposits": "1",
+                        "withdrawals": "0",
+                    }
+                    for i in range(60)
+                ],
+            },
+        )
+        flagged = [i for i in issues if i.code == CODE]
+        assert flagged, (
+            "the misattribution this test exists to pin is gone — if "
+            "_expected_rows_for_width was narrowed, that is good news: delete this "
+            "test and reconsider the default"
+        )
+        issue = flagged[0]
+        # The long list the check exists for is NOT flagged; the 5-row summary is.
+        assert issue.details["list_fields"] == ["account_summary"]
+        assert issue.details["item_property_count"] == 2
+        assert issue.details["extracted_rows"] == 5
+        assert issue.details["ocr_estimated_rows"] == 38  # 6 summary + 32 daily
+        assert issue.details["ratio"] < 0.2
+        # THEREFORE the default must be advisory. Asserted against the config
+        # default, not a literal, so flipping the default fails here.
+        assert IDPConfig().extraction.row_shortfall_action == "warn"
+        assert issue.severity == "warning"
+
+    def test_under_fail_that_correct_extraction_would_lose_the_document(self):
+        """The same schema and OCR, opted in — this is what the default avoids."""
+        svc = _svc(schema=self._shipped_bank_statement(), row_shortfall_action="fail")
+        svc._document_text = self._monthly_statement_ocr()
+        issues = _issues(
+            svc,
+            {
+                "account_summary": [
+                    {"summary_desc": f"d{i}", "summary_amount": str(i)}
+                    for i in range(5)
+                ],
+                "transaction_details": [
+                    {
+                        "date": "01/01/2024",
+                        "description": f"t{i}",
+                        "balance": "1",
+                        "deposits": "1",
+                        "withdrawals": "0",
+                    }
+                    for i in range(60)
+                ],
+            },
+        )
+        issue = next(i for i in issues if i.code == CODE)
+        assert issue.severity == "error"
+        doc = Document(
+            id="d",
+            input_key="d.pdf",
+            input_bucket="in",
+            output_bucket="out",
+            status=Status.EXTRACTING,
+        )
+        with pytest.raises(ExtractionOutputIncomplete):
+            svc._fail_on_row_shortfall(
+                doc, SimpleNamespace(processing_issues=issues), "1"
+            )
+
+    def test_the_shipped_default_preset_really_does_enable_table_ocr(self):
+        """The check is inert without Markdown tables, so this is its precondition.
+
+        Derived from the system default plus the preset, because the docs asserted
+        the opposite (`ocr.features: []`) and that is what made the misattribution
+        above invisible.
+        """
+        import subprocess
+
+        import yaml
+
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        base = yaml.safe_load(
+            (
+                Path(root)
+                / "lib/idp_common_pkg/idp_common/config/system_defaults/base-ocr.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        preset = yaml.safe_load(
+            (
+                Path(root) / "config_library/unified/lending-package-sample/config.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        features = (preset.get("ocr") or {}).get("features") or (
+            base.get("ocr") or {}
+        ).get("features")
+        names = {(f or {}).get("name") for f in (features or [])}
+        assert "TABLES" in names, (
+            f"the default preset resolves to ocr.features={sorted(n for n in names if n)}; "
+            "if TABLES is gone the check is inert by construction and both doc tiers "
+            "need updating again"
+        )
 
 
 class TestSiblingsRefsAndWrappers:

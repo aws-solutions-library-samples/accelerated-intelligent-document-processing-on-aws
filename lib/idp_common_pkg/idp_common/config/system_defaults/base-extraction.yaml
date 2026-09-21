@@ -150,15 +150,22 @@ extraction:
     # input window that helps re-extraction on large documents.
     # (Empty = retry with the same extraction model.)
     escalation_model: "us.anthropic.claude-sonnet-5:1m"
-  # fail | warn. What it MEANS when extraction returned under half the table rows
+  # warn | fail. What it MEANS when extraction returned under half the table rows
   # the section's own OCR text evidences for a list field (the
   # extraction_rows_below_ocr_estimate check). 'fail' saves the partial rows and
   # the issue and THEN fails the section, so no consumer reads COMPLETED over a
-  # list that lost most of itself. 'warn' is the pre-0.6.10 advisory-only
-  # behaviour — set it if a class declares a list whose column count coincides
-  # with an unrelated table in the same section, which is the one shape the
-  # check's same-width evidence cannot tell apart.
-  row_shortfall_action: fail
+  # list that lost most of itself.
+  #
+  # 'fail' is OPT-IN because of what the evidence can and cannot distinguish, not
+  # out of caution. The evidence is OCR tables whose column count equals the list
+  # item's property count, summed over the whole section — and a 2- or 3-property
+  # array modelling an entity GROUP (account_summary, W2.codes, Payslip taxes)
+  # looks exactly like one modelling table ROWS. A statement's 31-row two-column
+  # Daily Balance table therefore counts as evidence about a 5-row
+  # account_summary, and a fully correct extraction scores 0.13. Turn 'fail' on
+  # for a corpus whose narrow arrays really are table rows — long transaction
+  # lists are the case it was built for.
+  row_shortfall_action: warn
   image:
     target_width: ""
     target_height: ""

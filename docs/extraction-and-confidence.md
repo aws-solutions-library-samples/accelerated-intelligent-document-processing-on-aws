@@ -2133,7 +2133,7 @@ So it must be detected structurally. Four signals are raised as
 | `extraction_incomplete` | warning | A schema-declared list came back **empty, null, or absent from the response entirely**. |
 | `extraction_list_truncated` | warning | A list returned **fewer rows than its schema `minItems`** — the one unambiguous truncation signal available without ground truth. |
 | `extraction_sparse` | info | Fewer than `min_population_ratio` of the schema's leaf fields were populated. |
-| `extraction_rows_below_ocr_estimate` | **error** (warning under `row_shortfall_action: warn`) — and the only one of these that changes the document's status, see below | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a second table of another shape (a two-column Daily Balances table printed directly under Transactions), a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. The check needs OCR that emits Markdown tables (Textract with the `TABLES` feature, or BDA); with the default `ocr.features: []` there are none and it never fires. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
+| `extraction_rows_below_ocr_estimate` | warning (**error** under `row_shortfall_action: fail`, which is then the only one of these that changes the document's status — see below) | A list of objects returned **fewer than half** the rows found in the section's OCR tables **of the same shape** — tables whose column count equals the list item's property count — and those tables hold at least 30 rows. This is the ground-truth-free signal for the Simple-mode case above (43 rows extracted from an 800-row statement), which passes every other check because the list is non-empty and the scalars are right. Only Markdown tables count (rows starting with a pipe under a `|---|` separator row), segmented where the column count changes as well as at blank gaps and ended by the first prose line, so a table of a *different* width, a form's key/value blocks, a footer or prose line containing a pipe, and lists of scalars do not count against it; lists of the same shape (Deposits and Withdrawals) are judged together as one group, an array of instances is compared through its inner lists, and a multi-instance wrapper whose instances carry no lists is not compared at all. Item schemas defined through `$ref`/`$defs`, as every shipped preset does, are resolved. Reprinted heading rows inflate the estimate slightly, hence the half ratio. ⚠️ Matching is on width **only**, and matched tables are summed over the whole section: a table of the *same* width that has nothing to do with the list — a two-column Daily Balance table beside a two-property account summary — is counted as evidence about it. The check needs OCR that emits Markdown tables: Textract with the `TABLES` feature, or BDA. **That is the shipped default** (`ocr.features: [TABLES, LAYOUT, SIGNATURES]`), so the check is live on every shipped preset except the two `ocr-benchmark` ones, which set LAYOUT only; a config that removes `TABLES` has no pipe tables and the check is inert. In Advanced mode this is a secondary check; the shard runtime's own completeness checks and `minItems` remain the primary guards. |
 
 A fifth issue is raised by [schema validation](#schema-validation-extractionvalidation)
 rather than the completeness checks:
@@ -2142,40 +2142,66 @@ rather than the completeness checks:
 |---|---|---|
 | `extraction_validation_failed` | warning (error under `fail_action: reject`) | The result still violates the class JSON Schema after extraction (and after escalation, if enabled). |
 
-#### A materially incomplete list fails the section — `extraction.row_shortfall_action`
+#### Making a materially incomplete list fail the section — `extraction.row_shortfall_action`
 
 A processing issue, at any severity, does not change a document's status: it is
 recorded on the section, counted, and rendered in the UI, and the document still
-reports `COMPLETED`. For most of the signals above that is right — an empty list
-may be an empty list, and a sparse one may be a sparse document. For
-`extraction_rows_below_ocr_estimate` it is not, because that check has the
-section's **own OCR text** as evidence that the rows exist. A consumer reading
-status alone was told a 1,200-row statement carrying 43 rows had completed, and
-because a truncated run is cheaper than a complete one neither status nor cost
-flagged it.
+reports `COMPLETED`. That is true of **every** incompleteness signal in the
+pipeline, `error` severity included, and it is why a 1,200-row statement carrying
+43 rows reported success — and, because a truncated run is *cheaper* than a
+complete one, why neither status nor cost flagged it.
 
-So `extraction.row_shortfall_action` decides what that detection **costs**:
+`extraction.row_shortfall_action` is how a deployment makes the
+`extraction_rows_below_ocr_estimate` detection decide the outcome:
 
 | Value | Outcome |
 |---|---|
-| `fail` (default) | The rows that *were* extracted, the issue and the processing report are written to the section's `result.json` first; the section then fails with `ExtractionOutputIncomplete`, which is deterministic and in no `Retry` list, so it fails once and in seconds. The document's status is `FAILED` and the Step Functions cause is the sentence naming the rows extracted, the OCR row estimate and the remedy. |
-| `warn` | Record the issue and report success. |
+| `warn` (default) | Record the issue and report success. |
+| `fail` | The rows that *were* extracted, the issue and the processing report are written to the section's `result.json` first; the section then fails with `ExtractionOutputIncomplete`, which is deterministic and in no `Retry` list, so it fails once and in seconds. The document's status is `FAILED` and the Step Functions cause is the sentence naming the rows extracted, the OCR row estimate and the remedy. |
 
-Two things this setting does **not** do. It does not change **when** the
-shortfall is detected — the floor of 30 matching OCR rows and the "fewer than
-half" ratio are the same under both values, so the runs that fail are exactly the
-runs that used to warn. And it does not apply only to Simple extraction: the
-check and the outcome are shared by both modes, because a truncated Advanced
-section tells the same lie. Advanced mode shards and so reaches this far less
-often.
+It does not change **when** the shortfall is detected — the floor of 30 matching
+OCR rows and the "fewer than half" ratio are identical under both values, so the
+sections that fail under `fail` are exactly the ones that warn under `warn`. And
+it is not Simple-mode-only: the check and the outcome are shared by both modes,
+because a truncated Advanced section tells the same lie. Advanced mode shards, so
+it reaches this far less often.
 
-**When to set `warn`.** The check's evidence is OCR tables whose column count
-equals the list item's property count, and it cannot tell one of those from an
-unrelated table of the same width in the same section. If a class declares a
-three-property list and its documents also carry an unrelated three-column table
-of 30+ rows, the estimate is inflated by that table and a complete extraction can
-score below the ratio. That was cheap when the outcome was advisory and is not
-now, so `warn` is the escape hatch — per deployment, no code change.
+##### Why `fail` is opt-in, and what to check before turning it on
+
+Not caution — a property of the evidence. Matching is on **width only** and
+matched tables are **summed over the whole section**, so any table whose column
+count happens to equal the list item's property count is counted as evidence
+about that list. For a 2- or 3-property array that models an **entity group**
+rather than table rows, that evidence has no legitimate contribution at all, and
+a group-shaped array is structurally indistinguishable from a row-shaped one.
+
+The default preset shows it. `Bank-Statement.account_summary` has two properties
+(`summary_desc`, `summary_amount`). A monthly statement carries a five-row
+two-column Account Summary, a sixty-row five-column transaction table, and a
+31-row two-column **Daily Balance** table. A fully correct extraction — all five
+summary rows, all sixty transactions — scores `5 / 38 = 0.13` on
+`account_summary`, because the Daily Balance table's rows are summed into its
+evidence. Under `warn` that is a spurious warning; under `fail` it is a lost
+document, and the long transaction list the check exists for passes cleanly.
+
+Nine fields of this shape ship in the config library — `account_summary`,
+`W2.codes`, `Payslip.FederalTaxes` / `StateTaxes` / `CityTaxes`,
+`Medical-Insurance-Invoice.Charges`, `PA-Procedure-Log.codes_without_documentation`
+(a declared *subset* by definition), `PA-Medical-History.chronic_conditions` — and
+of the narrow arrays in presets with `TABLES` on, only `Transactions` genuinely
+models table rows. Four further shapes produce the same spurious failure and are
+tracked for narrowing: sibling lists whose property counts *differ* (the
+same-width grouping that stops Deposits and Withdrawals accusing each other keys
+on equality, so one extra property on one sibling disables it); a nested optional
+sub-list, which replaces its parent as the compared target so the parent's own
+completeness supplies the evidence that fails it; a list with `maxItems`, which
+`expected` does not consult; and any list nested under a plain object property,
+which is never compared at all.
+
+**So before setting `fail`:** confirm every array-of-object field in your classes
+models table rows rather than an entity group, and that no unrelated table in the
+same section shares a width with one of them. It is the right setting for a
+corpus of long transaction lists, which is the case it was built for.
 
 **Add `minItems` to list fields you care about.** It costs nothing at extraction
 time and turns an invisible truncation into a visible warning:

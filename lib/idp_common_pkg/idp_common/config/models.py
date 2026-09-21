@@ -1086,21 +1086,32 @@ class ExtractionConfig(BaseModel):
         description="Lambda function ARN for custom inference (used when model is 'LambdaHook'). Function name must start with GENAIIDP-.",
     )
     row_shortfall_action: Literal["fail", "warn"] = Field(
-        default="fail",
+        default="warn",
         description=(
             "What a section's outcome MEANS when extraction returned fewer than "
             "half the table rows the section's own OCR text evidences for a list "
-            "field — the ``extraction_rows_below_ocr_estimate`` check. 'fail' "
-            "(default): the partial result and the issue are still written, then "
-            "the section fails, so the document's status cannot report COMPLETED "
-            "on a list that lost most of its rows. 'warn': record the issue and "
-            "report success, which is the pre-0.6.10 behaviour. This does NOT "
-            "change WHEN the shortfall is detected, only what it costs; the "
-            "detection threshold is the same one the warning has always used. Set "
-            "'warn' if your classes declare a list whose width coincides with an "
-            "unrelated table in the same section, because the check's evidence is "
-            "OCR tables of the SAME column count and it cannot tell those apart "
-            "(see extraction/README.md)."
+            "field — the ``extraction_rows_below_ocr_estimate`` check. 'warn' "
+            "(default): record the issue and report success. 'fail': the partial "
+            "result and the issue are still written, then the section fails, so "
+            "the document's status cannot report COMPLETED on a list that lost "
+            "most of its rows. This does NOT change WHEN the shortfall is "
+            "detected, only what it costs; the detection threshold is the same "
+            "one the warning has always used.\n\n"
+            "⚠️ 'fail' is OPT-IN, and the reason is a property of the evidence, "
+            "not caution. The check's evidence is OCR tables whose column count "
+            "equals the list item's property count, summed over the whole "
+            "section, and a 2- or 3-property array that models an entity GROUP "
+            "rather than table rows is structurally indistinguishable from one "
+            "that models rows. So a monthly statement's 31-row two-column Daily "
+            "Balance table is counted as evidence about a 5-row 2-property "
+            "``account_summary``, and a completely correct extraction scores "
+            "0.13. Nine such fields ship in the config library "
+            "(``account_summary``, ``W2.codes``, ``Payslip.{Federal,State,City}"
+            "Taxes``, ``Medical-Insurance-Invoice.Charges`` …), so 'fail' by "
+            "default would fail correct extractions of the default preset. "
+            "Turn it on for a corpus whose narrow arrays really are table rows — "
+            "long transaction lists are what it is for — and see "
+            "docs/extraction-and-confidence.md for the shapes to check first."
         ),
     )
 
@@ -1112,9 +1123,11 @@ class ExtractionConfig(BaseModel):
         Same hazard as ``validation.fail_action``: the config editor has
         persisted nulls for scalar fields before, and a null arriving here must
         not become a ``ValidationError`` that wedges the whole config load.
+        Resolving to ``warn`` is also what keeps an upgrade behaviour-neutral —
+        every stored config predating this field has the key absent.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
-            return "fail"
+            return "warn"
         return str(v).lower()
 
     @field_validator("prompt_cache", mode="before")

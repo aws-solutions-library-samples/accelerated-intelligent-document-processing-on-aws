@@ -1237,32 +1237,37 @@ See `notebooks/examples/demo-lambda/` for:
 
 For more details, see [Extraction & Confidence](extraction-and-confidence.md).
 
-### A list that lost most of its rows fails the section (`extraction.row_shortfall_action`)
+### Making a truncated list fail the section (`extraction.row_shortfall_action`)
 
 Extraction compares the rows it returned for a list field with the rows in the section's own
-OCR tables *of the same shape*. When the OCR evidences at least 30 such rows and fewer than
-half of them came back, that is recorded as `extraction_rows_below_ocr_estimate` — and by
-default the section **fails**:
+OCR tables *of the same width*. When those tables hold at least 30 rows and fewer than half
+came back, that is recorded as `extraction_rows_below_ocr_estimate`. Like every other
+processing issue it does not change the document's status, so a document carrying 3% of a
+long table reports `COMPLETED` — and a truncated run is *cheaper* than a complete one, so
+neither status nor cost flags it. This setting is how a deployment changes that:
 
 ```yaml
 extraction:
-  row_shortfall_action: fail     # fail (default) | warn
+  row_shortfall_action: warn     # warn (default) | fail
 ```
 
-The partial rows, the issue and the processing report are written to the section's
-`result.json` first, so the failure costs the claim of success and not the data. The reason
-the default is `fail`: a processing issue does not change a document's status at any
-severity, and a truncated run is *cheaper* than a complete one, so a document carrying 3% of
-a long table used to report `COMPLETED` with nothing in status or cost to flag it.
+Under `fail`, the partial rows, the issue and the processing report are written to the
+section's `result.json` first and the section then fails, so the failure costs the claim of
+success and not the data. It changes only what the shortfall costs, never when it is
+detected, and it applies to both Simple and Advanced extraction.
 
-Set `warn` to restore the advisory-only behaviour. The case that warrants it is a class
-declaring a list whose column count coincides with an unrelated table of 30+ rows in the same
-section: the check's evidence is same-width OCR tables and it cannot tell those apart, so the
-estimate is inflated and a complete extraction can score below the ratio. This setting
-changes only what the shortfall costs, never when it is detected, and it applies to both
-Simple and Advanced extraction. Editable in the Web UI under **Configuration → Extraction →
-Truncated list outcome**. See
-[Extraction & Confidence](extraction-and-confidence.md#a-materially-incomplete-list-fails-the-section--extractionrow_shortfall_action).
+⚠️ **`fail` is opt-in for a reason and needs a check first.** Matching is on width alone and
+matched tables are summed over the whole section, so a 2- or 3-property array that models an
+entity *group* rather than table rows collects evidence that has nothing to do with it —
+and the two shapes are structurally identical. In the default preset a fully correct
+extraction of `Bank-Statement.account_summary` (2 properties, 5 rows) scores 0.13, because a
+monthly statement's 31-row two-column Daily Balance table is summed into its evidence. Nine
+such fields ship in the config library. Before turning `fail` on, confirm every
+array-of-object field in your classes models table rows and that no unrelated table in the
+same section shares a width with one. It is the right setting for a corpus of long
+transaction lists, which is what it was built for. Editable in the Web UI under
+**Configuration → Extraction → Truncated list outcome**; the shapes to check are listed in
+[Extraction & Confidence](extraction-and-confidence.md#why-fail-is-opt-in-and-what-to-check-before-turning-it-on).
 
 ### Tiered Models (Validation + Escalation)
 
