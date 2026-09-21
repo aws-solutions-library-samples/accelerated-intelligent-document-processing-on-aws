@@ -328,9 +328,12 @@ class RuleValidationOrchestratorService:
         top_p: float = 0.01,
         top_k: float = 20.0,
         max_tokens: int = 4096,
-    ) -> dict:
+    ) -> Optional[dict]:
         """
         Summarize a single rule with semaphore control.
+
+        Returns None when the model's response cannot be parsed. The caller
+        gathers these and skips anything that is not a dict.
         """
         async with self.semaphore:
             response = await self._invoke_model_async(

@@ -176,7 +176,7 @@ def discover_existing_ocr_pages(output_bucket, input_key):
 
     return completed_pages
 
-@xray_recorder.capture('ocr_function')
+@xray_recorder.capture('ocr_function')  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context): 
     """
     Lambda handler for OCR processing.

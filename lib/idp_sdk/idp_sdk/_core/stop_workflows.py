@@ -14,6 +14,7 @@ from typing import Optional
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
@@ -130,9 +131,17 @@ class WorkflowStopper:
                     cause="Stopped by idp-cli stop-workflows command",
                 )
                 return True
-            except self.sfn.exceptions.ExecutionNotFound:
-                # Already stopped - that's fine
-                return True
+            except ClientError as e:
+                # An execution that no longer exists needs no stopping, so that
+                # is a success. The error code is matched rather than the
+                # generated exception class: an `except` clause evaluates its
+                # expression when an error is raised, so a misspelled
+                # `self.sfn.exceptions.<Name>` raises AttributeError from inside
+                # the handler and escapes past every `except` below it.
+                if e.response.get("Error", {}).get("Code") == "ExecutionDoesNotExist":
+                    return True
+                logger.debug(f"Failed to stop {execution_arn}: {e}")
+                return False
             except Exception as e:
                 logger.debug(f"Failed to stop {execution_arn}: {e}")
                 return False

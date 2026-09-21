@@ -10,9 +10,9 @@ variables loaded from a .env file, similar to how you might run tests locally
 during development.
 
 Usage:
-    python run_analytics_test.py -q "How many documents were processed today?"
-    python run_analytics_test.py -q "Show me accuracy trends" --verbose
-    python run_analytics_test.py -q "Create a chart of document types" --strands-debug
+    python manual_tests/agents/run_analytics_test.py -q "How many documents were processed today?"
+    python manual_tests/agents/run_analytics_test.py -q "Show me accuracy trends" --verbose
+    python manual_tests/agents/run_analytics_test.py -q "Create a chart of document types" --strands-debug
 """
 
 import sys
@@ -44,12 +44,12 @@ def main():
         print("To use .env files, install python-dotenv: pip install python-dotenv")
 
     # Add the idp_common_pkg root to Python path
-    pkg_root = Path(__file__).parent.parent.parent.parent
+    pkg_root = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(pkg_root))
 
     # Import after path modification to avoid E402 linting error
     try:
-        from idp_common.agents.testing.test_analytics import (
+        from test_analytics import (
             main as test_main,  # noqa: E402
         )
 
@@ -57,11 +57,18 @@ def main():
         test_main()
 
     except ImportError as e:
-        print(f"Error importing test_analytics module: {e}")
+        # test_analytics is a sibling FILE, not a package member, so it resolves
+        # only when this script's own directory is on sys.path -- which the
+        # interpreter arranges for `python .../run_analytics_test.py` and does not
+        # for `python -m ...` or `python -P ...`. Installing the package cannot
+        # help, so this message does not suggest it.
+        print(f"Error importing test_analytics: {e}")
         print(
-            "Make sure you're running from the correct directory and the package is installed."
+            "Run this script by path, e.g.\n"
+            "  cd lib/idp_common_pkg && python manual_tests/agents/run_analytics_test.py -q '...'\n"
+            "Running it with `python -m` or `python -P` leaves its own directory off "
+            "sys.path, so the sibling module cannot be found."
         )
-        print("Try: pip install -e '.[agents,analytics,test]'")
         sys.exit(1)
     except Exception as e:
         print(f"Error running analytics test: {e}")

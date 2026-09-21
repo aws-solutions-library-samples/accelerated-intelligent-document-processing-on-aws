@@ -213,3 +213,112 @@ class TestDeletionModels:
         assert result.success is True
         assert result.deleted_count == 2
         assert result.dry_run is False
+
+
+@pytest.mark.unit
+class TestPublicExportSurface:
+    """Every public model must be importable from where the docs say it is.
+
+    `docs/idp-sdk.md`'s "Response Models" section tells the reader to import
+    result types from the top-level `idp_sdk` package, and the SDK's own
+    `idp_sdk/models/__init__.py` declares which types are public. Those two were
+    out of step for 13 names, so copy-pasting the documented import block raised
+    `ImportError` — a documented call that cannot succeed, which is the same
+    defect class as a constructor that cannot succeed.
+
+    Both checks are derived rather than listed: a new model added to
+    `idp_sdk.models.__all__`, or a new name added to the docs block, is covered
+    without editing this file.
+    """
+
+    def test_every_public_model_is_re_exported_at_the_top_level(self):
+        import idp_sdk
+        import idp_sdk.models
+
+        missing = sorted(set(idp_sdk.models.__all__) - set(idp_sdk.__all__))
+        assert not missing, (
+            f"{len(missing)} model(s) are public in idp_sdk.models.__all__ but not "
+            f"re-exported from the idp_sdk package: {missing}. Add each to the "
+            "`from .models import (...)` block and to `__all__` in "
+            "idp_sdk/__init__.py — the top-level package is the import path the "
+            "documentation gives, so a model missing here is unreachable in "
+            "practice however public it looks."
+        )
+
+    def test_every_exported_name_resolves(self):
+        """`__all__` naming something the module does not define breaks
+        `from idp_sdk import *` and every editor's completion."""
+        import idp_sdk
+
+        dangling = [n for n in idp_sdk.__all__ if not hasattr(idp_sdk, n)]
+        assert not dangling, f"idp_sdk.__all__ names undefined attributes: {dangling}"
+
+    #: Heading of the section whose code block is the reader's copy-paste target.
+    RESPONSE_MODELS_HEADING = "## Response Models"
+
+    def test_the_documented_import_block_is_importable(self):
+        """Parse the reader's copy-paste target and import every name in it."""
+        import importlib
+        import re
+        from pathlib import Path
+
+        # Walk up for the checkout root rather than counting parents: a hardcoded
+        # index was off by one and turned this into a silent skip, which protects
+        # nothing. `pyrightconfig.json` anchors it to *this* checkout — matching
+        # the first `docs/idp-sdk.md` in any ancestor could read a sibling clone.
+        here = Path(__file__).resolve()
+        doc = next(
+            (
+                candidate
+                for parent in here.parents
+                if (parent / "pyrightconfig.json").is_file()
+                and (candidate := parent / "docs" / "idp-sdk.md").is_file()
+            ),
+            None,
+        )
+        assert doc is not None, (
+            "no checkout root above "
+            f"{here} holds both pyrightconfig.json and docs/idp-sdk.md. This test "
+            "asserts that the documented import block works, so a missing target "
+            "means it is checking nothing — fix the lookup rather than letting it "
+            "skip."
+        )
+
+        # Scoped to the Response Models section rather than the whole page: a
+        # guard that accepts *any* parenthesised import block would still pass if
+        # that section lost its block, as long as some other block matched.
+        text = doc.read_text()
+        start = text.find(self.RESPONSE_MODELS_HEADING)
+        assert start != -1, (
+            f"{doc.name} no longer has a {self.RESPONSE_MODELS_HEADING!r} heading, "
+            "so this test cannot find the block it exists to check. Re-point it at "
+            "wherever the reader is now told to import result models from."
+        )
+        end = text.find("\n## ", start + 1)
+        section = text[start : end if end != -1 else len(text)]
+
+        blocks = re.findall(
+            r"```python\nfrom idp_sdk import \(\n(.*?)\n\)\n```", section, re.S
+        )
+        assert blocks, (
+            f"no `from idp_sdk import (...)` block under "
+            f"{self.RESPONSE_MODELS_HEADING!r} in {doc.name}. Either it was removed "
+            "or its fencing changed — this test would silently check nothing, so it "
+            "fails instead."
+        )
+
+        module = importlib.import_module("idp_sdk")
+        unimportable: list[str] = []
+        for block in blocks:
+            for line in block.splitlines():
+                name = line.strip().rstrip(",")
+                if not name or name.startswith("#"):
+                    continue
+                if not hasattr(module, name):
+                    unimportable.append(name)
+
+        assert not unimportable, (
+            f"{doc.name} tells the reader to import {unimportable} from idp_sdk, "
+            "which raises ImportError. Either export the name or correct the "
+            "documented block."
+        )

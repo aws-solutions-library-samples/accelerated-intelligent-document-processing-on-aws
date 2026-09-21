@@ -27,6 +27,7 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -69,7 +70,10 @@ def _load_handler(fake_s3):
     """Extract + exec the inline handler with fakes injected."""
     cfnlint_decode = pytest.importorskip("cfnlint.decode.cfn_yaml")
 
-    def _plain(node):
+    # Annotated `-> Any` on purpose: the recursive branches make the inferred
+    # return a `dict | list | str | ...` union, and subscripting that union is
+    # a reportCallIssue on an assertion that is correct at runtime.
+    def _plain(node) -> Any:
         if isinstance(node, dict):
             return {str(k): _plain(v) for k, v in node.items()}
         if isinstance(node, list):
