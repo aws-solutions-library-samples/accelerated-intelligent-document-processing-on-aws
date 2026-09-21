@@ -211,9 +211,20 @@ echo "" >&2
 PROFILE_FLAG=""
 [[ -n "$PROFILE" ]] && PROFILE_FLAG=" \\\n  --profile $PROFILE"
 
+# The VPC's primary CIDR. vpc-endpoints.yaml declares VpcCidr with no Default — it
+# feeds the endpoint security group's ingress and egress rules — so a printed command
+# omitting it is rejected with "Parameters: [VpcCidr] must have values" and creates
+# nothing. Looked up rather than left as a placeholder so the command can be pasted
+# as printed. Falls back to a visible placeholder if the lookup is not permitted.
+VPC_CIDR=$(aws ec2 describe-vpcs $AWS_FLAGS \
+  --vpc-ids "$VPC_ID" \
+  --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null) || VPC_CIDR=""
+[[ -z "$VPC_CIDR" || "$VPC_CIDR" == "None" ]] && VPC_CIDR="<vpc-primary-cidr>"
+
 # Build parameter-overrides string
 PARAM_OVERRIDES="IDPStackName=$IDP_STACK_NAME \\\n"
 PARAM_OVERRIDES+="    VpcId=$VPC_ID \\\n"
+PARAM_OVERRIDES+="    VpcCidr=$VPC_CIDR \\\n"
 PARAM_OVERRIDES+="    SubnetIds=$SUBNET_IDS \\\n"
 PARAM_OVERRIDES+="    LambdaSecurityGroupId=$LAMBDA_SG"
 

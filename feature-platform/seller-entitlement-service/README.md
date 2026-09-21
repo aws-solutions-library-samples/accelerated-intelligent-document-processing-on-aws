@@ -62,10 +62,23 @@ returns an empty list rather than an error, so every activation would be refused
 and every customer locked out with nothing in the logs explaining why.
 
 Useful options: `--seller-account-id` to assert the expected account,
-`--stack-name`, `--region` (default `us-east-1`), `--allowed-accounts`,
-`--token-ttl-seconds`, `--yes` to skip the confirmation, and
-`--skip-ownership-check` for the rare case where the deploying role lacks
-`aws-marketplace:ListEntities`.
+`--stack-name`, `--region` (default `us-east-1`), `--agreement-region` (default
+`us-east-1`), `--allowed-accounts`, `--token-ttl-seconds`, `--yes` to skip the
+confirmation, and `--skip-ownership-check` for the rare case where the deploying
+role lacks `aws-marketplace:ListEntities`.
+
+> **`--region` and `--agreement-region` are two different things, on purpose.**
+> `--region` is where the stack goes. `--agreement-region` becomes
+> `AGREEMENT_REGION` on the activation function — the Region it calls
+> `SearchAgreements` in — and `us-east-1` is the only value that works:
+> `agreement-marketplace.us-east-1.amazonaws.com` and
+> `catalog.marketplace.us-east-1.amazonaws.com` resolve, and no other Region's form
+> of either does. You can deploy the stack wherever you like; the agreement Region
+> should be left alone unless AWS adds the API somewhere else. They are separate
+> flags because deriving the second from the first makes moving the stack break
+> every activation — and it breaks it *at activation*, in a buyer's account, after a
+> deploy that reported success and a registry read-back that passed. The deploy
+> prints a warning if you set `--agreement-region` to anything else.
 
 Requires the AWS SAM CLI and a checkout of this repository (the template and
 Lambda source live here) — the same prerequisites as `idp-feature-cli publish`
@@ -92,6 +105,18 @@ to be caught at deploy time or not at all.
 > unquoted value at the first `"`, so a hand-rolled
 > `sam deploy --parameter-overrides ProductRegistryJson={"prod-…":…}` delivers a
 > registry of exactly `{`. The CLI compacts the JSON and single-quotes it.
+
+> **A `--parameter-overrides` name this template does not declare is discarded
+> silently.** `sam deploy` builds its `CreateChangeSet` call by walking the
+> *template's* `Parameters` and emitting a value only for names it finds there, so a
+> misspelled override never reaches CloudFormation: the deploy succeeds, the
+> parameter keeps its template default, and the pre-deploy banner still lists the
+> override as though it had been applied. `aws cloudformation deploy` and the boto3
+> `create_change_set` reject an unknown name outright, so the same typo fails loudly
+> there — the `sam` path is the one that hides it. The CLI therefore checks every
+> override it builds against this template's `Parameters` before running the deploy
+> (`validate_parameter_overrides` in `idp_feature_sdk/seller_service.py`); if you
+> deploy by hand, check the names yourself against the `Parameters` block above.
 
 ### Two account-level prerequisites the template handles for you
 

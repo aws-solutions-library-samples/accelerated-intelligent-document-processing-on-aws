@@ -19,6 +19,54 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib  # noqa: E402
 
 
+def score_confidence_coverage(sections):
+    """Confidence coverage over every section of one document: scored/extracted rows.
+
+    Issue #997. ``n_gaps`` next door is an EXTRACTION metric — truth ids the model
+    never produced — and says nothing about whether the rows it *did* produce carry
+    a confidence. That second quantity is what the ``assessment_coverage_incomplete``
+    guard fires on, and until this existed nothing in the repository recorded it: the
+    guard's 5%/25% rungs rested on the expectation that a healthy run sits at 0%
+    shortfall, read off the reconciliation code path and never measured.
+
+    The rule is not reimplemented here. ``idp_common.assessment.batching``'s
+    ``confidence_coverage`` is the same function the shipping guard calls, so this
+    measures the predicate that actually fires rather than a lookalike — a
+    reimplementation would disagree with the guard for reasons unrelated to the data,
+    which is the whole failure mode #997 is about.
+
+    Returns per-document totals plus the per-field breakdown, and ``None`` for the
+    coverage ratio when the document has no list-valued attribute (coverage is
+    undefined there, not perfect — a corpus mean that counted those as 100% would be
+    reporting the share of list-free documents).
+
+    Requires ``idp_common`` on ``PYTHONPATH`` (see benchmarks/matrices/METHODOLOGY.md,
+    which pins it). Deliberately NOT wrapped in a try/except that records ``None``: a
+    silent skip here reproduces exactly the defect this measurement exists to close.
+    """
+    from idp_common.assessment.batching import confidence_coverage
+
+    expected = scored = 0
+    by_field = {}
+    for sec in sections:
+        info = sec.get("explainability_info")
+        # `explainability_info` is written as a one-element list wrapping the
+        # per-field assessment dict (assessment/service.py); tolerate the bare dict.
+        assessment = info[0] if isinstance(info, list) and info else info
+        cov = confidence_coverage(assessment, sec.get("inference_result") or {})
+        expected += cov["expected_rows"]
+        scored += cov["scored_rows"]
+        for field, n in cov["unscored_rows_by_field"].items():
+            by_field[field] = by_field.get(field, 0) + n
+    return {
+        "conf_rows_expected": expected,
+        "conf_rows_scored": scored,
+        "conf_rows_unscored": expected - scored,
+        "conf_coverage": round(scored / expected, 4) if expected else None,
+        "conf_unscored_by_field": by_field or None,
+    }
+
+
 def scalar_bearing_records(ir):
     """The dicts a truth file's flat ``fields`` should be compared against.
 
@@ -300,6 +348,7 @@ def score_synthetic(bucket, doc_prefix, truth):
         if confs
         else None,
         "n_conf_leaves": len(confs),
+        **score_confidence_coverage(sections),
     }
 
 
@@ -390,6 +439,7 @@ def score_reference(bucket, doc_prefix):
         if confs
         else None,
         "n_conf_leaves": len(confs),
+        **score_confidence_coverage(sections),
     }
 
 

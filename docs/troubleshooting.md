@@ -226,6 +226,18 @@ section (`assessment_incomplete`, `assessment_row_too_large`,
 `assessment_schema_mismatch`), because that issue describes the same unscored rows
 with a cause attached.
 
+Two things to know before treating this as a data problem. A row counts as unscored
+when **any** confidence value inside it is missing, so one unfilled cell marks the
+whole row — and because 5% of a short list is less than one row, a single such row
+fires the warning on any section totalling 20 list rows or fewer. On a long table
+the rung means what it says; on a short one, read the per-field breakdown and the
+`unscored_rows` count before concluding anything. The counts you need are in the
+issue's `details`: `expected_rows`, `scored_rows`, `unscored_rows`,
+`unscored_rows_by_field`, and the two rounded ratios `scored_fraction` /
+`unscored_fraction`. The ratios are for reading; the rung itself is decided on the
+exact integer division, so a `details` value of `0.05` is not by itself proof the
+warning threshold was met.
+
 ### Web UI Access Issues
 
 | Issue                                | Resolution                                                                                                            |

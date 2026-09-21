@@ -462,18 +462,20 @@ above 25% **and** at least **10 unscored rows** — carrying `expected_rows`,
 Three deliberate choices in those thresholds:
 
 - **5%, not 0%.** Reconciliation pads one assessment entry per extracted row, so a
-  run whose model scored every row lands at 0% — but note that no stored artifact
-  measures confidence coverage across a corpus, so "healthy runs sit at 0%" is a
-  property of the code path, not something measured here. `_row_confidence_missing`'s
-  own docstring records a healthy three-record pay statement that reported 100% of
-  rows unscored, because a single `None` leaf marks a whole row unscored; that class
-  of false positive is what the absolute floor below limits. Small residual
-  shortfalls are also already named precisely by `assessment_incomplete`.
+  run whose model scored every row lands at 0%. Small residual shortfalls are also
+  already named precisely by `assessment_incomplete`, so a 1-2 row gap on an 800-row
+  table is that issue's business rather than a second document-level alarm. What the
+  fraction means on a *short* list is arithmetic and worth stating outright: a single
+  unscored row is a shortfall of `1/N`, so **one unscored row fires the warning for
+  any section totalling 20 list rows or fewer**. Whether a healthy run ever produces
+  that single unscored row is the part that is measured rather than reasoned — see
+  *Coverage: measured and unobserved* below.
 - **An absolute floor of 10 unscored rows on the error rung.** A fraction alone makes
   short lists fire hardest: one unscored row in a four-row list is 25%, and an error
   renders the section red ("Incomplete") in the Sections panel. Short list attributes
   are ordinary (a two-entry `ENDORSEMENTS` array in `lending-package-sample`). Below
-  the floor the shortfall is still reported, as a warning.
+  the floor the shortfall is still reported, as a warning. The floor bounds this
+  class for the error rung only; the warning rung still fires on a short list.
 - **Suppressed when the ladder already reported an error.** `build_assessment_issues`
   and this gate run on the same section, and the ladder's error rungs describe the
   same unscored rows *with a cause attached*. Emitting both doubles
@@ -487,6 +489,81 @@ Three deliberate choices in those thresholds:
 Issues are attached to each `Section`
 (`section.processing_issues`), rolled up to `Document.processing_issue_count`,
 and rendered in the extraction processing report.
+
+#### Coverage: measured and unobserved
+
+`confidence_coverage(assessment, extraction_results)` returns the figure —
+`scored_rows` over `expected_rows`, plus the per-field breakdown — for one section.
+It calls `audit_explainability` rather than re-deriving "is this row scored?", so a
+measurement and the guard that ships are one computation; `audit_explainability`
+puts the very same dict in the issue's `details`. Use it whenever you want the
+number unconditionally, because the issue only carries it once the shortfall has
+already crossed 5%, which is the reason nothing recorded coverage on healthy runs.
+
+`expected_rows == 0` (a section with no list attribute) means coverage is
+**undefined**, not perfect: `scored_fraction` is `None` so an aggregate drops it. A
+corpus mean that scored those as 1.0 would be reporting the share of list-free
+documents.
+
+The benchmark harness records it per document
+(`benchmarks/harness/analyze.py::score_confidence_coverage` → `conf_rows_expected`,
+`conf_rows_scored`, `conf_rows_unscored`, `conf_coverage`,
+`conf_unscored_by_field`), and `aggregate.cell_stats` rolls up the **distribution**
+per cell — min, max, stdev and CV, not only the mean, because a mean of 0.99 is
+equally consistent with every document at 0.99 and with one document at 0.
+
+What the existing committed artifacts under `benchmarks/results/` already show, and
+what they cannot: they retain `rows_extracted` and `n_conf_leaves` per document-run
+but no raw `explainability_info`, so coverage there is a **leaf-count proxy** rather
+than this rule. Across 4,344 committed assessment-on synthetic document-runs
+spanning v0.5.16 → v0.6.10, roughly 95% show no shortfall at all and about 1% would
+cross the 5% rung (0.2% the error rung), by two independent reconstructions that
+agree — an upper-envelope method needing no corpus constants, and one using the
+generator's known 3-cells-per-row shape. That is consistent with healthy runs
+sitting at 0%.
+
+The leaf model is not an estimate: `n_conf_leaves − 3 × rows_extracted` has a
+dominant mode of exactly **7** for every synthetic document (14 for the two-section
+`twodocs_2x20`, 13 for the repeated-header `repeathdr_3pg`), and it holds for the
+8-column document too, so "3 cells per row plus a 7-leaf document scalar block" is
+read off the data rather than assumed.
+
+**Restricted to the regime the warning rung is actually about, the rate is several
+times higher.** Among runs extracting 20 rows or fewer — the range where a single
+unscored row crosses 5% — **2.6× the corpus-wide rate** would trip the warning. Two
+independent reconstructions on different populations give the same multiplier while
+differing on the absolute figure (3.4% of 703 such runs against a 1.3% corpus rate;
+6.2% of 649 against theirs), so treat the ratio as the finding and the absolute as
+population-dependent.
+
+That figure is not an artifact of truncated large documents: 681 of those 703 runs
+are `tiny_form.pdf`, a genuinely 5-row document, and it alone trips at 3.2%. So the
+answer to "do healthy runs produce the single unscored row that makes the rung fire"
+is **sometimes yes, on flat data, at a measurable rate** — which sharpens the open
+question rather than dissolving it, because 3% of short-list runs carrying a
+low-severity warning is a defensible design and 30% would not be.
+
+Three limits on that evidence, all of which keep the specific concern open:
+
+- It is a **lower bound** on the guard's shortfall. `_row_confidence_missing` marks a
+  whole row unscored if *any* leaf in it is `None`; a leaf count credits the leaves
+  that were scored. A row with two of three cells scored is 0 scored rows to the
+  guard and 2 leaves to the proxy.
+- Only the **synthetic** corpus retains a row denominator. `score_reference` records
+  `n_conf_leaves` with no row count, so `realkie` and `ocr_bench` contribute nothing.
+- The synthetic corpus rows are **flat** — three or eight scalar cells, generated by
+  `benchmarks/corpus/generators/bank_statement.py::_row`. It contains no row carrying
+  a nested group or an inner list, which is exactly the shape the any-leaf-`None`
+  rule is hardest on and exactly the shape a multi-instance section (#715) makes
+  universal.
+
+So the warning rung's false-positive rate on **short, nested, multi-record** lists
+remains unobserved. Settling it needs a run over a multi-record corpus — the
+`healthcare-multisection-package` or a pay-statement shape — on both a Claude and a
+Nova model, since output caps drive the truncation that produces unscored rows; the
+instrument above then reports it directly. The thresholds are left where #912 put
+them until that run exists, because moving them on a proxy that cannot see the shape
+in question would be the same kind of reasoning this note replaces.
 
 ### Lambda wall-clock budget & resume safety
 
