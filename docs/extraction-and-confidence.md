@@ -831,7 +831,7 @@ not enforce. Runs on both Simple and Advanced extraction.
 | `fail_action` | Behaviour | Extra inference? |
 |---|---|---|
 | `warn` (default) | Records the outcome and raises an `extraction_validation_failed` **warning** on the section; the data is kept | **No — free** |
-| `reject` | Same, but the issue is an **error** and the section is marked failed so downstream/HITL can act | **No — free** |
+| `reject` | Same, but the issue is an **error** and the result is recorded as not parsed, so the section's Processing Report reads `FAILED` | **No — free** |
 | `escalate` | Re-extracts **only the failing fields** with `escalation_model`, merged back over the fields that already validated | **Yes** |
 
 Validation is **on by default** precisely because the default action is free: it
@@ -843,6 +843,15 @@ violations, so you do not have to open the section result JSON.
 re-extracted and only those are merged back, so an over-eager escalation cannot
 overwrite fields that already validated; if escalation fails, the original
 extraction is kept unchanged.
+
+⚠️ **All three actions are visibility settings — none of them rejects a section.**
+`reject` records `parsing_succeeded: false`, which is read by the section's
+Processing Report and the UI's **Processing Report** tab and by nothing in the
+status path, so the extracted values are still stored and the document still
+reports `COMPLETED`. The one setting in extraction that turns a detection into an
+outcome is
+[`extraction.row_shortfall_action`](#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action),
+which fails the Step Functions execution.
 
 > **Moved in v0.7.** This block was `extraction.agentic.validation`. Stored
 > configurations are migrated automatically on read — no action required.
@@ -2209,16 +2218,45 @@ corpus of long transaction lists, which is the case it was built for. Narrowing
 the attribution — which is what would let `fail` be the default — is tracked in
 [issue #1046](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1046).
 
-⚠️ **One asymmetry to know about if you choose `fail`.** A list that comes back
-**empty** is reported by `extraction_incomplete`, not by this check, and that
-stays a warning — so a section losing every row of a list still reports
-`COMPLETED` while one losing 95% of them fails. An empty list has an innocent
-reading that a 5%-complete one does not, which is why it is handled separately;
-the asymmetry is tracked in
-[issue #1047](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1047).
+##### `fail` does not cover a list that lost *every* row
 
-**Add `minItems` to list fields you care about.** It costs nothing at extraction
-time and turns an invisible truncation into a visible warning:
+⚠️ **Under `row_shortfall_action: fail`, a document that lost 95% of its rows
+fails and one that lost 100% completes.** This is worth knowing before you rely on
+the setting, because the uncovered case is the worse one.
+
+A width group in which *every* list came back empty is not compared against the
+OCR evidence at all. It is reported by `extraction_incomplete`, which is a
+warning, and a warning cannot change a document's status — so a section whose OCR
+evidences 800 table rows and whose list came back `[]` reports `COMPLETED`, while
+the same section returning 43 of those rows fails.
+
+Both populations are real, and the empty one is larger. Of the 3,631 recorded
+`COMPLETED` benchmark runs with at least 30 ground-truth rows, **99 returned zero
+rows** against 65 with partial loss — so `fail` catches the smaller of the two.
+
+**Why it is left that way.** A genuinely empty list is a common, legitimate
+outcome — an account with no fees, a statement period with no deposits — and the
+check cannot tell it apart from total loss, whereas "43 of 800" has no innocent
+reading. Extending the failure to the empty case would therefore fail correct
+documents, and the over-attribution described above applies *more* strongly there,
+because an empty list scores 0 against whatever evidence is attributed to it. The
+recorded corpus cannot bound the false-failure rate either: it contains no
+legitimately-empty-list documents that also carry a same-width table, so the case
+needs its own measurement. Both that measurement and the narrowing it depends on
+are tracked in
+[issue #1046](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1046).
+
+**What to do in the meantime.** Treat `extraction_incomplete` on a class you
+expect rows from as equivalent in severity to a row shortfall. It reaches the
+document list's **Processing Issues** column, the **Processing Report** tab, and
+the tracking table's sparse `HasProcessingIssues` attribute, so it is filterable —
+which is what has to substitute for document status here. Setting `minItems` on
+those fields adds a second signal for the same loss (next section).
+
+#### Add `minItems` to list fields you care about
+
+It costs nothing at extraction time and turns an invisible truncation into a
+visible warning:
 
 ```yaml
 Transactions:
@@ -2227,7 +2265,20 @@ Transactions:
   items: { … }
 ```
 
-Without it, only the empty/absent and sparse signals apply — a list that returns
+**What `minItems` buys is visibility.** A list under its floor raises
+`extraction_list_truncated`, which is a *warning*, and the same shortfall is also a
+JSON-Schema violation, so it appears in the section's `metadata.validation` block
+and in `extraction_validation_failed`. None of that changes an outcome: no
+processing issue changes a document's status at any severity, and the strongest
+thing `extraction.validation.fail_action: reject` does is record
+`parsing_succeeded: false`, which the Processing Report reads and the status path
+does not. Its value is that the shortfall is **unambiguous** — the schema author
+declared the floor, so unlike the OCR-row estimate it has no false positives — and
+that it is therefore something you can filter and alert on. The only setting that
+makes an incomplete list change the document's outcome is
+`extraction.row_shortfall_action: fail` above.
+
+Without `minItems`, only the empty/absent and sparse signals apply — a list that returns
 10 of 1,200 rows cannot be distinguished from a document that genuinely has 10.
 For corpora where large tables are expected — in practice anything beyond ~400 rows
 or ~10 pages per document — use **Advanced** mode, which holds recall 1.000 through
@@ -2270,12 +2321,12 @@ COMPLETED. The prompt now states the rule explicitly: declining the tool obliges
 the agent to extract the table directly, and one unreadable column means that
 cell is `null`, not that the row or the list is dropped.
 
-The **Processing Report** also stops contradicting itself here. It previously
-printed `✓ Completeness Validation: All schema constraints satisfied` immediately
-above the warning that the list was empty, because with no `minItems` no
-constraint *was* broken. It now reads `⚠` and says which list returned no rows,
-how many rows the OCR found, whether the table tool ran, and that `minItems` would
-make it a hard constraint.
+The **Processing Report** does not contradict itself over this case. With no
+`minItems` no schema constraint *is* broken, so the completeness line would
+otherwise read `✓ All schema constraints satisfied` immediately above the warning
+that the list was empty. Instead it reads `⚠` and says which list returned no rows,
+how many rows the OCR found, whether the table tool ran, and that setting
+`minItems` would report the same shortfall as a schema violation as well.
 
 ---
 

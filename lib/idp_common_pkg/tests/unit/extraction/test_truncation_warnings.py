@@ -23,6 +23,11 @@ Bedrock's bare "Input is too long". This pins:
   two-column Daily Balance table is summed into the evidence for a 5-row
   two-property ``account_summary``. That test fails if the default is ever flipped
   without narrowing the attribution first.
+* the two things a user choosing ``fail`` has to be told, both of which are
+  deliberate and therefore documented rather than fixed:
+  ``TestZeroRowsStillCompletesUnderFail`` (a list losing EVERY row still completes,
+  #1047) and ``TestMinItemsIsVisibilityNotAHardConstraint`` (``minItems`` makes a
+  shortfall visible; nothing acts on it, #1048).
 """
 
 from __future__ import annotations
@@ -756,6 +761,263 @@ class TestWhyFailIsOptIn:
             "if TABLES is gone the check is inert by construction and both doc tiers "
             "need updating again"
         )
+
+
+def _repo_root() -> Path:
+    import subprocess
+
+    return Path(
+        subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    )
+
+
+class TestZeroRowsStillCompletesUnderFail:
+    """#1047: under `fail`, losing 95% of the rows fails and losing 100% completes.
+
+    ``_build_extraction_issues`` skips a width group in which every list is empty
+    (``if not labels: continue``) and leaves it to ``extraction_incomplete``, a
+    warning, which cannot change a document's status. The asymmetry is deliberate —
+    a genuinely empty list is common and legitimate and indistinguishable from total
+    loss, the over-attribution in ``TestWhyFailIsOptIn`` applies more strongly to an
+    empty list (it scores 0 against whatever evidence is attributed to it), and the
+    recorded corpus holds no legitimately-empty-list document that also carries a
+    same-width table, so the case cannot be bounded from it.
+
+    Since it is deliberate, a user choosing ``fail`` has to be told, and both doc
+    tiers are part of the contract here rather than commentary on it.
+    """
+
+    def _saved(self, svc, fields, **kw):
+        return TestRowShortfallOutcome._saved(self, svc, fields, **kw)
+
+    def test_the_two_halves_of_the_asymmetry_in_one_place(self):
+        partial = _svc(row_shortfall_action="fail")
+        _w, _d, _s, exc = self._saved(
+            partial, {"Account Number": "1", "Transactions": _rows(43)}
+        )
+        assert exc is not None, "43 of 800 rows fails — this is the covered half"
+
+        total = _svc(row_shortfall_action="fail")
+        write, doc, section, exc = self._saved(
+            total, {"Account Number": "1", "Transactions": []}
+        )
+        assert exc is None, "0 of 800 rows completes — this is the uncovered half"
+        assert doc.errors == []
+        codes = [i.code for i in section.processing_issues]
+        assert "extraction_incomplete" in codes and CODE not in codes
+        assert (
+            next(
+                i
+                for i in section.processing_issues
+                if i.code == "extraction_incomplete"
+            ).severity
+            == "warning"
+        )
+        assert "COMPLETED WITH WARNINGS" in write.call_args.args[0]["processing_report"]
+
+    @pytest.mark.parametrize(
+        "path",
+        (
+            "docs/extraction-and-confidence.md",
+            "lib/idp_common_pkg/idp_common/extraction/README.md",
+        ),
+    )
+    def test_both_doc_tiers_state_the_asymmetry_and_its_size(self, path):
+        import re
+
+        # Markdown emphasis and line wrapping fall between the words of a phrase,
+        # so flatten both away before looking for it.
+        text = re.sub(
+            r"[*`\s]+", " ", (_repo_root() / path).read_text(encoding="utf-8")
+        )
+        for token in ("95%", "100%", "3,631", "99 returned zero rows"):
+            assert token in text, (
+                f"{path} no longer tells a reader choosing "
+                f"extraction.row_shortfall_action='fail' that a list losing every "
+                f"row still completes, or how large that population is (#1047)."
+            )
+
+
+class TestMinItemsIsVisibilityNotAHardConstraint:
+    """#1048: `minItems` makes a list shortfall VISIBLE. Nothing acts on it.
+
+    Three places used to tell the reader that setting ``minItems`` turns a
+    shortfall into a hard constraint — the two ``ExtractionService`` messages and
+    the processing report's completeness line in
+    ``docs/extraction-and-confidence.md``. It is not one at any layer:
+
+    * ``extraction_list_truncated`` is ``severity="warning"``.
+    * A ``minItems`` violation is also a JSON-Schema failure, and
+      ``extraction.validation.fail_action: reject`` sets
+      ``parsing_succeeded=False`` — read by ``_generate_processing_report``'s
+      status line and the UI's report tab, and by nothing in the status path.
+    * No ``ProcessingIssue`` changes a document's status at any severity,
+      ``error`` included. ``extraction.row_shortfall_action: fail`` is the only
+      setting in this module that turns a detection into an outcome, and it works
+      by raising, not by severity.
+
+    Giving ``minItems`` a real consequence is a product decision and is not taken
+    here, so the claim must not come back as wording. The phrase scan below is
+    what stops it.
+    """
+
+    # The three files the claim reached, plus the scaling guide, which recommends
+    # `minItems` for the same purpose. The phrase is banned outright rather than
+    # matched in context: "not a hard constraint" is a retraction, and per
+    # CLAUDE.md the text should state what `minItems` DOES instead.
+    _CLAIM_SURFACES = (
+        "lib/idp_common_pkg/idp_common/extraction/service.py",
+        "lib/idp_common_pkg/idp_common/extraction/README.md",
+        "docs/extraction-and-confidence.md",
+        "docs/extraction-scaling-guide.md",
+    )
+
+    def test_a_minitems_shortfall_is_only_a_warning(self):
+        svc = _svc(
+            schema={
+                "type": "object",
+                "properties": {
+                    "Account Number": {"type": "string"},
+                    "Transactions": {
+                        "type": "array",
+                        "minItems": 100,
+                        "items": ROW,
+                    },
+                },
+            }
+        )
+        # The schema is read off the class schema's own properties, so drive the
+        # real builder rather than asserting on a constructed issue.
+        issue = next(
+            i
+            for i in _issues(svc, {"Account Number": "1", "Transactions": _rows(43)})
+            if i.code == "extraction_list_truncated"
+        )
+        assert issue.severity == "warning"
+        assert "hard constraint" not in issue.message
+
+    def test_no_shipped_message_promises_a_hard_constraint(self):
+        """The recommendation the two shortfall messages carry, in both modes.
+
+        ``_check_completeness_detailed``'s summary and
+        ``extraction_rows_below_ocr_estimate``'s remedy clause are the two places
+        that recommend ``minItems`` to a user. Both must still recommend it — it
+        is the one signal with no false positives — without promising a
+        consequence it does not have.
+        """
+        svc = _svc()
+        svc._document_text = _table(800, pages=17)
+        summary = svc._check_completeness_detailed(
+            extracted_fields={"Transactions": []},
+            schema=SCHEMA,
+            tool_used=False,
+            ocr_analysis={
+                "tool_usage_recommended": True,
+                "tables_detected": 2,
+                "estimated_row_count": 800,
+            },
+        )["summary"]
+        messages = [summary]
+        for agentic in (False, True):
+            s = _svc(agentic=agentic)
+            s._document_text = _table(800, pages=17)
+            messages.append(
+                next(
+                    i
+                    for i in _issues(
+                        s, {"Account Number": "1", "Transactions": _rows(43)}
+                    )
+                    if i.code == CODE
+                ).message
+            )
+        for text in messages:
+            assert "minItems" in text, text
+            assert "hard constraint" not in text, text
+
+    @pytest.mark.parametrize("path", _CLAIM_SURFACES)
+    def test_no_document_or_source_promises_a_hard_constraint(self, path):
+        """Both doc tiers, the service source, and the config editor's own copy.
+
+        Scanned as text because the claim is prose: it reached three files at once
+        and a fix applied to one of them would leave the other two promising a
+        failure that cannot happen.
+        """
+        text = (_repo_root() / path).read_text(encoding="utf-8")
+        for phrase in ("hard constraint", "hard constraints"):
+            assert phrase not in text.lower(), (
+                f"{path} promises that a schema constraint is 'hard'. A minItems "
+                "shortfall raises a warning and no ProcessingIssue changes a "
+                "document's status; extraction.row_shortfall_action is the only "
+                "setting here with an outcome (#1048)."
+            )
+
+    def test_no_processing_issue_severity_fails_the_section(self):
+        """The invariant the corrected documentation rests on.
+
+        ``_save_results``' only failure is ``_fail_on_row_shortfall``, which fires
+        on an ``error``-severity ``ROW_SHORTFALL_CODE`` issue and nothing else. So
+        an ``error`` on any other code — a ``minItems`` violation under
+        ``fail_action: reject`` included — leaves the section completed. Driven
+        through ``_fail_on_row_shortfall`` with the real codes rather than a
+        synthetic one, so a new blocking code has to be added here deliberately.
+        """
+        svc = _svc(row_shortfall_action="fail")
+        others = (
+            "extraction_list_truncated",
+            "extraction_validation_failed",
+            "extraction_incomplete",
+            "extraction_sparse",
+            "extraction_off_schema_fields",
+        )
+        for code in others:
+            for severity in ("info", "warning", "error"):
+                doc = Document(
+                    id="d", input_key="d.pdf", input_bucket="in", output_bucket="out"
+                )
+                section = SimpleNamespace(
+                    processing_issues=[
+                        SimpleNamespace(code=code, severity=severity, message="m")
+                    ]
+                )
+                svc._fail_on_row_shortfall(doc, section, "1")
+                assert doc.errors == [], (code, severity)
+
+        # Positive control, so the loop above cannot pass by doing nothing.
+        doc = Document(
+            id="d", input_key="d.pdf", input_bucket="in", output_bucket="out"
+        )
+        with pytest.raises(ExtractionOutputIncomplete):
+            svc._fail_on_row_shortfall(
+                doc,
+                SimpleNamespace(
+                    processing_issues=[
+                        SimpleNamespace(code=CODE, severity="error", message="m")
+                    ]
+                ),
+                "1",
+            )
+
+    def test_parsing_succeeded_false_reaches_the_report_and_nothing_else(self):
+        """What ``fail_action: reject`` actually buys, end to end.
+
+        The report's status line reads FAILED, and the section's own result is
+        written with the extracted values intact — which is the whole of the
+        consequence, and is why the issue message says 'the document's status is
+        unchanged' rather than 'the section is marked FAILED'.
+        """
+        report = ExtractionService(config=IDPConfig())._generate_processing_report(
+            {"parsing_succeeded": False, "extraction_method": "traditional"}
+        )
+        assert "Status: FAILED" in report
+        ok = ExtractionService(config=IDPConfig())._generate_processing_report(
+            {"parsing_succeeded": True, "extraction_method": "traditional"}
+        )
+        assert "Status: SUCCESS" in ok
 
 
 class TestSiblingsRefsAndWrappers:

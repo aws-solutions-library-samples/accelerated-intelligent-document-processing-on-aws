@@ -2945,7 +2945,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     if not tool_used
                     else "The table parsing tool ran but produced no rows."
                 )
-                + " Set minItems on the list field to make this a hard constraint."
+                + " Setting minItems on the list field reports the same shortfall "
+                "as a schema violation as well, so it appears in the section's "
+                "validation block; it makes the loss visible and does not by "
+                "itself fail the section."
             )
         else:
             summary = "All schema constraints satisfied"
@@ -3724,14 +3727,25 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 ):
                     continue
                 fields_str = ", ".join(labels)
-                rec = (
+                # What `minItems` buys is VISIBILITY: it adds
+                # `extraction_list_truncated`, which is a warning, and a
+                # JSON-Schema violation, whose worst outcome under
+                # `validation.fail_action: reject` is `parsing_succeeded=False` —
+                # read by the processing report and the UI's report tab and by
+                # nothing in the status path. `extraction.row_shortfall_action` is
+                # the only setting here that decides an outcome (#1048).
+                mode_rec = (
                     " Simple extraction returns one response per section and "
                     "stops early on long lists; for documents this size use "
-                    "Advanced (agentic) extraction, which shards, or set minItems "
-                    "on the list field to make the shortfall a hard constraint."
+                    "Advanced (agentic) extraction, which shards."
                     if not is_agentic
-                    else " Set minItems on the list field to make this a hard "
-                    "constraint, and check the table-parsing tool was used."
+                    else " Check that the table-parsing tool was used."
+                )
+                rec = (
+                    mode_rec + " Setting minItems on the list field reports the "
+                    "same shortfall as a schema violation as well; it makes the "
+                    "loss visible and does not by itself fail the section — "
+                    "extraction.row_shortfall_action decides that."
                 )
                 # What the shortfall COSTS follows extraction.row_shortfall_action,
                 # the way extraction_validation_failed's severity follows
@@ -4026,8 +4040,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if len(failed) > 8:
                 named += f", +{len(failed) - 8} more"
             if fail_action == "reject":
+                # `reject` records the result as unparsed and makes the processing
+                # report read FAILED. It does not change the section's or the
+                # document's outcome — nothing in the status path reads
+                # `parsing_succeeded` — so the message says what it does (#1048).
                 consequence = (
-                    " The section is marked FAILED because Fail Action is 'reject'."
+                    " Fail Action is 'reject', so the result is recorded as not "
+                    "parsed and this section's processing report reads FAILED. The "
+                    "values are stored as extracted and the document's status is "
+                    "unchanged."
                 )
             elif escalated:
                 consequence = (
@@ -4777,8 +4798,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
           Validation is on by default precisely because this combination is free;
           a default that quietly spent money on every schema violation would be a
           cost surprise rather than a safety net.
-        - ``reject`` — same, plus ``parsing_succeeded=False`` so downstream/HITL
-          treats the section as failed. Also free.
+        - ``reject`` — same, plus ``parsing_succeeded=False``, which makes the
+          section's processing report and the UI's report tab read FAILED. Also
+          free. It does **not** change the section's or the document's outcome:
+          nothing in the status path reads ``parsing_succeeded``.
         - ``escalate`` — one scoped re-extraction of ONLY the failing top-level
           fields with the stronger ``escalation_model``, merged back over the
           fields that already validated. This is the opt-in that costs money.
@@ -5082,7 +5105,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 section_info=section_info,
             )
 
-        # reject: surface the failure so downstream/HITL can act on it.
+        # reject: record the result as unparsed, which makes the processing report
+        # and the UI's report tab read FAILED. The section and the document still
+        # complete — nothing in the status path reads `parsing_succeeded`.
         if not report.valid and vcfg.fail_action == "reject":
             parsing_succeeded = False
 

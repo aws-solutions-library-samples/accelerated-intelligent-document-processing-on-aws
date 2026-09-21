@@ -551,12 +551,21 @@ rewritten without a record. See `idp_common.extraction.coercion`.
 | `fail_action` | Behaviour | Extra inference? |
 |---|---|---|
 | `warn` (default) | Record the outcome in `metadata.validation` and raise a ProcessingIssue | **No — free** |
-| `reject` | Same, plus `parsing_succeeded=False` so downstream/HITL treats the section as failed | **No — free** |
+| `reject` | Same, plus `parsing_succeeded=False`, which makes the processing report and the UI's report tab read FAILED | **No — free** |
 | `escalate` | Re-extract ONLY the failing top-level fields with `escalation_model`, merged back over the fields that already validated | **Yes** |
 
 Validation is **on by default** precisely because the default action is free: it
 turns an otherwise-silent schema violation into something visible at no cost.
 `escalate` is the opt-in that spends money.
+
+⚠️ **No `fail_action` value rejects a section.** `reject` is a *visibility*
+setting: `parsing_succeeded=False` is read by `_generate_processing_report`'s
+status line and by `ProcessingReportTab.tsx`, and by nothing in the status path, so
+the values are still written to `result.json` and the document still completes. The
+one extraction setting that turns a detection into an outcome is
+`extraction.row_shortfall_action: fail`, which raises `ExtractionOutputIncomplete`
+and so fails the Step Functions execution (see *Simple-mode large-document
+warnings* below).
 
 Escalation is deliberately **not** preceded by a same-model retry: re-asking the
 model that just produced invalid output, with the same prompt, mostly buys
@@ -1850,7 +1859,8 @@ How it works:
      warn if it still fails. (When the failures can't be expressed as a field
      subset — e.g. they're root-level only — it falls back to a whole-section
      re-extraction.)
-   - **`reject`** — mark `parsing_succeeded=false` so downstream/HITL can act.
+   - **`reject`** — mark `parsing_succeeded=false`, which makes the processing
+     report read FAILED. The section and the document still complete.
 3. The outcome is recorded under `metadata.validation` (see *Audit metadata*
    below).
 
@@ -2091,8 +2101,8 @@ Use these metrics to:
 
 With over-splitting fixed (#726) a Simple-mode section is ONE request, and the measured
 consequence is an 800-row / 17-page statement returning 43 rows with `COMPLETED` and no
-processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. Two things
-make both loud without changing what is extracted:
+processing issue, and 25+ pages failing with Bedrock's bare *Input is too long*. These
+signals make both loud without changing what is extracted:
 
 - `extraction_rows_below_ocr_estimate` (warning; **error** under
   `extraction.row_shortfall_action: fail`, which also fails the section; both modes) — rows extracted for the lists of
@@ -2133,6 +2143,32 @@ make both loud without changing what is extracted:
   reprinted per page is N tables of the same width and the sum is what lets the check see 800
   rows at all. `tests/unit/extraction/test_truncation_warnings.py::TestWhyFailIsOptIn` pins the
   misattribution against the real shipped schema and fails if the default is flipped first.
+  ⚠️ **`fail` does not cover a list that lost EVERY row, so a document losing 95% of its
+  rows fails and one losing 100% completes.** `_build_extraction_issues` skips a width
+  group in which every list is empty (`if not labels: continue`) and leaves it to
+  `extraction_incomplete`, a warning, which cannot change a document's status. Of the
+  3,631 recorded `COMPLETED` benchmark runs with at least 30 ground-truth rows, 99
+  returned zero rows against 65 with partial loss — so the uncovered population is the
+  larger one. It is left that way because a genuinely empty list is common and legitimate
+  (an account with no fees, a period with no deposits) and indistinguishable from total
+  loss, where "43 of 800" has no innocent reading; because the over-attribution above
+  applies more strongly to an empty list, which scores 0 against whatever evidence is
+  attributed to it; and because the recorded corpus cannot bound the false-failure rate —
+  it holds no legitimately-empty-list document that also carries a same-width table, so
+  the case needs its own measurement. Tracked with the narrowing in GitHub issue #1046.
+- `extraction_list_truncated` (warning; both modes) — a non-empty list came back under its
+  schema `minItems`. This is the one completeness signal with no false positives by
+  construction, because the config author declared the floor. ⚠️ **What `minItems` buys is
+  visibility.** The issue is a warning; the same shortfall is also a
+  JSON-Schema violation, so it shows up in `metadata.validation` and
+  `extraction_validation_failed`; and the strongest thing
+  `extraction.validation.fail_action: reject` does with it is set
+  `parsing_succeeded=False`, which only the processing report and the UI's report tab read.
+  No `ProcessingIssue` changes a document's status at any severity, `error` included, so
+  `extraction.row_shortfall_action: fail` remains the only setting in this module that
+  turns an incompleteness detection into an outcome. Giving a `minItems` violation its own
+  consequence is a product decision, not a wording one, and is deliberately not taken here
+  (GitHub issue #1048).
 - `ExtractionOutputIncomplete` — the section's list came back under half the rows its own
   OCR text evidences, and `extraction.row_shortfall_action` is `fail` (opt-in; see the trade
   above). Raised by `_fail_on_row_shortfall`, which is the **last statement of

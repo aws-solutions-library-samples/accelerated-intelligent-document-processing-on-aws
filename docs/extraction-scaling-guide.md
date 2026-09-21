@@ -27,7 +27,11 @@ using synthetic bank statements with an exact known number of transaction rows.
 **Key safety point:** when simple mode exceeds its limit it **silently returns a
 partial list with no error** — it looks successful but drops most rows. If your
 documents can contain large tables, either use advanced mode or validate row counts
-downstream (e.g. a schema `minItems` constraint, which advanced mode enforces).
+downstream. A schema `minItems` constraint is the cheapest reconciliation signal —
+advanced mode enforces it at the agent's tool boundary, and a shortfall that gets
+past that is reported as a warning in both modes. It makes truncation *visible*; the
+setting that makes it fail a document is
+[`extraction.row_shortfall_action`](./extraction-and-confidence.md#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action).
 
 ---
 
@@ -130,7 +134,8 @@ behavior can **vary run-to-run**. If your OCR quality is marginal on tabular dat
    for documents with large multi-page tables.
 2. **Guard against silent truncation.** If large tables are possible in simple mode, add
    a schema `minItems` on the list or reconcile extracted row counts against an expected
-   total downstream. Advanced mode enforces completeness constraints for you.
+   total downstream. Advanced mode checks `minItems` inside its extraction loop, so the
+   agent gets a correction round rather than silently returning a short list.
 3. **Budget advanced mode.** Estimate ~$0.006–0.013 per row plus OCR; expect 5–15 min for
    thousand-row documents. Split documents above ~3,000 rows / ~60 pages.
 4. **Feed the table tool clean OCR.** Use Textract TABLES or BDA for tabular documents so
